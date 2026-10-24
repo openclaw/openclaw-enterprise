@@ -93,7 +93,9 @@ export function renderNativeAdminAccess(
   let rereadAfterPending = false;
 
   function updateControls() {
-    reload.disabled = pending;
+    // aria-disabled, not disabled: disabling the focused button drops keyboard focus to the page.
+    // load() already ignores activation while a read is pending.
+    reload.setAttribute("aria-disabled", String(pending));
     const url = !pending && current?.status === "available" ? current.url : undefined;
     launch.hidden = url === undefined;
     if (url === undefined) {

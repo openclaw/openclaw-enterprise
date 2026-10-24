@@ -334,15 +334,7 @@ test("active Agent can deploy the current saved draft as a new version", async (
   for (const key of ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"]) {
     const secret = await fixture.createSecret(namespace.id, key, `test-${key}`);
     secretBindings[key] = envBinding(secret);
-    fixture.policy.bindings.push({
-      id: `binding-${secret.id}`,
-      namespaceId: namespace.id,
-      subjectKind: "identity",
-      subjectId: `service-agent-${agent.id}`,
-      roleId: `auth-${agent.id}`,
-      resourceKind: "secret",
-      resourceId: secret.id,
-    });
+    await fixture.grantAgentSecretOperate(agent, secret.ref);
   }
   const currentDraft = await fixture.updateConfiguration(
     namespace.id,

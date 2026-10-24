@@ -297,8 +297,13 @@ Check the [session lifetime](../../reference/authentication.md#session-lifecycle
 before changing configuration: password-only sessions last seven days; sessions
 with external sign-in enabled last eight hours. Native Agent activity does not
 refresh them. An Agent revision change closes native WebSockets without expiring
-the OCE login. After expiry, reload the Agent root or open its console page to
-sign in again; native recovery ends at Agent detail.
+the OCE login.
+
+If an open Gateway tab offers **Reconnect in browser**, select it. Your sign-in
+may have expired, or your access may have changed. If OCE asks you to sign in,
+it checks your access again and returns you to that Agent’s detail page. Select
+**Open admin console** to continue. With an older runtime, open the Agent root
+or its console page to start the same recovery.
 
 If expiry coincides with controller restarts, check persistent session storage
 and whether the configured auth secret changed. In-memory sessions disappear

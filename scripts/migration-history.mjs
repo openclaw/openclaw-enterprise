@@ -300,7 +300,9 @@ async function preflight(client, manifest) {
   } else if (ledger !== manifest.ledgerCatalogs.completed) {
     refuse("the Drizzle ledger objects or privileges have changed");
   }
-  if (catalogDigest(await migrationCatalog(client)) !== manifest.catalogs[shape]) {
+  const native = manifest.catalogs[shape];
+  const actual = catalogDigest(await migrationCatalog(client));
+  if (actual !== native && actual !== manifest.logicalRestoreCatalogs?.[native]) {
     refuse(`catalog objects or effective grants differ for ${shape}`);
   }
   if (shape === "providerCompleted" || shape === "backendCompleted") {

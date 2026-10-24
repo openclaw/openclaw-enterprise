@@ -200,14 +200,19 @@ runs:
         # container.
         NODE_COMPILE_CACHE: ${{ runner.temp }}/node-compile-cache
       run: |
+        launch=()
         if [[ "${{ inputs.lane }}" == k3d-fixture-configuration ]]; then
           # Hosted runners have been lost mid-lane (suspected memory pressure); a
           # lost runner skips every later step, so the sampler also logs live.
           bash scripts/ci/memory-sampler.sh "$RUNNER_TEMP/memory/${{ inputs.lane }}.log" &
           sampler=$!
           trap 'kill "$sampler" 2>/dev/null || true' EXIT
+        elif [[ "${{ inputs.lane }}" == checks-browser || "${{ inputs.lane }}" == checks-browser-2 ]]; then
+          # Actions sends cancellation to the step's entry process. Let the browser
+          # runner receive it directly so it can stop its detached test processes.
+          launch=(exec)
         fi
-        node scripts/ci/run-tests.mjs run "${{ inputs.lane }}" --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json" --results "$RUNNER_TEMP/results/${{ inputs.lane }}.json"
+        "${launch[@]}" node scripts/ci/run-tests.mjs run "${{ inputs.lane }}" --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json" --results "$RUNNER_TEMP/results/${{ inputs.lane }}.json"
     - name: Show last memory samples
       if: (failure() || cancelled()) && inputs.lane == 'k3d-fixture-configuration'
       continue-on-error: true

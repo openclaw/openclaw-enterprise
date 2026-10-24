@@ -86,11 +86,10 @@ function openShellRefusal(status: number | undefined, result: Record<string, unk
     if (result.error === "middleware_denied") {
       const reason = printable(result.reason_code);
       if (reason === "draft_already_opened") {
-        // One draft per repository grant (repository, review branch and base), shared by every
-        // version and Agent bound to it (finding 2147).
+        // Authorization spends the grant allowance before any send to GitHub.
         return new DraftPullFailure(
           "not-created",
-          "this repository binding already opened its draft pull request (one per review branch and base); GitHub did not receive this one. Find the earlier draft at GitHub; for another draft, ask an operator for a new review branch.",
+          "the grant's draft-create allowance was already used. GitHub did not receive this request. Check whether the earlier attempt created a draft; do not submit another create.",
         );
       }
       const advice = reason === undefined ? undefined : ROUTE_REFUSALS.get(reason);

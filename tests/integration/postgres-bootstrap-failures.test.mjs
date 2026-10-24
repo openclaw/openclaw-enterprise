@@ -260,6 +260,11 @@ async function bootstrapWithLostCommitAcknowledgement(environment) {
   const serviceKeyOutput = JSON.parse(
     await readFile(environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE, "utf8"),
   );
+  // The logged attempt keeps the IDs the run assigned, each in its OCC format (finding 2246).
+  assert.match(failure.attempt.installationId, /^ins_[0-9a-f-]{36}$/);
+  assert.match(failure.attempt.principalId, /^prn_[0-9a-f-]{36}$/);
+  assert.match(failure.attempt.servicePrincipalId, /^spn_[0-9a-f-]{36}$/);
+  assert.equal(failure.attempt.servicePrincipalId, serviceKeyOutput.data.servicePrincipalId);
   assert.deepEqual(await rowCounts(), {
     installations: 1,
     bootstrap_audits: 1,

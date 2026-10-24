@@ -19,6 +19,7 @@ import {
   CredentialSourceRevisionError,
   ComputePreparationFailedError,
   DependencyUnavailableError,
+  KubernetesSecretWriteForbiddenError,
   PostgresMetricsSnapshot,
   SandboxGatewayUnavailableError,
   SandboxRevisionUnsupportedError,
@@ -2086,9 +2087,16 @@ revisionTest(
     // readiness evidence decides: a bootstrap last seen running is retired with the failure
     // (finding 1165), a deployment that got past it keeps its runtime for diagnosis, and a
     // revision published since (only its activation fails) is never retired.
-    const running = await fixture.admitInitialRevision("expired-bootstrap-outage");
-    const progressed = await fixture.admitInitialRevision("expired-runtime-outage");
-    const published = await fixture.admitInitialRevision("expired-activation-outage");
+    // The scripted passes must all run before the deadline, so it is real time from admission
+    // (finding 1171). Each work is admitted 20 s old by the database clock, which the worker judges
+    // the deadline by: 10 s of real time leaves a stalled runner room for those few passes (they
+    // take about 1 s), and the outage then fills the rest without waiting out all 30 s.
+    const timeoutMs = 30_000;
+    const remainingMs = 10_000;
+    const aged = { revision: { workAge: `${(timeoutMs - remainingMs) / 1000} seconds` } };
+    const running = await fixture.admitInitialRevision("expired-bootstrap-outage", aged);
+    const progressed = await fixture.admitInitialRevision("expired-runtime-outage", aged);
+    const published = await fixture.admitInitialRevision("expired-activation-outage", aged);
     // Readiness each pass reports, in order; once exhausted, every pass fails transiently,
     // except that the published revision's later passes are ready and its activation fails.
     const script = new Map([
@@ -2105,9 +2113,6 @@ revisionTest(
         "unavailable",
         "The Kubernetes API answered HTTP 503.",
       );
-    // The scripted passes must all run before the deadline, so it is real time from admission.
-    // 30 s leaves a stalled runner room for them; the outage then fills the rest (finding 1171).
-    const timeoutMs = 30_000;
     await fixture.start(
       {
         ...fixture.compute,
@@ -2154,7 +2159,7 @@ revisionTest(
       ).rows;
 
     for (const { candidate } of [running, progressed, published]) {
-      await fixture.work(candidate, "failed_permanent", timeoutMs + 60_000);
+      await fixture.work(candidate, "failed_permanent", remainingMs + 15_000);
       // The pass that ended it ran at the deadline, by the database clock, not before it.
       const { rows } = await fixture.observerPool.query(
         `SELECT EXTRACT(EPOCH FROM completed_at - created_at) * 1000 AS age_ms
@@ -2506,6 +2511,66 @@ revisionTest(
       },
     });
     assert.equal(preparations, 1);
+  },
+);
+
+revisionTest(
+  "a Kubernetes 403 on a private Secret write fails deployment on the first attempt",
+  async (fixture) => {
+    // Finding 1770 (D503): an RBAC grant, admission policy or quota that refuses the write
+    // refuses every retry too, so the deployment fails at once with a status that names the
+    // refusal and the grant to check, instead of five DEPENDENCY_UNAVAILABLE retries and
+    // "Deployment reconciliation failed.". The Driver keeps only the HTTP status and Status
+    // reason as the cause (tests/conformance/kubernetes-compute.test.mjs pins that shape), and
+    // the worker log keeps both. A 429, 5xx or timeout stays a TransientDependencyError, which
+    // waits for the convergence deadline (the KUBERNETES_API_UNAVAILABLE case below).
+    const admitted = await fixture.admitInitialRevision("private-secret-write-forbidden");
+    const events = [];
+    let preparations = 0;
+    await fixture.start(
+      {
+        ...fixture.compute,
+        async prepareRevision() {
+          preparations += 1;
+          const refused = new KubernetesSecretWriteForbiddenError();
+          refused.cause = Object.assign(
+            new Error("The Kubernetes API answered HTTP 403 (Forbidden)."),
+            { code: 403, reason: "Forbidden" },
+          );
+          throw refused;
+        },
+      },
+      { emit: (event) => events.push(event) },
+    );
+    await assertFailedDeployment(fixture, admitted, {
+      error: {
+        code: "KUBERNETES_SECRET_WRITE_FORBIDDEN",
+        message:
+          "Kubernetes refused access to a Secret this version needs (HTTP 403 Forbidden), so the controller did not retry. Ask a platform operator to check that the worker's tenant RoleBindings grant get, create and update on secrets in the Agent's Kubernetes namespaces (with an execution cluster, also the control cluster's Gateway namespace), and that no admission policy or ResourceQuota refuses Secrets there, then deploy again.",
+      },
+    });
+    assert.equal(preparations, 1);
+    const completed = events.filter(
+      (event) => event.event === "worker.completed" && event.revisionId === admitted.candidate.id,
+    );
+    assert.deepEqual(
+      completed.map(({ outcome, code, cause, status, reason }) => ({
+        outcome,
+        code,
+        cause,
+        status,
+        reason,
+      })),
+      [
+        {
+          outcome: "permanent",
+          code: "KUBERNETES_SECRET_WRITE_FORBIDDEN",
+          cause: "KubernetesSecretWriteForbiddenError",
+          status: 403,
+          reason: "Forbidden",
+        },
+      ],
+    );
   },
 );
 
@@ -2996,79 +3061,166 @@ revisionTest(
 // D381 follow-up: a dedicated Gateway that refuses its own in-Pod CLI as unauthorized
 // can never apply its workspace node for this revision, so activation must fail the
 // deployment with a named code instead of staying pending until the convergence
-// deadline. Both activation paths are covered: the pass that publishes the active
+// deadline. Finding 2265: so must a private Secret write (the workspace setup Secret that
+// activation delivers) that Kubernetes refuses with 403, as it does during preparation
+// (finding 1770). Both activation paths are covered: the pass that publishes the active
 // pointer, and a later pass that finds the pointer already published.
-for (const pendingPasses of [0, 1]) {
+for (const refusal of [
+  {
+    label: "the Gateway refuses as unauthorized",
+    slug: "gateway-unauthorized",
+    failure: () =>
+      new ActivationFailedError(
+        "AGENT_GATEWAY_UNAUTHORIZED",
+        "The exact AgentRevision gateway refused its own CLI as unauthorized.",
+      ),
+    error: {
+      code: "AGENT_GATEWAY_UNAUTHORIZED",
+      message:
+        "The Agent Gateway refused its own CLI as unauthorized. Check that the Agent's Configuration sets gateway.auth.password to OPENCLAW_GATEWAY_PASSWORD (Enable gateway password access), then deploy again.",
+    },
+    cause: "ActivationFailedError",
+  },
+  {
+    label: "whose private Secret write Kubernetes refuses with 403",
+    slug: "activation-secret-forbidden",
+    failure: () =>
+      Object.assign(new KubernetesSecretWriteForbiddenError(), {
+        cause: Object.assign(new Error("The Kubernetes API answered HTTP 403 (Forbidden)."), {
+          code: 403,
+          reason: "Forbidden",
+        }),
+      }),
+    error: {
+      code: "KUBERNETES_SECRET_WRITE_FORBIDDEN",
+      message:
+        "Kubernetes refused access to a Secret this version needs (HTTP 403 Forbidden), so the controller did not retry. Ask a platform operator to check that the worker's tenant RoleBindings grant get, create and update on secrets in the Agent's Kubernetes namespaces (with an execution cluster, also the control cluster's Gateway namespace), and that no admission policy or ResourceQuota refuses Secrets there, then deploy again.",
+    },
+    cause: "KubernetesSecretWriteForbiddenError",
+  },
+]) {
+  for (const pendingPasses of [0, 1]) {
+    revisionTest(
+      `an activation ${refusal.label} fails deployment at once (after ${pendingPasses} pending passes)`,
+      async (fixture) => {
+        const { owner, candidate } = await fixture.admitInitialRevision(
+          `${refusal.slug}-${pendingPasses}`,
+        );
+        const events = [];
+        let activations = 0;
+        const stopped = [];
+
+        await fixture.start(
+          {
+            ...fixture.compute,
+            // Exclusive Compute stops a refused candidate, but never the published revision.
+            requiresStoppedPredecessors: () => true,
+            async stopRevision(revision) {
+              stopped.push(revision.id);
+              return fixture.compute.stopRevision(revision);
+            },
+            async activateRevision() {
+              activations += 1;
+              if (activations <= pendingPasses) {
+                throw new ActivationPendingError(
+                  "WORKSPACE_NODE_BINDING_PENDING",
+                  "The exact AgentRevision gateway has not applied its workspace node.",
+                );
+              }
+              throw refusal.failure();
+            },
+          },
+          { emit: (event) => events.push(event) },
+        );
+
+        await assertFailedDeployment(
+          fixture,
+          { owner, candidate },
+          { error: refusal.error },
+          30_000,
+        );
+        // No retry after the refusal: the first refused pass ends the deployment.
+        assert.equal(activations, pendingPasses + 1);
+        assert.deepEqual(stopped, [], "the published revision keeps its workload");
+        await completion(
+          events,
+          "the refused activation's terminal completion",
+          (event) =>
+            event.event === "worker.completed" &&
+            event.revisionId === candidate.id &&
+            event.outcome === "permanent",
+        );
+        const last = events
+          .filter(
+            (event) => event.event === "worker.completed" && event.revisionId === candidate.id,
+          )
+          .at(-1);
+        assert.deepEqual(
+          { outcome: last?.outcome, code: last?.code, cause: last?.cause },
+          { outcome: "permanent", code: refusal.error.code, cause: refusal.cause },
+        );
+      },
+    );
+  }
+}
+
+// Finding 2265: a maintenance pass of a running revision is no deployment anyone waits on. A
+// 403 on a private Secret write there, in preparation or activation, fails only that bounded
+// pass, as an outage does, and keeps the maintenance chain, so the Agent keeps its runtime and
+// recovers by itself once an operator fixes the grant instead of needing a new deployment.
+for (const [step, label] of [
+  ["prepareRevision", "preparation"],
+  ["activateRevision", "activation"],
+]) {
   revisionTest(
-    `an activation the Gateway refuses as unauthorized fails deployment at once (after ${pendingPasses} pending passes)`,
+    `a Kubernetes 403 on a private Secret write during maintenance ${label} keeps the maintenance chain`,
     async (fixture) => {
       const { owner, candidate } = await fixture.admitInitialRevision(
-        `gateway-unauthorized-${pendingPasses}`,
+        `maintenance-secret-forbidden-${label}`,
       );
       const events = [];
-      let activations = 0;
-      const stopped = [];
-
+      let refuse = false;
       await fixture.start(
         {
           ...fixture.compute,
-          // Exclusive Compute stops a refused candidate, but never the published revision.
-          requiresStoppedPredecessors: () => true,
-          async stopRevision(revision) {
-            stopped.push(revision.id);
-            return fixture.compute.stopRevision(revision);
-          },
-          async activateRevision() {
-            activations += 1;
-            if (activations <= pendingPasses) {
-              throw new ActivationPendingError(
-                "WORKSPACE_NODE_BINDING_PENDING",
-                "The exact AgentRevision gateway has not applied its workspace node.",
-              );
+          maintenanceIntervalMs: 200,
+          async [step](...args) {
+            if (refuse) {
+              throw new KubernetesSecretWriteForbiddenError();
             }
-            throw new ActivationFailedError(
-              "AGENT_GATEWAY_UNAUTHORIZED",
-              "The exact AgentRevision gateway refused its own CLI as unauthorized.",
-            );
+            // The fixture's Compute has no activation step of its own.
+            return fixture.compute[step]?.(...args);
           },
         },
         { emit: (event) => events.push(event) },
       );
-
-      await assertFailedDeployment(
-        fixture,
-        { owner, candidate },
-        {
-          error: {
-            code: "AGENT_GATEWAY_UNAUTHORIZED",
-            message:
-              "The Agent Gateway refused its own CLI as unauthorized. Check that the Agent's Configuration sets gateway.auth.password to OPENCLAW_GATEWAY_PASSWORD (Enable gateway password access), then deploy again.",
-          },
-        },
-        30_000,
-      );
-      // No retry after the refusal: the first refused pass ends the deployment.
-      assert.equal(activations, pendingPasses + 1);
-      assert.deepEqual(stopped, [], "the published revision keeps its workload");
-      await completion(
+      await fixture.work(candidate, "succeeded");
+      refuse = true;
+      const maintenance = `agent_revision:${candidate.id}:maintenance:`;
+      const refused = await completion(
         events,
-        "the refused activation's terminal completion",
+        "a maintenance pass refused with 403",
         (event) =>
           event.event === "worker.completed" &&
-          event.revisionId === candidate.id &&
-          event.outcome === "permanent",
+          event.workId?.startsWith(maintenance) &&
+          event.cause === "KubernetesSecretWriteForbiddenError",
       );
-      const last = events
-        .filter((event) => event.event === "worker.completed" && event.revisionId === candidate.id)
-        .at(-1);
       assert.deepEqual(
-        { outcome: last?.outcome, code: last?.code, cause: last?.cause },
-        {
-          outcome: "permanent",
-          code: "AGENT_GATEWAY_UNAUTHORIZED",
-          cause: "ActivationFailedError",
-        },
+        { outcome: refused.outcome, code: refused.code },
+        { outcome: "pending", code: "REVISION_FINALIZATION_INCOMPLETE" },
       );
+      refuse = false;
+      await completion(
+        events,
+        "a later maintenance pass to succeed",
+        (event, index) =>
+          index > events.indexOf(refused) &&
+          event.event === "worker.completed" &&
+          event.workId?.startsWith(maintenance) &&
+          event.outcome === "success",
+      );
+      assert.equal((await fixture.currentAgent(owner)).activeRevisionId, candidate.id);
+      assert.equal((await fixture.deploymentStatus(owner, candidate)).status, "succeeded");
     },
   );
 }

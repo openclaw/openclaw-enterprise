@@ -7,6 +7,7 @@
     {
       "path": "tests/integration/postgres-migration-compatibility.test.mjs",
       "expectedTests": [
+        "Logical restore preserves reviewed canonical and Provider migration histories",
         "First installation requires empty migration history under the migration lock",
         "Canonical migration commands preserve main data and serialize fresh/repeat runners",
         "Canonical migration refuses unexplained histories before mutation",

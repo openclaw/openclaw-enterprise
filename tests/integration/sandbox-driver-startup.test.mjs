@@ -63,6 +63,7 @@ import {
   WORKSPACE_DEFAULTS_ID,
 } from "../../packages/contracts/src/workspace-defaults.mjs";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
+import { labelSelectorLabels } from "../helpers/kubernetes-routed-scenarios.mjs";
 import { availablePort } from "../helpers/available-port.mjs";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
 
@@ -5179,10 +5180,7 @@ test("OpenShell preparer cleanup tolerates a concurrent delete but waits for lin
           assert.equal(version, "v1");
           assert.equal(kind, "Pod");
           assert.equal(namespace, context.namespace.name);
-          assert.deepEqual(
-            Object.fromEntries(selector.split(",").map((entry) => entry.split("="))),
-            deployment.metadata.labels,
-          );
+          assert.deepEqual(labelSelectorLabels(selector), deployment.metadata.labels);
           assert.equal(gateway.providers.size, 1);
           assert.equal(
             gateway.calls.some(([method]) => method === "deleteSandbox"),
@@ -5926,6 +5924,10 @@ test(
         };
         const ctx = { ...context, plan, revision: rev };
         protectedGit.computeDriver.validateExecutionAdmission(rev, owner);
+        assert.equal(
+          protectedGit.computeDriver.admitRevision(rev),
+          "protected-codex-no-connection-retry:v1",
+        );
         protectedGit.computeDriver.validateRepositoryCredentials(rev.harness, sandbox.id);
         // Compute's preparation refuses the profile too, so a revision admitted before this check
         // fails with the code instead of waiting at enrollment (finding 2199). The Sandbox's own

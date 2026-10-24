@@ -569,6 +569,52 @@ func TestKubernetesOnlyControlPlaneKeepsPostgreSQLAcrossClusterRestart(t *testin
 		"deploy/helm/openclaw-enterprise", "helm-values.json"), 1)
 }
 
+func TestKubernetesOnlyControlPlaneStartsPostgreSQLWhileTheBootstrapVolumeIsPrepared(t *testing.T) {
+	for _, scenario := range []string{"prepared", "prepare failure"} {
+		t.Run(scenario, func(t *testing.T) {
+			state := kubernetesOnlyOpenShellState(t)
+			if err := os.WriteFile(filepath.Join(state.directory, "installation.yaml"), []byte("occ: {}\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			// The prepare Pod finishes only after PostgreSQL was applied, so a
+			// launcher that waited for it first would wait until its deadline.
+			applied := filepath.Join(state.directory, "postgres-applied")
+			finished := "Succeeded"
+			if scenario == "prepare failure" {
+				finished = "Failed"
+			}
+			commands := fakeProfileCommands(t, map[string]string{
+				"kubectl": `"apply -f ` + filepath.Join(state.directory, "postgres.json") + `") : > ` + shellQuote(applied) + ` ;;
+"apply -f "*) ;;
+"-n oce-system get pod bootstrap-password-prepare -o jsonpath={.status.phase}") if [ -e ` + shellQuote(applied) + ` ]; then echo ` + finished + `; else echo Pending; fi ;;
+` + controlPlaneKubectlCases, // the prepare-phase case above wins: case takes the first match
+				"docker": controlPlaneNetworkCase,
+				"helm":   `"upgrade --install openclaw-enterprise deploy/helm/openclaw-enterprise "*) ;;`,
+			})
+			r := newRunner(Options{Repository: state.Repository})
+			r.engine = "docker"
+
+			err := r.installKubernetesControlPlane(context.Background(), state, "controller@"+profileTestDigest, "postgres@"+profileTestDigest, false, 3*time.Second)
+			calls := commands()
+			helm := slices.ContainsFunc(calls, func(command string) bool { return strings.HasPrefix(command, "helm ") })
+			if scenario == "prepared" {
+				if err != nil {
+					t.Fatalf("%v\n%s", err, strings.Join(calls, "\n"))
+				}
+				if !helm {
+					t.Fatalf("the chart was not installed:\n%s", strings.Join(calls, "\n"))
+				}
+				return
+			}
+			// The chart's bootstrap uses the prepared volume, so a failed prepare
+			// Pod stops startup before the chart is installed.
+			if err == nil || !strings.Contains(err.Error(), "Pod bootstrap-password-prepare failed") || helm {
+				t.Fatalf("want the prepare failure before the chart install, got %v:\n%s", err, strings.Join(calls, "\n"))
+			}
+		})
+	}
+}
+
 func candidateOpenShellEnvironment() map[string]string {
 	return map[string]string{
 		"OCC_DEVELOPMENT_OPENSHELL_GATEWAY_IMAGE":    "registry.example:5000/openshell/gateway@sha256:" + strings.Repeat("1", 64),

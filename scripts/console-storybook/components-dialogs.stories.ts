@@ -28,3 +28,9 @@ export const CreateSecretPhone = {
   ...phone("slackCreateSecretModal"),
   name: "Create Secret (phone)",
 };
+export const DesktopBackdrop = story("secretsCreate", {
+  name: "Backdrop at the desktop scrollbar",
+  openInNewTab: true,
+  instructions:
+    "Open the preview in its own tab to inspect the window’s scrollbar gutter; the embedded preview can show the frame’s background there. Compare a tall window where the page fits with a shorter one that scrolls. Press Escape to restore the page.",
+});

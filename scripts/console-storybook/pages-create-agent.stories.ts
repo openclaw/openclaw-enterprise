@@ -228,6 +228,10 @@ export const CreateRefusalReason = {
   ...story("createRefusalReason"),
   name: "Provisioning refusal with a reason",
 };
+export const CreatePreflightTimeout = {
+  ...story("createPreflightTimeout"),
+  name: "Configuration check timed out",
+};
 export const CreatePluginPreflightRefusal = {
   ...story("createPluginPreflightRefusal"),
   name: "Plugin refusal before anything is saved",

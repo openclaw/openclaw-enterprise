@@ -100,6 +100,7 @@ export async function staticEgressFixture(
     secretValue,
     admitSource,
     providerServer = createHttpsServer,
+    credentialProxyCapacity,
   } = {},
 ) {
   const directory = await temporaryDirectory(t, "oce-egress-wire-");
@@ -459,6 +460,7 @@ export async function staticEgressFixture(
     now,
     provisionedPeople: [],
     preparedTokens,
+    ...(credentialProxyCapacity === undefined ? {} : { credentialProxyCapacity }),
     driverConfigurations: [
       {
         capability: "sandbox",
@@ -1249,10 +1251,11 @@ export async function syntheticDispatchFixture(t, receipts) {
     },
     /**
      * One proxy shared by several Sandboxes of this sender, each with its own enrolled
-     * installation and a long-lived peer. `wrap` may replace any of its ports. `resolve(name, fields)` authenticates as the
+     * installation and a long-lived peer. `wrap` may replace any of its ports, and `capacity`
+     * sets the proxy's request-time bounds (defaults otherwise). `resolve(name, fields)` authenticates as the
      * named Sandbox with a fresh UUIDv7 request ID and deadline unless `fields` sets them.
      */
-    sandboxes(wrap = (sandboxPorts) => sandboxPorts) {
+    sandboxes(wrap = (sandboxPorts) => sandboxPorts, capacity = undefined) {
       const enrolled = new Map();
       const accepted = new Set();
       const enroll = (name) => {
@@ -1293,6 +1296,7 @@ export async function syntheticDispatchFixture(t, receipts) {
             [...enrolled.values()].find((entry) => entry.peer.sandboxId === sandboxPeer.sandboxId)
               ?.installation,
         }),
+        capacity,
       );
       const build = (fields = {}) => ({
         ...request,

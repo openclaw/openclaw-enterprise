@@ -28,17 +28,28 @@ type ShellOptions = Pick<Navigation, "route" | "pageUrl" | "navigate"> & {
 
 type LeaveGuard = (options?: { pendingOnly: true } | { refresh: true }) => boolean;
 
-export function brandContents(size: number) {
+export function brandContents(placement: "navigation" | "sign-in") {
   const displayName =
     document.querySelector<HTMLMetaElement>('meta[name="occ-console-display-name"]')?.content ??
     "OpenClaw Enterprise";
+  const mascot = "/console/oce-mascot.png";
   const src =
-    document.querySelector<HTMLMetaElement>('meta[name="occ-console-logo"]')?.content ??
-    "/console/oce-mascot.png";
-  return [
-    element("img", { src, alt: "", width: String(size), height: String(size) }),
-    element("span", { className: "brand-name", title: displayName }, displayName),
-  ];
+    document.querySelector<HTMLMetaElement>('meta[name="occ-console-logo"]')?.content ?? mascot;
+  const size = placement === "navigation" ? "20" : "40";
+  const image = element("img", { src, alt: "", width: size, height: size });
+  const logo =
+    placement === "navigation" && src === mascot
+      ? element(
+          "picture",
+          { className: "brand-mascot" },
+          element("source", {
+            media: "(forced-colors: none)",
+            srcset: "/console/oce-mascot-inverse.png",
+          }),
+          image,
+        )
+      : image;
+  return [logo, element("span", { className: "brand-name", title: displayName }, displayName)];
 }
 
 export function panel(
@@ -201,22 +212,33 @@ export function createShell({
     return svg;
   }
 
+  // A second action sits beside the first, for example Sign out next to Retry: this panel has
+  // no account menu (finding 1894).
   function publicPanel(
     title: string,
     description: string,
     actionLabel?: string,
     action?: () => void,
+    secondary?: { label: string; action: () => void },
   ) {
     menuControls = null;
     drawerControls = null;
+    const primary = action ? button(actionLabel, action) : null;
     app.replaceChildren(
       element(
         "main",
         { className: "auth" },
-        element("p", { className: "brand" }, ...brandContents(40)),
+        element("p", { className: "brand" }, ...brandContents("sign-in")),
         element("h1", {}, title),
         element("p", { role: "status", className: "muted" }, description),
-        action ? button(actionLabel, action) : null,
+        secondary
+          ? element(
+              "div",
+              { className: "status-actions" },
+              primary,
+              button(secondary.label, secondary.action),
+            )
+          : primary,
       ),
     );
   }
@@ -596,7 +618,7 @@ export function createShell({
       element(
         "p",
         { className: "brand" },
-        ...brandContents(20),
+        ...brandContents("navigation"),
         debug
           ? element(
               "span",
@@ -712,7 +734,7 @@ export function createShell({
       "div",
       { className: "topbar" },
       mobileToggle,
-      element("p", { className: "brand brand--bar" }, ...brandContents(20)),
+      element("p", { className: "brand brand--bar" }, ...brandContents("navigation")),
       menuControls?.top.account,
     );
     const wrapper = element("div", {}, topbar, main);

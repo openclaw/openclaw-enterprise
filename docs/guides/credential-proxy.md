@@ -69,6 +69,8 @@ and middleware name to the configured peers. Keep the
 [OpenShell Backend and Sandbox configuration](../reference/drivers/openshell-credential-gateway.md).
 A packaged Driver instead takes configuration through its Sandbox selection;
 its matching Credential Proxy selection has an empty `configuration`.
+Either kind can add `requestCapacity` to size OCC's in-memory request bounds; see
+[request-time capacity](../reference/drivers/credential-proxy.md#request-time-capacity).
 
 The API owns the static authority listener. Development binds only to loopback.
 Production needs a reachable host and a certificate covering the Service DNS

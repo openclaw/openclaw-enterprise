@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: "2026-10-21"
-last_updated_session: "authoring-run/445d1431-dae8-461a-8559-e95dfa03b4f6"
+updated: "2026-10-23"
+last_updated_session: "authoring-run/1b38bd1a-842f-42a8-8641-4858e5a2183a"
 ---
 
 # Production Startup Flow
@@ -148,10 +148,9 @@ not `.` or a `..` prefix.
 
 `scripts/migrate-production.mjs:1`, `scripts/migration-history.mjs:migrateWithHistory`
 
-Migration verifies the complete SQL source manifest, dedicated role and canonical
-receipt/catalog state, and holds an advisory lock on Drizzle's transaction
-connection. It accepts fresh databases, canonical history through 0023, or completed
-history through 0025; unsupported or mixed development histories fail before
+Migration verifies the SQL source, dedicated role, receipts and catalog under
+one advisory lock on Drizzle's transaction connection. For a recognized history, it accepts the native catalog digest or
+the reviewed restore digest bound to it. Unsupported histories fail before
 migration DDL and bootstrap. See [migration history and recovery](../reference/settings/operations.md#migration-history).
 
 `scripts/lib/bootstrap-configuration.mjs:authBaseURL` checks HTTP(S) origin before
@@ -331,6 +330,8 @@ until tenant deployment/TUI procedures run.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-23 11:15: Recognize the reviewed logical-restore catalog. (authoring-run/1b38bd1a-842f-42a8-8641-4858e5a2183a - a4146f54983537954246bc4df3a937293d92b220)
 
 - 2026-10-21 19:06: Preserve shared configuration diagnostics through the rebased API startup entry point. (authoring-run/445d1431-dae8-461a-8559-e95dfa03b4f6 - d4e78cadca361efaf089a31972f084a91ff307e1)
 

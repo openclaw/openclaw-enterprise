@@ -141,6 +141,9 @@
     {
       "path": "tests/integration/first-agent-smoke.test.mjs",
       "expectedTests": [
+        "chat proof accepts the deterministic assistant answer",
+        "chat proof rejects a prompt echo, missing role, and other non-assistant replies",
+        "chat proof still requires HTTP success and the current nonce as text",
         "stop observation accepts a fast shutdown and checks Pods afterward",
         "default stop observation covers the selected gateway grace",
         "the second stop can wait behind the serial worker's first gateway drain",

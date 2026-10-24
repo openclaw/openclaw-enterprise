@@ -47,16 +47,22 @@ import type {
   EgressRef,
   ProtectedEgressSource,
 } from "@openclaw-enterprise/contracts";
-import { CredentialProxy } from "./credential-proxy.ts";
+import {
+  CredentialProxy,
+  resolveCredentialProxyCapacity,
+  type CredentialProxyCapacity,
+} from "./credential-proxy.ts";
 import type { EgressExchangeOwner, CapturedEgressUse } from "@openclaw-enterprise/contracts";
 
 export type { AcceptedEgressAssociation, AuthorizedSend } from "@openclaw-enterprise/contracts";
 export {
   CredentialProxy,
+  resolveCredentialProxyCapacity,
   STREAM_LEASE_CEILING_MS,
   STREAM_LEASE_IDLE_MS,
   STREAM_LEASE_RECHECK_MS,
 } from "./credential-proxy.ts";
+export type { CredentialProxyCapacity } from "./credential-proxy.ts";
 export type {
   CapturedEgressUse,
   EgressExchangeOwner,
@@ -399,6 +405,7 @@ export {
   DedicatedOpenClawSandboxError,
   DeletionRetryOwnedError,
   DependencyUnavailableError,
+  PersistedStateInvalidError,
   DeviceAuthorizationStartError,
   DriverSelectionError,
   ModelDiscoveryError,
@@ -425,6 +432,7 @@ export {
   IAMPolicyValidationError,
   IAMRoleInUseError,
   keyedSettingPath,
+  KubernetesSecretWriteForbiddenError,
   ModelCredentialValueError,
   ModelProviderSettingError,
   NamespaceNotEmptyError,
@@ -704,6 +712,8 @@ export interface ControllerOptions {
   readonly configuredServiceAccountDriverId?: string;
   /** Installation startup `runtime.nativeWorkerSupport`; never set from the API. */
   readonly nativeWorkerSupport?: NativeWorkerSupport;
+  /** Installation startup `drivers.credential_proxy.requestCapacity`; defaults when absent. */
+  readonly credentialProxyCapacity?: CredentialProxyCapacity;
 }
 
 /** The result of a ServiceAccount deletion. */
@@ -1700,6 +1710,7 @@ export class OpenClawController {
   private readonly mutationRollbacks = new AsyncLocalStorage<(() => Promise<void>)[]>();
   private readonly shouldRecordOperations: boolean;
   private readonly nativeWorkers: NativeWorkerSupportSource | undefined;
+  private readonly credentialProxyCapacity: CredentialProxyCapacity;
   private readonly registry = new Map<string, RegisteredDriver>();
   private readonly preparedTokens: PreparedTokenService | undefined;
   private readonly selections = new Map<DriverCapability, RegisteredDriver>();
@@ -1766,6 +1777,14 @@ export class OpenClawController {
       throw new ScopeViolationError("The native worker support declaration is invalid.");
     }
     this.nativeWorkers = nativeWorkerSupportSource(options.nativeWorkerSupport);
+    const capacity = resolveCredentialProxyCapacity(
+      { ...options.credentialProxyCapacity },
+      "Credential Proxy capacity",
+    );
+    if (capacity.faults) {
+      throw new RangeError(capacity.faults.map((fault) => fault.message).join(" "));
+    }
+    this.credentialProxyCapacity = capacity.capacity;
     this.backendMap = backendDefinitionMap(this.backends);
     if (
       options.configuredServiceAccountDriverId !== undefined &&
@@ -5002,73 +5021,76 @@ export class OpenClawController {
 
   /** Trusted composition only: public workloads never supply an identity verifier. */
   createCredentialProxy(exchangeOwner: EgressExchangeOwner): CredentialProxy {
-    return new CredentialProxy({
-      exchangeOwner,
-      now: () => this.clock().getTime(),
-      installation: (peer) =>
-        this.state.read((state) =>
-          state.credentialSources.findEgressInstallation(peer.sender.id, peer.sandboxId),
-        ),
-      provider: (route) => {
-        const control = this.selectedDriver("credential_proxy").sourceControl;
-        return isDeepStrictEqual(control.backend, route.binding.source.backend)
-          ? control.providers.find((provider) =>
-              isDeepStrictEqual(provider.ref, route.binding.source.provider),
-            )
-          : undefined;
-      },
-      check: (use, material, stream) => this.checkEgressUse(use, material, stream),
-      read: async (source, lifetime) => {
-        const secret = await this.state.read((state) =>
-          state.secrets.findSecret(source.secret.namespaceId, source.secret.id),
-        );
-        if (lifetime.signal.aborted || !secret || secret.driverId !== source.secretDriver.id) {
-          throw new DependencyUnavailableError("Selected credential material is unavailable.");
-        }
-        const driver = this.secretDriver(secret.driverId);
-        if (!driver.readCredentialInput) {
-          throw new DependencyUnavailableError("Versioned credential reading is unavailable.");
-        }
-        return {
-          ...(await driver.readCredentialInput({ secret, lifetime, retention: "none" })),
-          materialId: secret.backendRef.uid,
-        };
-      },
-      readPrepared: (source, lifetime) =>
-        this.preparedIssuer(source.key.provider).readWarm(source, lifetime),
-      authorizePrepared: async (use, source, attempt, authorization) => {
-        if (this.transactionContext.getStore()) {
-          return { kind: "unavailable", code: "authority" };
-        }
-        return this.transact(async (state) => {
-          // A sender cannot supply this transaction or substitute a cached currentness decision.
-          const material = attempt.material;
-          if (
-            !material ||
-            (material.kind !== "prepared_token" && material.kind !== "prepared_github")
-          ) {
-            return { kind: "denied", code: "scope_mismatch" } as const;
-          }
-          const current = await this.checkEgressUseIn(state, use, material);
-          if (!("key" in current)) {
-            return current;
-          }
-          if (
-            !isDeepStrictEqual(current, source) ||
-            this.clock().getTime() >= Date.parse(authorization.sendStartBy)
-          ) {
-            return { kind: "denied", code: "stale_configuration" } as const;
-          }
-          return EgressSendReceipts.authorizeIn(
-            state.egressSendReceipts,
-            use.peer.sender,
-            attempt,
-            authorization,
+    return new CredentialProxy(
+      {
+        exchangeOwner,
+        now: () => this.clock().getTime(),
+        installation: (peer) =>
+          this.state.read((state) =>
+            state.credentialSources.findEgressInstallation(peer.sender.id, peer.sandboxId),
+          ),
+        provider: (route) => {
+          const control = this.selectedDriver("credential_proxy").sourceControl;
+          return isDeepStrictEqual(control.backend, route.binding.source.backend)
+            ? control.providers.find((provider) =>
+                isDeepStrictEqual(provider.ref, route.binding.source.provider),
+              )
+            : undefined;
+        },
+        check: (use, material, stream) => this.checkEgressUse(use, material, stream),
+        read: async (source, lifetime) => {
+          const secret = await this.state.read((state) =>
+            state.secrets.findSecret(source.secret.namespaceId, source.secret.id),
           );
-        });
+          if (lifetime.signal.aborted || !secret || secret.driverId !== source.secretDriver.id) {
+            throw new DependencyUnavailableError("Selected credential material is unavailable.");
+          }
+          const driver = this.secretDriver(secret.driverId);
+          if (!driver.readCredentialInput) {
+            throw new DependencyUnavailableError("Versioned credential reading is unavailable.");
+          }
+          return {
+            ...(await driver.readCredentialInput({ secret, lifetime, retention: "none" })),
+            materialId: secret.backendRef.uid,
+          };
+        },
+        readPrepared: (source, lifetime) =>
+          this.preparedIssuer(source.key.provider).readWarm(source, lifetime),
+        authorizePrepared: async (use, source, attempt, authorization) => {
+          if (this.transactionContext.getStore()) {
+            return { kind: "unavailable", code: "authority" };
+          }
+          return this.transact(async (state) => {
+            // A sender cannot supply this transaction or substitute a cached currentness decision.
+            const material = attempt.material;
+            if (
+              !material ||
+              (material.kind !== "prepared_token" && material.kind !== "prepared_github")
+            ) {
+              return { kind: "denied", code: "scope_mismatch" } as const;
+            }
+            const current = await this.checkEgressUseIn(state, use, material);
+            if (!("key" in current)) {
+              return current;
+            }
+            if (
+              !isDeepStrictEqual(current, source) ||
+              this.clock().getTime() >= Date.parse(authorization.sendStartBy)
+            ) {
+              return { kind: "denied", code: "stale_configuration" } as const;
+            }
+            return EgressSendReceipts.authorizeIn(
+              state.egressSendReceipts,
+              use.peer.sender,
+              attempt,
+              authorization,
+            );
+          });
+        },
+        receipts: new EgressSendReceipts(this.state),
       },
-      receipts: new EgressSendReceipts(this.state),
-    });
+      this.credentialProxyCapacity,
+    );
   }
 
   /**

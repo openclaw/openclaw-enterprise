@@ -65,6 +65,8 @@ When someone opens the Agent root `/` or a copied `/chat/main` link without a va
 
 The console checks the browser session and offers sign-in if needed. Its authenticated `GET /native-admin/return/<key>` operation then checks exact Agent `administer` access and returns the Namespace and Agent IDs even if the Agent is stopped. Unknown and unauthorized keys receive the same `404`. Recovery ends at Agent detail; opening native chat is a separate action. Only a user-activated, top-level HTML navigation qualifies for the redirect. Link previews, API requests, WebSocket upgrades, and actual authorization denials keep their ordinary refusal behavior.
 
+In an already-open Gateway tab, the Control UI offers **Reconnect in browser** if a reconnect fails and its same-origin health request receives `401` or `403`. Following the link opens `/` on the current Agent host. The UI does not navigate automatically or carry forward the chat path or query. The response is a reason to check access, not proof that a session expired. OCC decides whether that navigation reaches sign-in or is refused.
+
 ## Agent host identity
 
 OCC derives a stable browser host from the Installation ID, Namespace ID, Agent ID, and configured `agentNativeAdmin.domain`. The hostname is opaque and must not be reused for another Agent identity. The derived host is separate from the console origin, which gives each Agent UI its own browser origin.

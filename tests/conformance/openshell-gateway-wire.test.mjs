@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { getEventListeners, once } from "node:events";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
-import { connect } from "node:net";
+import { connect, createServer as createNetServer } from "node:net";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1553,6 +1553,55 @@ test("OpenShell client names only an unanswered gateway request a Sandbox gatewa
   });
   t.after(() => refused.close());
   await assert.rejects(refused.health(AbortSignal.timeout(5_000)), outage);
+
+  // Finding 2104: a kubectl port-forward whose Pod is gone accepts one connection, closes it
+  // before the HTTP/2 handshake ("Failed to connect"), then exits. That close is not an
+  // unanswered request, and grpc-js repeats it until its next connection attempt (about a
+  // second later); only once nothing listens is it an outage. The OpenShell k3d proof closes
+  // its forward before stopping the gateway, so its passes see only the refusal.
+  const staleSockets = [];
+  const stale = createNetServer((socket) => {
+    staleSockets.push(socket);
+    socket.on("error", () => {});
+    socket.end();
+    stale.close();
+  });
+  await new Promise((resolve) => stale.listen(0, "127.0.0.1", resolve));
+  // grpc-js leaves its end of the closed connection open, so the test destroys this one.
+  t.after(() => {
+    for (const socket of staleSockets) {
+      socket.destroy();
+    }
+    if (stale.listening) {
+      stale.close();
+    }
+  });
+  const forwarded = new GrpcOpenShellGatewayClient({
+    endpoint: `127.0.0.1:${stale.address().port}`,
+  });
+  t.after(() => forwarded.close());
+  const ordinary = (error) => {
+    assert.ok(error instanceof DependencyUnavailableError, String(error));
+    assert.ok(!(error instanceof SandboxGatewayUnavailableError), String(error));
+    assert.equal(error.grpcStatus, grpc.status.UNAVAILABLE);
+    return true;
+  };
+  await assert.rejects(forwarded.health(AbortSignal.timeout(5_000)), ordinary);
+  let closed;
+  for (const deadline = Date.now() + 10_000; closed === undefined && Date.now() < deadline;) {
+    try {
+      await forwarded.health(AbortSignal.timeout(5_000));
+    } catch (error) {
+      if (error instanceof SandboxGatewayUnavailableError) {
+        closed = error;
+      } else {
+        ordinary(error);
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    }
+  }
+  assert.ok(closed !== undefined, "a closed forward must read as an outage");
+  outage(closed);
 });
 
 function selfSignedCertificate(directory, name, subjectAltName) {

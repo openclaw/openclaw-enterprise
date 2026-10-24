@@ -9,6 +9,7 @@ import { GATEWAY_STOP_TIMEOUT_MS } from "../../apps/controller/src/drivers/compu
 import {
   STOP_PHASE_TIMEOUT_MS,
   agentStopDiagnostic,
+  assertChatReply,
   clusterEventLines,
   createApi,
   observeAgentStop,
@@ -19,6 +20,48 @@ import {
 } from "../../scripts/ci/first-agent-smoke.mjs";
 
 const revision = "rev_00000000-0000-4000-8000-000000000001";
+const chatNonce = "OCE_SMOKE_00000000-0000-4000-8000-000000000001";
+const validChatReply = { status: 200, role: "assistant", content: chatNonce };
+
+test("chat proof accepts the deterministic assistant answer", () => {
+  for (const content of [chatNonce, ` \t${chatNonce}\r\n`]) {
+    assertChatReply({ ...validChatReply, content }, chatNonce, "embedded");
+  }
+});
+
+test("chat proof rejects a prompt echo, missing role, and other non-assistant replies", () => {
+  const prompt = `Reply with exactly this nonce and no other text: ${chatNonce}`;
+  for (const role of ["user", undefined, "tool"]) {
+    assert.throws(
+      () => assertChatReply({ ...validChatReply, role }, chatNonce, "embedded"),
+      /reply was not an assistant message/,
+    );
+  }
+  for (const content of [prompt, `Answer: ${chatNonce}`, `${chatNonce} extra`]) {
+    assert.throws(
+      () => assertChatReply({ ...validChatReply, content }, chatNonce, "embedded"),
+      /assistant reply did not equal the nonce/,
+    );
+  }
+});
+
+test("chat proof still requires HTTP success and the current nonce as text", () => {
+  assert.throws(() => assertChatReply({ ...validChatReply, status: 503 }, chatNonce, "embedded"), {
+    actual: 503,
+    expected: 200,
+  });
+  assert.throws(() => assertChatReply({}, chatNonce, "embedded"), /before an HTTP response/);
+  assert.throws(
+    () => assertChatReply({ status: 200, invalidResponse: true }, chatNonce, "embedded"),
+    /unreadable response/,
+  );
+  for (const content of ["OCE_SMOKE_previous", undefined, [chatNonce]]) {
+    assert.throws(
+      () => assertChatReply({ ...validChatReply, content }, chatNonce, "embedded"),
+      /assistant reply did not equal the nonce/,
+    );
+  }
+});
 
 test("smoke API sends its key only to the selected controller origin", async (t) => {
   const requests = [];

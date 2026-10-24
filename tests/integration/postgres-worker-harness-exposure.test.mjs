@@ -4,6 +4,7 @@ import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 import { occLogLine } from "../helpers/occ-log-line.ts";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
+import { completedPasses } from "../helpers/postgres-worker-revision-support.mjs";
 import {
   SandboxGatewayUnauthorizedError,
   SandboxRevisionUnsupportedError,
@@ -625,12 +626,14 @@ revisionTest(
       },
       { emit: (event) => events.push(event) },
     );
-    await Promise.all(busy.map((candidate) => fixture.work(candidate, "succeeded")));
+    // Each deployment's worker.completed follows the commit that marks its Work succeeded, so
+    // wait for the events counted below, not the rows (finding 2283).
+    await Promise.all(busy.map((candidate) => completedPasses(events, candidate)));
+    const indices = (name) => events.flatMap(({ event }, index) => (event === name ? [index] : []));
     await waitFor("both listed exposures to be withdrawn", async () =>
-      withdrawals.length >= 2 ? true : undefined,
+      indices("worker.harness-exposure-withdrawn").length >= 2 ? true : undefined,
     );
     assert.deepEqual(new Set(withdrawals), new Set([active.id, failed.id]));
-    const indices = (name) => events.flatMap(({ event }, index) => (event === name ? [index] : []));
     const completed = indices("worker.completed");
     const withdrawn = indices("worker.harness-exposure-withdrawn");
     assert.ok(completed.length >= 8, `claimed passes: ${completed.length}`);

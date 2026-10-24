@@ -20,6 +20,7 @@ import type {
   WorkloadLaunchContext,
 } from "@openclaw-enterprise/contracts";
 import { admittedLoggingLevel } from "@openclaw-enterprise/contracts";
+import { ConfigurationHarnessError, configurationSettingMessage } from "@openclaw-enterprise/occ";
 import {
   asRecord,
   immutableCopy,
@@ -28,9 +29,13 @@ import {
   sha256Hex,
 } from "@openclaw-enterprise/utils";
 import { requireHarnessAuthMethod, type HarnessAuthMethodRule } from "../harness-auth-method.ts";
+import { failureAfterCleanup } from "../cleanup-failure.ts";
 import { ComputeLifecycleDispatcher } from "../lifecycle-hooks.ts";
 import { currentComputeAbortSignal } from "../operation-context.ts";
-import { WORKSPACE_SETUP_RUNTIME } from "../workspace-setup-runtime.ts";
+import {
+  requireWorkspaceSetupMainEntry,
+  WORKSPACE_SETUP_RUNTIME,
+} from "../workspace-setup-runtime.ts";
 import { validatePlaintextNativeGateway } from "../native-gateway-transport.ts";
 import { validateCodexApprovalPolicySetting } from "../../../gateway/codex-approval-policy.ts";
 import { unsupportedNativeGatewayAuthFields } from "../../../gateway/auth-fields.ts";
@@ -460,6 +465,20 @@ export class SshComputeDriver implements ComputeDriver {
     validateCodexApprovalPolicySetting(configuration);
   }
 
+  // Agent create and update refuse a roster the host helper refuses at deployment, where the
+  // refusal was retried until the deployment failed (finding 2285). The message is Docker's and
+  // Kubernetes's; the host still checks the workspace path, which lives under its Agent root.
+  validateWorkspaceSetup(
+    _harness: RevisionHarnessDescriptor,
+    configuration: Readonly<OpenClawConfigurationDocument>,
+  ): void {
+    requireWorkspaceSetupMainEntry(
+      configuration,
+      (setting, requirement) =>
+        new ConfigurationHarnessError(configurationSettingMessage(setting, requirement)),
+    );
+  }
+
   validateHarnessAuth(harness: RevisionHarnessDescriptor, auth: HarnessAuthSnapshot): void {
     // The topology first: no authentication method helps another one.
     // TODO: Dedicated Codex requires authenticated transport and separate host credential delivery.
@@ -513,15 +532,11 @@ export class SshComputeDriver implements ComputeDriver {
       if (launch === undefined) {
         throw error;
       }
-      try {
-        await this.lifecycle.beforeWorkloadStop(revision, { cleanup: true });
-      } catch (cleanupError) {
-        throw new AggregateError(
-          [error, cleanupError],
-          "SSH workload activation and lifecycle cleanup failed.",
-        );
-      }
-      throw error;
+      throw await failureAfterCleanup(
+        error,
+        "SSH workload activation and lifecycle cleanup failed.",
+        [() => this.lifecycle.beforeWorkloadStop(revision, { cleanup: true })],
+      );
     }
   }
 

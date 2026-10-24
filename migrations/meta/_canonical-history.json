@@ -526,6 +526,9 @@
       "databaseCreate": true
     }
   },
+  "logicalRestoreCatalogs": {
+    "ead0bf1743197edac2cd369f4822fec0d9686d4c215b8f6dcc16745c9addf155": "e6cbf3438426666a75867241828db127a2d84717daec49ef2d9af48caf6fdfed"
+  },
   "catalogs": {
     "empty": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
     "prePresetsMain": "7fe2e7ccc13ce974d03137b5117752ff03e7c001d2916d50c300ddbdf826207a",

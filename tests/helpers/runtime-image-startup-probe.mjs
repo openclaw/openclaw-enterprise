@@ -1,5 +1,6 @@
-// The startup model probe scenario shared by runtime-image-startup-probe.test.mjs
-// and runtime-image-startup-termination.test.mjs, which CI runs side by side in
+// The startup model probe scenario shared by runtime-image-startup-probe.test.mjs,
+// runtime-image-startup-termination.test.mjs and
+// runtime-image-gateway-unclean-restart.test.mjs, which CI runs side by side in
 // Image Runtime Startup 2: one runtime wrapper started with the container command
 // the Compute driver renders, beside a stand-in model provider sidecar.
 import assert from "node:assert/strict";

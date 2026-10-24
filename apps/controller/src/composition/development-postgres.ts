@@ -1,5 +1,5 @@
 import { installEgressAuthority } from "./egress-authority.ts";
-import { installationDriverConfigurations } from "./installation-config.ts";
+import { installationControllerOptions } from "./installation-config.ts";
 import type { AuditEventFactory } from "@openclaw-enterprise/audit";
 import type {
   AuditEvent,
@@ -245,8 +245,7 @@ export async function composePostgresDevelopment(
 
     const loggingLevel = config.logging?.level ?? drivers?.installation.logging.level;
     const controller = new OpenClawController(persistedInstallation, {
-      driverConfigurations: installationDriverConfigurations(drivers?.installation),
-      sandboxNetworkPolicyCeiling: drivers?.installation.sandboxNetworkPolicyCeiling ?? [],
+      ...installationControllerOptions(drivers?.installation),
       state,
       ...(drivers?.tokenService && { preparedTokens: drivers.tokenService }),
       recordOperations: true,
@@ -255,9 +254,6 @@ export async function composePostgresDevelopment(
       refreshBundledDefaultPresets: drivers?.installation.presets?.includeDefaults === true,
       ...(loggingLevel === undefined ? {} : { loggingLevel }),
       ...(drivers === undefined ? {} : { backends: drivers.installation.backend }),
-      ...(drivers?.installation.runtime === undefined
-        ? {}
-        : { nativeWorkerSupport: drivers.installation.runtime.nativeWorkerSupport }),
     });
     controller.registerDriver(iamDriver);
     controller.selectDriver("iam", driverId);

@@ -15,6 +15,12 @@ export type AgentAccessContext = Pick<
 
 type CredentialReference = SecretReference | CredentialSourceReference;
 
+// Granting access writes Namespace IAM policy, which only Installation administration may do (UX
+// plan A2). Every message that sends a reader to have access granted names that role in these
+// words (findings 1920, 2259, 2260).
+export const askInstallationAdministrator = (task: string) =>
+  `needs Installation administration access: ask an Installation administrator to ${task}.`;
+
 // A malformed policy read is not an empty policy: never create a grant on that evidence.
 export function policyList<T>(value: unknown, read: (item: unknown) => T): T[] {
   if (!Array.isArray(value)) {
@@ -87,11 +93,14 @@ export function createdPolicyRole(
   return role;
 }
 
+const iamPath = (context: AgentAccessContext, collection: "roles" | "access-bindings") =>
+  `${namespacePath(context.namespaceId)}/iam/${collection}`;
+
 async function credentialOperateRole(
   context: AgentAccessContext,
   resourceKind: CredentialReference["kind"],
 ) {
-  const rolesPath = `${namespacePath(context.namespaceId)}/iam/roles`;
+  const rolesPath = iamPath(context, "roles");
   const roles = policyList(await context.request(rolesPath), policyRole);
   const permissions = [{ action: "operate", resourceKind }] satisfies Permission[];
   const existing = roles.find((role) => matchesRole(role, context.namespaceId, permissions));
@@ -126,7 +135,7 @@ export async function ensureCredentialOperateBinding(
     throw new Error("The API did not return this Agent's service principal.");
   }
   const role = await credentialOperateRole(context, resourceKind);
-  const bindingsPath = `${namespacePath(context.namespaceId)}/iam/access-bindings`;
+  const bindingsPath = iamPath(context, "access-bindings");
   const bindings = policyList(await context.request(bindingsPath), policyBinding);
   if (
     bindings.some(
@@ -151,4 +160,55 @@ export async function ensureCredentialOperateBinding(
       resourceId: source.id,
     },
   });
+}
+
+/**
+ * Whether this Namespace's IAM policy grants the Agent operate on each credential of one kind
+ * (Secrets or credential sources, by id), as the IAM Driver evaluates it: an identity binding
+ * scoped to the Namespace or to that credential, whose role holds the permission. An Agent's
+ * service principal belongs to no Group. A binding to a role the Namespace does not list leaves
+ * its credential undecided (undefined), never missing. Reading the policy needs Installation
+ * administration; a refused read rejects (findings 1920, 2260).
+ */
+export async function credentialOperateGrants(
+  context: AgentAccessContext,
+  agent: Pick<Agent, "servicePrincipalId">,
+  kind: CredentialReference["kind"],
+  ids: readonly string[],
+) {
+  const [roles, bindings] = await Promise.all([
+    context.request(iamPath(context, "roles")).then((value) => policyList(value, policyRole)),
+    context
+      .request(iamPath(context, "access-bindings"))
+      .then((value) => policyList(value, policyBinding)),
+  ]);
+  const grants = new Map<string, boolean | undefined>();
+  for (const id of ids) {
+    let granted: boolean | undefined = false;
+    for (const binding of bindings) {
+      if (
+        binding.namespaceId !== context.namespaceId ||
+        binding.subjectKind !== "identity" ||
+        binding.subjectId !== agent.servicePrincipalId ||
+        (binding.resourceKind !== undefined &&
+          (binding.resourceKind !== kind || binding.resourceId !== id))
+      ) {
+        continue;
+      }
+      const role = roles.find((candidate) => candidate.id === binding.roleId);
+      if (!role) {
+        granted = undefined;
+      } else if (
+        role.namespaceId === context.namespaceId &&
+        role.permissions.some(
+          ({ action, resourceKind }) => action === "operate" && resourceKind === kind,
+        )
+      ) {
+        granted = true;
+        break;
+      }
+    }
+    grants.set(id, granted);
+  }
+  return grants;
 }

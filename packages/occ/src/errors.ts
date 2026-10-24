@@ -112,6 +112,13 @@ export class DependencyUnavailableError extends AuthorizationDeniedError {
 }
 
 /**
+ * Persisted platform state that its reader cannot decode, such as an invalid row. It fails closed
+ * like any unavailable dependency, but unlike an outage it does not recover by itself, so a caller
+ * that waits out outages must not wait on it forever.
+ */
+export class PersistedStateInvalidError extends DependencyUnavailableError {}
+
+/**
  * A Secret the selected Secret Driver cannot serve, typically one stored through a driver the
  * Installation no longer selects. Each subclass is raised only after the caller's grant and the
  * Secret lookup, so it reveals nothing a 403 or 404 hides, and carries a fixed message naming
@@ -878,6 +885,23 @@ export class SandboxNamespaceRefusedError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
     this.name = "SandboxNamespaceRefusedError";
+  }
+}
+
+/**
+ * The Kubernetes API answered 403 to a private Secret write, or its readback, that Compute
+ * needs for this revision: an RBAC grant, an admission policy or a ResourceQuota refuses it. Unlike a 429 or
+ * 5xx it does not clear by itself, so the worker fails the deployment at once with `code`
+ * instead of spending its attempt budget (finding 1770). Every other caller still sees an
+ * unavailable dependency. The message is fixed text, and the cause keeps only the HTTP status
+ * and Status reason, never the Secret's name or data.
+ */
+export class KubernetesSecretWriteForbiddenError extends DependencyUnavailableError {
+  readonly code = "KUBERNETES_SECRET_WRITE_FORBIDDEN";
+
+  constructor() {
+    super("The Kubernetes API refused a private Secret write with HTTP 403.");
+    this.name = "KubernetesSecretWriteForbiddenError";
   }
 }
 

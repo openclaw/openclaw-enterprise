@@ -5,7 +5,7 @@ import type {
 import { asRecord } from "@openclaw-enterprise/utils";
 
 import { canSpell } from "./configuration-settings.ts";
-import { requireAgentsShape, requireFallbackProviders } from "./configured-harness.ts";
+import { requireAgentsShape, requireModelSelections } from "./configured-harness.ts";
 import { agentEntryMessage, ConfigurationHarnessError } from "./errors.ts";
 
 // Every Kubernetes topology (embedded OpenClaw, dedicated OpenClaw or Codex) runs the pinned
@@ -128,8 +128,9 @@ function canFillExplicit(
 
 /**
  * Refuses, when a Configuration is saved, an agents roster that every deployment refuses, with
- * the deployment's text: resolveConfiguredHarnessId's shape rules and its fallback provider rule
- * first, as deployment checks them first, then the OpenClaw Gateway's. Rules that depend on the
+ * the deployment's text: resolveConfiguredHarnessId's shape rules and its model selection rules
+ * (each model a <provider>/<model> reference, each fallback on the primary's provider) first, as
+ * deployment checks them first, then the OpenClaw Gateway's. Rules that depend on the
  * topology, such as dedicated OpenClaw serving the main Agent, stay at deployment because a
  * Configuration does not fix one. A Preset save runs them too (finding 1308), with `options`
  * locating its unfilled variables.
@@ -139,6 +140,6 @@ export function requireDeployableRoster(
   options?: ConfigurationValidationOptions,
 ): void {
   requireAgentsShape(values);
-  requireFallbackProviders(values, options);
+  requireModelSelections(values, options);
   requireOpenClawRoster(values, options);
 }

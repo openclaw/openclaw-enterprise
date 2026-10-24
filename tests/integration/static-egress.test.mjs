@@ -10,9 +10,20 @@ import { readFileSync } from "node:fs";
 import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import { EgressSendReceipts } from "../../packages/occ/src/egress-send-receipts.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/state/platform-state.ts";
+import { OpenClawController } from "../../packages/occ/src/index.ts";
+import {
+  installationControllerOptions,
+  loadInstallationConfiguration,
+} from "../../apps/controller/src/composition/installation-config.ts";
+import { createCredentialProxyInstallationConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { OpenShellEgressIdentity } from "../../apps/controller/src/drivers/egress-proxy/openshell-identity.ts";
 import {
+  CREDENTIAL_PROXY_CAPACITY_MAXIMUM,
   CredentialProxy,
+  DEFAULT_CREDENTIAL_PROXY_CAPACITY,
   OPERATION_AUTHENTICATION_BUDGET,
   OPERATION_CAPACITY,
   OPERATION_SANDBOX_SHARE,
@@ -1898,6 +1909,163 @@ test("one Sandbox's replay share bounds it without refusing other Sandboxes", as
   gate = undefined;
   entered = undefined;
   assert.equal(await use("e"), "ready");
+});
+
+test("request-time capacity defaults to today's bounds and is set once per controller", async (t) => {
+  const f = await syntheticDispatchFixture(t);
+  const today = {
+    operations: OPERATION_CAPACITY,
+    authenticatingOperations: OPERATION_AUTHENTICATION_BUDGET,
+    sandboxOperations: OPERATION_SANDBOX_SHARE,
+    requestIds: REPLAY_TABLE_CAPACITY,
+    sandboxRequestIds: REPLAY_SANDBOX_SHARE,
+  };
+  assert.deepEqual(today, {
+    operations: 1024,
+    authenticatingOperations: 256,
+    sandboxOperations: 256,
+    requestIds: 8192,
+    sandboxRequestIds: 2048,
+  });
+  assert.deepEqual(DEFAULT_CREDENTIAL_PROXY_CAPACITY, today);
+  assert.deepEqual(new CredentialProxy(f.ports).capacity, today);
+  const installation = { id: "installation", name: "installation", createdAt: f.startedAt };
+  const owner = f.ports.exchangeOwner;
+  assert.deepEqual(
+    new OpenClawController(installation).createCredentialProxy(owner).capacity,
+    today,
+  );
+  const configured = {
+    operations: 64,
+    authenticatingOperations: 8,
+    sandboxOperations: 16,
+    requestIds: 512,
+    sandboxRequestIds: 128,
+  };
+  const controller = new OpenClawController(installation, { credentialProxyCapacity: configured });
+  assert.deepEqual(controller.createCredentialProxy(owner).capacity, configured);
+  // Direct composition refuses what Installation startup refuses, before any request.
+  for (const capacity of [
+    { operations: 0 },
+    { sandboxOperations: OPERATION_CAPACITY + 1 },
+    { requestIds: 16, sandboxRequestIds: 17 },
+    { requestIds: CREDENTIAL_PROXY_CAPACITY_MAXIMUM.requestIds + 1 },
+    { operations: "64" },
+  ]) {
+    assert.throws(() => new CredentialProxy(f.ports, capacity), RangeError);
+    assert.throws(
+      () => new OpenClawController(installation, { credentialProxyCapacity: capacity }),
+      RangeError,
+    );
+  }
+});
+
+test("configured operation bounds limit each Sandbox, the process and authentication", async (t) => {
+  const f = await syntheticDispatchFixture(t);
+  const s = f.sandboxes(undefined, { operations: 7, sandboxOperations: 2 });
+  assert.equal(s.proxy.capacity.authenticatingOperations, 1, "a quarter of the configured pool");
+  const held = new Map();
+  const hold = async (name) => {
+    const closed = held.get(name) ?? new AbortController();
+    held.set(name, closed);
+    const decision = await s.resolve(name, undefined, closed.signal);
+    return decision.kind === "ready" ? "ready" : decision;
+  };
+  for (const name of ["a", "b", "c"]) {
+    assert.equal(await hold(name), "ready");
+    assert.equal(await hold(name), "ready");
+    assert.deepEqual(await hold(name), saturated, `${name} holds at most its configured share`);
+  }
+  // Three full shares leave one slot of the configured process bound.
+  assert.equal(await hold("d"), "ready");
+  assert.deepEqual(await hold("d"), saturated, "the configured process bound holds");
+  held.get("a").abort();
+  assert.equal(await hold("d"), "ready", "a closed handle returns its slot");
+
+  let gate = Promise.withResolvers();
+  let verified = 0;
+  const filled = Promise.withResolvers();
+  const g = f.sandboxes(
+    (ports) => ({
+      ...ports,
+      exchangeOwner: {
+        ...ports.exchangeOwner,
+        async verify(name) {
+          if (++verified === 2) {
+            filled.resolve();
+          }
+          await gate?.promise;
+          return ports.exchangeOwner.verify(name);
+        },
+      },
+    }),
+    { authenticatingOperations: 2 },
+  );
+  const pending = [g.resolve("a"), g.resolve("b")];
+  await filled.promise;
+  assert.deepEqual(await g.resolve("c"), saturated, "the configured budget holds");
+  assert.equal(verified, 2, "the excess request is never verified");
+  gate.resolve();
+  gate = undefined;
+  assert.ok((await Promise.all(pending)).every((decision) => decision.kind === "ready"));
+  assert.equal((await g.resolve("c")).kind, "ready");
+});
+
+test("configured replay bounds limit each Sandbox and the process", async (t) => {
+  const f = await syntheticDispatchFixture(t);
+  const s = f.sandboxes(undefined, { requestIds: 5, sandboxRequestIds: 3 });
+  // Material was selected, so each ID stays reserved after its handle closes.
+  const use = async (name) => {
+    const closed = new AbortController();
+    const decision = await s.resolve(name, undefined, closed.signal);
+    closed.abort();
+    return decision.kind === "ready" ? "ready" : decision;
+  };
+  for (let i = 0; i < 3; i += 1) {
+    assert.equal(await use("a"), "ready");
+  }
+  assert.deepEqual(await use("a"), saturated, "a Sandbox past its configured share");
+  assert.equal(await use("b"), "ready");
+  assert.equal(await use("b"), "ready");
+  assert.deepEqual(await use("c"), saturated, "the configured table bound holds");
+  f.advance(30_000);
+  assert.equal(await use("c"), "ready", "expired IDs return both bounds");
+  assert.equal(await use("a"), "ready");
+});
+
+test("an Installation's request capacity bounds the actual exchange and recovers on release", async (t) => {
+  // Startup loads the operator's block, and the API compositions spread these options
+  // into the controller unchanged; the fixture's controller takes the same value.
+  const configuration = createCredentialProxyInstallationConfiguration();
+  configuration.drivers.credential_proxy.requestCapacity = { sandboxOperations: 1 };
+  const directory = await temporaryDirectory(t, "oce-request-capacity-");
+  const path = join(directory, "installation.yaml");
+  await writeFile(path, JSON.stringify(configuration));
+  const loaded = await loadInstallationConfiguration({
+    mode: "development",
+    environment: { OCC_CONFIG_PATH: path },
+  });
+  const { credentialProxyCapacity } = installationControllerOptions(loaded.installation);
+  assert.equal(credentialProxyCapacity?.sandboxOperations, 1);
+  const f = await staticEgressFixture(t, { credentialProxyCapacity });
+  // The Sandbox's only operation slot is held by a ready handle on an open exchange.
+  const held = await f.beginExchange();
+  held.stream.write(held.opening(f.capture()));
+  assert.ok((await held.next()).resolved.ready, "the first request is ready");
+  const reads = f.secretReads;
+  const refused = await f.resolve(f.capture());
+  assert.equal(refused.refused?.code, f.refusalCode("UNAVAILABLE"), JSON.stringify(refused));
+  assert.equal(f.secretReads, reads, "a request past the configured share reads no Secret");
+  // Closing the exchange releases its handle and with it the slot. The authority sees the
+  // cancellation asynchronously, so the next request may briefly still be refused.
+  held.stream.cancel();
+  const deadline = Date.now() + 10_000;
+  let next = await f.resolve(f.capture());
+  while (!next.ready && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    next = await f.resolve(f.capture());
+  }
+  assert.ok(next.ready, `the released slot serves the next request: ${JSON.stringify(next)}`);
 });
 
 test("a request ID stays reserved once policy or Secret work can start", async (t) => {

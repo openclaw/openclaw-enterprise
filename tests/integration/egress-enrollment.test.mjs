@@ -19,6 +19,8 @@ import {
   pluginRuntimeSpecForRevision,
 } from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
 
 import { reservePort, reservedPortArgs } from "../helpers/available-port.mjs";
@@ -78,7 +80,20 @@ test(
     const { port } = reservation;
     const transport = new GrpcOpenShellGatewayClient({ endpoint: `http://127.0.0.1:${port}` });
     t.after(() => transport.close());
+    const compute = createTestKubernetesComputeDriver("launch-compute", { channelRuntime: true });
     const f = await staticEgressFixture(t, {
+      // Keep local lifecycle observations, but run the actual Compute admission at
+      // the normal deploy route and read its immutable result back from State.
+      appFactory: (t, options) =>
+        createConsoleAppFixture(t, {
+          ...options,
+          computeDriver: {
+            ...options.computeDriver,
+            id: compute.id,
+            implementation: compute.implementation,
+            admitRevision: compute.admitRevision.bind(compute),
+          },
+        }),
       recordInstallation: false,
       physicalPlacement: true,
       serviceTransport: transport,
@@ -117,7 +132,23 @@ test(
     const modelPort = model.address().port;
     const callsPath = join(directory, "calls.jsonl");
     const script = join(directory, "entrypoint.cjs");
-    await writeFile(script, AGENT_RUNTIME_ENTRYPOINT);
+    assert.equal(f.revision.compute.admission, "protected-codex-no-connection-retry:v1");
+    const legacy = { ...f.revision, compute: { ...f.revision.compute, admission: undefined } };
+    assert.equal(compute.pluginRuntimeSnapshot(legacy).entrypoint, AGENT_RUNTIME_ENTRYPOINT);
+    const ordinary = {
+      ...legacy,
+      executionAdmission: { version: 2, mode: "unprotected" },
+      egressPlan: undefined,
+      sandboxDriverId: undefined,
+    };
+    assert.equal(compute.admitRevision(ordinary), undefined);
+    for (const revision of [
+      { ...ordinary, compute: f.revision.compute },
+      { ...legacy, compute: { ...legacy.compute, admission: "unknown:v1" } },
+    ]) {
+      assert.throws(() => compute.pluginRuntimeSnapshot(revision), /Compute admission is invalid/);
+    }
+    await writeFile(script, compute.pluginRuntimeSnapshot(f.revision).entrypoint);
     await writeFile(callsPath, "");
     await writeCommand(
       directory,
@@ -328,6 +359,13 @@ test(
     assert.equal(probes.length, 1);
     assert.ok(probes[0].includes("model_providers.openai-compatible.request_max_retries=0"));
     assert.ok(probes[0].includes("model_providers.openai-compatible.stream_max_retries=0"));
+    const servers = (await calls()).filter((args) => args.includes("app-server"));
+    assert.equal(servers.length, 1);
+    for (const args of [probes[0], servers[0]]) {
+      const feature = args.indexOf("unbounded_connection_retries");
+      assert.ok(feature > 0);
+      assert.equal(args[feature - 1], "--disable");
+    }
     // A repeated reconciliation observes the already-serving Harness and cannot
     // replay either the release or the first model request.
     await f.sandboxDriver.enrollHarness(enrollmentContext, installed, () =>

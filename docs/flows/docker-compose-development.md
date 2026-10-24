@@ -161,13 +161,16 @@ For the Kubernetes-only profile, `internal/occdev/openshell_k3d.go:upK3d`
 creates the owned cluster, checks node DNS, and writes and selects its kubeconfig.
 With Sandbox Driver `none`, it then imports the runtime image and runs
 `prepareDevelopmentCodexSandbox` before installing private routing controllers.
-A sandbox refusal rolls back the owned cluster before controller or PostgreSQL
-image imports, Installation setup, or credential delivery. OpenShell retains its
-preparation, routing-controller installation, then runtime-import order. Both
-paths retain the later network-isolation and authenticated readiness gates.
+Meanwhile, `internal/occdev/concurrent.go:concurrently` imports the controller
+image, then checks network isolation while importing PostgreSQL and, when
+configured, repository images. The first independent failure cancels the others
+and is reported. A sandbox refusal or failed check rolls back the owned cluster
+before Installation setup or credential delivery. OpenShell retains its
+routing-controller installation, then runtime-import order. Both paths install
+the platform only after the check, then gate on authenticated readiness.
 
 `internal/occdev/kubernetes.go:importDevelopmentImage` exports each selected
-image to a temporary archive, selecting its Linux platform explicitly on Docker.
+image to its own temporary archive, selecting its Linux platform explicitly on Docker.
 `internal/occdev/k3d_import.go:importArchiveDirect` streams that archive into
 k3d; only its known closed-stream race retries, with at most three total attempts. The launcher
 then resolves the imported digest from containerd, rejects missing or ambiguous
@@ -232,7 +235,8 @@ supervisor Pods can reach that listener through narrow NetworkPolicies. See the
 `selectedDevelopmentDatabase` validates an optional disposable database name
 before effects. `installKubernetesControlPlane` uses that name in creation, readiness,
 migrator and application URLs. Bootstrap, API and worker share the limited
-application-role URL. Unselected profiles retain the existing database and
+application-role URL. PostgreSQL starts while the bootstrap volume is prepared;
+Helm waits for both. Unselected profiles retain the existing database and
 transport defaults. The [launch guide](../guides/deploy/local-openshell-images.md#select-the-protected-profile)
 owns inputs; [packaging verification](../testing/static-egress.md#protected-launch-packaging)
 distinguishes local proof from pending connected runtime qualification.

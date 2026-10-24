@@ -5,6 +5,7 @@ import {
   RepositoryGitSenderUnqualifiedError,
   SandboxRevisionUnsupportedError,
 } from "../../packages/occ/src/index.ts";
+import { waitForWorkStateDue } from "./postgres-worker-revision-support.mjs";
 import { waitFor } from "./wait-for.mjs";
 
 // Refused-candidate fakes shared by the worker revision -replacement, -refused-stop,
@@ -202,9 +203,13 @@ export function waitForRefusedStopWaits(events, candidate, count, timeoutMs) {
   );
 }
 
-/** Waits for the work to reach `state` and checks the reason code it recorded. */
-export async function assertWorkEnds(fixture, work, state, code) {
-  await fixture.work(work, state, 30_000);
+/**
+ * Waits for the work to reach `state` and checks the reason code it recorded. With `due`, each
+ * miss makes the work's queued retry due, for a test that waits on its refused stop's retries
+ * but not on their backoff.
+ */
+export async function assertWorkEnds(fixture, work, state, code, { due = false } = {}) {
+  await (due ? waitForWorkStateDue(fixture, work, state) : fixture.work(work, state, 30_000));
   const result = await fixture.workResult(work);
   assert.equal(result.rows[0].reason_code, code);
 }

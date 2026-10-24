@@ -49,6 +49,7 @@ const ALLOWED_FIELDS = new Set([
   "attempt",
   "candidatePreparationReached",
   "cause",
+  "cleanupCause",
   "code",
   "computeDriverId",
   "deployPasses",
@@ -219,10 +220,23 @@ const SAFE_CODE = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 const UUID_V4 = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
 // Identifiers OCC assigns, kept only in their own format: the Installation a bootstrap or
 // maintenance run names, and a Configuration a refused provisioning job left behind.
+const INSTALLATION_ID = new RegExp(`^ins_${UUID_V4}$`);
 const IDENTIFIER_FIELDS: ReadonlyMap<string, RegExp> = new Map([
-  ["installationId", new RegExp(`^ins_${UUID_V4}$`)],
+  ["installationId", INSTALLATION_ID],
   ["orphanedConfigurationId", new RegExp(`^cfg_${UUID_V4}$`)],
 ]);
+// A bootstrap attempt names the same Installation, and the administrator Principal and service
+// Principal OCC assigns for it, each kept only in its own format (finding 2246). The auth account
+// and service key IDs come from the auth library, not OCC, so they keep the generic string check.
+const ATTEMPT_IDENTIFIER_FIELDS: ReadonlyMap<string, RegExp> = new Map([
+  ["installationId", INSTALLATION_ID],
+  ["principalId", new RegExp(`^prn_${UUID_V4}$`)],
+  ["servicePrincipalId", new RegExp(`^spn_${UUID_V4}$`)],
+]);
+
+function safeIdentifier(format: RegExp, value: unknown): string | undefined {
+  return typeof value === "string" && format.test(value) ? value : undefined;
+}
 
 function safeCode(value: unknown): string | undefined {
   return typeof value === "string" && SAFE_CODE.test(value) && !resemblesToken(value)
@@ -324,7 +338,9 @@ function safeAttempt(
       }
       continue;
     }
-    const safe = safeScalar(key, field);
+    const identifier = ATTEMPT_IDENTIFIER_FIELDS.get(key);
+    const safe =
+      identifier === undefined ? safeScalar(key, field) : safeIdentifier(identifier, field);
     if (safe !== undefined) {
       result[key] = safe;
     }
@@ -362,8 +378,9 @@ function sanitizedEvent(
     }
     const identifier = IDENTIFIER_FIELDS.get(key);
     if (identifier !== undefined) {
-      if (typeof value === "string" && identifier.test(value)) {
-        result[key] = value;
+      const id = safeIdentifier(identifier, value);
+      if (id !== undefined) {
+        result[key] = id;
       }
       continue;
     }

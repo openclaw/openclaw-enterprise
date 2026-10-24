@@ -140,6 +140,11 @@ stops reads. Missing provenance stays explicit.
 
 `apps/controller/src/console/console.mjs:loadPage`
 
+`agents/collection.mts:renderAgentList` forwards plain clicks on row content to
+its Agent-name link. It ignores links, buttons (including disabled buttons),
+modified clicks, and selected text. Focusing the name before activation preserves
+the same return-focus target. Keyboard users activate the existing name link.
+
 `loadPage` starts with `GET /api/auth/session`. Opening an Agent from the list
 immediately shows **Loading agent details…** and **Back to Agents**. Its name,
 actions, and overview appear together after access checks. Back cancels the read;

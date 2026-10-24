@@ -5,6 +5,7 @@ import { once } from "node:events";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer as createHttpsServer } from "node:https";
 import { promisify } from "node:util";
+import { inflateRawSync } from "node:zlib";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,7 +18,14 @@ import {
   HARNESS_EGRESS_ENROLLMENT_PATH,
 } from "../../apps/controller/src/drivers/compute/harness-egress-enrollment.ts";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
-import { AGENT_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import {
+  AGENT_RUNTIME_ENTRYPOINT,
+  AGENT_WITH_NODE_ENTRYPOINT,
+  PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
+  PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
+  RUNTIME_WRAPPER_COMMAND,
+} from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import test from "node:test";
 import {
   admitLoggingConfiguration,
@@ -1388,6 +1396,93 @@ test("provider Harness protected execution is released only on current signed in
         ]);
       }
       core.listNamespacedPod = originalList;
+    },
+  );
+  await t.test(
+    "an admitted protected Codex launch renders its no-connection-retry command; a stored revision keeps its bytes",
+    async () => {
+      // Pin the commands the Driver renders, not only the exported entrypoints (#3310,
+      // finding 2256): the Sandbox launch carries the workspace node; activation renders
+      // the same Harness without it for the endpoint and status reads.
+      const admission = driver.admitRevision(protectedRevision);
+      assert.equal(admission, "protected-codex-no-connection-retry:v1");
+      const admitted = {
+        ...protectedRevision,
+        compute: { ...protectedRevision.compute, admission },
+      };
+      // Controller-rendered programs reach `node -e` compressed behind a fixed loader.
+      const program = ([loader, ...pieces]) => {
+        assert.equal(loader, nodeProgramArguments("")[0]);
+        return inflateRawSync(Buffer.from(pieces.join(""), "base64")).toString("utf8");
+      };
+      const pod = fixture.pod("protected-revision");
+      pod.metadata.labels["openclaw.dev/revision"] = protectedRevision.id;
+      pod.metadata.labels["app.kubernetes.io/name"] =
+        "agent-" + digest(protectedRevision.agentId) + "-rev-" + digest(protectedRevision.id);
+      const originalList = core.listNamespacedPod;
+      const { enrollHarness, harnessEndpoint } = sandbox;
+      core.listNamespacedPod = async (request) =>
+        request.labelSelector.includes("openclaw.dev/revision=" + protectedRevision.id)
+          ? { items: [pod] }
+          : originalList(request);
+      observation = installed;
+      current = true;
+      try {
+        for (const target of [admitted, protectedRevision]) {
+          const rendered = [];
+          sandbox.enrollHarness = async ({ requirements }) => {
+            rendered.push([requirements.command, true]);
+            throw released;
+          };
+          sandbox.harnessEndpoint = async ({ requirements }) => {
+            rendered.push([requirements.command, false]);
+            throw released;
+          };
+          for (const lifecycle of ["prepareRevision", "activateRevision"]) {
+            await assert.rejects(
+              driver[lifecycle](target, protectedContext),
+              (error) => error === released,
+            );
+          }
+          assert.equal(rendered.length, 2);
+          const disabled = target === admitted;
+          for (const [command, node] of rendered) {
+            const legacy = node ? AGENT_WITH_NODE_ENTRYPOINT : AGENT_RUNTIME_ENTRYPOINT;
+            const updated = node
+              ? PROTECTED_CODEX_WITH_NODE_ENTRYPOINT
+              : PROTECTED_CODEX_RUNTIME_ENTRYPOINT;
+            // A stored revision without the marker keeps its exact immutable command.
+            assert.deepEqual(command, [
+              ...RUNTIME_WRAPPER_COMMAND,
+              ...nodeProgramArguments(disabled ? updated : legacy),
+            ]);
+            const outer = program(command.slice(RUNTIME_WRAPPER_COMMAND.length));
+            const child = /\n\s+name: "Codex",\n\s+args: (.+),\n/.exec(outer);
+            assert.equal(child !== null, node);
+            const codex = node ? program(JSON.parse(child[1]).slice(1)) : outer;
+            assert.equal(
+              codex,
+              disabled ? PROTECTED_CODEX_RUNTIME_ENTRYPOINT : AGENT_RUNTIME_ENTRYPOINT,
+            );
+            // Only the two model-calling invocations: the authentication probe and app-server.
+            assert.equal(
+              codex.match(/unbounded_connection_retries/g)?.length ?? 0,
+              disabled ? 2 : 0,
+            );
+            if (disabled) {
+              assert.match(
+                codex,
+                /spawnSync\("codex", \[\s+"--disable", "unbounded_connection_retries",\s+\.\.\.disabled/,
+              );
+              assert.match(codex, /"--disable", "unbounded_connection_retries",\s+"app-server",/);
+            }
+          }
+        }
+      } finally {
+        core.listNamespacedPod = originalList;
+        sandbox.enrollHarness = enrollHarness;
+        sandbox.harnessEndpoint = harnessEndpoint;
+      }
     },
   );
 });

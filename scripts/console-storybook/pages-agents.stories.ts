@@ -3,6 +3,7 @@ import { story } from "./story.ts";
 export default { title: "Pages/Agents" };
 
 export const Agents = { ...story("agents"), name: "Populated" };
+export const RowNavigation = story("agentsRowNavigation");
 export const UnreadableConfiguration = story("agentsUnreadableConfiguration");
 export const LongName = story("agentsLongName");
 export const LongNameDigits = story("agentsLongNameDigits");
