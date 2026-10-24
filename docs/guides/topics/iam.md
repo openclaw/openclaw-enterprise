@@ -123,9 +123,9 @@ nobody uses. It is still a credential:
 Add actions such as `update` or `deploy` to the Role for more access; see
 [Authorization](../../reference/authorization.md) for actions and scope. Role
 creation refuses `create` Permissions, and a binding refuses a Role with none
-for its target's kind, because those grants could never apply. Pass the
-Installation administrator `roleId` at creation only for someone who
-administers the whole Installation.
+for its target's kind, because those grants could never apply. The Installation administrator
+`roleId` grants account and service key administration at the Installation.
+Use Namespace bindings to grant access to Namespaces and Agents.
 
 ## Remove a person
 
