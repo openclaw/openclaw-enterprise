@@ -4,6 +4,7 @@ import test from "node:test";
 import pg from "pg";
 
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import {
   ConfigurationHarnessError,
@@ -298,6 +299,17 @@ async function ensureProvisioningBootstrap(context, state) {
     });
   })();
   await bootstrapPromise;
+}
+
+/** The provisioning jobs and Agents a Namespace holds; a refused request stores neither. */
+async function storedProvisioningCounts(pool, namespaceId) {
+  const { rows } = await pool.query(
+    `SELECT
+     (SELECT count(*)::integer FROM occ.agent_provisioning_work WHERE namespace_id = $1) AS jobs,
+     (SELECT count(*)::integer FROM occ.agents WHERE namespace_id = $1) AS agents`,
+    [namespaceId],
+  );
+  return rows[0];
 }
 
 function installationDrivers({
@@ -3125,13 +3137,90 @@ test(
       });
     }
     // The refusal stored nothing: no provisioning job or Agent.
-    const stored = await fixture.pool.query(
-      `SELECT
-       (SELECT count(*)::integer FROM occ.agent_provisioning_work WHERE namespace_id = $1) AS jobs,
-       (SELECT count(*)::integer FROM occ.agents WHERE namespace_id = $1) AS agents`,
-      [namespace.id],
+    assert.deepEqual(await storedProvisioningCounts(fixture.pool, namespace.id), {
+      jobs: 0,
+      agents: 0,
+    });
+  },
+);
+
+test(
+  "OpenShell refuses dedicated OpenClaw at provisioning admission unless user namespaces are off, and status reads still report stored work",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    // Native OpenClaw's private workspace preparation needs kubernetes.userNamespaces: false
+    // and runs only after a deploy stopped its predecessors (finding 2334). Provisioning admits
+    // the plan through the OpenShell Sandbox view, so a request is refused before it is stored.
+    let userNamespaces;
+    const fixture = await createFixture(context, {
+      computeDriver: createRuntimeComputeDriver(),
+      configurationDriver: createProvisioningConfigurationDriver({
+        id: "configuration-provisioning-openshell-openclaw",
+      }),
+      secretDriver: createTestSecretDriver({ id: "secret-provisioning" }),
+      sandboxDriver: {
+        id: "sandbox-provisioning",
+        capability: "sandbox",
+        implementation: "openshell",
+        facets: ["networking", "filesystem", "process"],
+        // OpenShell's own hook on a stand-in holding only the settings it reads, with the
+        // userNamespaces value this test changes (as workspace-setup-api does).
+        configureAgent(configuration, harness) {
+          return OpenShellSandboxDriver.prototype.configureAgent.call(
+            {
+              options: {
+                kubernetes: { userNamespaces, sandboxDataMount: { mountPath: "/sandbox/data" } },
+              },
+            },
+            configuration,
+            harness,
+          );
+        },
+        async provisionHarness() {
+          assert.fail("this case ends at provisioning handoff");
+        },
+        async cleanup() {},
+      },
+    });
+    const namespace = await fixture.bootstrapNamespace();
+    const secrets = await createProvisioningSecrets(fixture, namespace.id);
+    const openClawBody = () => {
+      const body = provisioningBody(namespace.id, secrets);
+      body.configuration.values.agents.defaults = {
+        model: "openai/gpt-5",
+        models: { "openai/gpt-5": { agentRuntime: { id: "openclaw" } } },
+      };
+      return body;
+    };
+    const provision = (body) =>
+      fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, { body });
+
+    const refused = await provision(openClawBody());
+    assert.equal(refused.status, 400, JSON.stringify(refused.body));
+    assert.deepEqual(refused.body.error, {
+      code: "INVALID_REQUEST",
+      message:
+        "Dedicated OpenClaw needs kubernetes.userNamespaces: false in the OpenShell Sandbox Driver configuration. Select Codex, or ask an operator to set it.",
+    });
+    assert.deepEqual(await storedProvisioningCounts(fixture.pool, namespace.id), {
+      jobs: 0,
+      agents: 0,
+    });
+
+    // Admitted while the setting is off. After an operator turns it back on, a status read
+    // still reports the stored work; only writes go through the Sandbox view again.
+    userNamespaces = false;
+    const admitted = await provision(openClawBody());
+    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    // No worker runs here; a later test's worker must not run this job with its Drivers.
+    fixture.cancelQueuedWorkAtTeardown(
+      admitted.data.provisioning.workId,
+      "OpenShell admission case ends at the status read",
     );
-    assert.deepEqual(stored.rows[0], { jobs: 0, agents: 0 });
+    userNamespaces = true;
+    const status = await fixture.request("GET", admitted.data.provisioning.url);
+    assert.equal(status.status, 200, JSON.stringify(status.body));
+    assert.equal(status.data.workId, admitted.data.provisioning.workId);
   },
 );
 

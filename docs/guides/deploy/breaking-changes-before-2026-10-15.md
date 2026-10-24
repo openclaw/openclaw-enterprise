@@ -1,7 +1,9 @@
 # Breaking-change notices before 2026-10-15
 
 These [breaking-change notices](breaking-changes.md) are dated 2026-10-14;
-newer ones are on that page, and older ones are in the
+newer ones are on that page and in the
+[notices before 2026-10-23](breaking-changes-before-2026-10-23.md), and older
+ones are in the
 [earlier notices](breaking-changes-archive.md). They still apply when you
 upgrade from a source commit older than their date. Entries are newest first.
 Steps marked _untested_ have not been run against a real Installation.
