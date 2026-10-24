@@ -239,7 +239,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if or (not (kindIs "bool" $oidcCa.enabled)) (not $oidcCa.enabled) -}}{{- fail "auth.oidc CA configuration requires auth.oidc.enabled: true" -}}{{- end -}}
 {{- if or (not $oidcCa.caSecretName) (not $oidcCa.caSecretKey) -}}{{- fail "auth.oidc.caSecretName and auth.oidc.caSecretKey must be set together" -}}{{- end -}}
 {{- /* eq refuses to compare a string with a number or boolean, so check the type first for the documented message. */ -}}
-{{- if $oidcCa.secretName -}}{{- include "openclaw.requireString" (dict "label" "auth.oidc.secretName" "value" $oidcCa.secretName) -}}{{- end -}}
+{{- if not (kindIs "invalid" $oidcCa.secretName) -}}{{- include "openclaw.requireString" (dict "label" "auth.oidc.secretName" "value" $oidcCa.secretName) -}}{{- end -}}
 {{- if eq $oidcCa.caSecretName $oidcCa.secretName -}}{{- fail "auth.oidc.caSecretName must differ from the OIDC client credential Secret" -}}{{- end -}}
 {{- if or (gt (len $oidcCa.caSecretName) 253) (not (regexMatch "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$" $oidcCa.caSecretName)) -}}{{- fail "auth.oidc.caSecretName must be a Kubernetes Secret name" -}}{{- end -}}
 {{- include "openclaw.validateSecretKey" (dict "label" "auth.oidc.caSecretKey" "value" $oidcCa.caSecretKey) -}}
@@ -352,6 +352,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- fail "bootstrap.serviceKey.fileName must identify the service key output file name" -}}
 {{- end -}}
 {{- range $label, $fileName := dict "bootstrap.password.fileName" .Values.bootstrap.password.fileName "bootstrap.serviceKey.fileName" .Values.bootstrap.serviceKey.fileName -}}
+{{- include "openclaw.requireString" (dict "label" $label "value" $fileName) -}}
 {{- if or (eq $fileName ".") (eq $fileName "..") (gt (len (toString $fileName)) 255) (not (regexMatch "^[A-Za-z0-9._-]+$" $fileName)) -}}
 {{- fail (printf "%s must be a simple basename of at most 255 characters" $label) -}}
 {{- end -}}

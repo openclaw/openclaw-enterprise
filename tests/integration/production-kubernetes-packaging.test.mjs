@@ -329,6 +329,9 @@ test(
       // with a number or boolean and used to fail with a Go template type error instead.
       ["database.caKey", "1", stringNameCaValues.database],
       ["auth.oidc.secretName", "2024", stringNameCaValues.oidc],
+      ["auth.oidc.secretName", "false", stringNameCaValues.oidc],
+      ["bootstrap.password.fileName", "2024"],
+      ["bootstrap.serviceKey.fileName", "true"],
       ["database.caSecretName", "2024", stringNameCaValues.oidc],
       ["auth.oidc.caSecretName", "2024", stringNameCaValues.oidc],
       ["executionCluster.apiKubeconfigSecretName", "2024", stringNameCaValues.execution],
@@ -394,24 +397,7 @@ test("execution chart names reject YAML booleans and numbers", tooling, async ()
 
 test("execution peer label maps reject non-string values before rendering", tooling, async () => {
   const renderExecution = (field, value, option = "--set-json") =>
-    execute(
-      helm,
-      [
-        "template",
-        "oce",
-        "deploy/helm/openclaw-execution",
-        "--set",
-        "routing.hostname=agents.example.invalid",
-        "--set",
-        "routing.gatewayClassName=private-envoy-gateway",
-        "--set",
-        "routing.tlsSecretName=agents-tls",
-        "--set",
-        "routing.controlPlaneCidrs[0]=198.51.100.0/24",
-        ...(field === undefined ? [] : [option, `${field}=${value}`]),
-      ],
-      { cwd: repository, maxBuffer: 2_000_000 },
-    );
+    renderExecutionChart(...(field === undefined ? [] : [option, `${field}=${value}`]));
   const defaults = await resources((await renderExecution()).stdout);
   const defaultPolicy = defaults.find(({ kind }) => kind === "NetworkPolicy");
   for (const [field, peer] of [
@@ -491,28 +477,7 @@ test(
         ],
       },
       {
-        objects: await resources(
-          (
-            await execute(
-              helm,
-              [
-                "template",
-                "oce",
-                "deploy/helm/openclaw-execution",
-                "--set",
-                "routing.hostname=agents.example.invalid",
-                "--set",
-                "routing.gatewayClassName=private-envoy-gateway",
-                "--set",
-                "routing.tlsSecretName=agents-tls",
-                "--set",
-                "routing.controlPlaneCidrs[0]=198.51.100.0/24",
-                ...dnsArguments,
-              ],
-              { cwd: repository, env: goToolEnvironment(), maxBuffer: 2_000_000 },
-            )
-          ).stdout,
-        ),
+        objects: await resources((await renderExecutionChart(...dnsArguments)).stdout),
         policies: ["oce-harness-proxy"],
       },
       {
@@ -1586,25 +1551,7 @@ test(
   tooling,
   async () => {
     const template = (field, value) =>
-      execute(
-        helm,
-        [
-          "template",
-          "oce",
-          "deploy/helm/openclaw-execution",
-          "--set",
-          "routing.hostname=agents.example.invalid",
-          "--set",
-          "routing.gatewayClassName=private-envoy-gateway",
-          "--set",
-          "routing.tlsSecretName=agents-tls",
-          "--set",
-          "routing.controlPlaneCidrs[0]=198.51.100.0/24",
-          "--set-string",
-          `routing.${field}=${value}`,
-        ],
-        { cwd: repository, env: goToolEnvironment(), maxBuffer: 2_000_000 },
-      );
+      renderExecutionChart("--set-string", `routing.${field}=${value}`);
     // Compute validateGatewayName: a DNS subdomain, at most 63 characters (a label value).
     for (const gatewayName of ["Bad_Name", "-gateways", "gateways-", "a..b", "a".repeat(64)]) {
       await assert.rejects(
@@ -1981,28 +1928,7 @@ test(
 
     // The execution chart grants its tenant API role the observer's Pod and proxy reads
     // (runtime diagnostics) and the same log reads.
-    const executionArgs = [
-      "template",
-      "oce",
-      "deploy/helm/openclaw-execution",
-      "--set",
-      "routing.hostname=agents.example.invalid",
-      "--set",
-      "routing.gatewayClassName=private-envoy-gateway",
-      "--set",
-      "routing.tlsSecretName=agents-tls",
-      "--set",
-      "routing.controlPlaneCidrs[0]=198.51.100.0/24",
-    ];
-    const execution = await resources(
-      (
-        await execute(helm, executionArgs, {
-          cwd: repository,
-          env: goToolEnvironment(),
-          maxBuffer: 2_000_000,
-        })
-      ).stdout,
-    );
+    const execution = await resources((await renderExecutionChart()).stdout);
     const executionPodReads = [
       { apiGroups: ["apps"], resources: ["deployments"], verbs: ["list"] },
       { apiGroups: [""], resources: ["pods"], verbs: ["get", "list"] },
@@ -2033,13 +1959,7 @@ test(
       );
     }
     const executionDisabled = await resources(
-      (
-        await execute(helm, [...executionArgs, "--set", "agentRuntimeLogs.enabled=false"], {
-          cwd: repository,
-          env: goToolEnvironment(),
-          maxBuffer: 2_000_000,
-        })
-      ).stdout,
+      (await renderExecutionChart("--set", "agentRuntimeLogs.enabled=false")).stdout,
     );
     assert.deepEqual(role(executionDisabled, "-execution-tenant-api").rules, executionPodReads);
   },
@@ -6049,23 +5969,8 @@ test(
 );
 
 test("execution chart refuses a harness hostname Compute refuses", tooling, async () => {
-  const template = (...values) =>
-    execute(
-      helm,
-      [
-        "template",
-        "oce",
-        "deploy/helm/openclaw-execution",
-        "--set",
-        "routing.gatewayClassName=private-envoy-gateway",
-        "--set",
-        "routing.tlsSecretName=agents-tls",
-        "--set-json",
-        'routing.controlPlaneCidrs=["198.51.100.0/24"]',
-        ...values,
-      ],
-      { cwd: repository, env: goToolEnvironment(), maxBuffer: 2_000_000 },
-    );
+  // A later --set or --set-string replaces the helper's routing.hostname.
+  const template = renderExecutionChart;
   await assert.rejects(
     template("--set", "routing.hostname=Bad_Host"),
     /routing\.hostname must be a DNS hostname without a port or path/,

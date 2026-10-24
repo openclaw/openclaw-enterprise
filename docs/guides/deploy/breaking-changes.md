@@ -46,14 +46,15 @@ names, `routing.envoyNamespace` and `dns.namespace`. Earlier charts rendered
 `secretName: 2024` as `"2024"` and `secretName: yes` as `"true"`.
 
 **Who is affected.** Values files with an unquoted name that YAML reads as a
-number or boolean, for example `2024`, `1e3`, `yes` or `on`. An optional name
-that reads as `false` or `0`, such as `database.caSecretName: false`, still
-counts as unset, as before. The execution chart's `routing.gatewayName`,
+number or boolean, for example `2024`, `1e3`, `yes` or `on`. Most optional
+names that read as `false` or `0`, such as `database.caSecretName: false`, still
+count as unset, as before. The execution chart's `routing.gatewayName`,
 `routing.envoyNamespace` and `dns.namespace` have defaults, so it refuses
 `false` there.
 
 **How to tell.** The render fails with `<field> must be a string: quote a value
-YAML reads as a number or boolean, or pass it with --set-string`.
+YAML reads as a number or boolean, or pass it with --set-string`. A required
+name set to `false` or `0` fails as missing instead.
 
 **Steps.** Quote the value in the values file, or pass it with
 `--set-string`, then run the upgrade again.
