@@ -1343,6 +1343,27 @@ test("Suite Audit and Static Checks runs the audit and every check the lanes ski
   assert.ok(workflow.jobs["ci-required"].needs.includes("static-checks"));
 });
 
+test("only pushes to main restore, use, or save Prettier's content cache", () => {
+  // A pull request can have a cache at the same key in its own ref scope.
+  // Skip restore there and require the ordinary, uncached formatting check.
+  const { steps } = loadYaml(".github/workflows/ci.yml").jobs["static-checks"];
+  const restore = steps.find((step) => step.id === "prettier-cache");
+  const outcome = "steps.prettier-cache.outcome";
+  assert.equal(restore.if, "github.event_name == 'push' && github.ref == 'refs/heads/main'");
+  const plain = steps.find((step) => step.run === "pnpm format:check");
+  assert.equal(plain.if, `${outcome} != 'success'`);
+
+  // Restore succeeds on a miss too: check every file, then seed after the job's checks.
+  const cached = steps.find(
+    (step) =>
+      step.run ===
+      'pnpm format:check --cache --cache-strategy content --cache-location "$RUNNER_TEMP/prettier-cache"',
+  );
+  assert.equal(cached.if, `${outcome} == 'success'`);
+  const save = steps.find((step) => step.uses?.startsWith("actions/cache/save@"));
+  assert.equal(save.if, `${cached.if} && steps.prettier-cache.outputs.cache-hit != 'true'`);
+});
+
 test("lane lists outside the lane table name every lane they must", async () => {
   const suiteIndex = JSON.parse(read("scripts/ci/test-suites.json"));
   // The lane action exposes the cache credentials and sets OCC_CI_IMAGE_CACHE for
