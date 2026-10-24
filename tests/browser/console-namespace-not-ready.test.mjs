@@ -155,7 +155,7 @@ test("a provisioning Namespace saves an Agent draft from a seeded runtime-auth P
       nodePath: "/usr/bin/node",
       openclawPath: "/opt/openclaw/index.js",
       user: "openclaw",
-      root: "/tmp/ssh-runtime-test",
+      root: "/var/lib/ssh-runtime-test",
     },
     network: { gatewayPortRange: { start: 18800, end: 18899 } },
   });

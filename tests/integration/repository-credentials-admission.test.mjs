@@ -160,7 +160,7 @@ function sshCompute() {
       nodePath: "/usr/bin/node",
       openclawPath: "/opt/openclaw/index.js",
       user: "openclaw",
-      root: "/tmp/admission-runtime",
+      root: "/var/lib/admission-runtime",
     },
     network: { gatewayPortRange: { start: 18800, end: 18899 } },
   });

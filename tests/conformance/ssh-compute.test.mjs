@@ -413,6 +413,47 @@ function setOption(object, keys, value) {
   target[keys.at(-1)] = value;
 }
 
+// The unit's PrivateTmp hides /tmp and /var/tmp, so a state root there timed out every deploy;
+// docs already forbade it (finding 2358).
+test("SSH startup refuses a runtime.root the unit cannot use", () => {
+  const dedicated =
+    "Use a dedicated absolute directory without . or .. segments, such as /var/lib/openclaw-enterprise.";
+  const privateTmp =
+    "Use a directory outside /tmp and /var/tmp, such as /var/lib/openclaw-enterprise: the unit's PrivateTmp hides those.";
+  for (const [root, message] of [
+    ["/", dedicated],
+    ["//", dedicated],
+    ["/var/lib/../../tmp/oce", dedicated],
+    ["/var/lib/./oce", dedicated],
+    ["/tmp", privateTmp],
+    ["/tmp/openclaw-enterprise", privateTmp],
+    ["//var/tmp/oce", privateTmp],
+  ]) {
+    const candidate = options();
+    candidate.runtime.root = root;
+    assert.throws(
+      () => requireConfiguration(SshComputeDriver, candidate),
+      (error) => {
+        assert.ok(error instanceof SharedConfigurationValidationError, root);
+        assert.deepEqual(error.error.details, [
+          { path: "/runtime/root", code: "INVALID_VALUE", message },
+        ]);
+        return true;
+      },
+    );
+  }
+  for (const root of [
+    "/var/lib/openclaw-enterprise",
+    "/srv/tmp/oce",
+    "/tmpdata",
+    "/var/tmpfiles",
+  ]) {
+    const candidate = options();
+    candidate.runtime.root = root;
+    requireConfiguration(SshComputeDriver, candidate);
+  }
+});
+
 test("SSH closed schema and semantic validation reject every invalid option", () => {
   const schema = SshComputeDriver.configurationSchema;
   assert.equal(schema.additionalProperties, false);

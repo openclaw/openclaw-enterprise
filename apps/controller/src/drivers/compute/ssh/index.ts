@@ -136,6 +136,20 @@ function path(value: unknown, description: string): void {
   }
 }
 
+// The unit runs with PrivateTmp=true and its WorkingDirectory under runtime.root, so a root under
+// /tmp or /var/tmp is hidden from it and every deploy times out (finding 2358); "/" or a "." or
+// ".." segment makes the state root ambiguous.
+function stateRootProblem(root: string): string | undefined {
+  const segments = root.split("/").filter((segment) => segment !== "");
+  if (segments.length === 0 || segments.some((segment) => segment === "." || segment === "..")) {
+    return "Use a dedicated absolute directory without . or .. segments, such as /var/lib/openclaw-enterprise.";
+  }
+  if (segments[0] === "tmp" || (segments[0] === "var" && segments[1] === "tmp")) {
+    return "Use a directory outside /tmp and /var/tmp, such as /var/lib/openclaw-enterprise: the unit's PrivateTmp hides those.";
+  }
+  return undefined;
+}
+
 function port(value: unknown, minimum: number, description: string): number {
   if (!isPositiveSafeInteger(value) || value < minimum || value > 65_535) {
     throw new ConfigurationFailure(`${description} must be an integer from ${minimum} to 65535.`);
@@ -339,6 +353,12 @@ export class SshComputeDriver implements ComputeDriver {
       const runtime = options.runtime;
       for (const key of ["nodePath", "openclawPath", "root"] as const) {
         path(runtime[key], `runtime.${key}`);
+      }
+      const rootProblem = stateRootProblem(runtime.root);
+      if (rootProblem !== undefined) {
+        throw new ConfigurationValidationError([
+          { path: "/runtime/root", code: "INVALID_VALUE", message: rootProblem },
+        ]);
       }
       if (runtime.systemdUnitDirectory !== undefined) {
         path(runtime.systemdUnitDirectory, "runtime.systemdUnitDirectory");
