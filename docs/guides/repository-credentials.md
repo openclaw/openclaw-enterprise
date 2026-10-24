@@ -162,6 +162,11 @@ kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
 ```
 
 The gateway retains its model credential; the TUI client unsets its copy.
+
+`user.name` and `user.email` identify the commit author; they do not change the
+managed GitHub App identity used to authorize a push. A successful authenticated
+clone does not configure these values; set them before committing, as shown below.
+
 The dedicated Agent works in its workspace without manual session-opening:
 
 ```sh
