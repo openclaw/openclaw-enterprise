@@ -773,12 +773,14 @@ test("deployment admission refuses a dedicated Harness the Installation cannot p
     new RegExp(
       `^Dedicated Agents need ${setting} in this Installation's Kubernetes Compute configuration\\. Select an embedded Agent, or ask an operator to configure it\\.$`,
     );
+  // Composition always supplies node enrollment, so gatewayRouting is the setting to name.
+  const routing = named("gatewayRouting");
   const storage = named("gateway routing and node enrollment");
   const selector = named("runtime\\.gatewayNodeSelector");
   const withoutSelector = routedOptions({ runtime });
   delete withoutSelector.runtime.gatewayNodeSelector;
   for (const [driver, message] of [
-    [new KubernetesComputeDriver(options({ runtime }), { nodeEnrollment: {} }), storage],
+    [new KubernetesComputeDriver(options({ runtime }), { nodeEnrollment: {} }), routing],
     [new KubernetesComputeDriver(routedOptions({ runtime })), storage],
     [new KubernetesComputeDriver(withoutSelector, { nodeEnrollment: {} }), selector],
     [
@@ -14333,13 +14335,20 @@ test("resource quantities reject bare numbers with structured field diagnostics"
     SharedConfigurationValidationError,
   );
   // The API server refuses the Namespace's ResourceQuota at the first deployment otherwise
-  // (finding 2357): resource names are qualified names, values quantities.
+  // (finding 2357): resource names are qualified names, and a name without a prefix is a
+  // standard quota resource; values are non-negative quantities.
   for (const [resource, value, message] of [
     ["bad key", "1", /Namespace quota resource "bad key" must be a Kubernetes resource name/],
     ["count/", "1", /must be a Kubernetes resource name/],
     ["Example.com/gpu", "1", /must be a Kubernetes resource name/],
-    ["pods", "ten", /Namespace quota resource pods must be a Kubernetes quantity string/],
-    ["limits.memory", "8 Gi", /must be a Kubernetes quantity string/],
+    ["podz", "1", /Namespace quota resource "podz" must be a Kubernetes resource name/],
+    [
+      "pods",
+      "ten",
+      /Namespace quota resource pods must be a non-negative Kubernetes quantity string/,
+    ],
+    ["limits.memory", "8 Gi", /must be a non-negative Kubernetes quantity string/],
+    ["requests.cpu", "-1", /must be a non-negative Kubernetes quantity string/],
   ]) {
     const configured = separateResources();
     configured.resources.namespace.quota[resource] = value;
@@ -14357,6 +14366,9 @@ test("resource quantities reject bare numbers with structured field diagnostics"
     "count/deployments.apps": "4",
     "requests.nvidia.com/gpu": "2",
     "limits.memory": "8Gi",
+    "requests.storage": "100Gi",
+    "services.loadbalancers": "0",
+    "requests.hugepages-2Mi": "1Gi",
   });
   requireConfiguration(KubernetesComputeDriver, extended);
   // A missing value is still reported as missing, and quoted cores pass.

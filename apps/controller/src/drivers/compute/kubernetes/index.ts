@@ -1777,6 +1777,11 @@ function validatePeer(value: KubernetesWorkloadPeer, description: string, path?:
   );
 }
 
+// ValidateResourceQuotaResourceName: a quota resource name without a "/" must be a standard
+// quota resource.
+const STANDARD_QUOTA_RESOURCE =
+  /^(?:(?:requests\.|limits\.)?(?:cpu|memory|ephemeral-storage)|requests\.storage|(?:requests\.)?hugepages-.+|pods|services|services\.nodeports|services\.loadbalancers|replicationcontrollers|resourcequotas|secrets|configmaps|persistentvolumeclaims)$/;
+
 // A label key (also a ResourceQuota resource name) as the API server checks it: a qualified
 // name, an optional DNS subdomain prefix and a name of at most 63 characters.
 function isKubernetesQualifiedName(key: string): boolean {
@@ -3595,19 +3600,23 @@ export class KubernetesComputeDriver implements ComputeDriver {
       for (const [key, quantity] of Object.entries(quota)) {
         required(key, "Quota resource", "/resources/namespace/quota");
         // The API server refuses the Namespace's ResourceQuota otherwise, at the first deploy.
-        if (!isKubernetesQualifiedName(key)) {
+        if (
+          !isKubernetesQualifiedName(key) ||
+          (!key.includes("/") && !STANDARD_QUOTA_RESOURCE.test(key))
+        ) {
           throw configurationConstraintFailure(
             `Namespace quota resource ${JSON.stringify(key)} must be a Kubernetes resource name, such as requests.cpu or count/pods.`,
             "/resources/namespace/quota",
           );
         }
-        if (
-          !isResourceQuantity(
-            resourceQuantity(quantity, "Namespace quota resource", "resources.namespace.quota"),
-          )
-        ) {
+        const value = resourceQuantity(
+          quantity,
+          "Namespace quota resource",
+          "resources.namespace.quota",
+        );
+        if (!isResourceQuantity(value) || (compareResourceQuantities(value, "0") ?? 0) < 0) {
           throw configurationConstraintFailure(
-            `Namespace quota resource ${key} must be a Kubernetes quantity string, such as 4 or 8Gi.`,
+            `Namespace quota resource ${key} must be a non-negative Kubernetes quantity string, such as 4 or 8Gi.`,
             "/resources/namespace/quota",
           );
         }
@@ -4450,12 +4459,16 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (harness.mode !== "dedicated" || runtime === undefined) {
       return;
     }
+    // Composition supplies node enrollment in every controller, so gatewayRouting is the
+    // setting an operator can change; only a Driver built without enrollment names both.
     const missing =
-      this.options.gatewayRouting === undefined || this.nodeEnrollment === undefined
+      this.nodeEnrollment === undefined
         ? "gateway routing and node enrollment"
-        : Object.keys(runtime.gatewayNodeSelector ?? {}).length === 0
-          ? "runtime.gatewayNodeSelector"
-          : undefined;
+        : this.options.gatewayRouting === undefined
+          ? "gatewayRouting"
+          : Object.keys(runtime.gatewayNodeSelector ?? {}).length === 0
+            ? "runtime.gatewayNodeSelector"
+            : undefined;
     if (missing !== undefined) {
       throw new ConfigurationHarnessError(
         `Dedicated Agents need ${missing} in this Installation's Kubernetes Compute configuration. Select an embedded Agent, or ask an operator to configure it.`,

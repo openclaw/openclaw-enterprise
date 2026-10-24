@@ -106,7 +106,8 @@ gateway Deployment and Service, then checks gateway readiness.
 `runtime.gatewayNodeSelector` and run in the logical Namespace's managed control-plane runtime
 namespace. With `runtime` set, deployment admission (`validateHarnessAuth`) refuses a dedicated
 Harness without that selector, gateway routing or node enrollment, before the replacement stops
-its predecessors. The Pod-level selector also schedules the Gateway's private-state initializer there.
+its predecessors. The Pod-level selector also schedules the Gateway's private-state initializer
+there.
 Compute owns both targets through the same version lifecycle; teardown selects each resource's
 physical namespace and preserves newer versions and durable Agent claims.
 Dedicated replacement stops earlier Harnesses before preparing the successor.

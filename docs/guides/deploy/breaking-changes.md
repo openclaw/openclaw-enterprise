@@ -23,26 +23,26 @@ real Installation.
 
 **What breaks.** Deployment admission refuses a dedicated Agent (Codex or
 OpenClaw) when the Kubernetes Compute configuration sets `runtime` without
-`runtime.gatewayNodeSelector`, or without gateway routing and node enrollment.
-Controller startup refuses `runtime.nodeSelector` or
-`runtime.gatewayNodeSelector` label keys or values that Kubernetes refuses, and
-`resources.namespace.quota` entries whose name is not a Kubernetes resource
-name or whose value is not a quantity. Earlier builds accepted all of these;
-each dedicated deployment then stopped the running revision and failed in
-preparation, or the API server refused the Deployment or ResourceQuota.
+`runtime.gatewayNodeSelector` or `gatewayRouting`. Controller startup refuses
+`runtime.nodeSelector` or `runtime.gatewayNodeSelector` label keys or values
+that Kubernetes refuses, and `resources.namespace.quota` entries whose name is
+not a Kubernetes quota resource name or whose value is not a non-negative
+quantity. Earlier builds accepted all of these; each dedicated deployment then
+stopped the running revision and failed in preparation, or the API server
+refused the Deployment or ResourceQuota.
 
 **Who is affected.** Installations with such a setting. Embedded and
 channel-runtime Installations without dedicated Agents are not affected by the
 placement check.
 
 **How to tell.** The deploy request fails with `Dedicated Agents need
-runtime.gatewayNodeSelector` (or `gateway routing and node enrollment`) `in
-this Installation's Kubernetes Compute configuration`. Or startup fails at
+runtime.gatewayNodeSelector` (or `gatewayRouting`) `in this Installation's
+Kubernetes Compute configuration`. Or startup fails at
 `/runtime/nodeSelector`, `/runtime/gatewayNodeSelector` or
 `/resources/namespace/quota`.
 
 **Steps.** Set `runtime.gatewayNodeSelector` to the trusted node pool's labels
-and configure gateway routing and node enrollment, as the
+and configure `gatewayRouting`, as the
 [Kubernetes Compute reference](../../reference/drivers/kubernetes-compute.md)
 describes; fix the selector labels or quota entries; then restart the
 controller.
