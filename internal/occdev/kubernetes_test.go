@@ -173,3 +173,101 @@ func TestEngineImageReferenceMatchesDefaultTagAndRegistry(t *testing.T) {
 		})
 	}
 }
+
+func TestImportDevelopmentImagePreservesTaggedImagesAndReleasesArchives(t *testing.T) {
+	// Exercise the real launcher across external CLI contracts with an archive
+	// on disk. These stand-ins do not prove a real engine or cluster import.
+	for _, tc := range []struct {
+		name          string
+		engine        string
+		saveFailure   bool
+		importFailure bool
+		missingImage  bool
+	}{
+		{name: "Podman tagged image", engine: "podman"},
+		{name: "Podman partial export fails", engine: "podman", saveFailure: true},
+		{name: "Podman direct import fails", engine: "podman", importFailure: true},
+		{name: "Docker tagged image", engine: "docker"},
+		{name: "Docker partial export fails", engine: "docker", saveFailure: true},
+		{name: "Docker direct import fails", engine: "docker", importFailure: true},
+		{name: "containerd did not register the image", engine: "docker", missingImage: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state := &developmentState{Cluster: "occ-dev-owned", directory: t.TempDir()}
+			requested := "openclaw-enterprise-runtime:quickstart"
+			recorded := requested
+			repository := "docker.io/library/openclaw-enterprise-runtime"
+			if tc.engine == "podman" {
+				recorded = "localhost/" + requested
+				repository = "localhost/openclaw-enterprise-runtime"
+			}
+			archive := filepath.Join(state.directory, "development-import.tar")
+			fixture := filepath.Join(t.TempDir(), "engine-export.tar")
+			exportedBytes := []byte("complete image export")
+			if tc.saveFailure {
+				exportedBytes = []byte("partial export")
+			}
+			if err := os.WriteFile(fixture, exportedBytes, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			importMarker := filepath.Join(state.directory, "imported")
+			exportResult := ""
+			if tc.saveFailure {
+				exportResult = "exit 43"
+			}
+			importResult := ""
+			if tc.importFailure {
+				importResult = "exit 44"
+			}
+			containerdImage := recorded
+			if tc.missingImage {
+				containerdImage = "unrelated:latest"
+			}
+			// Both engines export their recorded tag. Only Docker accepts the
+			// selected platform flag; neither may fall back to tag-based import.
+			saveArgs := "image save --output " + archive + " " + recorded
+			if tc.engine == "docker" {
+				saveArgs = "image save --platform linux/arm64 --output " + archive + " " + recorded
+			}
+			engineCases := `"image inspect --format {{json .RepoTags}} ` + requested + `") echo '["` + recorded + `"]' ;;
+"image inspect --format {{.Os}}/{{.Architecture}} ` + recorded + `") echo linux/arm64 ;;
+"` + saveArgs + `") cp ` + shellQuote(fixture) + ` ` + shellQuote(archive) + `; ` + exportResult + ` ;;
+"exec k3d-occ-dev-owned-server-0 ctr -n k8s.io images list") echo '` + containerdImage + ` application/vnd.oci.image.manifest.v1+json ` + profileTestDigest + `' ;;
+"exec k3d-occ-dev-owned-server-0 ctr -n k8s.io images tag ` + recorded + ` ` + repository + `@` + profileTestDigest + `") ;;`
+			importCases := `"image import --mode direct ` + archive + ` -c occ-dev-owned") cmp "$5" ` + shellQuote(fixture) + ` || exit 45; touch ` + shellQuote(importMarker) + `; ` + importResult + ` ;;`
+			commands := fakeProfileCommands(t, map[string]string{tc.engine: engineCases, "k3d": importCases})
+			r := newRunner(Options{})
+			r.engine = tc.engine
+
+			reference, err := r.importDevelopmentImage(context.Background(), state, requested)
+			calls := strings.Join(commands(), "\n")
+			if tc.saveFailure || tc.importFailure || tc.missingImage {
+				if err == nil || reference != "" {
+					t.Fatalf("failed image transfer was accepted: %q, %v", reference, err)
+				}
+				if (tc.saveFailure || tc.importFailure) && strings.Contains(calls, "ctr -n k8s.io images list") {
+					t.Fatalf("verified an image after failed transfer:\n%s", calls)
+				}
+			} else if err != nil || reference != repository+"@"+profileTestDigest {
+				t.Fatalf("unexpected immutable reference: %q, %v\n%s", reference, err, calls)
+			}
+			if !strings.Contains(calls, tc.engine+" "+saveArgs) {
+				t.Fatalf("engine did not export its recorded image and platform:\n%s", calls)
+			}
+			if _, err := os.Stat(archive); !os.IsNotExist(err) {
+				t.Fatalf("temporary archive survived: %v", err)
+			}
+			_, importErr := os.Stat(importMarker)
+			if tc.saveFailure {
+				if !os.IsNotExist(importErr) {
+					t.Fatalf("import ran after a partial export: %v", importErr)
+				}
+			} else if importErr != nil {
+				t.Fatalf("import did not read the expected archive bytes: %v\n%s", importErr, calls)
+			}
+			if strings.Contains(calls, "image rm ") || strings.Contains(calls, tc.engine+" tag ") {
+				t.Fatalf("changed the operator's tagged image:\n%s", calls)
+			}
+		})
+	}
+}

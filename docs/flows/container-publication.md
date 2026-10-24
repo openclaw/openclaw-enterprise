@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
-updated: 2026-10-08
-last_updated_session: authoring-run/74dc7eaf-a67b-47ef-91bd-2ecd0463fb10
+updated: 2026-10-21
+last_updated_session: codex/01a15ed8-26e2-7833-969f-20d0425a0f8e
 ---
 
 # Container publication flow
@@ -99,6 +99,10 @@ plugin's installation. Build tools remain in full Bookworm stages; final images
 use a separately pinned Node 24 Bookworm slim base. Both bases apply available
 Debian package updates when their recipe layers build. The Node digest identifies
 the upstream image; it does not freeze Debian package repositories.
+
+`deploy/runtime/Dockerfile:openclaw-dependency-inputs` copies both public helpers
+into builder stages, outside the final image. Installs retain Matrix library
+and secret mounts.
 
 `deploy/runtime/Dockerfile:runtime` disables npm's background update notifier in
 the final image environment. Harness child processes inherit that default, so
@@ -235,6 +239,8 @@ owns package-write access and coordination.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-10-21 22:56: Copy both public install helpers; retain library and secret mounts. (codex/01a15ed8-26e2-7833-969f-20d0425a0f8e - 9203cfc013db9db388f8d58cd52b0b62e245d194)
 
 - 2026-10-10 03:00: Pin stock Codex 0.163.0-alpha.2; alpha.1 sent metadata the backend rejects. (fix-992-pin)
 

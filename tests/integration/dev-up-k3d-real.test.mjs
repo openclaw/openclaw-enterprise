@@ -12,6 +12,11 @@ import { promisify } from "node:util";
 import { devUpUnrelatedImage, prepareDevUpImage } from "../../scripts/ci/prepare.mjs";
 import { availablePort } from "../helpers/available-port.mjs";
 import { runDevUpModelProviderCase } from "../helpers/dev-up-model-provider.mjs";
+import {
+  devUpTestError,
+  provisionDevUpSandboxAgent,
+  withDevUpModelKey,
+} from "../helpers/dev-up-test-auth.mjs";
 
 const { loadYaml } = createRequire(new URL("../../apps/controller/package.json", import.meta.url))(
   "@kubernetes/client-node",
@@ -21,6 +26,12 @@ const execute = promisify(execFile);
 const repository = resolve(import.meta.dirname, "../..");
 const occ = join(repository, "bin", "occ");
 const selected = process.env.OCC_TEST_DEV_UP_K3D_REAL === "1";
+// The deterministic provider owns Docker resources. Podman uses an explicitly
+// supplied real model key; excluded cases must never read that private file.
+const withSelectedDevUpModelKey =
+  process.env.OCC_TEST_DEV_UP_CONTAINER_ENGINE === "podman"
+    ? (body) => withDevUpModelKey(process.env.OCC_TEST_DEV_UP_MODEL_KEY_FILE, body)
+    : (body) => (t) => body(t, undefined);
 
 // Both the lane and direct opt-in execution need this image on a cold engine.
 // Keep the 15-minute pull retry bound, three 30-second inspections and process
@@ -211,7 +222,7 @@ test(
     skip: selected ? false : "Set OCC_TEST_DEV_UP_K3D_REAL=1 to run the real development profile.",
     timeout: 1_200_000,
   },
-  async (t) => {
+  withSelectedDevUpModelKey(async (t, modelKey) => {
     const root = await mkdtemp(join(tmpdir(), "oce-dev-up-k3d-real-"));
     const stateDirectory = join(root, "state");
     const cluster = `occ-dev-k3d-${randomUUID().slice(0, 8)}`;
@@ -235,8 +246,24 @@ test(
     ]) {
       delete environment[key];
     }
+    // The shared owner aborts and joins every producer before cleanup. Podman
+    // does not prepare a fixture, so the provider has no resources to remove.
+    const context =
+      modelKey === undefined
+        ? t
+        : {
+            signal: t.signal,
+            after: (cleanup) =>
+              t.after(async () => {
+                try {
+                  await cleanup();
+                } catch (error) {
+                  throw devUpTestError(error);
+                }
+              }),
+          };
     await runDevUpModelProviderCase(
-      t,
+      context,
       { root, cluster, environment },
       async ({ provider, execute, signal }) => {
         const apiPort = await availablePort();
@@ -253,11 +280,13 @@ test(
           OCC_DEVELOPMENT_BROWSER_PORT: String(browserPort),
           OCC_DEVELOPMENT_KUBERNETES_API_PORT: String(kubernetesPort),
         });
-        Object.assign(environment, await provider.prepare());
-        // The fixture and launcher use the same pinned local engine socket.
-        delete environment.DOCKER_CONTEXT;
-        delete environment.DOCKER_TLS_VERIFY;
-        delete environment.DOCKER_CERT_PATH;
+        if (modelKey === undefined) {
+          Object.assign(environment, await provider.prepare());
+          // The fixture and launcher use the same pinned local engine socket.
+          delete environment.DOCKER_CONTEXT;
+          delete environment.DOCKER_TLS_VERIFY;
+          delete environment.DOCKER_CERT_PATH;
+        }
 
         // This invokes the regular launcher and real Helm, PostgreSQL, API, and worker.
         const started = await execute(join(repository, "scripts", "dev-up"), [], {
@@ -274,10 +303,59 @@ test(
         assert.equal(state.sandboxDriver, "none");
         // Route only this owned cluster, and await both provider and controller
         // Service DNS before any Agent can make its native startup model request.
-        await provider.route(stateDirectory);
+        if (modelKey === undefined) {
+          await provider.route(stateDirectory);
+        }
         assert.equal(existsSync(join(stateDirectory, "compose.yaml")), false);
         for (const file of ["initial-admin-password", "initial-admin-service-key.json"]) {
           assert.equal((await stat(join(stateDirectory, file))).mode & 0o077, 0);
+        }
+
+        // Compare the admitted image with real containerd metadata. Readiness alone
+        // cannot establish that the native engine archive preserved image identity.
+        const installation = loadYaml(
+          await readFile(join(stateDirectory, "installation.yaml"), "utf8"),
+        );
+        const runtimeReference = installation.drivers.compute.configuration.images.agent;
+        assert.match(runtimeReference, /@sha256:[a-f0-9]{64}$/);
+        const [runtimeRepository, runtimeDigest] = runtimeReference.split("@");
+        const importedImages = (
+          await execute(
+            state.containerEngine,
+            ["exec", `k3d-${cluster}-server-0`, "ctr", "-n", "k8s.io", "images", "list"],
+            { cwd: repository, env: environment },
+          )
+        ).stdout;
+        assert.ok(
+          importedImages.split("\n").some((line) => {
+            const [reference, , digest] = line.trim().split(/\s+/);
+            return (
+              digest === runtimeDigest &&
+              (reference === runtimeReference || reference.startsWith(`${runtimeRepository}:`))
+            );
+          }),
+          "the installed runtime digest must resolve in the real owned node",
+        );
+        assert.equal(existsSync(join(stateDirectory, "development-import.tar")), false);
+        if (state.containerEngine === "podman") {
+          // Default tagged builds exercise native export of Podman-recorded names.
+          // The exporter must retain both original source tags.
+          for (const [selection, image] of [
+            ["OCC_KUBERNETES_RUNTIME_IMAGE", "openclaw-enterprise-runtime:kubernetes-quickstart"],
+            [
+              "OCC_DEVELOPMENT_CONTROLLER_IMAGE",
+              "openclaw-enterprise-controller:kubernetes-quickstart",
+            ],
+          ]) {
+            if (!environment[selection]) {
+              const inspected = await execute(
+                "podman",
+                ["image", "inspect", "--format", "{{json .RepoTags}}", image],
+                { cwd: repository, env: environment },
+              );
+              assert.ok(JSON.parse(inspected.stdout).includes(`localhost/${image}`));
+            }
+          }
         }
 
         // The browser endpoint terminates TLS for this installation only. Verify
@@ -394,22 +472,14 @@ test(
         assert.ok(
           catalog.data.plugins.some(({ id }) => id === "codex-plugin:linear@openai-curated-remote"),
         );
-        // Provision the shipped dedicated Codex Preset through the same API used by
-        // the console. Its native startup turn must complete against the deterministic
-        // Responses fixture using a synthetic Secret; this is not live model inference.
-        const { renderPresetTemplate } = await import("../../packages/contracts/src/index.ts");
+        // Read the shipped dedicated Codex Preset through its real API before
+        // choosing deterministic Docker startup or authorized Podman startup.
         // The Preset list returns summaries; the exact Preset carries the template.
         const preset = (
           await request(
             `/namespaces/${namespace.id}/presets/${presets.data.find(({ name }) => name === "Standard Codex").id}`,
           )
         ).data;
-        const rendered = renderPresetTemplate(preset.template, {
-          name: "Local sandbox proof",
-          model: "gpt-6-astra",
-          modelSecret: "synthetic-local-sandbox-key",
-        });
-        rendered.configuration.values.gateway.controlUi.enabled = false;
         const post = async (path, body, expected) => {
           signal.throwIfAborted();
           const response = await browserRequest(path, {
@@ -420,24 +490,45 @@ test(
           assert.equal(response.statusCode, expected, `Unexpected status for ${path}`);
           return JSON.parse(response.body);
         };
-        const secret = await post(
-          `/namespaces/${namespace.id}/secrets`,
-          {
+        let admitted;
+        if (modelKey === undefined) {
+          // This fixture proves native startup protocol behavior, not live inference.
+          const { renderPresetTemplate } = await import("../../packages/contracts/src/index.ts");
+          const rendered = renderPresetTemplate(preset.template, {
             name: "Local sandbox proof",
-            value: "synthetic-local-sandbox-key",
-          },
-          201,
-        );
-        const admitted = await post(
-          `/namespaces/${namespace.id}/agents/provision`,
-          {
+            model: "gpt-6-astra",
+            modelSecret: "synthetic-local-sandbox-key",
+          });
+          rendered.configuration.values.gateway.controlUi.enabled = false;
+          const secret = await post(
+            `/namespaces/${namespace.id}/secrets`,
+            {
+              name: "Local sandbox proof",
+              value: "synthetic-local-sandbox-key",
+            },
+            201,
+          );
+          admitted = await post(
+            `/namespaces/${namespace.id}/agents/provision`,
+            {
+              requestId: `req_${randomUUID()}`,
+              ...rendered.agent,
+              harnessAuth: { method: "api_key", source: secret.data.ref },
+              configuration: { kind: "agent", ...rendered.configuration },
+            },
+            202,
+          );
+        } else {
+          admitted = await provisionDevUpSandboxAgent({
+            post,
+            namespaceId: namespace.id,
+            preset,
+            modelKey,
+            model: process.env.OCC_TEST_OPENAI_MODEL,
+            thinkingDefault: process.env.OCC_TEST_DEV_UP_THINKING_DEFAULT,
             requestId: `req_${randomUUID()}`,
-            ...rendered.agent,
-            harnessAuth: { method: "api_key", source: secret.data.ref },
-            configuration: { kind: "agent", ...rendered.configuration },
-          },
-          202,
-        );
+          });
+        }
         const deadline = Date.now() + 300_000;
         let provisioned;
         while (Date.now() < deadline) {
@@ -471,9 +562,11 @@ test(
           await new Promise((resolveWait) => setTimeout(resolveWait, 1_000));
         }
         assert.ok(deployment, "Agent deployment did not activate");
-        t.diagnostic(
-          `Dedicated startup provider receipt: ${JSON.stringify(await provider.assertAnswered())}`,
-        );
+        if (modelKey === undefined) {
+          t.diagnostic(
+            `Dedicated startup provider receipt: ${JSON.stringify(await provider.assertAnswered())}`,
+          );
+        }
 
         const kubeArgs = [
           "--kubeconfig",
@@ -503,6 +596,7 @@ test(
         const agentPod = agentPods[0];
         const container = agentPod.spec.containers.find(({ name }) => name === "agent");
         assert.ok(container);
+        assert.equal(container.image, runtimeReference);
         const provenancePath = join(stateDirectory, "codex-seccomp-provenance.json");
         if (existsSync(provenancePath)) {
           const provenance = JSON.parse(await readFile(provenancePath, "utf8"));
@@ -605,7 +699,7 @@ test(
         );
       },
     );
-  },
+  }),
 );
 
 test(

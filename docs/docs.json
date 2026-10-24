@@ -1061,6 +1061,7 @@
               "testing/docker",
               "testing/ssh",
               "testing/kubernetes",
+              "testing/local-installation",
               "testing/slack",
               "testing/plugins",
               "testing/openshell",

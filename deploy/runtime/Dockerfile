@@ -152,6 +152,8 @@ ENV OPENCLAW_BUILD_TIMESTAMP=2026-10-08T19:24:05Z
 ENV OPENCLAW_PREFER_PNPM=1
 WORKDIR /source
 COPY --from=openclaw-source /inputs/ ./
+# Copy public helpers rather than binding context files on enforcing hosts.
+COPY deploy/runtime/with-pinned-matrix-sdk-crypto.mjs deploy/runtime/install-attempts.sh /tmp/
 
 FROM openclaw-dependency-inputs AS openclaw-build
 # Keep package-store downloads out of retained layers; installed files remain.
@@ -160,8 +162,6 @@ FROM openclaw-dependency-inputs AS openclaw-build
 RUN --mount=type=secret,id=build-ca,required=false \
     --mount=type=secret,id=npmrc,target=/root/.npmrc,required=false \
     --mount=type=bind,from=matrix-sdk-crypto,source=/out,target=/tmp/matrix-sdk-crypto \
-    --mount=type=bind,source=deploy/runtime/with-pinned-matrix-sdk-crypto.mjs,target=/tmp/with-pinned-matrix-sdk-crypto.mjs \
-    --mount=type=bind,source=deploy/runtime/install-attempts.sh,target=/tmp/install-attempts.sh \
     set -eu; \
     if [ -f /run/secrets/build-ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/build-ca; fi; \
     corepack enable; \
@@ -200,8 +200,6 @@ FROM openclaw-dependency-inputs AS openclaw-production-deps
 RUN --mount=type=secret,id=build-ca,required=false \
     --mount=type=secret,id=npmrc,target=/root/.npmrc,required=false \
     --mount=type=bind,from=matrix-sdk-crypto,source=/out,target=/tmp/matrix-sdk-crypto \
-    --mount=type=bind,source=deploy/runtime/with-pinned-matrix-sdk-crypto.mjs,target=/tmp/with-pinned-matrix-sdk-crypto.mjs \
-    --mount=type=bind,source=deploy/runtime/install-attempts.sh,target=/tmp/install-attempts.sh \
     set -eu; \
     if [ -f /run/secrets/build-ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/build-ca; fi; \
     corepack enable; \
