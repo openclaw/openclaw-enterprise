@@ -18,6 +18,7 @@ import {
   advanceCleanupRetries,
   completedPasses,
   completion,
+  makeWorkDue,
   removeAccessBindings,
   repositoryAttempts,
   repositoryBoundary,
@@ -866,10 +867,7 @@ test(
     // A day-old stuck cleanup rechecks every 10 minutes, not every 30 s.
     const first = await deferred(1);
     assert.ok(Number(first.delay_ms) >= 590_000, `delay ${first.delay_ms} ms`);
-    await fixture.observerPool.query(
-      "UPDATE occ.controller_work SET available_at = clock_timestamp() WHERE idempotency_key = $1",
-      [cleanupKey],
-    );
+    await makeWorkDue(fixture.observerPool, cleanupKey);
     await deferred(2);
     // The cause is logged once, not on every recheck.
     assert.deepEqual(
@@ -891,10 +889,7 @@ test(
        WHERE admission_id = $1`,
       [sibling.admissionId],
     );
-    await fixture.observerPool.query(
-      "UPDATE occ.controller_work SET available_at = clock_timestamp() WHERE idempotency_key = $1",
-      [cleanupKey],
-    );
+    await makeWorkDue(fixture.observerPool, cleanupKey);
     const closing = await deferred(3);
     assert.ok(Number(closing.delay_ms) < 60_000, `delay ${closing.delay_ms} ms`);
     // Retain the unsettled obligation while keeping it out of later scheduling.

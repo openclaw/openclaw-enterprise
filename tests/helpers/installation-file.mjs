@@ -1,7 +1,7 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
+import { temporaryDirectory } from "./temporary-directory.mjs";
 
 // Load an Installation configuration the way startup does: from the YAML file
 // OCC_CONFIG_PATH names. JSON is valid YAML, so the file goes through the same
@@ -12,8 +12,7 @@ export async function loadInstallationFile(
   configuration,
   { mode = "production", environment = {}, ...options } = {},
 ) {
-  const directory = await mkdtemp(join(tmpdir(), "occ-installation-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "occ-installation-");
   const path = join(directory, "installation.yaml");
   await writeFile(path, JSON.stringify(configuration), "utf8");
   return loadInstallationConfiguration({

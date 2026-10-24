@@ -18,6 +18,7 @@ import {
 import { PresetFileError } from "./composition/installation-presets.ts";
 import { createOccLogger, createWorkerLogEmitter, emitOccLogEvent } from "./logging.ts";
 import { createControllerWorker, workerDatabasePoolOptions } from "./worker.ts";
+import { workerEnvironmentSettings } from "./worker/timer-settings.ts";
 import { PostgresMetricsSnapshot } from "@openclaw-enterprise/occ";
 import { createOccMetrics } from "./metrics/index.ts";
 import {
@@ -26,18 +27,6 @@ import {
   startupListenerFailure,
 } from "./startup-failure.ts";
 import { metricsConfiguration, startMetricsListener } from "./metrics/listener.ts";
-
-function positiveEnvironment(name, fallback) {
-  const raw = process.env[name];
-  if (raw === undefined) {
-    return fallback;
-  }
-  const value = Number(raw);
-  if (!/^\d+$/.test(raw) || !Number.isSafeInteger(value) || value < 1) {
-    throw new Error(`${name} must be a positive safe integer.`);
-  }
-  return value;
-}
 
 function configuration() {
   const mode = process.env.NODE_ENV;
@@ -59,11 +48,7 @@ function configuration() {
   return {
     mode,
     databaseUrl,
-    pollIntervalMs: positiveEnvironment("OCC_WORKER_POLL_INTERVAL_MS", 250),
-    leaseDurationMs: positiveEnvironment("OCC_WORKER_LEASE_DURATION_MS", 5_000),
-    maxAttempts: positiveEnvironment("OCC_WORKER_MAX_ATTEMPTS", 5),
-    convergenceTimeoutMs: positiveEnvironment("OCC_WORKER_CONVERGENCE_TIMEOUT_MS", 900_000),
-    databaseTimeoutMs: positiveEnvironment("OCC_WORKER_DATABASE_TIMEOUT_MS", 60_000),
+    ...workerEnvironmentSettings(process.env),
   };
 }
 

@@ -50,7 +50,15 @@ The OpenClaw build stage applies a separate, checksum-verified regression patch
 and runs the real Gateway public-RPC cases without network access. The cases
 cover placement before and after acknowledgement, disconnect, and committed
 role, scope, and profile revocation. Test changes stay in the build stage.
+The build also applies `openclaw-codex-full-access-profile.patch`, which selects
+the native full-access Codex profile, and
+`openclaw-control-ui-browser-reconnect.patch`, which offers a browser navigation
+after the Control UI's access is refused. Remove each when the pinned OpenClaw
+does the same.
 The source archive and patch hashes identify the resulting custom build.
+Provenance `patches` maps every patch the Dockerfile applies, in order, to its
+SHA-256; `scripts/build-runtime-assets.mjs` holds that list, and a test checks it
+against the Dockerfile.
 
 The Codex adapter preserves namespaced IDs with an explicit native
 provider. For a custom endpoint, OCE compiles its private Gateway model references
@@ -86,7 +94,7 @@ enrollment, containment, workspace access, or model execution.
 
 The source's package version is `2026.9.9`; it does not identify this custom
 build. `/opt/oce/runtime/provenance.json` records the source commit, verified archive
-hash, bridge and dependency patch hashes, lockfile hash, pinned package manager, selected plugins, architecture, stock Codex
+hash, every applied patch hash, lockfile hash, pinned package manager, selected plugins, architecture, stock Codex
 package identity, and the SHA-256 of `contents.json`, which inventories
 packaged files, modes, hashes, and symlinks after final-stage permission
 normalization. The final stage copies the assembled

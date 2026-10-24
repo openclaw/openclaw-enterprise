@@ -434,7 +434,7 @@ test("dev-up starts Podman without Compose options on Bash 3.2", async (t) => {
   assert.match(result.stdout, /Container engine: Podman/);
 });
 
-test("dev-up preserves Compose files selected through COMPOSE_FILE for Podman", async (t) => {
+test("dev-up honors Podman Compose file selection from the environment and explicit flags", async (t) => {
   // A security override selected through the environment must participate in validation.
   const fixture = await createFixture(t, { engine: "podman" });
   const keyOutput = join(fixture.directory, "podman-compose-file-service-key.json");
@@ -459,6 +459,42 @@ test("dev-up preserves Compose files selected through COMPOSE_FILE for Podman", 
     invocations.some((entry) => entry.args.includes("up")),
     false,
   );
+
+  // Explicit file flags must override COMPOSE_FILE, including argparse's attached
+  // short form. Real Compose must load the selected file before startup proceeds.
+  for (const form of ["split", "attached", "long equals"]) {
+    await t.test(form, async (t) => {
+      const explicit = await createFixture(t, { engine: "podman" });
+      const sourceDirectory = join(explicit.directory, "source with spaces");
+      await symlink(explicit.env.DEV_UP_REPOSITORY, sourceDirectory);
+      const selectedFile = join(sourceDirectory, "compose.yaml");
+      const missingFile = join(explicit.directory, "missing-compose.yaml");
+      const fileArgs =
+        form === "split"
+          ? ["-f", selectedFile]
+          : [form === "attached" ? `-f${selectedFile}` : `--file=${selectedFile}`];
+      const result = await runDevUp(
+        [
+          "--key-output",
+          join(explicit.directory, "explicit-service-key.json"),
+          "--",
+          "--env-file",
+          explicit.emptyEnv,
+          "--project-name",
+          "oce-dev-up-explicit-files",
+          ...fileArgs,
+        ],
+        { ...explicit.env, COMPOSE_FILE: missingFile },
+      );
+
+      assert.equal(result.status, 0, result.stderr ?? result.error?.message);
+      assert.match(result.stdout, /OpenClaw Enterprise development stack is ready/);
+      assert.match(result.stdout, /API URL: http:\/\/127\.0\.0\.1:3000/);
+      const calls = composeInvocations(await readJsonLines(explicit.podmanLog));
+      assert.ok(calls.some((entry) => entry.args.includes("config")));
+      assert.ok(calls.every((entry) => !entry.args.includes(missingFile)));
+    });
+  }
 });
 
 test("dev-up accepts Docker when its server omits the platform name", async (t) => {

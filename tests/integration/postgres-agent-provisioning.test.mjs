@@ -43,6 +43,7 @@ import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 import { withNamespaceLockHeld } from "../helpers/postgres-namespace-lock.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { expireWorkLease, makeWorkDue } from "../helpers/postgres-worker-revision-support.mjs";
 
 const adminEmail = "postgres-agent-provisioning-v2@example.test";
 const adminPassword = "postgres-agent-provisioning-password";
@@ -244,11 +245,7 @@ async function elapseConfigurationSettleWindow(fixture, workId) {
     [workId],
   );
   assert.equal(aged.rowCount, 1, "the pending Configuration create must record its start");
-  const woken = await fixture.pool.query(
-    `UPDATE occ.controller_work SET available_at = clock_timestamp()
-     WHERE idempotency_key = $1 AND state = 'queued'`,
-    [workId],
-  );
+  const woken = await makeWorkDue(fixture.pool, { key: workId, state: "queued" });
   assert.equal(woken.rowCount, 1, "the provisioning work must be queued");
 }
 
@@ -3653,11 +3650,7 @@ test(
         // The worker stalls before its delete until its database lease has run out, as a
         // stopped or partitioned worker would, and the delete never reaches the Driver.
         stalled = true;
-        await fixture.pool.query(
-          `UPDATE occ.controller_work SET lease_expires_at = clock_timestamp() - interval '1 second'
-           WHERE idempotency_key = $1 AND state = 'claimed'`,
-          [workId],
-        );
+        await expireWorkLease(fixture.pool, { key: workId, state: "claimed" });
         throw new Error("synthetic worker stall before the Configuration delete");
       }
       deleted.push(reference.id);

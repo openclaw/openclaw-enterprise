@@ -4,8 +4,7 @@ import { getEventListeners, once } from "node:events";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { connect, createServer as createNetServer } from "node:net";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -28,6 +27,7 @@ import { DependencyUnavailableError } from "../../packages/occ/src/errors.ts";
 import { createManagedWorkloadExec } from "../helpers/egress-managed-workload-exec.mjs";
 import { createCustodyTransitions } from "../helpers/egress-supplier-custody-transitions.mjs";
 import { agentClients } from "../helpers/egress-custody-observations.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
 const grpc = require("@grpc/grpc-js");
@@ -1388,8 +1388,7 @@ test("OpenShell client lists a Workspace's provider profiles across pages", asyn
 });
 
 test("OpenShell client retries setup after a failed first connection", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "openshell-client-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "openshell-client-");
   const rootCertificatePath = join(directory, "ca.pem");
   // Nothing listens here; once setup succeeds the call fails on the transport.
   const client = new GrpcOpenShellGatewayClient({
@@ -1661,8 +1660,7 @@ async function tlsHealthGateway(keyPath, certPath, bind, seen) {
 
 test("OpenShell client verifies a TLS gateway at an IP endpoint against that IP and sends no SNI", async (t) => {
   const { SandboxGatewayUnavailableError } = await import("../../packages/occ/src/index.ts");
-  const directory = await mkdtemp(join(tmpdir(), "openshell-grpc-tls-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "openshell-grpc-tls-");
   // IPv6 loopback is optional on CI hosts; without it the IPv6 cases are skipped.
   // The probe only binds, so it needs no certificate.
   const probe = createSecureServer();
@@ -1815,8 +1813,7 @@ function signedClientCertificate(directory, name, ca) {
 }
 
 async function mutualTls(t) {
-  const directory = await mkdtemp(join(tmpdir(), "openshell-mtls-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "openshell-mtls-");
   const identity = selfSignedCertificate(directory, "server", "DNS:localhost,IP:127.0.0.1");
   const authority = selfSignedCertificate(directory, "client-ca", "DNS:client-ca.invalid");
   const auth = signedClientCertificate(directory, "client", authority);

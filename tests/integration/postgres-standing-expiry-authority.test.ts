@@ -8,7 +8,12 @@ import {
   seedBackendBinding,
 } from "../helpers/postgres-backend-state.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
-import { waitForRevisionPass } from "../helpers/postgres-worker-revision-support.mjs";
+import {
+  deferWork,
+  expireWorkLease,
+  makeWorkDue,
+  waitForRevisionPass,
+} from "../helpers/postgres-worker-revision-support.mjs";
 import {
   observationGateway,
   setupStandingWorkerAuthority,
@@ -127,10 +132,11 @@ async function withdrawalOwners(f: WorkerFixture) {
 }
 
 async function advanceRetainedCleanup(f: WorkerFixture) {
-  await f.observerPool.query(
-    "UPDATE occ.controller_work SET available_at=clock_timestamp() WHERE namespace_id=$1 AND state='queued' AND idempotency_key LIKE '%:repository_cleanup:%'",
-    [f.namespace.id],
-  );
+  await makeWorkDue(f.observerPool, {
+    namespaceId: f.namespace.id,
+    state: "queued",
+    keyLike: "%:repository_cleanup:%",
+  });
 }
 
 async function settleDeletedAgentWork(
@@ -139,10 +145,7 @@ async function settleDeletedAgentWork(
   agentId: string,
   scenario: string,
 ) {
-  await f.observerPool.query(
-    "UPDATE occ.controller_work SET available_at=clock_timestamp() WHERE namespace_id=$1 AND state='queued'",
-    [f.namespace.id],
-  );
+  await makeWorkDue(f.observerPool, { namespaceId: f.namespace.id, state: "queued" });
   await waitFor("owned work settled after Agent deletion", async () => {
     const { rows } = await f.observerPool.query(
       "SELECT count(*)::int AS pending FROM occ.controller_work WHERE namespace_id=$1 AND state IN ('queued','claimed')",
@@ -485,10 +488,7 @@ for (const scenario of [
           authorityFault = false;
           // All fixture workers are stopped. Expire only their owned claims so teardown
           // can recover an interrupted observation before deleting the Agent.
-          await f.observerPool.query(
-            "UPDATE occ.controller_work SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE namespace_id=$1 AND state='claimed'",
-            [f.namespace.id],
-          );
+          await expireWorkLease(f.observerPool, { namespaceId: f.namespace.id, state: "claimed" });
           unavailableGateway = false;
           await f.requestDeletion(owner);
           await start();
@@ -570,10 +570,7 @@ for (const scenario of [
           // queued while source withdrawal must recover through the active revision.
           const companion = await f.revision(owner, 2, revisionOptions);
           companionId = companion.id;
-          await f.observerPool.query(
-            "UPDATE occ.controller_work SET available_at=clock_timestamp()+interval '1 hour' WHERE idempotency_key=$1",
-            [companion.idempotencyKey],
-          );
+          await deferWork(f.observerPool, companion.idempotencyKey);
         }
         if (
           scenario.startsWith("model withdrawn") ||
@@ -611,22 +608,20 @@ for (const scenario of [
           initialWithdrawalOwners = await withdrawalOwners(f);
           // Isolate the maintenance ordering: the separately durable source-withdrawal job
           // remains scheduled, but does not race this expiry claim or issue a detach.
-          await f.observerPool.query(
-            "UPDATE occ.controller_work SET available_at=clock_timestamp()+interval '1 hour' WHERE namespace_id=$1 AND agent_target='credentials_withdrawn'",
-            [f.namespace.id],
-          );
+          await deferWork(f.observerPool, {
+            namespaceId: f.namespace.id,
+            agentTarget: "credentials_withdrawn",
+          });
         }
         if (scenario === "optional withdrawn") {
-          // One parked queued owner and one live companion claim exercise both duplicate
+          // One deferred queued owner and one live companion claim exercise both duplicate
           // guards. Claim through the real queue, after making only this companion due.
-          await f.observerPool.query(
-            "UPDATE occ.controller_work SET available_at=clock_timestamp()+interval '1 hour' WHERE namespace_id=$1 AND state='queued'",
-            [f.namespace.id],
-          );
-          await f.observerPool.query(
-            "UPDATE occ.controller_work SET available_at=clock_timestamp() WHERE namespace_id=$1 AND revision_id=$2 AND agent_target='credentials_withdrawn'",
-            [f.namespace.id, companionId],
-          );
+          await deferWork(f.observerPool, { namespaceId: f.namespace.id, state: "queued" });
+          await makeWorkDue(f.observerPool, {
+            namespaceId: f.namespace.id,
+            revisionId: companionId,
+            agentTarget: "credentials_withdrawn",
+          });
           const sourceQueue = new f.PostgresWorkQueue(f.observerPool, { leaseDurationMs: 120_000 });
           const held = await sourceQueue.claim();
           assert.ok(held);
@@ -689,10 +684,7 @@ for (const scenario of [
           });
           const successor = await f.revision(owner, 2);
           admittedSuccessorId = successor.id;
-          await f.observerPool.query(
-            "UPDATE occ.controller_work SET available_at=clock_timestamp()+interval '1 hour' WHERE idempotency_key=$1",
-            [successor.idempotencyKey],
-          );
+          await deferWork(f.observerPool, successor.idempotencyKey);
           if (!admittedSuccessor) {
             replacementId = successor.id;
             await f.state.transact((u) =>
