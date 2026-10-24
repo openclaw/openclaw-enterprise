@@ -465,18 +465,32 @@ export class SshComputeDriver implements ComputeDriver {
     validateCodexApprovalPolicySetting(configuration);
   }
 
-  // Agent create and update refuse a roster the host helper refuses at deployment, where the
-  // refusal was retried until the deployment failed (finding 2285). The message is Docker's and
-  // Kubernetes's; the host still checks the workspace path, which lives under its Agent root.
+  // Agent create and update refuse a roster or workspace the host helper refuses at deployment,
+  // where the refusal was retried until the deployment failed (findings 2285, 2289). The roster
+  // message is Docker's and Kubernetes's. The helper accepts only paths under a directory derived
+  // from each Agent's id, which a shared Configuration cannot name, so any explicit workspace is
+  // refused here; the helper still checks the path as defence in depth. Null counts as unset,
+  // as in the helper and the shared rule.
   validateWorkspaceSetup(
     _harness: RevisionHarnessDescriptor,
     configuration: Readonly<OpenClawConfigurationDocument>,
   ): void {
-    requireWorkspaceSetupMainEntry(
-      configuration,
-      (setting, requirement) =>
-        new ConfigurationHarnessError(configurationSettingMessage(setting, requirement)),
-    );
+    const settingError = (setting: string, requirement: string) =>
+      new ConfigurationHarnessError(configurationSettingMessage(setting, requirement));
+    const entry = requireWorkspaceSetupMainEntry(configuration, settingError);
+    const defaults = asRecord(asRecord(configuration.agents)?.defaults);
+    const setting =
+      entry.agent.workspace != null
+        ? `${entry.setting}.workspace`
+        : defaults?.workspace != null
+          ? "agents.defaults.workspace"
+          : undefined;
+    if (setting !== undefined) {
+      throw settingError(
+        setting,
+        "must be unset for initial workspace files on SSH Compute: the host chooses the workspace under the Agent's own directory",
+      );
+    }
   }
 
   validateHarnessAuth(harness: RevisionHarnessDescriptor, auth: HarnessAuthSnapshot): void {
