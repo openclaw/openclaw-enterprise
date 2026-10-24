@@ -8,6 +8,7 @@ import { access, chmod, readFile, readdir, rename, rm, writeFile } from "node:fs
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { withStateLock } from "./state-lock.mjs";
+import { runPostgresAdmin } from "./postgres-admin.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const composePostgresFile = join(repositoryRoot, "compose.postgres.yaml");
@@ -39,8 +40,9 @@ function parseArgs(argv) {
 }
 
 // Every container engine and k3d command has a limit, so one that never returns cannot hold
-// the job's Cleanup lane step, or a test's database drop, until the job timeout. Past it the
-// command gets SIGTERM, then SIGKILL after a grace period. Tests shorten both.
+// the job's Cleanup lane step until the job timeout. Past it the command gets SIGTERM, then
+// SIGKILL after a grace period. Tests shorten both. A test's database drop, a direct
+// connection to the lane's server, has the shorter limit below.
 function positiveEnvMs(name, fallback) {
   const value = Number(process.env[name]);
   return Number.isFinite(value) && value > 0 ? value : fallback;
@@ -309,22 +311,14 @@ async function cleanupDatabase(resource, state) {
   if (!compose) {
     return;
   }
-  await execFile(
-    process.env.OCC_DOCKER_BIN ?? "docker",
-    [
-      ...composeArgs(compose, state, "exec", "-T", "postgres"),
-      "psql",
-      "-v",
-      "ON_ERROR_STOP=1",
-      "-U",
-      "postgres",
-      "-d",
-      "postgres",
-      "-c",
-      `DROP DATABASE IF EXISTS ${quoteIdentifier(resource.name)} WITH (FORCE)`,
-    ],
-    { env: { OCC_POSTGRES_PORT: String(compose.port) }, timeoutMs: databaseDropTimeoutMs() },
-  );
+  // Checks the server is this state's owned lane server before connecting to its port.
+  composeArgs(compose, state);
+  // FORCE ends the database's remaining sessions first.
+  await runPostgresAdmin({
+    port: compose.port,
+    statements: [`DROP DATABASE IF EXISTS ${quoteIdentifier(resource.name)} WITH (FORCE)`],
+    timeoutMs: databaseDropTimeoutMs(),
+  });
 }
 
 async function cleanupK3dCluster(resource, state) {
