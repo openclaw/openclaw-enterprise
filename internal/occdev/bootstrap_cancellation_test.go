@@ -104,8 +104,9 @@ func TestBootstrapKeyReaderStopsWithinOneSecond(t *testing.T) {
 	state := &developmentState{PlatformNamespace: "bootstrap-fixture", directory: t.TempDir()}
 	r := newRunner(Options{Repository: t.TempDir()})
 	// The key read is not a fixture case, so the reader fails after its Pod is applied.
-	if _, _, err := r.copyAndVerifyKubernetesKey(context.Background(), state, "controller:fixture", "http://127.0.0.1:1", time.Second); err == nil {
-		t.Fatal("expected the unfixtured key read to fail")
+	_, _, err := r.copyAndVerifyKubernetesKey(context.Background(), state, "controller:fixture", "http://127.0.0.1:1", time.Second)
+	if err == nil || !strings.Contains(err.Error(), "exec bootstrap-key-reader") {
+		t.Fatalf("expected the unfixtured key read to fail, got %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(state.directory, "bootstrap-key-reader.json"))
 	if err != nil {

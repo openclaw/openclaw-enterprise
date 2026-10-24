@@ -482,8 +482,10 @@ for (const [label, first] of [
   });
 }
 
-// Each probe's Node process is PID 1 and ignores SIGTERM; Local Setup's
-// cleanup waits for the probe Namespace, so the default 30 s grace was idle time.
+// Each probe's Node process is PID 1 and ignores SIGTERM. Local Setup's cleanup
+// (prepareDevelopmentCodexSeccompProfile) waits for the probe Namespace, so the
+// default 30 s grace was idle time. Both paths share this Pod spec; the CI path
+// is the one with an offline fixture.
 test("codex seccomp probe Pods stop within a one-second grace period", async (t) => {
   const control = await missingProfileFixture(t, [missingProfileWaiting]);
   await control.run();
