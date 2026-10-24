@@ -114,7 +114,8 @@ Failed reloads block creation; obsolete completions cannot change the view. Unkn
 outcomes require stored Agent and Configuration reads.
 
 `packages/occ/src/index.ts:OpenClawController.repositoryBindingSelections`
-uses `resolveRepositoryBindings` after authorization (409 without a repository Driver). Inputs contain distinct opaque
+uses `resolveRepositoryBindings` after authorization. Without a repository Driver, save answers
+`409 RESOURCE_CONFLICT`. Inputs contain distinct opaque
 references and optional profiles, never provider tokens or caller-selected grant identities;
 selections keep request order. The
 `apps/controller/src/drivers/repo/github/policy.ts:GitHubRepositoryPolicy.resolve`
@@ -365,7 +366,7 @@ denied before reaching the provider, and chat continues.
 
 ## Changelog
 
-- 2026-10-24: Name the missing repository Driver. (fix-2361-2362)
+- 2026-10-24 22:30: Name the missing repository Driver. (fix-2361-2362 - 476c1b350)
 
 - 2026-10-22 06:30: Preserve independent authority facts and source recovery. (authoring-run/3ab680f7-bea5-4377-bb8c-14e6b81c49b4 - 221dff2ff7985a19cd34dad392d68cf5549e1136)
 

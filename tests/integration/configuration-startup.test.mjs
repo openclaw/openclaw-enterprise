@@ -217,21 +217,32 @@ test("Credential Proxy startup preserves the selection and refuses retired keys"
   }
 
   // Finding 2361: the retired drivers.repo refusal named only native Git, which startup refuses
-  // while a Sandbox is selected. It now names the path that works for the selected Sandbox.
-  for (const sandbox of [true, false]) {
-    await t.test(`retired drivers.repo, Sandbox selected=${sandbox}`, async () => {
+  // beside a Sandbox. It now names the path that fits the selected Sandbox.
+  for (const [sandbox, advice] of [
+    [
+      "bundled",
+      /configure repository\.openShell with repository\.preparedGitHub \(the bundled OpenShell Driver refuses git-write\), or repository\.nativeSender without drivers\.sandbox or drivers\.credential_proxy\./,
+    ],
+    [
+      "package",
+      /configure repository\.preparedGitHub with the package's drivers\.credential_proxy and no repository\.openShell, or repository\.nativeSender without drivers\.sandbox/,
+    ],
+    ["none", /then configure repository\.nativeSender with repository\.preparedGitHub\. Do not/],
+  ]) {
+    await t.test(`retired drivers.repo, Sandbox ${sandbox}`, async () => {
       const invalid = structuredClone(configuration);
       invalid.drivers.repo = { id: "repository-credentials", configuration: {} };
-      if (!sandbox) {
+      if (sandbox === "none") {
         delete invalid.drivers.sandbox;
+      } else if (sandbox === "package") {
+        invalid.drivers.sandbox.package = "@example/installed-sender";
       }
       await writeFile(path, JSON.stringify(invalid));
-      await assert.rejects(
-        load(),
-        sandbox
-          ? /drivers\.repo native admission is retired\..*configure repository\.openShell with repository\.preparedGitHub .*or use repository\.nativeSender without drivers\.sandbox\./
-          : /drivers\.repo native admission is retired\..*configure repository\.nativeSender with repository\.preparedGitHub\./,
-      );
+      await assert.rejects(load(), (error) => {
+        assert.match(error.message, /^drivers\.repo native admission is retired\./);
+        assert.match(error.message, advice);
+        return true;
+      });
     });
   }
 });

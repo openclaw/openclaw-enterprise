@@ -8865,7 +8865,8 @@ export class OpenClawController {
         throw new ScopeViolationError("Agent does not belong to the exact Namespace.");
       }
       // TODO: support multiple independently approved bindings when session admission supports them.
-      if (agent.repositoryBindings?.length !== 1) {
+      // Without a repository Driver nothing can be approved (finding 2362).
+      if (agent.repositoryBindings?.length !== 1 || !this.selections.has("repo")) {
         return [];
       }
       const resolved = this.resolveRepositoryBindings(namespaceId, agent.repositoryBindings);
