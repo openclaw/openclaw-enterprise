@@ -4,7 +4,7 @@ import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, request } from "node:http";
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 import {
@@ -209,7 +209,11 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
     ].join("\n"),
     { mode: 0o755 },
   );
-  prependPath(t, directory);
+  const path = process.env.PATH;
+  process.env.PATH = directory + delimiter + path;
+  t.after(() => {
+    process.env.PATH = path;
+  });
   const { requestCodexTurnFromGatewayPod } = createOpenShellKubernetesFixture({});
 
   for (const event of [
