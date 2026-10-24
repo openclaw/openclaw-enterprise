@@ -144,6 +144,5 @@ Switching methods hides that feedback without changing the lookup or saved choic
 ## Changelog
 
 - 2026-10-24 19:00: Check the Agent name and initial workspace files with the API's rules before any write. (fix-2339-2341)
-
 - 2026-10-22 10:56: Confirm creation responses before granting access or continuing provisioning. (console-create-delivery-20261022 - eef3442ff)
 - 2026-10-20 05:00: Split from the platform console flow's step 3. (docs-split-1020)

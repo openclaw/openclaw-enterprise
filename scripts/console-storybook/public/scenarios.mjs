@@ -2485,7 +2485,7 @@ export const scenarios = {
       click("Create Secret"),
     ],
     description:
-      "Create Secret with a tab in the name and a NUL in the value: each field names the API's rule under the control before any request; Name takes focus. A multiline value is kept exactly.",
+      "Create Secret with a tab in the name and a NUL in the value: each field names the API's rule under the control before any request; Name takes focus. Value is a masked multiline box, so a multiline credential is kept exactly.",
   },
   createAgentNameRefused: {
     group: "Pages/Create Agent",

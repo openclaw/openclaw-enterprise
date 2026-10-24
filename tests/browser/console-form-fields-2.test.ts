@@ -497,6 +497,7 @@ test("Create Agent refuses what the API would refuse before any write", async (t
     ] as const) {
       await value.fill(content);
       await submit.click();
+      assert.deepEqual(await invalidEvents(), [], "no browser validation bubble");
       await assertShownError(value, rule);
     }
     assert.deepEqual(nonAuthWriteRequests(requests), [], "no Secret is created");

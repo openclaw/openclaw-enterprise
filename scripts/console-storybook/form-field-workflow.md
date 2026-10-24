@@ -38,7 +38,8 @@ each story at 1440 and at 390.
 10. Open **Pages / Create Agent / Create Secret fields the API would refuse**.
     Name shows "Remove tabs, line breaks and other control characters from the
     name." and has focus; Value shows "Use valid UTF-8 without NUL characters."
-    Value is a masked multiline box with Show value; line breaks are kept.
+    Value is a masked multiline box: type two lines, then Show value, and
+    both lines are there.
 11. Open **Agent name the API would refuse**. Agent name shows the same Name
     rule and has focus. Open **Initial workspace file the API would refuse**:
     Advanced settings is open and AGENTS.md shows its 16 KiB error, naming the

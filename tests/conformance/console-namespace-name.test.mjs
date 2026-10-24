@@ -14,7 +14,9 @@ import {
   SECRET_VALUE_MAX_BYTES,
   secretValueProblem,
 } from "../../apps/controller/src/console/secrets.mts";
+import { workspaceFileProblem } from "../../apps/controller/src/console/agents/workspace.mjs";
 import { SecretValue } from "../../packages/contracts/src/api/common.ts";
+import { normalizeInitialWorkspaceFiles } from "../../packages/contracts/src/workspace-setup.ts";
 import {
   NAME_MAX_CHARACTERS as API_NAME_MAX_CHARACTERS,
   PLAIN_TEXT_PATTERN,
@@ -114,4 +116,31 @@ test("the console refuses exactly the Secret values the API refuses", () => {
   }
   assert.equal(secretValueProblem("nul\0inside"), "Use valid UTF-8 without NUL characters.");
   assert.equal(secretValueProblem("v".repeat(65_537)), "Use at most 65,536 UTF-8 bytes.");
+});
+
+test("the console refuses exactly the workspace files the API refuses, naming the file", () => {
+  // Create Agent's initial files and the Workspace tab share this check (finding 2341).
+  for (const content of [
+    "",
+    "line one\r\nline two",
+    "a".repeat(16_384),
+    "a".repeat(16_385),
+    "\u00e9".repeat(8_192),
+    "\u00e9".repeat(8_193),
+    "x\0y",
+    "lone\ud800surrogate",
+  ]) {
+    let apiAccepts = true;
+    try {
+      normalizeInitialWorkspaceFiles({ "AGENTS.md": content });
+    } catch {
+      apiAccepts = false;
+    }
+    assert.equal(
+      workspaceFileProblem("AGENTS.md", content) === "",
+      apiAccepts,
+      JSON.stringify(content.slice(0, 20)),
+    );
+  }
+  assert.match(workspaceFileProblem("SOUL.md", "x\0y"), /in SOUL\.md,/);
 });

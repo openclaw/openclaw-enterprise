@@ -542,11 +542,13 @@ export function createSecretReferenceField({
     name.addEventListener("input", () => name.setCustomValidity(namespaceNameProblem(name.value)));
     // The Secrets page's value control: a multiline value is kept exactly, and a value the API
     // would refuse is named under the field before any request.
-    const { value, reveal } = secretValueControl(`create-${id}-value`);
+    const { value, reveal, multiline } = secretValueControl(`create-${id}-value`);
     const valueField = formField({
       label: "Value",
       control: value,
-      help: "Stored as a Namespace Secret. The value is never read back.",
+      help: `Stored as a Namespace Secret. The value is never read back. ${
+        multiline ? "Spaces and line breaks are preserved." : "Enter a single-line value."
+      }`,
       className: "form-field secret-value-field",
     });
     value.before(reveal);
@@ -630,6 +632,7 @@ export function createSecretReferenceField({
       cancel.disabled = true;
       name.disabled = true;
       value.disabled = true;
+      reveal.disabled = true;
       feedback.textContent = "";
       let created = false;
       try {
@@ -681,6 +684,7 @@ export function createSecretReferenceField({
         cancel.disabled = false;
         name.disabled = outcomeUnknown;
         value.disabled = outcomeUnknown;
+        reveal.disabled = outcomeUnknown;
         if (status === 409 && code !== "NAMESPACE_NOT_READY") {
           name.focus();
         } else {
