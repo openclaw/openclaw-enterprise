@@ -3,6 +3,7 @@ package occcli
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -66,6 +67,14 @@ func TestAgentLogFollowHonorsRetryAfterDateForms(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			sleeps := recordSleeps(t)
+			// Record when each wait ends, to compare it with the server's date.
+			var wakes []time.Time
+			recorded := sleepContext
+			sleepContext = func(ctx context.Context, d time.Duration) error {
+				wakes = append(wakes, time.Now().Add(d))
+				return recorded(ctx, d)
+			}
+			var serverDate time.Time
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			retry := func(w http.ResponseWriter, q url.Values) {
@@ -79,6 +88,7 @@ func TestAgentLogFollowHonorsRetryAfterDateForms(t *testing.T) {
 						when = when.Add(2 * time.Hour)
 					}
 					value = when.Format(test.format)
+					serverDate = when.Truncate(time.Second)
 				}
 				logError(http.StatusTooManyRequests, "RUNTIME_LOGS_RATE_LIMITED", map[string]string{"retry-after": value})(w, q)
 			}
@@ -115,11 +125,38 @@ func TestAgentLogFollowHonorsRetryAfterDateForms(t *testing.T) {
 				if delay%time.Second != 0 {
 					t.Fatalf("date wait=%v; want whole seconds", delay)
 				}
+				// The remaining time is rounded up, so the retry never comes before the date.
+				if wakes[0].Before(serverDate) {
+					t.Fatalf("date wait=%v ends %v before the server date", delay, serverDate.Sub(wakes[0]))
+				}
 				if got := notices.String(); strings.Contains(got, ".") || !strings.Contains(got, "retrying in "+delay.String()) {
 					t.Fatalf("notice=%q; want whole-second retry delay", got)
 				}
 			}
 		})
+	}
+}
+
+// Error renders at most 32 details, and only bounded ones: a path or message up to
+// 512 runes and a code up to 64 bytes.
+func TestAPIErrorRendersOnlyBoundedDetails(t *testing.T) {
+	detail := func(path, code string) occclient.ConfigurationErrorDetail {
+		return occclient.ConfigurationErrorDetail{Path: path, Code: code, Message: "m"}
+	}
+	var details []occclient.ConfigurationErrorDetail
+	for index := range 33 {
+		details = append(details, detail(fmt.Sprintf("/d%d", index), "INVALID_VALUE"))
+	}
+	got := (&occclient.APIError{Status: http.StatusBadRequest, Details: details}).Error()
+	if !strings.Contains(got, `"/d31"`) || strings.Contains(got, `"/d32"`) {
+		t.Fatalf("message=%q; want the first 32 details only", got)
+	}
+	longPath, longCode := "/"+strings.Repeat("é", 511), strings.Repeat("C", 64)
+	got = (&occclient.APIError{Status: http.StatusBadRequest, Details: []occclient.ConfigurationErrorDetail{
+		detail(longPath, "A"), detail(longPath+"é", "B"), detail("/c", longCode), detail("/d", longCode+"C"),
+	}}).Error()
+	if lines := strings.Count(got, "\n  "); lines != 2 || !strings.Contains(got, `"code":"A"`) || !strings.Contains(got, `"`+longCode+`"`) {
+		t.Fatalf("message=%q; want only the details within the path and code bounds", got)
 	}
 }
 

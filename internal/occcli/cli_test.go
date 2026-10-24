@@ -1160,6 +1160,8 @@ func TestRedirectIsReportedWithItsTargetAndNotFollowed(t *testing.T) {
 		location string
 		want     string
 		hostCase bool
+		// schemeChange redirects to https on the origin's own host: another origin.
+		schemeChange bool
 	}{
 		{
 			name:     "other origin",
@@ -1167,6 +1169,7 @@ func TestRedirectIsReportedWithItsTargetAndNotFollowed(t *testing.T) {
 			want:     "redirected to https://" + strings.TrimPrefix(target.URL, "http://") + "/installation; occ does not follow redirects, so set OCC_URL (or --url) to https://" + strings.TrimPrefix(target.URL, "http://") + " ",
 		},
 		{name: "same origin", location: "/elsewhere/installation", want: "/elsewhere/installation; occ does not follow redirects, and OCC_URL must be the origin that serves the OCC API directly"},
+		{name: "same host over https", schemeChange: true},
 		{name: "same origin host case", hostCase: true, want: "/elsewhere/installation; occ does not follow redirects, and OCC_URL must be the origin that serves the OCC API directly"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -1176,6 +1179,9 @@ func TestRedirectIsReportedWithItsTargetAndNotFollowed(t *testing.T) {
 				location := testCase.location
 				if testCase.hostCase {
 					location = "http://" + strings.ToLower(r.Host) + "/elsewhere/installation"
+				}
+				if testCase.schemeChange {
+					location = "https://" + r.Host + "/installation"
 				}
 				w.Header().Set("location", location)
 				w.WriteHeader(http.StatusPermanentRedirect)
@@ -1192,6 +1198,10 @@ func TestRedirectIsReportedWithItsTargetAndNotFollowed(t *testing.T) {
 			if err == nil {
 				t.Fatal("expected the redirect to fail the command")
 			}
+			if testCase.schemeChange {
+				host := strings.TrimPrefix(origin.URL, "http://")
+				testCase.want = "redirected to https://" + host + "/installation; occ does not follow redirects, so set OCC_URL (or --url) to https://" + host + " "
+			}
 			if !strings.Contains(err.Error(), "HTTP 308") || !strings.Contains(err.Error(), testCase.want) {
 				t.Fatalf("error = %q, want it to contain HTTP 308 and %q", err, testCase.want)
 			}
@@ -1205,6 +1215,31 @@ func TestRedirectIsReportedWithItsTargetAndNotFollowed(t *testing.T) {
 				t.Fatalf("origin key = %q, redirect followed = %v", sawKey, followed)
 			}
 		})
+	}
+}
+
+// OCC_URL must be a bare origin: occ adds every path itself and never sends a
+// query, fragment, or userinfo with the service key.
+func TestOCCURLMustBeABareOrigin(t *testing.T) {
+	const origin = "OCC URL must be an origin without credentials, a path, a query, or a fragment"
+	for _, testCase := range []struct{ url, want string }{
+		{"ftp://occ.example.test", "OCC URL must use http or https"},
+		{"https://occ.example.test/api", origin},
+		{"https://occ.example.test?", origin},
+		{"https://occ.example.test?region=1", origin},
+		{"https://occ.example.test#top", origin},
+		{"https://user@occ.example.test", origin},
+		{"https:///", origin},
+	} {
+		if _, _, err := runHelp(t, "installation", "get", "--url", testCase.url, "--service-key-file", "unused"); err == nil || err.Error() != testCase.want {
+			t.Fatalf("--url %q error = %v, want %q", testCase.url, err, testCase.want)
+		}
+	}
+	// Control: an origin with or without a trailing slash passes, and the key file is read next.
+	for _, value := range []string{"https://occ.example.test", "http://occ.example.test:8080/"} {
+		if _, _, err := runHelp(t, "installation", "get", "--url", value, "--service-key-file", "unused"); err == nil || !strings.HasPrefix(err.Error(), "failed to read service-key file unused") {
+			t.Fatalf("--url %q error = %v, want the key file read failure", value, err)
+		}
 	}
 }
 
