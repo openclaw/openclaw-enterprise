@@ -1806,14 +1806,15 @@ async function loadPage({
     }
     if (scopedNamespaceUnavailable) {
       clearRetainedViewsForNamespace(namespaceId);
+      // With nothing to switch to, the header's Refresh is the one way to look again, so the
+      // panel adds no second Refresh (finding 2371).
       panel(
         shell.view,
         namespaceId === null ? "No readable Namespaces" : "Namespace unavailable",
         namespaceId === null
-          ? "Ask an administrator to provision a Namespace or grant access. Namespaces remain available in navigation."
+          ? "Ask an administrator to create a Namespace or grant you access to one, then Refresh."
           : "This Namespace is missing or you no longer have access. Choose another Namespace.",
-        namespaces.length ? "Switch Namespace" : "Refresh",
-        () => (namespaces.length ? switchNamespace() : void loadPage()),
+        ...(namespaces.length ? ["Switch Namespace", () => switchNamespace()] : []),
       );
       return;
     }
