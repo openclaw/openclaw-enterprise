@@ -87,7 +87,10 @@ function credentialFixture({
   secretCreateStatus = undefined,
   deploymentListStatus = undefined,
 } = {}) {
-  const configured = options(runtime ? {} : { runtime: undefined });
+  const configured = options();
+  if (!runtime) {
+    delete configured.runtime;
+  }
   if (twoCluster) {
     delete configured.network.gatewayClients;
     configured.gatewayRouting = {

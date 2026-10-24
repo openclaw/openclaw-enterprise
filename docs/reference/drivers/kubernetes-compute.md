@@ -1,13 +1,14 @@
 # Kubernetes Compute Driver
 
-The Kubernetes Compute Driver runs OpenClaw Agents on Kubernetes. It provisions
-or adopts one namespace per tenant in a single cluster and creates an OpenClaw
-gateway for each deployed Agent. Dedicated Gateways and Harnesses use separate
-Pods, identities and volumes within that namespace; embedded OpenClaw combines
-them in one Pod.
+The Kubernetes Compute Driver provisions or adopts one namespace per tenant,
+creating each Agent’s gateway. Dedicated Gateways and Harnesses use separate
+Pods, identities and volumes; embedded OpenClaw combines them in one Pod.
 The experimental `executionCluster` configuration selects a second Kubernetes
 API for dedicated Harness resources. See the [two-cluster validation profile](../../testing/kubernetes.md#two-cluster-validation)
 before using it; cloud deployment and complete runtime acceptance remain pending.
+Optional `executionCluster.caBundle` accepts at most 65,536 characters of X.509 PEM
+certificates and whitespace. Diagnostics identify `/executionCluster/...`
+fields, including `/executionCluster/caBundle`.
 
 New managed namespaces use `oce-` plus the first 15 hexadecimal
 characters of the Namespace ID's SHA-256 digest: stable, DNS-safe, and short
@@ -55,9 +56,8 @@ by hand: the old namespace's claims, routes and transport Secrets would not move
 
 ## Requirements
 
-- Kubernetes 1.35 or later. On an older API server, API and worker startup each
-  emit `compute.preflight-warning` with the observed and minimum versions, then
-  continue; versions below 1.35 are outside the supported and CI-verified boundary.
+- Kubernetes 1.35 or later. On older, unsupported versions the API and worker
+  log `compute.preflight-warning` and start.
 - A Kubernetes cluster dedicated to one OpenClaw Enterprise Installation; shared
   clusters are not supported.
 - Enforced Kubernetes NetworkPolicies, verified Kubernetes API TLS, and
@@ -176,8 +176,8 @@ drivers:
         codexSeccompProfile: profiles/codex-0.160.0.json
 ```
 
-This example configures only Compute. The [complete Installation example](../../guides/deploy/production-installation.md#configure-the-installation)
-supplies remaining required Drivers and settings.
+The [complete Installation example](../../guides/deploy/production-installation.md#configure-the-installation)
+adds the other required Drivers and settings.
 
 `runtime.nativeOpenClawSessionCapacity` accepts an integer from `1` through
 `1024` and defaults to `8`. It bounds retained native OpenClaw session workers
@@ -187,8 +187,8 @@ workers, so size the limit against the Agent workload's CPU and memory limits.
 
 For dedicated Codex `api_key` authentication, `runtime.codexModelBaseUrl` selects
 an HTTPS OpenAI-compatible streaming Responses endpoint ending in `/v1`.
-Rejects wildcards, port `0`, `@` or credentials, spaces, controls, missing `//`, queries, and fragments.
-Shorthand IPv4 is refused.
+Rejects wildcards, port `0`, `@` or credentials, spaces, controls, missing `//`, queries, fragments,
+and shorthand IPv4. A non-443 port, IPv6, or excluded IPv4 [starts with a warning](../../guides/operate/network-isolation.md#if-a-check-fails).
 Omission retains OpenAI's default; OpenShell sources select their own endpoint.
 OAuth, account logins, and OpenClaw ignore this option. Only the Harness receives
 the key. Private Gateway configuration qualifies parent and subagent selections

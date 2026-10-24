@@ -60,6 +60,7 @@ export function snapshotSessionInput(value: unknown): SessionInput {
     "deadlineWallMs",
     "recoverOnly",
     "durableAdmission",
+    "preparedOnly",
   ];
   const bound = boundFields.some((field) => Object.hasOwn(input, field));
   const allowed = bound
@@ -95,6 +96,7 @@ export function snapshotSessionInput(value: unknown): SessionInput {
     input.deadlineWallMs <= 0 ||
     (input.recoverOnly !== undefined && input.recoverOnly !== true) ||
     (input.durableAdmission !== undefined && input.durableAdmission !== true) ||
+    (input.preparedOnly !== undefined && input.preparedOnly !== true) ||
     !input.expectedBinding ||
     typeof input.expectedBinding !== "object" ||
     Array.isArray(input.expectedBinding) ||
@@ -111,6 +113,7 @@ export function snapshotSessionInput(value: unknown): SessionInput {
     repositoryRef: input.repositoryRef,
     expectedBinding: snapshotBinding(input.expectedBinding as RepositoryCredentialGrantIdentity),
     deadlineWallMs: input.deadlineWallMs,
+    ...(input.preparedOnly === true ? { preparedOnly: true as const } : {}),
   });
 }
 
@@ -137,6 +140,7 @@ export function sameSessionInput(left: SessionInput, right: SessionInput): boole
     left.namespaceId === right.namespaceId &&
     left.repositoryRef === right.repositoryRef &&
     left.deadlineWallMs === right.deadlineWallMs &&
+    left.preparedOnly === right.preparedOnly &&
     sameBinding(left.expectedBinding, right.expectedBinding)
   );
 }

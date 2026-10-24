@@ -122,11 +122,46 @@ function objectFor({ namespace, kind, objectName, expected }) {
       };
 }
 
-function logRecords(text) {
-  return text
-    .split("\n")
-    .filter((line) => line.startsWith("{"))
-    .map((line) => JSON.parse(line));
+const podSelector = "openclaw.dev/test=volume-refresh";
+
+// The watchers record their timestamps inside the Pods, so how often the test reads
+// the logs does not change what it measures. One `kubectl logs` call reads every
+// case's log (label selector, prefixed by Pod), every pollIntervalMs.
+const pollIntervalMs = 2_000;
+
+async function waitForRecords(readLogs, cases, field, description, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const records = podLogRecords(await readLogs());
+    for (const entry of cases) {
+      const record = records.get(entry.name)?.find((item) => item[field] !== undefined);
+      if (entry[field] === undefined && record !== undefined) {
+        entry[field] = record[field];
+      }
+    }
+    const pending = cases.filter((entry) => entry[field] === undefined);
+    if (pending.length === 0) {
+      return;
+    }
+    if (Date.now() >= deadline) {
+      assert.fail(
+        `Timed out waiting for ${pending.map((entry) => entry.name).join(", ")} to report ${description}.`,
+      );
+    }
+    await delay(pollIntervalMs);
+  }
+}
+
+// `kubectl logs --prefix` lines read "[pod/<name>/<container>] <line>".
+function podLogRecords(text) {
+  const records = new Map();
+  for (const line of text.split("\n")) {
+    const match = /^\[pod\/([^/\]]+)\/[^\]]+\] (\{.*)$/.exec(line);
+    if (match !== null) {
+      records.set(match[1], [...(records.get(match[1]) ?? []), JSON.parse(match[2])]);
+    }
+  }
+  return records;
 }
 
 test(
@@ -147,11 +182,7 @@ test(
           maxBuffer: 4 * 1024 * 1024,
         })
       ).stdout;
-    const { applyManifest, resource, waitFor } = createKubernetesClient({
-      selection,
-      kubectl,
-      waitIntervalMs: 250,
-    });
+    const { applyManifest } = createKubernetesClient({ selection, kubectl });
     const namespace = `oce-volume-refresh-${randomUUID().slice(0, 8)}`;
     await kubectl("create", "namespace", namespace);
     t.after(() => kubectl("delete", "namespace", namespace, "--wait=false"));
@@ -173,6 +204,18 @@ test(
       }
     }
 
+    const readLogs = () =>
+      kubectl(
+        "logs",
+        "--namespace",
+        namespace,
+        "--selector",
+        podSelector,
+        "--prefix",
+        "--tail=-1",
+        `--max-log-requests=${cases.length}`,
+      );
+
     await applyManifest(
       JSON.stringify({
         apiVersion: "v1",
@@ -180,21 +223,28 @@ test(
         items: cases.map((entry) => podFor({ namespace, ...entry })),
       }),
     );
-    await Promise.all(
-      cases.map((entry) =>
-        waitFor(
-          `${entry.name} watching its empty optional volume`,
-          async () => {
-            const pod = await resource("pod", entry.name, namespace);
-            if (pod.status?.phase !== "Running") {
-              return false;
-            }
-            const records = logRecords(await kubectl("logs", entry.name, "--namespace", namespace));
-            return records.some((record) => record.watchingAtMs !== undefined);
-          },
-          120_000,
-        ),
-      ),
+    // `kubectl wait` watches the Pods (one process); then one log read finds the
+    // watchers' start records.
+    await execute(
+      "kubectl",
+      kubectlArguments(selection, [
+        "wait",
+        "pod",
+        "--namespace",
+        namespace,
+        "--selector",
+        podSelector,
+        "--for=condition=Ready",
+        "--timeout=120s",
+      ]),
+      { timeout: 130_000 },
+    );
+    await waitForRecords(
+      readLogs,
+      cases,
+      "watchingAtMs",
+      "watching its empty optional volume",
+      60_000,
     );
     // The late object arrives after the Pod has settled, as a Gateway-ready wait would.
     await delay(settleMs);
@@ -217,17 +267,18 @@ test(
       }),
     );
 
-    await Promise.all(
-      cases.map(async (entry) => {
-        const seen = await waitFor(
-          `${entry.name} to see its ${entry.kind} content`,
-          async () =>
-            logRecords(await kubectl("logs", entry.name, "--namespace", namespace)).find(
-              (record) => record.seenAtMs !== undefined,
-            ),
-          (unnudgedBoundSeconds + 60) * 1_000,
-        );
-        entry.seconds = Math.round((seen.seenAtMs - entry.createdAtMs) / 100) / 10;
+    try {
+      await waitForRecords(
+        readLogs,
+        cases,
+        "seenAtMs",
+        "content in its late volume",
+        (unnudgedBoundSeconds + 60) * 1_000,
+      );
+    } finally {
+      // Also on a timeout: the cases that did see their content keep their measurement.
+      for (const entry of cases.filter(({ seenAtMs }) => seenAtMs !== undefined)) {
+        entry.seconds = Math.round((entry.seenAtMs - entry.createdAtMs) / 100) / 10;
         t.diagnostic(
           `openclaw-ci-measurement ${JSON.stringify({
             kind: "kubelet-volume-refresh",
@@ -237,8 +288,8 @@ test(
             seconds: entry.seconds,
           })}`,
         );
-      }),
-    );
+      }
+    }
 
     for (const entry of cases) {
       const bound = entry.nudge === "pod-annotation" ? nudgedBoundSeconds : unnudgedBoundSeconds;

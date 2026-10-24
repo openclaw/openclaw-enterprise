@@ -30,6 +30,7 @@ import {
   RepositoryBindingSelectionsSchema,
   RepositoryAccessSchema,
   RevisionId,
+  RequestId,
   ResourceKindSchema,
   SecretBindings,
   SecretId,
@@ -604,7 +605,7 @@ export const CredentialSourceStatusSchema = Type.Object(
   {
     additionalProperties: false,
     description:
-      "Live status reported by the selected Credential Gateway. It never contains credential values.",
+      "Source admission or selected Credential Gateway status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values.",
   },
 );
 
@@ -614,7 +615,31 @@ export const CredentialSourceSchema = Type.Object(
     namespaceId: NamespaceId,
     name: Name,
     type: CredentialSourceType,
+    ownerCapability: Type.Union(
+      [Type.Literal("credential_gateway"), Type.Literal("credential_proxy")],
+      {
+        description:
+          "The Driver capability that admitted this source. Changing the selected Driver does not transfer ownership.",
+      },
+    ),
     config: CredentialSourceConfig,
+    egress: Type.Optional(
+      Type.Object(
+        {
+          adoption: Type.Union([
+            Type.Literal("live"),
+            Type.Literal("prepared"),
+            Type.Literal("credential_free"),
+          ]),
+          retention: Type.Literal("none"),
+        },
+        {
+          additionalProperties: false,
+          description:
+            "Protected live static, eligible prepared, or explicitly credential-free metadata access. Each profile requires its own grant; missing material never selects credential-free access. Runtime readiness requires current authenticated supervisor evidence.",
+        },
+      ),
+    ),
     secrets: CredentialSourceSecrets,
     state: Type.Union([
       Type.Literal("registering"),
@@ -717,6 +742,13 @@ export const NamespaceCallerPermissionsResponse = Type.Object(
 
 export const AgentProvisioningStatusSchema = Type.Object(
   {
+    requestId: Type.Optional(
+      Type.String({
+        ...RequestId,
+        description:
+          "The client request ID stored when this job was admitted. Older controllers omit it. The separate meta.requestId identifies the current HTTP request.",
+      }),
+    ),
     workId: Type.String({ minLength: 1, maxLength: 200 }),
     status: Type.Union([
       Type.Literal("queued"),
@@ -1101,10 +1133,7 @@ export const BackendListResponse = Type.Object(
 export const RepositoryOptionListResponse = Type.Object(
   {
     data: Type.Array(RepositoryOptionSchema, { maxItems: 1000 }),
-    meta: Type.Object(
-      { ...Meta.properties, descriptionsPending: Type.Boolean() },
-      { additionalProperties: false },
-    ),
+    meta: Meta,
   },
   { additionalProperties: false },
 );
@@ -1545,6 +1574,48 @@ export const RuntimeLogRecordSchema = Type.Union([
   ),
 ]);
 
+export const AgentHarnessStatusSchema = Type.Object(
+  {
+    state: Type.Union([
+      Type.Literal("running"),
+      Type.Literal("starting"),
+      Type.Literal("lost"),
+      Type.Literal("unknown"),
+    ]),
+    code: Type.Optional(
+      Type.Union([
+        Type.Literal("SANDBOX_MISSING"),
+        Type.Literal("SANDBOX_DELETING"),
+        Type.Literal("SANDBOX_STOPPED"),
+        Type.Literal("SANDBOX_FAILED"),
+        Type.Literal("HARNESS_EXITED"),
+        Type.Literal("HARNESS_RESTARTING"),
+        Type.Literal("UNAVAILABLE"),
+      ]),
+    ),
+    exitCode: Type.Optional(
+      Type.Integer({
+        minimum: -2147483648,
+        maximum: 2147483647,
+        description: "Present only with HARNESS_RESTARTING: the Harness process's last exit code.",
+      }),
+    ),
+    restarts: Type.Optional(
+      Type.Integer({
+        minimum: 1,
+        maximum: 4294967295,
+        description:
+          "Present only with HARNESS_RESTARTING: the restart number in the current crash loop (1 for a first restart).",
+      }),
+    ),
+  },
+  {
+    additionalProperties: false,
+    description:
+      "The Sandbox Driver reports this provider-owned Harness Sandbox (OpenShell). `lost` means that the Sandbox does not serve this Agent revision. OCC will not restart it. Deploy the Agent again to replace it. `starting` with `HARNESS_RESTARTING` means that the provider is restarting a Harness process that exited.",
+  },
+);
+
 export const AgentRuntimeDescriptionSchema = Type.Object(
   {
     revisionId: RevisionId,
@@ -1633,50 +1704,7 @@ export const AgentRuntimeDescriptionSchema = Type.Object(
       ),
       { maxItems: 4 },
     ),
-    harness: Type.Optional(
-      Type.Object(
-        {
-          state: Type.Union([
-            Type.Literal("running"),
-            Type.Literal("starting"),
-            Type.Literal("lost"),
-            Type.Literal("unknown"),
-          ]),
-          code: Type.Optional(
-            Type.Union([
-              Type.Literal("SANDBOX_MISSING"),
-              Type.Literal("SANDBOX_DELETING"),
-              Type.Literal("SANDBOX_STOPPED"),
-              Type.Literal("SANDBOX_FAILED"),
-              Type.Literal("HARNESS_EXITED"),
-              Type.Literal("HARNESS_RESTARTING"),
-              Type.Literal("UNAVAILABLE"),
-            ]),
-          ),
-          exitCode: Type.Optional(
-            Type.Integer({
-              minimum: -2147483648,
-              maximum: 2147483647,
-              description:
-                "Present only with HARNESS_RESTARTING: the Harness process's last exit code.",
-            }),
-          ),
-          restarts: Type.Optional(
-            Type.Integer({
-              minimum: 1,
-              maximum: 4294967295,
-              description:
-                "Present only with HARNESS_RESTARTING: the restart number in the current crash loop (1 for a first restart).",
-            }),
-          ),
-        },
-        {
-          additionalProperties: false,
-          description:
-            "The Sandbox Driver reports this provider-owned Harness Sandbox (OpenShell). `lost` means that the Sandbox does not serve this Agent revision. OCC will not restart it. Deploy the Agent again to replace it. `starting` with `HARNESS_RESTARTING` means that the provider is restarting a Harness process that exited.",
-        },
-      ),
-    ),
+    harness: Type.Optional(AgentHarnessStatusSchema),
   },
   { additionalProperties: false },
 );
@@ -1684,6 +1712,24 @@ export const AgentRuntimeDescriptionSchema = Type.Object(
 export const AgentRuntimeResponse = Type.Object(
   { data: AgentRuntimeDescriptionSchema, meta: Meta },
   { $id: "AgentRuntimeResponse", additionalProperties: false },
+);
+
+export const AgentHarnessStatusResponse = Type.Object(
+  {
+    data: Type.Object(
+      {
+        status: Type.Union([Type.Literal("observed"), Type.Literal("unobserved")], {
+          description:
+            "`observed` when OCC read the Sandbox record of the running Agent's active revision. `unobserved` when there is nothing to read: the Agent is stopped, deleting or has no active revision, its Harness is not dedicated, or the selected Sandbox Driver keeps no lifecycle record.",
+        }),
+        revisionId: Type.Optional(RevisionId),
+        harness: Type.Optional(AgentHarnessStatusSchema),
+      },
+      { additionalProperties: false },
+    ),
+    meta: Meta,
+  },
+  { additionalProperties: false },
 );
 
 export const AgentRuntimeLogPageSchema = Type.Object(

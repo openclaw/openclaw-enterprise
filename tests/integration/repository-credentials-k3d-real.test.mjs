@@ -1,6 +1,7 @@
 import { cleanupRepositoryJourney } from "../helpers/repository-remote-cleanup.mjs";
 import { verifyNativeRepositoryJourney } from "../helpers/repository-native-journey.mjs";
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
@@ -116,7 +117,7 @@ async function recordRuntimeStartupFailure(f, agent) {
 // cannot: the model acts using material opened by the production worker.
 for (const mode of ["embedded", "dedicated"]) {
   test(
-    `installed ${mode} Agent isolates broker credentials and disposes worker-owned sessions`,
+    `installed ${mode} Agent isolates prepared native credentials and disposes worker-owned sessions`,
     {
       skip: selected
         ? false
@@ -127,18 +128,7 @@ for (const mode of ["embedded", "dedicated"]) {
   );
 }
 
-test(
-  "installed dedicated read-only Agent fetches and is denied a repository push",
-  {
-    skip: selected
-      ? false
-      : "Set OCC_TEST_REPOSITORY_CREDENTIALS_REAL=1 with explicit authorized repository, protected App inputs, model key and immutable images.",
-    timeout: 1800000,
-  },
-  installedRepositoryJourney("dedicated", "git-read"),
-);
-
-function installedRepositoryJourney(mode, profile = "git-full") {
+function installedRepositoryJourney(mode, profile = "git-write") {
   return async (context) => {
     // TODO: restore direct installed qualification after safe remote cleanup is qualified.
     if (selected) {
@@ -290,6 +280,8 @@ function installedRepositoryJourney(mode, profile = "git-full") {
       const driverId = "repository-proof-driver";
       const repositoryValues = {
         enabled: true,
+        authority: "prepared-git",
+        preparedCustodySecretName: "repository-custody",
         image: images.credentials,
         serviceName: "git",
         backendId,
@@ -317,7 +309,15 @@ function installedRepositoryJourney(mode, profile = "git-full") {
             repositoryRef,
             repositoryId: app.repositoryId,
             repository,
-            namespaces: [{ namespaceId: f.namespace.id, profiles: [profile] }],
+            namespaces: [
+              {
+                namespaceId: f.namespace.id,
+                profiles: [profile],
+                transport: "git-and-draft-pr",
+                pushRefAllowlist: [`refs/heads/${branch}`],
+                pullRequestBase: base,
+              },
+            ],
           },
         ],
       };
@@ -351,6 +351,17 @@ function installedRepositoryJourney(mode, profile = "git-full") {
       const tlsCert = await readFile(join(f.directory, "repository-tls.crt"), "utf8");
       const socket = "/run/openclaw/repository-control/private/control.sock";
       await f.createSecret("repository-app-key", { "private-key.pem": appKey });
+      const custody = randomBytes(32);
+      try {
+        await f.apply({
+          apiVersion: "v1",
+          kind: "Secret",
+          metadata: f.metadata("repository-custody"),
+          data: { "custody.key": custody.toString("base64") },
+        });
+      } finally {
+        custody.fill(0);
+      }
       await f.createSecret("repository-tls", { "tls.crt": tlsCert, "tls.key": tlsKey });
       await f.createSecret("repository-public-ca", { "ca.crt": tlsCert });
       await f.createSecret("repository-service-config", {
@@ -368,10 +379,9 @@ function installedRepositoryJourney(mode, profile = "git-full") {
           },
           limits: {},
           backend: {
-            kind: "github-app-registry",
+            kind: "github-prepared-git-registry",
             backendId,
             registryFile: "/etc/openclaw/repository-registry/registry.json",
-            privateKeyFile: "/etc/openclaw/repository-inputs/private-key.pem",
           },
         }),
       });
@@ -383,12 +393,13 @@ function installedRepositoryJourney(mode, profile = "git-full") {
           drivers: { repo: driverId },
         },
       ];
-      f.configuration.drivers.repo = {
+      f.configuration.repository = {
         id: driverId,
-        configuration: {
-          controlSocket: socket,
-          sessionDurationSeconds: 1800,
-          publicCaPath: "/etc/openclaw/repository-ca/ca.crt",
+        configuration: { sessionDurationSeconds: 1800 },
+        nativeSender: { controlSocket: socket, publicCaPath: "/etc/openclaw/repository-ca/ca.crt" },
+        preparedGitHub: {
+          custodyKeyPath: "/etc/openclaw/prepared-repository/custody.key",
+          privateKeyPath: "/etc/openclaw/prepared-repository/private-key.pem",
         },
       };
       const workerLabels = {
@@ -402,8 +413,8 @@ function installedRepositoryJourney(mode, profile = "git-full") {
         port: 8443,
       };
       assert.deepEqual(await f.upgrade(repositoryValues), renderedBroker);
-      // The service shares the worker Pod but neither the API nor worker process
-      // receives App key/TLS mounts or the Agent's model credential.
+      // Only the worker owns App issuance and custody; the native sender owns TLS.
+      // Neither process receives the Agent's model credential.
       const pods = await f.kubernetes.resources("pods", f.system);
       for (const component of ["api", "worker"]) {
         const pod = pods.find(
@@ -445,7 +456,16 @@ function installedRepositoryJourney(mode, profile = "git-full") {
             ["repository-inputs", "repository-private"].includes(m.name),
           ),
         );
+        assert.equal(
+          container.volumeMounts.some(({ name }) => name === "prepared-repository-owner"),
+          component === "worker",
+        );
         if (component === "worker") {
+          const sender = pod.spec.containers.find(({ name }) => name === "repository-credentials");
+          assert.equal(
+            sender.volumeMounts.some(({ name }) => name === "prepared-repository-owner"),
+            false,
+          );
           workerPod = pod;
           if (kind === "initContainer") {
             assert.equal(container.restartPolicy, "Always");

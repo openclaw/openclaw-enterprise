@@ -10,6 +10,8 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { createInstallationDriverConfiguration } from "./installation-driver-configuration.mjs";
+import { kubectlGetJson } from "./kubernetes-api-read.mjs";
+import { waitFor as pollFor } from "./wait-for.mjs";
 
 const execute = promisify(execFile);
 
@@ -30,6 +32,10 @@ async function kubectlFor(selection, ...args) {
   // Inside a failure diagnostic, kubectl stops at its deadline (finding 1557).
   const signal = diagnosticDeadline.getStore();
   signal?.throwIfAborted();
+  const answered = await kubectlGetJson(selection, args, { signal });
+  if (answered !== undefined) {
+    return answered;
+  }
   const { stdout } = await execute("kubectl", kubectlArguments(selection, args), {
     maxBuffer: 4 * 1024 * 1024,
     signal,
@@ -639,17 +645,16 @@ export function createKubernetesClient({
   };
   const resources = async (kind, namespace, ...args) =>
     JSON.parse(await kubectl("get", kind, "--namespace", namespace, ...args, "-o", "json")).items;
-  const waitFor = async (description, operation, timeoutMs = waitTimeoutMs) => {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      const result = await operation();
-      if (result !== undefined && result !== false) {
-        return result;
-      }
-      await delay(waitIntervalMs);
-    }
-    assert.fail(`Timed out waiting for ${description}.`);
-  };
+  // `operation` may also return false for "not yet".
+  const waitFor = (description, operation, timeoutMs = waitTimeoutMs) =>
+    pollFor(
+      description,
+      async () => {
+        const result = await operation();
+        return result === false ? undefined : result;
+      },
+      { timeoutMs, intervalMs: waitIntervalMs },
+    );
 
   return {
     kubectlArguments: kubectlArgumentsForSelection,

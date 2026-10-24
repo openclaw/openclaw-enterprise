@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createRequire } from "node:module";
 import { createHumanLogin } from "../../apps/controller/src/auth/github.ts";
-import { createControllerAuth } from "../../apps/controller/src/auth/index.ts";
+import { createControllerAuth } from "../helpers/password-hasher.mjs";
 import {
   issueKnownDevice,
   knownDeviceCookieName,

@@ -2,7 +2,8 @@
 
 Browse production Console pages, components, and Agent workflows against an
 in-memory fixture. Previews contact no services and run no workloads. Use dummy
-credentials.
+credentials. To build or change a page, start with
+[Console components and styles](console-ui.md).
 
 ## Run locally
 
@@ -26,6 +27,29 @@ python3 -m http.server 6006 --bind 127.0.0.1 \
 Serve at the origin root for absolute `/console/` URLs. Build fingerprints keep
 cached fixture pages and module imports current. CI uploads a static artifact
 without publishing the documentation site.
+
+## Write Console modules in TypeScript
+
+Put browser code in `.mts` files and import the public `.mjs` path. TypeScript
+resolves that import to the source file. `pnpm typecheck` checks it against browser
+APIs and rejects syntax that needs more than type erasure.
+
+Add the source path to the controller's allowlist in
+`apps/controller/src/console-assets.ts`. The controller and Storybook both use
+Node 24 to remove types, preserve line numbers, and serve JavaScript at the same
+URL as before.
+
+Node resolves imports literally, including imports inside an `.mts` file. Point
+Node callers of a standalone module directly at its `.mts` source. For example,
+when the starter model moves, change the first-agent scripts and test helpers to
+import `agents/starter-model.mts`.
+Test browser behavior through the served `.mjs` URLs, where the controller
+resolves the whole module graph.
+
+Keep a temporary source forwarder such as `dom.mjs` only while a Node caller
+still reaches that exact path. Renaming the caller alone leaves the import in
+place. Remove the forwarder, then run those consumers and the browser tests to
+verify both paths. A browser-only module needs no forwarder.
 
 ## Appearance review
 
@@ -61,6 +85,7 @@ Stories reach error states through real controls after loading fixture data.
 | Agents                                                                     | Populated, empty, no matches, loading, inaccessible Namespaces, denied or failed reads; row Stop and Delete restrictions, refusals, uncertain outcomes.                                                                                                                                                                                                                                                           |
 | Backends                                                                   | Configured, empty, discovery failure, and access denied.                                                                                                                                                                                                                                                                                                                                                          |
 | [Namespaces](../../scripts/console-storybook/namespace-create-workflow.md) | Creation, status cards, empty, denied, recovery.                                                                                                                                                                                                                                                                                                                                                                  |
+| [Secrets](../../scripts/console-storybook/secrets-workflow.md)             | Namespace listing, search, creation, masked values, consumers, replacement, deletion, missing values, readiness, denials, conflicts, and uncertain saves.                                                                                                                                                                                                                                                         |
 | Settings and navigation                                                    | Account, sign-out failure, unknown route.                                                                                                                                                                                                                                                                                                                                                                         |
 | Create Agent                                                               | Installed default, missing/loading/denied Presets, Preset variables, fixed model choices before credential entry and manual model IDs, OpenAI Codex/OpenClaw and Anthropic OpenClaw harnesses, Service Accounts switching and bound Presets, seeded workspace files, storage/grant denial, repository selection/discovery and rejected-grant recovery, invalid JSON, partial save/conflict, unknown save outcome. |
 | Agent detail                                                               | First and later drafts, version details, native JSON and plugin editors, immutable plugin snapshot, queued/running/succeeded/failed activity, exact-version diagnostics, error and permission states.                                                                                                                                                                                                             |
@@ -155,9 +180,9 @@ Moved to [Agent workflows](console-storybook-agent-workflows.md#delete).
 `scripts/console-storybook/` installs from its own manifest and lockfile under the
 seven-day release-age policy, independently of root dependencies.
 
-- `prepare-assets.mjs` copies current console assets and the controller-served
-  shared contract modules into ignored `dist/assets/`. Rebuild after source
-  edits; the development server does not recopy sources.
+- `prepare-assets.mjs` reads the public Console assets through the controller's
+  asset reader, then versions the preview in `dist/assets/`. Rebuild after source
+  edits so the development server serves the new assets.
 - `public/scenarios.mjs` owns story descriptions, initial data options, failure
   responses, automatic setup actions, and workflow instructions.
 - `public/fixtures.mjs` intercepts API calls inside the preview. Unconfigured
@@ -165,8 +190,9 @@ seven-day release-age policy, independently of root dependencies.
   also blocks network connections. Authentication and authorization
   responses are examples, not a security implementation.
 - `public/frame.mjs` starts the production console and opens configured controls.
-- `*.stories.mjs` exports named stories by group; `story.mjs` adds instructions,
-  UI-gap notices, the preview, and Reset story.
+- `*.stories.ts` exports named stories by group. `story.ts` adds instructions,
+  UI-gap notices, the preview, and Reset story. The repository's `pnpm typecheck`
+  checks these files without installing the separate Storybook dependencies.
 
 Update scenarios and instructions with console changes, exporting new scenarios
 from their owning story file. Configure API responses; the console owns failure

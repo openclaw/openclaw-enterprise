@@ -168,6 +168,9 @@ type runtimeLogStub struct {
 	harness map[string]any
 	// forbidden lists revisions whose runtime description is refused with 403.
 	forbidden []string
+	// permissions is the caller's Agent permission summary; empty grants all
+	// four, and "forbidden" refuses the read.
+	permissions string
 }
 
 func (stub *runtimeLogStub) serve(response http.ResponseWriter, request *http.Request) {
@@ -175,6 +178,10 @@ func (stub *runtimeLogStub) serve(response http.ResponseWriter, request *http.Re
 	switch {
 	case request.URL.Path == "/namespaces/ns_1/agents/agt_1":
 		fmt.Fprintf(response, `{"data":{"id":"agt_1","activeRevisionId":%q},"meta":{}}`, stub.activeID)
+	case request.URL.Path == "/namespaces/ns_1/agents/agt_1/permissions" && stub.permissions == "forbidden":
+		logError(http.StatusForbidden, "FORBIDDEN", nil)(response, nil)
+	case request.URL.Path == "/namespaces/ns_1/agents/agt_1/permissions":
+		fmt.Fprintf(response, `{"data":%s,"meta":{}}`, cmp.Or(stub.permissions, `{"update":true,"deploy":true,"operate":true,"delete":true}`))
 	case request.URL.Path == "/namespaces/ns_1/agents/agt_1/revisions":
 		fmt.Fprintf(response, `{"data":%s,"meta":{}}`, cmp.Or(stub.revisions, "[]"))
 	case request.URL.Path == "/namespaces/ns_1/agents/agt_1/revisions/"+stub.activeID:
@@ -403,11 +410,64 @@ func TestAgentLogsRejectsInvalidFlagsBeforeAnyRequest(t *testing.T) {
 		stub := &runtimeLogStub{t: t}
 		_, _, err := runLogsCommand(t, context.Background(), stub, args...)
 		// The hint keeps the selected Namespace so the copied command targets the same Agent.
-		if err == nil || !strings.Contains(err.Error(), `agent agt_1 has no readable revisions; run "occ --namespace ns_1 agent deploy agt_1" first`) {
+		if err == nil || err.Error() != `agent agt_1 has no active revision and no revision you can read; if it was never deployed, run "occ --namespace ns_1 agent deploy agt_1" first; otherwise listing revisions needs revision read (ask an administrator to grant it), or pass --revision with a revision ID` {
 			t.Fatalf("follow=%v: expected a missing revision error, got %v", follow, err)
 		}
 		if len(stub.queries) != 0 {
 			t.Fatalf("follow=%v: sent %d log requests for an Agent without revisions", follow, len(stub.queries))
+		}
+	}
+}
+
+// OCC lists only the revisions the caller may read. A log reader without
+// revision read lists none: the default selection says which revision it reads
+// and what it could not check, and with no active revision names the grant and
+// --revision instead of telling a caller who cannot deploy to deploy (finding 522).
+func TestAgentLogsNameTheRevisionGrantWhenNoRevisionIsReadable(t *testing.T) {
+	stub := &runtimeLogStub{t: t, activeID: "rev_1", pages: []func(http.ResponseWriter, url.Values){
+		logPage("", logLine(1, "info", "active output")),
+	}}
+	out, errOut, err := runLogsCommand(t, context.Background(), stub, "agent", "logs", "agt_1", "--source", "gateway")
+	if err != nil {
+		t.Fatalf("logs: %v", err)
+	}
+	if !strings.Contains(out, "active output") || !slices.Contains(stub.paths, "/namespaces/ns_1/agents/agt_1/deployments/rev_1/runtime/logs") {
+		t.Fatalf("logs output = %q, requests = %v", out, stub.paths)
+	}
+	if want := "notice: reading the active revision rev_1; you can read none of agent agt_1's revisions, so a newer or failed revision was not checked (listing revisions needs revision read)\n"; errOut != want {
+		t.Fatalf("logs notice = %q, want %q", errOut, want)
+	}
+
+	// Runtime status needs revision read itself, so its refusal hint names the
+	// grant; the notice does not repeat it.
+	_, runtimeOut, err := runLogsCommand(t, context.Background(), &runtimeLogStub{t: t, activeID: "rev_1"}, "agent", "runtime", "agt_1")
+	if err != nil || runtimeOut != "notice: reading the active revision rev_1\n" {
+		t.Fatalf("runtime notice = %q, err = %v", runtimeOut, err)
+	}
+
+	reader := `{"update":false,"deploy":false,"operate":false,"delete":false}`
+	logsError := "agent agt_1 has no active revision and no revision you can read; listing revisions needs revision read (ask an administrator to grant it), or pass --revision with a revision ID"
+	for _, test := range []struct {
+		args        []string
+		permissions string
+		want        string
+	}{
+		{[]string{"agent", "logs", "agt_1", "--source", "gateway"}, reader, logsError},
+		// Runtime status itself needs revision read, so --revision is no way around it.
+		{
+			[]string{"agent", "runtime", "agt_1"}, reader,
+			"agent agt_1 has no active revision and no revision you can read; listing revisions needs revision read (ask an administrator to grant it)",
+		},
+		// An unreadable permission summary cannot show deploy access: no deploy advice.
+		{[]string{"agent", "logs", "agt_1", "--source", "gateway"}, "forbidden", logsError},
+	} {
+		stub := &runtimeLogStub{t: t, permissions: test.permissions}
+		_, _, err := runLogsCommand(t, context.Background(), stub, test.args...)
+		if err == nil || err.Error() != test.want {
+			t.Fatalf("%v: error = %v, want %q", test.args, err, test.want)
+		}
+		if len(stub.queries) != 0 || slices.ContainsFunc(stub.paths, func(path string) bool { return strings.Contains(path, "/deployments/") }) {
+			t.Fatalf("%v: read a revision without one to read: %v", test.args, stub.paths)
 		}
 	}
 }
@@ -1179,5 +1239,37 @@ func TestExplicitEmptyFlagValuesAreRefusedBeforeAnyWork(t *testing.T) {
 	command.SetArgs(append(slices.Clone(connection), "agent", "runtime", "agt_1", "--revision", "rev_1", "--ca-bundle="))
 	if err := command.Execute(); err == nil || requests != 1 {
 		t.Fatalf("--ca-bundle=: error = %v after %d requests, want the server's error after 1", err, requests)
+	}
+}
+
+// The real client must retain policy diagnostics through the ordinary CLI error path.
+func TestPolicyUpdatePrintsConfigurationDetails(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPut || request.URL.Path != "/namespaces/"+testNamespaceID+"/agents/"+testAgentID+"/sandbox-policy/networking" {
+			t.Errorf("unexpected policy request: %s %s", request.Method, request.URL.Path)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		writer.WriteHeader(http.StatusConflict)
+		fmt.Fprint(writer, `{"error":{"code":"RESOURCE_CONFLICT","message":"The requested network policy exceeds the Installation delegation ceiling.","details":[{"path":"/additions/0","code":"OUTSIDE_CEILING","message":"The grant exceeds the Installation delegation ceiling."},{"path":"/additions/1","code":"INVALID_VALUE","message":"invalid \u001b[31mvalue","providerPayload":"must-not-print"},{"path":"/additions/2","code":"INVALID_VALUE","message":"invalid \u007fvalue"},{"path":"/additions/3","code":"INVALID_VALUE","message":"invalid \u009bvalue"}]},"meta":{}}`)
+	}))
+	defer server.Close()
+	key := writeKeyFile(t, `{"data":{"key":"test-key"}}`)
+	file := filepath.Join(t.TempDir(), "policy.json")
+	if err := os.WriteFile(file, []byte(`{"expectedVersion":1,"additions":[]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	command := New(io.Discard, io.Discard)
+	command.SetArgs([]string{"--url", server.URL, "--service-key-file", key, "--namespace", testNamespaceID, "agent", "policy", "update", testAgentID, "--file", file})
+	err := command.Execute()
+	if err == nil {
+		t.Fatal("policy rejection was not returned")
+	}
+	for _, want := range []string{"The requested network policy exceeds the Installation delegation ceiling.", `"path":"/additions/0"`, `"code":"OUTSIDE_CEILING"`, `"message":"The grant exceeds the Installation delegation ceiling."`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("missing diagnostic %q in %s", want, err)
+		}
+	}
+	if strings.ContainsAny(err.Error(), "\x1b\x7f\u009b") || strings.Contains(err.Error(), "/additions/1") || strings.Contains(err.Error(), "/additions/2") || strings.Contains(err.Error(), "/additions/3") || strings.Contains(err.Error(), "providerPayload") || strings.Contains(err.Error(), "must-not-print") {
+		t.Fatalf("unsafe error fields were printed: %q", err.Error())
 	}
 }

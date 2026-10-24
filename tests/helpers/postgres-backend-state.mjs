@@ -277,6 +277,7 @@ export function createBackendController(fixture, options = {}) {
   const controller = new OpenClawController(fixture.installation, {
     state: fixture.state,
     backends,
+    driverConfigurations: options.driverConfigurations,
     nativeWorkerSupport: options.nativeWorkerSupport,
     now: options.now,
   });
