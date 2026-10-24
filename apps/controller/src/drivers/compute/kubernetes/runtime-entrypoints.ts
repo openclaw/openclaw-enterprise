@@ -215,8 +215,8 @@ function serveHeldRuntimeFailureToTransportPeer(check, code, cause) {
 // longest delay a Node.js timer honours (MAX_TIMER_DELAY_MS in @openclaw-enterprise/utils, which
 // this script cannot import). The request timeout feeds AbortSignal.timeout, where Number() read
 // "12abc" as NaN, "" as 0 and 3e9 as a timer that fires after 1 ms (finding 2312); the install
-// deadline shares the bound. The script stays terse: the dedicated Harness command is within a
-// few hundred bytes of the exec string budget.
+// deadline shares the bound. Whole-line comments here cost nothing at runtime: nodeProgramArguments
+// drops them before the dedicated Harness command is measured against the exec string budget.
 export const PLUGIN_RUNTIME_HELPERS = String.raw`
 const pluginRuntimeTranslator = (${PLUGIN_RUNTIME_TRANSLATOR_SOURCE})();
 const {

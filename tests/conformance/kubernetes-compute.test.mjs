@@ -15,13 +15,20 @@ import { inspect } from "node:util";
 import { inflateRawSync } from "node:zlib";
 import test from "node:test";
 import {
+  AGENT_READINESS_ENTRYPOINT,
   AGENT_RUNTIME_ENTRYPOINT,
   AGENT_WITH_NODE_ENTRYPOINT,
   GATEWAY_RUNTIME_ENTRYPOINT,
+  NATIVE_WORKER_ENTRYPOINT,
+  PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
+  PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
   RUNTIME_WRAPPER_COMMAND,
   SETUP_WRAPPER_COMMAND,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
-import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
+import {
+  nodeProgramArguments,
+  withoutLineComments,
+} from "../../apps/controller/src/drivers/compute/node-program.ts";
 import {
   admitLoggingConfiguration,
   presetTemplateDefaultsWithPlaceholders,
@@ -2534,6 +2541,46 @@ test("dedicated startup initializes Harness plugins before enrolling its workspa
   const command = [...harness.command, ...harness.args];
   assert.equal(command[0], "/usr/bin/tini");
   assert.ok(Buffer.byteLength(JSON.stringify(command)) <= EXEC_STRING_BUDGET);
+  const program = inflateRawSync(
+    Buffer.from(command.slice(command.indexOf("-e", 4) + 2).join(""), "base64"),
+  );
+  assert.doesNotMatch(program.toString("utf8"), /^[ \t]*\/\//m);
+});
+
+// Whole-line comments were about a fifth of the dedicated Harness command, which had
+// ~170 bytes left under the budget (finding 2326). Rendered programs drop them, and the
+// TypeScript printer, which drops comments too, proves nothing else changed.
+test("rendered runtime programs reach node without whole-line comments", () => {
+  const ts = createRequire(import.meta.url)("typescript");
+  const printer = ts.createPrinter({ removeComments: true });
+  const code = (text) =>
+    printer.printFile(ts.createSourceFile("program.js", text, ts.ScriptTarget.Latest));
+  for (const [name, program] of Object.entries({
+    AGENT_READINESS_ENTRYPOINT,
+    AGENT_RUNTIME_ENTRYPOINT,
+    AGENT_WITH_NODE_ENTRYPOINT,
+    NATIVE_WORKER_ENTRYPOINT,
+    PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
+    PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
+  })) {
+    const sent = withoutLineComments(program);
+    assert.match(program, /^[ \t]*\/\//m, name);
+    assert.doesNotMatch(sent, /^[ \t]*\/\//m, name);
+    assert.equal(code(sent), code(program), name);
+    const [, ...pieces] = nodeProgramArguments(program);
+    assert.equal(inflateRawSync(Buffer.from(pieces.join(""), "base64")).toString("utf8"), sent);
+  }
+  // A `//` line can sit inside a template literal, a continued string or a block comment;
+  // a program with any of those (the Gateway entrypoint has a "/*" glob) is left whole.
+  for (const program of [
+    GATEWAY_RUNTIME_ENTRYPOINT,
+    "const text = `\n// kept\n`;\n",
+    'const text = "a\\\n// kept";\n',
+    "/*\n// kept */\nrun();\n",
+  ]) {
+    assert.equal(withoutLineComments(program), program);
+  }
+  assert.equal(withoutLineComments("// gone\n  // gone\nrun(); // kept\n"), "run(); // kept\n");
 });
 
 // Every Agent enrolled before file delivery has a recorded deviceId and an
@@ -17989,7 +18036,7 @@ test("rendered exec arguments and environment values stay within the per-string 
       const program = containerProgram(spec.template.spec.containers[0]);
       assert.ok(
         [GATEWAY_RUNTIME_ENTRYPOINT, AGENT_RUNTIME_ENTRYPOINT, AGENT_WITH_NODE_ENTRYPOINT].some(
-          (entrypoint) => program.endsWith(entrypoint),
+          (entrypoint) => program.endsWith(withoutLineComments(entrypoint)),
         ),
       );
     }
@@ -18009,7 +18056,8 @@ test(
   },
   () => {
     // Incompressible padding keeps several pieces after compression.
-    const padding = `// ${randomBytes(150 * 1024).toString("base64")}\n`;
+    // A string statement, since whole-line comments never reach the loader.
+    const padding = `"${randomBytes(150 * 1024).toString("base64")}";\n`;
     const program = `${padding}const observed = { argv: process.argv.slice(1), file: __filename,
     required: typeof require("node:fs").readFileSync };
 process.stdout.write(JSON.stringify(observed));
