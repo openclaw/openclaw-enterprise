@@ -1143,6 +1143,25 @@ func TestRedirectIsReportedWithItsTargetAndNotFollowed(t *testing.T) {
 	}
 }
 
+// A missing endpoint or service key names the setting to fix instead of a
+// file or connection error.
+func TestMissingConnectionSettingsNameTheSetting(t *testing.T) {
+	t.Setenv("OCC_URL", "")
+	t.Setenv("OCC_SERVICE_KEY_FILE", "")
+	t.Setenv("OCC_TIMEOUT_SECONDS", "")
+	for _, testCase := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"installation", "get", "--service-key-file", "unused"}, "set OCC_URL or pass --url"},
+		{[]string{"installation", "get", "--url", "http://127.0.0.1:9"}, "set OCC_SERVICE_KEY_FILE or pass --service-key-file"},
+	} {
+		if _, _, err := runHelp(t, testCase.args...); err == nil || err.Error() != testCase.want {
+			t.Fatalf("occ %v error = %v, want %q", testCase.args, err, testCase.want)
+		}
+	}
+}
+
 func TestUnknownTopLevelCommandFailsInsteadOfPrintingHelp(t *testing.T) {
 	// Bare occ validates the global options, so keep the caller's OCC_* values out.
 	for _, name := range []string{"OCC_URL", "OCC_SERVICE_KEY_FILE", "OCC_CA_BUNDLE", "OCC_TIMEOUT_SECONDS", "OCC_NAMESPACE"} {

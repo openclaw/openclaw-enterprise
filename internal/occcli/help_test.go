@@ -54,30 +54,11 @@ func TestHelpAndCompletionIgnoreInvalidConnectionOptions(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "OCC timeout must be a positive integer") {
 		t.Fatalf("installation get error = %v, want the timeout error", err)
 	}
-	// Zero would disable the request deadline, so it is refused too.
+	// Zero is refused too, before the client is built.
 	t.Setenv("OCC_TIMEOUT_SECONDS", "0")
 	_, _, err = runHelp(t, "installation", "get", "--url", "http://127.0.0.1:9", "--service-key-file", "unused")
-	if err == nil || !strings.Contains(err.Error(), "OCC timeout must be a positive integer") {
+	if err == nil || err.Error() != "OCC timeout must be a positive integer number of seconds" {
 		t.Fatalf("installation get with OCC_TIMEOUT_SECONDS=0 error = %v, want the timeout error", err)
-	}
-}
-
-// A missing endpoint or service key names the setting to fix instead of a
-// file or connection error.
-func TestMissingConnectionSettingsNameTheSetting(t *testing.T) {
-	t.Setenv("OCC_URL", "")
-	t.Setenv("OCC_SERVICE_KEY_FILE", "")
-	t.Setenv("OCC_TIMEOUT_SECONDS", "")
-	for _, testCase := range []struct {
-		args []string
-		want string
-	}{
-		{[]string{"installation", "get", "--service-key-file", "unused"}, "set OCC_URL or pass --url"},
-		{[]string{"installation", "get", "--url", "http://127.0.0.1:9"}, "set OCC_SERVICE_KEY_FILE or pass --service-key-file"},
-	} {
-		if _, _, err := runHelp(t, testCase.args...); err == nil || err.Error() != testCase.want {
-			t.Fatalf("occ %v error = %v, want %q", testCase.args, err, testCase.want)
-		}
 	}
 }
 
