@@ -7127,6 +7127,10 @@ export const scenarios = {
       click("Logs"),
       { text: "Runtime status requires Agent operate" },
       click("Workspace files"),
+      { selector: "#agent-stop-title" },
+      click("Configuration"),
+      { selector: ".version-diagnostics .deployment-heading button:not(:disabled)" },
+      click("Workspace files"),
       {
         selector: 'textarea[id="workspace-AGENTS.md"]:not([readonly])',
         value: "kept across the revocation",
@@ -7137,12 +7141,12 @@ export const scenarios = {
       { selector: '[id="workspace-AGENTS.md"][readonly]', matches: "kept across the revocation" },
     ],
     description:
-      "Workspace files stay parked while Logs reads a newer Agent operate answer. A grant makes them editable on return. A revocation makes them read-only again and keeps unsaved text.",
+      "Workspace files stay parked while Logs reads a newer Agent operate answer. A grant makes them editable on return, shows the Stop row and enables Run diagnostics. A revocation makes them read-only again, keeps unsaved text, hides Stop and disables Run diagnostics.",
     steps: [
-      "Workspace files open read-only, with the note that saving needs Agent operate.",
+      "Workspace files open read-only, with the note that saving needs Agent operate. The Danger zone has no Stop row.",
       "Logs records the runtime-status refusal. Returning to Workspace files keeps that note.",
-      "The next Logs visit reads an operate grant. Returning hides the note and AGENTS.md is editable.",
-      "After the edit, the following Logs visit reads a revocation. Returning keeps the unsaved text and makes AGENTS.md read-only.",
+      "The next Logs visit reads an operate grant. Returning hides the note, AGENTS.md is editable, the Stop row appears, and Configuration offers Run diagnostics.",
+      "After the edit, the following Logs visit reads a revocation. Returning keeps the unsaved text and makes AGENTS.md read-only; Stop hides and Run diagnostics is disabled with its reason.",
     ],
     gap: "The permission changes and runtime refusal are simulated. A failed permission read is not shown; the page keeps the previous answer. The browser test changes the controller's real IAM policy across the same tab visits. The controller still authorizes every write.",
   },

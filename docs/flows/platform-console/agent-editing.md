@@ -286,7 +286,8 @@ has already read. Logs can observe a newer answer while they are parked. A grant
 makes the files editable and hides the explanation. A revocation makes them
 read-only, shows that explanation, and keeps unsaved text. A failed permission
 read keeps the previous answer. The controller still authorizes every write; the
-editor is not that boundary.
+editor is not that boundary. Stop and each version's **Run diagnostics** follow
+the same answer.
 
 On the first read or an explicit **Reload**, only a `404` with code `NOT_FOUND`
 and message `The requested workspace file was not found.` confirms the file is
@@ -351,6 +352,6 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 ## Changelog
 
 - 2026-10-24: Restoring parked Workspace files applies the latest observed Agent operate answer. (pr-3474)
-- 2026-10-22 13:00: Rebuild after a plugin save from the save response, so a Stop requested on the page stays shown. (bughunt-1022b)
+- 2026-10-24 17:30: Stop and Run diagnostics follow the latest observed operate answer. (fix-2328)
 
 [Console Agent editing documentation history](agent-editing/history.md) preserves the older dated entries.

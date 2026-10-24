@@ -89,8 +89,10 @@ workspace Save changes only the selected simulated file.
 **Operate answer on return** keeps that editor mounted. The preview runs the
 visits: the first Logs visit records the runtime-status refusal and Workspace
 files stays read-only; the next Logs visit reads a simulated operate grant and
-AGENTS.md is editable on return; after the edit, the following Logs visit reads
-a revocation, and returning keeps that unsaved text and makes the file read-only.
+AGENTS.md is editable on return, the Stop row shows and Configuration offers Run
+diagnostics; after the edit, the following Logs visit reads a revocation, and
+returning keeps that unsaved text and makes the file read-only, hides Stop and
+disables Run diagnostics.
 Reset story replays it. The permission changes and the runtime refusal are
 simulated. A failed permission read is not this story; the page keeps the previous
 answer. The controller still authorizes every write. The browser test changes the
