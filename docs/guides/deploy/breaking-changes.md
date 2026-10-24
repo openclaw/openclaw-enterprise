@@ -17,6 +17,22 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-24: OpenShell readiness poll interval is capped at 2147483647 ms
+
+**What breaks.** Controller startup refuses an OpenShell Sandbox
+`gateway.readiness.pollIntervalMs` above `2147483647`. Earlier builds accepted
+values up to `9007199254740991`, but Node.js fires a longer timer after 1 ms,
+so the readiness wait polled Kubernetes back to back until `timeoutMs`.
+
+**Who is affected.** Only Installations that set the poll interval above
+`2147483647` (about 24.8 days).
+
+**How to tell.** Startup fails with `STARTUP_FAILED`, and the Installation
+loader reports `/gateway/readiness/pollIntervalMs` as not satisfying `maximum`.
+
+**Steps.** Set the value to `2147483647` or less (or remove it for the
+1-second default), then start the controller again.
+
 ## 2026-10-24: worker timer settings are capped at 2147483647 ms
 
 **What breaks.** `helm install` and `helm upgrade` refuse `worker.pollIntervalMs`
@@ -38,16 +54,23 @@ aborted every claim and polled without pause.
 ## 2026-10-24: chart refuses unquoted numeric or boolean names
 
 **What breaks.** `helm install` and `helm upgrade` refuse a Secret,
-ConfigMap, Secret-key or PersistentVolumeClaim name, or a `dns.namespace`,
-`api.clients[].namespace` or `gatewayRouting.envoyNamespace` value, that YAML or `--set` reads as a number or
-boolean. Earlier charts rendered `secretName: 2024` as `"2024"` and
-`secretName: yes` as `"true"`.
+ConfigMap, Secret-key or PersistentVolumeClaim name, a Gateway or
+GatewayClass name, or a `dns.namespace`, `api.clients[].namespace` or
+`gatewayRouting.envoyNamespace` value, that YAML or `--set` reads as a number or
+boolean. The `openclaw-execution` chart refuses the same for its `routing`
+names, `routing.envoyNamespace` and `dns.namespace`. Earlier charts rendered
+`secretName: 2024` as `"2024"` and `secretName: yes` as `"true"`.
 
 **Who is affected.** Values files with an unquoted name that YAML reads as a
-number or boolean, for example `2024`, `1e3`, `yes`, `on` or `false`.
+number or boolean, for example `2024`, `1e3`, `yes` or `on`. Most optional
+names that read as `false` or `0`, such as `database.caSecretName: false`, still
+count as unset, as before. The execution chart's `routing.gatewayName`,
+`routing.envoyNamespace` and `dns.namespace` have defaults, so it refuses
+`false` there.
 
 **How to tell.** The render fails with `<field> must be a string: quote a value
-YAML reads as a number or boolean, or pass it with --set-string`.
+YAML reads as a number or boolean, or pass it with --set-string`. A required
+name set to `false` or `0` fails as missing instead.
 
 **Steps.** Quote the value in the values file, or pass it with
 `--set-string`, then run the upgrade again.

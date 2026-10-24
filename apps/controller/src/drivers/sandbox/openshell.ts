@@ -53,6 +53,7 @@ import {
 } from "@openclaw-enterprise/occ";
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
+import { MAX_TIMER_DELAY_MS } from "../../worker/timer-settings.ts";
 import type {
   AgentRevision,
   EgressInstallation,
@@ -2136,10 +2137,12 @@ function validateOptions(options: OpenShellSandboxDriverOptions): void {
     const pollIntervalMs = options.gateway.readiness.pollIntervalMs;
     if (
       pollIntervalMs !== undefined &&
-      (!Number.isSafeInteger(pollIntervalMs) || pollIntervalMs < 1)
+      (!Number.isSafeInteger(pollIntervalMs) ||
+        pollIntervalMs < 1 ||
+        pollIntervalMs > MAX_TIMER_DELAY_MS)
     ) {
       throw new OpenShellSandboxConfigurationFailure(
-        "OpenShell gateway readiness poll interval must be a positive safe integer.",
+        `OpenShell gateway readiness poll interval must be a positive safe integer no greater than ${MAX_TIMER_DELAY_MS}.`,
       );
     }
   }
@@ -2241,7 +2244,8 @@ export const configurationSchema = Object.freeze({
             serviceName: { type: "string" },
             podSelector: { type: "object" },
             timeoutMs: { type: "integer", minimum: 1 },
-            pollIntervalMs: { type: "integer", minimum: 1 },
+            // A Node.js timer fires a longer delay after 1 ms.
+            pollIntervalMs: { type: "integer", minimum: 1, maximum: MAX_TIMER_DELAY_MS },
           },
         },
       },
