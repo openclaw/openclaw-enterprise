@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { Agent, request as httpRequest } from "node:http";
 import test from "node:test";
+import { makeWorkDue } from "../helpers/postgres-worker-revision-support.mjs";
 import {
   adminEmail,
   adminPassword,
@@ -22,7 +23,6 @@ import {
   startController,
   verifyPlatformStateStoreContract,
 } from "../helpers/postgres-platform-state.mjs";
-import { makeWorkDue } from "../helpers/postgres-worker-revision-support.mjs";
 
 async function ensureInstallation(state, name) {
   const existing = await state.loadInstallation();
