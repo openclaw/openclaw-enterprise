@@ -1104,6 +1104,30 @@ func TestAgentRevisionsPagesWithCursor(t *testing.T) {
 	}
 }
 
+// Without --limit, the next-page hint must not add one: "--limit 0" is refused
+// locally, so the advertised command would fail.
+func TestAgentRevisionsNextPageHintOmitsAnUnsetLimit(t *testing.T) {
+	responses := agentRevisionResponses()
+	agentPath := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID
+	responses["GET "+agentPath+"/revisions"] = `raw:200 {"data":[{"id":"` + testRevision2ID + `","revision":2,"createdAt":"2026-09-30T01:00:00.000Z"}],"meta":{"requestId":"req_test","nextCursor":"v1.2"}}`
+	_, notices, _, err := runOCCWithNotices(t, responses, "--namespace", testNamespaceID, "agent", "revisions", testAgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, continuation, found := strings.Cut(notices, `older revisions may exist; run "`)
+	if !found {
+		t.Fatalf("missing next-page command: %q", notices)
+	}
+	continuation, _, _ = strings.Cut(continuation, `"`)
+	if strings.Contains(continuation, "--limit") {
+		t.Fatalf("next-page command adds a --limit the caller did not pass: %q", continuation)
+	}
+	responses["GET "+agentPath+"/revisions"] = `raw:200 {"data":[{"id":"` + testRevision1ID + `","revision":1,"createdAt":"2026-09-30T00:00:00.000Z"}],"meta":{"requestId":"req_test","nextCursor":null}}`
+	if _, requested, err := runOCC(t, responses, strings.Fields(continuation)[1:]...); err != nil || !slices.Contains(requested, "GET "+agentPath+"/revisions?cursor=v1.2") {
+		t.Fatalf("advertised next-page command = %v, requests %v", err, requested)
+	}
+}
+
 // Subject IDs are opaque and can match across identities and groups. Tables
 // must preserve the discriminator that decides whether the grant is direct.
 func TestIAMAccessBindingTablesDistinguishIdentityAndGroupSubjects(t *testing.T) {
