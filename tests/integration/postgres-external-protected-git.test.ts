@@ -74,6 +74,10 @@ if (conversationRequired) {
   await access(codex, constants.X_OK);
 }
 
+// The worker reconciles a protected Git Driver every second. These cases count reconcile passes
+// (and wait for passes to settle deliveries), so they bind the same loop with a shorter wait.
+const transportOptions = { reconcileIntervalMs: 100 };
+
 // Production package selection, OCC deployment, worker and custody. The external package,
 // its workload, Kubernetes placement, GitHub and the private Git origin are controlled locally.
 const journeyOptions = { ...requiresPostgres, timeout: 240_000 };
@@ -588,7 +592,13 @@ function externalGitJourney(
         report: (code) => emit({ event: "worker.repository-owner", code }),
       });
     prepared = await startOwner();
-    transport = await bindRepositoryGitTransport(drivers, prepared, f.observerPool, emit);
+    transport = await bindRepositoryGitTransport(
+      drivers,
+      prepared,
+      f.observerPool,
+      emit,
+      transportOptions,
+    );
     assert.ok(transport);
     const { peer } = cedar;
     deliveryDiagnostic = () => ({
@@ -1538,7 +1548,13 @@ function externalGitJourney(
           await transport!.close();
           await prepared.close();
           prepared = await startOwner();
-          transport = await bindRepositoryGitTransport(drivers, prepared, pool, emit);
+          transport = await bindRepositoryGitTransport(
+            drivers,
+            prepared,
+            pool,
+            emit,
+            transportOptions,
+          );
           await expireStoppedClaims(f, revision);
           await f.start(compute, {
             emit,
@@ -1831,7 +1847,13 @@ function externalGitJourney(
         await transport!.close();
         await prepared.close();
         prepared = await startOwner();
-        transport = await bindRepositoryGitTransport(drivers, prepared, pool, emit);
+        transport = await bindRepositoryGitTransport(
+          drivers,
+          prepared,
+          pool,
+          emit,
+          transportOptions,
+        );
         await expireStoppedClaims(f, revision);
         await f.start(compute, {
           emit,
