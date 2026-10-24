@@ -181,14 +181,14 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 "tag ` + runtimeImage + ` ` + staging + `") ;;
 "image inspect --format {{json .RepoTags}} ` + staging + `") echo '["` + staging + `"]' ;;
 "image inspect --format {{.Os}}/{{.Architecture}} ` + staging + `") echo linux/amd64 ;;
-"image save --platform linux/amd64 --output "*) ;;
+"image save --platform linux/amd64 "*) printf archive ;;
+"exec -i k3d-occ-dev-order-server-0 ctr -n k8s.io images import --all-platforms -") IFS= read -r data || :; [ "$data" = archive ] && [ "$KUBECONFIG" = ` + shellQuote(filepath.Join(state, "kubeconfig")) + ` ] && [ -f "$KUBECONFIG" ] && [ -f ` + shellQuote(filepath.Join(state, "container-kubeconfig")) + ` ] ;;
 "exec k3d-occ-dev-order-server-0 ctr -n k8s.io images list") echo '` + staging + ` application/vnd.oci.image.manifest.v1+json ` + profileTestDigest + `' ;;
 "exec k3d-occ-dev-order-server-0 ctr -n k8s.io images tag ` + staging + ` ` + imported + `") ;;
 "image rm ` + staging + `") ;;`,
 				"k3d": `"cluster list -o json") if [ -f ` + shellQuote(filepath.Join(root, "created")) + ` ]; then echo '[{"name":"occ-dev-order"}]'; else echo '[]'; fi ;;
 "cluster create occ-dev-order "*) : > ` + shellQuote(filepath.Join(root, "created")) + ` ;;
 "kubeconfig get occ-dev-order") printf '%s\n' 'contexts:' '- name: k3d-occ-dev-order' '  context:' '    cluster: owned' 'clusters:' '- name: owned' '  cluster:' '    server: https://127.0.0.1:6443' ;;
-"image import --mode direct "*) [ "$KUBECONFIG" = ` + shellQuote(filepath.Join(state, "kubeconfig")) + ` ] && [ -f "$KUBECONFIG" ] && [ -f ` + shellQuote(filepath.Join(state, "container-kubeconfig")) + ` ] ;;
 "cluster delete occ-dev-order") ` + deleteResult + ` ;;`,
 				"kubectl": `"--kubeconfig "*" --context k3d-occ-dev-order get --raw=/version") ` + apiResult + ` ;;`,
 				"helm":    `"show chart "*) exit 45 ;;`,
@@ -261,9 +261,9 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 			previous := -1
 			stages := []string{"k3d cluster create ", "docker exec k3d-occ-dev-order-server-0 nslookup ", "k3d kubeconfig get ", "kubectl --kubeconfig "}
 			if driver == "none" && scenario != "API failure" {
-				stages = append(stages, "docker tag "+runtimeImage, "k3d image import ", "docker exec k3d-occ-dev-order-server-0 ctr -n k8s.io images tag ", "node scripts/prepare-development-codex-seccomp.mjs ")
+				stages = append(stages, "docker tag "+runtimeImage, "docker exec -i k3d-occ-dev-order-server-0 ctr -n k8s.io images import ", "docker exec k3d-occ-dev-order-server-0 ctr -n k8s.io images tag ", "node scripts/prepare-development-codex-seccomp.mjs ")
 			} else {
-				if index("k3d image import ") >= 0 || index("node ") >= 0 {
+				if index("docker exec -i ") >= 0 || index("node ") >= 0 {
 					t.Fatal("runtime work preceded its prerequisite")
 				}
 			}

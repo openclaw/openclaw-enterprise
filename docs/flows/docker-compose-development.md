@@ -167,11 +167,12 @@ preparation, routing-controller installation, then runtime-import order. Both
 paths retain the later network-isolation and authenticated readiness gates.
 
 `internal/occdev/kubernetes.go:importDevelopmentImage` exports each selected
-image to a temporary archive, selecting its Linux platform explicitly on Docker.
-`internal/occdev/k3d_import.go:importArchiveDirect` streams that archive into
-k3d; only its known closed-stream race retries, with at most three total attempts. The launcher
-then resolves the imported digest from containerd, rejects missing or ambiguous
-results, and removes the archive. Tagged local builds use this same path.
+image, selecting its Linux platform explicitly on Docker.
+`internal/occdev/k3d_import.go:importImageIntoNode` streams that export through
+the engine's `exec` into `ctr images import` on the node, with no archive on disk,
+and reports which side failed. The launcher then resolves the imported digest
+from containerd and rejects missing or ambiguous results. Tagged local builds use
+this same path.
 
 ### 5. Prepare the optional OpenShell development profile
 

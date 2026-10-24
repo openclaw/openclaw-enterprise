@@ -205,7 +205,7 @@ func (r *runner) prepareOpenShell(ctx context.Context, state *developmentState, 
 		{"sandbox", images.sandbox, &assets.sandboxImage},
 		{"supervisor", images.supervisor, &assets.supervisorImage},
 	} {
-		imported, err := r.importOpenShellImage(ctx, state, root, selected.component, selected.source, images.revision != "")
+		imported, err := r.importOpenShellImage(ctx, state, selected.component, selected.source, images.revision != "")
 		if err != nil {
 			return nil, err
 		}
@@ -265,7 +265,7 @@ func (r *runner) renderOpenShellWorkspaceResources(ctx context.Context, chart, g
 	return resources, nil
 }
 
-func (r *runner) importOpenShellImage(ctx context.Context, state *developmentState, root, component, source string, localOnly bool) (result string, resultErr error) {
+func (r *runner) importOpenShellImage(ctx context.Context, state *developmentState, component, source string, localOnly bool) (result string, resultErr error) {
 	if _, err := r.output(ctx, r.engine, "image", "inspect", source); err != nil {
 		if localOnly {
 			return "", fmt.Errorf("OpenShell candidate image must still exist locally at import: %s", source)
@@ -301,21 +301,7 @@ func (r *runner) importOpenShellImage(ctx context.Context, state *developmentSta
 	if !strings.HasPrefix(platform, "linux/") {
 		return "", fmt.Errorf("OpenShell %s image must contain a Linux platform", component)
 	}
-	archive := filepath.Join(root, component+"-image.tar")
-	defer func() {
-		if err := os.Remove(archive); err != nil && !os.IsNotExist(err) {
-			resultErr = errors.Join(resultErr, fmt.Errorf("remove OpenShell %s image archive: %w", component, err))
-		}
-	}()
-	saveArgs := []string{"image", "save"}
-	if r.engine == "docker" {
-		saveArgs = append(saveArgs, "--platform", platform)
-	}
-	saveArgs = append(saveArgs, "--output", archive, recorded)
-	if err := r.run(ctx, r.engine, saveArgs...); err != nil {
-		return "", err
-	}
-	if err := r.importArchiveDirect(ctx, archive, state.Cluster); err != nil {
+	if err := r.importImageIntoNode(ctx, state.Cluster, recorded, platform); err != nil {
 		return "", err
 	}
 

@@ -6,7 +6,6 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -131,7 +130,7 @@ var imageDigest = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 // local image.
 //
 // Docker can record a familiar Docker Hub name. Podman qualifies a local
-// build tagged `name:tag` as `localhost/name:tag`. Both `k3d image import`
+// build tagged `name:tag` as `localhost/name:tag`. Both the engine's image save
 // and containerd match the recorded name, so later steps must use it.
 func (r *runner) engineImageReference(ctx context.Context, image string) (string, error) {
 	data, err := r.output(ctx, r.engine, "image", "inspect", "--format", "{{json .RepoTags}}", image)
@@ -266,21 +265,7 @@ func (r *runner) importDevelopmentImage(ctx context.Context, s *developmentState
 	if !strings.HasPrefix(platform, "linux/") {
 		return "", fmt.Errorf("development image must contain a Linux platform: %s", image)
 	}
-	archive := filepath.Join(s.directory, "development-import.tar")
-	defer func() {
-		if err := os.Remove(archive); err != nil && !os.IsNotExist(err) {
-			resultErr = errors.Join(resultErr, fmt.Errorf("remove development image archive: %w", err))
-		}
-	}()
-	saveArgs := []string{"image", "save"}
-	if r.engine == "docker" {
-		saveArgs = append(saveArgs, "--platform", platform)
-	}
-	saveArgs = append(saveArgs, "--output", archive, selected)
-	if err := r.run(ctx, r.engine, saveArgs...); err != nil {
-		return "", err
-	}
-	if err := r.importArchiveDirect(ctx, archive, s.Cluster); err != nil {
+	if err := r.importImageIntoNode(ctx, s.Cluster, selected, platform); err != nil {
 		return "", err
 	}
 	server := "k3d-" + s.Cluster + "-server-0"
