@@ -267,10 +267,14 @@ for (const mutation of ["recreated home", "wider home mode", "replaced credentia
     const { CODEX_HOME: home, TMPDIR: root } = fixture.environment;
     if (mutation === "recreated home") {
       const entries = fs.readdirSync(home);
-      for (const entry of entries) fs.renameSync(join(home, entry), join(root, entry));
+      for (const entry of entries) {
+        fs.renameSync(join(home, entry), join(root, entry));
+      }
       fs.rmdirSync(home);
       fs.mkdirSync(home, { mode: 0o700 });
-      for (const entry of entries) fs.renameSync(join(root, entry), join(home, entry));
+      for (const entry of entries) {
+        fs.renameSync(join(root, entry), join(home, entry));
+      }
     } else if (mutation === "wider home mode") {
       fs.chmodSync(home, 0o755);
     } else {

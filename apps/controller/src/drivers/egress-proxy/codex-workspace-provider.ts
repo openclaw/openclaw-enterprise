@@ -549,30 +549,46 @@ function validPolicyBundle(
   body: Record<string, unknown> | undefined,
   leaked: (value: string) => boolean,
 ): boolean {
-  if (!body || Object.keys(body).length !== 2) return false;
+  if (!body || Object.keys(body).length !== 2) {
+    return false;
+  }
   let remaining = 4096;
   const decodedIsSafe = (contents: string): boolean => {
     const pending: { value: unknown; depth: number }[] = [];
     const push = (value: unknown, depth: number): boolean => {
-      if (--remaining < 0 || depth > 32) return false;
+      if (--remaining < 0 || depth > 32) {
+        return false;
+      }
       pending.push({ value, depth });
       return true;
     };
-    if (!push(parseToml(contents, { maxDepth: 32, integersAsBigInt: true }), 0)) return false;
+    if (!push(parseToml(contents, { maxDepth: 32, integersAsBigInt: true }), 0)) {
+      return false;
+    }
     while (pending.length) {
       const entry = pending.pop();
-      if (!entry) return false;
+      if (!entry) {
+        return false;
+      }
       const { value, depth } = entry;
       if (typeof value === "string") {
-        if (leaked(value)) return false;
+        if (leaked(value)) {
+          return false;
+        }
       } else if (value instanceof TomlDate) {
         // Dates are typed TOML scalars, not containers or strings to reserialize.
         continue;
       } else if (Array.isArray(value)) {
-        for (const child of value) if (!push(child, depth + 1)) return false;
+        for (const child of value) {
+          if (!push(child, depth + 1)) {
+            return false;
+          }
+        }
       } else if (value && typeof value === "object") {
         const table = asRecord(value);
-        if (!table) return false;
+        if (!table) {
+          return false;
+        }
         for (const key in table) {
           // Include special own keys such as __proto__, never inherited properties.
           if (Object.hasOwn(table, key) && (leaked(key) || !push(table[key], depth + 1))) {
@@ -601,8 +617,9 @@ function validPolicyBundle(
         identities.has(fragment.id) ||
         typeof fragment.name !== "string" ||
         typeof fragment.contents !== "string"
-      )
+      ) {
         return false;
+      }
       identities.add(fragment.id);
       return decodedIsSafe(fragment.contents);
     });

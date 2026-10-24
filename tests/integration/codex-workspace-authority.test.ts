@@ -968,8 +968,9 @@ constructor = "${escaped(value)}"`,
         "a = " + "[".repeat(40) + "0" + "]".repeat(40),
         "a = [" + Array(4097).fill("0").join(",") + "]",
         "[" + Array(40).fill("a").join(".") + "]\nb = 1",
-      ])
+      ]) {
         assert.equal(protect("policy", policyWith(key, invalid)), undefined);
+      }
       const scalars = policyWith(
         key,
         'date = 1979-05-27T07:32:00Z\ntime = 07:32:00\ninteger = 9223372036854775807\nfloat = inf\n"__proto__" = "safe"\n"constructor" = "safe"',
@@ -997,8 +998,9 @@ constructor = "${escaped(value)}"`,
         { enterprise_managed: [{ id: "a", name: "policy", contents: token }] },
         { enterprise_managed: [{ id: "a", name: "policy", contents: "x".repeat(65536) }] },
         { enterprise_managed: fragments, unknown: true },
-      ])
+      ]) {
         assert.equal(protect("policy", { ...policy, [key]: layer }), undefined);
+      }
     }
     const catalog = protect("models", { models: [nativeModel("other-model"), nativeModel()] });
     assert.ok(catalog);
