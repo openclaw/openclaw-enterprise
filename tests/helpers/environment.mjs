@@ -4,8 +4,9 @@
 
 const restores = new WeakMap();
 
-// Sets `values` in process.env until the test that owns `t` ends. Several calls for one
-// test are undone in reverse order, so an entry set twice ends as it was before the first.
+// Sets `values` in process.env until the test that owns `t` ends. All calls for one test
+// are undone together, at the point where the first call registered its `t.after` hook,
+// and in reverse order, so an entry set twice ends as it was before the first call.
 export function setEnvironment(t, values) {
   let stack = restores.get(t);
   if (stack === undefined) {
