@@ -3576,6 +3576,20 @@ test("NetworkPolicy peers from values are refused before install", tooling, asyn
       `${at}.ipBlock.cidr requires an IPv4 or IPv6 CIDR`,
     ],
     [
+      { [`${peer}.ipBlock.cidr`]: "256.0.0.0/8" },
+      `${at}.ipBlock.cidr requires an IPv4 or IPv6 CIDR`,
+    ],
+    [{ [`${peer}.ipBlock.cidr`]: "::/129" }, `${at}.ipBlock.cidr requires an IPv4 or IPv6 CIDR`],
+    // Eight groups without ::, or fewer with exactly one ::.
+    ...["1:2:3:4/64", "1:2:3:4::5:6:7:8/64", "1::2::3/64"].map((cidr) => [
+      { [`${peer}.ipBlock.cidr`]: cidr },
+      `${at}.ipBlock.cidr contains an invalid IPv6 address`,
+    ]),
+    [
+      { [`${peer}.ipBlock.cidr`]: "10.0.0.0/8", [`${peer}.ipBlock.except`]: "10.1.0.0/16" },
+      `${at}.ipBlock.except must be a list of CIDRs`,
+    ],
+    [
       { [`${peer}.ipBlock.cidr`]: "10.0.0.0/8", [`${peer}.ipBlock.except[0]`]: "10.1.0.0" },
       `${at}.ipBlock.except[0] requires an IPv4 or IPv6 CIDR`,
     ],
@@ -3601,8 +3615,24 @@ test("NetworkPolicy peers from values are refused before install", tooling, asyn
       `${at}.podSelector.matchExpressions[0] contains an invalid Kubernetes label key`,
     ],
     [
+      expression("podSelector", { key: "a".repeat(64), operator: "Exists" }),
+      `${at}.podSelector.matchExpressions[0] contains an invalid Kubernetes label key`,
+    ],
+    [
+      { [`${peer}.podSelector.matchExpressions.key`]: "app" },
+      `${at}.podSelector.matchExpressions must be a list`,
+    ],
+    [
+      expression("podSelector", { key: "app", operator: "Exists", value: "edge" }),
+      `${at}.podSelector.matchExpressions[0] has unknown field value`,
+    ],
+    [
       expression("podSelector", { key: "app", operator: "In" }),
       `${at}.podSelector.matchExpressions[0].values must list label values for In and NotIn`,
+    ],
+    [
+      expression("podSelector", { key: "app", operator: "In", "values[0]": "a".repeat(64) }),
+      `${at}.podSelector.matchExpressions[0].values contains an invalid Kubernetes label value`,
     ],
     [
       expression("podSelector", { key: "app", operator: "In", "values[0]": "bad value" }),
@@ -3653,6 +3683,10 @@ test("NetworkPolicy peers from values are refused before install", tooling, asyn
       [{ ipBlock: { cidr: "0.0.0.0/0", except: ["10.0.0.0/8"] } }],
     ],
     [{ [`${peer}.ipBlock.cidr`]: "::/0" }, [{ ipBlock: { cidr: "::/0" } }]],
+    [
+      { [`${peer}.ipBlock.cidr`]: "2001:db8:1:2:3:4:5:6/128" },
+      [{ ipBlock: { cidr: "2001:db8:1:2:3:4:5:6/128" } }],
+    ],
     [
       {
         ...expression("namespaceSelector", {
