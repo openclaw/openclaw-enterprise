@@ -22,7 +22,9 @@ real Installation.
 **What breaks.** Deploying an Agent whose initial workspace setup already
 completed is refused when its Configuration breaks the workspace rule that
 Agent save applies to a pending setup, for example a roster that no longer
-holds only `main`. Each deployment delivers the completed setup, and
+holds only `main`. On SSH Compute this includes any `workspace` on
+`agents.defaults` or `main`, also a path under the Agent's own directory that
+the host accepted. Each deployment delivers the completed setup, and
 preparation refused it again; that failed after its retries with
 `DEPENDENCY_UNAVAILABLE`.
 
@@ -30,7 +32,8 @@ preparation refused it again; that failed after its retries with
 Configuration changed after the first deployment, on any Compute Driver.
 
 **How to tell.** The deploy request answers `400` with the Configuration
-setting's message, as Agent save does, and no version is created.
+setting's message, as Agent save does (or `409` when the selected Sandbox
+cannot receive the files), and no version is created.
 
 **Steps.** Restore the setting, or select a Configuration that meets the rule,
 then deploy again. _untested_

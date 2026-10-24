@@ -133,10 +133,10 @@ with the same messages, at Agent save and in preparation. It accepts both paths 
 either topology, since one volume backs both, and also refuses `skipBootstrap`
 and `skipOptionalBootstrapFiles` on `agents.defaults` or `main`.
 SSH Compute applies the shared roster rule, with its message, at Agent save and
-when deploying an Agent with a setup, pending or completed. With initial workspace files it
-also refuses any `workspace` on `agents.defaults` or `main` there: the host
-always uses a workspace it derives under the Agent's own directory, and checks
-that path again at deployment.
+when deploying an Agent with a setup, pending or completed. With initial
+workspace files it also refuses any `workspace` on `agents.defaults` or `main`
+there: the host always uses a workspace it derives under the Agent's own
+directory, and checks that path again at deployment.
 
 ## Related
 

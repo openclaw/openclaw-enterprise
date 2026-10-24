@@ -7936,8 +7936,8 @@ test("SSH Compute refuses at Agent save and deploy a roster or workspace whose m
   assert.equal(restored.status, 200, JSON.stringify(restored.body));
   const first = await controller.request("POST", `${path}/deploy`);
   assert.equal(first.status, 202, JSON.stringify(first.body));
-  // What the worker records when the first revision activates: the revision becomes active and
-  // the setup completes, in one transaction.
+  // What the worker records when the first revision activates: the revision becomes active,
+  // then the setup completes.
   const [revision] = (await controller.request("GET", `${path}/revisions`)).data;
   await controller.fixture.platformState.transact(async (unit) => {
     await unit.agents.compareAndSetActiveRevision(
