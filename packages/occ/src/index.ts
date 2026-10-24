@@ -1,3 +1,5 @@
+import { verifiedSourceIdentityMatches } from "@openclaw-enterprise/contracts";
+import { proxyHarnessAuthProvider } from "@openclaw-enterprise/contracts";
 import { isReducedCredentialPlan } from "./credential-policy-reduction.ts";
 
 export { reduceCredentialPolicy, isReducedCredentialPlan } from "./credential-policy-reduction.ts";
@@ -5386,6 +5388,35 @@ export class OpenClawController {
       }
       return admitted;
     }
+    if (provider.verifySource || admitted.verifiedIdentity) {
+      if (
+        !verifiedSourceIdentityMatches(admitted) ||
+        (material !== undefined &&
+          (material.kind !== "static" ||
+            material.materialId !== admitted.verifiedIdentity!.materialId ||
+            material.materialVersion !== admitted.verifiedIdentity!.materialVersion ||
+            !(await this.verifiedSourceCurrent(state, admitted, {
+              signal: AbortSignal.timeout(Math.ceil(remaining)),
+              deadlineAt: stream?.until ?? use.request.deadlineAt,
+            }))))
+      ) {
+        return deny("stale_configuration");
+      }
+    }
+    if (use.route.binding.grant.kind === "workspace_inference") {
+      try {
+        const current = provider.normalizeGrant(
+          use.route.binding.grant.models,
+          source.config,
+          source,
+        );
+        if (!isDeepStrictEqual(current, use.route.binding.grant)) {
+          return deny("scope_mismatch");
+        }
+      } catch {
+        return deny("scope_mismatch");
+      }
+    }
     if (material !== undefined) {
       const secret = await state.secrets.findSecret(
         admitted.secret.namespaceId,
@@ -5566,7 +5597,7 @@ export class OpenClawController {
     if (!material.version || !Number.isFinite(Date.parse(material.authoritativeObservedAt))) {
       throw new DependencyUnavailableError("The Secret Driver returned no version evidence.");
     }
-    return immutableCopy({
+    const candidate: StaticEgressSource = immutableCopy({
       key: {
         installationId: this.installation.id,
         namespaceId,
@@ -5583,6 +5614,72 @@ export class OpenClawController {
       resolver: control.resolver,
       retention: "none" as const,
     });
+    if (!provider.verifySource) {
+      return candidate;
+    }
+    const identity = await provider.verifySource(material, {
+      signal,
+      deadlineAt: new Date(Date.now() + CREDENTIAL_GATEWAY_TIMEOUT_MS).toISOString(),
+    });
+    signal.throwIfAborted();
+    const verified: StaticEgressSource = immutableCopy({
+      ...candidate,
+      verifiedIdentity: {
+        issuer: identity.issuer,
+        subject: identity.subject,
+        origin: identity.origin,
+        source: candidate.key,
+        materialRefId: candidate.materialRefId,
+        secret: candidate.secret,
+        secretDriver: candidate.secretDriver,
+        materialId: secret.backendRef.uid,
+        materialVersion: material.version,
+      },
+    });
+    if (
+      !verifiedSourceIdentityMatches(verified) ||
+      !(await this.verifiedSourceCurrent(state, verified, {
+        signal,
+        deadlineAt: new Date(Date.now() + CREDENTIAL_GATEWAY_TIMEOUT_MS).toISOString(),
+      }))
+    ) {
+      throw new DependencyUnavailableError(
+        "The credential owner returned invalid identity evidence.",
+      );
+    }
+    return verified;
+  }
+
+  private async verifiedSourceCurrent(
+    state: PlatformReadView,
+    source: StaticEgressSource,
+    lifetime: import("@openclaw-enterprise/contracts").CredentialReadLifetime,
+  ): Promise<boolean> {
+    if (!verifiedSourceIdentityMatches(source)) {
+      return false;
+    }
+    const proof = source.verifiedIdentity!;
+    const secret = await state.secrets.findSecret(source.secret.namespaceId, source.secret.id);
+    if (
+      !secret ||
+      secret.driverId !== source.secretDriver.id ||
+      secret.backendRef.uid !== proof.materialId
+    ) {
+      return false;
+    }
+    const driver = this.secretDriver(secret.driverId);
+    if (!driver.readCredentialInput) {
+      return false;
+    }
+    const material = await driver.readCredentialInput({ secret, lifetime, retention: "none" });
+    return (
+      !lifetime.signal.aborted &&
+      Date.now() < Date.parse(lifetime.deadlineAt) &&
+      material.version === proof.materialVersion &&
+      Number.isFinite(Date.parse(material.authoritativeObservedAt)) &&
+      Date.parse(material.authoritativeObservedAt) <= Date.now() &&
+      (material.expiresAt === undefined || Date.parse(material.expiresAt) > Date.now())
+    );
   }
 
   private async admitProxyPlan(
@@ -5668,7 +5765,7 @@ export class OpenClawController {
     }
     const reducibleGit =
       gitProfile !== undefined &&
-      gitAuthorization === "exact-dispatch" &&
+      (gitAuthorization === "exact-dispatch" || gitAuthorization === "online-request") &&
       driver.policyReduction?.version === 2;
     if (repositoryGit && sources.length && !reducibleGit) {
       throw new ScopeViolationError(
@@ -5703,6 +5800,22 @@ export class OpenClawController {
       revisionId,
       executionId: repositoryGit ? randomBytes(24).toString("base64url") : crypto.randomUUID(),
     };
+    for (const source of sources) {
+      const admitted = source.egress!;
+      const provider = driver.sourceControl.providers.find((entry) =>
+        isDeepStrictEqual(entry.ref, admitted.key.provider),
+      );
+      if (
+        admitted.adoption === "live" &&
+        (provider?.verifySource || admitted.verifiedIdentity) &&
+        !(await this.verifiedSourceCurrent(state, admitted, {
+          signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+          deadlineAt: new Date(Date.now() + CREDENTIAL_GATEWAY_TIMEOUT_MS).toISOString(),
+        }))
+      ) {
+        throw new DependencyUnavailableError("The source identity evidence is no longer current.");
+      }
+    }
     const routes = sources.flatMap((source) => {
       const admitted = source.egress!;
       const provider = driver.sourceControl.providers.find((entry) =>
@@ -5711,7 +5824,7 @@ export class OpenClawController {
       if (!provider || !isDeepStrictEqual(driver.sourceControl.backend, admitted.key.backend)) {
         throw new DependencyUnavailableError("The admitted egress composition is unavailable.");
       }
-      const grant = provider.normalizeGrant([modelId], source.config);
+      const grant = provider.normalizeGrant([modelId], source.config, source);
       let digestGrant = grant;
       if (source.type === credentialFreeMetadataType && admitted.adoption === "credential_free") {
         const canonical = credentialFreeMetadataGrant(source.config);
@@ -6053,8 +6166,17 @@ export class OpenClawController {
           "A different protected source or grant requires explicit new admission.",
         );
       }
-      const gateway = this.ownedCredentialGatewayDriver(source);
-      const type = await this.credentialSourceType(gateway, source.type);
+      const owner = this.credentialSourceOwner(source);
+      const gateway = owner.kind === "gateway" ? owner.driver : undefined;
+      const type =
+        owner.kind === "proxy"
+          ? owner.driver.sourceControl.providers.find((provider) =>
+              isDeepStrictEqual(provider.ref, source.egress?.key.provider),
+            )?.sourceType
+          : await this.credentialSourceType(owner.driver, source.type);
+      if (!type) {
+        throw new DependencyUnavailableError("The admitted source provider is unavailable.");
+      }
       if (type.deviceAuthorization !== undefined) {
         // Device grants are held by the Refresh Driver, not recorded Secret references.
         // Reconfiguring from an empty reference set could revoke the active grant.
@@ -6120,6 +6242,9 @@ export class OpenClawController {
           throw new ResourceStateConflictError("The protected source changed during admission.");
         }
         return this.credentialSourceMetadata(updated, { state: "ready" });
+      }
+      if (!gateway) {
+        throw new DependencyUnavailableError("The source credential owner is unavailable.");
       }
       const values = await this.readCredentialSourceSecrets(
         state,
@@ -9571,7 +9696,7 @@ export class OpenClawController {
       if (egressPlan === undefined) {
         executionAdmission = { version: 2, mode: "unprotected" };
       } else {
-        let version: 3 | 4 | 5 | 6 | 7 = 3;
+        let version: 3 | 4 | 5 | 6 | 7 | 8 = 3;
         if (egressPlan.repositoryGit) {
           version = 4;
         }
@@ -9582,7 +9707,7 @@ export class OpenClawController {
           version = 6;
         }
         if (egressPlan.repositoryGit && egressPlan.policyReductionVersion === 2) {
-          version = 7;
+          version = egressPlan.repositoryGitAuthorization === "online-request" ? 8 : 7;
         }
         executionAdmission = { version, mode: "protected" };
       }
@@ -10863,7 +10988,7 @@ export class OpenClawController {
         namespaceId,
         id: binding.sourceId,
       });
-      this.assertCredentialGatewaySelected();
+      this.assertCredentialSourceOwnerSelected();
       const source = await state.credentialSources.lockCredentialSource(
         namespaceId,
         binding.sourceId,
@@ -10873,7 +10998,11 @@ export class OpenClawController {
           "The Harness credential source is unavailable in the exact Namespace.",
         );
       }
-      this.ownedCredentialGatewayDriver(source);
+      if (source.ownerCapability === "credential_proxy") {
+        await this.credentialSourceHarnessAuthSnapshot(state, namespaceId, binding);
+      } else {
+        this.ownedCredentialGatewayDriver(source);
+      }
     } else {
       if (binding.source.namespaceId !== namespaceId) {
         throw new ScopeViolationError("Harness authentication sources cannot cross Namespaces.");
@@ -12408,7 +12537,65 @@ export class OpenClawController {
     if (source === undefined || source.state !== "ready") {
       throw new ScopeViolationError("The Harness credential source is unavailable.");
     }
-    const gateway = this.ownedCredentialGatewayDriver(source);
+    return this.harnessAuthSnapshotForSource(state, source);
+  }
+
+  private async harnessAuthSnapshotForSource(
+    state: PlatformReadView,
+    source: Readonly<CredentialSource>,
+  ): Promise<Extract<HarnessAuthSnapshot, { readonly method: "credential_source" }>> {
+    let owner: ReturnType<OpenClawController["credentialSourceOwner"]>;
+    try {
+      owner = this.credentialSourceOwner(source);
+    } catch (error) {
+      if (error instanceof DriverSelectionError) {
+        throw new DependencyUnavailableError("The admitted Harness provider is unavailable.");
+      }
+      throw error;
+    }
+    if (owner.kind === "proxy") {
+      const candidates = owner.driver.sourceControl.providers.filter(
+        (provider) => provider.sourceType.type === source.type,
+      );
+      const provider = candidates.length === 1 ? candidates[0] : undefined;
+      const loginMode = provider?.sourceType.harnessAuth?.loginMode;
+      if (!source.egress || !loginMode) {
+        throw new DependencyUnavailableError("The admitted Harness provider is unavailable.");
+      }
+      if (
+        source.egress.adoption === "live" &&
+        (provider?.verifySource || source.egress.verifiedIdentity)
+      ) {
+        if (
+          !(await this.verifiedSourceCurrent(state, source.egress, {
+            signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+            deadlineAt: new Date(Date.now() + CREDENTIAL_GATEWAY_TIMEOUT_MS).toISOString(),
+          }))
+        ) {
+          throw new DependencyUnavailableError(
+            "The source identity evidence is no longer current.",
+          );
+        }
+      }
+      const snapshot = immutableCopy({
+        method: "credential_source" as const,
+        sourceId: source.id,
+        credentialProxyId: owner.driver.id,
+        sourceType: source.type,
+        loginMode,
+        egress: source.egress,
+      });
+      if (
+        source.egress.key.namespaceId !== source.namespaceId ||
+        source.egress.key.installationId !== this.installation.id ||
+        source.egress.key.source.id !== source.id ||
+        !proxyHarnessAuthProvider(owner.driver, snapshot)
+      ) {
+        throw new DependencyUnavailableError("The admitted Harness provider is unavailable.");
+      }
+      return snapshot;
+    }
+    const gateway = owner.driver;
     const type = await this.credentialSourceType(gateway, source.type);
     if (type.harnessAuth === undefined) {
       throw new ResourceStateConflictError(
@@ -12448,6 +12635,16 @@ export class OpenClawController {
         throw new ResourceStateConflictError(
           "Credential-source Harness authentication requires a selected Sandbox Driver.",
         );
+      }
+      if (auth.credentialProxyId !== undefined) {
+        const provider = proxyHarnessAuthProvider(
+          this.selectedProxyOwner().require("credential_proxy"),
+          auth,
+        );
+        if (!provider) {
+          throw new DependencyUnavailableError("The admitted Harness provider is unavailable.");
+        }
+        return provider.sourceType;
       }
       return this.credentialSourceType(
         this.credentialGatewayDriver(auth.credentialGatewayId),
@@ -12684,7 +12881,9 @@ export class OpenClawController {
     const driver = this.selectedProxyOwner().require("credential_proxy");
     return driver.sourceControl.providers.flatMap((provider) => {
       const issuer = this.preparedTokens?.issuer(provider.ref);
-      return issuer || isDeepStrictEqual(provider.ref, credentialFreeProviderRef)
+      return issuer ||
+        provider.sourceOwnership === "proxy" ||
+        isDeepStrictEqual(provider.ref, credentialFreeProviderRef)
         ? [{ driver, type: provider.sourceType, issuer }]
         : [];
     });
@@ -13309,6 +13508,40 @@ export class OpenClawController {
       return;
     }
     const configuration = await readConfiguration();
+    if (agent.harnessAuth?.method === "credential_source") {
+      const source = await state.credentialSources.findCredentialSource(
+        agent.namespaceId,
+        agent.harnessAuth.sourceId,
+      );
+      if (source?.ownerCapability === "credential_proxy") {
+        const snapshot = await this.harnessAuthSnapshotForSource(state, source);
+        const provider = proxyHarnessAuthProvider(
+          this.selectedProxyOwner().require("credential_proxy"),
+          snapshot,
+        );
+        if (!provider) {
+          throw new DependencyUnavailableError(
+            "The protected Harness source requires an admitted provider and model.",
+          );
+        }
+        if (selectsModel(configuration.values)) {
+          const selection = asRecord(asRecord(configuration.values.agents)?.defaults)?.model;
+          const model = typeof selection === "string" ? selection : asRecord(selection)?.primary;
+          if (typeof model !== "string" || !model.includes("/")) {
+            throw new DependencyUnavailableError(
+              "The protected Harness source requires an admitted provider and model.",
+            );
+          }
+          try {
+            provider.normalizeGrant([model.slice(model.indexOf("/") + 1)], source.config, source);
+          } catch {
+            throw new DependencyUnavailableError(
+              "The protected Harness source has no current provider authority.",
+            );
+          }
+        }
+      }
+    }
     let configuredHarnessId: string;
     try {
       configuredHarnessId = resolveConfiguredHarnessId(configuration.values);

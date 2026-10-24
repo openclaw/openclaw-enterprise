@@ -113,6 +113,9 @@ importers:
       pino:
         specifier: 10.4.0
         version: 10.4.0
+      smol-toml:
+        specifier: 1.8.0
+        version: 1.8.0
       tldts:
         specifier: 7.4.18
         version: 7.4.18
@@ -2174,6 +2177,10 @@ packages:
     resolution: {integrity: sha512-94hK0Hh8rPqQl2xXc3HsaBoOXKV20MToPkcXvwbISWLEs+64sBq5kFgn2kJDHb1Pry9yrP0dxrCI9RRci7RXKg==}
     engines: {node: '>= 6.0.0', npm: '>= 3.0.0'}
 
+  smol-toml@1.8.0:
+    resolution: {integrity: sha512-kCZr2V3ch9i00x8zXRhjUNVcjG9ijES5dDudkXvUVCT5QlJNQWElSJdZqyPemffHoLNUYwOcou0Fy+ojN0uHSQ==}
+    engines: {node: '>= 18'}
+
   socks-proxy-agent@10.1.0:
     resolution: {integrity: sha512-WlMj/67cEJ6MDI1OcsnjuYKDNDoyPCCYZ249kuuXPiMDw9F8PXkVaQ7YWu3siTydfQ/4BEZcvGzu+aYvz7dDCQ==}
     engines: {node: '>= 20'}
@@ -4071,6 +4078,8 @@ snapshots:
   shebang-regex@3.0.0: {}
 
   smart-buffer@4.2.0: {}
+
+  smol-toml@1.8.0: {}
 
   socks-proxy-agent@10.1.0:
     dependencies:

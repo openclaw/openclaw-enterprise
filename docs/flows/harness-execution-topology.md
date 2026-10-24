@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-10-23
-last_updated_session: authoring-run/d909ff44-894e-4e57-91e2-ab5bea7532c7
+updated: 2026-10-24
+last_updated_session: authoring-run/f0f87daa-3c51-4559-b105-23c8c3d6084b
 ---
 
 # Harness Execution Topology Flow
@@ -165,20 +165,20 @@ predecessor makes its successor unready. Stops retry after one, two, four, then 
 claim leases. Failed preparation or preparing or activating the predecessor clears
 its record. New exclusive versions supersede old reconciliation and maintenance
 without rollback; see [production version stages](../reference/drivers/compute.md#production-revision-stages).
-For dedicated Codex API-key auth, `pluginRuntimeSnapshot` in
-`apps/controller/src/drivers/compute/kubernetes/index.ts` selects the bound model
-source endpoint before `runtime.codexModelBaseUrl`.
-`apps/controller/src/drivers/openai-endpoint.ts:normalizeOpenAiBaseUrl` normalizes either.
+For Codex API keys, `pluginRuntimeSnapshot` selects the bound source endpoint before
+`runtime.codexModelBaseUrl`; `normalizeOpenAiBaseUrl` validates it.
 `pluginRuntimeConfigMapData` in `apps/controller/src/drivers/compute/plugin-runtime.ts`
 writes the HTTPS Responses endpoint/provider pair to the manifest and `config.toml`.
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:probeCodexAuthentication`
 uses CLI overrides because the probe ignores user configuration. Account login and
 other Harnesses keep their endpoints; only the Harness holds model credentials.
 
-For admitted inference, Kubernetes Compute records launch behavior in new protected
-dedicated Codex revisions. The authentication probe and app-server disable unbounded
-native connection retries, avoiding indefinite reconnects. Stored revisions retain
-original commands.
+`KubernetesComputeDriver.admitRevision` versions new Codex launches with
+`codex-launch:v2:`. `pluginRuntimeSnapshot` selects their corrected marker ordering
+and workspace login; unprefixed admissions retain original command bytes.
+`OpenShellSandboxDriver.provisionHarness` compares exact ownership and content
+before adoption, without replay. The [stored binding](../reference/drivers/compute-admission.md#stored-launch-bindings)
+retains existing grants and adds no execution schema version.
 
 For custom endpoints, `gatewayConfigurationDocument` uses
 `apps/controller/src/drivers/compute/codex-model-configuration.ts:codexGatewayModelConfiguration`
@@ -295,6 +295,8 @@ owns claim sizes, mounts, StorageClass requirements and final teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-24 07:10: Describe native Codex startup order and preserve existing Sandbox commands. (authoring-run/f0f87daa-3c51-4559-b105-23c8c3d6084b - 5ad11ff5e27b16d83e0560d8ca35f1233d48d2af)
 
 - 2026-10-23 13:33: Trace protected Codex connection failure behavior and condense the activation flow. (authoring-run/d909ff44-894e-4e57-91e2-ab5bea7532c7 - 162c9131f3dacb48979fba68bec7e88af317e6b3)
 

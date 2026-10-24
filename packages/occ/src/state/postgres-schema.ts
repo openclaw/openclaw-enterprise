@@ -706,17 +706,17 @@ export const agentRevisions = occSchema.table(
             AND ${table.admittedSpec} #> '{harness_auth,protectedExecutionVersion}'
               = ${table.admittedSpec} #> '{execution_admission,version}'
             AND (
-                ${table.admittedSpec} #>> '{execution_admission,version}' IN ('3','4','5','6','7')
-                AND CASE WHEN ${table.admittedSpec} #>> '{execution_admission,version}' = '7'
+                ${table.admittedSpec} #>> '{execution_admission,version}' IN ('3','4','5','6','7','8')
+                AND CASE WHEN ${table.admittedSpec} #>> '{execution_admission,version}' IN ('7','8')
                   THEN ${table.admittedSpec} #> '{egress_plan,policyReductionVersion}' = '2'::jsonb
                   ELSE NOT (${table.admittedSpec}->'egress_plan' ? 'policyReductionVersion') OR
                     (${table.admittedSpec} #>> '{execution_admission,version}' = '3' AND ${table.admittedSpec} #> '{egress_plan,policyReductionVersion}' = '1'::jsonb) END
-                AND ((${table.admittedSpec} #>> '{execution_admission,version}') IN ('4','5','6','7'))
+                AND ((${table.admittedSpec} #>> '{execution_admission,version}') IN ('4','5','6','7','8'))
                   = ((${table.admittedSpec}->'egress_plan') ? 'repositoryGit')
                 AND (NOT ((${table.admittedSpec}->'egress_plan') ? 'repositoryGit')
                   OR (jsonb_typeof(${table.admittedSpec}->'repository_credentials')='object'
                     AND ${table.admittedSpec} #> '{egress_plan,repositoryGit}' = ${table.admittedSpec}->'repository_credentials'))
-                AND CASE WHEN ${table.admittedSpec} #>> '{execution_admission,version}' = '5'
+                AND CASE WHEN ${table.admittedSpec} #>> '{execution_admission,version}' IN ('5','8')
                     THEN ${table.admittedSpec} #>> '{egress_plan,repositoryGitAuthorization}' = 'online-request'
                     WHEN ${table.admittedSpec} #>> '{execution_admission,version}' = '6' THEN
                       ${table.admittedSpec} #>> '{egress_plan,repositoryGitAuthorization}' = 'request-hook-observed'

@@ -51,7 +51,8 @@
     "tests/integration/postgres-standing-execution.test.ts",
     "tests/integration/postgres-standing-session-worker.test.ts",
     "tests/integration/postgres-standing-expiry-authority.test.ts",
-    "tests/integration/credential-proxy-withdrawal.test.ts"
+    "tests/integration/credential-proxy-withdrawal.test.ts",
+    "tests/integration/codex-workspace-authority.test.ts"
   ],
   "files": [
     {
@@ -357,6 +358,8 @@
         "an installed external Driver uses an explicit GitHub installation for private Git fetch, push, REST and GraphQL until withdrawal",
         "an online sender uses the admitted GitHub installation for real Git and API requests until withdrawal",
         "a capable external Driver reduces Git on the original running execution through cleanup and worker replacement",
+        "an online external Driver independently reduces Git with verified policy reduction",
+        "an online external Driver retains Git after durable model-source withdrawal",
         "a capable registered Driver observes only the original lost rotation across worker replacement and withdrawal",
         "production composition separates repository policy from protected and explicitly selected native senders",
         "external Git reduction authenticates and observes exact policy without mutation replay"
@@ -468,6 +471,21 @@
         "ordinary revision authorization distinguishes State unavailable",
         "ordinary revision authorization distinguishes IAM unavailable",
         "ordinary revision authorization distinguishes backend unavailable"
+      ]
+    },
+    {
+      "path": "tests/integration/codex-workspace-authority.test.ts",
+      "expectedTests": [
+        "registered workspace PAT exchange persists exact Harness ownership in PostgreSQL",
+        "registered workspace PAT exchange enforces source ownership, response custody and withdrawal",
+        "workspace PAT classifies two-turn message metadata without widening Platform policy"
+      ]
+    },
+    {
+      "path": "tests/integration/verified-workspace-source.test.ts",
+      "expectedTests": [
+        "verified workspace source fences real Secret versions through external composition (memory)",
+        "verified workspace source fences real Secret versions through external composition (postgres)"
       ]
     }
   ]

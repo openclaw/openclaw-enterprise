@@ -328,24 +328,35 @@ test("run preserves nonzero child Node exits and rejects zero-case files", async
   const exitSummary = JSON.parse(await readFile(join(root, "results/exits.json"), "utf8"));
   assert.equal(exitSummary.exitCode, exits.status);
 
-  const empty = run(root, [
-    "run",
-    "empty",
-    "--manifest",
-    "manifest.json",
-    "--root",
-    root,
-    "--state",
-    "state/empty.jsonl",
-    "--results",
-    "results/empty.json",
-  ]);
-  assert.equal(empty.status, 1);
-  const emptySummary = JSON.parse(await readFile(join(root, "results/empty.json"), "utf8"));
-  assert.deepEqual(
-    emptySummary.issues.map((entry) => entry.code),
-    ["selected-zero"],
-  );
+  for (const content of [
+    "process.exit(0);",
+    "",
+    'import { describe } from "node:test"; describe("empty suite", () => {});',
+    'import { describe } from "node:test"; describe("outer", () => { describe("inner", () => {}); });',
+    'import { describe, test } from "node:test"; describe("filtered suite", () => { if (false) test("filtered", () => {}); });',
+    'import { describe } from "node:test"; describe.skip("skipped suite", () => {});',
+    'import { describe } from "node:test"; describe.todo("todo suite", () => {});',
+  ]) {
+    await writeFile(join(root, "tests/integration/empty.test.mjs"), content);
+    const empty = run(root, [
+      "run",
+      "empty",
+      "--manifest",
+      "manifest.json",
+      "--root",
+      root,
+      "--state",
+      "state/empty.jsonl",
+      "--results",
+      "results/empty.json",
+    ]);
+    assert.equal(empty.status, 1, content);
+    const summary = JSON.parse(await readFile(join(root, "results/empty.json"), "utf8"));
+    assert.ok(
+      summary.issues.some((entry) => entry.code === "selected-zero"),
+      content,
+    );
+  }
 });
 
 test(

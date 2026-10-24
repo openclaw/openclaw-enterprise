@@ -1,3 +1,4 @@
+import { verifiedSourceIdentityMatches } from "@openclaw-enterprise/contracts";
 import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
 import { assertExecutionAdmission } from "@openclaw-enterprise/contracts";
 import { memoryEgressSendReceipts } from "./egress-send-receipts.ts";
@@ -614,10 +615,18 @@ export function validHarnessAuthSnapshot(value: HarnessAuthSnapshot, namespaceId
       return normalizeHarnessAuthBinding(value) !== null;
     }
     if (value.method === "credential_source") {
+      if (value.credentialProxyId !== undefined) {
+        assertProtectedEgressSource(value.egress, namespaceId, value.sourceId);
+      }
       return (
         normalizeHarnessAuthBinding({ method: value.method, sourceId: value.sourceId }) !== null &&
-        Object.keys(value).length === 5 &&
-        isNonEmptyString(value.credentialGatewayId) &&
+        (value.credentialProxyId === undefined
+          ? Object.keys(value).length === 5 &&
+            isNonEmptyString(value.credentialGatewayId) &&
+            value.egress === undefined
+          : Object.keys(value).length === 6 &&
+            isNonEmptyString(value.credentialProxyId) &&
+            value.credentialGatewayId === undefined) &&
         isNonEmptyString(value.sourceType) &&
         (value.loginMode === "api_key" ||
           value.loginMode === "codex_pat" ||
@@ -1413,7 +1422,11 @@ function assertProtectedEgressSource(
   const secret = value?.secret;
   if (
     !common ||
-    Object.keys(value).length !== 9 ||
+    Object.keys(value).length !== (value.verifiedIdentity === undefined ? 9 : 10) ||
+    (value.verifiedIdentity !== undefined &&
+      !verifiedSourceIdentityMatches(
+        value as unknown as import("@openclaw-enterprise/contracts").StaticEgressSource,
+      )) ||
     value.schemaVersion !== 1 ||
     value.adoption !== "live" ||
     value.retention !== "none" ||

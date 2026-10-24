@@ -11,9 +11,13 @@ const recipientAuthorization =
 const peerKey = "p.installation #>> '{enforcement,peerKeyId}'";
 // v4 requires its original peer-bound recipient. v5 requires an explicit online recipient,
 // without inventing a peer key that the sender neither possessed nor proved.
+// In v8 a separately authenticated model exchange may retain its real peer key;
+// the online Git port still authorizes each request without an exact-dispatch claim.
 const matchingAuthorization = `(CASE WHEN p.installation->'plan' ? 'repositoryGitAuthorization'
   THEN ${admittedAuthorization} = 'online-request'
-    AND ${recipientAuthorization} = 'online-request' AND ${peerKey} IS NULL
+    AND ${recipientAuthorization} = 'online-request'
+    AND (${peerKey} IS NULL OR (p.installation #>> '{plan,policyReductionVersion}' = '2'
+      AND ${peerKey} ~ '^[A-Za-z0-9_-]{43}$'))
   ELSE ${recipientAuthorization} IS NULL AND nullif(btrim(${peerKey}), '') IS NOT NULL END)`;
 // Repository execution releases contain exactly one binding. Both the signed release and the
 // independently observed recipient must explicitly name installation delivery; absence means narrow.

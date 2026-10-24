@@ -12,6 +12,7 @@
     "tests/integration/list-summaries.test.mjs",
     "tests/conformance/plugin-compute.test.mjs",
     "tests/conformance/codex-native-startup.test.mjs",
+    "tests/conformance/codex-launch-compat.test.ts",
     "tests/conformance/occ-api-security.test.mjs",
     "tests/integration/configuration-startup.test.mjs",
     "tests/integration/installation-change-preflight.test.mjs",
@@ -113,6 +114,7 @@
     "tests/integration/credential-free-metadata-grant.test.ts",
     "tests/integration/egress-enrollment.test.mjs",
     "tests/integration/protected-driver-registration.test.ts",
+    "tests/integration/protected-codex-pat.test.ts",
     "tests/integration/credential-policy-recovery.test.ts",
     "tests/conformance/kubernetes-prepared-repository.test.mjs",
     "tests/integration/egress-installation-exchange.test.mjs",
@@ -454,6 +456,9 @@
       "path": "tests/conformance/codex-native-startup.test.mjs"
     },
     {
+      "path": "tests/conformance/codex-launch-compat.test.ts"
+    },
+    {
       "path": "tests/conformance/split-layout-tenants.test.mjs"
     },
     {
@@ -552,6 +557,9 @@
         "the running OpenShell recipient refuses a changed Repo ref or foreign supplier identity without restoring access",
         "repository scope changes invalidate the external Driver identity while a reload preserves it"
       ]
+    },
+    {
+      "path": "tests/integration/protected-codex-pat.test.ts"
     },
     {
       "path": "tests/integration/credential-policy-recovery.test.ts",

@@ -19,6 +19,16 @@ before creating one: an older worker refuses this revision. Version 2 represents
 unprotected admission only. Protected versions 4, 5 and 6 carry the distinct
 [repository authorization contracts](../repository-credentials/protected-openshell-git.md).
 Version 7 requires exact-dispatch Git and authenticated reduction v2 support.
+Version 8 instead requires online Git authorization and authenticated reduction v2.
+Each new Git request must obtain current authorization before credential injection;
+a request that already passed that check may finish. Version 8 does not promise
+an exact-dispatch first-write deadline. Its independent model exchange retains its
+own authenticated peer key and per-request source checks. Git does not use that
+key to claim exact dispatch. Removing Git preserves the admitted model routes;
+removing a model source preserves Git. Neither operation grants another source
+or restores a withdrawn route. The selected pair must verify the exact installed
+recipient before release and persist reductions so stale configuration cannot
+restore access. The bundled sender remains unqualified for this combination.
 Advertising v2 does not replace v4, v5 or v6 admission or imply v1 support.
 Ordinary v3 can omit reduction for one source; multiple static sources require
 explicit reduction v1 support. Production uses the selected Driver registration

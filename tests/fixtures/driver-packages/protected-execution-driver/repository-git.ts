@@ -6,6 +6,7 @@ import { createServer, request, type ServerOptions } from "node:https";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { buffer, json } from "node:stream/consumers";
 import { isDeepStrictEqual } from "node:util";
+import { createCodexWorkspacePatProvider } from "../../../../apps/controller/src/drivers/egress-proxy/codex-workspace-provider.ts";
 import { createDriver as releaseDriver } from "./index.ts";
 import type {
   DriverRegistration,
@@ -23,6 +24,8 @@ import type {
   CapturedEgressUse,
   RepositoryGitMaterialVersion,
 } from "../../../../packages/contracts/src/index.ts";
+
+// Synthetic registry supplied by the integration fixture. It is not production workspace attestation.
 
 // This external adapter supports one credential-free metadata operation beside Git.
 // Its platform grant is still admitted and authorized by OCC; the peer enforces exact routes.
@@ -118,6 +121,7 @@ export const configurationSchema = {
         "capabilityOrigin",
         "releaseKey",
         "installationApiOrigin",
+        "modelOrigin",
         "controlSecretFile",
       ].map((k) => [k, { type: "string" }]),
     ),
@@ -130,6 +134,7 @@ type Config = {
   capabilityOrigin: string;
   releaseKey: string;
   installationApiOrigin?: string;
+  modelOrigin?: string;
   policyReduction?: boolean;
   controlSecretFile?: string;
 };
@@ -148,6 +153,7 @@ export function validateConfiguration(config: Readonly<Config>): readonly ErrorD
             "capabilityOrigin",
             "releaseKey",
             "installationApiOrigin",
+            "modelOrigin",
             "policyReduction",
             "controlSecretFile",
           ].includes(key),
@@ -171,6 +177,7 @@ export function validateConfiguration(config: Readonly<Config>): readonly ErrorD
       config.peerOrigin,
       config.capabilityOrigin,
       config.installationApiOrigin,
+      config.modelOrigin,
     ]) {
       if (origin === undefined) {
         continue;
@@ -217,6 +224,7 @@ export let peer: {
   replayLastInstallationExchange?(): Promise<void>;
   decisions: { operation: string; decision: unknown }[];
   /** The test can hold this already committed permit at either boundary, but cannot replace it. */
+  beforeModelSend?(): Promise<void>;
   beforeSend?(
     stage: "connect" | "request",
     permit: RepositoryGitSendPermit,
@@ -266,6 +274,11 @@ export function createDriver(options: {
   const { sandbox, credential_proxy: proxy } = base.capabilities;
   assert.ok(sandbox && proxy);
   const sender = proxy.sourceControl.sender;
+  const modelProvider = createCodexWorkspacePatProvider({
+    workspaceForSource() {
+      throw new Error("Production composition must supply the verified workspace identity");
+    },
+  });
   const clientSecret = randomUUID();
   const observationSecret = config.controlSecretFile
     ? readFileSync(config.controlSecretFile, "utf8")
@@ -361,7 +374,7 @@ export function createDriver(options: {
         authorityScope: "execution",
         instanceId: randomUUID(),
         configurationId: plan.id,
-        ...(authorization ? {} : { peerKeyId }),
+        ...(authorization && !plan.routes.length ? {} : { peerKeyId }),
         policyHash: hash(JSON.stringify(plan)),
         repositoryGitRecipient: {
           attachmentEpoch: execution,
@@ -515,8 +528,10 @@ export function createDriver(options: {
             return;
           }
           if (
-            req.url?.startsWith("/repos/") &&
-            req.method === "GET" &&
+            ((req.url?.startsWith("/repos/") && req.method === "GET") ||
+              (config.modelOrigin &&
+                req.url === "/backend-api/codex/responses" &&
+                req.method === "POST")) &&
             req.headers.authorization === clientSecret
           ) {
             const selected = status?.plan.routes.find(
@@ -535,10 +550,15 @@ export function createDriver(options: {
             const id = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
             const input = {
               id,
-              method: "GET",
+              method: req.method!,
               url: selected.origin + selected.path,
-              headers: [] as [string, string][],
-              body: new Uint8Array(),
+              headers: (req.method === "POST"
+                ? [
+                    ["content-type", "application/json"],
+                    ["chatgpt-account-id", req.headers["chatgpt-account-id"] as string],
+                  ]
+                : []) as [string, string][],
+              body: req.method === "POST" ? await buffer(req) : new Uint8Array(),
               deadlineAt: new Date(acceptedAt + 5000).toISOString(),
               verifiedExecutionPolicyHash: status.enforcement.policyHash,
             };
@@ -548,7 +568,7 @@ export function createDriver(options: {
               input,
               signal(),
             );
-            if (resolved.kind !== "ready_without_material") {
+            if (resolved.kind !== "ready_without_material" && resolved.kind !== "ready") {
               if (resolved.kind === "refused") {
                 delivery.metadataRefusal = {
                   stage: "resolve",
@@ -559,13 +579,16 @@ export function createDriver(options: {
               res.writeHead(403).end();
               return;
             }
+            if (req.method === "POST") {
+              await peer.beforeModelSend?.();
+            }
             const decision = await exchangeAuthority.authorizeSend(
               observationSecret,
               status.sandboxId,
               id,
               resolved.handle,
-              true,
-              hash(""),
+              resolved.kind === "ready" ? resolved.evidence : true,
+              resolved.kind === "ready" ? resolved.injectionDigest : hash(""),
               input.deadlineAt,
               signal(),
             );
@@ -580,7 +603,19 @@ export function createDriver(options: {
               res.writeHead(403).end();
               return;
             }
-            const upstream = await exchange(new URL(input.url), { method: "GET" });
+            // Only this independently configured synthetic TLS origin receives model traffic.
+            // The actual provider still classifies its fixed public URL before authorization.
+            const upstream = await exchange(
+              new URL(req.method === "POST" ? config.modelOrigin! + selected.path : input.url),
+              {
+                method: input.method,
+                headers: Object.fromEntries([
+                  ...input.headers,
+                  ...(resolved.kind === "ready" ? resolved.headers : []),
+                ]),
+              },
+              Buffer.from(input.body),
+            );
             const responseHandle = await exchangeAuthority.beginResponse(
               observationSecret,
               status.sandboxId,
@@ -1000,11 +1035,17 @@ export function createDriver(options: {
         },
         repositoryAccess: {
           async verifyExecution({ revision }) {
-            const { plan, enforcement } = (await observe()).installation;
+            const { plan, sandboxId, sender, enforcement } = (await observe()).installation;
             assert.equal(plan.execution.revisionId, revision.id);
+            // Policy configuration changes during reduction; the running recipient does not.
+            const {
+              configurationId: _configuration,
+              policyHash: _policy,
+              ...identity
+            } = enforcement;
             return {
               executionId: plan.execution.executionId,
-              fingerprint: hash(JSON.stringify(enforcement)),
+              fingerprint: hash(JSON.stringify([plan.execution, sandboxId, sender, identity])),
             };
           },
           async retireExpired() {
@@ -1059,7 +1100,9 @@ export function createDriver(options: {
         }),
         sourceControl: {
           ...proxy.sourceControl,
-          providers: config.policyReduction ? [metadata] : [],
+          providers: config.policyReduction
+            ? [metadata, ...(config.modelOrigin ? [modelProvider] : [])]
+            : [],
           assertAvailable: async (signal, profile) => {
             if (profile === undefined && config.policyReduction) {
               const response = await exchange(
@@ -1108,7 +1151,7 @@ export function createDriver(options: {
                 sender,
                 sandboxId: status.sandboxId,
                 instanceId: status.enforcement.instanceId,
-                peerKeyId,
+                ...(status.enforcement.peerKeyId === undefined ? {} : { peerKeyId }),
                 expiresAt,
               };
             },

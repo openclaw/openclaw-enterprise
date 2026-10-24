@@ -1,3 +1,4 @@
+import { bindVerifiedCodexWorkspaceSource } from "../drivers/egress-proxy/codex-workspace-identity.ts";
 import { InstalledDriver } from "@openclaw-enterprise/occ";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { readFile, realpath, stat } from "node:fs/promises";
@@ -5,6 +6,7 @@ import { findPackageJSON } from "node:module";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type {
+  CredentialProxyDriver,
   ComputeDriver,
   ConfigurationDriver,
   DriverImplementation,
@@ -467,11 +469,20 @@ export function createExternalProtectedDriver(
       "The selected package must return one Driver registration for Sandbox and Credential Proxy.",
     );
   }
+  const capabilities = asRecord(registration.capabilities)!;
+  const proxy = capabilities.credential_proxy as CredentialProxyDriver | undefined;
+  if (!proxy?.sourceControl || !Array.isArray(proxy.sourceControl.providers)) {
+    throw new Error("The selected package must report its credential source capabilities.");
+  }
+  const verifiedRegistration = {
+    ...registration,
+    capabilities: { ...capabilities, credential_proxy: bindVerifiedCodexWorkspaceSource(proxy) },
+  };
   const owner = new InstalledDriver(
     repositoryAuthorityIdentity === undefined
       ? selection
       : { ...selection, configuration: { sandbox: configuration, repositoryAuthorityIdentity } },
-    registration as unknown as DriverRegistration,
+    verifiedRegistration as unknown as DriverRegistration,
   );
   owner.require("sandbox");
   owner.require("credential_proxy");

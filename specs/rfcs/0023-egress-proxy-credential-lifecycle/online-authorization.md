@@ -91,6 +91,26 @@ First qualify a released OpenShell without patches. If the gap is proving that a
 is mandatory and applied, ask upstream for that narrow capability. Do not paper over a
 missing enforcement boundary with a successful request or a configuration write.
 
+## Codex workspace access tokens
+
+A protected sender for a dedicated Codex Agent uses the existing `codex-pat` Credential Source and `codex_pat` login mode. The workload uses a nonsecret marker. The credential owner and trusted sender hold the reusable workspace token.
+
+Classify workspace bootstrap separately from model generation. Identity discovery is `GET https://auth.openai.com/api/accounts/v1/user-auth-credential/whoami`. Validate the returned account and backend origin against the admitted workspace before using them. On the admitted ChatGPT origin, qualify the exact reads the native client needs:
+
+- `GET /backend-api/wham/accounts/check` and `/backend-api/wham/settings/user` for workspace metadata.
+- `GET /backend-api/wham/config/bundle` for mandatory workspace policy.
+- `GET /backend-api/codex/models` for model discovery, with only the qualified client's `client_version` query.
+
+The model turn uses `POST /backend-api/codex/responses` for the admitted model. Each credential release binds the current grant, execution, workspace, operation and verified HTTPS origin. The issuer checks the grant again at release. Refuse unlisted reads, substituted destinations or workspaces, and unsupported transports before releasing the token. Qualify additional routes individually.
+
+For workspace policy, authorize only a bodyless, queryless GET on the verified `chatgpt.com:443` origin. Match the account header to the admitted workspace and current grant before credential release. Require the same operation at the protected sender. Reject substitutions, routing overrides and ambiguous framing.
+
+Accept a successful policy response only within the proposed 64 KiB uncompressed limit; reject overflow, redirects, ambiguous JSON and reflected credentials. Deliver the qualified `config_toml` and `requirements_toml` enterprise-managed fragments only to the admitted client. Preserve their order, identities and contents so the client can enforce them. Never log policy contents. Require both `config_toml.enterprise_managed` and `requirements_toml.enterprise_managed` as lists, including when either is empty. Two empty lists explicitly mean no applicable policy. Reject a missing or malformed list even when the other carries valid fragments. Parse both buckets as TOML and scan decoded keys and string values before releasing the original bytes. The proposed qualification limits are 32 nesting levels and 4,096 decoded nodes per bundle, within the existing byte limit; reject invalid or unsupported decoding. Preserve the client's identity-bound cache validation. With no valid cached policy, startup must fail if required policy cannot be obtained and validated.
+
+Qualify the shipped native client with a representative restriction: observe it being enforced before work and complete a model turn. Test explicit empty lists separately from missing fields, invalid fragments, unsuccessful responses and oversize bundles. Deny a withdrawn grant and changes to method, path, query, authority, account or routing headers. This read grants no general data access and leaves ordinary OAuth and API-key access unchanged.
+
+Exercise the shipped Codex client and selected sender against controlled HTTPS peers. Verify a full turn, marker-only Agent custody and denial of an unlisted GET on the correct host. Hold a request after its initial allow, withdraw the still-valid token's grant, then resume it. Neither that request nor a fresh one may reach the peer, and Git must still fetch. Withdraw Git separately and complete another model turn in the same conversation. A request whose credential was already released may finish.
+
 ## Release test
 
 From a clean OCE checkout, use the published OpenShell image, an ordinary client and a

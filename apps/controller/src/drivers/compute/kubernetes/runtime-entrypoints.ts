@@ -7,6 +7,10 @@ import {
 } from "../../../../../../packages/contracts/src/runtime-failure.mjs";
 
 import { PLUGIN_RUNTIME_TRANSLATOR_SOURCE } from "../../plugin/runtime-translator.ts";
+import {
+  PROTECTED_EGRESS_MARKER,
+  codexWorkspaceProviderArguments,
+} from "../codex-workspace-client.ts";
 import { nodeProgramArguments } from "../node-program.ts";
 import { HARNESS_EGRESS_ENROLLMENT_HELPER } from "../harness-egress-enrollment.ts";
 import { gatewayStateMigrationHelper, startupPhaseHelper } from "../runtime-startup.ts";
@@ -211,7 +215,8 @@ function serveHeldRuntimeFailureToTransportPeer(check, code, cause) {
 }
 `;
 
-export const PLUGIN_RUNTIME_HELPERS = String.raw`
+function pluginRuntimeHelpers(currentLaunch: boolean): string {
+  return String.raw`
 const pluginRuntimeTranslator = (${PLUGIN_RUNTIME_TRANSLATOR_SOURCE})();
 const {
   dirname: pluginDirname,
@@ -1250,10 +1255,23 @@ function assertCodexPluginRuntime(runtime) {
   if (!isPlainObject(runtime.manifest.selections ?? {})) {
     throw new Error("Codex plugin selections are invalid.");
   }
-  if ((runtime.manifest.providerTools !== undefined || runtime.manifest.egressEnrollment !== undefined) &&
+${
+  currentLaunch
+    ? String.raw`  const nativePat = runtime.manifest.nativePat === true;
+  if (runtime.manifest.nativePat !== undefined &&
+      (!nativePat || runtime.manifest.modelEndpoint !== undefined ||
+       runtime.manifest.providerTools !== "none" ||
+       runtime.manifest.egressEnrollment?.inference !== true ||
+       process.env.CODEX_LOGIN_MODE !== "codex_pat" ||
+       process.env.OCE_CODEX_CREDENTIAL_SOURCE !== "1")) {
+    throw new Error("Codex protected native PAT profile is invalid.");
+  }
+`
+    : ""
+}  if ((runtime.manifest.providerTools !== undefined || runtime.manifest.egressEnrollment !== undefined) &&
       (runtime.manifest.providerTools !== "none" ||
        !isPlainObject(runtime.manifest.egressEnrollment) ||
-       (runtime.manifest.egressEnrollment.inference === true &&
+       (runtime.manifest.egressEnrollment.inference === true &&${currentLaunch ? " !nativePat &&" : ""}
         (runtime.manifest.modelEndpoint?.modelProvider !== "openai-compatible" ||
          typeof runtime.manifest.modelEndpoint.baseUrl !== "string")))) {
     throw new Error("Codex protected inference profile is invalid.");
@@ -2011,13 +2029,16 @@ function codexPluginStartupFailureCode(error) {
   }
 }
 `;
+}
 
+export const PLUGIN_RUNTIME_HELPERS = pluginRuntimeHelpers(false);
 // Holds unready until an explicit restart; readiness polls never submit model calls.
 // A failed probe's cause is a closed kind and a fixed token, never native output,
 // provider text or a credential; the controller drops a cause outside that vocabulary.
-const AUTH_PROBE_FAILURE_HELPER = String.raw`
+function authProbeFailureHelper(currentCodexLaunch = false) {
+  return String.raw`
 function holdFailedAuthentication(check = "model-probe", code = "UNAVAILABLE", cause) {
-  publishRuntimeFailure(check, code, cause);
+${currentCodexLaunch ? "  closeCredentialHome?.();\n" : ""}  publishRuntimeFailure(check, code, cause);
   serveHeldRuntimeFailureToTransportPeer(check, code, cause);
   console.error("Harness model authentication probe failed.");
   setInterval(() => {}, 3600000);
@@ -2040,6 +2061,7 @@ function probeExitFailure({ error, status, signal }) {
     : /^SIG[A-Z0-9]{1,10}$/.test(signal) ? "signal-" + signal : undefined);
 }
 `;
+}
 
 // The native probe disables tools and fallback and performs a bounded model turn.
 // Its JSON status, not its process exit status alone, establishes provider acceptance.
@@ -2062,7 +2084,7 @@ function probeExitFailure({ error, status, signal }) {
 // The Gateway times its model-probe phase from wrapper start: it is the first step.
 // Generated code stays compact: the Gateway program is near the exec limit.
 const OPENCLAW_AUTH_PROBE_HELPERS = String.raw`
-${AUTH_PROBE_FAILURE_HELPER}
+${authProbeFailureHelper()}
 function probeOpenClawAuthenticationFailure() {
   const fs = require("node:fs");
   const cgroup = (name) => { try { return fs.readFileSync("/sys/fs/cgroup/" + name, "utf8"); } catch { return ""; } };
@@ -3426,15 +3448,18 @@ function codexRetryDelay(retry) {
 // Preserve the legacy command bytes: running Sandboxes compare their immutable command.
 // Zero provider retry budgets do not disable native connection waiting. Protected
 // launches turn that feature off explicitly in both native CLI invocations.
-function agentRuntimeEntrypoint(disableUnboundedConnectionRetries: boolean): string {
+function agentRuntimeEntrypoint(
+  disableUnboundedConnectionRetries: boolean,
+  currentLaunch = false,
+): string {
   return String.raw`
 const { createHash } = require("node:crypto");
 const { mkdirSync, mkdtempSync, rmSync } = require("node:fs");
 const { spawn, spawnSync } = require("node:child_process");
 const { performance } = require("node:perf_hooks");
 
-${PLUGIN_RUNTIME_HELPERS}
-${AUTH_PROBE_FAILURE_HELPER}
+${pluginRuntimeHelpers(currentLaunch)}
+${authProbeFailureHelper(currentLaunch)}
 ${CODEX_FAILURE_OUTPUT_CLASS_HELPER}
 ${CODEX_STDERR_FILTER_HELPER}
 ${HARNESS_EGRESS_ENROLLMENT_HELPER}
@@ -3490,7 +3515,15 @@ function agentRuntimeReady() {
   });
 }
 
-startPluginRuntimeStatusServer(agentRuntimeReady);
+${
+  currentLaunch
+    ? String.raw`// A rejected restart must not leave readiness from an earlier process behind.
+if (process.env.OPENCLAW_PLUGIN_READY_MARKER !== undefined) {
+  rmSync(process.env.OPENCLAW_PLUGIN_READY_MARKER, { force: true });
+}
+`
+    : ""
+}startPluginRuntimeStatusServer(agentRuntimeReady);
 const loginMode = process.env.CODEX_LOGIN_MODE;
 const apiKey = process.env.OPENAI_API_KEY;
 const accessToken = process.env.CODEX_ACCESS_TOKEN;
@@ -3520,7 +3553,83 @@ const workspaceDirectory = process.env.OPENCLAW_WORKSPACE_DIR ||
 if (!workspaceDirectory.startsWith("/")) {
   throw new Error("The Codex workspace directory must be an absolute path.");
 }
-mkdirSync(process.env.CODEX_HOME, { recursive: true });
+${
+  currentLaunch
+    ? String.raw`const pluginRuntime = readPluginRuntime("codex");
+if (pluginRuntime !== undefined) assertCodexPluginRuntime(pluginRuntime);
+if (loginMode === "codex_pat" &&
+    (${disableUnboundedConnectionRetries} || pluginRuntime?.manifest.egressEnrollment !== undefined ||
+     process.env.OPENCLAW_EGRESS_ENROLLMENT_REVISION_ID !== undefined ||
+     process.env.OPENCLAW_EGRESS_COMPUTE_RELEASE_PUBLIC_KEY !== undefined) &&
+    pluginRuntime?.manifest.egressEnrollment?.inference !== "credential_source" &&
+    (pluginRuntime?.manifest.nativePat !== true || accessToken !== ${JSON.stringify(PROTECTED_EGRESS_MARKER)})) {
+  throw new Error("Codex protected native PAT profile or marker is invalid.");
+}
+const providerManagedPat = loginMode === "codex_pat" && process.env.OCE_CODEX_CREDENTIAL_SOURCE === "1";
+let credentialHomeValid;
+let closeCredentialHome;
+if (providerManagedPat) {
+  const fs = require("node:fs");
+  const home = process.env.CODEX_HOME;
+  if (home === "/" || home !== pluginResolve(home)) throw new Error("Codex credential home must be an absolute directory.");
+  // OpenShell may have created a link parent on a previous start under its own umask.
+  let existing = home;
+  while (!fs.lstatSync(existing, { throwIfNoEntry: false })) existing = pluginDirname(existing);
+  if (fs.realpathSync(existing) !== existing) throw new Error("Codex credential home must not traverse a symlink.");
+  mkdirSync(home, { recursive: true, mode: 0o700 });
+  let directory = fs.openSync(home, fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW);
+  // Pin the inode across signed release and retries. A wrapper exit also releases it.
+  closeCredentialHome = () => {
+    if (directory !== undefined) {
+      fs.closeSync(directory);
+      directory = undefined;
+    }
+  };
+  try {
+    const held = "/proc/self/fd/" + directory;
+    if (fs.readlinkSync(held) !== home) throw new Error("Codex credential home changed during startup.");
+    const admitted = fs.fstatSync(directory, { bigint: true });
+    const owner = BigInt(process.geteuid());
+    if (admitted.uid !== owner) throw new Error("Codex credential home owner is invalid.");
+    fs.fchmodSync(directory, 0o700);
+    // Keep both sides of the rename in the opened directory even if its name moves.
+    const temporary = held + "/.pat-auth-" + pluginRandomUUID();
+    const file = fs.openSync(temporary, "wx", 0o600);
+    try {
+      fs.writeFileSync(file, JSON.stringify({ personal_access_token: accessToken }));
+      fs.renameSync(temporary, held + "/auth.json");
+      const prepared = fs.fstatSync(file, { bigint: true });
+      credentialHomeValid = () => {
+        if (directory === undefined) return false;
+        try {
+          const current = fs.lstatSync(home, { bigint: true });
+          const auth = fs.lstatSync(held + "/auth.json", { bigint: true });
+          return current.dev === admitted.dev && current.ino === admitted.ino &&
+            current.uid === owner && (current.mode & 0o7777n) === 0o700n && fs.realpathSync(home) === home &&
+            auth.isFile() && auth.dev === prepared.dev && auth.ino === prepared.ino &&
+            auth.ctimeNs === prepared.ctimeNs && auth.uid === owner && (auth.mode & 0o7777n) === 0o600n;
+        } catch {
+          return false;
+        }
+      };
+    } catch (error) {
+      rmSync(temporary, { force: true });
+      throw error;
+    } finally {
+      fs.closeSync(file);
+    }
+    if (!credentialHomeValid()) throw new Error("Codex credential home changed during startup.");
+  } catch (error) {
+    closeCredentialHome();
+    throw error;
+  }
+} else {
+  mkdirSync(process.env.CODEX_HOME, { recursive: true });
+}
+mkdirSync(workspaceDirectory, { recursive: true });
+if (pluginRuntime !== undefined) writeCodexConfigToml(pluginRuntime);
+`
+    : String.raw`mkdirSync(process.env.CODEX_HOME, { recursive: true });
 mkdirSync(workspaceDirectory, { recursive: true });
 if (process.env.OPENCLAW_PLUGIN_READY_MARKER !== undefined) {
   rmSync(process.env.OPENCLAW_PLUGIN_READY_MARKER, { force: true });
@@ -3537,7 +3646,8 @@ if (providerManagedPat) {
   require("node:fs").writeFileSync(process.env.CODEX_HOME + "/auth.json",
     JSON.stringify({ personal_access_token: accessToken }), { mode: 0o600 });
 }
-const loginFlag = loginMode === "api_key" ? "--with-api-key" : "--with-access-token";
+`
+}const loginFlag = loginMode === "api_key" ? "--with-api-key" : "--with-access-token";
 const loginArguments = [
   "-c", "cli_auth_credentials_store=file", "login", providerManagedPat ? "status" : loginFlag,
 ];
@@ -3629,14 +3739,22 @@ if (noInference) {
   const loginDeadline = performance.now() + 90000;
   for (let attempt = 1; ; attempt++) {
     const attemptStartedAt = performance.now();
-    login = spawnSync("codex", loginArguments, {
+${
+  currentLaunch
+    ? `    if (credentialHomeValid?.() === false) {
+      login = { status: 1 };
+      break;
+    }
+`
+    : ""
+}    login = spawnSync("codex", loginArguments, {
       input: loginMode === "api_key" ? apiKey : accessToken,
       env: codexChildEnvironment(),
       encoding: "utf8",
       stdio: ["pipe", "ignore", "pipe"],
       timeout: Math.min(30000, Math.floor(loginDeadline - attemptStartedAt)), killSignal: "SIGKILL", maxBuffer: 262144,
     });
-    if (loginMode === "api_key" || (login.status === 0 && !login.error)) break;
+    if (${currentLaunch ? "pluginRuntime?.manifest.nativePat === true || " : ""}loginMode === "api_key" || (login.status === 0 && !login.error)) break;
     const timedOut = login.error?.code === "ETIMEDOUT";
     const failureClass = codexFailureOutputClass(login.stderr, login.error);
     console.error(JSON.stringify({
@@ -3758,7 +3876,7 @@ function probeCodexAuthentication(timeout) {
       "sleep_tool", "goals", "workspace_dependencies", "skill_search",
       "skill_mcp_dependency_install", "tool_suggest", "recommended_plugins", "request_permissions_tool",
     ];
-    result = spawnSync("codex", [
+${currentLaunch ? '    if (credentialHomeValid?.() === false) return finish(probeFailure("WRAPPER_ERROR"));\n' : ""}    result = spawnSync("codex", [
 ${disableUnboundedConnectionRetries ? '      "--disable", "unbounded_connection_retries",\n' : ""}      ...disabled.flatMap((feature) => ["--disable", feature]),
       "-a", "never", "exec", "--ephemeral", "--ignore-user-config", "--ignore-rules",
       "--skip-git-repo-check", "--json", "--sandbox", "read-only", "--cd", directory,
@@ -3767,7 +3885,13 @@ ${disableUnboundedConnectionRetries ? '      "--disable", "unbounded_connection_
       "-c", 'web_search="disabled"',
       "-c", "project_doc_max_bytes=0",
       "-c", "check_for_update_on_startup=false",
-      // The authentication probe ignores user config, so carry the admitted
+${
+  currentLaunch
+    ? String.raw`      // This probe ignores config.toml, so pass the protected app-server profile explicitly.
+      ...(pluginRuntime?.manifest.nativePat !== true ? [] : ${JSON.stringify(["--disable", "enable_request_compression", ...codexWorkspaceProviderArguments()])}),
+`
+    : ""
+}      // The authentication probe ignores user config, so carry the admitted
       // compatible endpoint explicitly and use its HTTPS Responses transport.
       ...(pluginRuntime?.manifest.modelEndpoint === undefined ? [] : [
         "-c", "model_provider=" + JSON.stringify(pluginRuntime.manifest.modelEndpoint.modelProvider),
@@ -3954,7 +4078,15 @@ if (pluginRuntimeStatusPort() !== undefined) {
   }
   process.env.APP_SERVER_TOKEN = derivePluginAppServerToken(pluginStatusReport.startupId);
 }
-publishRuntimeReady();
+${
+  currentLaunch
+    ? `if (credentialHomeValid?.() === false) {
+  holdFailedAuthentication("login", "LOGIN_FAILED");
+  return;
+}
+`
+    : ""
+}publishRuntimeReady();
 // Everything before this line delays the Codex app-server.
 logStartupPhase("native-spawn", startupPhaseOrigin);
 let digest = configuredTokenSha;
@@ -3994,7 +4126,7 @@ ${disableUnboundedConnectionRetries ? '    "--disable", "unbounded_connection_re
   // stdout is the protocol stream; stderr passes through the span-noise filter.
   { stdio: ["inherit", "inherit", "pipe"], cwd: workspaceDirectory, env: codexChildEnvironment() },
 );
-forwardTermination(child);
+${currentLaunch ? "closeCredentialHome?.();\n" : ""}forwardTermination(child);
 const codexStderrDone = child.stderr ? forwardCodexStderr(child.stderr) : Promise.resolve();
 child.on("exit", (code, signal) => {
   const status = code ?? (signal === "SIGTERM" ? 0 : 1);
@@ -4051,7 +4183,9 @@ if (!protectedStartup) {
 }
 
 export const AGENT_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint(false);
-export const PROTECTED_CODEX_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint(true);
+export const LEGACY_PROTECTED_CODEX_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint(true);
+export const CURRENT_AGENT_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint(false, true);
+export const PROTECTED_CODEX_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint(true, true);
 
 // Kubernetes Codex implementation: this file-only node is not an OpenClaw
 // execution worker; its explicit command allowlist disables worker hosting.
@@ -4345,6 +4479,12 @@ for (const slot of [...processes].reverse()) start(slot);
 }
 
 export const AGENT_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(AGENT_RUNTIME_ENTRYPOINT);
+export const LEGACY_PROTECTED_CODEX_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
+  LEGACY_PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
+);
+export const CURRENT_AGENT_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
+  CURRENT_AGENT_RUNTIME_ENTRYPOINT,
+);
 export const PROTECTED_CODEX_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
   PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
 );
