@@ -932,7 +932,36 @@ capabilities:
 {{- end -}}
 {{- end -}}
 
-{{/* A null map clears chart defaults. Skip it; indexing nil aborts install and upgrade. */}}
+{{/* The value of a quantity openclaw.quantity accepted, as a float for sign and request-to-limit
+     checks. ParseQuantity reads a missing numerator as zero. The API server compares exact
+     fixed-point values; a float differs only past about 15 significant digits. */}}
+{{- define "openclaw.quantityValue" -}}
+{{- $quantity := trim (toString .) -}}
+{{- $suffix := regexFind "([KMGTPE]i|[eE][+-]?[0-9]+|[numkMGTPE])$" $quantity -}}
+{{- $number := trimSuffix $suffix $quantity -}}
+{{- if not (regexMatch "[0-9]" $number) -}}{{- $number = "0" -}}{{- end -}}
+{{- $binary := dict "Ki" 1024 "Mi" 1048576 "Gi" 1073741824 "Ti" 1099511627776 "Pi" 1125899906842624 "Ei" 1152921504606846976 -}}
+{{- $decimal := dict "" 0 "n" -9 "u" -6 "m" -3 "k" 3 "M" 6 "G" 9 "T" 12 "P" 15 "E" 18 -}}
+{{- if hasKey $binary $suffix -}}
+{{- mulf (float64 $number) (index $binary $suffix) -}}
+{{- else if hasKey $decimal $suffix -}}
+{{- float64 (printf "%se%d" $number (index $decimal $suffix)) -}}
+{{- else -}}
+{{- float64 (printf "%s%s" $number $suffix) -}}
+{{- end -}}
+{{- end -}}
+
+{{/* openclaw.quantity, and Kubernetes refuses a negative resource quantity or emptyDir sizeLimit. */}}
+{{- define "openclaw.nonNegativeQuantity" -}}
+{{- include "openclaw.quantity" . -}}
+{{- if lt (float64 (include "openclaw.quantityValue" .value)) 0.0 -}}
+{{- fail (printf "%s must not be negative" .name) -}}
+{{- end -}}
+{{- end -}}
+
+{{/* A null map clears chart defaults. Skip it; indexing nil aborts install and upgrade. Kubernetes
+     refuses a Deployment whose container resources name another resource, are negative, or
+     request more than their limit, after the release's other objects changed. */}}
 {{- define "openclaw.resourceRequirements" -}}
 {{- if .requirements -}}
 {{- $name := .name -}}
@@ -940,7 +969,22 @@ capabilities:
 {{- range $section := list "requests" "limits" -}}
 {{- with index $requirements $section -}}
 {{- range $key, $qty := . -}}
-{{- include "openclaw.quantity" (dict "name" (printf "%s.%s.%s" $name $section $key) "value" $qty) -}}
+{{- $field := printf "%s.%s.%s" $name $section $key -}}
+{{- if not (or (regexMatch "^(cpu|memory|ephemeral-storage|hugepages-.+)$" $key) (and (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$" $key) (not (regexMatch "(^|\\.)kubernetes\\.io/" $key)))) -}}
+{{- fail (printf "%s names a resource Kubernetes does not accept: use cpu, memory, ephemeral-storage, hugepages-<size> or a domain-prefixed extended resource such as example.com/gpu" $field) -}}
+{{- end -}}
+{{- if not (kindIs "invalid" $qty) -}}
+{{- include "openclaw.nonNegativeQuantity" (dict "name" $field "value" $qty) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- $limits := index $requirements "limits" | default dict -}}
+{{- range $key, $request := index $requirements "requests" | default dict -}}
+{{- $limit := index $limits $key -}}
+{{- if and (not (kindIs "invalid" $request)) (not (kindIs "invalid" $limit)) -}}
+{{- if gt (float64 (include "openclaw.quantityValue" $request)) (float64 (include "openclaw.quantityValue" $limit)) -}}
+{{- fail (printf "%s.requests.%s (%v) must not exceed %s.limits.%s (%v)" $name $key $request $name $key $limit) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
@@ -960,7 +1004,8 @@ capabilities:
 {{- end -}}
 
 {{- define "openclaw.gatewayRouting.envoyNetworkPolicyName" -}}
-{{- printf "%s-%s-envoy-dataplane" (.Release.Name | trunc 34 | trimSuffix "-") (include "openclaw.gatewayRouting.routeNamespaceLabel" .) -}}
+{{- /* A truncated dotted release name can end in "." as well as "-" (finding 2338). */ -}}
+{{- printf "%s-%s-envoy-dataplane" (regexReplaceAll "[-.]+$" (.Release.Name | trunc 34) "") (include "openclaw.gatewayRouting.routeNamespaceLabel" .) -}}
 {{- end -}}
 
 {{/*
