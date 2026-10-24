@@ -593,7 +593,7 @@ test("OpenClaw Plugin Driver refuses a selection a roster entry's tools.deny blo
     lists: [{ entry: "main" }],
   });
   assert.equal(deniedOpenClawSelection(pairCatalog, pair, split(["pair_read"])), undefined);
-  // A plugin without tools has none to hide.
+  // A plugin without tools has none to hide, so it is never refused (the check skips it).
   assert.equal(
     deniedOpenClawSelection(
       [{ id: "occ-plugin:empty", name: "Empty", tools: [] }],
@@ -665,8 +665,8 @@ test("OpenClaw Plugin Driver refuses a selection the primary model's tools.byPro
     ),
     { message: refusal("setting tools.byProvider.openai.deny") },
   );
-  // Keys that normalize alike ("openai/" is the provider key): the one written in normalized
-  // form applies, wherever it stands.
+  // Keys that normalize alike ("openai/" normalizes to the provider key openai): the one
+  // written in normalized form applies, wherever it stands.
   for (const byProvider of [
     { "openai/": { deny: ["exec"] }, openai: { deny: ["*"] } },
     { openai: { deny: ["*"] }, "openai/": { deny: ["exec"] } },
