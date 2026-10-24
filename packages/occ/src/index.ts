@@ -272,8 +272,10 @@ import {
   ConfigurationGenerationConflictError,
   ConfigurationHarnessError,
   CredentialGatewayNotConfiguredError,
+  CredentialProxyRepositoryOnlyError,
   CredentialSourceDriverError,
   CredentialSourceTypeNotOfferedError,
+  CredentialSourceUnprotectedError,
   CredentialWithdrawalInProgressError,
   HarnessAuthSecretDriverError,
   IAMAccessBindingRoleError,
@@ -420,10 +422,12 @@ export {
   ConfigurationSizeError,
   configurationSettingMessage,
   CredentialGatewayNotConfiguredError,
+  CredentialProxyRepositoryOnlyError,
   CredentialSourceConfigError,
   CredentialSourceDriverError,
   CredentialSourceRevisionError,
   CredentialSourceTypeNotOfferedError,
+  CredentialSourceUnprotectedError,
   CredentialTokenUnsettledError,
   CredentialWithdrawalInProgressError,
   CredentialWithdrawalRefusedError,
@@ -5543,6 +5547,9 @@ export class OpenClawController {
       throw new ScopeViolationError("The protected egress provider does not support this source.");
     }
     provider.normalizeConfig(config);
+    // An Installation property: a Proxy that cannot serve the source refuses it before any
+    // Secret is read (finding 2360).
+    await control.assertAvailable(AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS));
     const reference = references[provider.sourceType.secrets[0]!.name];
     if (!reference || reference.namespaceId !== namespaceId) {
       throw new ScopeViolationError(
@@ -5561,7 +5568,6 @@ export class OpenClawController {
       );
     }
     const signal = AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS);
-    await control.assertAvailable(signal);
     const material = await secretDriver.readCredentialInput({
       secret,
       lifetime: {
@@ -5642,9 +5648,18 @@ export class OpenClawController {
     const owner = this.selectedProxyOwner();
     const driver = owner.require("credential_proxy");
     if ((agent.credentialSources?.length ?? 0) !== sourceCount) {
-      throw new ScopeViolationError(
-        "Protected egress requires an explicitly admitted source for every credential binding.",
-      );
+      if (repositoryGit === undefined) {
+        // Finding 2360: when the Proxy serves only repository Git, replacing the source cannot
+        // help, so that refusal comes first. Any other outcome leaves the binding refusal.
+        await driver.sourceControl
+          .assertAvailable(AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS))
+          .catch((error: unknown) => {
+            if (error instanceof CredentialProxyRepositoryOnlyError) {
+              throw error;
+            }
+          });
+      }
+      throw new CredentialSourceUnprotectedError();
     }
     if (sourceCount > 1 && !repositoryGit && driver.policyReduction?.version !== 1) {
       throw new ScopeViolationError(

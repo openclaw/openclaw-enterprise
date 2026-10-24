@@ -17,6 +17,12 @@ installed sender qualified for the profile, or remove the binding. A `git-read` 
 `git-full` binding has no protected delivery profile, so deploy refuses it on any
 Credential Proxy with `409 REPOSITORY_GIT_PROFILE_UNSUPPORTED`.
 
+This composition's Credential Proxy serves only repository Git. Creating a model
+credential source, or deploying an Agent without a repository binding, answers
+`409 RESOURCE_CONFLICT` naming `repository.openShell`. A Git Agent's model uses an
+existing Gateway Harness source; see
+[enroll prepared GitHub access](../../guides/credential-proxy.md#enroll-prepared-github-access).
+
 For an existing installation, first follow the
 [compatibility upgrade](../../guides/deploy/credential-proxy-upgrade.md#check-compatibility-before-interrupting-access).
 You can retain current selections and unprotected admissions. Keep Credential

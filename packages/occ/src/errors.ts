@@ -577,6 +577,39 @@ export class RepositoryGitSenderUnqualifiedError extends ResourceStateConflictEr
 }
 
 /**
+ * Finding 2360: with repository.openShell, the bundled OpenShell Credential Proxy's only
+ * registration is the request-phase Git service, which never advertises the execution profile.
+ * It delivers repository Git, so a model credential source or an Agent without a repository
+ * binding can never be admitted. Source creation answered a generic 503 for this permanent
+ * configuration and such a deploy a bare 404; both now name the Installation settings.
+ */
+export class CredentialProxyRepositoryOnlyError extends ResourceStateConflictError {
+  static readonly description =
+    "repository.openShell selects a Credential Proxy that serves only repository Git, so it cannot admit a model credential source or an Agent without a repository binding. To allow them, an admin removes repository.openShell and drivers.credential_proxy.";
+
+  constructor() {
+    super(CredentialProxyRepositoryOnlyError.description);
+    this.name = "CredentialProxyRepositoryOnlyError";
+  }
+}
+
+/**
+ * Finding 2360: a protected revision admits only credential sources admitted for live reads,
+ * and beside repository Git only the Agent's Gateway Harness source. Deploy refused any other
+ * binding, such as a Gateway source registered before the Proxy was selected, as a bare 404;
+ * the caller already holds deploy on the Agent, whose bindings it can read.
+ */
+export class CredentialSourceUnprotectedError extends ResourceStateConflictError {
+  static readonly description =
+    "With drivers.credential_proxy selected, a revision can use only credential sources admitted for live reads, and beside repository Git its Gateway Harness source. Bind a source created or adopted for live reads, then deploy again.";
+
+  constructor() {
+    super(CredentialSourceUnprotectedError.description);
+    this.name = "CredentialSourceUnprotectedError";
+  }
+}
+
+/**
  * Finding 2204: a Credential Proxy delivers repository Git only for one binding with a mapped
  * delivery profile (`git-write` or `github-installation`; `repositoryGitDeliveryProfile`).
  * Protected admission v4-v7 requires that profile, so a `git-read` or `git-full` binding, or
