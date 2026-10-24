@@ -22,7 +22,8 @@ real Installation.
 **What breaks.** `helm install` and `helm upgrade` refuse a
 `gatewayRouting.sandbox.ingressPeers` or `openshellGit.clients` entry that the
 Kubernetes API would refuse or that has fields a NetworkPolicy peer lacks: an
-invalid `ipBlock.cidr` or `except` CIDR, `ipBlock` together with selectors, a
+invalid `ipBlock.cidr` or `except` CIDR (including leading-zero octets such as
+`010.0.0.0/8`), `ipBlock` together with selectors, a
 `matchExpressions` entry with an invalid key, an operator other than `In`,
 `NotIn`, `Exists` or `DoesNotExist`, or values that do not fit the operator,
 invalid `openshellGit.clients` label keys or values, and unknown keys such as

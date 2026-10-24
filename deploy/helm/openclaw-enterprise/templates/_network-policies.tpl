@@ -78,7 +78,10 @@
 {{- fail (printf "%s.values must list label values for In and NotIn" $at) -}}
 {{- end -}}
 {{- range $value := $values -}}
-{{- if or (not (kindIs "string" $value)) (gt (len $value) 63) (and (ne $value "") (not (regexMatch "^[A-Za-z0-9]([A-Za-z0-9_.-]*[A-Za-z0-9])?$" $value))) -}}
+{{- if not (kindIs "string" $value) -}}
+{{- fail (printf "%s.values must be strings; use --set-string for values that look like numbers or booleans" $at) -}}
+{{- end -}}
+{{- if or (gt (len $value) 63) (and (ne $value "") (not (regexMatch "^[A-Za-z0-9]([A-Za-z0-9_.-]*[A-Za-z0-9])?$" $value))) -}}
 {{- fail (printf "%s.values contains an invalid Kubernetes label value" $at) -}}
 {{- end -}}
 {{- end -}}
@@ -92,18 +95,26 @@
 {{- define "openclaw.networkPolicy.peer" -}}
 {{- $name := .name -}}
 {{- $peer := .value -}}
-{{- if or (not (kindIs "map" $peer)) (not $peer) -}}
+{{- if not (kindIs "map" $peer) -}}
 {{- fail (printf "%s must set either ipBlock or selectors" $name) -}}
 {{- end -}}
-{{- range $field, $_ := $peer -}}
+{{- /* The API server decodes a null field as unset. */ -}}
+{{- $set := dict -}}
+{{- range $field, $value := $peer -}}
 {{- if not (has $field (list "ipBlock" "namespaceSelector" "podSelector")) -}}
 {{- fail (printf "%s has unknown field %s" $name $field) -}}
 {{- end -}}
+{{- if not (kindIs "invalid" $value) -}}
+{{- $_ := set $set $field true -}}
 {{- end -}}
-{{- if and (hasKey $peer "ipBlock") (or (hasKey $peer "namespaceSelector") (hasKey $peer "podSelector")) -}}
+{{- end -}}
+{{- if not $set -}}
+{{- fail (printf "%s must set either ipBlock or selectors" $name) -}}
+{{- end -}}
+{{- if and (hasKey $set "ipBlock") (or (hasKey $set "namespaceSelector") (hasKey $set "podSelector")) -}}
 {{- fail (printf "%s must set either ipBlock or selectors, not both" $name) -}}
 {{- end -}}
-{{- if hasKey $peer "ipBlock" -}}
+{{- if hasKey $set "ipBlock" -}}
 {{- $block := $peer.ipBlock -}}
 {{- if not (kindIs "map" $block) -}}
 {{- fail (printf "%s.ipBlock must be a map with cidr" $name) -}}
@@ -122,7 +133,7 @@
 {{- end -}}
 {{- end -}}
 {{- range $selector := list "namespaceSelector" "podSelector" -}}
-{{- if hasKey $peer $selector -}}
+{{- if hasKey $set $selector -}}
 {{- include "openclaw.networkPolicy.selector" (dict "name" (printf "%s.%s" $name $selector) "value" (index $peer $selector)) -}}
 {{- end -}}
 {{- end -}}
