@@ -901,17 +901,20 @@ export function validPluginRevisionState(value: unknown): value is PluginRevisio
  * a revision; OCC applies the same rule at Agent save, provisioning and deployment, before a
  * dedicated deployment stops the running revision.
  */
+export const OPENCLAW_PLUGIN_DRIVER_IMPLEMENTATION = "occ/openclaw-plugin";
+export const CODEX_PLUGIN_DRIVER_IMPLEMENTATION = "occ/codex-plugin";
+
 export function pluginRuntimeHarnessRequirement(
   implementation: string,
   harness: Readonly<Pick<RevisionHarnessDescriptor, "id" | "mode">>,
 ): string | undefined {
-  if (implementation === "occ/codex-plugin") {
+  if (implementation === CODEX_PLUGIN_DRIVER_IMPLEMENTATION) {
     return (harness.id === "codex" && harness.mode === "dedicated") ||
       (harness.id === "openclaw" && harness.mode === "embedded")
       ? undefined
       : "a dedicated Codex Harness or embedded OpenClaw Harness";
   }
-  if (implementation === "occ/openclaw-plugin") {
+  if (implementation === OPENCLAW_PLUGIN_DRIVER_IMPLEMENTATION) {
     return harness.id === "openclaw" &&
       (harness.mode === "embedded" || harness.mode === "dedicated")
       ? undefined

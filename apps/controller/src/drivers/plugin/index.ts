@@ -1,5 +1,10 @@
 import { type ErrorDetail } from "@openclaw-enterprise/contracts";
-import { requireConfiguration, ConfigurationValidationError } from "@openclaw-enterprise/contracts";
+import {
+  CODEX_PLUGIN_DRIVER_IMPLEMENTATION,
+  OPENCLAW_PLUGIN_DRIVER_IMPLEMENTATION,
+  requireConfiguration,
+  ConfigurationValidationError,
+} from "@openclaw-enterprise/contracts";
 import { asRecord, deepFreeze, immutableCopy } from "@openclaw-enterprise/utils";
 import {
   type JSONSchema,
@@ -44,9 +49,9 @@ type BundledCatalogEntry = PluginCatalogEntry;
 export class PluginValidationError extends ScopeViolationError {}
 
 const OCC_DRIVER_ID = "occ-plugin";
-const OCC_IMPLEMENTATION = "occ/openclaw-plugin";
+const OCC_IMPLEMENTATION = OPENCLAW_PLUGIN_DRIVER_IMPLEMENTATION;
 const CODEX_DRIVER_ID = "codex-plugin";
-const CODEX_IMPLEMENTATION = "occ/codex-plugin";
+const CODEX_IMPLEMENTATION = CODEX_PLUGIN_DRIVER_IMPLEMENTATION;
 
 const EMPTY_CONFIGURATION_SCHEMA: JSONSchema = deepFreeze({
   type: "object",

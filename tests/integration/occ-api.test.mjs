@@ -4000,19 +4000,21 @@ test("Agent save and deployment refuse plugins the Plugin Driver cannot run in t
     namespace.id,
     createHarnessConfiguration("codex", "gpt-6-astra"),
   );
-  const openclaw = await createConfiguration(controller, namespace.id, {
-    agents: { defaults: { model: "openai/gpt-5.1" } },
-  });
+  const openclaw = await createConfiguration(
+    controller,
+    namespace.id,
+    createHarnessConfiguration("openclaw", "gpt-5.1"),
+  );
   const pluginDriver = new OCCPluginDriver();
   controller.fixture.controller.registerDriver(pluginDriver);
   controller.fixture.controller.selectDriver("plugin", pluginDriver.id);
   const plugins = { [diffsPluginId]: pluginPolicy() };
-  const message =
-    "The Installation's Plugin Driver runs plugins only in an OpenClaw Harness: remove the Agent's plugins or select a Harness that runs them.";
-  const assertRefused = (refused, label) => {
+  const message = (harness) =>
+    `The Installation's Plugin Driver runs plugins only in ${harness}: remove the Agent's plugins, or change its Configuration or execution mode to a Harness that runs them.`;
+  const assertRefused = (refused, label, harness = "an OpenClaw Harness") => {
     assert.equal(refused.status, 400, `${label}: ${JSON.stringify(refused.body)}`);
     assert.equal(refused.body.error.code, "INVALID_REQUEST", label);
-    assert.equal(refused.body.error.message, message, label);
+    assert.equal(refused.body.error.message, message(harness), label);
   };
   // Kubernetes Compute renders OpenClaw plugin artifacts only into an OpenClaw Harness and
   // refused a dedicated Codex Agent's plugins in preparation, after the deployment had stopped
@@ -4065,6 +4067,46 @@ test("Agent save and deployment refuse plugins the Plugin Driver cannot run in t
   );
   assertRefused(await controller.request("POST", `${agentPath}/deploy`), "deploy");
   assert.deepEqual((await controller.request("GET", `${agentPath}/revisions`)).data, []);
+  // The refusal's advice works: clearing the plugins saves.
+  const cleared = await controller.request("PATCH", agentPath, {
+    body: { configurationId: codex.id, plugins: {} },
+  });
+  assert.equal(cleared.status, 200, JSON.stringify(cleared.body));
+
+  // The Codex Plugin Driver runs in dedicated Codex or embedded OpenClaw, not dedicated
+  // OpenClaw; Create Agent's preflight refuses the pair as create does.
+  const codexDriver = new CodexPluginDriver();
+  controller.fixture.controller.registerDriver(codexDriver);
+  controller.fixture.controller.selectDriver("plugin", codexDriver.id);
+  const codexPlugins = { [linearPluginId]: { enabled: true } };
+  const codexHarness = "a dedicated Codex Harness or embedded OpenClaw Harness";
+  assertRefused(
+    await controller.request("POST", agents, {
+      body: {
+        name: "openclaw-codex-plugins",
+        executionMode: "dedicated",
+        configurationId: openclaw.id,
+        plugins: codexPlugins,
+      },
+    }),
+    "Codex Plugin Driver create",
+    codexHarness,
+  );
+  assertRefused(
+    await controller.request("POST", `${agents}/validate`, {
+      body: {
+        configuration: { kind: "agent", values: createHarnessConfiguration("openclaw", "gpt-5.1") },
+        executionMode: "dedicated",
+        plugins: codexPlugins,
+      },
+    }),
+    "Codex Plugin Driver preflight",
+    codexHarness,
+  );
+  const codexEmbedded = await controller.request("POST", agents, {
+    body: { name: "embedded-codex-plugins", configurationId: openclaw.id, plugins: codexPlugins },
+  });
+  assert.equal(codexEmbedded.status, 201, JSON.stringify(codexEmbedded.body));
 });
 
 test("the OpenClaw Plugin Driver refuses a selection whose every tool the Configuration denies at save and deployment", async () => {
@@ -6583,7 +6625,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
     {
       code: "INVALID_REQUEST",
       message:
-        "The Installation's Plugin Driver runs plugins only in an OpenClaw Harness: remove the Agent's plugins or select a Harness that runs them.",
+        "The Installation's Plugin Driver runs plugins only in an OpenClaw Harness: remove the Agent's plugins, or change its Configuration or execution mode to a Harness that runs them.",
     },
   );
   assert.deepEqual(

@@ -1,6 +1,8 @@
 import {
   type AgentRevision,
   assertExecutionAdmission,
+  CODEX_PLUGIN_DRIVER_IMPLEMENTATION,
+  OPENCLAW_PLUGIN_DRIVER_IMPLEMENTATION,
   type PluginDesiredState,
   pluginRuntimeHarnessRequirement,
   validPluginRevisionState,
@@ -79,8 +81,12 @@ function validateDriverMatchesRuntime(
 ): void {
   const [implementation, artifacts, driver] =
     runtime.kind === "codex"
-      ? ["occ/codex-plugin", "Codex plugin runtime artifacts", "Codex PluginDriver"]
-      : ["occ/openclaw-plugin", "OpenClaw plugin runtime artifacts", "OpenClaw PluginDriver"];
+      ? [CODEX_PLUGIN_DRIVER_IMPLEMENTATION, "Codex plugin runtime artifacts", "Codex PluginDriver"]
+      : [
+          OPENCLAW_PLUGIN_DRIVER_IMPLEMENTATION,
+          "OpenClaw plugin runtime artifacts",
+          "OpenClaw PluginDriver",
+        ];
   const harness = pluginRuntimeHarnessRequirement(implementation, revision.harness);
   if (harness !== undefined) {
     throw new Error(`${artifacts} require ${harness}.`);

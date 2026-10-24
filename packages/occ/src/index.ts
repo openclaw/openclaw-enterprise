@@ -13278,7 +13278,7 @@ export class OpenClawController {
     const required = pluginRuntimeHarnessRequirement(this.pluginDriver().implementation, harness);
     if (required !== undefined) {
       throw new ConfigurationHarnessError(
-        `The Installation's Plugin Driver runs plugins only in ${required}: remove the Agent's plugins or select a Harness that runs them.`,
+        `The Installation's Plugin Driver runs plugins only in ${required}: remove the Agent's plugins, or change its Configuration or execution mode to a Harness that runs them.`,
       );
     }
   }
