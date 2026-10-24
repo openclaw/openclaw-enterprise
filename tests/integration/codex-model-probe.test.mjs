@@ -8,6 +8,7 @@ import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { AGENT_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { waitUntil } from "../helpers/wait-for.mjs";
 
 const execute = promisify(execFile);
 const image = process.env.OCC_TEST_CODEX_PROBE_IMAGE;
@@ -208,15 +209,11 @@ async function startLauncher(
   };
 }
 
-async function waitFor(check, diagnostics) {
-  const deadline = Date.now() + 70000;
-  while (Date.now() < deadline) {
-    if (check()) {
-      return;
-    }
-    await delay(50);
-  }
-  assert.fail(`Launcher did not settle: ${diagnostics()}`);
+function waitFor(check, diagnostics) {
+  return waitUntil(() => `the launcher to settle: ${diagnostics()}`, check, {
+    timeoutMs: 70_000,
+    intervalMs: 50,
+  });
 }
 
 test(

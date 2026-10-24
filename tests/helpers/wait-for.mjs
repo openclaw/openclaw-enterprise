@@ -53,3 +53,16 @@ export async function waitFor(description, read, options = {}) {
 export async function waitUntil(description, check, options) {
   await waitFor(description, async () => ((await check()) ? true : undefined), options);
 }
+
+// Polls `read` like waitFor, except that `false` also means "not yet": for reads that
+// answer false until they can return the awaited value.
+export function waitForResult(description, read, options) {
+  return waitFor(
+    description,
+    async () => {
+      const value = await read();
+      return value === false ? undefined : value;
+    },
+    options,
+  );
+}

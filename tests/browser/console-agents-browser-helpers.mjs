@@ -9,6 +9,7 @@ import { chromium, request as playwrightRequest } from "playwright";
 import { watchBrowserContext } from "../helpers/browser-failure-diagnostics.mjs";
 import { keepRequestInterceptionEnabled } from "../helpers/browser-request-interception.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { waitUntil } from "../helpers/wait-for.mjs";
 import {
   deploymentErrorForWork,
   deploymentProgressForWork,
@@ -387,7 +388,7 @@ export async function waitForEnabled(locator, timeoutMs = 10_000) {
   await locator.waitFor({ state: "attached", timeout: timeoutMs });
   await waitForCondition(
     () => locator.isEnabled(),
-    `${locator} stayed disabled for ${timeoutMs} ms`,
+    `${locator} to be enabled within ${timeoutMs} ms`,
     Math.max(1, deadline - Date.now()),
   );
 }
@@ -482,15 +483,8 @@ export async function waitForIdleFetches(page) {
   await page.waitForFunction(() => globalThis.inFlightFetchCount() === 0);
 }
 
-export async function waitForCondition(predicate, message, timeoutMs = 5_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await predicate()) {
-      return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  assert.fail(message);
+export async function waitForCondition(predicate, description, timeoutMs = 5_000) {
+  await waitUntil(description, predicate, { timeoutMs, intervalMs: 50 });
 }
 
 export function nativeValues(marker, options = {}) {
