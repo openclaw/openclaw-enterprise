@@ -1679,6 +1679,44 @@ test("a source picked while a refresh reads clears the kept lines at once", asyn
   assert.match((await outputStatus.textContent()) ?? "", /^Showing gateway in /u);
 });
 
+test("a status refresh keeps Download disabled while a download is pending", async (t) => {
+  const logs = await logsFixture(t);
+  logs.computeDriver.state.lines = [line(1, "download stays pending")];
+  const { page, requests } = await openRetainedLogs(t, logs);
+  const log = page.getByRole("log", { name: "Runtime log output" });
+  await log.getByText("download stays pending").waitFor();
+  await waitForIdleFetches(page);
+  const download = page.getByRole("button", { name: "Download", exact: true });
+  const held = await holdRequests(
+    t,
+    page,
+    `**/deployments/${logs.revisionId}/runtime/logs?*download=true*`,
+    { once: true },
+  );
+  const statusPath = `/deployments/${logs.revisionId}/runtime`;
+  const statusReads = () => requests.filter(({ path }) => path.endsWith(statusPath)).length;
+  const before = statusReads();
+  await download.click();
+  try {
+    await held.requested;
+    assert.equal(await download.isDisabled(), true);
+    await page.clock.runFor(10_000);
+    await waitForCondition(() => statusReads() > before, "the runtime status refreshes");
+    assert.equal(await download.isDisabled(), true);
+    assert.equal(
+      requests.filter(({ path }) => path.includes("download=true")).length,
+      1,
+      "a second click must not start while the first download is pending",
+    );
+    await download.click({ force: true });
+    assert.equal(requests.filter(({ path }) => path.includes("download=true")).length, 1);
+  } finally {
+    held.release();
+  }
+  await waitForEnabled(download);
+  await waitForIdleFetches(page);
+});
+
 test("the Sandbox source shows redacted policy decisions without a Pod picker", async (t) => {
   const computeDriver = createRuntimeLogComputeDriver({ sandboxNamespace: "tenant-console" });
   const secret = `Zq9${randomUUID().replaceAll("-", "")}`;

@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { accessSync, constants } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
-import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { commandShim, startFixtureCommandServer } from "./ci-prepare-fixture-command.mjs";
+import { temporaryDirectory } from "./temporary-directory.mjs";
 
 export { forwardedEnv } from "./ci-prepare-fixture-command.mjs";
 
@@ -19,8 +19,7 @@ export const nodeBaseImage = `docker.io/library/node:24-bookworm@sha256:${digest
 export const mutableImage = "registry.example/openclaw/runtime:latest";
 
 export async function fixture(t) {
-  const root = await mkdtemp(join(tmpdir(), "ci-prepare-test-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await temporaryDirectory(t, "ci-prepare-test-");
   await mkdir(root, { recursive: true });
   return root;
 }

@@ -1714,6 +1714,10 @@ test(
   imageTestOptions,
   async () => {
     const defaultPluginPolicy = codexRuntimeArtifact({}, []).configuration.plugins;
+    const codexExecutableSource = AGENT_RUNTIME_ENTRYPOINT.match(
+      /^function codexExecutable\(\) \{\n[\s\S]*?\n\}\n/m,
+    )?.[0];
+    assert.ok(codexExecutableSource, "the Harness entrypoint must define codexExecutable()");
     const script = String.raw`
 const assert = require("node:assert/strict");
 const { createHash } = require("node:crypto");
@@ -1737,6 +1741,12 @@ assert.equal(provenance.openclawConnectPatchSha256, "906fd14d2d36b98c4308d4db65f
 assert.equal(provenance.openclawTrustedProxyRolePatchSha256, "1e076ffa1d47b1178e63817f9e7844188da2c34e3e7c39b708b3d35e72630702");
 assert.equal(provenance.codexDependencyPinPatchSha256, "7bb0ae29bf3259b245d7675b2c6a3abe521c8139095f75ce0c532188162de5e9");
 assert.equal(provenance.openclawRequiredWorkerAuthorityPatchSha256, "d07be9735250a5fb8be69086a96d4959f02caaeec6dc31990c03eed959bd17d8");
+// The patches the per-patch fields above omit; runtime-assets.test.mjs checks the full set.
+assert.equal(provenance.patches["openclaw-codex-preserve-on-request.patch"], "ef50d1e635be0a9afd970ee1ea95c3468c307759fedd3783180ac2a676fa015b");
+assert.equal(provenance.patches["openclaw-codex-full-access-profile.patch"], "bf0e9cd6d1d2420f42a33af130d534e1de6d1fe17701517c676824f5e80ec931");
+assert.equal(provenance.patches["openclaw-required-worker-authority-regression.patch"], "1998cdd2321a68f97afb96470dcfb989a1460484c831b113b3af22dcabbf6189");
+assert.equal(provenance.patches["openclaw-control-ui-browser-reconnect.patch"], "964c500f981f343d8c131a213aad65ea47e2de4a9a5d11dbb57c3f30bead7065");
+assert.equal(Object.keys(provenance.patches).length, 9);
 assert.equal(provenance.codex.version, "0.163.0-alpha.2");
 assert.equal(Object.hasOwn(provenance, "codexPatchSha256"), false);
 assert.equal(Object.hasOwn(provenance, "codexVersion"), false);
@@ -1776,6 +1786,13 @@ const codexPackage = JSON.parse(readFileSync(resolve(codexPackageRoot, "package.
 const platformPackageRoot = resolve(codexPackageRoot, "..", platform.packageDirectory);
 const platformPackage = JSON.parse(readFileSync(resolve(platformPackageRoot, "package.json"), "utf8"));
 const platformBinary = resolve(platformPackageRoot, platform.binaryPath);
+// Login and the model check spawn codexExecutable() so a timeout's SIGKILL ends native
+// Codex, not just the npm launcher (finding 2274). Run the generated helper on this
+// image's PATH: a shim in place of the launcher symlink would make it fall back.
+${codexExecutableSource}
+const harnessCodex = codexExecutable();
+assert.ok(harnessCodex.startsWith("/"), "codexExecutable() fell back to " + harnessCodex + " on PATH " + process.env.PATH);
+assert.equal(realpathSync(harnessCodex), realpathSync(platformBinary));
 const platformBinarySha256 = createHash("sha256").update(readFileSync(platformBinary)).digest("hex");
 const platformInventoryPath = relative("/app/node_modules/openclaw", realpathSync(platformBinary));
 assert.ok(!platformInventoryPath.startsWith(".."), "Codex platform binary must live under the inventoried OpenClaw package root.");

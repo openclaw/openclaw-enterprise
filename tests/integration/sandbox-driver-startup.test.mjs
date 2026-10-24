@@ -66,6 +66,7 @@ import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs"
 import { labelSelectorLabels } from "../helpers/kubernetes-routed-scenarios.mjs";
 import { availablePort } from "../helpers/available-port.mjs";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const controllerRequire = createRequire(
   new URL("../../apps/controller/package.json", import.meta.url),
@@ -2679,8 +2680,7 @@ test("OpenShell holds withdrawn Codex authentication after a Harness restart", a
     .digest("hex");
   await driver.provisionHarness({ ...context, revision, requirements });
 
-  const root = await mkdtemp(join(tmpdir(), "openshell-withdrawn-auth-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await temporaryDirectory(t, "openshell-withdrawn-auth-");
   const codexHome = join(root, "codex");
   await mkdir(codexHome);
   const authPath = join(codexHome, "auth.json");
@@ -2899,8 +2899,7 @@ for (const harnessId of ["codex", "openclaw"]) {
     assert.equal(executions.length, before);
 
     await t.test("the setup wrapper passes the runner's refusal status through", async (t) => {
-      const root = await mkdtemp(join(tmpdir(), "openshell-workspace-wrapper-"));
-      t.after(() => rm(root, { recursive: true, force: true }));
+      const root = await temporaryDirectory(t, "openshell-workspace-wrapper-");
       const workspace = join(root, "workspace");
       await mkdir(workspace);
       const wrapped = (payload, environment = {}) =>
@@ -2934,8 +2933,7 @@ for (const harnessId of ["codex", "openclaw"]) {
             : "Set OCC_TEST_RUNTIME_IMAGE to the pinned native runtime.",
         },
         async (t) => {
-          const root = await mkdtemp(join(tmpdir(), "openshell-workspace-setup-"));
-          t.after(() => rm(root, { recursive: true, force: true }));
+          const root = await temporaryDirectory(t, "openshell-workspace-setup-");
           const workspace = join(root, "workspace");
           const home = join(root, "home");
           await mkdir(workspace);
@@ -3641,8 +3639,7 @@ test("startup rejects an invalid OpenShell gateway readiness wait", async (t) =>
 });
 
 test("shipped startup names a rejected OpenShell policy without logging its name", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "occ-policy-name-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "occ-policy-name-");
   const template = sandboxInstallation().drivers.sandbox.configuration.policy.networkPolicies[0];
   const planted = "planted-policy-token";
 

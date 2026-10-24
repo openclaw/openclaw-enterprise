@@ -42,6 +42,7 @@ import {
 import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
 import { socketDirectory } from "../helpers/socket-directory.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 function jsonLines(text) {
   return text
@@ -129,8 +130,7 @@ before(async () => {
 });
 
 async function fixture(t, configuration = installation()) {
-  const directory = await mkdtemp(join(tmpdir(), "occ-installation-startup-"));
-  t.after(async () => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "occ-installation-startup-");
   const path = join(directory, "installation.yaml");
   // JSON is valid YAML; mutations exercise the same real SDK YAML parser as controller startup.
   await writeFile(path, JSON.stringify(configuration), "utf8");
@@ -718,8 +718,7 @@ function retiredChatgptInstallation() {
 }
 
 async function repositoryInstallation(t) {
-  const directory = await mkdtemp(join(tmpdir(), "occ-repository-startup-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "occ-repository-startup-");
   const tls = await createTlsMaterial(t);
   await chmod(tls.certFile, 0o644);
   const writableCaPath = join(directory, "writable-ca.crt");
@@ -1032,8 +1031,7 @@ test("repository startup rejects unmatched ownership, registry identity, duratio
 });
 
 test("public CA loading rejects repeated malformed certificates without stalling", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "occ-public-ca-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "occ-public-ca-");
   const path = join(directory, "ca.pem");
   await writeFile(
     path,

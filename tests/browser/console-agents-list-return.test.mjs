@@ -638,6 +638,25 @@ test("A list held by a refocus while its rows wait to fill paints no earlier ans
   await page.getByText(READING).first().waitFor({ state: "detached" });
 });
 
+// A retained view keeps the reader's place: from a list scrolled down, Back from the Agent it
+// opened lands where it was, not at the top. The last Agent is in view at full scroll, so opening
+// it scrolls nothing and the retained position is exactly the one measured.
+test("Back to a scrolled Agents list restores its scroll position", async (t) => {
+  const { agents, page } = await openTeamList(t, "Team scroll return");
+  await page.setViewportSize({ width: 1280, height: 480 });
+  await tagView(page);
+  await page.evaluate(() =>
+    globalThis.scrollTo({ top: globalThis.document.body.scrollHeight, left: 0 }),
+  );
+  const scrolled = await page.evaluate(() => globalThis.scrollY);
+  assert.ok(scrolled > 0, "the list scrolls at this height");
+  await openAgent(page, agents.at(-1));
+  await page.goBack();
+  await page.locator(settledView).getByRole("table", { name: "Agents" }).waitFor();
+  assert.equal(await viewTag(page), "kept", "the retained list was reused");
+  assert.equal(await page.evaluate(() => globalThis.scrollY), scrolled);
+});
+
 // A list left again before its rows' rereads land is reused on the next return too: rows read
 // again whenever the list resumes, so unfinished ones don't count against it (finding 1663).
 // No row shows the answer it had, or an aborted read's failure, as current.

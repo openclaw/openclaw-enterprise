@@ -6,6 +6,7 @@ import { chmod, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { setEnvironment } from "../helpers/environment.mjs";
 import {
   createGitHubAppRepositoryObserver,
   loadGitHubAppObserverInput,
@@ -369,15 +370,7 @@ test("GitHub App observer credential helper rejects unsupported operations and w
 
 test("GitHub App observer credential helper keeps API origin override test-only and loopback", async (t) => {
   const f = await fixture(t);
-  const previousNodeEnv = process.env.NODE_ENV;
-  process.env.NODE_ENV = "test";
-  t.after(() => {
-    if (previousNodeEnv === undefined) {
-      delete process.env.NODE_ENV;
-    } else {
-      process.env.NODE_ENV = previousNodeEnv;
-    }
-  });
+  setEnvironment(t, { NODE_ENV: "test" });
   const notTest = await runCredentialHelper(f, "get", credentialRequest(), {
     OCC_TEST_QA_GITHUB_API_ORIGIN: f.origin,
   });

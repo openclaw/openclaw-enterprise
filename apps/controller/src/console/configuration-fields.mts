@@ -212,11 +212,11 @@ export function configurationFields(
               ? () => (control.value === "" ? null : Number(control.value))
               : () => control.value;
         }
+        // JSON Schema counts code points; native input lengths count UTF-16 units.
+        // Leave string length validation to the resource owner to avoid truncating input.
         for (const [source, target] of [
           ["minimum", "min"],
           ["maximum", "max"],
-          ["minLength", "minlength"],
-          ["maxLength", "maxlength"],
           ["pattern", "pattern"],
         ] as const) {
           if (definition[source] !== undefined) {

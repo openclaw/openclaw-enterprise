@@ -6,6 +6,7 @@ import { createOccMetrics } from "../../apps/controller/src/metrics/index.ts";
 import { PostgresMetricsSnapshot } from "../../packages/occ/src/index.ts";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
+import { expireWorkLease } from "../helpers/postgres-worker-revision-support.mjs";
 
 // A TCP relay between one pool and PostgreSQL. `silence()` keeps every connection open but
 // forwards nothing, like a failover or partition that drops packets without a reset: queries
@@ -172,12 +173,10 @@ test(
     assert.equal(original.rows[0].state, "claimed");
     assert.equal(original.rows[0].attempt_count, 1);
 
-    await observerPool.query(
-      `UPDATE occ.controller_work
-       SET lease_expires_at = clock_timestamp() - interval '1 second'
-       WHERE idempotency_key = $1 AND claim_token = $2::uuid`,
-      [idempotencyKey, original.rows[0].claim_token],
-    );
+    await expireWorkLease(observerPool, {
+      key: idempotencyKey,
+      claimToken: original.rows[0].claim_token,
+    });
     const recoveryQueue = new PostgresWorkQueue(observerPool, {
       leaseDurationMs: 30_000,
       maxAttempts: 5,
@@ -549,12 +548,7 @@ test(
     assert.ok(late[0].durationMs > leaseDurationMs, `durationMs ${late[0].durationMs}`);
 
     // The claim stays with lease recovery; once it expires the work runs again and converges.
-    await observerPool.query(
-      `UPDATE occ.controller_work
-       SET lease_expires_at = clock_timestamp() - interval '1 second'
-       WHERE idempotency_key = $1 AND state = 'claimed'`,
-      [idempotencyKey],
-    );
+    await expireWorkLease(observerPool, { key: idempotencyKey, state: "claimed" });
     await waitFor("the recovered work to converge the Namespace", async () => {
       const rows = await observerPool.query(
         `SELECT namespaces.status, work.state, work.attempt_count
@@ -949,12 +943,10 @@ test(
     assert.equal(original.rows[0].state, "claimed");
     assert.equal(original.rows[0].attempt_count, 1);
 
-    await observerPool.query(
-      `UPDATE occ.controller_work
-       SET lease_expires_at = clock_timestamp() - interval '1 second'
-       WHERE idempotency_key = $1 AND claim_token = $2::uuid`,
-      [idempotencyKey, original.rows[0].claim_token],
-    );
+    await expireWorkLease(observerPool, {
+      key: idempotencyKey,
+      claimToken: original.rows[0].claim_token,
+    });
     const recoveryQueue = new PostgresWorkQueue(recoveryPool, {
       leaseDurationMs: 30_000,
       maxAttempts: 5,

@@ -88,8 +88,8 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	if err != nil {
 		return err
 	}
-	if apiPort == kubernetesPort {
-		return fmt.Errorf("development API and Kubernetes API ports must differ")
+	if err := checkAPIKubernetesPorts(apiPort, kubernetesPort); err != nil {
+		return err
 	}
 	signIn, err := developmentSignIn(r.env)
 	if err != nil {
@@ -181,13 +181,14 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	if err := r.checkLegacyNATTable(ctx); err != nil {
 		return err
 	}
+	// The revision checks read images the local engine lacks from the registry.
+	if err := r.selectDevelopmentImageRegistry(ctx); err != nil {
+		return err
+	}
 	if err := r.validateDevelopmentImageRevisions(ctx); err != nil {
 		return err
 	}
 	if err := r.validateDevelopmentRepositoryImage(ctx); err != nil {
-		return err
-	}
-	if err := r.selectDevelopmentImageRegistry(ctx); err != nil {
 		return err
 	}
 	state.ContainerEngine = r.engine
@@ -560,22 +561,55 @@ func (r *runner) validateDevelopmentImageRevisions(ctx context.Context) error {
 		return fmt.Errorf("the checkout must have a full Git commit revision")
 	}
 	for _, image := range []string{controller, r.env["OCC_KUBERNETES_RUNTIME_IMAGE"]} {
-		label, err := r.output(ctx, r.engine, "image", "inspect", "--format", `{{ index .Config.Labels "org.opencontainers.image.revision" }}`, image)
+		label, err := r.developmentImageRevision(ctx, image)
 		if err != nil {
-			return fmt.Errorf("selected image must exist locally and expose its source revision: %s", image)
+			return err
 		}
-		if string(label) != revision {
+		if label != revision {
 			return fmt.Errorf("selected image revision does not match checkout %s: %s", revision, image)
 		}
 	}
 	return nil
 }
 
+// developmentImageRevision reads a selected image's source revision label from
+// the local engine. An image the engine lacks may instead be pinned by digest
+// to the development image registry, whose verified config is read.
+func (r *runner) developmentImageRevision(ctx context.Context, image string) (string, error) {
+	label, err := r.output(ctx, r.engine, "image", "inspect", "--format", `{{ index .Config.Labels "org.opencontainers.image.revision" }}`, image)
+	if err == nil {
+		return string(label), nil
+	}
+	if _, _, ok := r.imageRegistry.source(image); !ok {
+		return "", fmt.Errorf("selected image must exist locally and expose its source revision: %s", image)
+	}
+	selected, err := r.readRegistryImage(ctx, image)
+	if err != nil {
+		return "", fmt.Errorf("selected image must exist locally or in the development image registry and expose its source revision: %w", err)
+	}
+	return selected.Labels["org.opencontainers.image.revision"], nil
+}
+
+// requireSelectedDevelopmentImage checks that an explicitly selected image
+// exists locally, or in the development image registry that serves it.
+func (r *runner) requireSelectedDevelopmentImage(ctx context.Context, role, image string) error {
+	if _, err := r.output(ctx, r.engine, "image", "inspect", image); err == nil {
+		return nil
+	}
+	if _, _, ok := r.imageRegistry.source(image); ok {
+		if _, err := r.readRegistryImage(ctx, image); err != nil {
+			return fmt.Errorf("explicitly selected %s image must already exist locally or in the development image registry: %w", role, err)
+		}
+		return nil
+	}
+	return fmt.Errorf("explicitly selected %s image must already exist locally: %s", role, image)
+}
+
 func (r *runner) importDevelopmentController(ctx context.Context, state *developmentState) (string, error) {
 	image := r.setting("OCC_DEVELOPMENT_CONTROLLER_IMAGE", developmentController)
 	if r.env["OCC_DEVELOPMENT_CONTROLLER_IMAGE"] != "" {
-		if _, err := r.output(ctx, r.engine, "image", "inspect", image); err != nil {
-			return "", fmt.Errorf("explicitly selected controller image must already exist locally: %s", image)
+		if err := r.requireSelectedDevelopmentImage(ctx, "controller", image); err != nil {
+			return "", err
 		}
 	} else {
 		base := r.setting("OCC_DEVELOPMENT_NODE_BASE_IMAGE", developmentNodeBase)

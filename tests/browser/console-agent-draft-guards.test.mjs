@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { NAMESPACE_NOT_READY_MESSAGE } from "../../apps/controller/src/console/agents/list.mts";
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
 import { createConsoleRepositoryLaunchFixture } from "../helpers/console-repository-launch.mjs";
@@ -291,6 +292,105 @@ test("Agent policy proposals save separately or save then apply the newly saved 
     pathRequests(requests, "POST", `${base}/apply`).map(({ body }) => body),
     [{ expectedVersion: 3, revisionId: revision.id }],
   );
+});
+
+test("Agent policy proposals preserve valid Unicode executable paths through review and save", async (t) => {
+  // JSON Schema counts Unicode code points. Each path segment also fits the native
+  // filesystem byte limit, although this valid path exceeds 512 UTF-16 code units.
+  const grant = {
+    ...delegatedPolicyGrant,
+    id: "unicode-tool",
+    binary: `/${Array(6).fill("𐐀".repeat(45)).join("/")}/tool`,
+  };
+  const { fixture, namespace, agent, base } = await createPolicyConsole(t, [grant]);
+  const initial = (await fixture.request("GET", base)).data.policy;
+  assert.equal(initial.version, 1);
+  const accepted = await fixture.request("POST", `${base}/validate`, {
+    body: { expectedVersion: initial.version, additions: [grant] },
+  });
+  assert.equal(accepted.status, 200, JSON.stringify(accepted.body));
+  assert.deepEqual(accepted.data, { success: true, data: { additions: [grant] } });
+
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "policy"));
+  await page.getByRole("button", { name: "Add Network rules", exact: true }).click();
+  await page.getByRole("textbox", { name: "Rule ID", exact: true }).fill(grant.id);
+  await page.getByRole("textbox", { name: "Destination hostname", exact: true }).fill(grant.host);
+  await page.getByRole("button", { name: "Add Port ranges", exact: true }).click();
+  await page.getByRole("spinbutton", { name: "Start port", exact: true }).fill("443");
+  await page.getByRole("spinbutton", { name: "End port", exact: true }).fill("443");
+  const executable = page.getByRole("textbox", { name: "Executable path", exact: true });
+  await executable.click();
+  // Keyboard insertion exercises native maxlength handling; fill() can bypass it.
+  await page.keyboard.insertText(grant.binary);
+  const entered = await executable.inputValue();
+  t.diagnostic(
+    `Executable path: expected ${[...grant.binary].length} code points / ${grant.binary.length} UTF-16 units; entered ${[...entered].length} code points / ${entered.length} UTF-16 units.`,
+  );
+  assert.equal(entered, grant.binary, "the editor must retain the complete accepted path");
+
+  const preview = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" && response.url().endsWith(`${base}/validate`),
+  );
+  await page.getByRole("button", { name: "Review changes", exact: true }).click();
+  const previewResponse = await preview;
+  assert.equal(previewResponse.status(), 200);
+  assert.deepEqual((await previewResponse.json()).data, {
+    success: true,
+    data: { additions: [grant] },
+  });
+  const saved = page.waitForResponse(
+    (response) => response.request().method() === "PUT" && response.url().endsWith(base),
+  );
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  assert.equal((await saved).status(), 200);
+  await page.getByText(/Policy v2 saved\. The current revision is unchanged\./).waitFor();
+  const persisted = (await fixture.request("GET", base)).data.policy;
+  assert.equal(persisted.version, initial.version + 1);
+  assert.deepEqual(persisted.additions, [grant]);
+  assert.equal(persisted.application, undefined);
+  for (const [method, path] of [
+    ["POST", `${base}/validate`],
+    ["PUT", base],
+  ]) {
+    assert.deepEqual(
+      pathRequests(requests, method, path).map(({ body }) => body),
+      [{ expectedVersion: initial.version, additions: [grant] }],
+    );
+  }
+
+  // Keep the schema owner's limit: exceeding 512 code points is an explicit
+  // validation refusal, not a truncated input or a second saved policy.
+  const tooLong = grant.binary + "a".repeat(232);
+  await executable.click();
+  await executable.press("ControlOrMeta+A");
+  await page.keyboard.insertText(tooLong);
+  assert.equal(await executable.inputValue(), tooLong);
+  const rejected = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" && response.url().endsWith(`${base}/validate`),
+  );
+  await page.getByRole("button", { name: "Review changes", exact: true }).click();
+  const rejectedResponse = await rejected;
+  assert.equal(rejectedResponse.status(), 200);
+  const refusal = (await rejectedResponse.json()).data;
+  assert.equal(refusal.success, false);
+  assert.deepEqual(refusal.error.details, [
+    {
+      path: "/additions/0/binary",
+      code: "TOO_LONG",
+      message: "Configuration does not satisfy maxLength.",
+    },
+  ]);
+  await page.getByText("Configuration does not satisfy maxLength.", { exact: true }).waitFor();
+  assert.equal(await executable.inputValue(), tooLong);
+  assert.equal(await page.getByRole("button", { name: "Save", exact: true }).count(), 0);
+  assert.equal(pathRequests(requests, "PUT", base).length, 1);
+  const unchanged = (await fixture.request("GET", base)).data.policy;
+  assert.equal(unchanged.version, 2);
+  assert.deepEqual(unchanged.additions, [grant]);
 });
 
 test("Agent policy under protected execution offers only removal of saved network rules", async (t) => {
@@ -1211,6 +1311,17 @@ test("Agent deployment shows the API's typed 403 and 409 refusals", async (t) =>
   await waitForEnabled(deploy);
   fixture.policy.restrictions.pop();
 
+  // Deploys against a routed 409 with `body` and waits for `text`, with Deploy enabled again.
+  async function routedConflict(body, text, exact) {
+    await page.route(`${fixture.origin}${path}/deploy`, (route) =>
+      route.fulfill({ status: 409, contentType: "application/json", body }),
+    );
+    await deploy.click();
+    await page.getByText(text, { exact }).waitFor();
+    await waitForEnabled(deploy);
+    await page.unroute(`${fixture.origin}${path}/deploy`);
+  }
+
   // An untyped conflict, or a proxy reply with no error envelope, also names nothing to fix.
   for (const body of [
     JSON.stringify({
@@ -1221,16 +1332,18 @@ test("Agent deployment shows the API's typed 403 and 409 refusals", async (t) =>
     }),
     "",
   ]) {
-    await page.route(`${fixture.origin}${path}/deploy`, (route) =>
-      route.fulfill({ status: 409, contentType: "application/json", body }),
-    );
-    await deploy.click();
-    await page
-      .getByText("Deployment conflicts with the saved Agent state.", { exact: false })
-      .waitFor();
-    await waitForEnabled(deploy);
-    await page.unroute(`${fixture.origin}${path}/deploy`);
+    await routedConflict(body, "Deployment conflicts with the saved Agent state.", false);
   }
+
+  // A Namespace that isn't ready gets the console's pointer to the Namespaces page, not the
+  // API's bare sentence.
+  await routedConflict(
+    JSON.stringify({
+      error: { code: "NAMESPACE_NOT_READY", message: "The requested Namespace is not ready." },
+    }),
+    NAMESPACE_NOT_READY_MESSAGE,
+    true,
+  );
 });
 
 for (const mutation of ["authentication", "channel Secrets"]) {

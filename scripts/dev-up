@@ -100,6 +100,9 @@ while [ "$#" -gt 0 ]; do
       key_output="$2"
       shift 2
       ;;
+    --sandbox-network-policy-file | --sandbox-network-policy-ceiling-file | --sandbox-network-policy-file=* | --sandbox-network-policy-ceiling-file=*)
+      usage_error "arguments" "Sandbox policy input requires Kubernetes Compute and a Sandbox Driver"
+      ;;
     --)
       shift
       compose_args=("$@")
@@ -257,7 +260,7 @@ if [ -z "$container_engine" ] && [ "$requested_container_engine" != docker ] && 
     if [ "${#compose_args[@]}" -gt 0 ]; then
       for arg in "${compose_args[@]}"; do
         case "$arg" in
-          -f | --file | --file=*) compose_file_selected=1 ;;
+          -f | -f?* | --file | --file=*) compose_file_selected=1 ;;
         esac
       done
     fi

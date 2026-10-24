@@ -98,6 +98,8 @@ RUN --mount=type=secret,id=build-ca,required=false \
     echo 'ec38a23888430a6aae72fdacda05efbd36f0ddad86562c00017ba3a51df0a61d  /tmp/openclaw-source.tar.gz' | sha256sum --check --strict; \
     tar -xzf /tmp/openclaw-source.tar.gz --strip-components=1; \
     rm /tmp/openclaw-source.tar.gz
+# Record every patch applied here in appliedPatches in scripts/build-runtime-assets.mjs,
+# which writes provenance; runtime-assets.test.mjs compares the two.
 # TODO: Remove this bridge patch when OpenClaw supports networkProxy.readOnlyPaths.
 COPY deploy/runtime/openclaw-codex-read-only-paths.patch /tmp/openclaw-codex-read-only-paths.patch
 RUN echo '1d8b670e7029872262375a21da7222768c2fe2390ff7a159ed1616ee9c9de1ca  /tmp/openclaw-codex-read-only-paths.patch' | sha256sum --check --strict \

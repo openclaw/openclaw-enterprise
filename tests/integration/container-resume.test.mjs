@@ -6,22 +6,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { publishWorkflow, repository } from "../../scripts/ci/container-release.mjs";
+import { setEnvironment } from "../helpers/environment.mjs";
 import { prependPath, writeCommand } from "../helpers/fake-commands.mjs";
 
 test("publication aliases and recovery preserve producer bytes and identity", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "container-resume-test-"));
-  const original = { GH_TOKEN: process.env.GH_TOKEN };
-  t.after(async () => {
-    for (const [key, value] of Object.entries(original)) {
-      if (value === undefined) {
-        delete process.env[key];
-      } else {
-        process.env[key] = value;
-      }
-    }
-    await rm(directory, { recursive: true, force: true });
-  });
-  process.env.GH_TOKEN = "test-token";
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  setEnvironment(t, { GH_TOKEN: "test-token" });
   prependPath(t, directory);
   const workflowSha = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
   let sourceSha = "a".repeat(40);

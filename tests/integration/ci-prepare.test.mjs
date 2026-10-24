@@ -14,6 +14,7 @@ import { metricsMonitoringImages } from "../../scripts/ci/metrics-monitoring-ima
 import { defaultK3sImage } from "../../scripts/ci/prepare.mjs";
 import { withStateLock } from "../../scripts/ci/state-lock.mjs";
 import { createKubernetesInstallationConfiguration } from "../helpers/kubernetes-real.mjs";
+import { listen } from "../helpers/listen.mjs";
 import { nodeTestSummary } from "../helpers/node-test-summary.mjs";
 import {
   assertStderrMatch,
@@ -370,10 +371,9 @@ describe("CI preparation", { concurrency }, () => {
       socket.on("error", () => {});
       socket.once("data", () => socket.end("printf impostor-ran\nexit 0\n"));
     });
-    await new Promise((resolve) => impostor.listen(0, "127.0.0.1", resolve));
-    t.after(() => new Promise((resolve) => impostor.close(resolve)));
+    const impostorPort = await listen(t, impostor);
     const misdirected = join(root, "misdirected-docker");
-    await writeFixtureCommand(misdirected, "docker", server, impostor.address().port);
+    await writeFixtureCommand(misdirected, "docker", server, impostorPort);
     const refused = await spawnResult(misdirected, ["version"], {
       env: { PATH: "/nonexistent", CI_FIXTURE_SCENARIO: "success" },
     });

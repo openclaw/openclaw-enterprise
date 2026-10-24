@@ -1153,6 +1153,7 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
 
   let nodeResult = null;
   let tests = [];
+  let skippedSuites = [];
   let fileFailure;
   let details;
   let nodeElapsedMs;
@@ -1221,6 +1222,16 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
           error: failureError(event.data.error),
           durationMs: event.data.durationMs,
         }));
+      // A skipped describe() never registers its tests, so only its suite event shows the skip.
+      skippedSuites = events
+        .filter(
+          (event) =>
+            event.type === "test:pass" &&
+            event.data?.testType === "suite" &&
+            event.data.skip !== undefined &&
+            event.data.name !== absolutePath,
+        )
+        .map((event) => event.data.name);
     }
   } catch (error) {
     issues.push(
@@ -1322,6 +1333,15 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
           file: relativePath,
           name: skipped.name,
           status: skipped.status,
+        }),
+      );
+    }
+    for (const name of skippedSuites) {
+      issues.push(
+        issue("unexpected-skip", `selected suite did not run its tests: ${name}`, {
+          file: relativePath,
+          name,
+          status: "skipped",
         }),
       );
     }
