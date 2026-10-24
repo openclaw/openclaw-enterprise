@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
-updated: "2026-10-23"
-last_updated_session: "authoring-run/3c1a4d88-d619-47e3-9eba-dbaf0988d2e9"
+updated: "2026-10-24"
+last_updated_session: "console-release-verification"
 ---
 
 # Production image upgrade flow
@@ -249,6 +249,21 @@ the checked states and Doctor reported no error. The operator next verifies
 model responses, providers, channels, credentials, workspace continuity, native
 access, and required restore behavior.
 
+After traffic selection, the operator separately runs
+`scripts/verify-console-release.py:main` with the routed controller publication commit, local Git
+repository, and canonical user-facing URL. `source_blob` reads the committed
+shell and base CSS with Git lazy fetching disabled; missing local objects return
+`invalid-source` without contacting a remote. `fetch` bounds two anonymous TLS
+reads, requiring one bounded Content-Length and an unambiguous UTF-8-compatible
+content type for each response. Parser-reported header defects are rejected before
+using any fields. Unsupported framing returns `unexpected-content`;
+short bodies return `incomplete-response`. `ConsoleHTML` checks the explicit
+release head and plain CSS link,
+including themed-shell output. Matching marker and CSS bytes produce a private
+JSON identity record. Refusals omit response contents and URLs. This observation
+does not prove theme colors, browser execution, image identity, health, or migrations;
+see the [operator procedure](../release/container-promotion.md#verify-the-served-console).
+
 ### Read-only export after a split-layout refusal
 
 The [split-layout export fallback](../guides/deploy/split-layout-upgrade.md#export-and-re-create)
@@ -294,6 +309,8 @@ checks the exported inventory before following the recovery procedure. Empty
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-24 00:11: Add offline source and bounded TLS verification of the routed Console, requiring explicit response lengths, compatible content types and applicable release markup. (console-release-verification - 341952eef5299ff62d358ed8b230ea5ef3dfd024)
 
 - 2026-10-23 09:50: Document preflight-only rehearsal and fresh checks at deployment. (authoring-run/3c1a4d88-d619-47e3-9eba-dbaf0988d2e9 - 4e9f5935d5fa4878a719e82db5e504ec6ae55d64)
 

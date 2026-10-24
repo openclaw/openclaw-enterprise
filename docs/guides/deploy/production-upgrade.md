@@ -355,6 +355,14 @@ response and check relevant channels, credentials, workspace data, and native UI
 access. Doctor lint proves that OpenClaw found no error-level diagnostic; it does
 not prove those application paths.
 
+### Verify the user-facing Console after promotion
+
+For the controller actually routed to users, follow the receipt selection and
+runtime-only guidance in
+[Verify the served Console](../../release/container-promotion.md#verify-the-served-console)
+and retain its result with the private upgrade evidence. This independent check
+leaves the upgrade helper's internal OCC URL and rollout checks unchanged.
+
 ## Recover from a partial failure
 
 Keep the evidence directory and maintenance restrictions, and do not start another upgrade. [Recover a partial production upgrade](production-upgrade-recovery.md) covers resuming the helper, uncertain migrations, unknown Agent dispatches and older images.
