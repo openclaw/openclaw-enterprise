@@ -217,35 +217,81 @@ func dockerHubReference(reference string) (string, bool) {
 }
 
 func (r *runner) importRuntime(ctx context.Context, s *developmentState) (string, error) {
+	exported, err := r.exportRuntime(ctx, s)
+	if err != nil {
+		return "", err
+	}
+	return r.importExportedImage(ctx, s, exported)
+}
+
+// exportRuntime selects or builds the runtime image and exports it to an
+// archive. It needs no cluster, so Local Setup can run it while k3d starts.
+func (r *runner) exportRuntime(ctx context.Context, s *developmentState) (*developmentImageArchive, error) {
 	image := r.setting("OCC_KUBERNETES_RUNTIME_IMAGE", "openclaw-enterprise-runtime:kubernetes-quickstart")
 	if r.env["OCC_KUBERNETES_RUNTIME_IMAGE"] != "" {
 		if _, err := r.output(ctx, r.engine, "image", "inspect", image); err != nil {
-			return "", fmt.Errorf("explicitly selected runtime image must already exist locally: %s", image)
+			return nil, fmt.Errorf("explicitly selected runtime image must already exist locally: %s", image)
 		}
 	} else {
 		if err := r.run(ctx, r.engine, "build", "-f", "deploy/runtime/Dockerfile", "--tag", image, "."); err != nil {
-			return "", err
+			return nil, err
 		}
 	}
-	return r.importDevelopmentImage(ctx, s, image)
+	return r.exportDevelopmentImage(ctx, s, image)
 }
 
-func (r *runner) importDevelopmentImage(ctx context.Context, s *developmentState, image string) (result string, resultErr error) {
+func (r *runner) importDevelopmentImage(ctx context.Context, s *developmentState, image string) (string, error) {
+	exported, err := r.exportDevelopmentImage(ctx, s, image)
+	if err != nil {
+		return "", err
+	}
+	return r.importExportedImage(ctx, s, exported)
+}
+
+// developmentImageArchive is an image exported for import into the owned k3d
+// node: the archive, the name the engine recorded, and what removes both.
+type developmentImageArchive struct {
+	image, selected, archive string
+	removals                 []func() error
+}
+
+// remove deletes the archive and any staging tag. It is safe to call more than once.
+func (exported *developmentImageArchive) remove() error {
+	var result error
+	for i := len(exported.removals) - 1; i >= 0; i-- {
+		result = errors.Join(result, exported.removals[i]())
+	}
+	exported.removals = nil
+	return result
+}
+
+// exportDevelopmentImage saves image to its own archive. On failure it removes
+// what it created; on success the caller imports the archive with
+// importExportedImage, which removes it.
+func (r *runner) exportDevelopmentImage(ctx context.Context, s *developmentState, image string) (result *developmentImageArchive, resultErr error) {
+	exported := &developmentImageArchive{image: image}
+	defer func() {
+		if resultErr != nil {
+			resultErr = errors.Join(resultErr, exported.remove())
+		}
+	}()
 	selected := image
 	if strings.Contains(image, "@") {
 		digest := sha256.Sum256([]byte(image))
 		selected = fmt.Sprintf("openclaw-development/import-%x:%s", digest[:6], s.Cluster)
 		if _, err := r.output(ctx, r.engine, "image", "inspect", selected); err == nil {
-			return "", fmt.Errorf("development staging image already exists: %s", selected)
+			return nil, fmt.Errorf("development staging image already exists: %s", selected)
 		}
 		if err := r.run(ctx, r.engine, "tag", image, selected); err != nil {
-			return "", err
+			return nil, err
 		}
-		defer func() {
+		// Remove the name the engine recorded once it is known (below).
+		exported.removals = append(exported.removals, func() error {
 			if _, err := r.output(context.WithoutCancel(ctx), r.engine, "image", "rm", selected); err != nil {
-				resultErr = errors.Join(resultErr, fmt.Errorf("remove development staging image: %w", err))
+				return fmt.Errorf("remove development staging image: %w", err)
 			}
-		}()
+			return nil
+		})
 	}
 	// Use the name the engine actually recorded. Podman qualifies an
 	// unqualified local build as `localhost/<name>`, and both k3d and
@@ -253,35 +299,47 @@ func (r *runner) importDevelopmentImage(ctx context.Context, s *developmentState
 	// nothing to import or verify.
 	recorded, err := r.engineImageReference(ctx, selected)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	selected = recorded
 	// Export the selected platform explicitly for every image. Tag-based k3d
 	// imports can report success without registering the built image in the node.
 	platformData, err := r.output(ctx, r.engine, "image", "inspect", "--format", "{{.Os}}/{{.Architecture}}", selected)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	platform := string(platformData)
 	if !strings.HasPrefix(platform, "linux/") {
-		return "", fmt.Errorf("development image must contain a Linux platform: %s", image)
+		return nil, fmt.Errorf("development image must contain a Linux platform: %s", image)
 	}
 	// Images are imported concurrently, so each needs its own archive.
 	archive := filepath.Join(s.directory, developmentImportArchive(selected))
-	defer func() {
+	exported.removals = append(exported.removals, func() error {
 		if err := os.Remove(archive); err != nil && !os.IsNotExist(err) {
-			resultErr = errors.Join(resultErr, fmt.Errorf("remove development image archive: %w", err))
+			return fmt.Errorf("remove development image archive: %w", err)
 		}
-	}()
+		return nil
+	})
 	saveArgs := []string{"image", "save"}
 	if r.engine == "docker" {
 		saveArgs = append(saveArgs, "--platform", platform)
 	}
 	saveArgs = append(saveArgs, "--output", archive, selected)
 	if err := r.run(ctx, r.engine, saveArgs...); err != nil {
-		return "", err
+		return nil, err
 	}
-	if err := r.importArchiveDirect(ctx, archive, s.Cluster); err != nil {
+	exported.selected, exported.archive = selected, archive
+	return exported, nil
+}
+
+// importExportedImage imports an exported archive into the owned k3d node,
+// resolves its digest reference, and removes the archive and staging tag.
+func (r *runner) importExportedImage(ctx context.Context, s *developmentState, exported *developmentImageArchive) (result string, resultErr error) {
+	defer func() {
+		resultErr = errors.Join(resultErr, exported.remove())
+	}()
+	selected := exported.selected
+	if err := r.importArchiveDirect(ctx, exported.archive, s.Cluster); err != nil {
 		return "", err
 	}
 	server := "k3d-" + s.Cluster + "-server-0"

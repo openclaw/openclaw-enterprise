@@ -258,36 +258,57 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 		clusterArgs = append(clusterArgs, developmentKeycloakPortArgs()...)
 	}
 	clusterAttempted = true
-	if err := r.createK3dCluster(ctx, clusterArgs...); err != nil {
-		clusterCreationFailed = true
+	// With Sandbox Driver none, select or build the runtime image and export it
+	// to an archive while k3d creates the cluster; the export needs no cluster.
+	// An export failure does not cancel cluster creation, so the rollback
+	// removes a fully created cluster instead of an interrupted one.
+	var runtimeArchive *developmentImageArchive
+	var runtimeExportErr error
+	err = r.concurrently(ctx, func(ctx context.Context, r *runner) error {
+		if err := r.createK3dCluster(ctx, clusterArgs...); err != nil {
+			clusterCreationFailed = true
+			return err
+		}
+		if err := r.checkDevelopmentNodeDNS(ctx, state); err != nil {
+			return err
+		}
+		return r.writeKubeconfigs(ctx, state)
+	}, func(ctx context.Context, r *runner) error {
+		if sandboxDriver == "none" {
+			runtimeArchive, runtimeExportErr = r.exportRuntime(ctx, state)
+		}
+		return nil
+	})
+	if runtimeArchive != nil {
+		defer func() {
+			if err := runtimeArchive.remove(); err != nil {
+				result = errors.Join(result, err)
+			}
+		}()
+	}
+	if err != nil {
 		return err
 	}
-	if err := r.checkDevelopmentNodeDNS(ctx, state); err != nil {
-		return err
-	}
-	if err := r.writeKubeconfigs(ctx, state); err != nil {
-		return err
+	if runtimeExportErr != nil {
+		return runtimeExportErr
 	}
 	r.env["KUBECONFIG"] = filepath.Join(directory, "kubeconfig")
 	timeout := time.Duration(timeoutSeconds) * time.Second
 
-	var runtimeImage string
-	if sandboxDriver == "none" {
-		runtimeImage, err = r.importRuntime(ctx, state)
-		if err != nil {
-			return err
-		}
-	}
-
 	// Nothing below needs the controller, PostgreSQL or repository images until
-	// the network check, so import them while the Codex sandbox check and the
-	// routing controller rollouts wait on the cluster. The runtime image is
-	// imported outside this overlap, so no two image builds run at once.
-	var codexSeccompProfile, routingPodCIDR string
+	// the network check, so import them while the runtime import, the Codex
+	// sandbox check and the routing controller rollouts wait on the cluster.
+	// The runtime image was built before this overlap, so no two image builds
+	// run at once.
+	var runtimeImage, codexSeccompProfile, routingPodCIDR string
 	var controllerImage, postgresImage, repositoryImage string
 	err = r.concurrently(ctx, func(ctx context.Context, r *runner) error {
 		var err error
 		if sandboxDriver == "none" {
+			runtimeImage, err = r.importExportedImage(ctx, state, runtimeArchive)
+			if err != nil {
+				return err
+			}
 			codexSeccompProfile, err = r.prepareDevelopmentCodexSandbox(ctx, state, runtimeImage, timeoutSeconds)
 			if err != nil {
 				return err

@@ -114,7 +114,7 @@ func (transport *k3dOrderingTransport) RoundTrip(*http.Request) (*http.Response,
 }
 
 func TestK3dCodexPreflightOrdering(t *testing.T) {
-	for _, scenario := range []string{"refused", "invalid result", "cleanup failure", "cancelled", "accepted", "API failure", "OpenShell routing", "controller import failure"} {
+	for _, scenario := range []string{"refused", "invalid result", "cleanup failure", "cancelled", "accepted", "API failure", "OpenShell routing", "controller import failure", "runtime export failure"} {
 		t.Run(scenario, func(t *testing.T) {
 			root := t.TempDir()
 			state := filepath.Join(root, "state")
@@ -141,6 +141,17 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 			}
 			probePID := filepath.Join(root, "probe.pid")
 			controllerPresent := ":"
+			// With Sandbox Driver none, the runtime image is exported while k3d
+			// creates the cluster: creation completes only once the export has
+			// written its archive, or here has failed its image check.
+			exported := filepath.Join(root, "runtime-exported")
+			runtimePresent := ":"
+			saveResult := ": > " + shellQuote(exported)
+			clusterCreated := "while [ ! -e " + shellQuote(exported) + " ]; do :; done; : > " + shellQuote(filepath.Join(root, "created"))
+			if scenario == "OpenShell routing" {
+				// OpenShell imports the runtime image after the routing install.
+				clusterCreated = ": > " + shellQuote(filepath.Join(root, "created"))
+			}
 			// Clear optional lifecycle inputs without reading or recording credentials.
 			for _, key := range []string{"DOCKER_CONTEXT", "OCC_DEVELOPMENT_REPOSITORY_INPUT_DIRECTORY", "OCC_DEVELOPMENT_REPOSITORY_IMAGE", "OCC_DEVELOPMENT_OPENSHELL_HELM_CHART", "OCC_DEVELOPMENT_OPENSHELL_WORKSPACE_HELM_CHART", "OCC_DEVELOPMENT_OPENSHELL_AGENT_SANDBOX_MANIFEST"} {
 				t.Setenv(key, "")
@@ -184,6 +195,11 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 				// PATH holds only fixtures, so both wait with shell builtins.
 				probe = "echo $$ > " + shellQuote(probePID) + "; while :; do :; done"
 				controllerPresent = "while [ ! -s " + shellQuote(probePID) + " ]; do :; done; exit 1"
+			case "runtime export failure":
+				// Creation is still running when the export fails, and the failure
+				// must let it finish so the rollback deletes a complete cluster.
+				runtimePresent = ": > " + shellQuote(exported) + "; exit 1"
+				clusterCreated = "while [ ! -e " + shellQuote(exported) + " ]; do :; done; i=0; while [ $i -lt 100000 ]; do i=$((i+1)); done; : > " + shellQuote(filepath.Join(root, "created"))
 			}
 			deleteResult := ":"
 			if scenario == "cleanup failure" {
@@ -202,13 +218,13 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 "info") ;;
 "image inspect --format {{ index .Config.Labels "*) echo 0123456789abcdef0123456789abcdef01234567 ;;
 "exec k3d-occ-dev-order-server-0 nslookup registry-1.docker.io") ;;
-"image inspect ` + runtimeImage + `") ;;
+"image inspect ` + runtimeImage + `") ` + runtimePresent + ` ;;
 "image inspect ` + controllerImage + `") ` + controllerPresent + ` ;;
 "image inspect ` + developmentPostgres + `") ;;
-` + imageCases + `"image save --platform linux/amd64 --output "*) ;;
+` + imageCases + `"image save --platform linux/amd64 --output "*) ` + saveResult + ` ;;
 "exec k3d-occ-dev-order-server-0 ctr -n k8s.io images list") printf '` + imageList + `' ;;`,
 				"k3d": `"cluster list -o json") if [ -f ` + shellQuote(filepath.Join(root, "created")) + ` ]; then echo '[{"name":"occ-dev-order"}]'; else echo '[]'; fi ;;
-"cluster create occ-dev-order "*) : > ` + shellQuote(filepath.Join(root, "created")) + ` ;;
+"cluster create occ-dev-order "*) ` + clusterCreated + ` ;;
 "kubeconfig get occ-dev-order") printf '%s\n' 'contexts:' '- name: k3d-occ-dev-order' '  context:' '    cluster: owned' 'clusters:' '- name: owned' '  cluster:' '    server: https://127.0.0.1:6443' ;;
 "image import --mode direct "*) [ "$KUBECONFIG" = ` + shellQuote(filepath.Join(state, "kubeconfig")) + ` ] && [ -f "$KUBECONFIG" ] && [ -f ` + shellQuote(filepath.Join(state, "container-kubeconfig")) + ` ] ;;
 "cluster delete occ-dev-order") ` + deleteResult + ` ;;`,
@@ -257,6 +273,8 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 				wantError = "fixture routing download refused"
 			case "controller import failure":
 				wantError = "import the development controller image: explicitly selected controller image must already exist locally"
+			case "runtime export failure":
+				wantError = "explicitly selected runtime image must already exist locally"
 			}
 			if err == nil || !strings.Contains(err.Error(), wantError) {
 				t.Fatalf("want %q, got %v; commands: %v", wantError, err, calls)
@@ -303,8 +321,13 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 			previous := -1
 			stages := []string{"k3d cluster create ", "docker exec k3d-occ-dev-order-server-0 nslookup ", "k3d kubeconfig get ", "kubectl --kubeconfig "}
 			runtimeImport := "k3d image import --mode direct " + filepath.Join(state, developmentImportArchive(staging)) + " "
-			if driver == "none" && scenario != "API failure" {
-				stages = append(stages, "docker tag "+runtimeImage, runtimeImport, "docker exec k3d-occ-dev-order-server-0 ctr -n k8s.io images tag "+staging+" ", "node scripts/prepare-development-codex-seccomp.mjs ")
+			if driver == "none" && scenario != "API failure" && scenario != "runtime export failure" {
+				// The export overlapped cluster creation (the create fixture waited
+				// for it); the import waits for the selected kubeconfig.
+				if index("docker tag "+runtimeImage) < 0 {
+					t.Fatalf("runtime image was not exported: %v", calls)
+				}
+				stages = append(stages, runtimeImport, "docker exec k3d-occ-dev-order-server-0 ctr -n k8s.io images tag "+staging+" ", "node scripts/prepare-development-codex-seccomp.mjs ")
 			} else {
 				if index(runtimeImport) >= 0 || index("node ") >= 0 {
 					t.Fatal("runtime work preceded its prerequisite")
@@ -326,14 +349,18 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 				t.Fatalf("routing downloads: got %d, want %d", transport.requests, wantRequests)
 			}
 			forbidden := []string{"kubectl apply ", "kubectl create secret ", "helm upgrade "}
-			if scenario == "API failure" {
-				// The platform images import only once the cluster API answers.
+			if scenario == "API failure" || scenario == "runtime export failure" {
+				// The platform images import only once the cluster API answers
+				// and the runtime image is exported.
 				forbidden = append(forbidden, "docker tag "+controllerImage, "docker tag "+developmentPostgres)
 			}
 			for _, command := range forbidden {
 				if index(command) >= 0 {
 					t.Fatalf("unexpected downstream work: %s", command)
 				}
+			}
+			if scenario == "API failure" && index("docker image rm "+staging) < 0 {
+				t.Fatalf("the exported runtime staging image was not removed: %v", calls)
 			}
 			if scenario == "cleanup failure" {
 				if !strings.Contains(err.Error(), "rollback incomplete") || !strings.Contains(err.Error(), "exit status 43") {
