@@ -15,6 +15,9 @@ export function createTestKubernetesComputeDriver(
     repositoryCredentials = false,
     // An Installation with runtime.channels: isolated channel credentials and a reviewed proxy.
     channelRuntime = false,
+    // false: runtime storage without gateway routing or node enrollment, which dedicated Agents
+    // cannot use (provisioning and deployment admission refuse them).
+    routed = true,
     authentication = { mode: "inCluster" },
     gatewayTrustedProxyCidrs = ["127.0.0.1/32"],
     sandboxDriver,
@@ -27,8 +30,22 @@ export function createTestKubernetesComputeDriver(
     limits: { cpu: "250m", memory: "128Mi" },
   };
 
+  // Runtime storage that dedicated Agents can use needs gateway routing, node enrollment and a
+  // Gateway node selector; deployment admission refuses dedicated Agents otherwise.
+  const runtime = repositoryCredentials || channelRuntime;
+  const placed = runtime && routed;
   return new KubernetesComputeDriver(
     {
+      ...(placed
+        ? {
+            gatewayRouting: {
+              hostname: "agents.example.test",
+              gatewayName: "gateways",
+              gatewayNamespace: "controller",
+              envoyNamespace: "envoy",
+            },
+          }
+        : {}),
       authentication,
       images: { gateway: "gateway:local", agent: "agent:local", requireImmutableDigest: false },
       resources: {
@@ -40,7 +57,9 @@ export function createTestKubernetesComputeDriver(
         dns: { namespace: "kube-system", podLabels: { app: "dns" } },
         gatewayPort: 8080,
         gatewayTrustedProxyCidrs,
-        gatewayClients: [{ namespace: "controller", podLabels: { app: "controller" } }],
+        ...(placed
+          ? {}
+          : { gatewayClients: [{ namespace: "controller", podLabels: { app: "controller" } }] }),
         ...(repositoryCredentials
           ? {
               repositoryCredentials: {
@@ -52,17 +71,24 @@ export function createTestKubernetesComputeDriver(
           : {}),
       },
       servicePrincipalCredentials: { mode: "disabled" },
-      ...(repositoryCredentials || channelRuntime
+      ...(runtime
         ? {
             runtime: {
               transportSecretPrefix: "transport",
               gatewayStorageClassName: "local-path",
+              ...(placed ? { gatewayNodeSelector: { "oce-role": "control" } } : {}),
               ...(channelRuntime ? { channels: { proxyUrl: "http://10.42.0.15:3128" } } : {}),
             },
           }
         : {}),
     },
-    { id, sandboxDriver, credentialGatewayDriver, protectedDriver },
+    {
+      id,
+      sandboxDriver,
+      credentialGatewayDriver,
+      protectedDriver,
+      ...(placed ? { nodeEnrollment: {} } : {}),
+    },
   );
 }
 

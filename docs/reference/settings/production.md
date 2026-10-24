@@ -280,11 +280,12 @@ See [chart defaults](../../../deploy/helm/openclaw-enterprise/values.yaml) for
 credential, runtime-export, and workload isolation boundaries.
 
 The chart rejects obvious malformed quantities such as `foo`, `10MiB`, and
-`1K` in top-level `resources`, Collector `resources`, and Collector volume size
-limits, with an error naming the setting. Kubernetes remains responsible for
-complete quantity validation; exponent ranges and numeric parsing edge cases
-are not checked during rendering. A successful render does not prove API
-acceptance. Setting a resource map or Collector size limit to `null` clears its
+`1K` in top-level `resources`, `slackProxy.resources`, Collector `resources`,
+and Collector volume size limits, with an error naming the setting. It also
+rejects a value with a leading `-` (negative) and resource names Kubernetes
+refuses. Kubernetes remains responsible for complete quantity validation;
+exponent ranges, numeric parsing edge cases and a request above its limit are
+not checked during rendering. A successful render does not prove API acceptance. Setting a resource map or Collector size limit to `null` clears its
 chart default; a null size limit leaves that volume unlimited.
 
 ### Private telemetry defaults

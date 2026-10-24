@@ -1,6 +1,6 @@
 ---
 created: "2026-09-18"
-updated: "2026-10-22"
+updated: "2026-10-24"
 last_updated_session: authoring-run/3ab680f7-bea5-4377-bb8c-14e6b81c49b4
 ---
 
@@ -114,7 +114,8 @@ Failed reloads block creation; obsolete completions cannot change the view. Unkn
 outcomes require stored Agent and Configuration reads.
 
 `packages/occ/src/index.ts:OpenClawController.repositoryBindingSelections`
-uses `resolveRepositoryBindings` after authorization. Inputs contain distinct opaque
+uses `resolveRepositoryBindings` after authorization. Without a repository Driver, save answers
+`409 RESOURCE_CONFLICT`. Inputs contain distinct opaque
 references and optional profiles, never provider tokens or caller-selected grant identities;
 selections keep request order. The
 `apps/controller/src/drivers/repo/github/policy.ts:GitHubRepositoryPolicy.resolve`
@@ -365,15 +366,17 @@ denied before reaching the provider, and chat continues.
 
 ## Changelog
 
-- 2026-10-22 06:30: Preserve independent authority facts and source recovery in the accompanying worker fix. (authoring-run/3ab680f7-bea5-4377-bb8c-14e6b81c49b4 - 221dff2ff7985a19cd34dad392d68cf5549e1136)
+- 2026-10-24 22:30: Name the missing repository Driver. (fix-2361-2362 - 476c1b350)
 
-- 2026-10-22 06:08: Distinguish definite authority loss from unavailable expiry evidence in the accompanying worker fix. (authoring-run/0070b799-5882-41af-9b5a-de66c2b5bd4c - 21efaa2ac0a04eb86cc45062522b5ca7551747fd)
+- 2026-10-22 06:30: Preserve independent authority facts and source recovery. (authoring-run/3ab680f7-bea5-4377-bb8c-14e6b81c49b4 - 221dff2ff7985a19cd34dad392d68cf5549e1136)
+
+- 2026-10-22 06:08: Distinguish definite authority loss from unavailable expiry evidence. (authoring-run/0070b799-5882-41af-9b5a-de66c2b5bd4c - 21efaa2ac0a04eb86cc45062522b5ca7551747fd)
 
 - 2026-10-22 05:40: Tighten the flow while preserving lifecycle boundaries. (authoring-run/6a3ac3a3-9ca1-4fe8-a71e-ce0445cc7840 - 6abb03f892181bfe093472a4721b8428659d245b)
 
 - 2026-10-22 05:05: Match reducible protected Git sessions to admission v7 in prepared-material selection. (authoring-run/8df2bc1b-5c23-4628-8351-ed2e23b279bf - 4c2054cd056be2d70b6343babeeea411d6aaf873)
 
-- 2026-10-22 04:11: Trace selected registered delivery reconciliation in the accompanying change. (authoring-run/13ded5bb-8707-46f5-8aa3-7a334529d124 - f4a2ca6139625059f1f8c58855f6343864ee7528)
+- 2026-10-22 04:11: Trace selected registered delivery reconciliation. (authoring-run/13ded5bb-8707-46f5-8aa3-7a334529d124 - f4a2ca6139625059f1f8c58855f6343864ee7528)
 
 - 2026-10-22 02:32: Require prepared authority at native OPEN, durable receipt and release; reject legacy controller selection. (authoring-run/b8149a96-d1dc-4681-8930-7d5434fbf1e3 - 2fca4e18d905f7bf760d0da70cb916f20186169e)
 

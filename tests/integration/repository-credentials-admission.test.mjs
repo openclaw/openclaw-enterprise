@@ -8,6 +8,7 @@ import { SshComputeDriver } from "../../apps/controller/src/drivers/compute/ssh/
 import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
+import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import { openShellExchangeCapabilities } from "../../apps/controller/src/drivers/egress-proxy/openshell-exchange-capabilities.ts";
@@ -24,8 +25,11 @@ import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import {
   InMemoryPlatformState,
   DriverConfigurationRegistry,
+  CredentialProxyRepositoryOnlyError,
+  CredentialSourceUnprotectedError,
   InstalledDriver,
   OpenClawController,
+  RepositoryDriverNotConfiguredError,
   RepositoryGitProfileUnsupportedError,
   RepositoryGitSenderUnqualifiedError,
   SandboxNetworkPolicyConflictError,
@@ -105,23 +109,22 @@ class OpenShellGitComputeDriver extends KubernetesComputeDriver {
   }
 }
 
-function kubernetesCompute(Driver = KubernetesComputeDriver, provisioning = false) {
+// An Installation with runtime storage that dedicated Agents can use: gateway routing, node
+// enrollment and a Gateway node selector (deployment admission refuses dedicated Agents
+// otherwise, finding 2349).
+function kubernetesCompute(Driver = KubernetesComputeDriver) {
   const resources = {
     requests: { cpu: "100m", memory: "64Mi" },
     limits: { cpu: "250m", memory: "128Mi" },
   };
   const compute = new Driver(
     {
-      ...(provisioning
-        ? {
-            gatewayRouting: {
-              hostname: "agents.example.test",
-              gatewayName: "gateways",
-              gatewayNamespace: "controller",
-              envoyNamespace: "envoy",
-            },
-          }
-        : {}),
+      gatewayRouting: {
+        hostname: "agents.example.test",
+        gatewayName: "gateways",
+        gatewayNamespace: "controller",
+        envoyNamespace: "envoy",
+      },
       authentication: { mode: "inCluster" },
       images: { gateway: "gateway:local", agent: "agent:local", requireImmutableDigest: false },
       resources: {
@@ -129,14 +132,15 @@ function kubernetesCompute(Driver = KubernetesComputeDriver, provisioning = fals
         agent: resources,
         namespace: { quota: { pods: "10" }, containerDefaults: resources },
       },
-      runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+      runtime: {
+        transportSecretPrefix: "transport",
+        gatewayStorageClassName: "local-path",
+        gatewayNodeSelector: { "oce-role": "control" },
+      },
       network: {
         dns: { namespace: "kube-system", podLabels: { app: "dns" } },
         gatewayPort: 8080,
         gatewayTrustedProxyCidrs: ["127.0.0.1/32"],
-        ...(provisioning
-          ? {}
-          : { gatewayClients: [{ namespace: "controller", podLabels: { app: "controller" } }] }),
         repositoryCredentials: {
           namespace: "controller",
           podLabels: { app: "worker" },
@@ -145,7 +149,7 @@ function kubernetesCompute(Driver = KubernetesComputeDriver, provisioning = fals
       },
       servicePrincipalCredentials: { mode: "disabled" },
     },
-    provisioning ? { nodeEnrollment: {} } : {},
+    { nodeEnrollment: {} },
   );
   // Repository admission has no cluster; its transport credential prerequisite is satisfied.
   compute.getAgentRuntimeCredentialStatus = async () => ({ transportConfigured: true });
@@ -160,14 +164,20 @@ function sshCompute() {
       nodePath: "/usr/bin/node",
       openclawPath: "/opt/openclaw/index.js",
       user: "openclaw",
-      root: "/tmp/admission-runtime",
+      root: "/var/lib/admission-runtime",
     },
     network: { gatewayPortRange: { start: 18800, end: 18899 } },
   });
 }
 
-function registryFor(namespaceId, extraRepositories = []) {
+function registryFor(namespaceId, extraRepositories = [], installationAccess = false) {
   return {
+    ...(installationAccess && {
+      installationAccess: {
+        repositoryRef: "installation",
+        namespaces: [{ namespaceId, accessMode: "installation" }],
+      },
+    }),
     version: 1,
     backendId,
     providerInstanceId: "github-admission",
@@ -221,6 +231,7 @@ async function fixture(
     configurationDriver = createTestConfigurationDriver(),
     controllerOptions = {},
     extraRepositories = [],
+    installationAccess = false,
   } = {},
 ) {
   const installation = {
@@ -305,7 +316,7 @@ async function fixture(
   );
   assert.equal(configurationResponse.status, 201, JSON.stringify(configurationResponse));
   const configuration = configurationResponse.data;
-  const registry = registryFor(namespace.id, extraRepositories);
+  const registry = registryFor(namespace.id, extraRepositories, installationAccess);
   const composed = repositories ? await compose(registry) : initial;
   const collection = `/namespaces/${namespace.id}/agents`;
 
@@ -691,6 +702,59 @@ test("Repository policy rejects invalid create and PATCH before changing stored 
   }
 });
 
+test("Installation-wide repository access refuses other bindings at save, as deploy does", async (t) => {
+  // Finding 2316: create and PATCH accepted github-installation next to another binding, and
+  // only deploy refused it (hidden as a 404). Save and deploy now share the rule and name it.
+  const f = await fixture(t, { installationAccess: true });
+  const installation = { repositoryRef: "installation", profile: "github-installation" };
+  const sole = await f.createAgent({ repositoryBindings: [installation] });
+  assert.deepEqual(sole.repositoryBindings, [installation]);
+  const agent = await f.createAgent({ repositoryBindings: selection });
+  const path = `${f.collection}/${agent.id}`;
+  const before = (await f.request("GET", f.collection)).data;
+  const message =
+    "Installation-wide repository access (profile github-installation) must be the Agent's only repository selection. Remove the other entries from repositoryBindings or repositoryAccess.repositories, or select each repository with its own profile instead.";
+  const mixed = [installation, ...selection];
+  const access = {
+    defaultProfile: "git-write",
+    repositories: [installation, { repositoryRef: "project" }],
+  };
+  for (const [method, target, fields] of [
+    ["POST", f.collection, { name: "Refused Agent", repositoryBindings: mixed }],
+    ["PATCH", path, { repositoryBindings: mixed }],
+    ["POST", f.collection, { name: "Refused Agent", repositoryAccess: access }],
+    ["PATCH", path, { repositoryAccess: access }],
+  ]) {
+    const response = await f.request(method, target, {
+      configurationId: f.configuration.id,
+      ...fields,
+    });
+    assert.equal(response.status, 400, JSON.stringify(response));
+    assert.equal(response.error.code, "INVALID_REQUEST");
+    assert.equal(response.error.message, message);
+  }
+  assert.deepEqual((await f.request("GET", f.collection)).data, before);
+  // An Agent saved with both before this check still gets the same answer at deploy.
+  await f.prepareDeployment(agent);
+  const stored = await f.state.transact((unit) =>
+    unit.agents.updateConfiguration(
+      f.namespace.id,
+      agent.id,
+      f.configuration.id,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      mixed,
+    ),
+  );
+  assert.deepEqual(stored.repositoryBindings, mixed);
+  const deployed = await f.request("POST", `${path}/deploy`);
+  assert.equal(deployed.status, 400, JSON.stringify(deployed));
+  assert.equal(deployed.error.message, message);
+  assert.deepEqual((await f.request("GET", `${path}/revisions`)).data, []);
+});
+
 test("Agent repository access preserves inheritance intent and admits only resolved approved profiles", async (t) => {
   const f = await fixture(t);
   const intent = { defaultProfile: "git-full", repositories: [{ repositoryRef: "project" }] };
@@ -1046,12 +1110,30 @@ test("Repository capability remains optional when no repository Backend or Drive
   const deployed = await f.request("POST", `${f.collection}/${agent.id}/deploy`);
   assert.equal(deployed.status, 202, JSON.stringify(deployed));
   assert.equal(Object.hasOwn(deployed.data, "repositoryCredentials"), false);
-  const missingDriver = await f.request("PATCH", `${f.collection}/${agent.id}`, {
-    configurationId: f.configuration.id,
-    repositoryBindings: selection,
-  });
-  assert.equal(missingDriver.status, 503, JSON.stringify(missingDriver));
-  assert.equal(missingDriver.error.code, "DEPENDENCY_UNAVAILABLE");
+  // Finding 2362: binding a repository with no repository Driver configured is a permanent
+  // Installation state, not an outage, so create and update name the setting instead of a 503.
+  for (const [method, path, body] of [
+    [
+      "PATCH",
+      `${f.collection}/${agent.id}`,
+      { configurationId: f.configuration.id, repositoryBindings: selection },
+    ],
+    [
+      "POST",
+      f.collection,
+      {
+        name: `Repository Agent ${randomUUID()}`,
+        configurationId: f.configuration.id,
+        repositoryBindings: selection,
+      },
+    ],
+  ]) {
+    const missingDriver = await f.request(method, path, body);
+    assert.equal(missingDriver.status, 409, `${method}: ${JSON.stringify(missingDriver)}`);
+    assert.equal(missingDriver.error.code, "RESOURCE_CONFLICT", method);
+    assert.equal(missingDriver.error.message, RepositoryDriverNotConfiguredError.description);
+  }
+  assert.equal((await f.request("GET", f.collection)).data.length, 1, "no Agent was created");
   const unchanged = await f.request("GET", `${f.collection}/${agent.id}`);
   assert.equal(Object.hasOwn(unchanged.data, "repositoryBindings"), false);
   const options = await f.request("GET", `${f.collection}/repository-options`);
@@ -1069,7 +1151,7 @@ test("Provisioning rejects a forbidden repository profile before queueing or cre
   const f = await fixture(t, {
     harness: "codex",
     configurationDriver,
-    compute: kubernetesCompute(KubernetesComputeDriver, true),
+    compute: kubernetesCompute(),
   });
   await f.state.transact((unit) =>
     unit.namespaces.transitionNamespaceStatus(f.namespace.id, "provisioning", "ready"),
@@ -1107,7 +1189,7 @@ test("Provisioning refuses repository bindings on a topology Agent create refuse
   const f = await fixture(t, {
     harness: "codex",
     configurationDriver,
-    compute: kubernetesCompute(KubernetesComputeDriver, true),
+    compute: kubernetesCompute(),
   });
   await f.state.transact((unit) =>
     unit.namespaces.transitionNamespaceStatus(f.namespace.id, "provisioning", "ready"),
@@ -1298,10 +1380,15 @@ test("OpenShell Git refuses an Agent network grant to the Git hosts at save, bin
   assert.equal((await f.request("GET", policyPath(bound))).data.policy.application, undefined);
 });
 
-// Deploys a dedicated Codex Agent with `bindings` on the bundled OpenShell Credential Proxy.
-// `advertised` adds the execution profile to the stock 0.1.5 registration, as a gateway with a
-// stronger exchange would; the response and the number of gateway reads are returned.
-async function protectedOpenShellDeploy(t, bindings, { advertised = false } = {}) {
+// Composes the bundled OpenShell Credential Proxy in the repository.openShell shape, where the
+// request-phase registration is also its only egress registration. `advertised` adds the
+// execution profile to the stock 0.1.5 registration, as a gateway with a stronger exchange would;
+// `registered: false` leaves the registration out of gateway info; `credentialGateway` also
+// selects the bundled OpenShell Credential Gateway beside it.
+async function protectedOpenShellComposition(
+  t,
+  { bindings = [], advertised = false, registered = true, credentialGateway = false } = {},
+) {
   class ProtectedGitComputeDriver extends OpenShellGitComputeDriver {
     // Stands in for Kubernetes Compute with its paired protected release, so only the Credential
     // Proxy and the contract decide whether the repository execution is admitted.
@@ -1309,9 +1396,16 @@ async function protectedOpenShellDeploy(t, bindings, { advertised = false } = {}
       assertExecutionAdmission(revision);
     }
   }
+  class GatewayHarnessComputeDriver extends ProtectedGitComputeDriver {
+    // Kubernetes Compute paired with the OpenShell Gateway delivers credential-source Harness
+    // authentication; this one is not bound to that pair, so its delivery check is not the subject.
+    validateHarnessAuth() {}
+  }
   const f = await fixture(t, {
     harness: "codex",
-    compute: kubernetesCompute(ProtectedGitComputeDriver),
+    compute: kubernetesCompute(
+      credentialGateway ? GatewayHarnessComputeDriver : ProtectedGitComputeDriver,
+    ),
     controllerOptions: {
       driverConfigurations: [sandboxRegistration("repository-admission-openshell")],
     },
@@ -1329,17 +1423,19 @@ async function protectedOpenShellDeploy(t, bindings, { advertised = false } = {}
       // What stock 0.1.5 reports once the request-phase service is registered.
       return {
         gateway_version: "0.1.5",
-        extensions: [
-          {
-            configured_name: registration,
-            kind: 4,
-            protocol_major: 1,
-            ...(advertised && {
-              required_capabilities: [...openShellExchangeCapabilities],
-              supported_capabilities: [...openShellExchangeCapabilities],
-            }),
-          },
-        ],
+        extensions: registered
+          ? [
+              {
+                configured_name: registration,
+                kind: 4,
+                protocol_major: 1,
+                ...(advertised && {
+                  required_capabilities: [...openShellExchangeCapabilities],
+                  supported_capabilities: [...openShellExchangeCapabilities],
+                }),
+              },
+            ]
+          : [],
       };
     },
   };
@@ -1348,11 +1444,12 @@ async function protectedOpenShellDeploy(t, bindings, { advertised = false } = {}
     repositoryMiddlewareName: registration,
     authorityScope: "execution",
   };
-  const proxy = new OpenShellCredentialProxyDriver(options, {
-    id: sandbox.id,
-    sandbox,
-    backend: { id: "openshell", drivers: {}, client: { clientForNamespace: () => gateway } },
-  });
+  const backend = {
+    id: "openshell",
+    drivers: credentialGateway ? { credential_gateway: "openshell-credentials" } : {},
+    client: { clientForNamespace: () => gateway, placement: () => undefined },
+  };
+  const proxy = new OpenShellCredentialProxyDriver(options, { id: sandbox.id, sandbox, backend });
   const owner = new InstalledDriver(
     { id: sandbox.id, implementation: sandbox.implementation, configuration: options },
     { capabilities: { sandbox, credential_proxy: proxy } },
@@ -1360,12 +1457,27 @@ async function protectedOpenShellDeploy(t, bindings, { advertised = false } = {}
   f.controller.registerDriver(owner);
   f.controller.selectDriver("sandbox", sandbox.id);
   f.controller.selectDriver("credential_proxy", proxy.id);
+  if (credentialGateway) {
+    const catalog = new OpenShellCredentialGatewayDriver(
+      { binaries: ["/usr/bin/codex"] },
+      { id: "openshell-credentials", backend },
+    );
+    f.controller.registerDriver(catalog);
+    f.controller.selectDriver(catalog.capability, catalog.id);
+  }
+  return { ...f, gatewayReads: () => gatewayReads };
+}
+
+// Deploys a dedicated Codex Agent with `bindings` on that composition; the response and the
+// number of gateway reads are returned.
+async function protectedOpenShellDeploy(t, bindings, { advertised = false, registered } = {}) {
+  const f = await protectedOpenShellComposition(t, { bindings, advertised, registered });
   const agent = await f.createAgent({ executionMode: "dedicated", repositoryBindings: bindings });
   await f.prepareDeployment(agent);
   const path = `${f.collection}/${agent.id}`;
   const response = await f.request("POST", `${path}/deploy`);
   const revisions = (await f.request("GET", `${path}/revisions`)).data;
-  return { response, revisions, gatewayReads };
+  return { response, revisions, gatewayReads: f.gatewayReads() };
 }
 
 test("Deploy refuses OpenShell Git when its Credential Proxy has no qualified sender", async (t) => {
@@ -1408,6 +1520,88 @@ test("Deploy refuses a repository profile a Credential Proxy cannot deliver by n
       assert.equal(gatewayReads, 0, `${label}: the refusal needs no gateway read`);
     }
   }
+});
+
+test("A Git-only Credential Proxy names repository.openShell instead of a 503 or a bare 404", async (t) => {
+  // Finding 2360: with repository.openShell the Proxy's only registration is the request-phase
+  // Git service, which never advertises the execution profile. Creating a model source answered a
+  // generic 503, and deploying an Agent without Git whose Gateway source predates the Proxy
+  // answered 404 with nothing logged. Each refusal now names what cannot serve it.
+  for (const advertised of [false, true]) {
+    const label = advertised ? "with the execution profile" : "stock 0.1.5";
+    const f = await protectedOpenShellComposition(t, { advertised, credentialGateway: true });
+    const namespaceId = f.namespace.id;
+    await f.state.transact((unit) =>
+      unit.namespaces.transitionNamespaceStatus(namespaceId, "provisioning", "ready"),
+    );
+    const secret = await f.request("POST", `/namespaces/${namespaceId}/secrets`, {
+      name: "model-key",
+      value: "synthetic-admission-model-key",
+    });
+    assert.equal(secret.status, 201, JSON.stringify(secret));
+    const sourceInput = { type: "openai", config: {}, secrets: { api_key: secret.data.ref } };
+    if (!advertised) {
+      // The Installation refusal comes before any Secret read: this fixture's Secret Driver
+      // has no versioned reads, which would otherwise answer first.
+      const created = await f.request("POST", `/namespaces/${namespaceId}/credential-sources`, {
+        name: "fresh-model",
+        ...sourceInput,
+      });
+      assert.equal(created.status, 409, `${label}: ${JSON.stringify(created)}`);
+      assert.equal(created.error.message, CredentialProxyRepositoryOnlyError.description);
+    }
+    // A Gateway-owned source registered before the Installation selected the Proxy.
+    const sourceId = `cs_${randomUUID()}`;
+    await f.state.transact((unit) =>
+      unit.credentialSources.createCredentialSource({
+        id: sourceId,
+        namespaceId,
+        name: "earlier-model",
+        ...sourceInput,
+        ownerCapability: "credential_gateway",
+        driverId: "openshell-credentials",
+        state: "ready",
+        createdAt: new Date().toISOString(),
+      }),
+    );
+    const agent = await f.createAgent({
+      executionMode: "dedicated",
+      harnessAuth: { method: "credential_source", sourceId },
+      credentialSources: [{ sourceId }],
+    });
+    const internal = await f.controller.getAgent(f.actorId, namespaceId, agent.id);
+    f.iamState.identities.push({
+      kind: "service_principal",
+      id: internal.servicePrincipalId,
+      namespaceId,
+    });
+    grantRole(f.iamState, internal.servicePrincipalId, {
+      id: `source-${agent.id}`,
+      namespaceId,
+      permissions: { credential_source: ["operate"] },
+      resource: { kind: "credential_source", id: sourceId },
+    });
+    const path = `${f.collection}/${agent.id}`;
+    const deployed = await f.request("POST", `${path}/deploy`);
+    assert.equal(deployed.status, 409, `${label}: ${JSON.stringify(deployed)}`);
+    assert.equal(
+      deployed.error.message,
+      advertised
+        ? CredentialSourceUnprotectedError.description
+        : CredentialProxyRepositoryOnlyError.description,
+      label,
+    );
+    assert.deepEqual((await f.request("GET", `${path}/revisions`)).data, [], label);
+  }
+  // An Agent with no credential source reached the same 503 through the counterpart check.
+  const { response, revisions } = await protectedOpenShellDeploy(t, []);
+  assert.equal(response.status, 409, JSON.stringify(response));
+  assert.equal(response.error.message, CredentialProxyRepositoryOnlyError.description);
+  assert.deepEqual(revisions, []);
+  // A registration missing from gateway info is still an unavailable counterpart.
+  const missing = await protectedOpenShellDeploy(t, [], { registered: false });
+  assert.equal(missing.response.status, 503, JSON.stringify(missing.response));
+  assert.equal(missing.response.error.code, "DEPENDENCY_UNAVAILABLE");
 });
 
 test("the policy worker fails a Driver's named policy refusal at once", async () => {

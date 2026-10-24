@@ -482,10 +482,13 @@ test("Agent create refuses dedicated OpenClaw on OpenShell settings its workspac
     const f = await setup(t, openShellSandbox(t, kubernetes, gateway));
     const installation = await f.request("GET", "/installation");
     assert.equal(installation.status, 200, JSON.stringify(installation.body));
-    // Create Agent offers only the modes admission accepts.
+    // Create Agent offers only the modes admission accepts, and shows the refusal that names the
+    // setting (finding 2373).
     assert.deepEqual(
-      installation.data.capabilities.openclaw.executionModes,
-      message === undefined ? ["dedicated"] : [],
+      installation.data.capabilities.openclaw,
+      message === undefined
+        ? { executionModes: ["dedicated"] }
+        : { executionModes: [], settingRefusals: { dedicated: message } },
     );
     const openclaw = await storeConfiguration(f, "openclaw", "openai/gpt-4.1");
     const refused = await f.create("OpenShell openclaw", {

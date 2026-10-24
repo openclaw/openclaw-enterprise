@@ -6,6 +6,7 @@ import { delimiter, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { commandShim, startFixtureCommandServer } from "./ci-prepare-fixture-command.mjs";
 import { readJsonLines } from "./json-lines.mjs";
+import { socketDirectory } from "./socket-directory.mjs";
 import { temporaryDirectory } from "./temporary-directory.mjs";
 
 export { forwardedEnv } from "./ci-prepare-fixture-command.mjs";
@@ -141,6 +142,10 @@ export async function fixtureImageCommands(
   }
   const statePath = join(root, "state.json");
   const githubEnv = join(root, "github.env");
+  // The fake PostgreSQL server's Unix socket (ci-prepare-fixture-command.mjs).
+  const postgresSockets = await socketDirectory(t, "ci-prepare-pg-", {
+    longest: ".s.PGSQL.65535",
+  });
   // No inherited credentials, infrastructure selectors, or real command fallback.
   const env = {
     HOME: home,
@@ -157,6 +162,7 @@ export async function fixtureImageCommands(
     ),
     OPENCLAW_CI_K3D_BIN: join(bin, "k3d.mjs"),
     OCC_KUBECTL_BIN: join(bin, "kubectl.mjs"),
+    OPENCLAW_CI_POSTGRES_SOCKET_DIR: postgresSockets,
     ...extraEnv,
   };
   const run = (script, args) =>
