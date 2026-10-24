@@ -13,6 +13,7 @@ import { prepareCodexSeccompProfile } from "../../scripts/ci/codex-seccomp.mjs";
 import { metricsMonitoringImages } from "../../scripts/ci/metrics-monitoring-images.mjs";
 import { defaultK3sImage } from "../../scripts/ci/prepare.mjs";
 import { withStateLock } from "../../scripts/ci/state-lock.mjs";
+import { readJsonLines } from "../helpers/json-lines.mjs";
 import { createKubernetesInstallationConfiguration } from "../helpers/kubernetes-real.mjs";
 import { listen } from "../helpers/listen.mjs";
 import { nodeTestSummary } from "../helpers/node-test-summary.mjs";
@@ -2076,10 +2077,7 @@ process.exit(2);
           },
         );
 
-        const pulls = (await readFile(join(root, "docker.jsonl"), "utf8"))
-          .trim()
-          .split("\n")
-          .map((line) => JSON.parse(line))
+        const pulls = (await readJsonLines(join(root, "docker.jsonl")))
           .filter((args) => args[0] === "pull")
           .map((args) => args[1]);
         if (failure === "missing-manifest") {
@@ -2272,12 +2270,7 @@ if (args[0] === "pull") {
         // The launcher engine selection must win over the general CI engine override.
         OCC_DOCKER_BIN: join(root, "must-not-run"),
       },
-      commands: async () =>
-        (await readFile(join(root, "commands.jsonl"), "utf8"))
-          .trim()
-          .split("\n")
-          .filter(Boolean)
-          .map(JSON.parse),
+      commands: () => readJsonLines(join(root, "commands.jsonl"), { skipBlank: true }),
     };
   }
 
@@ -2611,7 +2604,7 @@ await assert.rejects(() => prepareFile({ lane: "postgres-application",
         10_000,
       );
       assert.equal(result.status, 0, result.stderr);
-      const commands = (await readFile(commandsPath, "utf8")).trim().split("\n").map(JSON.parse);
+      const commands = await readJsonLines(commandsPath);
       const expected = ["database-create", "database-schema", "database-migrate"];
       assert.deepEqual(
         commands,

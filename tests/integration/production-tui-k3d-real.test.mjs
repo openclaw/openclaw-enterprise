@@ -10,6 +10,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { availablePort } from "../helpers/available-port.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { readJsonLines } from "../helpers/json-lines.mjs";
 import { installProductionHelmControlPlane } from "../helpers/production-helm-real.mjs";
 import {
   createKubernetesClient,
@@ -1380,10 +1381,7 @@ test(
         );
         assert.equal(observed, upgradeImages.controller);
       }
-      const deployments = (await readFile(join(upgradeEvidence, "deployments.jsonl"), "utf8"))
-        .trim()
-        .split("\n")
-        .map((line) => JSON.parse(line));
+      const deployments = await readJsonLines(join(upgradeEvidence, "deployments.jsonl"));
       assert.equal(deployments.length, 2);
       assert.ok(deployments.every((deployment) => deployment.namespaceId === namespace.id));
       const primaryDeployment = deployments.find((deployment) => deployment.agentId === agent.id);

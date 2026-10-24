@@ -5,6 +5,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { commandShim, startFixtureCommandServer } from "./ci-prepare-fixture-command.mjs";
+import { readJsonLines } from "./json-lines.mjs";
 import { temporaryDirectory } from "./temporary-directory.mjs";
 
 export { forwardedEnv } from "./ci-prepare-fixture-command.mjs";
@@ -176,7 +177,6 @@ export async function fixtureImageCommands(
       assert.equal(result.status, 0, result.stderr);
     },
     readState: async () => JSON.parse(await readFile(statePath, "utf8")),
-    commands: async () =>
-      (await readFile(join(root, "commands.jsonl"), "utf8")).trim().split("\n").map(JSON.parse),
+    commands: () => readJsonLines(join(root, "commands.jsonl")),
   };
 }

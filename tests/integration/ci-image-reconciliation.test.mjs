@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { writeCommand } from "../helpers/fake-commands.mjs";
+import { readJsonLines } from "../helpers/json-lines.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const root = resolve(fileURLToPath(new URL("../../", import.meta.url)));
@@ -68,10 +69,7 @@ test("image lanes use separate cache scopes without exposing credentials or comp
     });
     assert.equal(result.status, 1, result.stderr);
     assert.match(result.stderr, /42/, result.stderr);
-    const calls = (await readFile(commandsPath, "utf8"))
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line));
+    const calls = await readJsonLines(commandsPath);
     // Each lane first probes for an image the engine already holds; the
     // failed probe falls back to the loading build.
     const builds = calls.filter((args) => args.includes("--load"));

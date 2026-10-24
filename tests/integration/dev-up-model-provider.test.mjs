@@ -8,6 +8,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import { createDevUpModelProvider } from "../helpers/dev-up-model-provider.mjs";
+import { readJsonLines } from "../helpers/json-lines.mjs";
 import { configureModelProviderDNS } from "../helpers/runtime-model-provider.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
@@ -534,7 +535,7 @@ test("deliberate cancellation", { timeout: 500 }, async (t) => {
       return true;
     },
   );
-  assert.deepEqual((await readFile(trace, "utf8")).trim().split("\n").map(JSON.parse), [
+  assert.deepEqual(await readJsonLines(trace), [
     "command-started",
     "teardown-start",
     "process-settled",
