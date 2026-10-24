@@ -757,7 +757,13 @@ test("a bootstrap that arrives while another is still in progress is refused", a
     return append(event);
   };
   const first = request(fixture.app, "/installation/bootstrap", { body: { name: "First" } });
-  await inProgress;
+  // Fail clearly, rather than waiting forever, if the bootstrap never reaches its audit write.
+  await Promise.race([
+    inProgress,
+    first.then((result) => {
+      throw new Error(`bootstrap ended before its audit write: ${result.response.status}`);
+    }),
+  ]);
   const second = await request(fixture.app, "/installation/bootstrap", {
     body: { name: "Second" },
   });
