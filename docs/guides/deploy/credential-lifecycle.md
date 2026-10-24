@@ -6,6 +6,12 @@ and every application or Agent that uses it. After replacing a credential,
 verify it through the affected application before revoking the old value, unless
 the old value has been compromised.
 
+For Credential Proxy setup, protected source withdrawal, and Gateway replacement,
+use [Credential Proxy setup](../credential-proxy.md) and its
+[upgrade procedure](credential-proxy-upgrade.md). Existing static Gateway owners
+can remain. Do not apply a copied-key rotation procedure to live Secret resolution
+or worker-prepared tokens: their owners and recovery requirements differ.
+
 ## Before changing a credential
 
 Record the responsible administrator, non-secret credential ID, expiry, affected
@@ -28,7 +34,7 @@ and who can stop affected workloads if access must be revoked immediately.
 | Backend-managed account credential   | The selected ServiceAccount Driver manages the upstream account, credential, and account-owned Secret.                         | Issuance is separate from creation. A second issuance conflicts; refresh and rotation are not implemented. See [service accounts](../../reference/service-accounts.md#account-and-credential-lifecycle).                                                                                                                                 |
 | Native OCC ServiceAccount credential | The operator owns the referenced source Secret.                                                                                | The API can replace a native `api_key` reference; that reference cannot select model authentication. See [native API-key references](../../reference/service-accounts.md#native-api-key-references).                                                                                                                                     |
 | Harness API key                      | The upstream provider issues the key; the selected Secret Driver stores it as an OCC Secret.                                   | Bind its exact same-Namespace reference through Agent `harnessAuth`. Update the source, explicitly deploy each consumer, verify model access, then revoke the old key upstream.                                                                                                                                                          |
-| Generated transport credentials      | The selected Compute Driver generates per-Agent transport material before the first revision.                                  | Supported Agent creation or the first deployment creates missing transport Secrets. Neither rotates existing values. Replacing transport credentials requires a separate stopped-runtime procedure when supported. See [runtime credentials](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#runtime-credentials). |
+| Generated transport credentials      | The selected Compute Driver generates per-Agent transport material before the first version.                                   | Supported Agent creation or the first deployment creates missing transport Secrets. Neither rotates existing values. Replacing transport credentials requires a separate stopped-runtime procedure when supported. See [runtime credentials](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#runtime-credentials). |
 | OCC Secret bindings                  | The Secret Driver stores harness and channel values; Agent `harnessAuth` and Configurations bind them to authorized consumers. | Value updates preserve the reference. They do not restart consumers or remove delivered values. Channel Secrets are projected only to selected gateways after explicit deployment. See [update and redeploy](../../reference/drivers/kubernetes-secret.md#update-and-redeploy).                                                          |
 | Private gateway-routing service key  | The operator manages the Envoy credential and OCC's mounted client key.                                                        | Use the separate [routing key rotation](workspace-routing.md#rotate-the-service-key-and-certificates) procedure; OCC reads the file for each operation. This is not an OCC API key.                                                                                                                                                      |
 | Auth signing and bootstrap material  | The operator protects the mounted auth Secret and bootstrap password/key output.                                               | Auth-secret changes require API restart. Bootstrap does not regenerate existing credentials or recover missing output. See [production settings](../../reference/settings/production.md) and [bootstrap recovery](../../reference/authentication/service-api-keys.md#recover-an-incomplete-bootstrap).                                   |
@@ -67,7 +73,7 @@ source Secret changes. For a model API key, the supported sequence is:
 1. Update the existing OCC Secret through its API, retaining the Secret reference.
 2. Run `occ agent deploy "$AGENT_ID"` for each consuming Agent, even when its
    Configuration and `harnessAuth` reference are unchanged.
-3. Wait for the new revision to become active, then perform a
+3. Wait for OCC to select the new version, then perform a
    [real model request](../operate/model-verification.md).
 
 With Kubernetes Compute, OCE preparation refreshes the Harness's DP credential
@@ -83,13 +89,13 @@ Where the provider permits overlap, revoke the old upstream credential after
 successful replacement checks. A stored credential status does not show that
 the provider accepts the value. Dedicated Gateway restarts read current canonical
 channel values; Harness restarts read their existing runtime projection.
-Revision history does not restore old source values.
+Version history does not restore old source values.
 
 Backend-managed account credentials require separate handling: OCC cannot
 refresh, rotate, or manually replace an issued token. Monitor expiry and arrange
 a separately issued replacement account before it expires. Bind that account
 and explicitly deploy each intended consumer. Account deletion performs upstream
-cleanup and is blocked by Agent drafts, active revisions, and pending deployments;
+cleanup and is blocked by Agent drafts, selected versions, and pending deployments;
 inactive history alone does not retain the source indefinitely.
 
 ## Use a personal Codex login
@@ -115,7 +121,7 @@ access for subsequent refresh.
    for a usable access token; the token service owns refresh. Another device login
    is needed only when replacing or recovering the connection.
 4. To replace the connection, sign in from the credential editor, save the new
-   source, and deploy. Saving a draft does not change the running revision.
+   source, and deploy. Saving a draft does not change the running version.
 
 Starting requires Agent-create, Secret-create and credential-source-create in the
 Namespace, plus `operate` on the resulting session Secret and source. For an
@@ -123,18 +129,39 @@ existing Agent, exact Agent `read`/`update` replaces Agent-create. Only the acto
 who started a session can poll or close it. Source use has its own exact
 `credential_source:operate` authorization; it is not tied to the login session.
 
-The session Secret stores only an opaque login handle and source identity.
+The session Secret binds an opaque login handle to the actor, scope, and source.
 The Refresh Driver hands exchanged credentials to the external service. A pending session uses
 the provider deadline; a completed session closes after 24 hours on its next
 access. **Close login** discards the handle without revoking the source or
 interrupting a deployed Agent. Failed and abandoned sources remain visible in
 credential-source management; delete unused sources separately and remove their
-unreferenced session Secrets. An uncertain exchange requires a new login.
+unreferenced session Secrets.
 
 If sign-in is unavailable, check the selected Gateway and Refresh capabilities. For a
 `503 DEPENDENCY_UNAVAILABLE`, check connectivity from OCC to that Gateway and its
 upstream provider. The paired Refresh Driver owns the provider exchange; OCC keeps only the
 opaque session handle. See [storage and limits](../../reference/drivers/kubernetes-compute/codex-oauth-storage.md).
+
+### Recover an interrupted Codex sign-in
+
+If the Console says **Sign-in may have started**, do not start again. The Console
+did not receive a usable session reference, so it cannot poll or cancel that
+attempt. Give an administrator the time, Namespace, Agent ID if already saved,
+and OCC request ID if available. Do not share the device code or Secret value.
+
+Using [approved audit access](../topics/audit-log.md#access-and-limitations), look
+for a successful `openclaw.agents.device_authorization.start` for that actor and
+request. OCC records it after saving the session Secret, before sending the reply.
+It confirms that OCC started the session, not that sign-in completed, and does not
+include the session ID. A missing event does not rule out a partial start. OCC can
+register an empty Credential Source before the session exists. Do not guess the
+session from a name or timestamp, or start again while the outcome is unknown.
+
+If the Console says **Cancel this login and sign in again** while checking a known
+session, choose **Cancel login**. Start a new sign-in only after cancellation
+succeeds. Cancelling discards the session without revoking the Credential Source.
+OCC does not repeat an exchange whose outcome is uncertain. A **Service unavailable**
+message alone does not tell you whether OCC reached that exchange.
 
 ## Preserve administrator recovery
 

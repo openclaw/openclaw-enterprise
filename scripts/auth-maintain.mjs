@@ -1,4 +1,6 @@
 import { readFile } from "node:fs/promises";
+import { realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { NativeIAMDriver } from "../packages/iam/src/index.ts";
 import {
   createPostgresPool,
@@ -27,8 +29,8 @@ const EXIT_REFUSED = 3;
 const EXIT_USAGE = 64;
 const NATIVE_IAM_DRIVER = { id: "native-iam", implementation: "native" };
 
-function output(event, fields = {}) {
-  process.stdout.write(`${JSON.stringify({ event, ...fields })}\n`);
+function outputLine(event, fields = {}) {
+  return `${JSON.stringify({ event, ...fields })}\n`;
 }
 
 async function readPassword(path) {
@@ -37,7 +39,7 @@ async function readPassword(path) {
   return contents.replace(/\r?\n$/, "");
 }
 
-async function run(options, maintenance, state, installationId) {
+async function run(options, maintenance, state, installationId, stderr) {
   const issuer = betterAuthIssuer(installationId);
   switch (options.command) {
     case "status":
@@ -66,7 +68,7 @@ async function run(options, maintenance, state, installationId) {
       }
       if (activation.seedIgnored) {
         // Like startup: an existing designation (possibly moved online) is kept, not replaced.
-        process.stderr.write(
+        stderr.write(
           "--recovery-user differs from the recorded recovery designation, which is kept.\n",
         );
       }
@@ -93,68 +95,114 @@ async function run(options, maintenance, state, installationId) {
   }
 }
 
-let pool;
-let options;
-let logger = createOccLogger({
-  component: "occ-auth-maintain",
-  level: "info",
-  destination: "stderr",
-});
-
-try {
-  options = parseAuthMaintainArguments(process.argv.slice(2));
-  const logging = await loadOperationalLoggingConfiguration({
-    mode: process.env.NODE_ENV === "development" ? "development" : "production",
-  });
-  logger = createOccLogger({
+/**
+ * `pnpm auth:maintain`: run one maintenance command against a stopped Installation. It reads
+ * its settings from `environment` and its command from `args`, never from process.env or argv,
+ * so tests can call it in process with their own settings. It writes its result line to
+ * `stdout`, messages to `stderr` and log events to `logDestination` ("stderr" for the command),
+ * and returns the exit status: 0, 1 (failed), 2 (writers running), 3 (refused) or 64 (usage).
+ * A failure's status also goes to `onFailure` before the database pool closes, so the command
+ * keeps its exit status even if closing the pool never settles.
+ *
+ * Dependencies still read a few process-wide settings themselves, such as OCC_DATABASE_AUTH in
+ * the database pool.
+ */
+export async function authMaintain({
+  environment,
+  args,
+  stdout = process.stdout,
+  stderr = process.stderr,
+  logDestination = "stderr",
+  onFailure = () => {},
+}) {
+  const output = (event, fields) => stdout.write(outputLine(event, fields));
+  let pool;
+  let options;
+  let logger = createOccLogger({
     component: "occ-auth-maintain",
-    level: logging.level,
-    destination: "stderr",
+    level: "info",
+    destination: logDestination,
   });
-  const databaseUrl = process.env.OCC_MIGRATION_DATABASE_URL;
-  if (typeof databaseUrl !== "string" || databaseUrl.trim().length === 0) {
-    throw new Error("OCC_MIGRATION_DATABASE_URL must contain the dedicated migrator credential.");
-  }
-  // One connection: every check and change runs on the backend excluded from the writer scan.
-  pool = await createPostgresPool(databaseUrl, { max: 1 });
-  const state = new PostgresPlatformState(pool);
-  const installation = await state.loadInstallation();
-  if (installation === undefined) {
-    throw new Error("The database has no Installation.");
-  }
-  const maintenance = new PostgresHumanAuthenticationMaintenance(
-    state,
-    installation.id,
-    betterAuthIssuer(installation.id),
-  );
-  await maintenance.assertSchemaOwner();
-  const result = await run(options, maintenance, state, installation.id);
-  output(`auth-maintain.${options.command}`, result);
-  emitOccLogEvent(logger, {
-    event: `auth-maintain.${options.command}`,
-    installationId: installation.id,
-  });
-} catch (error) {
-  if (error instanceof AuthMaintainUsageError) {
-    process.stderr.write(`${error.message}\n`);
-    process.exitCode = EXIT_USAGE;
-  } else if (error instanceof WritersNotStoppedError) {
-    output("auth-maintain.writers-running", { backends: error.backends });
-    process.stderr.write(`${error.message}\n`);
-    process.exitCode = EXIT_WRITERS_RUNNING;
-  } else if (error instanceof HumanAuthenticationMaintenanceRefusedError) {
-    output("auth-maintain.refused", { reason: error.reason, ...error.details });
-    process.stderr.write(`${error.message}\n`);
-    process.exitCode = EXIT_REFUSED;
-  } else {
-    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-    emitOccLogEvent(logger, {
-      event: "auth-maintain.failed",
-      code: "AUTH_MAINTENANCE_FAILED",
-      ...(options === undefined ? {} : { command: options.command }),
+  let status = 0;
+
+  try {
+    options = parseAuthMaintainArguments(args);
+    const logging = await loadOperationalLoggingConfiguration({
+      mode: environment.NODE_ENV === "development" ? "development" : "production",
+      environment,
     });
-    process.exitCode = EXIT_FAILED;
+    logger = createOccLogger({
+      component: "occ-auth-maintain",
+      level: logging.level,
+      destination: logDestination,
+    });
+    const databaseUrl = environment.OCC_MIGRATION_DATABASE_URL;
+    if (typeof databaseUrl !== "string" || databaseUrl.trim().length === 0) {
+      throw new Error("OCC_MIGRATION_DATABASE_URL must contain the dedicated migrator credential.");
+    }
+    // One connection: every check and change runs on the backend excluded from the writer scan.
+    pool = await createPostgresPool(databaseUrl, { max: 1 });
+    const state = new PostgresPlatformState(pool);
+    const installation = await state.loadInstallation();
+    if (installation === undefined) {
+      throw new Error("The database has no Installation.");
+    }
+    const maintenance = new PostgresHumanAuthenticationMaintenance(
+      state,
+      installation.id,
+      betterAuthIssuer(installation.id),
+    );
+    await maintenance.assertSchemaOwner();
+    const result = await run(options, maintenance, state, installation.id, stderr);
+    output(`auth-maintain.${options.command}`, result);
+    emitOccLogEvent(logger, {
+      event: `auth-maintain.${options.command}`,
+      installationId: installation.id,
+    });
+  } catch (error) {
+    if (error instanceof AuthMaintainUsageError) {
+      stderr.write(`${error.message}\n`);
+      status = EXIT_USAGE;
+    } else if (error instanceof WritersNotStoppedError) {
+      output("auth-maintain.writers-running", { backends: error.backends });
+      stderr.write(`${error.message}\n`);
+      status = EXIT_WRITERS_RUNNING;
+    } else if (error instanceof HumanAuthenticationMaintenanceRefusedError) {
+      output("auth-maintain.refused", { reason: error.reason, ...error.details });
+      stderr.write(`${error.message}\n`);
+      status = EXIT_REFUSED;
+    } else {
+      stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+      emitOccLogEvent(logger, {
+        event: "auth-maintain.failed",
+        code: "AUTH_MAINTENANCE_FAILED",
+        ...(options === undefined ? {} : { command: options.command }),
+      });
+      status = EXIT_FAILED;
+    }
+    onFailure(status);
+  } finally {
+    await pool?.end();
   }
-} finally {
-  await pool?.end();
+  return status;
+}
+
+// Run the command only when this file is the entry point, not when a test imports it.
+// Node before 24.2 lacks import.meta.main; its entry URL is the realpath of argv[1].
+function startedAsEntryPoint() {
+  try {
+    return realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
+  } catch {
+    // No argv[1], or not a file (node --eval with arguments): this module was imported.
+    return false;
+  }
+}
+if (import.meta.main ?? startedAsEntryPoint()) {
+  await authMaintain({
+    environment: process.env,
+    args: process.argv.slice(2),
+    onFailure: (status) => {
+      process.exitCode = status;
+    },
+  });
 }

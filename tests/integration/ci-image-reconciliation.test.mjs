@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { writeCommand } from "../helpers/fake-commands.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const root = resolve(fileURLToPath(new URL("../../", import.meta.url)));
 const prepare = join(root, "scripts/ci/prepare.mjs");
@@ -22,22 +23,20 @@ function run(script, args, env) {
 }
 
 test("image lanes use separate cache scopes without exposing credentials or competing writers", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "ci-image-cache-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const docker = join(directory, "docker");
+  const directory = await temporaryDirectory(t, "ci-image-cache-");
   const commandsPath = join(directory, "commands.json");
   // Stop at the real preparer's external build boundary. Hosted CI separately
   // proves BuildKit cache transport; this verifies invocation and failure ownership.
   // getBuiltinModule, not require: the stand-in loads as ESM when TMPDIR is inside this repo.
-  await writeFile(
-    docker,
-    `#!${process.execPath}\n` +
-      'const fs = process.getBuiltinModule("node:fs");\n' +
+  const docker = await writeCommand(
+    directory,
+    "docker",
+    'const fs = process.getBuiltinModule("node:fs");\n' +
       "const args = process.argv.slice(2);\n" +
       'if (args[0] === "version") { console.log("29.4.0"); process.exit(0); }\n' +
       "fs.appendFileSync(process.env.COMMANDS_PATH, `${JSON.stringify(args)}\\n`);\n" +
       "process.exit(42);\n",
-    { mode: 0o700 },
+    { interpreter: process.execPath },
   );
   for (const [lane, roles] of [
     // Images and Packaging builds its two images at once.
@@ -101,12 +100,13 @@ test("image lanes use separate cache scopes without exposing credentials or comp
 });
 
 test("failed image preparation and cleanup retain a sanitized attempt-bound tag", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "ci-image-reconciliation-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "ci-image-reconciliation-");
   const statePath = join(directory, "state.json");
-  const docker = join(directory, "docker");
-  await writeFile(docker, '#!/bin/sh\nif [ "$1" = "version" ]; then echo 1; exit 0; fi\nexit 42\n');
-  await chmod(docker, 0o700);
+  const docker = await writeCommand(
+    directory,
+    "docker",
+    'if [ "$1" = "version" ]; then echo 1; exit 0; fi\nexit 42\n',
+  );
   const env = {
     GITHUB_RUN_ID: "12345",
     GITHUB_RUN_ATTEMPT: "2",
@@ -151,8 +151,7 @@ test("failed image preparation and cleanup retain a sanitized attempt-bound tag"
 });
 
 test("image reconciliation refuses foreign, transplanted and duplicate identities", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "ci-image-identity-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "ci-image-identity-");
   const statePath = join(directory, "state.json");
   const prefix = "openclaw-ci-12345-2-images-abcdef123456";
   const label = createHash("sha256")
@@ -213,8 +212,7 @@ test("image reconciliation refuses foreign, transplanted and duplicate identitie
 });
 
 test("missing state remains unavailable and each attempt is retained separately", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "ci-image-attempt-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "ci-image-attempt-");
   const statePath = join(directory, "missing.json");
   for (const attempt of ["1", "2"]) {
     const env = { GITHUB_RUN_ID: "12345", GITHUB_RUN_ATTEMPT: attempt };
@@ -230,8 +228,7 @@ test("missing state remains unavailable and each attempt is retained separately"
 });
 
 test("present malformed state is rejected rather than reported as unavailable", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "ci-image-invalid-state-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "ci-image-invalid-state-");
   const statePath = join(directory, "state.json");
   const env = { GITHUB_RUN_ID: "12345", GITHUB_RUN_ATTEMPT: "2" };
   for (const value of [null, false, 0, "", [], { resources: [] }]) {
@@ -247,8 +244,7 @@ test("present malformed state is rejected rather than reported as unavailable", 
 });
 
 test("prepared image records require string IDs, unique roles and one tag base", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "ci-image-records-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "ci-image-records-");
   const statePath = join(directory, "state.json");
   const prefix = "openclaw-ci-12345-2-images-abcdef123456";
   const label = createHash("sha256")
@@ -322,8 +318,7 @@ test("prepared image records require string IDs, unique roles and one tag base",
 });
 
 test("the upload is conditioned on this export succeeding even after a cleanup failure", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "ci-image-stale-output-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "ci-image-stale-output-");
   const statePath = join(directory, "state.json");
   const output = join(directory, "images-12345-2.json");
   await writeFile(statePath, "null");

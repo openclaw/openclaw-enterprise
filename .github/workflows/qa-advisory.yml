@@ -7,6 +7,9 @@ on:
     branches:
       - main
   workflow_dispatch:
+  # Every 6 hours, so the local installation rehearsal (skipped on push) runs on main without a label.
+  schedule:
+    - cron: "17 */6 * * *"
 
 permissions:
   contents: read
@@ -30,7 +33,7 @@ jobs:
     name: Select advisory QA
     if: >-
       (github.ref == 'refs/heads/main' &&
-        (github.event_name == 'push' ||
+        (github.event_name == 'push' || github.event_name == 'schedule' ||
          (github.event_name == 'workflow_dispatch' && github.actor != 'dependabot[bot]'))) ||
       (github.event_name == 'pull_request' &&
         github.event.pull_request.head.repo.full_name == github.repository &&
@@ -45,7 +48,7 @@ jobs:
   local-installation:
     name: QA advisory (local installation)
     needs: eligibility
-    # Run this installation rehearsal with full-qa or a manual dispatch on main.
+    # Run this installation rehearsal with full-qa, the 6-hourly schedule or a manual dispatch on main.
     if: github.event_name != 'push'
     runs-on: ubuntu-22.04
     timeout-minutes: 180
@@ -85,7 +88,7 @@ jobs:
       OCC_DEVELOPMENT_K3S_IMAGE: docker.io/rancher/k3s:v1.35.9-k3s1@sha256:ec9868c6a38d4e8c1869832fb5fd1eb8473c39794a0b44d2b952e7ba911951bc
       OCC_TEST_QA_INSTALLATION: ${{ matrix.installation }}
       OCC_TEST_QA_PRESET: Codex
-      OCC_TEST_QA_SCENARIOS: model-ui,calendar
+      OCC_TEST_QA_SCENARIOS: model-ui,calendar,console-secrets
       OCC_TEST_QA_CODEX_MODEL: ${{ vars.OCC_TEST_QA_CODEX_MODEL }}
       OCC_TEST_CODEX_CALENDAR_TOOL_NAME: ${{ vars.OCC_TEST_CODEX_CALENDAR_TOOL_NAME }}
       OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT: ${{ vars.OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT }}

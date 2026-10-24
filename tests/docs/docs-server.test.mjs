@@ -1,16 +1,15 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, symlink, writeFile } from "node:fs/promises";
 import { request } from "node:http";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
 import { spawnDocsPreview, waitForDocsPreview } from "../helpers/docs-site.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 test("preview serves static docs on loopback and confines reads to site output", async (t) => {
-  const fixture = await mkdtemp(join(tmpdir(), "enterprise-docs-server-"));
-  t.after(() => rm(fixture, { recursive: true, force: true }));
+  const fixture = await temporaryDirectory(t, "enterprise-docs-server-");
   await mkdir(join(fixture, "dist/docs/guide"), { recursive: true });
   await writeFile(join(fixture, "dist/docs/index.html"), "<h1>Home</h1>");
   await writeFile(join(fixture, "dist/docs/guide/index.html"), "<h1>Guide</h1>");

@@ -7,11 +7,10 @@ covers bootstrap, password sessions, request origin, provisioning, and failures.
 
 ## Console sign-in destinations
 
-After sign-in, the console returns to the requested supported page and Namespace
-when available. Access is checked again; sign-out and failed external sign-in
-clear the pending destination. A new sign-in after an active session expires
-starts at Agents. An Agent recovery link can return to its console page after
-authorization, where opening the native UI remains a separate action.
+Sign-in restores the validated page, Namespace, and Agent tab or version after
+expiry, then rechecks access. It clears private views and drafts and never
+replays writes. Logout or failed external sign-in clears the destination. Agent
+recovery ends at its console page; opening native UI remains a separate action.
 
 ## GitHub sign-in for existing accounts
 
@@ -127,7 +126,7 @@ or `temporarily_unavailable`), or its token endpoint refuses the configured clie
 and registered callback), the denial is audited as `PROVIDER_UNAVAILABLE` and the API
 logs one `authentication.provider-unavailable-warning` at WARN. It carries `provider`
 (`github`, `google`, or `oidc`), the provider instance `providerId`, `step`
-(`authorization`, `token`, `jwks`, `profile`, or `membership`), a bounded `cause` (`connect_refused`,
+(`authorization`, `token`, `jwks`, `profile`, or `membership`), a `cause` from a fixed list (`connect_refused`,
 `dns`, `timeout`, `tls`, `connection_reset`, `network`, `redirect`, `http_status`,
 `oversized_response`, `malformed_response`, `provider_error`, or `client_rejected`), and,
 when present, the HTTP `status` or transport `code` such as `ECONNREFUSED`. It never carries URLs,
@@ -301,7 +300,7 @@ spends one of each. Without
 [trusted proxies](../cheatsheets/environment-variables.md#controller-and-authentication)
 every browser behind an ingress shares its address, so the address is never a key:
 callback and result key on the browser's attempt and receipt cookies, and start is
-bounded only by the active cap and the 1,000 pending attempts (oldest evicted).
+limited only by the active request cap and the 1,000 pending attempts (oldest evicted).
 Startup and Helm's install notes warn
 ([trusted proxies](../settings/production.md#github-sign-in-and-trusted-proxies)).
 A 4,096-key table bounds memory. Provider calls share a ten-second deadline, refuse

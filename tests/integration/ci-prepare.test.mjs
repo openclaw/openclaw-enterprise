@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import { chmod, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { appendFile, chmod, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
+import { connect, createServer } from "node:net";
 import { availableParallelism } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,13 +18,17 @@ import { nodeTestSummary } from "../helpers/node-test-summary.mjs";
 import {
   assertStderrMatch,
   fixture,
+  fixtureCommandServer,
   fixtureImageCommands,
   fixturePreparationMetrics,
+  forwardedEnv,
   immutableImage,
   mutableImage,
   nodeBaseImage,
   spawnResult,
+  writeFixtureCommand,
 } from "../helpers/ci-prepare-fixture.mjs";
+import { waitUntil } from "../helpers/wait-for.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../../", import.meta.url)));
 const preparePath = join(repositoryRoot, "scripts/ci/prepare.mjs");
@@ -310,6 +315,73 @@ describe("CI preparation", { concurrency }, () => {
     });
   }
 
+  // The fakes' command server listens on loopback, where any local user can connect. It
+  // must run nothing for a request without its client token (the same request with the
+  // token writes the metadata file), and a shim must run nothing from another listener.
+  test("the fake command server and its shims run nothing for each other's impostors", async (t) => {
+    const root = await fixture(t);
+    const server = await fixtureCommandServer(t, root);
+    const metadata = join(root, "metadata.json");
+    const args = [
+      "buildx",
+      "build",
+      "--output",
+      "type=image,push=false,store=false",
+      "--provenance=false",
+      "--metadata-file",
+      metadata,
+      ".",
+    ];
+    // A shim's complete request: its argv, then each forwarded variable ("=" + value if set).
+    const env = forwardedEnv.map((name) => (name === "CI_FIXTURE_SCENARIO" ? "=success" : ""));
+    const request = (token) =>
+      new Promise((resolve, reject) => {
+        const fields = [...token, "docker", root, String(args.length), ...args, ...env];
+        let reply = "";
+        const socket = connect(server.port, "127.0.0.1", () =>
+          socket.write(fields.map((field) => field + "\0").join("")),
+        );
+        socket.setTimeout(30_000, () => {
+          socket.destroy();
+          reject(new Error("the command server neither answered nor closed the connection"));
+        });
+        socket.setEncoding("utf8");
+        socket.on("data", (chunk) => (reply += chunk));
+        // The server may reset the connection it refuses.
+        socket.on("error", (error) => error.code === "ECONNRESET" || reject(error));
+        socket.on("close", () => resolve(reply));
+      });
+    // The protocol without a token, a wrong token, and the server token sent back.
+    for (const token of [[], ["0".repeat(64)], [server.serverToken]]) {
+      assert.equal(await request(token), "", "an unauthenticated client gets no reply");
+    }
+    // Read, not stat: nothing was written, and no check precedes the read below.
+    await assert.rejects(readFile(join(root, "commands.jsonl")), { code: "ENOENT" });
+    await assert.rejects(readFile(metadata), { code: "ENOENT" });
+    const served = await request([server.clientToken]);
+    assert.match(served, new RegExp(`^${server.serverToken}\n[^]*exit 0\n$`));
+    assert.equal(
+      JSON.parse(await readFile(metadata, "utf8"))["containerimage.config.digest"],
+      "sha256:" + "f".repeat(64),
+    );
+
+    // A listener that is not the fixture's server, as if another user took the port.
+    const impostor = createServer((socket) => {
+      socket.on("error", () => {});
+      socket.once("data", () => socket.end("printf impostor-ran\nexit 0\n"));
+    });
+    await new Promise((resolve) => impostor.listen(0, "127.0.0.1", resolve));
+    t.after(() => new Promise((resolve) => impostor.close(resolve)));
+    const misdirected = join(root, "misdirected-docker");
+    await writeFixtureCommand(misdirected, "docker", server, impostor.address().port);
+    const refused = await spawnResult(misdirected, ["version"], {
+      env: { PATH: "/nonexistent", CI_FIXTURE_SCENARIO: "success" },
+    });
+    assert.equal(refused.status, 125);
+    assert.equal(refused.stdout, "");
+    assert.match(refused.stderr, /fixture command server did not authenticate/);
+  });
+
   // A hosted image lane's cache inputs; the token must reach no build argument or output.
   const imageCacheEnv = {
     GITHUB_ACTIONS: "true",
@@ -318,53 +390,10 @@ describe("CI preparation", { concurrency }, () => {
     ACTIONS_RESULTS_URL: "https://cache.example.test/",
   };
 
-  // The docker shim records argv only: this proves the cache credential stays out of
-  // build arguments and every output preparation hands on, not out of docker's environment.
-  test("repository platform preparation restores the runtime image cache without exporting it", async (t) => {
-    const commands = await fixtureImageCommands(
-      t,
-      "success",
-      "repository-credentials-platform",
-      imageCacheEnv,
-    );
-    const prepared = await commands.prepare();
-    assert.equal(prepared.status, 0, prepared.stderr);
-    const calls = (await commands.commands()).filter(({ command }) => command === "docker");
-    const runtime = calls.filter(({ args }) => args[0] === "buildx" && args.includes("--load"));
-    assert.equal(runtime.length, 1);
-    const { args } = runtime[0];
-    // The engine lacked the probed image, so the lane loaded the build.
-    const probes = calls.filter(({ args }) => args[0] === "buildx" && args.includes("--output"));
-    assert.deepEqual(
-      probes.map(({ args: probe }) => probe.slice(7)),
-      [args.slice(3)],
-    );
-    assert.deepEqual(args.slice(0, 3), ["buildx", "build", "--load"]);
-    assert.equal(
-      args[args.indexOf("--cache-from") + 1],
-      `type=gha,version=2,scope=oce-ci-runtime-${process.platform}-${process.arch}-v1,timeout=60s`,
-    );
-    assert.equal(args.includes("--cache-to"), false);
-    // The fixture derives from the loaded runtime image through the engine's own builder.
-    const fixtureBuilds = calls.filter(({ args }) => args[0] === "build");
-    assert.equal(fixtureBuilds.length, 1);
-    assert.equal(fixtureBuilds[0].args[fixtureBuilds[0].args.indexOf("--builder") + 1], "default");
-    assert.ok(fixtureBuilds[0].args.includes(`RUNTIME_IMAGE=${args[args.indexOf("-t") + 1]}`));
-    const state = await readFile(commands.statePath, "utf8");
-    const githubEnv = await readFile(commands.githubEnv, "utf8");
-    assert.match(githubEnv, /^OCC_TEST_REPOSITORY_CREDENTIALS_PLATFORM_IMAGE=/m);
-    assert.doesNotMatch(
-      JSON.stringify(calls) + state + githubEnv + prepared.stdout + prepared.stderr,
-      /synthetic-cache-credential/,
-    );
-    const cleaned = await commands.cleanup();
-    assert.equal(cleaned.status, 0, cleaned.stderr);
-  });
-
   test("image cache preparation refuses missing credentials and unmapped lanes before building", async (t) => {
     for (const [lane, env] of [
       // A cache lane without its runtime token.
-      ["repository-credentials-platform", { ...imageCacheEnv, ACTIONS_RUNTIME_TOKEN: "" }],
+      ["images-packaging", { ...imageCacheEnv, ACTIONS_RUNTIME_TOKEN: "" }],
       // A lane outside the cache map, even with credentials.
       [
         "docker-model",
@@ -420,6 +449,14 @@ describe("CI preparation", { concurrency }, () => {
         assert.equal(args[args.indexOf("--cache-from") + 1], `${cache},timeout=60s`, event);
         assert.equal(args.includes("--cache-to"), false, event);
       }
+      assert.doesNotMatch(
+        JSON.stringify(calls) +
+          (await readFile(commands.statePath, "utf8")) +
+          (await readFile(commands.githubEnv, "utf8")) +
+          prepared.stdout +
+          prepared.stderr,
+        /synthetic-cache-credential/,
+      );
       const cleaned = await commands.cleanup();
       assert.equal(cleaned.status, 0, `${event}: ${cleaned.stderr}`);
     }
@@ -538,6 +575,58 @@ describe("CI preparation", { concurrency }, () => {
           0,
         );
       }
+      const cleaned = await commands.cleanup();
+      assert.equal(cleaned.status, 0, cleaned.stderr);
+    });
+  }
+
+  // Finding 2103: a cold image build probe ran to a fixed 20 min, the build after it took 4 more
+  // and the tests got 40 s. In a lane with a deadline the build keeps the reserve for the tests
+  // and otherwise stops preparation with a message saying why.
+  for (const { scenario, aheadMs, probes, outcome } of [
+    // The probe (a full build on a cache miss) outlasts the budget: no second build starts.
+    { scenario: "image-probe-hung", aheadMs: 6_000, probes: 1, outcome: "out-of-time" },
+    // The probe resolves an image the engine lacks, and the loading build outlasts the budget.
+    { scenario: "image-build-hung", aheadMs: 10_000, probes: 1, outcome: "absent" },
+    // Nothing is left of the budget when the build would start.
+    { scenario: "image-out-of-time", aheadMs: 0, probes: 0, outcome: "out-of-time" },
+  ]) {
+    test(`image lanes stop when the image build runs out of the lane's time: ${scenario}`, async (t) => {
+      const reserveMs = 2_000;
+      const commands = await fixtureImageCommands(t, scenario, "images-runtime-startup-3", {
+        ...imageCacheEnv,
+        GITHUB_EVENT_NAME: "pull_request",
+        OPENCLAW_CI_IMAGE_BUILD_TEST_RESERVE_MS: String(reserveMs),
+        OPENCLAW_CI_COMMAND_KILL_GRACE_MS: "200",
+        CI_RUNNER_DEADLINE_MS: String(Date.now() + reserveMs + aheadMs),
+      });
+      const started = performance.now();
+      const prepared = await commands.prepare();
+      assert.notEqual(prepared.status, 0, prepared.stderr);
+      // Stopped by the budget, well before the hung command's own exit.
+      assert.ok(performance.now() - started < 30_000);
+      assertStderrMatch(
+        prepared.stderr,
+        /The runtime image did not finish building within this lane's time.*keeps 2 s before its deadline for the rest of preparation and its tests/,
+      );
+      assert.match(
+        prepared.stdout,
+        /^::error title=Image build out of lane time::The runtime image /m,
+      );
+      assertStderrMatch(
+        prepared.stderr,
+        new RegExp(`"stage":"runtime-image-reuse","outcome":"${outcome}"`),
+      );
+      const calls = (await commands.commands()).filter(({ command }) => command === "docker");
+      const builds = calls.filter(({ args }) => args[0] === "buildx");
+      assert.equal(
+        builds.filter(({ args }) => args.includes("type=image,push=false,store=false")).length,
+        probes,
+      );
+      assert.equal(
+        builds.filter(({ args }) => args.includes("--load")).length,
+        scenario === "image-build-hung" ? 1 : 0,
+      );
       const cleaned = await commands.cleanup();
       assert.equal(cleaned.status, 0, cleaned.stderr);
     });
@@ -859,77 +948,13 @@ describe("CI preparation", { concurrency }, () => {
   test("ordinary k3d preparation rejects mutable K3s overrides before creating state", async (t) => {
     const root = await fixture(t);
     const statePath = join(root, "state.json");
-    const result = await runPrepare(
-      ["--lane", "repository-credentials-platform", "--state", statePath],
-      {
-        OPENCLAW_CI_K3S_IMAGE: "rancher/k3s:latest",
-        OCC_DOCKER_BIN: join(root, "no-docker-command"),
-      },
-    );
+    const result = await runPrepare(["--lane", "k3d-fixture-state", "--state", statePath], {
+      OPENCLAW_CI_K3S_IMAGE: "rancher/k3s:latest",
+      OCC_DOCKER_BIN: join(root, "no-docker-command"),
+    });
     assert.equal(result.status, 1);
     assert.match(result.stderr, /OPENCLAW_CI_K3S_IMAGE must be an immutable/);
     await assert.rejects(() => stat(statePath), { code: "ENOENT" });
-  });
-
-  test("repository platform preparation binds runtime clients, an owned gateway and a fresh migrated database", async (t) => {
-    const commands = await fixtureImageCommands(t, "success", "repository-credentials-platform");
-    const prepared = await commands.prepare();
-    assert.equal(prepared.status, 0, prepared.stderr);
-    for (const phase of [
-      "postgres-start",
-      "k3d-create",
-      "runtime-image-build",
-      "platform-fixture-build",
-      "postgres-cluster-image-build",
-      "image-stream-import",
-      "platform-image-import",
-    ]) {
-      assert.match(
-        prepared.stderr,
-        new RegExp(
-          `\\[ci-timing\\] lane=repository-credentials-platform phase=${phase} duration_ms=\\d+`,
-        ),
-      );
-    }
-    const state = JSON.parse(await readFile(commands.statePath, "utf8"));
-    const cluster = state.resources.find(({ kind }) => kind === "k3d-cluster");
-    assert.equal(state.env.OCC_TEST_REPOSITORY_CREDENTIALS_PLATFORM, "1");
-    assert.equal(state.env.OCC_TEST_REPOSITORY_CREDENTIALS_HOST_ADDRESS, "172.19.0.1");
-    assert.match(
-      state.env.OCC_TEST_REPOSITORY_CREDENTIALS_PLATFORM_IMAGE,
-      new RegExp(
-        `^localhost/openclaw-ci-image-[a-z0-9-]+/repository-platform@sha256:${"c".repeat(64)}$`,
-      ),
-    );
-    const imported = state.resources.find(({ kind }) => kind === "k3d-image");
-    assert.equal(imported.cluster, cluster.name);
-    assert.equal(imported.status, "ready");
-    assert.equal(state.env.OPENAI_API_KEY, undefined);
-
-    const file = await commands.prepareFile(
-      "tests/integration/repository-credentials-platform.test.mjs",
-    );
-    assert.equal(file.status, 0, file.stderr);
-    const migrated = JSON.parse(await readFile(commands.statePath, "utf8"));
-    const database = migrated.resources.find(({ kind }) => kind === "postgres-database");
-    assert.match(database.name, /^openclaw_k8s_/);
-    assert.equal(database.status, "ready");
-    const calls = await commands.commands();
-    assert.ok(
-      calls.some(({ command, args }) => command === "corepack" && args[1] === "db:migrate"),
-    );
-    const builds = calls.filter(({ command, args }) => command === "docker" && args[0] === "build");
-    assert.equal(builds.length, 2);
-    for (const { args } of builds) {
-      assert.equal(args[args.indexOf("--builder") + 1], "default");
-      assert.ok(args.includes("--load"));
-    }
-    assert.ok(
-      builds[1].args.includes(`RUNTIME_IMAGE=${builds[0].args[builds[0].args.indexOf("-t") + 1]}`),
-    );
-    const cleaned = await commands.cleanup();
-    assert.equal(cleaned.status, 0, cleaned.stderr);
-    await assert.rejects(() => stat(commands.statePath), { code: "ENOENT" });
   });
 
   test("PostgreSQL CI selects and contains the per-file IAM barrier fixture", async (t) => {
@@ -949,7 +974,8 @@ assert.equal(args[0], "compose");
 assert.equal(args[1], "-f");
 assert.equal(args[3], "-p");
 assert.deepEqual(args.slice(5, 9), ["exec", "-T", "postgres", "psql"]);
-appendFileSync(process.env.CI_SYNTHETIC_LOG, "docker-exec\\t" + args.at(-1) + "\\n");
+const commands = args.filter((_, index) => args[index - 1] === "-c");
+appendFileSync(process.env.CI_SYNTHETIC_LOG, ["docker-exec", ...commands].join("\\t") + "\\n");
 `,
       { mode: 0o700 },
     );
@@ -986,11 +1012,12 @@ assert.equal(app.host, migrator.host);
 assert.equal(app.pathname, migrator.pathname);
 assert.equal(app.pathname, "/" + selected.env.OCC_TEST_NATIVE_IAM_BARRIER_DATABASE);
 assert.match(app.pathname, /^\\/openclaw_ci_postgres_native_iam_policy_barrier_[a-f0-9]{12}$/);
+const databases = (state) => state.resources.filter((resource) => resource.kind === "postgres-database" && resource.laneTemplate === undefined);
 const prepared = JSON.parse(await readFile(statePath, "utf8"));
-assert.equal(prepared.resources.filter((resource) => resource.kind === "postgres-database").length, 1);
+assert.equal(databases(prepared).length, 1);
 await selected.cleanup();
 const settled = JSON.parse(await readFile(statePath, "utf8"));
-assert.equal(settled.resources.filter((resource) => resource.kind === "postgres-database").length, 0);
+assert.equal(databases(settled).length, 0);
 const other = await prepareFile({
   lane,
   file: "tests/integration/postgres-worker-agent-revision.test.mjs",
@@ -1001,7 +1028,8 @@ assert.equal(other.env.OCC_TEST_NATIVE_IAM_BARRIER_DATABASE, undefined);
 assert.equal(other.env.OCC_TEST_NATIVE_IAM_BARRIER_MIGRATION_DATABASE_URL, undefined);
 await other.cleanup();
 const finalState = JSON.parse(await readFile(statePath, "utf8"));
-assert.equal(finalState.resources.length, 1);
+// The server and its lane template, which lane cleanup drops.
+assert.deepEqual(finalState.resources.map(({ kind, laneTemplate }) => [kind, laneTemplate]), [["compose-postgres", undefined], ["postgres-database", "ci"]]);
 `;
     const fakeEnv = {
       PATH: root,
@@ -1014,10 +1042,13 @@ assert.equal(finalState.resources.length, 1);
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stdout, "");
     const commandLog = (await readFile(logPath, "utf8")).trim().split("\n");
-    assert.equal(commandLog.length, 8);
+    // One migrated lane template, then a copy per file, each copy one exec.
+    assert.equal(commandLog.length, 7);
+    assert.equal(commandLog.filter((line) => line.startsWith("migrate\t")).length, 1);
     const createCommands = commandLog.filter((line) => line.includes("CREATE DATABASE"));
     const dropCommands = commandLog.filter((line) => line.includes("DROP DATABASE"));
-    assert.equal(createCommands.length, 2);
+    assert.equal(createCommands.length, 3);
+    assert.equal(createCommands.filter((line) => line.includes(" TEMPLATE ")).length, 2);
     assert.equal(dropCommands.length, 2);
     assert.ok(createCommands.every((line) => line.startsWith("docker-exec\tCREATE DATABASE ")));
     const githubEnv = join(root, "github.env");
@@ -1044,7 +1075,7 @@ assert.equal(finalState.resources.length, 1);
       assert.match(blocked.stderr, /must be prepared within the test runner/);
       await assert.rejects(() => stat(githubEnv), { code: "ENOENT" });
     }
-    assert.equal((await readFile(logPath, "utf8")).trim().split("\n").length, 8);
+    assert.equal((await readFile(logPath, "utf8")).trim().split("\n").length, 7);
   });
 
   test("prepareFile copies a per-test database from a ready template it owns without migrating", async (t) => {
@@ -1079,7 +1110,8 @@ import assert from "node:assert/strict";
 import { appendFileSync } from "node:fs";
 const args = process.argv.slice(2);
 assert.deepEqual(args.slice(5, 9), ["exec", "-T", "postgres", "psql"]);
-appendFileSync(process.env.CI_SYNTHETIC_LOG, "docker-exec\\t" + args.at(-3) + "\\t" + args.at(-1) + "\\n");
+const commands = args.filter((_, index) => args[index - 1] === "-c");
+appendFileSync(process.env.CI_SYNTHETIC_LOG, ["docker-exec", args[args.indexOf("-d") + 1], ...commands].join("\\t") + "\\n");
 `,
       { mode: 0o700 },
     );
@@ -1127,7 +1159,8 @@ assert.deepEqual(
 );
 await copy.cleanup();
 await template.cleanup();
-console.error(new URL(template.env.OCC_TEST_DATABASE_URL).pathname.slice(1) + " " + copied.pathname.slice(1));
+const laneTemplate = prepared.resources.find((resource) => resource.laneTemplate === "ci").name;
+console.error(laneTemplate + " " + new URL(template.env.OCC_TEST_DATABASE_URL).pathname.slice(1) + " " + copied.pathname.slice(1));
 `;
     const result = await runProgram(
       program,
@@ -1142,14 +1175,17 @@ console.error(new URL(template.env.OCC_TEST_DATABASE_URL).pathname.slice(1) + " 
       20_000,
     );
     assert.equal(result.status, 0, result.stderr);
-    const [templateName, copyName] = result.stderr.trim().split(" ");
+    const [laneTemplateName, templateName, copyName] = result.stderr.trim().split(" ");
+    assert.match(laneTemplateName, /^openclaw_ci_lane_template_[a-f0-9]{12}$/);
     assert.deepEqual((await readFile(logPath, "utf8")).trim().split("\n"), [
-      `docker-exec\tpostgres\tCREATE DATABASE "${templateName}"`,
-      `docker-exec\t${templateName}\tGRANT CREATE ON DATABASE "${templateName}" TO occ_migrator; CREATE SCHEMA occ AUTHORIZATION occ_migrator; CREATE SCHEMA drizzle AUTHORIZATION occ_migrator; REVOKE CREATE ON SCHEMA public FROM PUBLIC;`,
-      `migrate\t/${templateName}`,
-      // The copy keeps the template's schemas and migrations; only the database grant is new.
-      `docker-exec\tpostgres\tCREATE DATABASE "${copyName}" TEMPLATE "${templateName}"`,
-      `docker-exec\t${copyName}\tGRANT CREATE ON DATABASE "${copyName}" TO occ_migrator;`,
+      // The lane's one migration, which each file's database copies.
+      `docker-exec\tpostgres\tCREATE DATABASE "${laneTemplateName}"`,
+      `docker-exec\t${laneTemplateName}\tGRANT CREATE ON DATABASE "${laneTemplateName}" TO occ_migrator; CREATE SCHEMA occ AUTHORIZATION occ_migrator; CREATE SCHEMA drizzle AUTHORIZATION occ_migrator; REVOKE CREATE ON SCHEMA public FROM PUBLIC;`,
+      `migrate\t/${laneTemplateName}`,
+      // A copy keeps the template's schemas and migrations; only the database grant is new,
+      // in the same exec.
+      `docker-exec\tpostgres\tCREATE DATABASE "${templateName}" TEMPLATE "${laneTemplateName}"\tGRANT CREATE ON DATABASE "${templateName}" TO occ_migrator;`,
+      `docker-exec\tpostgres\tCREATE DATABASE "${copyName}" TEMPLATE "${templateName}"\tGRANT CREATE ON DATABASE "${copyName}" TO occ_migrator;`,
       `docker-exec\tpostgres\tDROP DATABASE IF EXISTS "${copyName}" WITH (FORCE)`,
       `docker-exec\tpostgres\tDROP DATABASE IF EXISTS "${templateName}" WITH (FORCE)`,
     ]);
@@ -1199,7 +1235,16 @@ await template.cleanup();
       assert.equal(result.status, 0, result.stderr);
     }
     const settled = JSON.parse(await readFile(statePath, "utf8"));
-    assert.deepEqual(settled.resources, [server]);
+    // Both processes copied one lane template, which stays until lane cleanup.
+    assert.deepEqual(settled.resources[0], server);
+    assert.deepEqual(
+      settled.resources.slice(1).map(({ kind, laneTemplate, status }) => ({
+        kind,
+        laneTemplate,
+        status,
+      })),
+      [{ kind: "postgres-database", laneTemplate: "ci", status: "ready" }],
+    );
     assert.deepEqual((await readdir(root)).sort(), [
       "fake-corepack.mjs",
       "fake-docker.mjs",
@@ -1214,12 +1259,27 @@ await template.cleanup();
     const exited = spawnSync(process.execPath, ["-e", ""]);
     assert.equal(exited.status, 0);
     await writeFile(lockPath, `${exited.pid} abandoned\n`, { mode: 0o600 });
+    // Places in the queue older than any live waiter's: the exited process's, and one past
+    // its deadline whose pid reads as alive (reused, here this process's).
+    const ticket = (clock, expiry, pid) =>
+      writeFile(
+        join(
+          root,
+          `.state.json.lock.${clock.padStart(20, "0")}.${expiry.padStart(20, "0")}.${pid}.${randomUUID()}.ticket`,
+        ),
+        `${pid} queued\n`,
+        { mode: 0o600 },
+      );
+    await ticket("1", String(process.hrtime.bigint() + 10n ** 12n), exited.pid);
+    await ticket("2", "3", process.pid);
     // A nested call in the same async context reuses the held lock.
     assert.equal(
-      await withStateLock(statePath, () => withStateLock(statePath, async () => "ran")),
+      await withStateLock(statePath, () => withStateLock(statePath, async () => "ran"), {
+        timeoutMs: 10_000,
+      }),
       "ran",
     );
-    await assert.rejects(() => stat(lockPath), { code: "ENOENT" });
+    assert.deepEqual(await readdir(root), []);
 
     const holder = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60_000)"], {
       stdio: "ignore",
@@ -1237,7 +1297,7 @@ await template.cleanup();
           { timeoutMs: 300 },
         ),
       new RegExp(
-        `Timed out after 300 ms waiting for the CI state lock .* \\(held by pid ${holder.pid}\\)`,
+        `Timed out after 300 ms waiting for the CI state lock .* \\(held by pid ${holder.pid}, 0 waiting ahead\\)`,
       ),
     );
     assert.equal(ran, false);
@@ -1245,29 +1305,79 @@ await template.cleanup();
     assert.deepEqual((await readdir(root)).sort(), ["state.json.lock"]);
   });
 
-  test("repository platform preparation refuses a public relay gateway before importing images", async (t) => {
-    const commands = await fixtureImageCommands(
-      t,
-      "public-gateway",
-      "repository-credentials-platform",
-    );
-    const prepared = await commands.prepare();
-    assert.equal(prepared.status, 1);
-    assert.match(prepared.stderr, /private IPv4 Docker host gateway/);
-    // The image builds overlap cluster creation; nothing reaches the refused cluster.
-    assert.equal(
-      (await commands.commands()).some(({ args }) => args[0] === "exec" && args[1] === "-i"),
-      false,
-    );
-    const state = JSON.parse(await readFile(commands.statePath, "utf8"));
-    assert.equal(
-      state.resources.some(({ kind }) => kind === "k3d-image"),
-      false,
-    );
-    assert.equal(state.env, undefined);
-    await assert.rejects(() => stat(commands.githubEnv), { code: "ENOENT" });
-    const cleaned = await commands.cleanup();
-    assert.equal(cleaned.status, 0, cleaned.stderr);
+  test("the CI state lock serves waiters in arrival order across processes", async (t) => {
+    const root = await fixture(t);
+    const statePath = join(root, "state.json");
+    const orderPath = join(root, "order");
+    const lock = new URL("../../scripts/ci/state-lock.mjs", import.meta.url).href;
+    // Each contender takes the lock `times` times in a row and records its name while
+    // holding it for 50 ms.
+    const contender = (name, times) =>
+      spawnResult(process.execPath, [
+        "--input-type=module",
+        "-e",
+        `import { appendFileSync } from "node:fs";
+import { setTimeout as delay } from "node:timers/promises";
+const { withStateLock } = await import(${JSON.stringify(lock)});
+const [statePath, orderPath, name, times] = process.argv.slice(1);
+for (let index = 0; index < Number(times); index += 1) {
+  await withStateLock(statePath, async () => {
+    appendFileSync(orderPath, name + "\\n");
+    await delay(50);
+  });
+}`,
+        statePath,
+        orderPath,
+        name,
+        String(times),
+      ]);
+    // Each waiter holds a ticket next to the lock while it waits.
+    const waiting = (count) =>
+      waitUntil(
+        `${count} waiters to queue`,
+        async () =>
+          (await readdir(root)).filter((name) => name.endsWith(".ticket")).length >= count,
+        { timeoutMs: 20_000, intervalMs: 10 },
+      );
+    let release;
+    const holding = withStateLock(statePath, () => new Promise((resolve) => (release = resolve)));
+    await waitUntil("the test to hold the state lock", () => release, { intervalMs: 10 });
+    // The contenders queue one at a time, behind this process's hold. "first" asks again as
+    // soon as it releases: before tickets, its process re-took the lock at once, and a
+    // waiter that had backed off to 100 ms polls lost to newer ones (finding 2179).
+    const runs = [];
+    for (const [index, [name, times]] of [
+      ["first", 2],
+      ["second", 1],
+      ["third", 1],
+      ["fourth", 1],
+    ].entries()) {
+      runs.push(contender(name, times));
+      await waiting(index + 1);
+    }
+    // A second call from this process queues behind them too.
+    const local = withStateLock(statePath, () => appendFile(orderPath, "local\n"));
+    await waiting(5);
+    const released = Date.now();
+    release();
+    await holding;
+    for (const result of await Promise.all(runs)) {
+      assert.equal(result.status, 0, result.stderr);
+    }
+    await local;
+    const elapsed = Date.now() - released;
+    assert.deepEqual((await readFile(orderPath, "utf8")).trim().split("\n"), [
+      "first",
+      "second",
+      "third",
+      "fourth",
+      "local",
+      "first",
+    ]);
+    // Five 50 ms holds; each hand-off is a 5 ms poll by the next waiter.
+    t.diagnostic(`six waiters served in ${elapsed} ms`);
+    assert.ok(elapsed < 5_000, `six waiters took ${elapsed} ms`);
+    assert.deepEqual(await readdir(root), ["order"]);
   });
 
   test("installed repository preparation is refused before prerequisite checks or side effects", async (t) => {
@@ -1442,10 +1552,10 @@ await template.cleanup();
     ]);
   });
 
-  test("ordinary CI groups require platform proof and exclude installed live repository writes", async () => {
+  test("ordinary CI groups require controlled repository coverage and exclude installed live repository writes", async () => {
     const manifest = loadTestSuites(join(repositoryRoot, "scripts/ci/test-suites.json"));
     for (const name of ["ci", "full"]) {
-      assert.ok(manifest.groups[name].includes("repository-credentials-platform"));
+      assert.ok(manifest.groups[name].includes("repository-credentials-container"));
       assert.ok(!manifest.groups[name].includes("repository-credentials-installed"));
       for (const lane of manifest.groups[name]) {
         assert.notEqual(manifest.lanes[lane].env?.OCC_TEST_REPOSITORY_CREDENTIALS_REAL, "1");

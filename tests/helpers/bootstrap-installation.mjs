@@ -82,12 +82,59 @@ export async function runBootstrapInstallation(environment, options = {}) {
   }
 }
 
+/** Collects what the in-process command writes to one of its streams. */
+export function outputSink() {
+  const chunks = [];
+  return {
+    write(chunk) {
+      chunks.push(String(chunk));
+      return true;
+    },
+    text() {
+      return chunks.join("");
+    },
+  };
+}
+
+/**
+ * The initialization Job's code (`bootstrapInstallation`, what scripts/bootstrap-installation.mjs
+ * runs) in this process, with `environment` instead of process.env. It returns the same shape as
+ * runBootstrapInstallation: stdout carries the result line, stderr the diagnostics and log events,
+ * in the order the Job writes them to its streams.
+ */
+export async function bootstrapInstallationInProcess(environment) {
+  const { bootstrapInstallation } = await import("../../scripts/bootstrap-installation.mjs");
+  const stdout = outputSink();
+  const stderr = outputSink();
+  const status = await bootstrapInstallation({
+    environment,
+    args: [],
+    stdout,
+    stderr,
+    logDestination: stderr,
+  });
+  return status === 0
+    ? { ok: true, stdout: stdout.text(), stderr: stderr.text() }
+    : {
+        ok: false,
+        stdout: stdout.text(),
+        stderr: stderr.text(),
+        message: `bootstrap exited with status ${status}`,
+      };
+}
+
+/**
+ * Bootstraps the development Installation. `inProcess: true` runs the Job's code in this process
+ * (bootstrapInstallationInProcess), saving a Node start; otherwise it runs the real script.
+ */
 export async function ensureDevelopmentBootstrap(context, options) {
   const directory =
     options.directory ??
     (await privateBootstrapDirectory(context, "openclaw-development-bootstrap-"));
   const environment = developmentBootstrapEnvironment({ ...options, directory });
-  const result = await runBootstrapInstallation(environment, options);
+  const result = options.inProcess
+    ? await bootstrapInstallationInProcess(environment)
+    : await runBootstrapInstallation(environment, options);
   if (!result.ok) {
     throw new Error(`Development bootstrap failed:\n${result.stderr || result.stdout}`);
   }

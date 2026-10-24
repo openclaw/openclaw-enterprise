@@ -21,9 +21,6 @@ AccessBinding ──► Role ──► Permission
             no ──► allow
 ```
 
-Authentication is not authorization: after a user session or service API key
-establishes the caller, the selected IAM Driver separately checks each operation.
-
 ## Supported policy surface
 
 Fresh native-IAM bootstrap provisions the human administrator and one
@@ -61,8 +58,8 @@ administrator rights.
 Administrators manage immutable Namespace Roles and exact-resource identity
 AccessBindings through the [Namespace policy APIs](#manage-namespace-policy).
 Group, membership, Restriction, and broad grant management remain unavailable
-through HTTP. The policy records below illustrate internal semantics; use the
-API request shapes for public mutations.
+through the Namespace policy API. Its creation requests are narrower than the
+internal policy models below.
 
 ## Principals
 
@@ -88,7 +85,7 @@ Ordinary service keys are deliberately unavailable to Agent-owned principals.
 When explicitly selected, the
 [Kubernetes Compute Driver](drivers/kubernetes-compute.md) provisions an Agent-specific
 ServiceAccount and can project a short-lived, audience-scoped ServiceAccount
-token into that Agent's revision Pods. The token is credential evidence for the
+token into that Agent's version Pods. The token is credential evidence for the
 Agent's existing ServicePrincipal, not another platform principal.
 
 That evidence comes from its issuing cluster and ServiceAccount; it is not a
@@ -97,7 +94,7 @@ cluster trust domains cannot share one cluster's ServiceAccount identity. OCC
 token verification, identity exchange, and ServicePrincipal workload
 authentication through the controller API remain deferred: a future path must
 verify each environment's local evidence, exchange it for a short-lived
-credential scoped to the existing Agent ServicePrincipal and revision, and authenticate the Gateway and Harness
+credential scoped to the existing Agent ServicePrincipal and version, and authenticate the Gateway and Harness
 independently. Until OCC has that verifier, exchange, authorization, and a
 runtime client, the projected token does not authenticate an Agent request.
 
@@ -106,19 +103,12 @@ identity headers, or membership in another Namespace do not grant access.
 
 ## Permissions and Roles
 
-A Permission allows one action on one resource kind. Supported permission
-actions are `create`, `read`, `update`, `delete`, `deploy`, `operate`,
-`administer`, and `read_logs`; not every action has a corresponding public
-endpoint yet. `read_logs` on an Agent delegates reading its runtime log text
-without `administer`; fresh bootstrap does not grant it. A scoped Role and
-AccessBinding can grant any action to a human Principal or an Agent-owned
-ServicePrincipal.
-
-Resource kinds currently include `installation`, `namespace`, `configuration`,
-`preset`, `agent`, `agent_revision`, `secret`, `credential_source`, and
-`service_account`. Use the
-[permissions cheat sheet](cheatsheets/permissions.md) for the resource matrix and
-operations that require additional grants.
+A Permission pairs an `action` with a `resourceKind`; a Role groups these
+Permissions. The kind selects a category such as `agent`, not an individual
+Agent ID. The [permissions cheat sheet](cheatsheets/permissions.md) lists the
+supported action/kind pairs and operations requiring additional grants.
+`read_logs` delegates Agent log access without `administer` and is not granted
+by fresh bootstrap.
 
 An OCC-owned [service account](service-accounts.md) is not an IAM principal,
 and IAM never accesses its credentials. Creation requires `create` in its exact
@@ -133,48 +123,67 @@ operation description in the
 Collection scopes distinguish access to the requested parent from the
 permission checked for each returned resource.
 
-A Role groups Permissions:
+The following TypeScript interfaces summarize the
+[internal models](../../packages/contracts/src/index.ts). Fields without `?`
+are required; `?` marks optional model fields, not permission to omit them from
+creation requests.
 
-```json
-{
-  "id": "role-support-agents",
-  "namespaceId": "ns_45b6dbdb-2fc2-4c2c-9cc4-a94cf26cc6c2",
-  "permissions": [
-    { "action": "read", "resourceKind": "agent" },
-    { "action": "create", "resourceKind": "agent" }
-  ]
+```ts
+import type { PermissionAction, ResourceKind } from "@openclaw-enterprise/contracts";
+
+interface Permission {
+  action: PermissionAction;
+  resourceKind: ResourceKind;
+}
+
+interface Role {
+  id: string;
+  namespaceId?: string;
+  name?: string;
+  permissions: readonly Permission[];
 }
 ```
 
-This internal policy record can hold `create` because it bypasses the
-Namespace policy API, where Role creation takes only `name` and `permissions`
-and OCC supplies the ID and Namespace.
+`id` identifies the stored Role; `name` is an optional display label, not an
+authority. `namespaceId` limits its Permissions to one Namespace; omission means
+Installation scope. The Role grants nothing until an AccessBinding assigns it.
 
 ## Access bindings and Groups
 
-An AccessBinding attaches a Role to one principal or Group at a specific scope.
-For example, this internal record grants the preceding Role to a Principal in
-the `support` Namespace:
+An AccessBinding attaches a Role to one identity or Group:
 
-```json
-{
-  "id": "binding-support-alex",
-  "namespaceId": "ns_45b6dbdb-2fc2-4c2c-9cc4-a94cf26cc6c2",
-  "subjectKind": "identity",
-  "subjectId": "principal-alex",
-  "roleId": "role-support-agents"
+```ts
+interface AccessBinding {
+  id: string;
+  namespaceId?: string;
+  subjectKind: "identity" | "group";
+  subjectId: string;
+  roleId: string;
+  resourceKind?: ResourceKind;
+  resourceId?: string;
 }
 ```
+
+`id` identifies the binding. `subjectKind` selects whether `subjectId` names a
+Principal/ServicePrincipal (`identity`) or a Group; `roleId` selects the Role.
+`namespaceId` bounds the grant's Namespace. `resourceKind` and `resourceId`
+select an exact target and must appear together or both be absent. Only Role
+Permissions matching the target kind apply.
+
+With neither target field, a Namespace-scoped binding grants the Role's actions
+across matching resource kinds in that Namespace, including future resources.
+Omitting both the Namespace and target filters permits Installation-wide grants.
+An exact `namespace` target instead grants only Namespace actions; Namespace
+`read` never grants access to children or permission to create them.
+
+The [Namespace read schemas](../../packages/contracts/src/api/resources.ts)
+require `id` and `namespaceId`, retain optional Role `name`, and can return Group
+or untargeted bindings. Their broader shapes do not expand creation support.
 
 Groups collect human Principals so one binding can grant the same Role to
 multiple members; ServicePrincipals receive direct AccessBindings rather than
 Group membership. Membership is direct and must remain inside the Group's scope;
 a Namespace-scoped Group cannot grant access in another Namespace.
-
-Bindings can apply to the singleton Installation, one Namespace, or one exact
-resource. A binding without `namespaceId` is Installation-wide; a
-Namespace-scoped binding applies only to its exact Namespace. An exact-resource
-binding additionally identifies the resource kind and ID.
 
 ## Manage Namespace policy
 
@@ -198,8 +207,6 @@ non-Agent identity fixed to the Namespace with no grant; bind it like any
 subject and issue its [service key](authentication/service-api-keys.md). The API
 cannot delete one yet: revoke its keys and AccessBindings to remove its access.
 Deleting the Namespace does not revoke them, so revoke its keys first.
-The [Namespace IAM policy flow](../flows/namespace-iam-policy.md) traces the
-controller, Driver, persistence, and audit path.
 Lists exclude Installation bootstrap policy but include existing broad and
 Group bindings in the Namespace, which deletion can revoke by exact ID. The
 narrower subject and target requirements below apply to creation.
@@ -216,13 +223,38 @@ it). One Role may still name several kinds and be bound to a target of each.
 Ordinary resource access does not authorize delegation. Drivers without policy
 management return `503 DEPENDENCY_UNAVAILABLE`; OCC never substitutes native IAM.
 
-Create a reusable Role with a nonempty, duplicate-free permission set of
-actions that some operation checks on each kind (the per-kind table in the
-[permissions cheat sheet](cheatsheets/permissions.md)). Role creation returns
-`400 INVALID_REQUEST` naming any pair that would grant nothing (detail path
-`/permissions`), such as `secret:read_logs` or `configuration:deploy`, and
-refuses `create` Permissions with the detail path of the first
-(`/permissions/<i>/action`). A valid Role:
+These interfaces summarize the [HTTP creation bodies](../../packages/contracts/src/api/common.ts).
+All binding fields are required, including `resourceId`; Role `name` is optional.
+OCC generates `id` and supplies `namespaceId` from the URL. Neither belongs in
+these request bodies; extra fields are rejected.
+
+```ts
+import type { ManagedIAMResourceKind, PermissionAction } from "@openclaw-enterprise/contracts";
+
+interface CreateRoleRequest {
+  name?: string;
+  permissions: {
+    action: PermissionAction;
+    resourceKind: ManagedIAMResourceKind;
+  }[];
+}
+
+interface CreateAccessBindingRequest {
+  subjectKind: "identity";
+  subjectId: string;
+  roleId: string;
+  resourceKind: ManagedIAMResourceKind;
+  resourceId: string;
+}
+```
+
+Role creation requires 1–64 duplicate-free Permissions with supported action/kind
+pairs. Unsupported pairs such as `secret:read_logs` return `400 INVALID_REQUEST`
+at `/permissions`. Although the HTTP enum includes `create`, OCC rejects it at
+`/permissions/<i>/action`. Creation cannot produce Group or Namespace-wide bindings.
+
+Hypothetically, allow an Agent to use one model Secret. POST this Role body to
+`/namespaces/:namespaceId/iam/roles`:
 
 ```json
 {
@@ -231,7 +263,10 @@ refuses `create` Permissions with the detail path of the first
 }
 ```
 
-Bind it to the immutable `servicePrincipalId` returned in the Agent response:
+Then POST this AccessBinding body to
+`/namespaces/:namespaceId/iam/access-bindings` in the same Namespace, replacing
+placeholders with the returned Role's `id`, the Agent's immutable
+`servicePrincipalId`, and an existing Secret's ID:
 
 ```json
 {
@@ -243,27 +278,27 @@ Bind it to the immutable `servicePrincipalId` returned in the Agent response:
 }
 ```
 
+These are separate hypothetical creation requests, not a combined policy import.
+The Role permits `operate` on the **Secret kind**; the binding limits that grant
+to **one Secret ID**. Another Secret needs another binding. Neither JSON object
+contains a Secret value.
+
 The subject must be an existing human Principal or a ServicePrincipal in the
 path Namespace. A human does not need a separate Namespace ServicePrincipal.
-The Role and target must exist in the path Namespace. Exact targets and Role
-permission kinds are `namespace`, `agent`, `agent_revision`, `configuration`,
-`credential_source`, `preset`, `secret`, or `service_account`. `namespace`
-permissions support only `read`, and for a `namespace` target, `resourceId` must
-equal the Namespace ID in the path. A binding applies only the Role permissions
-whose kind equals its target kind: an `agent_revision` permission bound to an
-Agent target grants nothing, so revision `read` is bound per AgentRevision. A ServiceAccount
-resource is not an IAM identity. Caller IDs, scope, wildcard targets, Groups, unknown permissions,
-and extra fields are rejected. An invalid Permission, or a subject, Role or
-target that is not usable in the path Namespace (including an Agent being
+The Role and target must exist in the path Namespace. `namespace` Permissions
+support only `read`; for a `namespace` target, `resourceId` must equal the
+Namespace ID in the path.
+Agent revision `read` needs an `agent_revision` target, not its parent Agent. A
+ServiceAccount resource is not an IAM identity. Caller IDs, scope, wildcard
+targets, Groups, and unknown permissions are rejected. An invalid Permission,
+or a subject, Role or target that is not usable in the path Namespace (including an Agent being
 deleted), returns `400 INVALID_REQUEST` with the offending field as the detail
 path. Native IAM commits validated policy and its
 attributable audit event together; later requests on other replicas see it
 without a restart.
 
-For human discovery, grant `read` on that exact Namespace and separately grant
-the required actions on each exact Agent. A Namespace target grants only
-Namespace actions; it does not grant access to its Agents or permission to
-create child resources. Human enrollment and grant creation are separate steps.
+For human discovery, grant exact Namespace `read` and separately grant the
+required actions on each exact Agent. Human enrollment and grants are separate.
 
 Roles and bindings cannot be updated. Create replacements and explicitly
 remove old bindings. A referenced Role cannot be deleted (`409`), and deleting
@@ -327,9 +362,9 @@ checks Agent `read` and `operate` if Compute must generate missing transport
 credentials.
 
 [Agent runtime reads](../guides/topics/agent-logs.md#who-can-see-what) use two
-tiers on the exact Agent and revision: Pod status and Events need Agent
-`operate` and `read` plus revision `read`; container log text needs Agent
-`read_logs` or `administer` and Agent `read`, which cover every revision of that
+tiers on the exact Agent and version: Pod status and Events need Agent
+`operate` and `read` plus Agent revision `read`; container log text needs Agent
+`read_logs` or `administer` and Agent `read`, which cover every version of that
 Agent, including later deployments. A matching
 `read_logs` Restriction denies log text even to a holder of `administer`. Each
 follow poll is authorized again, so revoking a grant stops the next poll.

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { ConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -12,6 +13,10 @@ import { createKubernetesComputeDriver } from "../../apps/controller/src/drivers
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { immutableImageAccepted, imageReferenceCases } from "../fixtures/image-reference-cases.mjs";
+import {
+  RenderRefusal,
+  renderInstallationProfile,
+} from "../../scripts/render-installation-profile.mjs";
 
 // Each case runs through the profile preflight and through `helm template`, so the
 // renderer cannot accept a value the chart then refuses (or refuse one it accepts).
@@ -76,6 +81,8 @@ function codexInput(codex = {}) {
 
 const repositoryInput = {
   enabled: true,
+  authority: "prepared-git",
+  preparedCustodySecretName: "occ-repository-custody",
   image: `registry.example.invalid/repository@sha256:${"c".repeat(64)}`,
   backendId: "github-primary",
   registryConfigMapName: "occ-repository-registry",
@@ -85,6 +92,21 @@ const repositoryInput = {
   publicCaSecretName: "occ-repository-ca",
   upstreamCidrs: ["192.0.2.30/32"],
 };
+
+test("profile renderer refuses the retired signing gateway without preparing outputs", async () => {
+  for (const authority of [undefined, "github-app", "github-app-registry"]) {
+    await withProfile(
+      { ...input({}), ...codexInput(), repository: { ...repositoryInput, authority } },
+      ({ directory, renderer }) => {
+        assert.equal(renderer.ok, false);
+        assert.match(renderer.output, /repository.authority must explicitly select prepared-git/);
+        assert.equal(existsSync(join(directory, "values.yaml")), false);
+        assert.equal(existsSync(join(directory, "installation.yaml")), false);
+      },
+      "codex",
+    );
+  }
+});
 
 const oidcEndpoints = {
   issuer: "https://sso.example.com/realm",
@@ -102,9 +124,10 @@ const namespaceRefusal = (field) =>
     `${escape(field)} must be a Kubernetes namespace name \\(a DNS label of at most 63 characters\\)`,
   );
 
-// Each case spawns its renderer and helm children in turn. A test runs its cases in at most
-// one worker per CPU (and at least two), and the tests run one after another, so this file
-// runs at most that many children at once (the CI lane may run other files beside it).
+// Each case renders its profile in-process, then spawns its helm child. A test runs its
+// cases in at most one worker per CPU (and at least two), and the tests run one after
+// another, so this file runs at most that many helm children at once (the CI lane may run
+// other files beside it).
 const slots = Math.max(2, availableParallelism());
 async function each(cases, check) {
   let next = 0;
@@ -126,9 +149,16 @@ async function each(cases, check) {
   }
 }
 
+// Runs one `helm template`. Each run exits within a fraction of a second, so Go's garbage
+// collector only adds CPU: GOGC=off cuts about a quarter of helm's CPU time for under 10 MB
+// more peak memory per child. GOMEMLIMIT still collects if a child nears 512 MiB.
 function run(command, args) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { cwd: repository, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(command, args, {
+      cwd: repository,
+      env: { ...process.env, GOGC: "off", GOMEMLIMIT: "512MiB" },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
     let stdout = "";
     let stderr = "";
     child.stdout.setEncoding("utf8").on("data", (chunk) => (stdout += chunk));
@@ -140,19 +170,28 @@ function run(command, args) {
   });
 }
 
+// Renders in-process through the function the CLI calls. `renderer.output` is what the CLI
+// prints: the preflight summary on stdout, or its stderr line for a refusal without one.
+// profile-renderer.test.mjs covers the CLI process itself (argv, exit status, stdout).
 async function renderProfile(profileInput, profile = "openclaw") {
   const directory = mkdtempSync(join(tmpdir(), "oce-profile-parity-"));
   try {
     writeFileSync(join(directory, "input.json"), JSON.stringify(profileInput));
-    const renderer = await run(process.execPath, [
-      "scripts/render-installation-profile.mjs",
-      "--profile",
-      profile,
-      "--input",
-      join(directory, "input.json"),
-      "--out-dir",
-      directory,
-    ]);
+    let renderer;
+    try {
+      const preflight = await renderInstallationProfile({
+        profile,
+        input: join(directory, "input.json"),
+        outDir: directory,
+      });
+      renderer = { ok: preflight.ok, output: `${JSON.stringify(preflight, null, 2)}\n` };
+    } catch (error) {
+      // Only a refusal is a verdict; a renderer crash fails the case.
+      if (!(error instanceof RenderRefusal)) {
+        throw error;
+      }
+      renderer = { ok: false, output: `render-installation-profile: ${error.message}\n` };
+    }
     return { directory, renderer };
   } catch (error) {
     rmSync(directory, { recursive: true, force: true });
@@ -265,12 +304,22 @@ function fieldParity(
 
 // Compute must admit or refuse the same value at Driver creation.
 const configured = conformanceKubernetesOptions({ gatewayTrustedProxyCidrs: ["10.42.0.0/16"] });
-function assertCompute(overrides, accepted, refusal, label) {
+function assertCompute(overrides, accepted, refusal, label, path, code = "INVALID_FORMAT") {
   const create = () => createKubernetesComputeDriver({ ...configured, ...overrides });
   if (accepted) {
     assert.doesNotThrow(create, label);
   } else {
-    assert.throws(create, refusal, label);
+    assert.throws(
+      create,
+      (error) => {
+        assert.ok(error instanceof ConfigurationValidationError);
+        assert.equal(error.error.details[0].path, path);
+        assert.equal(error.error.details[0].code, code);
+        assert.match(error.error.details[0].message, refusal);
+        return true;
+      },
+      label,
+    );
   }
 }
 
@@ -456,6 +505,7 @@ test(
         accepted,
         /Gateway routing Envoy namespace must be a Kubernetes namespace name/,
         `${label}: Compute`,
+        "/gatewayRouting/envoyNamespace",
       );
     });
   },
@@ -520,6 +570,7 @@ test(
         accepted,
         /DNS peer namespace must be a Kubernetes namespace name/,
         `dns ${label}: Compute`,
+        "/network/dns/namespace",
       );
     });
   },
@@ -616,11 +667,11 @@ const peerSelectorCases = [
   [{ [`${"a".repeat(253)}/Name`]: "" }, true],
   [{ [`${"a".repeat(64)}.example/zone`]: "east" }, true],
   [{ 123: "0" }, true],
-  [{ app: "kube/dns" }, false],
-  [{ app: "a".repeat(64) }, false],
-  [{ app: "value\n" }, false],
-  [{ app: "-dns" }, false],
-  [{ app: "@platform" }, false],
+  [{ app: "kube/dns" }, false, /^Configuration does not satisfy pattern\.$/],
+  [{ app: "a".repeat(64) }, false, /^Configuration does not satisfy maxLength\.$/, "TOO_LONG"],
+  [{ app: "value\n" }, false, /^Configuration does not satisfy pattern\.$/],
+  [{ app: "-dns" }, false, /^Configuration does not satisfy pattern\.$/],
+  [{ app: "@platform" }, false, /^Configuration does not satisfy pattern\.$/],
   [{ "k8s.io/name/extra": "dns" }, false],
   [{ "example.com/": "dns" }, false],
   [{ "Example.com/Name": "dns" }, false],
@@ -637,16 +688,18 @@ test("peer Pod selectors get Compute's verdict in preflight, and the chart rende
     "controlPlane.metrics.scraperNamespaceLabels",
     "controlPlane.metrics.scraperPodLabels",
   ];
-  const admitDns = (dns, accepted, label) =>
+  const admitDns = (dns, accepted, label, refusal, code) =>
     assertCompute(
       { network: { ...configured.network, dns } },
       accepted,
-      /DNS peer label (?:keys|values) must be Kubernetes/,
+      refusal ?? /DNS peer label keys must be Kubernetes/,
       label,
+      "/network/dns/podLabels",
+      code,
     );
-  return each(peerSelectorCases, async ([podLabels, accepted]) => {
+  return each(peerSelectorCases, async ([podLabels, accepted, refusal, code]) => {
     const label = JSON.stringify(podLabels);
-    admitDns({ namespace: "kube-system", podLabels }, accepted, label);
+    admitDns({ namespace: "kube-system", podLabels }, accepted, label, refusal, code);
     const profile = input({});
     // Each path names the field to set and, below, the field the refusal must name.
     for (const path of peers) {
@@ -782,6 +835,7 @@ test(
               false,
               /Gateway image repository path must be lowercase/,
               name,
+              "/images/gateway",
             );
             return;
           }
@@ -925,6 +979,7 @@ test("image references get Kubernetes' verdict in preflight and Compute", () =>
         ? /Gateway image repository path must be lowercase/
         : /Gateway image must be a container image reference Kubernetes can pull/,
       label,
+      "/images/gateway",
     );
     const accepted = immutableImageAccepted(image, problem);
     // One profile carries the reference in all three image fields; preflight refuses each.

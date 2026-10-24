@@ -221,7 +221,7 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 				}()
 			}
 			var output, diagnostic bytes.Buffer
-			err := upK3d(ctx, Options{Repository: root, Out: &output, Err: &diagnostic}, driver)
+			err := upK3d(ctx, Options{Repository: root, Out: &output, Err: &diagnostic}, driver, nil, nil)
 			calls := commands()
 			wantError := "dedicated Codex sandbox preparation failed"
 			switch scenario {

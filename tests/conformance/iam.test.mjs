@@ -1,3 +1,7 @@
+import {
+  requireConfiguration,
+  ConfigurationValidationError as SharedConfigurationValidationError,
+} from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { PERMISSION_ACTIONS, RESOURCE_KINDS } from "../../packages/contracts/src/index.ts";
@@ -597,12 +601,12 @@ test("the native IAM implementation exposes a closed pre-construction configurat
   });
   assert.equal(Object.isFrozen(NativeIAMDriver.configurationSchema), true);
   assert.equal(Object.isFrozen(NativeIAMDriver.configurationSchema.properties), true);
-  assert.doesNotThrow(() => NativeIAMDriver.validateConfiguration({}));
+  assert.doesNotThrow(() => requireConfiguration(NativeIAMDriver, {}));
 
   for (const configuration of [undefined, null, [], "native", { unsupported: true }, new Date()]) {
     assert.throws(
-      () => NativeIAMDriver.validateConfiguration(configuration),
-      /Native IAM Driver configuration must be an empty object/,
+      () => requireConfiguration(NativeIAMDriver, configuration),
+      SharedConfigurationValidationError,
     );
   }
 
@@ -914,7 +918,14 @@ for (const { label, kind, slug, actions, deniedAction } of [
 }
 
 test("an Installation-wide grant still refuses malformed or unscoped requests", async () => {
-  const kinds = ["configuration", "preset", "service_account", "secret", "credential_source"];
+  const kinds = [
+    "configuration",
+    "preset",
+    "service_account",
+    "secret",
+    "credential_source",
+    "sandbox_policy",
+  ];
   const driver = createDriver({
     roles: [
       ...roles,
@@ -1621,9 +1632,14 @@ const reference = (() => {
     nonempty(request.principalId) &&
     nonempty(request.resource.id) &&
     optionalNonempty(request.resource.namespaceId) &&
-    (!["configuration", "preset", "service_account", "secret", "credential_source"].includes(
-      request.resource.kind,
-    ) ||
+    (![
+      "configuration",
+      "preset",
+      "service_account",
+      "secret",
+      "credential_source",
+      "sandbox_policy",
+    ].includes(request.resource.kind) ||
       nonempty(request.resource.namespaceId)) &&
     PERMISSION_ACTIONS.includes(request.action) &&
     RESOURCE_KINDS.includes(request.resource.kind);

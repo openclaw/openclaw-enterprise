@@ -1480,9 +1480,13 @@ test("OCC rejects alternate selectable runtimes and unsupported Codex providers 
     models: { [model]: { agentRuntime: { id: runtimeId } } },
   });
   const scenarios = [
+    // Every deployment refuses these too, so save refuses them first with its text (finding 1828).
     ...[null, "openai/gpt-4.1-mini", [42], ["/missing-provider"]].map((fallbacks) => ({
       name: `malformed fallback selection ${JSON.stringify(fallbacks)} cannot be admitted`,
       executionMode: "embedded",
+      saveRefusal: Array.isArray(fallbacks)
+        ? "Configuration setting agents.defaults.model must name each model as <provider>/<model>, such as openai/gpt-5.1 or codex/gpt-5.1."
+        : "Configuration setting agents.defaults.model.fallbacks must be an array.",
       values: {
         agents: {
           defaults: {
@@ -1694,8 +1698,8 @@ test("OCC rejects alternate selectable runtimes and unsupported Codex providers 
   for (const { name, executionMode, values, saveRefusal } of scenarios) {
     const { agent, controller, namespace } = await fixture();
     if (saveRefusal !== undefined) {
-      // Every deployment refuses a fallback on another provider, so Configuration save refuses
-      // it first, naming the setting (finding 1298).
+      // Every deployment refuses a fallback on another provider or a malformed selection, so
+      // Configuration save refuses it first, naming the setting (findings 1298 and 1828).
       await assert.rejects(
         controller.createConfiguration(administrator, {
           namespaceId: namespace.id,

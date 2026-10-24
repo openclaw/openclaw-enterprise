@@ -22,6 +22,7 @@ import {
 import { NativeCodexPluginCatalogReader } from "../../apps/controller/src/drivers/plugin/stdio-catalog-reader.ts";
 import { requestFailure } from "../../apps/controller/src/http/errors.ts";
 import { NotImplementedError } from "../../packages/occ/src/index.ts";
+import { waitFor, waitUntil } from "../helpers/wait-for.mjs";
 
 const OCC_DIFFS_DIGEST =
   "sha512-5VTDNEo7D3iOgRoL5C31JPTbA/EXQEFRuxOvLy67IMFmOajwroGsUMWeuKkmqzFbPNQxvn7GACDSr/5Vmpx3/g==";
@@ -1065,28 +1066,31 @@ setInterval(() => {}, 1_000);
   const controller = new AbortController();
   const listed = reader.listCatalog(controller.signal);
   listed.catch(() => {});
-  const started = Date.now() + 30_000;
-  while (pid === undefined && Date.now() < started) {
-    try {
-      pid = Number(await readFile(pidFile, "utf8"));
-    } catch {
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-  }
+  pid = await waitFor(
+    "the Codex fixture to start",
+    () =>
+      readFile(pidFile, "utf8").then(
+        (text) => Number(text) || undefined,
+        () => undefined,
+      ),
+    30_000,
+  );
   assert.ok(pid > 0, "the Codex fixture did not start");
   controller.abort();
   await assert.rejects(listed, /aborted/);
-  const deadline = Date.now() + 5_000;
-  let alive = true;
-  while (alive && Date.now() < deadline) {
-    try {
-      process.kill(pid, 0);
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    } catch {
-      alive = false;
-    }
-  }
-  assert.equal(alive, false, "the aborted Codex app-server must not outlive the request");
+  // The aborted Codex app-server must not outlive the request.
+  await waitUntil(
+    "the aborted Codex app-server to exit",
+    () => {
+      try {
+        process.kill(pid, 0);
+        return false;
+      } catch {
+        return true;
+      }
+    },
+    { timeoutMs: 5_000, intervalMs: 50 },
+  );
 });
 
 test("Codex native catalog rejects a non-object response without escaping discovery", async (t) => {

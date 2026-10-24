@@ -7835,6 +7835,73 @@ test("SSH Compute names a Harness authentication method other than runtime at Ag
   );
 });
 
+test("SSH Compute refuses at Agent save and deploy a roster whose main Agent cannot read initial workspace files", async () => {
+  // Finding 2285: only the host refused these, at deployment, which retried until it failed.
+  const computeDriver = new SshComputeDriver({
+    ssh: { identityFile: "/tmp/ssh-test-key", knownHostsFile: "/tmp/ssh-test-hosts" },
+    hosts: { "workspace-roster": { address: "127.0.0.1", user: "root" } },
+    runtime: {
+      nodePath: "/usr/bin/node",
+      openclawPath: "/opt/openclaw/index.js",
+      user: "openclaw",
+      root: "/tmp/ssh-runtime-test",
+    },
+    network: { gatewayPortRange: { start: 18800, end: 18899 } },
+  });
+  const controller = await configuredController({ computeDriver });
+  await bootstrap(controller);
+  const namespace = await createNamespace(controller, "workspace-roster");
+  await controller.fixture.platformState.transact((unit) =>
+    unit.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+  );
+  const values = createHarnessConfiguration("openclaw", "gpt-5.1");
+  const withAgents = (agents) => ({ ...values, agents: { ...values.agents, ...agents } });
+  const collection = `/namespaces/${namespace.id}/agents`;
+  const files = { "USER.md": "ssh-workspace-roster" };
+  const create = (name, configurationId, extra = {}) =>
+    controller.request("POST", collection, {
+      body: { name, configurationId, harnessAuth: { method: "runtime" }, ...extra },
+    });
+  const roster =
+    "Configuration setting agents.entries must hold only main, or be omitted, for initial workspace files: only the main Agent reads them.";
+  // (Configuration save itself refuses a null main entry.)
+  for (const agents of [
+    { entries: {} },
+    { ownership: "explicit", entries: { main: {}, helper: {} } },
+  ]) {
+    const configuration = await createConfiguration(controller, namespace.id, withAgents(agents));
+    const refused = await create("Unreadable setup", configuration.id, {
+      initialWorkspaceFiles: files,
+    });
+    assert.equal(refused.status, 400, JSON.stringify(refused.body));
+    assert.equal(refused.body.error.message, roster);
+    // Without initial workspace files the same Configuration saves.
+    const plain = await create(`Plain ${configuration.id}`, configuration.id);
+    assert.equal(plain.status, 201, JSON.stringify(plain.body));
+  }
+  // A main entry in any letter case saves; a roster changed after save refuses the deploy.
+  const configuration = await createConfiguration(
+    controller,
+    namespace.id,
+    withAgents({ entries: { Main: {} } }),
+  );
+  const created = await create("Pending setup", configuration.id, {
+    initialWorkspaceFiles: files,
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const changed = await controller.request(
+    "PATCH",
+    `/namespaces/${namespace.id}/configurations/${configuration.id}`,
+    { body: { values: withAgents({ entries: {} }) } },
+  );
+  assert.equal(changed.status, 200, JSON.stringify(changed.body));
+  const path = `${collection}/${created.data.id}`;
+  const deployed = await controller.request("POST", `${path}/deploy`);
+  assert.equal(deployed.status, 400, JSON.stringify(deployed.body));
+  assert.equal(deployed.body.error.message, roster);
+  assert.deepEqual((await controller.request("GET", `${path}/revisions`)).data, []);
+});
+
 test("Slack validation rejects swapped credentials and preserves authorization", async () => {
   const controller = await configuredController({
     computeDriver: createProvisioningCapableComputeDriver(),
@@ -7951,6 +8018,14 @@ test("Slack validation rejects swapped credentials and preserves authorization",
   // The in-memory fixture deliberately has no durable work queue. Reaching its
   // error proves credentials passed without substituting for the durable worker test.
   assert.equal((await provision()).body.error.code, "DEPENDENCY_UNAVAILABLE");
+  const enterprise = {
+    ok: true,
+    bot_id: "B123",
+    is_enterprise_install: true,
+    enterprise_id: "E123",
+  };
+  response = { ...enterprise, team_id: enterprise.enterprise_id };
+  assert.equal((await provision()).body.error.code, "DEPENDENCY_UNAVAILABLE");
   const config = await controller.request("POST", `${base}/configurations`, {
     body: configuration,
   });
@@ -7975,9 +8050,12 @@ test("Slack validation rejects swapped credentials and preserves authorization",
   const deploy = await controller.request("POST", `${base}/agents/${agent.data.id}/deploy`);
   assert.equal(deploy.status, 400, JSON.stringify(deploy.body));
   assert.equal(deploy.body.error.details[0].path, "/channels/slack/botToken");
-  response = { ok: true, bot_id: "B123", team_id: "T123" };
+  response = enterprise;
   const good = await controller.request("POST", `${base}/agents/${agent.data.id}/deploy`);
   assert.equal(good.status, 202, JSON.stringify(good.body));
+  response = { ...enterprise, enterprise_id: "invalid", team_id: "T123" };
+  assert.equal((await provision()).body.error.code, "CHANNEL_CREDENTIAL_UNAVAILABLE");
+  response = enterprise;
   // Named accounts do not hide the top-level tokens: OpenClaw starts them as the
   // implicit default account, so they need Secret-backed refs too.
   const namedAccounts = structuredClone(configuration);

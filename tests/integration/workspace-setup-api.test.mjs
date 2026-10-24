@@ -238,7 +238,7 @@ test("Agent save and deployment refuse initial workspace files the Configuration
     harnessAuth: { method: "api_key", source: key.ref },
   });
   assert.equal(created.status, 201, JSON.stringify(created.body));
-  f.grantAgentSecretOperate(created.data, key.ref);
+  await f.grantAgentSecretOperate(created.data, key.ref, { listed: false });
   await f.updateConfiguration(
     f.namespace.id,
     valid.id,
@@ -392,7 +392,17 @@ test("Agent create admits private workspace files through the OpenShell initiali
     },
     { id: "workspace-openshell-sandbox", backend },
   );
-  const f = await setup(t, { sandboxDriver });
+  const f = await setup(t, {
+    sandboxDriver,
+    driverConfigurations: [
+      {
+        capability: "sandbox",
+        driverId: sandboxDriver.id,
+        implementation: sandboxDriver.implementation,
+        definition: OpenShellSandboxDriver,
+      },
+    ],
+  });
   for (const [runtime, model] of [
     ["openclaw", "openai/gpt-4.1"],
     ["codex", "codex/gpt-5.1"],

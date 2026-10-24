@@ -18,6 +18,10 @@ experimental `codex-oauth` device login and the `oauth2-client-credentials` and
 OpenShell is not a supported production Agent path; see its
 [qualification requirements](drivers/openshell-sandbox.md#qualification-contract).
 
+The optional [protected static inference path](credential-sources/protected-inference.md)
+uses request-bound live Secret resolution. Its limits and explicit opt-in for existing
+sources differ from the gateway-copy behavior described below.
+
 ## Register a source
 
 1. Wait for the Namespace to become `ready`.
@@ -216,9 +220,9 @@ replace the Agent binding.
 
 ## Withdraw a source from an Agent
 
-Withdrawal revokes a source from an Agent's active revision while the revision
+Withdrawal revokes a source from an Agent's selected version while the version
 keeps running, and the source cannot be deleted until a redeploy replaces that
-revision. [Credential source withdrawal](credential-sources/withdrawal.md)
+version. [Credential source withdrawal](credential-sources/withdrawal.md)
 covers the request, its retries, and maintenance.
 
 ## Delete a source
@@ -226,8 +230,8 @@ covers the request, its retries, and maintenance.
 `DELETE /namespaces/:namespaceId/credential-sources/:credentialSourceId`
 requires exact `delete` and returns `204`:
 
-- It returns `409 RESOURCE_CONFLICT` while an Agent draft, active revision, pending deployment, or queued/running provisioning request references the source. Wait for provisioning, remove the binding and redeploy, or delete the Agent.
-- When only a queued/running withdrawal attempt or retry series blocks it, the `409` is `CREDENTIAL_WITHDRAWAL_IN_PROGRESS`. A withdrawal that never confirms keeps its series queued for up to about an hour, even after redeployment; the request no longer applies once the active revision drops the source. Wait for the series to finish, or delete the Agent: completed deletion drops that work.
+- It returns `409 RESOURCE_CONFLICT` while an Agent draft, selected version, pending deployment, or queued/running provisioning request references the source. Wait for provisioning, remove the binding and redeploy, or delete the Agent.
+- When only a queued/running withdrawal attempt or retry series blocks it, the `409` is `CREDENTIAL_WITHDRAWAL_IN_PROGRESS`. A withdrawal that never confirms keeps its series queued for up to about an hour, even after redeployment; the request no longer applies once the selected version drops the source. Wait for the series to finish, or delete the Agent: completed deletion drops that work.
 - On an Installation with no Credential Gateway it returns
   `409 CREDENTIAL_GATEWAY_NOT_CONFIGURED`, and for a source the selected driver
   did not register it returns `503`; neither changes the record.
@@ -235,6 +239,11 @@ requires exact `delete` and returns `204`:
   A dependency failure returns `503`; an OpenShell provider ownership mismatch
   returns `404`. Both retain `deleting`. Resolve ownership drift before retrying;
   an already-removed copy counts as deleted.
+- For a prepared GitHub source, `409 CREDENTIAL_TOKEN_UNSETTLED` means a token
+  it issued may still be valid: GitHub's answer to an issue or revocation was lost.
+  The record stays `deleting`. Retry after the time in the message, at most 72
+  minutes after the attempt. A refused issue with no token does not block deletion.
+  While the worker is revoking a token, deletion waits up to 25 seconds for GitHub's answer.
 - Within 70 seconds of registration, deletion removes the copy but returns `503`
   and keeps the record, because a timed-out registration could still create a
   copy. Retry after that window.
@@ -260,15 +269,15 @@ after the caller's grant and the source lookup. `GET` on such a source reports a
 
 ## Errors
 
-| Status                                  | Meaning                                                                                                                                                                                                                                                |
-| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `400 INVALID_REQUEST`                   | The body, field name, or configuration value is invalid, a Secret reference names another Namespace, or a credential-source `harnessAuth` is not listed.                                                                                               |
-| `403 FORBIDDEN`                         | A required `credential_source` or `secret` permission is missing.                                                                                                                                                                                      |
-| `404 NOT_FOUND`                         | The source or Secret is not in the exact Namespace, or a catalog field is invalid; or the Agent's active revision does not use the source or has no withdrawal for it.                                                                                 |
-| `409 NAMESPACE_NOT_READY`               | The Namespace is not `ready`.                                                                                                                                                                                                                          |
-| `409 RESOURCE_CONFLICT`                 | The source is still referenced, not `ready` for an update or rotation, static for a rotation, or changed during the request; the gateway does not offer its type; the Agent has no active revision to withdraw from; or sources need a Sandbox Driver. |
-| `409 CREDENTIAL_GATEWAY_NOT_CONFIGURED` | Registration, update, rotation, deletion, Agent binding, or deploying an Agent that binds a source, on an Installation that selects no Credential Gateway.                                                                                             |
-| `503 DEPENDENCY_UNAVAILABLE`            | The selected Credential Gateway, Credential Refresh Driver, or Secret Driver is unavailable, the gateway call failed, a `refresh` type could not mint a token, or the source was registered through a previously selected gateway.                     |
+| Status                                  | Meaning                                                                                                                                                                                                                                                 |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `400 INVALID_REQUEST`                   | The body, field name, or configuration value is invalid, a Secret reference names another Namespace, or a credential-source `harnessAuth` is not listed.                                                                                                |
+| `403 FORBIDDEN`                         | A required `credential_source` or `secret` permission is missing.                                                                                                                                                                                       |
+| `404 NOT_FOUND`                         | The source or Secret is not in the exact Namespace, or a catalog field is invalid; or the Agent's selected version does not use the source or has no withdrawal for it.                                                                                 |
+| `409 NAMESPACE_NOT_READY`               | The Namespace is not `ready`.                                                                                                                                                                                                                           |
+| `409 RESOURCE_CONFLICT`                 | The source is still referenced, not `ready` for an update or rotation, static for a rotation, or changed during the request; the gateway does not offer its type; the Agent has no selected version to withdraw from; or sources need a Sandbox Driver. |
+| `409 CREDENTIAL_GATEWAY_NOT_CONFIGURED` | Registration, update, rotation, deletion, Agent binding, or deploying an Agent that binds a source, on an Installation that selects no Credential Gateway.                                                                                              |
+| `503 DEPENDENCY_UNAVAILABLE`            | The selected Credential Gateway, Credential Refresh Driver, or Secret Driver is unavailable, the gateway call failed, a `refresh` type could not mint a token, or the source was registered through a previously selected gateway.                      |
 
 ## Related
 
