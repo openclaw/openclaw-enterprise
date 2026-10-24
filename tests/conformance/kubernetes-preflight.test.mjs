@@ -282,7 +282,9 @@ test("startup reports Kubernetes configuration errors at their original paths", 
   const config = createInstallationDriverConfiguration();
   const { compute } = config.drivers;
   const start = () => loadInstallationFile(t, config);
-  const twoClusters = { ...executionOptions(), images: compute.configuration.images };
+  // Keep the startup settings production requires that the driver-level options don't carry.
+  const { images, servicePrincipalCredentials } = compute.configuration;
+  const twoClusters = { ...executionOptions(), images, servicePrincipalCredentials };
 
   assert.equal((await start()).computeDriver.id, compute.id);
   compute.configuration = twoClusters;
