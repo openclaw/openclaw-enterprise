@@ -72,7 +72,7 @@ PluginDriver proof paths.
 | Setting                                  | Contract                                                                                                                                               |
 | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `ssh.identityFile`, `ssh.knownHostsFile` | Required absolute worker-local file paths.                                                                                                             |
-| `ssh.connectTimeoutSeconds`              | Positive safe integer, default `10`.                                                                                                                   |
+| `ssh.connectTimeoutSeconds`              | Positive integer up to `2147483647` (the OpenSSH limit), default `10`.                                                                                 |
 | `hosts`                                  | Nonempty map keyed by exact platform Namespace **name**, not resource ID.                                                                              |
 | `hosts.<name>.address`, `.user`          | Required hostname/IP and SSH user `root`.                                                                                                              |
 | `hosts.<name>.port`                      | Integer `1`–`65535`, default `22`.                                                                                                                     |

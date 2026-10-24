@@ -438,6 +438,8 @@ test("SSH closed schema and semantic validation reject every invalid option", ()
       Number.MAX_SAFE_INTEGER + 1,
       /connectTimeoutSeconds must be a positive safe/,
     ],
+    // OpenSSH refuses a longer ConnectTimeout, so every probe would fail and blame the host.
+    [["ssh", "connectTimeoutSeconds"], 2_147_483_648, /connectTimeoutSeconds must be at most/],
     [["hosts", "stable", "address"], "", /Host address is required/],
     [["hosts", "stable", "address"], "-oProxyCommand=bad", /Host address must be a hostname or IP/],
     [["hosts", "stable", "address"], "host;false", /Host address must be a hostname or IP/],
