@@ -3809,7 +3809,7 @@ test("startup refuses unknown OpenShell settings and invalid Agent resource quan
   for (const agentResources of [
     { requests: { cpu: "one" } },
     { limits: { memory: 5 } },
-    // A JSON number parses as a quantity once quoted ("512"), so the type check refuses it.
+    // Quantities are strings: without the type check 512 would parse as a quantity (5 does not).
     { requests: { memory: 512 } },
     { limits: { cpu: "1", "example.com/gpu": "1 Gi" } },
     { requests: { cpu: "-500m" } },
@@ -3949,7 +3949,7 @@ test("startup refuses OpenShell endpoint protocols the gateway refuses", async (
       backend: backendFor(workspaceGatewayClient()),
     });
     const [sent] = driver.admitNetworkPolicy([], 1).defaults["model-egress"].endpoints;
-    assert.equal(sent.protocol, endpoint.protocol === "" ? "" : endpoint.protocol.toLowerCase());
+    assert.equal(sent.protocol, endpoint.protocol.toLowerCase());
   }
 });
 
