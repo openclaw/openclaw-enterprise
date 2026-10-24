@@ -587,8 +587,7 @@ func TestKubernetesOnlyControlPlaneStartsPostgreSQLWhileTheBootstrapVolumeIsPrep
 				"kubectl": `"apply -f ` + filepath.Join(state.directory, "postgres.json") + `") : > ` + shellQuote(applied) + ` ;;
 "apply -f "*) ;;
 "-n oce-system get pod bootstrap-password-prepare -o jsonpath={.status.phase}") if [ -e ` + shellQuote(applied) + ` ]; then echo ` + finished + `; else echo Pending; fi ;;
-` + strings.TrimPrefix(controlPlaneKubectlCases, `"-n oce-system get pod bootstrap-password-prepare -o jsonpath={.status.phase}") echo Succeeded ;;
-`),
+` + controlPlaneKubectlCases, // the prepare-phase case above wins: case takes the first match
 				"docker": controlPlaneNetworkCase,
 				"helm":   `"upgrade --install openclaw-enterprise deploy/helm/openclaw-enterprise "*) ;;`,
 			})

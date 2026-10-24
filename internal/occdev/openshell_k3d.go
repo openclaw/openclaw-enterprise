@@ -669,8 +669,7 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 		return err
 	}
 	// PostgreSQL does not mount the bootstrap volume, so it starts while the
-	// prepare Pod runs. The chart, whose bootstrap uses that volume, is
-	// installed only after the prepare Pod succeeded.
+	// prepare Pod runs.
 	// A StatefulSet, not a bare Pod: k3d cluster stop/start and host reboots
 	// delete bare Pods, and the controller recreates PostgreSQL on its claim.
 	postgresLabels := map[string]string{"app": "postgres", "app.kubernetes.io/managed-by": "openclaw-development"}
@@ -705,6 +704,7 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 	if err := r.run(ctx, "kubectl", "-n", namespace, "rollout", "status", "statefulset/postgres", "--timeout", timeout.String()); err != nil {
 		return err
 	}
+	// The chart's bootstrap writes to the prepared volume.
 	if err := r.waitPodSucceeded(ctx, namespace, "bootstrap-password-prepare", timeout); err != nil {
 		return err
 	}
