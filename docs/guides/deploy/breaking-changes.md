@@ -18,6 +18,27 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-24: Preset saves check literal Agent launch fields
+
+**What breaks.** Preset create and update, and seeding a missing `presets.files`
+copy at startup, bootstrap or Namespace creation, refuse a template whose `agent.name`, `agent.executionMode`,
+`agent.backendId` or `agent.pluginApprovers` is written without a variable token
+and breaks the rule Agent create applies (for example `executionMode: turbo`,
+a Backend the Installation does not configure, or a non-Slack approver while a
+Plugin Driver is selected).
+Earlier builds saved it, and every Agent created from it was refused.
+
+**Who is affected.** Installations whose `presets.files` hold such a field, and
+API clients that save one. Existing copies and other stored Presets still read
+and render.
+
+**How to tell.** The write answers `400`, or startup or Namespace creation
+fails, with a message such as
+`Preset agent.executionMode: must be "embedded" or "dedicated".`
+
+**Steps.** Fix the named field, or replace it with a variable token; then
+restart the controller or repeat the write. _Untested_ on a real Installation.
+
 ## 2026-10-24: OpenShell refuses a quoted userNamespaces and endpoints without ports
 
 **What breaks.** Controller startup refuses an OpenShell Sandbox Driver
