@@ -102,7 +102,8 @@ until appropriate loaded, changed state is available.
 
 Each file allows up to 16 KiB of valid UTF-8 text. Concurrent saves use the last
 writer's contents. Reading requires Agent `read`, saving requires `operate`, and
-access needs a selected version with a reachable gateway. An uncertain save
+access needs a selected version with a reachable gateway. Without `operate`, the
+files are read-only and a note above them names the grant. An uncertain save
 requires Reload to confirm contents or file absence before another save. A confirmed
 missing file opens an empty editor; read failures leave Save disabled. See
 [Workspace Files](../topics/workspace-files.md).

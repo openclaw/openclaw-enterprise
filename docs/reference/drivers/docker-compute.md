@@ -128,6 +128,14 @@ development Driver accepts tags as well as digests; production Kubernetes
 digest requirements do not imply that the local engine enforces immutable
 images.
 
+Both topologies keep one gateway container per Agent, so a new version
+replaces the active version's gateway. The Driver therefore declares
+[exclusive replacement](compute.md#production-revision-stages)
+(`requiresStoppedPredecessors`) for every version: the worker stops all earlier
+versions before preparing the new one, and stops a refused new version, so
+the Agent is unavailable until a later version deploys. Redeployment interrupts
+service and has no automatic rollback.
+
 `retireRevision(revision)` removes only the runtime with the same Agent revision
 ID. It preserves another Agent's containers and preserves a gateway still required by
 a replacement version for the same Agent.

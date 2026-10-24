@@ -13,13 +13,17 @@ and generated CSS. API, session, credential, and runtime state remain simulated.
 1. Open Sign In and enter disposable credentials. Inspect the title, logo, form,
    and keyboard focus, then navigate to an Agent.
 2. Open Desktop and Mobile. Operate navigation and the mobile drawer; verify the
-   full name remains accessible. Navigation logos render at 20×20 pixels; sign-in
-   logos render at 40×40. In Long Name, the navigation drawer wraps the full
-   name. The phone's top bar truncates it with an ellipsis so the menu and
-   account controls stay reachable; the full name remains in the drawer.
-3. Inspect Empty, Denied, Loading, Missing Credentials, and Public Error for text
+   full name remains accessible. The operator’s logo has no added outline: it
+   renders at 20 × 20 px in navigation and 40 × 40 px at sign-in. In Long Name,
+   the drawer wraps the full name. The phone’s top bar truncates it with an
+   ellipsis so the menu and account controls stay reachable.
+3. Compare **Pages/Secrets → Mobile**: the bundled 48 × 38 px mascot has a white
+   outline on navy and dims with the header when a sheet opens. With forced
+   colors active, navigation uses the original 20 × 20 px artwork instead.
+   **Pages/Sign in** also keeps the original artwork, at 40 × 40 px.
+4. Inspect Empty, Denied, Loading, Missing Credentials, and Public Error for text
    readability, visible status labels, and consistent branding.
-4. Capture final desktop/mobile screenshots and a short sign-in/navigation video
+5. Capture final desktop/mobile screenshots and a short sign-in/navigation video
    outside the checkout. Name the source revision, environment, stories, and
    simulated proof boundary. Attach final media to the implementation PR.
 

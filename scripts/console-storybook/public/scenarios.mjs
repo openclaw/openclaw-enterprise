@@ -429,7 +429,13 @@ export const scenarios = {
     name: "Mobile",
     path: "/console/secrets",
     mobile: true,
-    description: "The Secret list and dialogs at phone width. Simulated UI proof.",
+    actions: [{ selector: "#secret-search", value: "sec_demo_model" }],
+    description:
+      "Compare the same 390 × 844 page with one search result, then with a list that scrolls.",
+    steps: [
+      "Open the one Secret, then Replace value. The top bar, dimmed page and sheet reach the right edge, with no empty strip. Press Escape without entering a value.",
+      "Clear Search Secrets, scroll to the last Secret and open it. The sheet reaches the available edge: beside a classic scrollbar, or under an overlay scrollbar. Escape returns focus to that Secret.",
+    ],
   },
   secretsSearch: {
     group: "Pages/Secrets",
@@ -1118,8 +1124,9 @@ export const scenarios = {
     deployed: true,
     actions: [{ selector: '[aria-label="Delete Research assistant"]', click: true }],
     description:
-      "The row's Delete icon opens the permanent-deletion confirmation, including the commands that remove the kept Configuration and model Secret.",
+      "The confirmation says what deletion removes and what stays in the Namespace. Separate cleanup commands are available on request.",
     steps: [
+      "Open View separate cleanup commands. Copying a command leaves the confirmation open.",
       "Select Permanently delete Agent. The row shows Deleting and both icons are disabled.",
       "Select Refresh: the row still shows Deleting, because the list keeps an Agent until its cleanup finishes.",
     ],
@@ -3660,6 +3667,19 @@ export const scenarios = {
     steps: [
       "Confirm the refusal names the missing Sandbox Driver and no Retry provisioning request button appears.",
       "Choose Codex, or Embedded execution if the installation selects no Sandbox Driver, then create the Agent again.",
+    ],
+  },
+  createPreflightTimeout: {
+    group: "Pages/Create Agent",
+    name: "Configuration check timed out",
+    path: create,
+    unsupportedProvisioning: true,
+    rules: [{ suffix: "/agents/validate", method: "POST", hold: true, once: true }],
+    actions: readyForm,
+    description: "The first configuration check stays pending until the Console stops waiting.",
+    steps: [
+      "Select Create Agent. After 15 seconds, the timeout message takes focus and the button is available again.",
+      "Select Create Agent again to check the same entries and continue creating the draft.",
     ],
   },
   createPluginPreflightRefusal: {
@@ -6387,12 +6407,31 @@ export const scenarios = {
     ],
     rules: [{ suffix: "/iam/roles", status: 403 }],
     description:
-      "A member saves a Slack token from the editor. The Configuration saves, but granting the Agent the Secret needs Installation administration access, so the IAM read is refused. That is a known outcome, not an unknown one: the page names who can grant it and links to Credentials, where Retry Secret access waits.",
+      "A session the console takes for an Installation administrator saves a Slack token from the editor. The Configuration saves, but its IAM read for the Agent's grant is refused. That is a known outcome, not an unknown one: the page names who can grant it and links to Credentials, where Retry Secret access waits.",
     steps: [
       "The editor closes. A warning above Channels names the Installation administrator step; Prepare says to resolve the saved Secret access grant, not that the outcome is unknown.",
       "Edit Slack stays available. Open Credentials: the app token reads Bound · Agent access not confirmed beside Retry Secret access.",
     ],
     gap: "The member browser test uses a member account and the real Native IAM refusal.",
+  },
+  channelSecretGrantMemberUnverified: {
+    group: "Components/Channels",
+    name: "Member Slack token saved, access not verified",
+    path: `${draft}&tab=channels`,
+    slack: true,
+    observabilityDenied: true,
+    actions: [
+      click("Edit Slack"),
+      { selector: "#slack-secret-slack-app-token", value: "sec_demo_slack_backup_token" },
+      click("Save configuration"),
+    ],
+    description:
+      "A member saves a Slack token from the editor. The session already knows this member does not administer the Installation, so it sends no IAM request for the Agent's grant. The warning says this session did not verify the Agent's access and names the Installation administrator step.",
+    steps: [
+      "The editor closes. The warning above Channels says access was not verified; Prepare says to resolve the saved Secret access grant. The request log shows no /iam/ request.",
+      "Open Credentials: the app token reads Bound · Agent access not confirmed. There is no Retry Secret access; Reload draft clears the warning.",
+    ],
+    gap: "The member browser test uses a member account and the real Installation permission check.",
   },
   channelSaveUnknown: {
     group: "Components/Channels",
@@ -6711,12 +6750,43 @@ export const scenarios = {
     rules: [{ suffix: "/iam/access-bindings", method: "POST", status: 403, once: true }],
     actions: [click("Save authentication source")],
     description:
-      "The Agent binding is saved, but granting its Secret access is denied. Deployment stays blocked in this view until access is confirmed.",
+      "The Agent binding is saved, but the request to grant its Secret access is refused (403). The warning says that request was refused, names the Installation administrator step, and keeps Retry credential access for when access is restored. Deployment stays blocked in this view until access is confirmed.",
     steps: [
       "Read the partial-save message and disabled authentication controls.",
       "Click Retry credential access. This fixture permits the next grant to simulate an administrator restoring authority.",
       "The form refreshes without another Agent PATCH.",
     ],
+  },
+  authSecretGrantMissing: {
+    group: "Components/Credentials",
+    name: "Authentication Secret without an Agent grant",
+    path: `${draft}&tab=credentials`,
+    harnessGrantMissing: true,
+    description:
+      "An Installation administrator opens an Agent whose saved model Secret has no Agent grant, for example after a member saved it. The console reads the Namespace IAM policy, says deploying would be refused, names Save authentication source and blocks Deploy.",
+    steps: [
+      "Read the warning under the authentication form; Prepare says to confirm authentication and Secret access in Credentials.",
+      "Select Save authentication source. The grant is written, the tab rebuilds without the warning, and Deploy new version is available; do not deploy.",
+    ],
+  },
+  authSecretGrantMemberUnverified: {
+    group: "Components/Credentials",
+    name: "Member authentication saved, access not verified",
+    path: `${draft}&tab=credentials`,
+    observabilityDenied: true,
+    extraSecrets: [{ id: "sec_demo_replacement", name: "Replacement model token" }],
+    actions: [
+      { selector: "#harness-auth-method", value: "codex_pat" },
+      { selector: "#harness-auth-secret", value: "sec_demo_replacement" },
+      click("Save authentication source"),
+    ],
+    description:
+      "A member saves a new model Secret. The session already knows this member does not administer the Installation, so the form sends no IAM request for the Agent's grant. The warning says this session did not verify the Agent's access, names the Installation administrator and the step that grants it, and offers no Retry credential access.",
+    steps: [
+      "Read the warning: this session did not verify access, and an Installation administrator opens this Agent's Credentials and selects Save authentication source.",
+      "Only Reload authentication source remains. Deploy new version stays blocked. The request log shows the Agent PATCH and no /iam/ request.",
+    ],
+    gap: "The member browser test uses a member account and the real Installation permission check.",
   },
   authSaveRefused: {
     group: "Components/Credentials",
@@ -6859,6 +6929,18 @@ export const scenarios = {
     nativeAdmin: "denied",
     description: "Denied native-admin access hides the whole panel.",
   },
+  nativeRefreshing: {
+    group: "Components/Native admin",
+    name: "Refreshing access",
+    path: draft,
+    nativeAdmin: "stopped",
+    // The first access check answers at once; each Refresh access reads for 1.5 s.
+    rules: [{ suffix: "/native-admin", skip: 1, delayMs: 1500 }],
+    description: "Refresh access keeps keyboard focus while it rereads native admin access.",
+    steps: [
+      "Tab to Refresh access and press Enter. While Checking access… shows, focus stays on the button and Enter again sends nothing.",
+    ],
+  },
   workspaceNavigation: {
     group: "Components/Workspace",
     name: "Keep unsaved files",
@@ -6935,6 +7017,17 @@ export const scenarios = {
     ],
     description:
       "A refused save names the Agent operate grant it needs and keeps the edit on screen.",
+  },
+  workspaceOperateDenied: {
+    group: "Components/Workspace",
+    name: "Save needs Agent operate",
+    path: `${revision}&tab=workspace`,
+    deployed: true,
+    agentPermissionSummary: { update: true, deploy: true, operate: false, delete: true },
+    description:
+      "The Agent permission answer denies operate: the files load read-only, and each Save stays in the Tab order, looks disabled and is described by the note naming Agent operate.",
+    steps: ["Tab to Save AGENTS.md and press Enter. Nothing is sent and the file is unchanged."],
+    gap: "Simulated files and permission answer; the API still refuses the write.",
   },
   workspaceMissing: {
     group: "Components/Workspace",
@@ -7120,7 +7213,7 @@ export const scenarios = {
     path: draft,
     actions: [click("Delete Agent")],
     description:
-      "A focused confirmation dialog describes irreversible Agent, revision, and workspace deletion. Namespace Configurations and Secrets remain.",
+      "The confirmation names what will be permanently deleted and what stays in the Namespace. Open View separate cleanup commands to find the full resource IDs.",
   },
   deleting: {
     group: "Components/Deletion",
@@ -7143,7 +7236,21 @@ export const scenarios = {
     deleting: true,
     actions: [click("Request deletion again")],
     description:
-      "A manual repeated deletion requires confirmation. Queued or running cleanup remains unchanged.",
+      "A manual repeated deletion requires confirmation. Queued or running cleanup remains unchanged, and separate cleanup commands stay collapsed until opened.",
+  },
+  deletionRetryAccessEnded: {
+    group: "Components/Deletion",
+    name: "Status access ends during repeat confirmation",
+    path: draft,
+    deleting: true,
+    rules: [{ suffix: "/agents/agt_00000000-0000-4000-8000-000000000001", skip: 1, status: 403 }],
+    actions: [click("Request deletion again")],
+    description:
+      "The Agent was already marked for deletion. The next status check is refused while the repeat confirmation is open.",
+    steps: [
+      "Leave the confirmation open. It closes when the status check returns, without sending another deletion request.",
+      "Focus returns to Delete Agent. The notice says you can no longer check whether cleanup finished.",
+    ],
   },
   deletionRetryUnknown: {
     group: "Components/Deletion",
@@ -7659,6 +7766,7 @@ export const scenarios = {
       "Interactive deletion through the actual console controls, with simulated asynchronous cleanup.",
     steps: [
       "Scroll to Delete Agent and open its confirmation dialog.",
+      "Read what stays in the Namespace. Open View separate cleanup commands to copy a command without running it.",
       "Cancel once to inspect the safe exit, then reopen and confirm Permanently delete Agent.",
       "The page marks deletion requested, removes edit/deploy controls, and keeps confirmed manual recovery available.",
       "Click Refresh deletion status. The fixture now reports completion and the console returns to the Agent list.",

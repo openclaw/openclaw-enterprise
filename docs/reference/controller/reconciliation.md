@@ -205,6 +205,9 @@ connection, a dropped one, or a Harness status read left unanswered; an
 pass records that code, and `worker.completed` names the `dependency` and its
 `cause`. If the dependency is still failing at the convergence deadline, the
 deployment fails with that code rather than `CONVERGENCE_DEADLINE_EXCEEDED`.
+When a bundled Compute Driver's cleanup after a failed preparation or activation
+fails too, the pass is decided by the preparation's or activation's own failure,
+and `worker.completed` adds `cleanupCause`.
 Pending convergence has its own limit: `OCC_WORKER_CONVERGENCE_TIMEOUT_MS`,
 measured from operation creation on PostgreSQL's clock, so
 controller clock skew cannot move it. Exceeding it fails the operation with
@@ -215,7 +218,9 @@ CPU at its limit with `RUNTIME_CPU_STARVED`. Other failures that need a new
 version fail it early too: `RUNTIME_MODEL_PROBE_TIMEOUT`,
 `RUNTIME_MODEL_PROBE_FAILED`, `RUNTIME_LOGIN_FAILED`, `RUNTIME_STARTUP_FAILED`,
 and a workspace setup refusal (`WORKSPACE_SETUP_REFUSED`). A dedicated gateway that refuses its own in-Pod CLI as
-unauthorized fails activation at once with `AGENT_GATEWAY_UNAUTHORIZED`. A Sandbox Driver that cannot run
+unauthorized fails activation at once with `AGENT_GATEWAY_UNAUTHORIZED`, and a `403` on a
+private Secret write fails preparation or activation at once with
+[`KUBERNETES_SECRET_WRITE_FORBIDDEN`](../../guides/operate/troubleshooting.md#a-deployment-fails-because-kubernetes-refused-a-secret). A Sandbox Driver that cannot run
 the version fails it on the first attempt with its
 [closed code](../drivers/sandbox.md), such as
 `SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED`, and two credential sources that share

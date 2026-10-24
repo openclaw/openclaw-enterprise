@@ -156,6 +156,9 @@ test("cleanup removes an owned k3d cluster resource through the CLI", async (t) 
     { owner: prefix, name: clusterName },
     clusterDirectory,
   );
+  // An empty shared storage (no volume was ever written, or the node image was never pulled)
+  // needs no root container: cleanup must not try to start one with --pull=never.
+  await mkdir(join(clusterDirectory, "storage"));
   const deletedMarker = join(root, "deleted");
   await writeCommand(
     join(root, "bin"),
@@ -210,8 +213,76 @@ test("cleanup removes an owned k3d cluster resource through the CLI", async (t) 
     /images rm registry\.example\/gateway@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/,
   );
   assert.match(dockerCommands, new RegExp(`images rm localhost/${clusterName}/occ-test:local`));
+  assert.doesNotMatch(dockerCommands, /^run /m);
   await assert.rejects(() => stat(statePath), { code: "ENOENT" });
   await assert.rejects(() => stat(clusterDirectory), { code: "ENOENT" });
+});
+
+test("cleanup empties a fixture lane's shared k3d storage as root after deleting the cluster", async (t) => {
+  const root = await fixture(t);
+  const prefix = "openclaw-ci-local-storage1234567890ab";
+  const clusterName = "openclaw-k8s-storage-123abc456def";
+  const nodeImage = "registry.example/k3s@sha256:" + "b".repeat(64);
+  const clusterDirectory = join(root, `${clusterName}-state`);
+  const cluster = {
+    ...(await createK3dClusterResource({ owner: prefix, name: clusterName }, clusterDirectory)),
+    nodeImage,
+  };
+  // local-path leaves a deleted claim's volume directory behind as root. A directory without
+  // write permission stands in for it: the runner user's rm cannot empty it.
+  const storage = join(clusterDirectory, "storage");
+  const volume = join(storage, "pvc-1_tenant_workspace");
+  await mkdir(volume, { recursive: true });
+  await writeFile(join(volume, "state"), "written by a workload\n");
+  await chmod(volume, 0o500);
+  t.after(() => chmod(volume, 0o700).catch(() => {}));
+  const deletedMarker = join(root, "deleted");
+  const k3dLog = join(root, "k3d.log");
+  await writeCommand(
+    join(root, "bin"),
+    "k3d",
+    [
+      'if [ "$2" = "list" ]; then',
+      `  if [ -e ${JSON.stringify(deletedMarker)} ]; then printf '[]\\n'; else printf '[{"name":"%s"}]\\n' ${JSON.stringify(clusterName)}; fi`,
+      'elif [ "$2" = "delete" ]; then',
+      `  touch ${JSON.stringify(deletedMarker)}`,
+      "fi",
+      "",
+    ].join("\n"),
+    { log: k3dLog },
+  );
+  // The container runs as root: here, restore write permission and empty the mount. It must
+  // start only after the cluster, whose nodes could still write volumes, is gone.
+  const dockerLog = join(root, "docker.log");
+  await writeCommand(
+    join(root, "bin"),
+    "docker",
+    [
+      'if [ "$1" = "run" ]; then',
+      `  [ -e ${JSON.stringify(deletedMarker)} ] || exit 9`,
+      `  chmod -R u+w ${JSON.stringify(storage)} && rm -rf ${JSON.stringify(volume)}`,
+      "fi",
+      "",
+    ].join("\n"),
+    { log: dockerLog },
+  );
+  const statePath = join(root, "state.json");
+  await writeState(statePath, { version: 1, repositoryRoot, prefix, resources: [cluster] });
+
+  const result = runCleanup(statePath, {
+    OCC_DOCKER_BIN: join(root, "bin/docker"),
+    OPENCLAW_CI_K3D_BIN: join(root, "bin/k3d"),
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(
+    (await commandCalls(dockerLog)).filter((call) => call.startsWith("run ")),
+    [
+      `run --rm --pull=never --network=none --user=0 --security-opt=label=disable --entrypoint=find --volume ${storage}:/storage ${nodeImage} /storage -mindepth 1 -delete`,
+    ],
+  );
+  await assert.rejects(() => stat(clusterDirectory), { code: "ENOENT" });
+  await assert.rejects(() => stat(statePath), { code: "ENOENT" });
 });
 
 for (const scenario of [

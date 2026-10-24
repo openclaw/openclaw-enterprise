@@ -67,8 +67,7 @@ function main(args) {
   const issues = [];
   const expected = {
     impact: "success",
-    audit: "success",
-    // Lint, format, OpenAPI and docs checks run in every mode.
+    // The suite audit and static checks share a required job in every mode.
     "static-checks": "success",
     "pr-safe": mode === "docs" ? "skipped" : "success",
     "runtime-image-fixture":
@@ -95,7 +94,7 @@ function main(args) {
   const state = (job) => ({ result: needs[job]?.result ?? "missing" });
   const expanded = {
     impact: state("impact"),
-    audit: state("audit"),
+    "static-checks": state("static-checks"),
   };
   if (mode === "full") {
     expanded["runtime-image-fixture"] = state("runtime-image-fixture");

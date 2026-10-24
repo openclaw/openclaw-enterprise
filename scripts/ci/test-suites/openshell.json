@@ -37,6 +37,13 @@
   },
   "files": [
     {
+      "path": "tests/integration/local-first-agent-openshell-real.test.mjs",
+      "expectedTests": [
+        "a local Kubernetes installer can deploy and reuse an Agent but cannot replace its key after external changes",
+        "guided native OpenClaw redeployment resumes the same session with retained files and required-worker execution"
+      ]
+    },
+    {
       "path": "tests/integration/dev-up-openshell-k3d-real.test.mjs",
       "expectedTests": [
         "dev-up installs the pinned OpenShell profile in its owned k3d cluster",
@@ -46,13 +53,6 @@
     {
       "path": "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
       "expectedTests": ["OpenShell enforces provider delivery and authenticated Codex exposure"]
-    },
-    {
-      "path": "tests/integration/local-first-agent-openshell-real.test.mjs",
-      "expectedTests": [
-        "a local Kubernetes installer can deploy and reuse an Agent but cannot replace its key after external changes",
-        "guided native OpenClaw redeployment resumes the same session with retained files and required-worker execution"
-      ]
     },
     {
       "path": "tests/integration/local-first-agent-openshell-k3d-real.test.mjs",

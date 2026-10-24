@@ -179,6 +179,9 @@ function restrictedProbePod({ name, namespace, nodeName, image, localhostProfile
       automountServiceAccountToken: false,
       enableServiceLinks: false,
       restartPolicy: "Never",
+      // The probe's Node process runs as PID 1 and ignores SIGTERM. Without a
+      // short grace period, the cleanup's Namespace deletion waits 30 seconds.
+      terminationGracePeriodSeconds: 1,
       nodeName,
       securityContext: {
         runAsNonRoot: true,

@@ -72,6 +72,10 @@ export const ChannelSecretGrantRefused = {
   ...story("channelSecretGrantRefused"),
   name: "Slack token saved, grant refused",
 };
+export const ChannelSecretGrantMemberUnverified = {
+  ...story("channelSecretGrantMemberUnverified"),
+  name: "Member Slack token saved, access not verified",
+};
 export const ChannelSaveUnknown = {
   ...story("channelSaveUnknown"),
   name: "Channel save outcome unknown",

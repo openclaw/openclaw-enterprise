@@ -187,6 +187,9 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	if err := r.validateDevelopmentRepositoryImage(ctx); err != nil {
 		return err
 	}
+	if err := r.selectDevelopmentImageRegistry(ctx); err != nil {
+		return err
+	}
 	state.ContainerEngine = r.engine
 	state.DockerHost = r.env["DOCKER_HOST"]
 	exists, err := r.clusterExists(ctx, state.Cluster)
@@ -270,24 +273,80 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	}
 	r.env["KUBECONFIG"] = filepath.Join(directory, "kubeconfig")
 	timeout := time.Duration(timeoutSeconds) * time.Second
+	// The node pulls registry-pinned images while the registry is attached to
+	// the cluster network. The last pull detaches it; the checks below and the
+	// deferred detach (which runs before the rollback deletes the network)
+	// cover images that were never pulled.
+	if err := r.attachDevelopmentImageRegistry(ctx, state); err != nil {
+		return errors.Join(err, r.detachDevelopmentImageRegistry(ctx))
+	}
+	defer func() {
+		if err := r.detachDevelopmentImageRegistry(ctx); err != nil {
+			result = errors.Join(result, err)
+		}
+	}()
 
 	var runtimeImage string
-	var codexSeccompProfile string
 	if sandboxDriver == "none" {
 		runtimeImage, err = r.importRuntime(ctx, state)
 		if err != nil {
 			return err
 		}
-		codexSeccompProfile, err = r.prepareDevelopmentCodexSandbox(ctx, state, runtimeImage, timeoutSeconds)
-		if err != nil {
-			return err
-		}
 	}
 
-	// Dedicated Harnesses, including OpenShell-owned Codex, require private
-	// Agent Gateway routing for workspace-node enrollment.
-	fmt.Fprintln(r.opts.Out, "Installing pinned private routing controllers...")
-	routingPodCIDR, err := r.installDevelopmentRoutingControllers(ctx, state, timeout)
+	// Nothing below needs the controller, PostgreSQL or repository images until
+	// the network check, so import them while the Codex sandbox check and the
+	// routing controller rollouts wait on the cluster. The runtime image is
+	// imported outside this overlap, so no two image builds run at once. The
+	// network check needs only the controller image and runs in this overlap
+	// too; the platform install below still waits for it.
+	var codexSeccompProfile, routingPodCIDR string
+	var controllerImage, postgresImage, repositoryImage string
+	err = r.concurrently(ctx, func(ctx context.Context, r *runner) error {
+		var err error
+		if sandboxDriver == "none" {
+			codexSeccompProfile, err = r.prepareDevelopmentCodexSandbox(ctx, state, runtimeImage, timeoutSeconds)
+			if err != nil {
+				return err
+			}
+		}
+		// Dedicated Harnesses, including OpenShell-owned Codex, require private
+		// Agent Gateway routing for workspace-node enrollment.
+		fmt.Fprintln(r.opts.Out, "Installing pinned private routing controllers...")
+		routingPodCIDR, err = r.installDevelopmentRoutingControllers(ctx, state, timeout)
+		if err != nil {
+			return fmt.Errorf("install the private routing controllers: %w", err)
+		}
+		return nil
+	}, func(ctx context.Context, r *runner) error {
+		var err error
+		fmt.Fprintln(r.opts.Out, "Importing the controller and PostgreSQL images alongside the cluster checks...")
+		controllerImage, err = r.importDevelopmentController(ctx, state)
+		if err != nil {
+			return fmt.Errorf("import the development controller image: %w", err)
+		}
+		// The probe Pods run the controller image. The check creates its own
+		// Namespaces and policy and no routing resources, and its probes wait on
+		// timeouts, so it runs while the remaining images import. When a sibling
+		// fails, the check still removes its probe resources before the rollback.
+		return r.concurrently(ctx, func(ctx context.Context, r *runner) error {
+			fmt.Fprintln(r.opts.Out, "Verifying Kubernetes network isolation before configuring gateway trust...")
+			return r.verifyDevelopmentNetworkPolicy(ctx, state, controllerImage, "", "", false, timeout)
+		}, func(ctx context.Context, r *runner) error {
+			var err error
+			postgresImage, err = r.importDevelopmentPostgres(ctx, state)
+			if err != nil {
+				return fmt.Errorf("import the development PostgreSQL image: %w", err)
+			}
+			if repositoryInputs != nil {
+				repositoryImage, err = r.importDevelopmentRepositoryService(ctx, state)
+				if err != nil {
+					return fmt.Errorf("import the development repository service image: %w", err)
+				}
+			}
+			return nil
+		})
+	})
 	if err != nil {
 		return err
 	}
@@ -297,26 +356,8 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 			return err
 		}
 	}
-	controllerImage, err := r.importDevelopmentController(ctx, state)
-	if err != nil {
+	if err := r.detachDevelopmentImageRegistry(ctx); err != nil {
 		return err
-	}
-	postgresImage, err := r.importDevelopmentPostgres(ctx, state)
-	if err != nil {
-		return err
-	}
-	var repositoryImage string
-	if repositoryInputs != nil {
-		repositoryImage, err = r.importDevelopmentRepositoryService(ctx, state)
-		if err != nil {
-			return err
-		}
-	}
-	if routingPodCIDR != "" {
-		fmt.Fprintln(r.opts.Out, "Verifying Kubernetes network isolation before configuring gateway trust...")
-		if err := r.verifyDevelopmentNetworkPolicy(ctx, state, controllerImage, "", "", false, timeout); err != nil {
-			return err
-		}
 	}
 	var assets *openShellDevelopmentAssets
 	if sandboxDriver == "openshell" {
@@ -651,9 +692,8 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 	if err := r.writeAndApply(ctx, state, "bootstrap-password-prepare", prepare); err != nil {
 		return err
 	}
-	if err := r.waitPodSucceeded(ctx, namespace, "bootstrap-password-prepare", timeout); err != nil {
-		return err
-	}
+	// PostgreSQL does not mount the bootstrap volume, so it starts while the
+	// prepare Pod runs.
 	// A StatefulSet, not a bare Pod: k3d cluster stop/start and host reboots
 	// delete bare Pods, and the controller recreates PostgreSQL on its claim.
 	postgresLabels := map[string]string{"app": "postgres", "app.kubernetes.io/managed-by": "openclaw-development"}
@@ -686,6 +726,10 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 		return err
 	}
 	if err := r.run(ctx, "kubectl", "-n", namespace, "rollout", "status", "statefulset/postgres", "--timeout", timeout.String()); err != nil {
+		return err
+	}
+	// The chart's bootstrap writes to the prepared volume.
+	if err := r.waitPodSucceeded(ctx, namespace, "bootstrap-password-prepare", timeout); err != nil {
 		return err
 	}
 	postgresIP, err := r.output(ctx, "kubectl", "-n", namespace, "get", "pod", "postgres-0", "-o", "jsonpath={.status.podIP}")
@@ -1105,7 +1149,9 @@ func (r *runner) copyAndVerifyKubernetesKey(ctx context.Context, state *developm
 	reader := map[string]any{
 		"apiVersion": "v1", "kind": "Pod", "metadata": kubernetesMetadata("bootstrap-key-reader", state.PlatformNamespace, labels),
 		"spec": map[string]any{
-			"restartPolicy": "Never", "automountServiceAccountToken": false,
+			// Node runs as PID 1 and ignores SIGTERM, so the deferred delete below
+			// would otherwise wait out the default 30-second grace period.
+			"restartPolicy": "Never", "automountServiceAccountToken": false, "terminationGracePeriodSeconds": 1,
 			"securityContext": map[string]any{"runAsNonRoot": true, "runAsUser": 1000, "runAsGroup": 1000, "fsGroup": 1000, "seccompProfile": map[string]string{"type": "RuntimeDefault"}},
 			"containers": []any{map[string]any{
 				"name": "reader", "image": controllerImage, "imagePullPolicy": "Never", "command": []string{"node", "-e", "setInterval(()=>{},1<<30)"},

@@ -8,6 +8,7 @@
     "tests/integration/postgres-worker-agent-revision.test.mjs",
     "tests/integration/postgres-worker-agent-revision-replacement.test.mjs",
     "tests/integration/postgres-worker-agent-revision-refused-wait.test.mjs",
+    "tests/integration/postgres-worker-agent-revision-cleanup-failure.test.ts",
     "tests/integration/postgres-worker-agent-revision-stop.test.mjs",
     "tests/integration/postgres-worker-agent-revision-yielded-redeploy.test.mjs",
     "tests/integration/postgres-worker-agent-revision-refused-stop.test.mjs",
@@ -59,7 +60,10 @@
         "api_key revision dispatch rechecks Configuration and exact harness Secret grants without backend Secret reads",
         "codex_pat revision dispatch rechecks Configuration and exact harness Secret grants without backend Secret reads",
         "revision dispatch refuses a different selected Secret Driver before binding or activating the Agent",
-        "revision dispatch never substitutes a later ChatGPT credential or reconfigured Backend for its admitted snapshot"
+        "revision dispatch never substitutes a later ChatGPT credential or reconfigured Backend for its admitted snapshot",
+        "a Kubernetes 403 on a private Secret write fails deployment on the first attempt",
+        "a Kubernetes 403 on a private Secret write during maintenance preparation keeps the maintenance chain",
+        "a Kubernetes 403 on a private Secret write during maintenance activation keeps the maintenance chain"
       ]
     },
     {
@@ -121,6 +125,17 @@
       "path": "tests/integration/postgres-worker-agent-revision-refused-wait.test.mjs",
       "expectedTests": [
         "a refused candidate superseded while its stop fails is stopped before it completes"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-worker-agent-revision-cleanup-failure.test.ts",
+      "expectedTests": [
+        "a refusal whose Compute cleanup also failed fails deployment on the first attempt",
+        "a Kubernetes API outage whose Compute cleanup also failed waits past the attempt budget, then the deployment activates",
+        "a Sandbox gateway outage whose Compute cleanup also failed waits past the attempt budget, then the deployment activates",
+        "an activation refusal whose Compute cleanup also failed fails deployment at once (after 0 pending passes)",
+        "an activation refusal whose Compute cleanup also failed fails deployment at once (after 1 pending passes)",
+        "a maintenance outage whose Compute cleanup also failed waits on its dependency and keeps the chain"
       ]
     },
     {

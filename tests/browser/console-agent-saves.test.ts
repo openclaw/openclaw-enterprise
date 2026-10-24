@@ -32,9 +32,11 @@ import {
   newPage,
   nonAuthWriteRequests,
   pathRequests,
+  recordFocusTrail,
   recordLayoutShifts,
   selectSecret,
   setSlackSelection,
+  stopFocusTrail,
   takeLayoutShifts,
   trackSettledFetches,
   waitForEnabled,
@@ -65,6 +67,11 @@ type Draft = {
 };
 type Requests = ReturnType<typeof apiRequests>;
 type Viewport = NonNullable<ReturnType<Page["viewportSize"]>>;
+
+declare global {
+  // recordFocusTrail()'s record in the page.
+  var focusFrames: { trail: string[]; frames: number; loadingShown: boolean; stopped: boolean };
+}
 
 const scrollY = (page: Page) => page.evaluate(() => globalThis.scrollY);
 // A refresh in place rereads the Agent's permission answer, so a grant applies to the rebuilt
@@ -1871,35 +1878,17 @@ test("a keyboard Configuration save keeps focus on its status while the save is 
   });
   const save = page.getByRole("button", { name: "Save Configuration" });
   await save.focus();
-  // Every frame from here until Edit Configuration has focus: the focused node.
-  const focus = await page.evaluateHandle(() => {
-    const observed: { trail: string[]; frames: number } = { trail: [], frames: 0 };
-    const sample = () => {
-      observed.frames += 1;
-      const node = globalThis.document.activeElement;
-      const entry =
-        !node || node === globalThis.document.body
-          ? "BODY"
-          : `${node.tagName}: ${node.textContent.trim()}`;
-      if (observed.trail.at(-1) !== entry) {
-        observed.trail.push(entry);
-      }
-      if (entry !== "BUTTON: Edit Configuration") {
-        globalThis.requestAnimationFrame(sample);
-      }
-    };
-    sample();
-    return observed;
-  });
+  // Every node that holds focus from here until Edit Configuration has it.
+  await recordFocusTrail(page, [], { until: "^BUTTON#\\d+: Edit Configuration$" });
   await page.keyboard.press("Enter");
   await reread.requested;
-  const held = await focus.evaluate(({ frames }) => frames);
-  await page.waitForFunction(({ focus, held }) => focus.frames >= held + 12, { focus, held });
+  const held = await page.evaluate(() => globalThis.focusFrames.frames);
+  await page.waitForFunction((held) => globalThis.focusFrames.frames >= held + 12, held);
   reread.release();
-  await page.waitForFunction(({ trail }) => trail.at(-1) === "BUTTON: Edit Configuration", focus);
-  const trail = await focus.evaluate(({ trail }) => trail);
+  await page.waitForFunction(() => globalThis.focusFrames.stopped);
+  const { trail } = await stopFocusTrail(page);
   assert.deepEqual(
-    trail,
+    trail.map((entry) => entry.replace(/#\d+/, "")),
     ["BUTTON: Save Configuration", "P: Checking Configuration…", "BUTTON: Edit Configuration"],
     trail.join(" | "),
   );

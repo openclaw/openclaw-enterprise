@@ -17,6 +17,44 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-23: existing-namespace deletion lists ConfigMaps and ServiceAccounts
+
+**What breaks.** Deleting a Namespace placed in an existing Kubernetes
+namespace now lists and deletes the ConfigMaps and ServiceAccounts (and, with
+repository credentials, Secrets) that still carry that Namespace's ownership.
+A worker RoleBinding to a custom role without `list` and `delete` on those
+resources used to finish teardown; now the Namespace stays `deleting`.
+
+**Who is affected.** Existing-namespace Installations whose tenant worker role
+is not the chart's `tenant-worker` role. The chart's roles already grant both.
+
+**How to tell.** The Namespace stays `deleting`, and its `namespace.delete`
+work fails in the worker log.
+
+**Steps.** Grant the worker `list` and `delete` on `configmaps` and
+`serviceaccounts` in the namespace, then repeat the `DELETE`.
+
+## 2026-10-23: SSH initial workspace files need a main-only roster at save
+
+**What breaks.** On SSH Compute, Agent create and update refuse initial
+workspace files unless `agents.entries` is omitted or holds only `main` (in any
+letter case), and `agents.list` is unset, as Kubernetes and Docker Compute do.
+Deploying an Agent whose setup is still pending is refused the same way. An
+empty `agents.entries` used to deploy; since #3371 every such deployment failed
+after its retries. Other entries and `agents.list` already failed every SSH
+deployment and are now refused earlier; a `Main` key now works.
+
+**Who is affected.** SSH Installations with initial workspace files on such a
+Configuration.
+
+**How to tell.** The request answers `400` with `Configuration setting
+agents.entries must hold only main, or be omitted, for initial workspace files`.
+An Agent whose setup already completed is not checked at save; its deployment
+still fails after its retries with `DEPENDENCY_UNAVAILABLE`.
+
+**Steps.** Remove `agents.entries` or leave only `main` in it, then save or
+deploy again. _untested_
+
 ## 2026-10-23: saves refuse a model without its provider
 
 **What breaks.** Configuration create and update, Agent provisioning, Agent

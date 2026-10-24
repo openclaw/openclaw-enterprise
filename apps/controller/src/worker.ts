@@ -68,6 +68,7 @@ import {
   CredentialSourceRevisionError,
   CredentialWithdrawalRefusedError,
   DependencyUnavailableError,
+  KubernetesSecretWriteForbiddenError,
   PersistedStateInvalidError,
   SandboxGatewayUnauthorizedError,
   SandboxGatewayUnavailableError,
@@ -112,6 +113,7 @@ import {
 } from "@openclaw-enterprise/occ";
 import type { InstallationRuntimeDrivers } from "./composition/installation-config.ts";
 import { resolveApprovedHarness } from "./composition/production-harness.ts";
+import { ComputeCleanupFailedError } from "./drivers/compute/cleanup-failure.ts";
 import {
   ComputeStopYieldedError,
   withComputeAbortSignal,
@@ -291,12 +293,84 @@ function causeStatusLogFields(error: object): {
 }
 
 /**
+ * The cleanup failures a Compute Driver reported beside each primary failure the worker took out
+ * of a ComputeCleanupFailedError, so the pass's log line still shows that cleanup failed.
+ */
+const computeCleanupFailures = new WeakMap<object, readonly unknown[]>();
+
+/**
+ * The failure a Compute Driver operation's outcome follows. A Driver whose cleanup also failed
+ * reports both; the operation's own failure decides, so a refusal still fails at once and an
+ * outage still waits, and the cleanup failure is kept for the log fields (finding 2268). A
+ * primary failure that is not an object cannot carry that record, so its aggregate stays whole
+ * and is classified as before. A Driver can throw one error object again (a memoized client
+ * failure), so a failure without a failed cleanup clears any record it kept.
+ */
+function primaryComputeFailure(error: unknown): unknown {
+  if (!(error instanceof ComputeCleanupFailedError)) {
+    if (error !== null && typeof error === "object") {
+      computeCleanupFailures.delete(error);
+    }
+    return error;
+  }
+  const primary = error.primary;
+  if (primary === null || typeof primary !== "object" || error.cleanupFailures.length === 0) {
+    return error;
+  }
+  computeCleanupFailures.set(primary, error.cleanupFailures);
+  return primary;
+}
+
+/** The error class a log line may name: its own name or constructor's, else `Error`. */
+function loggedErrorClass(error: unknown): string {
+  const record = error !== null && typeof error === "object" ? error : undefined;
+  return (
+    (record === undefined
+      ? undefined
+      : [(record as { readonly name?: unknown }).name, record.constructor?.name].find(
+          (candidate): candidate is string =>
+            typeof candidate === "string" &&
+            candidate !== "Error" &&
+            LOGGED_ERROR_NAME.test(candidate),
+        )) ?? "Error"
+  );
+}
+
+/**
  * Log fields that say which dependency failed and why, without provider text:
  * a transient dependency names itself and a closed reason; any other failure
  * gives its error class and any fixed Driver request diagnostic. Other errors add
  * the HTTP status of an SDK error, its own or its cause's, and the Status reason a cause keeps.
+ * A failure whose Compute cleanup also failed adds `cleanupCause`, the first cleanup failure's
+ * class, so a failed cleanup never reads as a clean one (finding 2268).
  */
 function revisionFailureLogFields(error: unknown): {
+  readonly dependency?: string;
+  readonly cause?: string;
+  readonly status?: number;
+  readonly reason?: string;
+  readonly method?: string;
+  readonly grpcStatus?: number;
+  readonly validationCategory?: string;
+  readonly cleanupCause?: string;
+} {
+  return { ...primaryFailureLogFields(error), ...computeCleanupLogFields(error) };
+}
+
+/** `cleanupCause` when the Compute cleanup after this failure failed too, else nothing. */
+function computeCleanupLogFields(error: unknown): { readonly cleanupCause?: string } {
+  if (error === null || typeof error !== "object") {
+    return {};
+  }
+  // A Sandbox gateway outage reaches the log as the transient failure that wraps it.
+  const cause = (error as { readonly cause?: unknown }).cause;
+  const cleanup =
+    computeCleanupFailures.get(error) ??
+    (cause !== null && typeof cause === "object" ? computeCleanupFailures.get(cause) : undefined);
+  return cleanup === undefined ? {} : { cleanupCause: loggedErrorClass(cleanup[0]) };
+}
+
+function primaryFailureLogFields(error: unknown): {
   readonly dependency?: string;
   readonly cause?: string;
   readonly status?: number;
@@ -309,16 +383,7 @@ function revisionFailureLogFields(error: unknown): {
     return { dependency: error.dependency, cause: error.reason, ...causeStatusLogFields(error) };
   }
   const record = error !== null && typeof error === "object" ? error : undefined;
-  const name =
-    record === undefined
-      ? undefined
-      : [(record as { readonly name?: unknown }).name, record.constructor?.name].find(
-          (candidate): candidate is string =>
-            typeof candidate === "string" &&
-            candidate !== "Error" &&
-            LOGGED_ERROR_NAME.test(candidate),
-        );
-  const errorClass = name ?? "Error";
+  const errorClass = loggedErrorClass(error);
   if (error instanceof DependencyUnavailableError && error.requestDiagnostic !== undefined) {
     const { method, grpcStatus, validationCategory } = error.requestDiagnostic;
     return { cause: errorClass, method, grpcStatus, validationCategory };
@@ -1628,7 +1693,11 @@ export class ControllerWorker {
       this.validateExecutionAdmission(revision);
       this.stoppedPredecessors.delete(revision.id);
     }
-    await stage.call(this.compute, revision, context);
+    try {
+      await stage.call(this.compute, revision, context);
+    } catch (error) {
+      throw primaryComputeFailure(error);
+    }
   }
 
   private shouldActivateAfterCommit(compute: ComputeDriver): boolean {
@@ -1800,7 +1869,8 @@ export class ControllerWorker {
         }
       }
       return prepared;
-    } catch (error) {
+    } catch (failure) {
+      const error = primaryComputeFailure(failure);
       // The worker aborted Compute itself, on a lost claim or a graceful shutdown: the pass's
       // own claim-loss or interruption record explains it, so there is no Compute failure to
       // describe (finding 1040).
@@ -4497,7 +4567,12 @@ export class ControllerWorker {
           // claim's chain too: the revision cannot activate without a new one.
           if (
             error instanceof ActivationFailedError ||
-            error instanceof CredentialSourceRevisionError
+            error instanceof CredentialSourceRevisionError ||
+            // Finding 2265: a 403 on a private Secret write fails the deployment at once here as
+            // in preparation (finding 1770). A maintenance pass keeps the running revision's
+            // chain instead, as for an outage: it recovers once an operator fixes the grant.
+            (error instanceof KubernetesSecretWriteForbiddenError &&
+              !claim.idempotencyKey.startsWith(`agent_revision:${revision.id}:maintenance:`))
           ) {
             await this.finalizeRevision(
               claim,
@@ -4609,7 +4684,10 @@ export class ControllerWorker {
           error instanceof RepositoryGitProfileUnsupportedError ||
           error instanceof SandboxRevisionUnsupportedError ||
           error instanceof CredentialSourceRevisionError ||
-          error instanceof ActivationFailedError
+          error instanceof ActivationFailedError ||
+          // Finding 1770: Kubernetes refused a private Secret write with 403. An operator must
+          // change a grant, admission policy or quota first, so no retry can succeed.
+          error instanceof KubernetesSecretWriteForbiddenError
         ) {
           result = { outcome: "permanent", code: error.code };
         } else if (error instanceof ComputeStopYieldedError) {
@@ -5742,24 +5820,27 @@ export class ControllerWorker {
         if (error instanceof WorkClaimLostError) {
           throw error;
         }
-        resolved =
-          error instanceof RepositoryCredentialAuthorityError
-            ? { outcome: "permanent", code: error.code }
-            : { outcome: "retry", code: "DEPENDENCY_UNAVAILABLE" };
+        if (error instanceof RepositoryCredentialAuthorityError) {
+          resolved = { outcome: "permanent", code: error.code };
+        } else {
+          resolved = { outcome: "retry", code: "DEPENDENCY_UNAVAILABLE" };
+          // Say why the check failed, as a failure in dispatch does (finding 2272).
+          failureLogFields = revisionFailureLogFields(error);
+        }
       }
     }
     if (
       resolved.outcome === "retry" &&
       claim.attemptCount >= this.maxAttempts &&
-      (await this.continueExhaustedActiveRevision(claim, resolved.code))
+      (await this.continueExhaustedActiveRevision(claim, resolved.code, failureLogFields))
     ) {
       return;
     }
     // OCC refused this candidate (its authority, credentials or configuration), so its runtime
     // must not keep serving. A runtime that failed by itself (a held startup failure, the
     // convergence deadline, exhausted retries) stays for diagnosis on its version's Logs tab.
-    // ActivationFailedError also lands here, but no bundled Driver activates before commit, so
-    // it only reaches a published (active) revision, which the stop skips.
+    // A permanent activation failure also lands here, but no bundled Driver activates before
+    // commit, so it only reaches a published (active) revision, which the stop skips.
     if (
       resolved.outcome === "permanent" &&
       heldFailureCode === undefined &&
@@ -5968,18 +6049,27 @@ export class ControllerWorker {
           throw error;
         }
         if (error instanceof RepositoryCredentialAuthorityError) {
-          await this.finalizeRevision(claim, { outcome: "permanent", code: error.code });
+          await this.finalizeRevision(
+            claim,
+            { outcome: "permanent", code: error.code },
+            computeCleanupLogFields(error),
+          );
           return;
         }
         if (error instanceof ComputeStopYieldedError) {
           // The Agent stopped after activation and its stop yielded: the next pass repeats it as
           // the stopped Agent's active revision, then retires the earlier ones.
-          await this.finalizeRevision(claim, { outcome: "pending", code: "AGENT_STOP_YIELDED" });
+          await this.finalizeRevision(
+            claim,
+            { outcome: "pending", code: "AGENT_STOP_YIELDED" },
+            computeCleanupLogFields(error),
+          );
           return;
         }
         await this.finalizeRevision(
           claim,
-          error instanceof ActivationFailedError
+          error instanceof ActivationFailedError ||
+            error instanceof KubernetesSecretWriteForbiddenError
             ? { outcome: "permanent", code: error.code }
             : activationPendingResult(error),
           revisionFailureLogFields(error),
@@ -6519,6 +6609,7 @@ export class ControllerWorker {
   private async continueExhaustedActiveRevision(
     claim: ClaimedWork,
     code: string,
+    failureLogFields?: Readonly<Record<string, string | number>>,
   ): Promise<boolean> {
     const revisionId = claim.revisionId;
     if (
@@ -6579,6 +6670,8 @@ export class ControllerWorker {
       result: "retry",
       outcome: "retry",
       code,
+      // Like any other ended pass, say why the last attempt failed (finding 1743).
+      ...failureLogFields,
       ...this.deployTimingFields(claim),
     });
     return true;

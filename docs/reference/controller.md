@@ -127,7 +127,9 @@ The worker emits fixed operational event classes through the same logger:
   or for a transient dependency its closed failure code, with `dependency` naming
   the dependency. An HTTP failure adds `status`, and the Kubernetes Status `reason`
   when its cause keeps one, such as `403` and `Forbidden` for a refused Secret
-  write. A version pass that loses the race for the Agent's selected version logs
+  write. When a bundled Compute Driver's cleanup after the failed preparation or
+  activation failed too, the pass adds `cleanupCause`, the first cleanup failure's
+  class. A version pass that loses the race for the Agent's selected version logs
   outcome `retry` with code `ACTIVE_REVISION_CHANGED`; the work fails once its
   attempts are exhausted.
   A pass that could not stop a refused candidate stays pending with code

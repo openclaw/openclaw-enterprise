@@ -98,6 +98,8 @@ stops the grant; **Retry credential access** reads the saved Agent again without
 An unrecognized success leaves the outcome unknown and blocks another create.
 For an uncertain Credential Source registration, **Check credential registration** reads
 the source for this request and confirms its type and Secret references before continuing.
+If the Console times out waiting for validation, it stops before the save step,
+keeps the form entries, and lets the caller select **Create Agent** to try again.
 Success opens `revision=draft`.
 OCC stages all four workspace textareas, including unchanged/empty values, outside
 Agent/Configuration for [workspace setup](../workspace-files.md).

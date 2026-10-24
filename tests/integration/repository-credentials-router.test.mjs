@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmod, cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
-import { availableParallelism, tmpdir } from "node:os";
+import { chmod, cp, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
+import { availableParallelism } from "node:os";
 import { join, resolve } from "node:path";
-import { after, describe, it as test } from "node:test";
+import { describe, it as test } from "node:test";
 import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.mjs";
 import {
   cleanEnvironment,
@@ -11,6 +11,7 @@ import {
   temporaryDirectory,
 } from "../fixtures/repository-credentials/process.mjs";
 import { settled as settle } from "../helpers/child-processes.mjs";
+import { fileCompileCache } from "../helpers/compile-cache.mjs";
 import { parseGhInvocation } from "../../apps/controller/src/drivers/repo/github/credentials/client/commands.ts";
 import { createClientEnvironment } from "../../apps/controller/src/drivers/repo/github/credentials/client/environment.ts";
 import {
@@ -25,12 +26,7 @@ import {
 
 // Children get an allowlisted environment, so they only share the lane's Node
 // compile cache when it is passed explicitly; outside CI the file keeps its own.
-const compileCache =
-  process.env.NODE_COMPILE_CACHE ||
-  (await mkdtemp(join(tmpdir(), "repository-credentials-router-cache-")));
-if (compileCache !== process.env.NODE_COMPILE_CACHE) {
-  after(() => rm(compileCache, { recursive: true, force: true }));
-}
+const compileCache = await fileCompileCache("repository-credentials-router");
 const clean = (extra = {}) => cleanEnvironment({ NODE_COMPILE_CACHE: compileCache, ...extra });
 
 // Every case spawns Git or Node children, and Git starts the managed hook

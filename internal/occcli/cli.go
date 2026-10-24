@@ -850,6 +850,9 @@ func (app *application) agentCommand() *cobra.Command {
 			} else {
 				var number float64
 				if deploymentID, number, err = latestReadableRevision(client, namespace, args[0]); err != nil {
+					if errors.Is(err, errNoReadableRevisions) {
+						err = noReadableRevisionsError(client, namespace, args[0], fmt.Sprintf("agent %s has no revision you can read", args[0]), "")
+					}
 					return err
 				}
 				defaultDeploymentNotice(client, command.ErrOrStderr(), namespace, args[0], deploymentID, number)
@@ -1167,7 +1170,7 @@ func (app *application) validateOptions(command *cobra.Command) error {
 	formats := []string{"table", "json", "yaml"}
 	if annotated, ok := command.Annotations[outputFormatsAnnotation]; ok {
 		formats = strings.Split(annotated, ",")
-		if app.output == "table" {
+		if !command.Flags().Changed("output") {
 			app.output = formats[0]
 		}
 	}

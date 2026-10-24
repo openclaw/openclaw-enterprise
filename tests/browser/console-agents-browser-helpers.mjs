@@ -309,10 +309,27 @@ export function expireSessions(fixture) {
   }
 }
 
-export async function expectNoText(page, pattern) {
-  await assert.rejects(
-    page.getByText(pattern).waitFor({ state: "visible", timeout: 300 }),
-    /Timeout/,
+// Checks that no visible text matches `pattern`. `settled` resolves once the page has done what
+// could have shown the text: the read behind it settled (waitForIdleFetches,
+// waitForSettledFetches), or the page shows its last render before a held read answers. The
+// check runs once that has rendered, without a fixed wait. Without `settled`, it watches the
+// page for 300 ms: keep that where a timer could still show the text, such as the loading
+// timers that run while a test holds a session or admission read. The settled check waits for
+// page frames, so it hangs on a page whose clock is paused (page.clock.pauseAt).
+export async function expectNoText(page, pattern, settled) {
+  if (settled === undefined) {
+    await assert.rejects(
+      page.getByText(pattern).waitFor({ state: "visible", timeout: 300 }),
+      /Timeout/,
+    );
+    return;
+  }
+  await settled();
+  await nextFrames(page);
+  assert.equal(
+    await page.getByText(pattern).filter({ visible: true }).count(),
+    0,
+    `no visible text matches ${pattern}`,
   );
 }
 
@@ -651,6 +668,71 @@ export const nextFrames = (page) =>
         );
       }),
   );
+
+// Records every node that holds focus from now until stopFocusTrail(), in
+// globalThis.focusFrames.trail: the focused node at every frame and the target of every focusin,
+// so a node that holds focus for less than a frame (a busy page paints late) still shows. Nodes
+// are numbered, so a replaced heading is a new entry. `loadingShown` turns true once the content
+// shows one of `loadingTexts`; `frames` counts sampled frames. With `until` (a regular
+// expression source), recording stops at the first entry it matches, so the trail ends there and
+// `stopped` turns true.
+/**
+ * @param {import("playwright").Page} page
+ * @param {string[]} [loadingTexts]
+ * @param {{ until?: string | null }} [options]
+ */
+export const recordFocusTrail = (page, loadingTexts = [], { until = null } = {}) =>
+  page.evaluate(
+    ({ loadingTexts, until }) => {
+      const ids = new WeakMap();
+      let next = 0;
+      const state = { trail: [], loadingShown: false, stopped: false, frames: 0 };
+      const record = (node) => {
+        if (node && node !== globalThis.document.body && !ids.has(node)) {
+          ids.set(node, ++next);
+        }
+        const entry =
+          !node || node === globalThis.document.body
+            ? "BODY"
+            : `${node.tagName}#${ids.get(node)}: ${node.textContent.trim()}`;
+        if (state.trail.at(-1) !== entry) {
+          state.trail.push(entry);
+          state.stopped ||= until !== null && new RegExp(until).test(entry);
+        }
+      };
+      const focused = (event) => {
+        if (!state.stopped) {
+          record(event.target);
+        }
+      };
+      const sample = () => {
+        if (state.stopped) {
+          globalThis.document.removeEventListener("focusin", focused, true);
+          return;
+        }
+        state.frames += 1;
+        record(globalThis.document.activeElement);
+        const shown = globalThis.document.querySelector(".content")?.textContent ?? "";
+        state.loadingShown ||= loadingTexts.some((text) => shown.includes(text));
+        globalThis.requestAnimationFrame(sample);
+      };
+      globalThis.document.addEventListener("focusin", focused, true);
+      globalThis.focusFrames = state;
+      sample();
+    },
+    { loadingTexts, until },
+  );
+
+// Stops the focus trail recordFocusTrail() started and returns it.
+/**
+ * @param {import("playwright").Page} page
+ * @returns {Promise<{ trail: string[], frames: number, loadingShown: boolean, stopped: boolean }>}
+ */
+export const stopFocusTrail = (page) =>
+  page.evaluate(() => {
+    globalThis.focusFrames.stopped = true;
+    return globalThis.focusFrames;
+  });
 
 // The page's main view once its reads have settled and nothing holds it inert.
 export const settledView = '.content [aria-live="polite"][aria-busy="false"]:not([inert])';

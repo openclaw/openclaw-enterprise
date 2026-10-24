@@ -129,19 +129,10 @@ test(
     });
     const namespace = `oce-released-workspace-${randomUUID().slice(0, 8)}`;
     await kubectl("create", "namespace", namespace);
-    // The upgraded directories are uid 1000 mode 0700 on the runner's k3d storage
-    // bind mount, which the lane cleanup cannot read; let local-path remove them.
-    t.after(async () => {
-      await kubectl("delete", "namespace", namespace, "--wait=false");
-      await waitFor(
-        `${namespace} local-path volume to be removed`,
-        async () =>
-          JSON.parse(await kubectl("get", "persistentvolumes", "-o", "json")).items.every(
-            ({ spec }) => spec.claimRef?.namespace !== namespace,
-          ),
-        180_000,
-      );
-    });
+    // The upgraded directories are uid 1000 mode 0700 on the runner's k3d storage bind mount.
+    // Lane cleanup empties that storage as root (scripts/ci/cleanup.mjs), so the case does not
+    // wait for local-path to remove its volume.
+    t.after(() => kubectl("delete", "namespace", namespace, "--wait=false"));
     const completed = (name) =>
       waitFor(`${name} to complete`, async () => {
         const observed = await resource("pod", name, namespace);

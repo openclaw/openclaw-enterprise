@@ -1203,7 +1203,7 @@ test("unusable base policy cannot select documentation", async (t) => {
 
 test("documentation workflow selects documentation checks and omits product tests", () => {
   const docs = job("static-checks");
-  assert.match(docs, /needs\.impact\.outputs\.mode == 'docs'/);
+  assert.doesNotMatch(docs, /^ {4}(?:needs|if):/m);
   for (const command of [
     "check:workspace",
     "lint",
@@ -1298,7 +1298,7 @@ test("full-integration runs kernel- and sandbox-sensitive same-SHA lanes on ci.y
   }
 });
 
-test("Static Checks runs every check the CI lanes skip", () => {
+test("Suite Audit and Static Checks runs the audit and every check the lanes skip", () => {
   const workflow = loadYaml(".github/workflows/ci.yml");
   const action = loadYaml(".github/actions/run-ci-lane/action.yml");
   const lane = workflow.jobs["pr-safe"].steps.find(
@@ -1320,9 +1320,25 @@ test("Static Checks runs every check the CI lanes skip", () => {
     ],
   );
   // A check moved out of the lanes must still gate CI Required in every mode.
-  const runs = workflow.jobs["static-checks"].steps.map((step) => step.run);
-  for (const step of skipped) {
-    assert.ok(runs.includes(step.run), step.run);
+  const staticChecks = workflow.jobs["static-checks"];
+  assert.equal(staticChecks.needs, undefined, "start alongside CI Impact");
+  assert.equal(staticChecks.if, undefined, "every selection needs these checks");
+  assert.equal(staticChecks["continue-on-error"], undefined);
+  const commands = [
+    "bash scripts/ci/setup-tools.sh workflows",
+    "actionlint .github/workflows/*.yml",
+    "node scripts/ci/run-tests.mjs audit",
+    ...skipped.map((step) => step.run),
+  ];
+  const checks = staticChecks.steps.filter((step) => commands.includes(step.run));
+  assert.deepEqual(
+    checks.map((step) => step.run),
+    commands,
+    "require the suite audit before static checks",
+  );
+  for (const step of checks) {
+    assert.equal(step.if, undefined, step.name);
+    assert.equal(step["continue-on-error"], undefined, step.name);
   }
   assert.ok(workflow.jobs["ci-required"].needs.includes("static-checks"));
 });
@@ -1561,7 +1577,7 @@ test("workflow selection flows through the gate and full-mode source-bound aggre
     // The inventory checks above still require every production CI lane.
     assert.deepEqual(
       Object.keys(selectedNeeds).sort(),
-      ["impact", "audit", ...expectedFullLanes].sort(),
+      ["impact", "static-checks", ...expectedFullLanes].sort(),
     );
     for (const lane of expectedFullLanes) {
       assert.equal(selectedNeeds[lane].result, "success", lane);
@@ -2413,10 +2429,7 @@ test("workflow runs selected lanes in tests mode and gates them by the verified 
   );
   // Static checks (lint, format, OpenAPI, docs) run in every mode; the smoke
   // and the advisory job stay off in tests mode.
-  assert.match(
-    job("static-checks"),
-    /if: \$\{\{ needs\.impact\.outputs\.mode == 'docs' \|\| needs\.impact\.outputs\.mode == 'full' \|\| needs\.impact\.outputs\.mode == 'tests' \}\}/,
-  );
+  assert.doesNotMatch(job("static-checks"), /^ {4}(?:needs|if):/m);
   for (const name of ["first-agent-smoke", "affected-packages"]) {
     assert.doesNotMatch(job(name), /'tests'/, name);
   }
@@ -2448,7 +2461,6 @@ async function gatedTestLanes(t, change, expected) {
   const root = bootstrap.checkout;
   const needs = {
     impact: { result: "success", outputs: { mode: "tests", lanes } },
-    audit: { result: "success", outputs: {} },
     "static-checks": { result: "success", outputs: {} },
     "pr-safe": { result: "success", outputs: {} },
     "runtime-image-fixture": { result: "skipped", outputs: {} },
@@ -2464,7 +2476,7 @@ test("a test-only selection without Checks and Conformance 1 passes the gate", a
     editTest("tests/integration/postgres-a.test.mjs"),
     '["postgres"]',
   );
-  assert.deepEqual(Object.keys(needs), ["impact", "audit", "postgres"]);
+  assert.deepEqual(Object.keys(needs), ["impact", "static-checks", "postgres"]);
 });
 
 test("tests mode flows through the gate to a source-bound aggregate of only its lanes", async (t) => {

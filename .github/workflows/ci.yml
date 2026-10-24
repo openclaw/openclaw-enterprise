@@ -256,32 +256,10 @@ jobs:
       ci_attempt: ${{ github.run_attempt }}
       node_base_image: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
 
-  audit:
-    name: Suite Audit
-    # 16vcpu rarely waits for a runner (see the CI Impact lane table).
-    runs-on: blacksmith-16vcpu-ubuntu-2404
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-      - name: Set up workflow tools
-        run: bash scripts/ci/setup-tools.sh workflows
-      - name: Lint workflow definitions
-        run: actionlint .github/workflows/*.yml
-      - name: Audit suite manifest and workflows
-        run: node scripts/ci/run-tests.mjs audit
-
   static-checks:
-    name: Static Checks
-    needs: impact
-    # Workspace boundary, lint, format, OpenAPI and documentation checks need no
-    # test fixture, so they run beside the test lanes in every mode instead of
-    # before Checks and Conformance 1's tests (about 40 s of its critical path).
-    if: ${{ needs.impact.outputs.mode == 'docs' || needs.impact.outputs.mode == 'full' || needs.impact.outputs.mode == 'tests' }}
+    name: Suite Audit and Static Checks
+    # Both run in every mode. Start beside CI Impact, audit the workflow and
+    # suite first, then reuse this checkout, Node and runner for static checks.
     # 16vcpu rarely waits for a runner (see the CI Impact lane table).
     runs-on: blacksmith-16vcpu-ubuntu-2404
     timeout-minutes: 10
@@ -294,6 +272,12 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: ${{ env.NODE_VERSION }}
+      - name: Set up workflow tools
+        run: bash scripts/ci/setup-tools.sh workflows
+      - name: Lint workflow definitions
+        run: actionlint .github/workflows/*.yml
+      - name: Audit suite manifest and workflows
+        run: node scripts/ci/run-tests.mjs audit
       - uses: ./.github/actions/setup-pnpm-store-cache
         with:
           node-version: ${{ env.NODE_VERSION }}
@@ -479,7 +463,6 @@ jobs:
     runs-on: ubuntu-22.04
     needs:
       - impact
-      - audit
       - static-checks
       - pr-safe
       - runtime-image-fixture

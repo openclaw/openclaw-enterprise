@@ -17,6 +17,7 @@ import { nativeAdminOriginResolver } from "../../apps/controller/src/gateway/nat
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
+import { NAME_MAX_CHARACTERS } from "../../packages/contracts/src/api/plain-text.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
 import { authenticatedHeaders, signInWithEmailPassword } from "./auth-session.mjs";
@@ -86,6 +87,13 @@ function computeDriver({
     },
     async retireRevision() {},
   });
+}
+
+// The default model credential Secret's name for createAgent. An Agent name may use all of the
+// Name rule's characters, so "Auth <Agent name>" is cut to that length (in code points); the cut
+// can land after a space, which a Name cannot end with.
+function authSecretName(agentName) {
+  return Array.from(`Auth ${agentName}`).slice(0, NAME_MAX_CHARACTERS).join("").trimEnd();
 }
 
 function spkiHash(cert) {
@@ -651,12 +659,19 @@ export async function createConsoleAppFixture(t, options = {}) {
     return configuration.data;
   }
 
+  // The listed bindings createAgent adds for each Agent's model credential (finding 2260).
+  const modelGrantBindingIds = new Set();
+
   // Grants the Agent operate on one Secret, as an Installation administrator's console does. The
   // Agent's service principal and its role are added on the first grant; a repeat changes nothing.
   // The evaluator reads this fixture policy, while the Namespace's IAM API lists only what it
   // stored, so a `listed` grant is also written through that API: the console's policy reads
   // then see it, as they see a production grant (finding 1920).
-  async function grantAgentSecretOperate(agent, source, { listed = true } = {}) {
+  async function grantAgentSecretOperate(
+    agent,
+    source,
+    { listed = true, modelGrant = false } = {},
+  ) {
     const roleId = `auth-${agent.id}`;
     const bindingId = `${roleId}-${source.id}`;
     if (policy.bindings.some((binding) => binding.id === bindingId)) {
@@ -687,8 +702,19 @@ export async function createConsoleAppFixture(t, options = {}) {
       resourceId: source.id,
     });
     if (listed) {
-      await listSecretOperate(agent, source);
+      const binding = await listSecretOperate(agent, source);
+      if (modelGrant) {
+        modelGrantBindingIds.add(binding.id);
+      }
     }
+  }
+
+  // The Namespace's listed access bindings, without the model-credential grants createAgent
+  // lists: what the console or the test itself granted since.
+  async function addedAccessBindings(namespaceId) {
+    const bindings = await request("GET", `/namespaces/${namespaceId}/iam/access-bindings`);
+    assert.equal(bindings.status, 200, JSON.stringify(bindings.body));
+    return bindings.data.filter(({ id }) => !modelGrantBindingIds.has(id));
   }
 
   async function listSecretOperate(agent, source) {
@@ -714,6 +740,7 @@ export async function createConsoleAppFixture(t, options = {}) {
       },
     });
     assert.equal(binding.status, 201, JSON.stringify(binding.body));
+    return binding.data;
   }
 
   async function createAgent(namespaceId, name, values = {}, options = {}) {
@@ -726,7 +753,7 @@ export async function createConsoleAppFixture(t, options = {}) {
         ? {
             method: "api_key",
             source: (
-              await createSecret(namespaceId, `Auth ${name}`, `test-api-key-${randomUUID()}`)
+              await createSecret(namespaceId, authSecretName(name), `test-api-key-${randomUUID()}`)
             ).ref,
           }
         : (options.harnessAuth ?? null);
@@ -743,10 +770,10 @@ export async function createConsoleAppFixture(t, options = {}) {
       },
     });
     assert.equal(agent.status, 201);
-    // The console's channel Secret checks read only bound channel Secrets' grants, so the model
-    // credential's grant need not be listed (Role counts in other cases stay as they were).
+    // An Installation administrator's console reads the model credential's grant as it reads bound
+    // channel Secrets' grants, so it is listed too (finding 2260).
     if (harnessAuth?.method === "api_key") {
-      await grantAgentSecretOperate(agent.data, harnessAuth.source, { listed: false });
+      await grantAgentSecretOperate(agent.data, harnessAuth.source, { modelGrant: true });
     }
     // The console grants the Agent each Secret its Configuration binds when it binds it.
     for (const { source } of Object.values(options.secretBindings ?? {})) {
@@ -858,6 +885,7 @@ export async function createConsoleAppFixture(t, options = {}) {
     updateConfiguration,
     createAgent,
     grantAgentSecretOperate,
+    addedAccessBindings,
     updateAgent,
     deployAgent,
     activateRevision,

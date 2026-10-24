@@ -4,6 +4,9 @@ import { element, button, setFieldError, statusBlock, validateFields } from "../
 import type { createDraftStore } from "../drafts.mjs";
 
 const filenames = ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"];
+// Shown when the caller's permission answer denies Agent operate, which saving a file needs.
+const OPERATE_DENIED =
+  "Your access does not include operating this Agent. Ask an administrator for Agent operate access to save workspace files.";
 
 interface WorkspaceContext {
   request: ReturnType<typeof createApiClient>;
@@ -57,13 +60,18 @@ function writeOutcomeUnknown(status: number | undefined) {
 }
 
 // Returns the section and `refresh`, which rereads the files in place after another version
-// becomes current.
+// becomes current. `operateAllowed` is the caller's Agent operate answer: when it is false, every
+// Save is marked unavailable with the reason before the reader edits anything (finding 521). A
+// missing answer leaves Save on its usual path; the API still refuses the write.
 export function renderWorkspaceFiles(
   context: WorkspaceContext,
   agent: Pick<AgentRead, "activeRevisionId">,
   path: string,
+  operateAllowed?: Promise<boolean | undefined> | null,
 ) {
   const refreshers: Array<() => Promise<void>> = [];
+  const denials: Array<() => void> = [];
+  let operateDenied = false;
   const section = element(
     "section",
     { className: "workspace-files" },
@@ -78,6 +86,13 @@ export function renderWorkspaceFiles(
       { role: null },
     ),
   );
+  const operateNote = element("p", {
+    id: "workspace-operate-denied",
+    className: "muted",
+    role: "status",
+    hidden: true,
+  });
+  section.append(operateNote);
   if (!agent.activeRevisionId) {
     section.append(
       element(
@@ -135,6 +150,8 @@ export function renderWorkspaceFiles(
       `Save ${name}`,
     );
     const reload = button(`Reload ${name}`, () => void load(true));
+    const missingCreate = `${name} is missing. Save to create it.`;
+    const missingText = () => (operateDenied ? `${name} is missing.` : missingCreate);
     const form = element(
       "form",
       { className: "agent-card agent-form", novalidate: "" },
@@ -155,9 +172,24 @@ export function renderWorkspaceFiles(
     );
     const updateControls = () => {
       editor.disabled = pending || !loaded;
+      // The file stays readable and selectable, but an edit no Save can keep is not offered.
+      editor.readOnly = operateDenied;
       reload.disabled = pending;
-      save.disabled = pending || !loaded || outcomeUnknown || editor.value === baseline;
+      // aria-disabled, not disabled: Save stays in the Tab order and its description names the
+      // grant it needs. The submit handler ignores it.
+      save.disabled =
+        !operateDenied && (pending || !loaded || outcomeUnknown || editor.value === baseline);
+      if (operateDenied) {
+        save.setAttribute("aria-disabled", "true");
+        save.setAttribute("aria-describedby", operateNote.id);
+      }
     };
+    denials.push(() => {
+      if (status.textContent === missingCreate) {
+        status.textContent = `${name} is missing.`;
+      }
+      updateControls();
+    });
     editor.addEventListener("input", () => {
       editor.setCustomValidity("");
       updateControls();
@@ -217,7 +249,7 @@ export function renderWorkspaceFiles(
         } else {
           loaded = false;
         }
-        status.textContent = canCreate ? `${name} is missing. Save to create it.` : "";
+        status.textContent = canCreate ? missingText() : "";
         errorNotice.textContent = canCreate ? "" : fileError(cause, false);
       } finally {
         if (context.isCurrent()) {
@@ -235,6 +267,7 @@ export function renderWorkspaceFiles(
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       if (
+        operateDenied ||
         pending ||
         !loaded ||
         outcomeUnknown ||
@@ -348,9 +381,7 @@ export function renderWorkspaceFiles(
           // status gives way to that notice again rather than to nothing (finding 1885).
           if (rereadFailed) {
             rereadFailed = false;
-            status.textContent = errorNotice.textContent
-              ? ""
-              : `${name} is missing. Save to create it.`;
+            status.textContent = errorNotice.textContent ? "" : missingText();
           }
           return;
         }
@@ -394,6 +425,19 @@ export function renderWorkspaceFiles(
     section.append(form);
     void load();
   }
+  // An answer already settled applies before this section is first painted. It also applies while
+  // the tab is parked (another tab is shown), since the page restores these nodes on return; it
+  // changes only this section's own nodes.
+  void operateAllowed?.then((allowed) => {
+    if (allowed === false) {
+      operateDenied = true;
+      operateNote.textContent = OPERATE_DENIED;
+      operateNote.hidden = false;
+      for (const deny of denials) {
+        deny();
+      }
+    }
+  });
   return {
     section,
     refresh: () => {

@@ -273,5 +273,5 @@ func TestDevelopmentImageImportRetriesAClosedStreamAndVerifiesTheDigest(t *testi
 	if got != reference {
 		t.Fatalf("unexpected runtime reference: %q", got)
 	}
-	assertRetriedImport(t, commands(), filepath.Join(state.directory, "development-import.tar"), state.Cluster, stdout.String())
+	assertRetriedImport(t, commands(), filepath.Join(state.directory, developmentImportArchive(recorded)), state.Cluster, stdout.String())
 }

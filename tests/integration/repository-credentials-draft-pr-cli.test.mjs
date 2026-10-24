@@ -11,8 +11,8 @@ import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
 
 // `oce-github pr-create` in OpenShell mode: each failure class prints its own line, so an
 // Agent or operator can tell a usage error, a local refusal, a route denial, a GitHub
-// refusal and an unconfirmed outcome apart (finding 2134). Only the last one may have
-// created a draft, so only it says to check GitHub before anything else.
+// refusal and an unconfirmed outcome apart (finding 2134). A denied request cannot
+// establish the outcome of an earlier attempt.
 const helper = fileURLToPath(
   new URL(
     "../../apps/controller/src/drivers/repo/github/credentials/client/draft-pr.ts",
@@ -185,6 +185,36 @@ tls.connect = (options, ...rest) => connect({ ...options, host: "127.0.0.1", por
       "Draft not sent: could not connect to api.github.com (ECONNREFUSED).",
     );
 
+    // The first attempt has an unknown outcome. A subsequent denial says only that
+    // this request was not forwarded; it cannot confirm what happened to the first.
+    reply = { status: 502, body: { message: "Server Error" } };
+    const beforeUnknown = requests;
+    const unknown = await create();
+    assert.equal(unknown.code, 1);
+    assert.match(unknown.lines[0], attempt);
+    assert.deepEqual(unknown.lines.slice(1), [unconfirmed]);
+    assert.equal(requests, beforeUnknown + 1, "unknown outcome must not trigger another request");
+
+    reply = {
+      status: 403,
+      body: {
+        error: "middleware_denied",
+        middleware: "oce-prepared-git",
+        reason_code: "draft_already_opened",
+        layer: "l7",
+      },
+    };
+    const beforeDenied = requests;
+    const denied = await create();
+    assert.equal(denied.code, 1);
+    assert.match(denied.lines[0], attempt);
+    assert.equal(denied.lines.length, 2);
+    assert.match(denied.lines[1], /^Draft not created: .*draft-create allowance .*used/);
+    assert.match(denied.lines[1], /GitHub did not receive this request/);
+    assert.match(denied.lines[1], /whether the earlier attempt created a draft/);
+    assert.match(denied.lines[1], /do not submit another create/);
+    assert.equal(requests, beforeDenied + 1, "spent allowance must not trigger another request");
+
     const cases = [
       [
         "route denial",
@@ -198,20 +228,6 @@ tls.connect = (options, ...rest) => connect({ ...options, host: "127.0.0.1", por
           },
         },
         "Draft not created: the repository route refused it (online_authorization_denied); GitHub did not receive it. Retry once; if it is refused again, ask an operator to check the worker log.",
-      ],
-      // Finding 2147: the grant's one draft create was already used, by any version or Agent.
-      [
-        "draft already opened",
-        {
-          status: 403,
-          body: {
-            error: "middleware_denied",
-            middleware: "oce-prepared-git",
-            reason_code: "draft_already_opened",
-            layer: "l7",
-          },
-        },
-        "Draft not created: this repository binding already opened its draft pull request (one per review branch and base); GitHub did not receive this one. Find the earlier draft at GitHub; for another draft, ask an operator for a new review branch.",
       ],
       // Finding 2149: each worker refusal says what the Agent can do about it.
       ...[
@@ -303,7 +319,6 @@ tls.connect = (options, ...rest) => connect({ ...options, host: "127.0.0.1", por
         },
         "Draft not created: GitHub answered 422: Validation Failed; e0; e1; e2; e3; e4.",
       ],
-      ["GitHub server error", { status: 502, body: { message: "Server Error" } }, unconfirmed],
       ["unconfirmed success", { status: 201, body: { number: 7, draft: false } }, unconfirmed],
     ];
     for (const [label, response, expected] of cases) {

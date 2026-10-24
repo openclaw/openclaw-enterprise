@@ -752,6 +752,8 @@ function deploymentErrorMessage(code: string): string {
       return "The Agent Gateway refused its own CLI as unauthorized. Check that the Agent's Configuration sets gateway.auth.password to OPENCLAW_GATEWAY_PASSWORD (Enable gateway password access), then deploy again.";
     case "KUBERNETES_API_UNAVAILABLE":
       return "The Kubernetes API was still unavailable at the deployment deadline.";
+    case "KUBERNETES_SECRET_WRITE_FORBIDDEN":
+      return "Kubernetes refused access to a Secret this version needs (HTTP 403 Forbidden), so the controller did not retry. Ask a platform operator to check that the worker's tenant RoleBindings grant get, create and update on secrets in the Agent's Kubernetes namespaces (with an execution cluster, also the control cluster's Gateway namespace), and that no admission policy or ResourceQuota refuses Secrets there, then deploy again.";
     case "SANDBOX_REPOSITORY_RECIPIENT_UNVERIFIED":
       return SandboxRepositoryRecipientUnverifiedError.description;
     case "SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED":
