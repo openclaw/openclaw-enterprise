@@ -22,8 +22,11 @@ recorder handles the opening pause, transitions, and reading time. It briefly ou
 the next control in blue. This is a recording annotation, separate from keyboard focus.
 Keep these pauses out of product tests.
 
+Replace `/path/to/openclaw-enterprise` with the absolute path to your checkout so
+you can run this script from a separate evidence directory.
+
 ```ts
-import { recordWalkthrough } from "./scripts/console/record-walkthrough.ts";
+import { recordWalkthrough } from "/path/to/openclaw-enterprise/scripts/console/record-walkthrough.ts";
 
 const open = page.getByRole("button", { name: "Create Secret" });
 await recordWalkthrough(page, {
