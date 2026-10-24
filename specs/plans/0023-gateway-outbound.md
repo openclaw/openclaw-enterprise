@@ -7,13 +7,16 @@ rfc: ../rfcs/0024-gateway-outbound.md
 - **ID:** RFC-0024
 - **Delivery status:** In progress
 - **Authority:** [RFC-0024](../rfcs/0024-gateway-outbound.md)
+- **RFC review:** [#3520](https://github.com/openclaw/openclaw-enterprise/pull/3520)
 - **Source baseline:** `d3ccc54781d0d50b40e9aeb814f0573d38c0a585`
 - **Refresh target:** upstream `main` at `7d472f3f7d3b5104deb7e18ae7a2627ce1da0f91`
 
 ## Outcome and scope
 
-Deliver the RFC through the regular Agent workflow in one draft PR. Preserve
-dedicated execution and existing credential owners. Supply automatic Slack
+Keep this branch as a draft implementation for reference and experimentation.
+Architectural discussion takes place in the separate RFC review linked above;
+prototype evidence does not establish design acceptance or release qualification.
+Preserve dedicated execution and existing credential owners. Supply automatic Slack
 requirements, explicitly approved restricted/public integration HTTPS, isolated
 revision proxies and a separately restricted control-plane transport. Teams
 implementation, embedded networking and remote plugin hosting are excluded.
