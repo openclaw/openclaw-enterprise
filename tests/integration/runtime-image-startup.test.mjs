@@ -1790,7 +1790,7 @@ const platformBinary = resolve(platformPackageRoot, platform.binaryPath);
 // image's PATH: a shim in place of the launcher symlink would make it fall back.
 ${codexExecutableSource}
 const harnessCodex = codexExecutable();
-assert.ok(harnessCodex.startsWith("/"), "codexExecutable() fell back to " + harnessCodex);
+assert.ok(harnessCodex.startsWith("/"), "codexExecutable() fell back to " + harnessCodex + " on PATH " + process.env.PATH);
 assert.equal(realpathSync(harnessCodex), realpathSync(platformBinary));
 const platformBinarySha256 = createHash("sha256").update(readFileSync(platformBinary)).digest("hex");
 const platformInventoryPath = relative("/app/node_modules/openclaw", realpathSync(platformBinary));
