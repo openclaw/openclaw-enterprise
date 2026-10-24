@@ -16,11 +16,14 @@ const NODE_PROGRAM_LOADER =
 /**
  * The program without its whole-line `//` comments, which are about a fifth of a
  * rendered runtime program's compressed size (finding 2326). Without template literals,
- * line continuations or a `/*` anywhere, such a line cannot sit inside a string or a
- * block comment, so only comments go; any other program is returned unchanged.
+ * line continuations, a `/*`, or a line terminator other than `\n` (a string may hold a raw
+ * U+2028 or U+2029) anywhere, such a line cannot sit inside a string or a block comment,
+ * so only comments go; any other program is returned unchanged.
  */
 export function withoutLineComments(program: string): string {
-  return /`|\/\*|\\\r?\n/.test(program) ? program : program.replace(/^[ \t]*\/\/.*\n/gm, "");
+  return /[`\r\u2028\u2029]|\/\*|\\\n/.test(program)
+    ? program
+    : program.replace(/^[ \t]*\/\/.*\n/gm, "");
 }
 
 /**

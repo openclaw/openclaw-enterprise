@@ -2570,12 +2570,16 @@ test("rendered runtime programs reach node without whole-line comments", () => {
     const [, ...pieces] = nodeProgramArguments(program);
     assert.equal(inflateRawSync(Buffer.from(pieces.join(""), "base64")).toString("utf8"), sent);
   }
-  // A `//` line can sit inside a template literal, a continued string or a block comment;
-  // a program with any of those (the Gateway entrypoint has a "/*" glob) is left whole.
+  // A `//` line can sit inside a template literal, a continued string, a string with a raw
+  // U+2028 or U+2029, or a block comment; a program with any of those (the Gateway
+  // entrypoint has a "/*" glob) or a carriage return is left whole.
   for (const program of [
     GATEWAY_RUNTIME_ENTRYPOINT,
     "const text = `\n// kept\n`;\n",
     'const text = "a\\\n// kept";\n',
+    'const text = "a\\\r// kept";\n',
+    'const text = "a\u2028// kept";\n',
+    'const text = "a\u2029// kept";\n',
     "/*\n// kept */\nrun();\n",
   ]) {
     assert.equal(withoutLineComments(program), program);
