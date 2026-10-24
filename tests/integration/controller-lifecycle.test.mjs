@@ -1066,9 +1066,12 @@ test("Sandbox Drivers without an Agent configuration hook preserve the admitted 
   assert.equal(revision.configuration.plugins.entries.codex.config.appServer.sandbox, "read-only");
 });
 
-for (const { title, configureAgent, message } of [
+for (const { title, implementation, namespaceName, agentName, configureAgent, message } of [
   {
     title: "malformed provider configuration",
+    implementation: "malformed-containment",
+    namespaceName: "Malformed Sandbox configuration",
+    agentName: "Rejected dedicated Agent",
     configureAgent: () => null,
     message: "Configuration values must be a JSON object.",
   },
@@ -1076,10 +1079,15 @@ for (const { title, configureAgent, message } of [
     // Deployment admits the Harness the stored Configuration selects; a Driver view that
     // moves the model to another Harness runtime is refused.
     title: "a provider configuration that changes the Harness runtime",
+    implementation: "runtime-changing-containment",
+    namespaceName: "Runtime-changing Sandbox configuration",
+    agentName: "Dedicated Agent on a moved runtime",
     configureAgent: (configuration) => ({
       ...configuration,
       agents: {
+        ...configuration.agents,
         defaults: {
+          ...configuration.agents.defaults,
           model: "openai/gpt-5",
           models: { "openai/gpt-5": { agentRuntime: { id: "openclaw" } } },
         },
@@ -1090,17 +1098,14 @@ for (const { title, configureAgent, message } of [
 ]) {
   test(`Sandbox admission rejects ${title} before creating a revision`, async () => {
     const { controller } = createController();
-    const sandbox = createSandboxDriver({
-      implementation: "malformed-containment",
-      configureAgent,
-    });
+    const sandbox = createSandboxDriver({ implementation, configureAgent });
     controller.registerDriver(sandbox);
     controller.selectDriver("sandbox", sandbox.id);
 
     const target = await createDedicatedAgentForSandboxAdmission(
       controller,
-      "Malformed Sandbox configuration",
-      "Rejected dedicated Agent",
+      namespaceName,
+      agentName,
       codexSandboxConfiguration(),
     );
 
