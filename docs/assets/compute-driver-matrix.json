@@ -2174,7 +2174,7 @@
         },
         "kubernetes": {
           "status": "supported",
-          "detail": "At the reviewed baseline, private routing verified explicit trusted-proxy settings. The current Driver always renders trusted-proxy authentication from Installation settings; see the current Driver reference.",
+          "detail": "At the reviewed baseline, private routing verified explicit trusted-proxy settings. The current Driver renders trusted-proxy trust settings from the Installation and preserves explicit Agent Configuration identities and grants alongside machine administration; see the current Driver reference.",
           "evidence": [
             {
               "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
