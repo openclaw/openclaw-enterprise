@@ -38,6 +38,7 @@ import {
   waitForInputValue,
   waitForSettledFetches,
   statusTone,
+  isMaskedSecretValue,
 } from "./console-agents-browser-helpers.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import {
@@ -2369,7 +2370,7 @@ test("Agent credential Secret picker searches, validates, and preserves duplicat
     await dialog.getByLabel("Name", { exact: true }).inputValue(),
     "Combobox Agent harness authentication",
   );
-  assert.equal(await dialog.getByLabel("Value", { exact: true }).getAttribute("type"), "password");
+  assert.equal(await isMaskedSecretValue(dialog.getByLabel("Value", { exact: true })), true);
   await dialog.getByLabel("Name", { exact: true }).fill(duplicateNameSecret.name);
   await dialog.getByLabel("Value", { exact: true }).fill("synthetic-duplicate-value");
   const duplicate = page.waitForResponse(

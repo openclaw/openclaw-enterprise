@@ -49,6 +49,7 @@ import {
   waitForEnabled,
   waitForInputValue,
   statusTone,
+  isMaskedSecretValue,
 } from "./console-agents-browser-helpers.mjs";
 import {
   STARTER_CONTROL_UI,
@@ -231,8 +232,8 @@ test("Agent creation stores its API key separately, grants exact access, and sav
     "Console-created Agent Slack bot token",
   );
   assert.equal(
-    await createSecretDialog.getByLabel("Value", { exact: true }).getAttribute("type"),
-    "password",
+    await isMaskedSecretValue(createSecretDialog.getByLabel("Value", { exact: true })),
+    true,
   );
   // Dismissing the topmost dialog discards its token, not the underlying Slack edits.
   await createSecretDialog.getByLabel("Value", { exact: true }).fill("discarded-secret-value");
