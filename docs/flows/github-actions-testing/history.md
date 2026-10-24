@@ -58,3 +58,7 @@ This record preserves the dated changes to the GitHub Actions testing flow. See 
 - 2026-09-04 15:10: Clarified independent logging backend cleanup and local one-Kubernetes-lane-at-a-time guidance after measured Docker VM pressure.
 - 2026-09-04 15:35: Documented the shared Docker 29.4.0 setup action for Collector and Docker-model compatibility.
 - 2026-09-04 16:00: Pointed evolving proof status to spec19 after PR #23 head `27bd0e9` passed the hosted PR lanes and local live Docker-model execution passed.
+
+- 2026-10-10 09:04: Preserve failed-wait container evidence when optional watch startup fails. (authoring-run/c7f52e93-d02d-497c-b146-43640cef1418 - acb84f827e22218bdb8432c48cbb22d644503cfb)
+
+- 2026-10-10 06:28: Await initial Agent watch synchronization before each test file. (authoring-run/1daba808-076b-48c2-a2ef-79a5f6149f31 - 792304b6a09b5df4f46e3889066f231610b294cf)
