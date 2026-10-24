@@ -3686,12 +3686,15 @@ test("startup refuses OpenShell filesystem paths before any Sandbox is created",
   );
 });
 
-// The schema leaves these open, so the Driver's own checks are the only refusal.
+// The schema leaves these open, so the Driver's own checks are the only refusal. Startup
+// reports each as the same generic detail, so every case must change one valid field of
+// the fixture, and the control below shows the fixture loads otherwise.
 test("startup refuses OpenShell settings its schema leaves open", async (t) => {
   const refused = invalidValue("", "Configuration violates the Driver's constraints.");
   const dataMount = (c) => sandboxOf(c).kubernetes.sandboxDataMount;
   for (const change of [
     (c) => delete sandboxOf(c).gateway.workspaceMode,
+    // labels() refuses an empty map before the explicit empty check does.
     (c) => (sandboxOf(c).gateway.operatorNamespaceLabels = {}),
     (c) =>
       (sandboxOf(c).gateway.operatorWorkspaceResources = [
@@ -3701,7 +3704,8 @@ test("startup refuses OpenShell settings its schema leaves open", async (t) => {
     (c) => (dataMount(c).subPath = "."),
     (c) => (dataMount(c).mountPath = "/data"),
     (c) => delete dataMount(c).readOnly,
-    // Sandbox names add 17 characters to the prefix, and OpenShell allows 19.
+    // Sandbox names need 17 characters after the prefix (a dash and a 16-character hash),
+    // and OpenShell allows 19.
     (c) => (sandboxOf(c).sandboxNamePrefix = "abc"),
   ]) {
     await rejectsAtStartup(t, change, refused);
@@ -3709,7 +3713,6 @@ test("startup refuses OpenShell settings its schema leaves open", async (t) => {
   // Control: the same fields load with accepted values.
   const accepted = sandboxInstallation();
   Object.assign(sandboxOf(accepted).gateway, {
-    workspaceMode: "managed",
     operatorNamespaceLabels: { team: "agents" },
     operatorWorkspaceResources: [
       { apiVersion: "v1", kind: "ServiceAccount", metadata: { name: "sandbox" } },
