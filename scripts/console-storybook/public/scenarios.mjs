@@ -1127,10 +1127,10 @@ export const scenarios = {
       "The confirmation says what deletion removes and what stays in the Namespace. Separate cleanup commands are available on request.",
     steps: [
       "Open View separate cleanup commands. Copying a command leaves the confirmation open.",
-      "Select Permanently delete Agent. The row shows Deleting and both icons are disabled.",
-      "Select Refresh: the row still shows Deleting, because the list keeps an Agent until its cleanup finishes.",
+      "Select Permanently delete Agent to open the deletion status page.",
+      "Follow the status to Agent deleted, then use Back to Agents.",
     ],
-    gap: "The fixture does not run cleanup. Open the Agent to follow deletion status.",
+    gap: "Worker progress and completion are simulated.",
   },
   agentsRowStopDenied: {
     group: "Pages/Agents",
@@ -7204,60 +7204,41 @@ export const scenarios = {
   },
   deleting: {
     group: "Components/Deletion",
-    name: "Cleanup in progress",
+    name: "Follow deletion to completion",
     path: draft,
-    deleting: true,
-    rules: [{ suffix: "/agents/agt_00000000-0000-4000-8000-000000000001", skip: 1, delayMs: 1300 }],
+    actions: [click("Delete Agent"), click("Permanently delete Agent")],
     steps: [
-      "Focus Refresh deletion status and press Enter. When Checking finishes, focus returns to Refresh.",
-      "Refresh again and press Tab during Checking. The response leaves focus where you moved it.",
-      "Leave the page open: the 3 s status polls do not change Refresh to Checking or rewrite the deletion notice.",
+      "Follow Deletion queued, Deleting Agent, then Agent deleted. Refresh reads status without sending another deletion.",
+      "Choose Back to Agents when you’re ready. Losing access or a missing receipt would not confirm deletion.",
     ],
     description:
-      "An already deleting Agent retains manual confirmed recovery and status refresh controls; worker progress is simulated.",
+      "The Console follows an accepted deletion. The fixture simulates the worker and its final result.",
+  },
+  deletionWaiting: {
+    group: "Components/Deletion",
+    name: "Waiting for automatic cleanup",
+    path: draft,
+    deleting: true,
+    deletionStatus: "waiting",
+    description: "Cleanup will continue automatically. There is no manual retry action.",
   },
   deletionRetryConfirm: {
     group: "Components/Deletion",
-    name: "Repeat cleanup confirmation",
+    name: "Retry after cleanup stopped",
     path: draft,
     deleting: true,
-    actions: [click("Request deletion again")],
-    description:
-      "A manual repeated deletion requires confirmation. Queued or running cleanup remains unchanged, and separate cleanup commands stay collapsed until opened.",
+    deletionStatus: "failed",
+    actions: [click("Retry cleanup")],
+    description: "Only failed cleanup with current delete permission offers a confirmed retry.",
   },
-  deletionRetryAccessEnded: {
+  deletionStatusUnavailable: {
     group: "Components/Deletion",
-    name: "Status access ends during repeat confirmation",
+    name: "Status access ends",
     path: draft,
     deleting: true,
-    rules: [{ suffix: "/agents/agt_00000000-0000-4000-8000-000000000001", skip: 1, status: 403 }],
-    actions: [click("Request deletion again")],
+    rules: [{ suffix: "/deletion-status", status: 403 }],
     description:
-      "The Agent was already marked for deletion. The next status check is refused while the repeat confirmation is open.",
-    steps: [
-      "Leave the confirmation open. It closes when the status check returns, without sending another deletion request.",
-      "Focus returns to Delete Agent. The notice says you can no longer check whether cleanup finished.",
-    ],
-  },
-  deletionRetryUnknown: {
-    group: "Components/Deletion",
-    name: "Repeat cleanup outcome unknown",
-    path: draft,
-    deleting: true,
-    rules: [
-      {
-        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001",
-        method: "DELETE",
-        status: 503,
-        once: true,
-      },
-    ],
-    actions: [
-      click("Request deletion again"),
-      { selector: ".agent-delete-dialog button.danger", click: "Request deletion again" },
-    ],
-    description:
-      "An uncertain repeat request remains disabled until Refresh reads the already deleting Agent successfully. No write is automatically retried.",
+      "Access ended. The Console cannot confirm deletion and offers no destructive action.",
   },
   deletionDenied: {
     group: "Components/Deletion",
@@ -7658,9 +7639,7 @@ export const scenarios = {
     stopped: true,
     deletingOnRefresh: true,
     description: "Another actor starts deletion after the page loads.",
-    steps: [
-      "Choose Refresh stop status. The page shows deletion recovery and focuses Refresh deletion status without sending a write.",
-    ],
+    steps: ["Choose Refresh stop status. The page opens deletion status without sending a write."],
   },
   stopRepeatConfirm: {
     group: "Components/Stop Agent",
@@ -7755,10 +7734,10 @@ export const scenarios = {
       "Scroll to Delete Agent and open its confirmation dialog.",
       "Read what stays in the Namespace. Open View separate cleanup commands to copy a command without running it.",
       "Cancel once to inspect the safe exit, then reopen and confirm Permanently delete Agent.",
-      "The page marks deletion requested, removes edit/deploy controls, and keeps confirmed manual recovery available.",
-      "Click Refresh deletion status. The fixture now reports completion and the console returns to the Agent list.",
+      "The status page opens at Deletion queued and updates to Deleting Agent as simulated cleanup starts.",
+      "Wait for Agent deleted, then choose Back to Agents. Refresh deletion status never sends another deletion.",
     ],
-    gap: "The console reports deletion status but provides no detailed cleanup-progress view. Configurations and Secrets remain Namespace-owned and need separate management.",
+    gap: "The fixture simulates cleanup and its result. Configurations and Secrets stay in the Namespace; repository cleanup continues separately.",
   },
 };
 

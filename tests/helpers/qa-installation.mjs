@@ -9,7 +9,7 @@ import { renderPresetTemplate } from "../../packages/contracts/src/index.ts";
 import { availablePort } from "./available-port.mjs";
 import { createNativePluginAssertions } from "./plugin-driver-real.mjs";
 import { prepareHybridInstallation } from "./qa-hybrid.mjs";
-import { grantQaRepositoryBranch } from "./qa-repository.mjs";
+import { grantQaRepositoryBranch, stopQaAgentForCleanup } from "./qa-repository.mjs";
 import { loadYaml, dumpYaml, waitFor } from "./qa-utils.mjs";
 import {
   protectedText,
@@ -677,17 +677,8 @@ export async function createQaInstallation(
       child.kill("SIGTERM");
     }
     for (const agent of f.agents) {
-      if (agent.stopped) {
-        continue;
-      }
       try {
-        await f.api("POST", `/namespaces/${agent.namespaceId}/agents/${agent.id}/stop`);
-        await waitFor(
-          "Agent stop",
-          async () =>
-            !(await f.api("GET", `/namespaces/${agent.namespaceId}/agents/${agent.id}`))
-              .activeRevisionId,
-        );
+        await stopQaAgentForCleanup(f, agent);
       } catch {
         f.retained = true;
       }

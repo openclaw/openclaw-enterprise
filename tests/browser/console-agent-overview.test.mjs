@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 
-import { DELETION_POLL_MS } from "../../apps/controller/src/console/agents/deletion.mjs";
+import { DELETION_POLL_MS } from "../../apps/controller/src/console/agents/deletion-status.mjs";
 import { FIRST_ACTIVITY_WAIT_MS } from "../../apps/controller/src/console/agents/detail.mts";
 import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/deployment-evidence.mts";
 import { deploymentFailureStep } from "../../apps/controller/src/console/agents/deployment-recovery.mts";
@@ -143,9 +143,9 @@ test("deletion status polls leave Refresh and the deletion notice untouched", as
     t,
     "Quiet deletion",
     "Quiet Deletion",
+    { recordOperations: true },
   );
   const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
-  const agentUrl = `${fixture.origin}${agentPath}`;
   await trackSettledFetches(page);
   await page.clock.install({ time: new Date("2026-10-16T12:00:00Z") });
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
@@ -153,7 +153,10 @@ test("deletion status polls leave Refresh and the deletion notice untouched", as
   await page.getByRole("button", { name: "Delete Agent" }).click();
   const dialog = page.getByRole("dialog", { name: "Delete Quiet Deletion?" });
   await dialog.getByRole("button", { name: "Permanently delete Agent" }).click();
-  await page.getByRole("status").getByText("Deletion was requested").waitFor();
+  await page.getByRole("heading", { name: "Deletion queued" }).waitFor();
+  const receipt = new URL(page.url()).searchParams.get("receiptId");
+  const statusPath = agentPath + "/deletion-status";
+  const statusUrl = fixture.origin + statusPath + "?receiptId=" + receipt;
   // Polls run only when the test advances the clock. Pause 1 s ahead of the page's own time,
   // short of the first poll: a fixed time fails once sign-in and delete outlast it.
   const now = await page.evaluate(() => Date.now());
@@ -172,7 +175,7 @@ test("deletion status polls leave Refresh and the deletion notice untouched", as
             : `${record.type}: ${record.target.textContent.slice(0, 40)}`,
         );
       }
-    }).observe(globalThis.document.querySelector(".deletion-note"), {
+    }).observe(globalThis.document.querySelector(".deletion-status"), {
       attributes: true,
       characterData: true,
       childList: true,
@@ -181,14 +184,14 @@ test("deletion status polls leave Refresh and the deletion notice untouched", as
   });
 
   for (let poll = 0; poll < 2; poll += 1) {
-    const settled = await settledFetches(page, agentPath);
+    const settled = await settledFetches(page, statusPath);
     const read = page.waitForResponse(
-      (response) => response.url() === agentUrl && response.request().method() === "GET",
+      (response) => response.url() === statusUrl && response.request().method() === "GET",
     );
     await page.clock.runFor(DELETION_POLL_MS);
     assert.equal((await read).status(), 200);
     // The poll's read has settled and the page has handled it.
-    await waitForSettledFetches(page, agentPath, settled + 1);
+    await waitForSettledFetches(page, statusPath, settled + 1);
   }
   assert.deepEqual(await page.evaluate(() => globalThis.deletionChanges), []);
   assert.equal(await refresh.evaluate((node) => node.matches(":focus")), true);
@@ -196,14 +199,14 @@ test("deletion status polls leave Refresh and the deletion notice untouched", as
   // Refresh pressed while a quiet poll reads turns that poll into a shown check, and focus
   // comes back to Refresh when it ends.
   for (const during of ["poll", "idle"]) {
-    const read = await holdRequests(t, page, agentUrl, { once: true });
+    const read = await holdRequests(t, page, statusUrl, { once: true });
     if (during === "poll") {
       await page.clock.runFor(DELETION_POLL_MS);
       await read.requested;
       assert.equal(await refresh.isEnabled(), true);
     }
     await page.keyboard.press("Enter");
-    await page.getByRole("button", { name: "Checking…" }).waitFor();
+    await page.getByRole("button", { name: "Checking status…" }).waitFor();
     read.release();
     await refresh.waitFor();
     await page.waitForFunction(() => globalThis.document.activeElement?.tagName === "BUTTON");
@@ -2579,7 +2582,9 @@ test("Delete during a Configuration save keeps saying why the page stays open", 
 // of the page is set up. ← Agents and the reload check read that part, threw, and did nothing
 // (finding 2125).
 test("A page that opens on a deleting Agent can still be left", async (t) => {
-  const { fixture, namespace } = await readyNamespace(t, "Opened deleting");
+  const { fixture, namespace } = await readyNamespace(t, "Opened deleting", {
+    recordOperations: true,
+  });
   const agent = await fixture.createAgent(
     namespace.id,
     "Opened Deleting Agent",
@@ -2594,7 +2599,7 @@ test("A page that opens on a deleting Agent can still be left", async (t) => {
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
-  await page.getByRole("button", { name: "Request deletion again" }).waitFor();
+  await page.getByRole("heading", { name: "Deletion queued" }).waitFor();
   assert.equal(await asksBeforeUnload(page), false);
   await page.getByRole("link", { name: "← Agents" }).click();
   await page.getByRole("heading", { name: "Agents", exact: true }).waitFor();

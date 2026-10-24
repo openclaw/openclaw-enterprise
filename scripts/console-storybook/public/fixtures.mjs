@@ -239,6 +239,8 @@ export function installFixture(scenario, evidence) {
   const roles = [];
   const bindings = [];
   const deleted = new Set();
+  const deletionReceiptId = "aud_00000000-0000-4000-8000-000000000001";
+  let deletionReads = 0;
   const clearRevisionOnRead = new Set();
   const session = {
     authenticated: true,
@@ -1422,6 +1424,23 @@ export function installFixture(scenario, evidence) {
       if (agentMatch) {
         const [, id, suffix] = agentMatch;
         const saved = agents.get(id);
+        if (suffix === "/deletion-status" && method === "GET") {
+          const receiptId = url.searchParams.get("receiptId");
+          const status =
+            scenario.deletionStatus ??
+            (deleted.has(id)
+              ? ["queued", "running", "deleted"][Math.min(deletionReads++, 2)]
+              : "queued");
+          if (status === "deleted" && !receiptId) {
+            return error(404);
+          }
+          return response({
+            agentId: id,
+            namespaceId,
+            status,
+            ...(receiptId ? { receiptId } : {}),
+          });
+        }
         if (!saved) {
           return error(404);
         }
@@ -1717,7 +1736,8 @@ export function installFixture(scenario, evidence) {
             saved.status = "deleting";
             saved.desiredRuntimeState = "stopped";
             deleted.add(id);
-            return response(saved, 202);
+            deletionReads = 0;
+            return response(saved, 202, undefined, { deletionReceiptId });
           }
         }
         if (suffix === "/permissions" && method === "GET") {

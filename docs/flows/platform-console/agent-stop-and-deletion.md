@@ -1,7 +1,7 @@
 ---
 created: 2026-10-20
-updated: 2026-10-20
-last_updated_session: 8b95a6fb-7095-4556-9028-0723f32cc534
+updated: 2026-10-24
+last_updated_session: authoring-run/2912f79a-c23d-4312-a263-1ffb0e516efc
 ---
 
 # Console Agent stop and deletion
@@ -35,11 +35,13 @@ graph TD
     S --> T["POST exact Agent stop"]
     T -->|accepted or uncertain| U["Refresh desired state and selected version"]
     T -->|denied| I
-    G -->|accepted or uncertain| H["Refresh exact Agent"]
+    G -->|accepted| H["Follow the deletion receipt"]
+    G -->|uncertain| X["Read the Agent without repeating deletion"]
     G -->|denied| I["Show access denied"]
-    H -->|exists| J["Show current Agent state"]
-    J -->|known deleting and manual request| E
-    H -->|not found| K["Return to Agents list"]
+    H -->|queued, running or waiting| J["Show progress and check again"]
+    H -->|failed| F["Offer a confirmed retry with current delete permission"]
+    H -->|deleted| K["Show Agent deleted and a link back to Agents"]
+    H -->|unavailable| N["Leave the outcome unconfirmed"]
   end
 ```
 
@@ -66,41 +68,42 @@ just used it. The overview's **Runtime** row reports a requested stop.
 
 Refresh reads desired state and selected version, not live health. Denial stays inline; changed
 state updates panels in place. If the read finds deletion in progress, Agent detail switches to
-the deletion recovery controls without sending a write. Focus moves to **Refresh deletion status**
-only when the reader stayed on the disappearing Stop control. An uncertain write blocks another
+the deletion status page without sending a write. An uncertain write blocks another
 Stop until readback succeeds.
 [Deploy to resume](../../reference/agents/deployment.md#stop-and-resume); the lifecycle
 reference covers worker shutdown and preservation of versions, credentials, and state.
 
 <span id="7-confirm-deletion-and-read-back-the-agent"></span>
 <span id="7.-confirm-deletion-and-read-back-the-agent"></span>
+<span id="8-confirm-deletion-and-read-back-the-agent"></span>
 
-### 8. Confirm deletion and read back the Agent
+### 8. Confirm deletion and follow its outcome
 
-`apps/controller/src/console/agents/deletion.mjs:createAgentDeletion`
+**Delete Agent** opens a cancel-first confirmation. **Permanently delete Agent**
+sends a bodyless `DELETE` to the exact Agent URL. The controller requires Agent
+`delete`. A refusal stays visible on the page. If the response is lost or names
+a different Agent, the Console offers a read to find out what happened without
+sending another deletion.
 
-**Delete Agent** requests confirmation before sending a bodyless `DELETE` to the
-exact Agent URL. The controller requires Agent `delete`; a `403` stays visible on
-the detail page. Acceptance starts asynchronous cleanup and marks the Agent deleting. The page
-rereads the exact Agent every few seconds; **Refresh deletion status** reads it
-on demand. A read error stops polling. Only a not-found read after
-an accepted or uncertain request, or when an already-deleting Agent is opened,
-returns to the Agents list in the selected Namespace. A `403` after the Agent was marked
-deleting means the caller can no longer follow cleanup. The Console stops polling and closes
-the repeat confirmation if it is open. If the reader confirmed a repeat while that status read was
-pending, the Console drops the unsent request. Neither action cancels a DELETE already sent or
-establishes whether cleanup finished.
+A `202` includes a deletion receipt. The Console opens
+`/console/agents/:agentId/deletion` with the Namespace and receipt ID in the URL.
+`agents/deletion-status.mts:renderDeletionStatus` reads only the status endpoint,
+so reload and browser history work after the Agent and its grants are removed.
+The receipt identifies the request; the controller still checks the signed-in
+identity and current Namespace read access. Opening this link while signed out
+preserves only that read destination through sign-in. A different person cannot
+use the receipt, and signing out clears the page and its remembered receipts.
 
-An already deleting Agent keeps **Request deletion again** beside Refresh. It opens a cancel-first confirmation
-and sends the same bodyless DELETE only when the reader confirms. Queued or claimed
-work stays unchanged; terminal work can restart under the controller's existing
-current-permission and retry-ownership checks. The view does not infer a worker
-outcome from the Agent's deleting state or add a separate status contract.
+The page follows queued, running and waiting work automatically. **Refresh deletion
+status** checks now. Only `deleted` confirms completion; a missing result, access
+denial or read failure stops polling and leaves the outcome unknown. **Back to
+Agents** is available throughout. A reader who opens an already deleting Agent
+without its receipt can follow cleanup only while the Agent remains readable.
 
-An uncertain initial or repeated deletion blocks writes until a successful exact
-Agent read. A deleting read clears that guard even when the view was already deleting;
-a failed read does not. Cancel returns focus to the repeat-request button, and
-successful writes retain status refresh. The browser never retries DELETE automatically.
+Only failed cleanup with current delete permission offers **Retry cleanup**.
+Confirmation rechecks both the failure and permission before sending a new request.
+Cancel or Escape during those reads sends nothing. The controller decides who can
+retry; an unclear write outcome requires a status check, never an automatic replay.
 
 `packages/occ/src/index.ts:deleteAgent` owns deletion admission. The
 [Agent deletion reference](../../reference/agents.md#deletion) covers
@@ -114,8 +117,9 @@ same Stop and Delete confirmations. Each row reads
 like its deployment, and reads it again when a retained list resumes.
 Refusal disables the action and explains why; in an open confirmation, it also
 disables confirmation and focuses Cancel. A stopped Agent without a selected
-version has no Stop action. A response that confirms the action for the requested Agent
-updates its row without polling. If the response names a different Agent, the list reports an
+version has no Stop action. An accepted Stop updates its row without polling; an
+accepted Delete opens its receipt. **View deletion progress** opens status from
+a deleting row, using the receipt only if this session requested the deletion. If the response names a different Agent, the list reports an
 unknown outcome and keeps the last observed state of both Agents. After `404`, `409`, or an
 uncertain outcome, the requested row’s actions stay disabled until **Refresh** rereads it.
 
@@ -124,8 +128,8 @@ uncertain outcome, the requested row’s actions stay disabled until **Refresh**
 - On repeat `403`, follow the API’s retry-ownership explanation. For ordinary
   denials, check `delete` on the exact Agent; Agent `read` and
   `operate` do not authorize deletion. Any failed repeat pauses polling until a manual action. Use the displayed request ID when present.
-- An accepted deletion remains in progress until the exact Agent read reports
-  not found. A failed refresh does not establish whether cleanup finished.
+- Match the Namespace, Agent and receipt in the status response. A missing Agent
+  or a failed status check does not establish whether cleanup finished.
 
 ## Related docs
 
@@ -139,6 +143,7 @@ uncertain outcome, the requested row’s actions stay disabled until **Refresh**
 
 ## Changelog
 
+- 2026-10-24 01:28: Follow the deletion receipt to confirmed completion, including status access and retry boundaries. (authoring-run/2912f79a-c23d-4312-a263-1ffb0e516efc - 3ace2f1205d77b815883e75b8b95c9a3f2858eee)
 - 2026-10-20 08:02: Trace Stop and Delete from Agents list rows, moved from the Agent editing flow, in the accompanying merge. (8b95a6fb-7095-4556-9028-0723f32cc534 - a8fb50b1babb68f3eb759841f92b042da039248e)
 - 2026-10-20 07:57: Describe deletion discovered by a stop-status read in the accompanying change. (authoring-run/28365356-ae7e-47dc-9790-888c3592251f - 6aedac546aad8308b4e9954648268f14545e39b2)
 - 2026-10-20 05:00: Split from the Agent editing flow's steps 7 and 8. (docs-split-1020)

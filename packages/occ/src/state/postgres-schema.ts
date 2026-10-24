@@ -1200,6 +1200,11 @@ export const auditEvents = occSchema.table(
       .where(
         sql`${table.kind} = 'mutation' AND ${table.action} = 'reconcile' AND ${table.resourceKind} = 'agent_revision'`,
       ),
+    index("audit_events_agent_deletion_completion_idx")
+      .on(table.namespaceId, table.resourceId)
+      .where(
+        sql`${table.action} = 'openclaw.agents.lifecycle.delete' AND ${table.kind} = 'mutation' AND ${table.resourceKind} = 'agent' AND ${table.outcome} = 'success' AND ${table.details}->>'reasonCode' = 'AGENT_DELETED'`,
+      ),
     check("audit_events_id_format", sql`${table.id} ~ ${identifierPatterns.audit}`),
     check("audit_events_outcome_valid", sql`${table.outcome} IN ('success', 'denied', 'failure')`),
     check(

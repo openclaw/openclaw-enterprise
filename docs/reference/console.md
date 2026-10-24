@@ -150,11 +150,14 @@ insufficient. Deletion removes the Agent, its versions, and its workspace data.
 Namespace Configurations and Secrets remain; see
 [Agent deletion](agents.md#deletion).
 
-**Refresh deletion status** follows asynchronous cleanup. When the API confirms
-the Agent is gone, the console returns to that Namespace; meanwhile its row shows
-**Deleting**. A deleting Agent keeps **Request deletion again** behind
-confirmation. Failed cleanup can be replenished; queued or running cleanup is
-unchanged. A refused repeat explains the API's retry ownership.
+The Console opens a deletion status page and updates it automatically. You can
+reload it or choose **Back to Agents** while cleanup continues. **Agent deleted**
+means the controller confirmed deletion; lost access or an unavailable status
+does not. Repository cleanup continues separately.
+
+A deleting row offers **View deletion progress**. If automatic attempts stop,
+**Retry cleanup** requires confirmation and current delete permission. The
+controller enforces retry ownership. See the [stop and deletion flow](../flows/platform-console/agent-stop-and-deletion.md).
 
 Missing access disables a row icon with a reason. Denials remain visible; the
 console never resends either write. After an uncertain result, the action stays

@@ -3103,7 +3103,9 @@ test("Agent stop and Refresh stop status update the page in place and keep focus
 });
 
 test("Refresh stop status switches to deletion recovery when another actor starts deletion", async (t) => {
-  const { fixture, namespace, state } = await createRuntimeAuthFixture(t, "Deletion discovered");
+  const { fixture, namespace, state } = await createRuntimeAuthFixture(t, "Deletion discovered", {
+    recordOperations: true,
+  });
   const agent = await fixture.createAgent(
     namespace.id,
     "Deletion Candidate",
@@ -3122,21 +3124,14 @@ test("Refresh stop status switches to deletion recovery when another actor start
   requests.length = 0;
 
   // Another actor changes lifecycle state after this page loads; the operator only reads it.
-  const deleting = await state.transact((unit) =>
-    unit.agents.transitionAgentStatus(namespace.id, agent.id, "active", "deleting"),
+  const deleting = await fixture.request(
+    "DELETE",
+    `/namespaces/${namespace.id}/agents/${agent.id}`,
   );
-  assert.equal(deleting.status, "deleting");
+  assert.equal(deleting.status, 202);
   await refreshStop.click();
-  await page.getByText(/Deletion was requested\./).waitFor();
-  assert.equal(await page.getByRole("button", { name: "Delete Agent", exact: true }).count(), 0);
-  assert.equal(
-    await page.getByRole("button", { name: "Request deletion again" }).isVisible(),
-    true,
-  );
-  assert.equal(
-    await page.evaluate(() => globalThis.document.activeElement?.textContent),
-    "Refresh deletion status",
-  );
+  await page.getByRole("heading", { name: "Deletion queued" }).waitFor();
+  assert.equal(await page.getByRole("button", { name: "Retry cleanup" }).isVisible(), false);
   assert.deepEqual(nonAuthWriteRequests(requests), []);
 });
 

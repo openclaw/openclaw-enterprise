@@ -222,6 +222,8 @@ interface RequiredPermission {
     | "missing_runtime_credentials"
     | "authenticated_plugin_discovery"
     | "read_logs_alternative"
+    | "deletion_receipt"
+    | "without_deletion_receipt"
     | "bound_credential_source";
 }
 
@@ -856,6 +858,23 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
     ];
   }
 
+  if (operation.operationId === "getAgentDeletionStatus") {
+    return [
+      {
+        action: "read",
+        resourceKind: "agent",
+        scope: "requested",
+        condition: "without_deletion_receipt",
+      },
+      {
+        action: "read",
+        resourceKind: "namespace",
+        scope: "requested",
+        condition: "deletion_receipt",
+      },
+    ];
+  }
+
   if (operation.operationId === "diagnoseAgentDeployment") {
     return [
       { action: "operate", resourceKind: "agent", scope: "requested" },
@@ -994,6 +1013,12 @@ function permissionDescription(
       }
       if (condition === "read_logs_alternative") {
         return `Without read_logs, ${action} permission on the requested ${name} also admits the read.`;
+      }
+      if (condition === "without_deletion_receipt") {
+        return "Without receiptId, requires read permission on the requested Agent and reports only deletion still recorded on that Agent.";
+      }
+      if (condition === "deletion_receipt") {
+        return "With receiptId, requires current read permission on the requested Namespace and the caller's own accepted DELETE receipt for that exact Agent. The receipt remains readable after Agent grants are removed and grants no access to the Agent or audit events.";
       }
       if (condition === "iam_binding_target") {
         return `Requires ${action} permission on the request body ${name} when the AccessBinding targets that resource kind.`;
@@ -1602,7 +1627,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         event(
           operation,
           request,
-          operationTarget(operation, installationId, request.params as Record<string, unknown>),
+          operation.operationId === "getAgentDeletionStatus" && authorization
+            ? authorization.resource
+            : operationTarget(operation, installationId, request.params as Record<string, unknown>),
           kind,
           context,
           evidence,
@@ -1743,6 +1770,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       operation.operationId !== "listRepositoryOptions" &&
       operation.operationId !== "listAgentRepositoryOptions" &&
       operation.operationId !== "getAgentDeploymentRuntimeLogs" &&
+      operation.operationId !== "getAgentDeletionStatus" &&
       operation.operationId !== "deleteServiceAccount" &&
       operation.operationId !== "listAgentRevisions"
     ) {

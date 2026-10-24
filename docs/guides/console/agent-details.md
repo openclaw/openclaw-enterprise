@@ -224,14 +224,14 @@ gives the commands that delete the Agent's Configuration and, if it has one, its
 model credential Secret: both are kept even when Create Agent made them.
 Secrets can also be inspected and deleted from the [Secrets page](secrets.md)
 once their references are cleared; Configuration cleanup uses the CLI. Exact Agent
-`delete` permission is required. Accepted deletion starts asynchronous cleanup;
-the page checks it every few seconds and returns to Agents once the Agent is gone.
-**Refresh deletion status** checks it immediately. **Request deletion again**
-opens a new confirmation for an already deleting Agent. Use it after fixing a
-cleanup failure that exhausted its retries; cleanup still queued or running
-continues unchanged. Another uncertain request stays blocked until a successful
-status refresh confirms that the Agent is deleting. The browser never repeats
-DELETE automatically. Existing delete permissions and retry ownership apply.
+`delete` permission is required.
+
+After you confirm, the status page shows whether cleanup is queued, running or
+waiting to retry. You can reload the page or leave while cleanup continues.
+**Agent deleted** means the controller confirmed deletion. If you lose access or
+the status is unavailable, completion stays unconfirmed. Repository cleanup runs
+separately. Use **Retry cleanup** only after fixing a failure that stopped automatic
+attempts. It requires a new confirmation, and the browser never sends it automatically.
 
 An API error may show a request ID for support. **Outcome unknown** does not
 prove failure: refresh before retrying any write. An expired session clears

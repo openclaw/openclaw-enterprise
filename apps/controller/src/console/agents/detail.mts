@@ -35,6 +35,7 @@ import {
 } from "./harness-auth.mjs";
 import { renderAgentAccess } from "./access.mjs";
 import { renderNativeAdminAccess } from "./native-admin.mjs";
+import { deletionStatusPage } from "./deletion-status.mjs";
 import { createAgentDeletion } from "./deletion.mjs";
 import { createAgentStop } from "./stop.mjs";
 import { renderAgentPlugins } from "./plugins.mjs";
@@ -434,6 +435,10 @@ export async function renderAgentDetail(
   if (!context.isCurrent()) {
     return null;
   }
+  if (agent.status === "deleting") {
+    context.navigate(deletionStatusPage(agent), namespaceId, true);
+    return null;
+  }
   // The controller validates the response shape. Bind its identity to this page before using
   // a read as write preflight or a write response as confirmation. A metadata-only Agent or
   // revision is still readable; its saved configuration and editing controls remain unavailable.
@@ -551,7 +556,7 @@ export async function renderAgentDetail(
   void callerPermissionsRead.then(() => {
     permissionsReadSettled = latestPermissionsRead === callerPermissionsRead;
   });
-  let deleting = agent.status === "deleting";
+  let deleting = false;
   let currentRevisionId = agent.activeRevisionId;
   // The Agent as last read; Stop and finished deployments update it in place.
   let currentAgent = agent;
@@ -941,21 +946,24 @@ export async function renderAgentDetail(
       deletion.section,
     ),
   );
-  function showDeleting({ focus = false } = {}) {
+  function showDeleting({ receiptId }: { receiptId?: string; focus?: boolean } = {}) {
     deleting = true;
-    headerActions.replaceChildren(
-      element("span", { className: "badge", "data-tone": "warning" }, "Deleting"),
-    );
+    const target = deletionStatusPage(agent, receiptId);
+    if (!sharingWrite && !draftWriteInFlight({ rereads: false })) {
+      context.navigate(target);
+      return;
+    }
+    // Another write still owns this page. Keep its navigation guard and outcome, and let the
+    // operator open the receipt once that write settles without repeating the deletion request.
+    headerActions.replaceChildren();
     view.classList.remove("agent-detail-pending", "agent-logs-opening");
-    // A deleting Agent can no longer be stopped; its deletion row is all the page shows.
-    stopPanel.section.remove();
-    view.replaceChildren(dangerZone);
-    deletion.showOnPage({ focus });
-    context.revealed?.();
-  }
-  if (deleting) {
-    showDeleting();
-    return agent;
+    const progress = button("View deletion progress", () => {
+      if (!refuseLeave()) {
+        context.navigate(target);
+      }
+    });
+    view.replaceChildren(statusBlock("info", null, "Deletion was requested.", [progress]));
+    progress.focus();
   }
   const selector = element("section", { className: "agent-card revision-selector" });
   const content = element("div");
