@@ -67,7 +67,7 @@ COPY --chown=node:node apps/controller/src apps/controller/src
 COPY --from=console-build --chown=node:node /app/apps/controller/src/console/index.html apps/controller/src/console/index.html
 COPY --chown=node:node migrations/[0-9]*.sql migrations/
 COPY --chown=node:node migrations/meta/_journal.json migrations/meta/_journal.json
-COPY --chown=node:node migrations/meta/canonical-history.json migrations/meta/canonical-history.json
+COPY --chown=node:node migrations/meta/_canonical-history.json migrations/meta/_canonical-history.json
 COPY --chown=node:node scripts/migrate-production.mjs scripts/migrate-production.mjs
 COPY --chown=node:node scripts/migration-history.mjs scripts/migration-history.mjs
 COPY --chown=node:node scripts/migration-catalog.mjs scripts/migration-catalog.mjs

@@ -945,6 +945,7 @@ test(
        WHERE admission_id = $1`,
       [opened[0].admissionId],
     );
+    // A prepared admission without a broker receipt can be fenced as missing after deletion.
     const missingAdmissionId = `missing-${randomUUID()}`;
     await fixture.observerPool.query(
       `INSERT INTO occ.repository_session_attempts
@@ -952,7 +953,7 @@ test(
           duration_seconds, deadline_wall_ms, phase, session_id, created_at, updated_at,
           broker_protocol)
        VALUES ($1, $2, $3, $4, $5, 60, $6, 'opening', NULL, clock_timestamp(),
-          clock_timestamp(), 0)`,
+          clock_timestamp(), 3)`,
       [
         fixture.namespace.id,
         pendingOwner.id,

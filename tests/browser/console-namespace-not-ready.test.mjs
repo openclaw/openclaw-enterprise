@@ -13,6 +13,7 @@ import {
   secretPostRequests,
   settledView,
   statusTone,
+  waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
 import { routeInstallationProvisioning } from "./console-agents-test-support.mjs";
 import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
@@ -81,7 +82,7 @@ test("a first run's provisioning Namespace names its status and still offers dra
   // Create Agent still saves drafts (#2867); it points at the note, and the empty state says
   // what will happen instead of the plain invitation (finding 1990).
   const create = view.getByRole("button", { name: "Create Agent" });
-  assert.equal(await create.isDisabled(), false);
+  await waitForEnabled(create);
   assert.equal(await create.getAttribute("aria-describedby"), "namespace-not-ready");
   await view.getByText(DRAFT_INVITATION).waitFor();
   assert.equal(await view.getByText(INVITATION).count(), 0);
@@ -141,7 +142,7 @@ test("Create Agent names a provisioning Namespace's status before any start", as
     .waitFor();
   // The status line follows the harness at once; Create Agent also waits for the form's
   // repository discovery, which can still be loading.
-  await create.and(page.locator(":enabled")).waitFor();
+  await waitForEnabled(create);
   assert.equal(await create.getAttribute("aria-describedby"), null);
 });
 
@@ -371,7 +372,7 @@ test("the Agents list sees its Namespace become ready without a Refresh", async 
   assert.deepEqual(await statusTone(readyNote), { ...WARNING, tone: "success" });
   assert.equal(await view.getByText(NOT_READY).count(), 0);
   const create = view.getByRole("button", { name: "Create Agent" });
-  assert.equal(await create.isEnabled(), true);
+  await waitForEnabled(create);
   assert.equal(await create.getAttribute("aria-describedby"), null);
   assert.equal(await search.inputValue(), "Probe");
   assert.equal(await search.evaluate((node) => node === node.ownerDocument.activeElement), true);
@@ -503,7 +504,7 @@ test("the Agents list keeps checking its Namespace after a failed read", async (
     .getByRole("status")
     .filter({ hasText: "Namespace status: Ready. Agents created here can be deployed now." })
     .waitFor();
-  assert.equal(await create.isEnabled(), true);
+  await waitForEnabled(create);
 });
 
 // A list kept for a return comes back with its check stopped; it starts again on the return
@@ -521,7 +522,7 @@ test("a return to a kept Agents list mid-wait keeps checking its Namespace", asy
     .getByRole("status")
     .filter({ hasText: "Namespace status: Ready. Agents created here can be deployed now." })
     .waitFor();
-  assert.equal(await create.isEnabled(), true);
+  await waitForEnabled(create);
 });
 
 // Create Agent open on a provisioning Namespace with a Dedicated plan waits for the Namespace.
@@ -579,7 +580,7 @@ test("Create Agent waiting on a provisioning Namespace", async (t) => {
       await page.evaluate(() => globalThis.dispatchEvent(new globalThis.Event("focus")));
       await view.getByText(READY_PLAN, { exact: true }).waitFor();
       // Create Agent also waits for the form's repository discovery.
-      await create.and(page.locator(":enabled")).waitFor();
+      await waitForEnabled(create);
       assert.equal(await create.getAttribute("aria-describedby"), null);
       assert.equal(await view.getByText(WAITS).count(), 0);
       assert.equal(await view.getByText(NOT_READY).count(), 0);
@@ -606,7 +607,7 @@ test("Create Agent waiting on a provisioning Namespace", async (t) => {
       release();
       await poll();
       await view.getByText(READY_PLAN, { exact: true }).waitFor();
-      await create.and(page.locator(":enabled")).waitFor();
+      await waitForEnabled(create);
       assert.equal(await view.getByText(NOT_READY).count(), 0);
       await assertDraftIntact(name);
     },

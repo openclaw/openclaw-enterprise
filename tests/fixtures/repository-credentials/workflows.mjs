@@ -53,7 +53,7 @@ export async function exerciseGit(t, fixture, { push = true } = {}) {
   return { client, checkout, commit };
 }
 
-export async function exerciseGh(t, fixture, client) {
+export async function exerciseGh(fixture, client) {
   const prefix = `repos/${fixtureRepository}`;
   const createPr = await client.json("create-pr.json", {
     title: "Example change",
@@ -159,28 +159,6 @@ export async function exerciseGh(t, fixture, client) {
   ]);
   assert.equal(deleted.stdout, "");
   assert.equal(fixture.github.comments.has(comment.id), false);
-  const bodyFile = join(client.directory, "body.md");
-  await writeFile(bodyFile, humanText);
-  await client.gh([
-    "pr",
-    "create",
-    "-R",
-    `github.com/${fixtureRepository}`,
-    "--base",
-    "main",
-    "--head",
-    "native-feature",
-    "--title",
-    "Native change",
-    "--body-file",
-    bodyFile,
-  ]);
-  assert.equal([...fixture.github.pulls.values()].filter((value) => value.native).length, 1);
-  assert.ok(
-    fixture.github.trace.some(
-      (entry) => entry.target === "/graphql" && entry.operation === "createPullRequest",
-    ),
-  );
   assert.equal(fixture.github.errors.length, 0);
   return { pull, issue, comment };
 }

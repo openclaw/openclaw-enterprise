@@ -18,7 +18,7 @@ applies that input in the exact native workspace before starting anything that c
 use it. After initialization, the gateway workspace owns the live files; setup
 never restores them on restart or redeploy.
 
-Today [Console creation](/apps/controller/src/console/agents/create.mjs#L385)
+Today [Console creation](https://github.com/openclaw/openclaw-enterprise/blob/cee299ce8147656b36fc616ea7655b823d9b56f7/apps/controller/src/console/agents/create.mjs#L444-L464)
 saves a Configuration and creates an undeployed Agent; [OCC](/packages/occ/src/index.ts#L1957)
 starts it in desired state `stopped`. The [live editor](/docs/flows/workspace-files.md)
 uses exact-Agent `agents.files.get` / `agents.files.set`, requires an active
@@ -125,7 +125,7 @@ storage is not required here. Gateway authority does not dictate physical storag
    [current tmpfs](/apps/controller/src/drivers/compute/docker/index.ts#L654) cannot
    preserve files or the marker. Fail closed wherever private delivery or durable
    initialization is unsupported; provide the normal status reason without content.
-3. Update the [Console create form](/apps/controller/src/console/agents/create.mjs#L464)
+3. Update the [Console create form](https://github.com/openclaw/openclaw-enterprise/blob/cee299ce8147656b36fc616ea7655b823d9b56f7/apps/controller/src/console/agents/create.mjs#L90)
    and render defaults as text, never HTML. On implementation, update current
    [Agents](/docs/reference/agents.md#workspace-files), [deployment](/docs/reference/agents/deployment.md),
    [Console](/docs/reference/console.md#edit-workspace-files), and the [workspace flow](/docs/flows/workspace-files.md).

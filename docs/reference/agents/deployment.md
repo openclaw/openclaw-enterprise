@@ -131,7 +131,7 @@ gateway/Harness. Without a SandboxDriver, Compute owns the Codex Deployment;
 with one selected, that Driver provisions the dedicated Harness workload.
 Unless Compute requests
 [exclusive replacement](../drivers/compute.md#production-revision-stages), as
-Kubernetes does for dedicated Agents, a replacement must preserve its
+Kubernetes does for dedicated Agents and Docker for all Agents, a replacement must preserve its
 predecessor's Service selector until activation succeeds. Without an
 eligible worker, version work remains queued.
 

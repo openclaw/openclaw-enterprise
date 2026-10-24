@@ -1,3 +1,15 @@
+{{- /* Preserve native null/empty maps, but reject values the Kubernetes string-map decoder refuses. */ -}}
+{{- define "openclaw-execution.matchLabels" -}}
+{{- if and (not (kindIs "invalid" .value)) (not (kindIs "map" .value)) -}}
+{{- fail (printf "%s must be a Kubernetes matchLabels map" .name) -}}
+{{- end -}}
+{{- range $key, $value := .value -}}
+{{- if and (not (kindIs "invalid" $value)) (not (kindIs "string" $value)) -}}
+{{- fail (printf "%s label values must be strings" $.name) -}}
+{{- end -}}
+{{- end -}}
+{{- toYaml .value -}}
+{{- end -}}
 {{- $r := .Values.routing }}
 {{- if or (not $r.hostname) (not $r.gatewayClassName) (not $r.tlsSecretName) (not $r.controlPlaneCidrs) }}
 {{- fail "routing requires hostname, GatewayClass, TLS Secret, and observed control-plane source CIDRs" }}
@@ -106,7 +118,7 @@ spec:
               kubernetes.io/metadata.name: {{ .Values.dns.namespace | quote }}
           podSelector:
             matchLabels:
-              {{- toYaml .Values.dns.podLabels | nindent 14 }}
+              {{- include "openclaw-execution.matchLabels" (dict "name" "dns.podLabels" "value" .Values.dns.podLabels) | nindent 14 }}
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
@@ -129,6 +141,6 @@ spec:
               kubernetes.io/metadata.name: {{ $r.envoyNamespace | quote }}
           podSelector:
             matchLabels:
-              {{- toYaml $r.envoyGatewayPodLabels | nindent 14 }}
+              {{- include "openclaw-execution.matchLabels" (dict "name" "routing.envoyGatewayPodLabels" "value" $r.envoyGatewayPodLabels) | nindent 14 }}
       ports:
         - { protocol: TCP, port: 18000 }

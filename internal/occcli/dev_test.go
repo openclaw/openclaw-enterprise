@@ -5,11 +5,133 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestDevUpProtectedProfileEntrypoints(t *testing.T) {
+	repository, err := developmentRepository()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture := t.TempDir()
+	for _, directory := range []string{"bin", "scripts", "tools"} {
+		if err := os.Mkdir(filepath.Join(fixture, directory), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Keep the actual script and CLI together so direct shell entry exercises the
+	// same validation as occ dev up, without a replacement validation fixture.
+	for _, path := range []string{"go.mod", "compose.yaml", "scripts/dev-up"} {
+		data, err := os.ReadFile(filepath.Join(repository, path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(fixture, path), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cli := filepath.Join(fixture, "bin", "occ")
+	build := exec.Command("go", "build", "-o", cli, "./cmd/occ")
+	build.Dir = repository
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build CLI: %v\n%s", err, output)
+	}
+	tools := filepath.Join(fixture, "tools")
+	for _, name := range []string{"dirname", "python3", "mktemp", "chmod", "rm"} {
+		path, err := exec.LookPath(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(path, filepath.Join(tools, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Record dispatch separately from infrastructure access: a missing CLI guard
+	// must fail even if the real script would subsequently reject the selection.
+	for name, body := range map[string]string{
+		"bash":   "#!/bin/bash\nprintf 'script dispatched\\n' >>\"$DISPATCH_LOG\"\nexec /bin/bash \"$@\"\n",
+		"docker": "#!/bin/bash\nprintf '%s\\n' \"$*\" >>\"$ENGINE_LOG\"\nexit 1\n",
+	} {
+		if err := os.WriteFile(filepath.Join(tools, name), []byte(body), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cases := []struct {
+		name     string
+		settings []string
+		want     string
+	}{
+		{"unset", nil, ""},
+		{"disabled", []string{"OCC_DEVELOPMENT_PROTECTED_EGRESS=0"}, ""},
+		{"enabled", []string{"OCC_DEVELOPMENT_PROTECTED_EGRESS=1"}, "protected egress requires"},
+		{"invalid", []string{"OCC_DEVELOPMENT_PROTECTED_EGRESS=true"}, "OCC_DEVELOPMENT_PROTECTED_EGRESS must be 0 or 1"},
+		{"database", []string{"OCC_DEVELOPMENT_DATABASE_NAME=openclaw_k8s_owned"}, "OCC_DEVELOPMENT_DATABASE_NAME requires"},
+		{"empty-database", []string{"OCC_DEVELOPMENT_DATABASE_NAME="}, "OCC_DEVELOPMENT_DATABASE_NAME requires"},
+		{"host-gateway", []string{"OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP=172.30.42.1"}, "OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP requires"},
+		{"empty-host-gateway", []string{"OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP="}, "OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP requires"},
+	}
+	for _, entrypoint := range []string{"cli", "script"} {
+		for _, compute := range []string{"default", "docker"} {
+			for _, scenario := range cases {
+				t.Run(entrypoint+"/"+compute+"/"+scenario.name, func(t *testing.T) {
+					directory := t.TempDir()
+					// The real launcher requires a private bootstrap-key parent,
+					// independently of the test runner's umask.
+					if err := os.Chmod(directory, 0o700); err != nil {
+						t.Fatal(err)
+					}
+					engineLog := filepath.Join(directory, "engine.log")
+					dispatchLog := filepath.Join(directory, "dispatch.log")
+					key := filepath.Join(directory, "key.json")
+					args := []string{"--key-output", key}
+					command := exec.Command(cli, append([]string{"dev", "up"}, args...)...)
+					if entrypoint == "script" {
+						command = exec.Command("/bin/bash", append([]string{"scripts/dev-up"}, args...)...)
+					}
+					command.Dir = fixture
+					command.Env = append([]string{
+						"PATH=" + tools, "TMPDIR=" + directory,
+						"ENGINE_LOG=" + engineLog, "DISPATCH_LOG=" + dispatchLog,
+						"OCC_DEVELOPMENT_CONTAINER_ENGINE=docker",
+					}, scenario.settings...)
+					if compute == "docker" {
+						command.Env = append(command.Env, "OCC_DEVELOPMENT_COMPUTE_DRIVER=docker")
+					}
+					output, err := command.CombinedOutput()
+					t.Logf("exit: %v; output: %s", err, output)
+					if err == nil {
+						t.Fatal("startup must stop at validation or the unavailable Docker probe")
+					}
+					engineCalls, readErr := os.ReadFile(engineLog)
+					if scenario.want == "" {
+						// Ordinary profiles must reach the existing engine selection;
+						// this probe deliberately supplies no Docker daemon.
+						if readErr != nil || !strings.Contains(string(engineCalls), "version --format {{json .Server}}") {
+							t.Fatalf("ordinary Docker profile did not reach engine selection: %v, %s", readErr, engineCalls)
+						}
+					} else {
+						if !strings.Contains(string(output), scenario.want) {
+							t.Errorf("missing validation diagnostic %q", scenario.want)
+						}
+						if !os.IsNotExist(readErr) {
+							t.Errorf("rejected profile reached infrastructure helper: %v, %s", readErr, engineCalls)
+						}
+						if _, err := os.Stat(dispatchLog); !os.IsNotExist(err) {
+							t.Errorf("rejected profile dispatched startup script: %v", err)
+						}
+					}
+					if _, err := os.Stat(key); !os.IsNotExist(err) {
+						t.Errorf("startup wrote bootstrap key: %v", err)
+					}
+				})
+			}
+		}
+	}
+}
 
 func TestDevUpRejectsUnsupportedOrEmptySandboxPolicyFlag(t *testing.T) {
 	t.Setenv("OCC_DEVELOPMENT_COMPUTE_DRIVER", "docker")

@@ -25,14 +25,18 @@ const componentVariable = "OCC_UPGRADE_PREFLIGHT_COMPONENT";
 // Other Compute Drivers keep the load-only check.
 const startupCheck = `
 let drivers;
+let formatConfigurationFailure;
 try {
+  ({ formatStartupConfigurationFailure: formatConfigurationFailure } = await import(
+    "/app/apps/controller/src/startup-failure.ts"
+  ));
   const { loadInstallationConfiguration, loadStartupConfigurationSnapshot } = await import(
     "/app/apps/controller/src/composition/installation-config.ts"
   );
   const startupConfiguration = await loadStartupConfigurationSnapshot({ mode: "production" });
   drivers = await loadInstallationConfiguration({ mode: "production", startupConfiguration });
 } catch (error) {
-  process.stderr.write((error instanceof Error ? error.message : String(error)) + "\\n");
+  process.stderr.write((formatConfigurationFailure?.(error) ?? (error instanceof Error ? error.message : String(error))) + "\\n");
   process.exit(1);
 }
 try {

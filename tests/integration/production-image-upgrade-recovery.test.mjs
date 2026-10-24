@@ -866,21 +866,21 @@ async function fixture(
               drivers: { repo: "repository-credentials" },
             },
           ],
+          repository: {
+            id: "repository-credentials",
+            configuration: { sessionDurationSeconds: 86400 },
+            nativeSender: {
+              controlSocket: "/run/openclaw/repository-control/private/control.sock",
+              publicCaPath: "/etc/openclaw/repository-ca/ca.crt",
+            },
+            preparedGitHub: {
+              custodyKeyPath: "/etc/openclaw/prepared-repository/custody.key",
+              privateKeyPath: "/etc/openclaw/prepared-repository/private-key.pem",
+            },
+          },
         }
       : {}),
     drivers: {
-      ...(repositoryCredentials
-        ? {
-            repo: {
-              id: "repository-credentials",
-              configuration: {
-                controlSocket: "/run/openclaw/repository-control/private/control.sock",
-                sessionDurationSeconds: 86400,
-                publicCaPath: "/etc/openclaw/repository-ca/ca.crt",
-              },
-            },
-          }
-        : {}),
       compute: {
         id: "compute-kubernetes",
         configuration: {
@@ -1212,7 +1212,7 @@ test("reviewed settings survive an interrupted controller upgrade without losing
     "/etc/openclaw/repository-registry/registry.json",
   );
   assert.equal(
-    liveInstallation.drivers.repo.configuration.publicCaPath,
+    liveInstallation.repository.nativeSender.publicCaPath,
     "/etc/openclaw/repository-ca/ca.crt",
   );
   assert.equal(
@@ -1348,9 +1348,9 @@ test(
           if (change === "registry") {
             candidate.backend[0].configuration.registryPath = "/etc/other/registry.json";
           } else if (change === "driver") {
-            candidate.drivers.repo.configuration.publicCaPath = "/etc/other/ca.crt";
+            candidate.repository.nativeSender.publicCaPath = "/etc/other/ca.crt";
           } else if (change === "duration") {
-            candidate.drivers.repo.configuration.sessionDurationSeconds = 3600;
+            candidate.repository.configuration.sessionDurationSeconds = 3600;
           } else if (change === "peer") {
             candidate.drivers.compute.configuration.network.repositoryCredentials.podLabels[
               "app.kubernetes.io/component"
@@ -1362,10 +1362,10 @@ test(
               context: "other",
             };
           } else if (change === "remove") {
-            delete candidate.drivers.repo;
+            delete candidate.repository;
             delete candidate.backend;
           } else {
-            candidate.drivers.repo = { id: "repository-credentials", configuration: {} };
+            candidate.repository = { id: "repository-credentials", configuration: {} };
             candidate.backend = [
               {
                 id: "github-primary",
@@ -1787,22 +1787,61 @@ test("an Installation the selected controller image cannot load stops before any
   ]);
 });
 
+test("a Driver refusal preserves field diagnostics before upgrade quiescence", async (t) => {
+  if (!realHelm) {
+    t.skip("helm is unavailable to render the real chart");
+    return;
+  }
+  const f = await fixture(t, {
+    controllerOnly: true,
+    chart: {
+      installation: (installation) => {
+        installation.drivers.compute.configuration.runtime.gatewayStorageClassName = "Bad_Class";
+        return installation;
+      },
+    },
+  });
+  await assert.rejects(f.run(), (error) => {
+    assert.match(
+      error.stderr,
+      /cannot start the api with the candidate Installation: .*DRIVER_CONFIGURATION_INVALID.*No OCC writer was stopped/s,
+    );
+    assert.doesNotMatch(error.stderr, /Bad_Class/);
+    return true;
+  });
+  await assertStoppedBeforeWriters(f);
+  for (const component of ["api", "worker"]) {
+    const log = await readFile(join(f.evidence, `preflight-${component}.log`), "utf8");
+    const line = log.split("\n").find((line) => line.startsWith("DRIVER_CONFIGURATION_INVALID: "));
+    assert.ok(line, log);
+    assert.deepEqual(JSON.parse(line.slice("DRIVER_CONFIGURATION_INVALID: ".length)), [
+      {
+        path: "/runtime/gatewayStorageClassName",
+        code: "INVALID_FORMAT",
+        message:
+          "SQLite-compatible gateway storage class must be a DNS-safe Kubernetes resource name.",
+      },
+    ]);
+  }
+});
+
 // The API and worker read the stored Installation name from the database and refuse
 // one that breaks the Name rule (INSTALLATION_NAME_INVALID). The preflight Pods check
 // the name OCC returns with the selected image's rule, so the refusal comes before any
 // writer stops instead of after (dogfood D525). The Pod carries the stored name as JSON,
 // so a trailing no-break space survives and a line break (a control character) gets the
 // same refusal rather than a parse failure. Each case reads a different component's Pod.
-for (const [name, installationName, component] of [
+for (const [name, installationName, component, ...flags] of [
   [
     "a stored Installation name that breaks the Name rule stops before any writer stops",
     "Production\u00a0",
     "api",
   ],
   [
-    "a stored Installation name with a line break gets the Name rule refusal",
+    "preflight-only refuses a stored Installation name with a line break",
     "Production\n",
     "worker",
+    "--preflight-only",
   ],
 ]) {
   test(name, async (t) => {
@@ -1815,7 +1854,7 @@ for (const [name, installationName, component] of [
       installationName,
       chart: { installation: (installation) => installation },
     });
-    await assert.rejects(f.run(), (error) => {
+    await assert.rejects(f.run(...flags), (error) => {
       for (const stopped of ["api", "worker"]) {
         assert.match(
           error.stderr,
@@ -2274,4 +2313,25 @@ test("an Installation the selected controller image loads passes the preflight a
   assert.ok(
     state.preflight.deleted.includes(`networkpolicy.networking.k8s.io/${policy.metadata.name}`),
   );
+});
+
+test("preflight-only checks the candidate without preparing or deploying it", async (t) => {
+  if (!realHelm) {
+    t.skip("helm is unavailable to render the real chart");
+    return;
+  }
+  const f = await fixture(t, {
+    agent: true,
+    chart: { installation: (installation) => installation },
+  });
+  await assert.rejects(f.run("--resume", "--preflight-only"), /cannot be combined/);
+  assert.equal(existsSync(f.evidence), false);
+  assert.match((await f.run("--preflight-only")).stdout, /Preflight passed/);
+  assert.match(
+    await readFile(join(f.evidence, "preflight-worker.log"), "utf8"),
+    /^installation-startup-ready$/m,
+  );
+  assert.equal(existsSync(join(f.evidence, "prepared")), false);
+  await assert.rejects(f.run("--resume"), /not a prepared deployment/);
+  await assertStoppedBeforeWriters(f);
 });

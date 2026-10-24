@@ -14,7 +14,7 @@ import {
 // supplies CGI framing and a controlled provider authentication check.
 export async function startGitSmartHttpFixture(
   t,
-  { authorize = () => true, repository = "fixture/repository", tls } = {},
+  { authorize = () => true, repository = "fixture/repository", tls, observeRequest } = {},
 ) {
   tls ??= await createTlsMaterial(t);
   const directory = await temporaryDirectory(t, "repository-credentials-git-");
@@ -40,7 +40,10 @@ export async function startGitSmartHttpFixture(
   const children = new Set();
   let disconnectPush = false;
   let heldFetch;
+  let requests = 0;
   const server = createServer(tls, (request, response) => {
+    requests++;
+    observeRequest?.(request.method, request.url);
     if (!authorize(request.headers.authorization, "git")) {
       response.writeHead(401).end();
       return;
@@ -153,6 +156,11 @@ export async function startGitSmartHttpFixture(
       }
     });
   });
+  // Count new transport attempts as well as complete HTTP requests, including rejected ones.
+  let connections = 0;
+  server.on("connection", () => {
+    connections++;
+  });
   const origin = await listen(t, server);
   t.after(() => {
     for (const child of children) {
@@ -165,6 +173,7 @@ export async function startGitSmartHttpFixture(
     repository,
     bare,
     trace,
+    traffic: () => ({ connections, requests }),
     holdNextFetch({ beforeHeaders = false } = {}) {
       let started;
       let release;
@@ -179,6 +188,13 @@ export async function startGitSmartHttpFixture(
     },
     disconnectAfterNextAcceptedPush() {
       disconnectPush = true;
+    },
+    async addCommit() {
+      await run("git", ["commit", "--allow-empty", "-m", "New object for successor fetch"], {
+        cwd: seed,
+      });
+      await run("git", ["push", bare, "HEAD:refs/heads/main"], { cwd: seed });
+      return (await run("git", ["rev-parse", "HEAD"], { cwd: seed })).stdout.trim();
     },
     async ref(name) {
       return (await run("git", ["rev-parse", name], { cwd: bare })).stdout.trim();

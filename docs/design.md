@@ -29,6 +29,12 @@ token authentication to OCC, and general credential-free model inference remain
 planned. The two-cluster profile is experimental.
 
 <a id="openclaw-as-the-open-enterprise-agent-platform"></a>
+Kubernetes Compute supports [protected execution](reference/credential-sources/protected-inference.md)
+with the selected Credential Proxy and a matching OpenShell Sandbox. Compute verifies
+the current installation before it signs the workload release. Other Compute Drivers
+and readers that cannot interpret the admission refuse it. The bundled OpenShell
+release cannot enforce this path; qualify the exact pair before rollout.
+
 <a id="summary"></a>
 <a id="motivation"></a>
 <a id="goals"></a>
@@ -167,7 +173,11 @@ implementations, plus channel and optional service-account, plugin, repository, 
 Credential Gateway integrations. [Driver development](contributing/driver-development.md)
 links to contracts; [selection](reference/drivers/selection.md) defines trusted
 package loading. [Backends](reference/backends.md) supply authenticated clients
-to related Drivers within their documented experimental scope.
+to related Drivers within their documented experimental scope. Driver-owned
+configuration definitions share schemas and validation across startup and Agent
+settings. A contribution registry binds them to existing resource owners, which
+retain authorization, persistence, and save/apply lifecycle; see
+[configuration discovery](reference/drivers/selection.md#configuration-definitions-and-discovery).
 
 Compute owns Namespace infrastructure and each Agent's gateway and workload
 lifecycle: preparation, readiness, activation, stop, retirement, and deletion.
