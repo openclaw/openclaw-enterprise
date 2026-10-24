@@ -1476,6 +1476,20 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     }
   }
 
+  function pluginDiscoveryRequestSignal(reply: FastifyReply): AbortSignal {
+    // The POST can finish parsing and its client disconnect while IAM resolves the caller.
+    if (reply.raw.destroyed) {
+      return AbortSignal.abort();
+    }
+    const disconnected = new AbortController();
+    reply.raw.once("close", () => {
+      if (!reply.raw.writableEnded) {
+        disconnected.abort();
+      }
+    });
+    return disconnected.signal;
+  }
+
   function workspaceFileRequestSignal(
     request: FastifyRequest,
     reply: FastifyReply,
@@ -2341,31 +2355,41 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     }
 
     if (operation.operationId === "discoverAgentPlugins") {
-      const catalog = await controller.discoverAgentPlugins(context.actorId, namespaceId, {
-        ...(body?.credentialSource === undefined
-          ? {}
-          : { credentialSource: body.credentialSource as CredentialSourceReference }),
-        ...(body?.secretRef === undefined
-          ? { accessToken: body?.accessToken as string }
-          : { secretRef: body.secretRef as SecretReference }),
-        ...(body?.cursor === undefined ? {} : { cursor: body.cursor as string }),
-        ...(body?.q === undefined ? {} : { q: body.q as string }),
-      });
+      const catalog = await controller.discoverAgentPlugins(
+        context.actorId,
+        namespaceId,
+        {
+          ...(body?.credentialSource === undefined
+            ? {}
+            : { credentialSource: body.credentialSource as CredentialSourceReference }),
+          ...(body?.secretRef === undefined
+            ? { accessToken: body?.accessToken as string }
+            : { secretRef: body.secretRef as SecretReference }),
+          ...(body?.cursor === undefined ? {} : { cursor: body.cursor as string }),
+          ...(body?.q === undefined ? {} : { q: body.q as string }),
+        },
+        pluginDiscoveryRequestSignal(reply),
+      );
       reply.header("cache-control", "no-store");
       reply.send({ data: catalog, meta: { requestId: request.id } });
       return;
     }
 
     if (operation.operationId === "discoverAgentPluginDetails") {
-      const plugin = await controller.discoverAgentPluginDetails(context.actorId, namespaceId, {
-        ...(body?.credentialSource === undefined
-          ? {}
-          : { credentialSource: body.credentialSource as CredentialSourceReference }),
-        ...(body?.secretRef === undefined
-          ? { accessToken: body?.accessToken as string }
-          : { secretRef: body.secretRef as SecretReference }),
-        pluginId: body?.pluginId as string,
-      });
+      const plugin = await controller.discoverAgentPluginDetails(
+        context.actorId,
+        namespaceId,
+        {
+          ...(body?.credentialSource === undefined
+            ? {}
+            : { credentialSource: body.credentialSource as CredentialSourceReference }),
+          ...(body?.secretRef === undefined
+            ? { accessToken: body?.accessToken as string }
+            : { secretRef: body.secretRef as SecretReference }),
+          pluginId: body?.pluginId as string,
+        },
+        pluginDiscoveryRequestSignal(reply),
+      );
       reply.header("cache-control", "no-store");
       reply.send({ data: plugin, meta: { requestId: request.id } });
       return;
@@ -2394,6 +2418,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           ...(body?.cursor === undefined ? {} : { cursor: body.cursor as string }),
           ...(body?.q === undefined ? {} : { q: body.q as string }),
         },
+        pluginDiscoveryRequestSignal(reply),
       );
       reply.header("cache-control", "no-store");
       reply.send({ data: catalog, meta: { requestId: request.id } });
@@ -2411,6 +2436,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             ? {}
             : { credentialSource: body.credentialSource as CredentialSourceReference }),
         },
+        pluginDiscoveryRequestSignal(reply),
       );
       reply.header("cache-control", "no-store");
       reply.send({ data: plugin, meta: { requestId: request.id } });
