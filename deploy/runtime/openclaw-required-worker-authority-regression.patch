@@ -1,16 +1,24 @@
 diff --git a/src/gateway/server.required-placement-scopes.test.ts b/src/gateway/server.required-placement-scopes.test.ts
-index 38fc452..2b0632e 100644
+index 38fc452..0486749 100644
 --- a/src/gateway/server.required-placement-scopes.test.ts
 +++ b/src/gateway/server.required-placement-scopes.test.ts
 @@ -2,6 +2,7 @@ import path from "node:path";
  import { afterEach, expect, test, vi } from "vitest";
  import { WebSocket } from "ws";
  import type { HelloOk } from "../../packages/gateway-protocol/src/schema/frames.js";
-+import { awaitGateBeforeSettlement, withTestTimeout } from "../../test/helpers/promise.js";
++import { awaitGateBeforeSettlement, withinTest, withTestTimeout } from "../../test/helpers/promise.js";
  import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
  import { writeConfigFile } from "../config/config.js";
  import type { GatewayAuthConfig } from "../config/types.gateway.js";
-@@ -115,196 +116,294 @@ test.each([false, true])(
+@@ -18,6 +19,7 @@ import {
+ } from "./server.auth.test-helpers.js";
+ import * as placementDispatchStore from "./worker-environments/placement-dispatch-store.js";
+ import * as placementDispatch from "./worker-environments/placement-dispatch.js";
++import type { WorkerSessionPlacementRecord } from "./worker-environments/placement-record.js";
+ import * as workerEnvironmentService from "./worker-environments/service.js";
+ 
+ installGatewayTestHooks({ scope: "suite" });
+@@ -115,196 +117,323 @@ test.each([false, true])(
    },
  );
  
@@ -45,9 +53,9 @@ index 38fc452..2b0632e 100644
 -      requiredProfile: "dedicated",
 -      profiles: {
 -        dedicated: { provider: "device", settings: { device: "paired", inference: "worker" } },
-+test.each(["before acknowledgment", "after acknowledgment"] as const)(
++test.for(["before acknowledgment", "after acknowledgment"] as const)(
 +  "required placement survives disconnect %s but stops setup when committed caller authority ends",
-+  async (timing) => {
++  async (timing, { signal }) => {
 +    const origin = "https://control.example.invalid";
 +    const admin = "admin@example.invalid";
 +    const writers = {
@@ -69,10 +77,7 @@ index 38fc452..2b0632e 100644
 +        requiredHeaders: ["x-forwarded-proto"],
 +        allowLoopback: true,
 +        allowUsers: [admin, ...Object.values(writers)],
-       },
--    },
--  });
--  vi.stubEnv("OPENCLAW_TEST_MINIMAL_GATEWAY", "0");
++      },
 +    };
 +    testState.gatewayAuth = auth;
 +    testState.gatewayControlUi = { allowedOrigins: [origin] };
@@ -98,7 +103,10 @@ index 38fc452..2b0632e 100644
 +        profiles: {
 +          dedicated: { provider: "device", settings: { device: "paired", inference: "worker" } },
 +        },
-+      },
+       },
+-    },
+-  });
+-  vi.stubEnv("OPENCLAW_TEST_MINIMAL_GATEWAY", "0");
 +    });
 +    vi.stubEnv("OPENCLAW_TEST_MINIMAL_GATEWAY", "0");
  
@@ -119,6 +127,7 @@ index 38fc452..2b0632e 100644
 +    const setupCalls: string[] = [];
 +    const dispatchErrors: string[] = [];
 +    let dispatchSettled: Promise<unknown> | undefined;
++    let terminalPlacement: Promise<WorkerSessionPlacementRecord | undefined> | undefined;
 +    let hold: { committed: Deferred; resume: Promise<void> } | undefined;
 +    const createDispatch = placementDispatch.createWorkerPlacementDispatchService;
 +    vi.spyOn(placementDispatch, "createWorkerPlacementDispatchService").mockImplementation(
@@ -141,11 +150,13 @@ index 38fc452..2b0632e 100644
 +        const dispatch = service.dispatch;
 +        service.dispatch = (...args) => {
 +          const operation = dispatch(...args);
++          const { sessionId } = args[0];
 +          dispatchSettled = operation.catch((error: unknown) => {
 +            dispatchErrors.push(
 +              error instanceof Error ? (error.stack ?? error.message) : String(error),
 +            );
 +          });
++          terminalPlacement = dispatchSettled.then(() => options.placements.getAsync(sessionId));
 +          return operation;
 +        };
 +        return service;
@@ -245,17 +256,22 @@ index 38fc452..2b0632e 100644
 +      const createThenEndAuthority = async (
 +        email: string,
 +        endAuthority: (ws: WebSocket) => Promise<void>,
++        terminalReason: RegExp,
 +        expectedSetupCalls: string[] = [],
 +      ) => {
 +        setupCalls.length = 0;
 +        dispatchErrors.length = 0;
++        dispatchSettled = undefined;
++        terminalPlacement = undefined;
 +        const ws = await connect(email, ["operator.sessions.write"]);
 +        const committed = createDeferredCore();
 +        const resume = createDeferredCore();
 +        hold = { committed, resume: resume.promise };
 +        settled = { remaining: 2, done: createDeferredCore() };
 +        const sessionKey = `agent:main:required-source-${timing.replaceAll(" ", "-")}-${email.split("@")[0]}`;
-+        const created = rpcReq(ws, "sessions.create", { key: sessionKey }).catch(
++        // We deliberately hold this RPC across the placement boundary. Its deadline is the
++        // test's cancellation, so a cold session create cannot be mistaken for a disconnect.
++        const created = rpcReq(ws, "sessions.create", { key: sessionKey }, signal).catch(
 +          (error: unknown) => {
 +            throw new Error(`${email}: sessions.create failed: ${String(error)}`, { cause: error });
 +          },
@@ -272,12 +288,15 @@ index 38fc452..2b0632e 100644
 +          } else {
 +            const accepted = await created;
 +            expect(accepted.ok, JSON.stringify(accepted.error)).toBe(true);
-+            // The reply can arrive before we observe the pause. Bound that wait here so a
-+            // missing notification still releases dispatch in finally, before fixture teardown.
-+            await withTestTimeout(
-+              committed.promise,
-+              10_000,
-+              "sessions.create succeeded but dispatch did not signal the requested placement pause",
++            // The reply can precede the pause notification. Bound this wait by both the
++            // local deadline and test cancellation so finally can release dispatch.
++            await withinTest(
++              withTestTimeout(
++                committed.promise,
++                10_000,
++                "sessions.create succeeded but dispatch did not signal the requested placement pause",
++              ),
++              signal,
 +            );
 +            const published = await rpcReq<{ sessions: Array<{ key: string }> }>(
 +              adminWs,
@@ -297,7 +316,12 @@ index 38fc452..2b0632e 100644
 +          resume.resolve();
 +          await dispatchSettled;
 +        }
-+        await settled.done.promise;
++        await withinTest(settled.done.promise, signal);
++        expect(await withinTest(Promise.resolve(terminalPlacement), signal)).toMatchObject({
++          sessionKey,
++          state: "failed",
++          terminalReason: expect.stringMatching(terminalReason),
++        });
 +        expect(setupCalls, dispatchErrors.join("; ")).toEqual(expectedSetupCalls);
 +        if (expectedSetupCalls.length > 0) {
 +          expect(dispatchErrors.at(-1)).toContain(
@@ -417,6 +441,7 @@ index 38fc452..2b0632e 100644
 +            ws.close();
 +            await closed.promise;
 +          },
++          /device worker is not a paired node host: paired/,
 +          ["prepareProjectIntent", "createWithRequest"],
 +        );
 +        if (timing === "before acknowledgment") {
@@ -428,17 +453,22 @@ index 38fc452..2b0632e 100644
 -        await commitConfigPatch({
 -          raw: JSON.stringify({ gateway: { auth: { identityScopes: { [writers.scope]: null } } } }),
 -          replacePaths: [`gateway.auth.identityScopes.${writers.scope}`],
-+        // A committed config patch removes the caller's operator scope.
-+        const revoked = await createThenEndAuthority(writers.scope, async () => {
-+          await commitConfigPatch({
-+            raw: JSON.stringify({
-+              gateway: { auth: { identityScopes: { [writers.scope]: null } } },
-+            }),
-+            replacePaths: [`gateway.auth.identityScopes.${writers.scope}`],
-+          });
-         });
+-        });
 -      });
 -      await expect(revoked.created).rejects.toThrow(/gateway policy changed/);
++        // A committed config patch removes the caller's operator scope.
++        const revoked = await createThenEndAuthority(
++          writers.scope,
++          async () => {
++            await commitConfigPatch({
++              raw: JSON.stringify({
++                gateway: { auth: { identityScopes: { [writers.scope]: null } } },
++              }),
++              replacePaths: [`gateway.auth.identityScopes.${writers.scope}`],
++            });
++          },
++          /operator source authority is no longer active/,
++        );
 +        if (timing === "before acknowledgment") {
 +          await expect(revoked.created).rejects.toThrow(/gateway policy changed/);
 +        }
@@ -447,18 +477,7 @@ index 38fc452..2b0632e 100644
 -      const unprofiled = await createThenEndAuthority(writers.profile, async () => {
 -        await commitConfigPatch({
 -          raw: JSON.stringify({ cloudWorkers: { requiredProfile: null } }),
-+        // Restoring a profile assignment cannot revive its original accepted authority.
-+        const reassigned = await createThenEndAuthority(writers.role, async (ws) => {
-+          const self = await rpcReq<{ profile: { id: string } }>(ws, "users.self", {});
-+          expect(self.ok, JSON.stringify(self.error)).toBe(true);
-+          for (const role of ["denied", null]) {
-+            const changed = await rpcReq(adminWs, "users.setRole", {
-+              profileId: self.payload?.profile.id,
-+              role,
-+            });
-+            expect(changed.ok, JSON.stringify(changed.error)).toBe(true);
-+          }
-         });
+-        });
 -      });
 -      await unprofiled.created;
 -      expect(unprofiled.ws.readyState).toBe(WebSocket.OPEN);
@@ -468,17 +487,37 @@ index 38fc452..2b0632e 100644
 -    }
 -  });
 -});
++        // Restoring a profile assignment cannot revive its original accepted authority.
++        const reassigned = await createThenEndAuthority(
++          writers.role,
++          async (ws) => {
++            const self = await rpcReq<{ profile: { id: string } }>(ws, "users.self", {});
++            expect(self.ok, JSON.stringify(self.error)).toBe(true);
++            for (const role of ["denied", null]) {
++              const changed = await rpcReq(adminWs, "users.setRole", {
++                profileId: self.payload?.profile.id,
++                role,
++              });
++              expect(changed.ok, JSON.stringify(changed.error)).toBe(true);
++            }
++          },
++          /operator role changed/i,
++        );
 +        if (timing === "before acknowledgment") {
 +          await expect(reassigned.created).rejects.toThrow(/closed|policy changed|role changed/);
 +        }
 +
 +        // A committed config patch removes the required profile while the caller stays connected.
-+        const unprofiled = await createThenEndAuthority(writers.profile, async () => {
-+          await commitConfigPatch({
-+            raw: JSON.stringify({ cloudWorkers: { requiredProfile: null } }),
-+          });
-+        });
-+        await unprofiled.created;
++        const unprofiled = await createThenEndAuthority(
++          writers.profile,
++          async () => {
++            await commitConfigPatch({
++              raw: JSON.stringify({ cloudWorkers: { requiredProfile: null } }),
++            });
++          },
++          /required worker policy changed/i,
++        );
++        expect((await unprofiled.created).ok).toBe(true);
 +        expect(unprofiled.ws.readyState).toBe(WebSocket.OPEN);
 +        unprofiled.ws.close();
 +      } finally {
@@ -487,3 +526,71 @@ index 38fc452..2b0632e 100644
 +    });
 +  },
 +);
+diff --git a/src/gateway/test-helpers.server.ts b/src/gateway/test-helpers.server.ts
+index 7ffe207..8dd131c 100644
+--- a/src/gateway/test-helpers.server.ts
++++ b/src/gateway/test-helpers.server.ts
+@@ -669,13 +669,20 @@ export function onceMessage<T extends GatewayTestMessage = GatewayTestMessage>(
+   // Full-suite runs can saturate the event loop (581+ files). Keep this high
+   // enough to avoid flaky RPC timeouts, but still fail fast when a response
+   // never arrives.
+-  timeoutMs = 10_000,
++  timeout: number | AbortSignal = 10_000,
+ ): Promise<T> {
+   // Keep the wait's caller in the stack when a timer eventually rejects it.
+   const timeoutError = new Error("timeout");
+   return new Promise<T>((resolve, reject) => {
++    const signal = typeof timeout === "number" ? undefined : timeout;
++    signal?.throwIfAborted();
++    function onTimeout() {
++      cleanup();
++      reject(signal?.reason ?? timeoutError);
++    }
+     function cleanup() {
+       clearTimeout(timer);
++      signal?.removeEventListener("abort", onTimeout);
+       ws.off("message", handler);
+       ws.off("close", closeHandler);
+     }
+@@ -690,11 +697,8 @@ export function onceMessage<T extends GatewayTestMessage = GatewayTestMessage>(
+         resolve(obj);
+       }
+     }
+-    const timer: ReturnType<typeof setTimeout> = setTimeout(() => {
+-      cleanup();
+-      reject(timeoutError);
+-    }, timeoutMs);
+-    timer.unref?.();
++    const timer = typeof timeout === "number" ? setTimeout(onTimeout, timeout).unref() : undefined;
++    signal?.addEventListener("abort", onTimeout, { once: true });
+     ws.on("message", handler);
+     ws.once("close", closeHandler);
+   });
+@@ -1239,7 +1243,7 @@ export async function rpcReq<T extends Record<string, unknown>>(
+   ws: WebSocket,
+   method: string,
+   params?: unknown,
+-  timeoutMs?: number,
++  timeout?: number | AbortSignal,
+ ) {
+   // Config publication leaves in-flight session writers owned by the Gateway.
+   publishGatewayTestConfig();
+@@ -1251,6 +1255,9 @@ export async function rpcReq<T extends Record<string, unknown>>(
+   }
+   const { randomUUID } = await import("node:crypto");
+   const id = randomUUID();
++  if (typeof timeout === "object") {
++    timeout.throwIfAborted();
++  }
+   const responsePromise = onceMessage<{
+     type: "res";
+     id: string;
+@@ -1266,7 +1273,7 @@ export async function rpcReq<T extends Record<string, unknown>>(
+       const rec = o as Record<string, unknown>;
+       return rec.type === "res" && rec.id === id;
+     },
+-    timeoutMs,
++    timeout,
+   );
+   ws.send(JSON.stringify({ type: "req", id, method, params }));
+   return await responsePromise;

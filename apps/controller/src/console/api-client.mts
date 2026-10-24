@@ -62,6 +62,12 @@ function validDetail(value: unknown): value is ErrorDetail {
   );
 }
 
+/** Field errors a view can show from an HTTP refusal; transport errors have none. */
+export function requestErrorDetails(cause: unknown): ErrorDetail[] {
+  const { details } = responseFields(cause);
+  return Array.isArray(details) ? details.slice(0, 32).filter(validDetail) : [];
+}
+
 export function createApiClient({
   lifetime,
   hasSession,
@@ -137,7 +143,7 @@ export function createApiClient({
       const details: unknown[] = Array.isArray(problem.details) ? problem.details : [];
       const error: ConsoleApiError = Object.assign(
         new Error("The request could not be completed."),
-        { status: response.status, details: details.slice(0, 32).filter(validDetail) },
+        { status: response.status, details: requestErrorDetails(problem) },
       );
       const code = problem.code;
       if (typeof code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(code)) {

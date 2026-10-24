@@ -36,6 +36,12 @@ func Up(ctx context.Context, opts Options) (result error) {
 	if controlPlane != "compose" && controlPlane != "kubernetes" {
 		return fmt.Errorf("OCC_DEVELOPMENT_CONTROL_PLANE must be compose or kubernetes")
 	}
+	if _, err := r.protectedEgressSelection(controlPlane, sandboxDriver); err != nil {
+		return err
+	}
+	if _, err := r.selectedDevelopmentDatabase(controlPlane); err != nil {
+		return err
+	}
 	networkPolicies, err := r.loadSandboxNetworkPolicies(ctx, sandboxDriver)
 	if err != nil {
 		return err
@@ -49,6 +55,10 @@ func Up(ctx context.Context, opts Options) (result error) {
 	}
 	if controlPlane == "kubernetes" {
 		return upK3d(ctx, opts, sandboxDriver, networkPolicies, ceiling)
+	}
+	openShellImages, err := r.selectOpenShellImages(sandboxDriver)
+	if err != nil {
+		return err
 	}
 	timeout, err := positiveSetting(r, "OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS", 300, 86400)
 	if err != nil {
@@ -118,6 +128,9 @@ func Up(ctx context.Context, opts Options) (result error) {
 		return err
 	}
 	if err := r.pinEndpoint(ctx); err != nil {
+		return err
+	}
+	if err := r.validateOpenShellImageRevisions(ctx, openShellImages); err != nil {
 		return err
 	}
 	if err := r.checkLegacyNATTable(ctx); err != nil {

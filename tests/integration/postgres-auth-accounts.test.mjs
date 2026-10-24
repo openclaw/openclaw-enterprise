@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import pg from "pg";
@@ -13,6 +12,7 @@ import {
 import { composePostgresDevelopment } from "../helpers/password-hasher.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
@@ -87,15 +87,18 @@ test(
   requiresPostgres,
   async (context) => {
     const observerPool = new pg.Pool({ connectionString: databaseUrl, max: 4 });
-    const outputDirectory = await mkdtemp(join(tmpdir(), "openclaw-development-bootstrap-key-"));
     let app;
     context.after(async () => {
       if (app !== undefined) {
         await app.close();
       }
       await observerPool.end();
-      await rm(outputDirectory, { recursive: true, force: true });
     });
+    // Registered after the hook above, so it is removed after the app closes.
+    const outputDirectory = await temporaryDirectory(
+      context,
+      "openclaw-development-bootstrap-key-",
+    );
 
     const state = new PostgresPlatformState(observerPool);
     if ((await state.loadInstallation()) !== undefined) {

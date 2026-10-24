@@ -125,6 +125,9 @@ require_command python3
 if [ ! -x "$occ_cli" ]; then
   fail "prerequisite" "OCC CLI is required at $occ_cli; run pnpm cli:build"
 fi
+if ! "$occ_cli" dev check-profile; then
+  exit 2
+fi
 
 temporary_directory="$(mktemp -d "${TMPDIR:-/tmp}/openclaw-dev-up.XXXXXXXXXX")"
 chmod 700 "$temporary_directory"

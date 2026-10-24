@@ -1,6 +1,8 @@
 // Runtime wrapper SIGTERM in every startup phase, split from
 // runtime-image-startup-probe.test.mjs so CI runs it beside the startup model
-// probes. Both files start the wrapper through the same scenario helper.
+// probes. Both files start the wrapper through the same scenario helper. The
+// Gateway restart after an unclean stop is in
+// runtime-image-gateway-unclean-restart.test.mjs.
 import assert from "node:assert/strict";
 import test from "node:test";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";

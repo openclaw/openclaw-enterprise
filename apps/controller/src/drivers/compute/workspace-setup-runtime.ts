@@ -43,6 +43,25 @@ export const HARNESS_WORKSPACE = "/home/node/workspace";
 type SettingError = (setting: string, requirement: string) => Error;
 
 /**
+ * The roster rule for initial workspace files: only the native main Agent reads them, so the
+ * roster must be main alone (or omitted). Docker, Kubernetes and SSH Compute apply it at Agent
+ * save, so each refusal names the same setting with the same text. Returns that entry.
+ */
+export function requireWorkspaceSetupMainEntry(
+  configuration: Readonly<OpenClawConfigurationDocument>,
+  createError: SettingError,
+): { readonly setting: string; readonly agent: Readonly<Record<string, unknown>> } {
+  const entry = workspaceSetupMainEntry(configuration);
+  if (entry?.agent === undefined) {
+    throw createError(
+      "agents.entries",
+      "must hold only main, or be omitted, for initial workspace files: only the main Agent reads them",
+    );
+  }
+  return { setting: entry.setting, agent: entry.agent };
+}
+
+/**
  * Initial workspace files reach only the native main Agent's managed durable workspace, so the
  * roster must be main alone (or omitted) and its workspace one of `workspaces`: the paths the
  * Compute Driver mounts on that storage for this Agent, managed path first. Docker and
@@ -54,14 +73,8 @@ export function requireWorkspaceSetupConfiguration(
   workspaces: readonly string[],
   createError: SettingError,
 ): string {
-  const entry = workspaceSetupMainEntry(configuration);
-  const main = entry?.agent;
-  if (entry === undefined || main === undefined) {
-    throw createError(
-      "agents.entries",
-      "must hold only main, or be omitted, for initial workspace files: only the main Agent reads them",
-    );
-  }
+  const entry = requireWorkspaceSetupMainEntry(configuration, createError);
+  const main = entry.agent;
   const defaults = asRecord(asRecord(configuration.agents)?.defaults);
   const setting =
     main.workspace !== undefined ? `${entry.setting}.workspace` : "agents.defaults.workspace";

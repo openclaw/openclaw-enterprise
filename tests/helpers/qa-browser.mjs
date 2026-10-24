@@ -6,8 +6,9 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:tls";
 import { chromium } from "playwright";
+import { availablePort } from "./available-port.mjs";
 import { prepareQaConsoleTheme } from "./qa-installation.mjs";
-import { unusedPort, waitFor } from "./qa-utils.mjs";
+import { waitFor } from "./qa-utils.mjs";
 import { submitChatTurnWithAssistantProof, waitForStockUi } from "./native-ui-chat.mjs";
 
 export async function createQaBrowser(f, { themed }) {
@@ -15,7 +16,7 @@ export async function createQaBrowser(f, { themed }) {
     await prepareQaConsoleTheme(f);
   }
   const nativeHost = `native.${f.cluster}.oce.localhost`;
-  const port = await unusedPort();
+  const port = await availablePort();
   const nativeOrigin = `https://${nativeHost}:${port}`;
   const ca = f.browserCA ?? join(f.directory, "browser-ca.crt");
   let relay;

@@ -2,8 +2,7 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { renameSync } from "node:fs";
-import { mkdtemp, open, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { open, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
@@ -18,6 +17,7 @@ import { createTestConfigurationDriver } from "../helpers/configuration-driver.m
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { bindRole, grantRole } from "../helpers/iam-grants.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const run = promisify(execFile);
 const occCli = join(process.cwd(), "bin", "occ");
@@ -260,8 +260,7 @@ test("service API keys authenticate scoped automation without replacing sessions
   );
 
   await t.test("occ CLI exercises Configuration CRUD and Agent stop/delete", async (t) => {
-    const directory = await mkdtemp(join(tmpdir(), "openclaw-occ-cli-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
+    const directory = await temporaryDirectory(t, "openclaw-occ-cli-");
     const keyFile = join(directory, "service-key.json");
     const adminKeyFile = join(directory, "admin-service-key.json");
     const bodyFile = join(directory, "configuration.json");

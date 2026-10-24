@@ -8,6 +8,8 @@ This record preserves the dated changes to the controller worker flow. See the [
 
 ## Changelog
 
+- 2026-10-23 14:00: Unreadable rows end a refused-stop wait at the attempt limit. (fix-1801)
+
 - 2026-10-11 10:30: Draining stops skip yielded stops. (fix-1093-1095)
 
 - 2026-10-11 09:30: Yield an Agent stop's Gateway drain to due work. (fix-1088)

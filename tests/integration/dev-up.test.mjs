@@ -6,11 +6,11 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { once } from "node:events";
-import { setTimeout as delay } from "node:timers/promises";
 import { createRequire } from "node:module";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { composeConfiguration } from "../helpers/compose.mjs";
 import { runDevUpModelProviderCase } from "../helpers/dev-up-model-provider.mjs";
+import { waitUntil } from "../helpers/wait-for.mjs";
 import {
   createFixture,
   matchingInstallationId,
@@ -440,16 +440,19 @@ test("cancelling Kubernetes startup during readiness rolls back its owned resour
   });
   // Wait for the real client to reach readiness, after all owned resources
   // exist, so cancellation must execute rollback rather than fail preflight.
-  const deadline = Date.now() + 15_000;
-  while (
-    !(await readJsonLines(fixture.requestLog)).some((row) => row.url === "/api/auth/session")
-  ) {
-    assert.ok(
-      Date.now() < deadline && child.exitCode === null,
-      output || "startup did not reach readiness",
-    );
-    await delay(20);
-  }
+  await waitUntil(
+    () => `startup to reach readiness: ${output}`,
+    async () => {
+      if (
+        (await readJsonLines(fixture.requestLog)).some((row) => row.url === "/api/auth/session")
+      ) {
+        return true;
+      }
+      assert.equal(child.exitCode, null, output || "startup exited before readiness");
+      return false;
+    },
+    { timeoutMs: 15_000 },
+  );
   child.kill("SIGTERM");
   const [status, signal] = await exited;
   assert.notEqual(status, 0, output);
@@ -566,11 +569,7 @@ for (const scenario of ["cancelled-creation", "cluster-create-failed", "node-dns
         await work;
       });
       if (scenario === "cancelled-creation") {
-        const deadline = Date.now() + 15_000;
-        while (!existsSync(started)) {
-          assert.ok(Date.now() < deadline, "creation did not start");
-          await delay(20);
-        }
+        await waitUntil("creation to start", () => existsSync(started), { timeoutMs: 15_000 });
         controller.abort();
       }
       const failure = await work;

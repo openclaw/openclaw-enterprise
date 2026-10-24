@@ -1,13 +1,12 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { appendFile, mkdtemp, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { appendFile, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 test("CLI release builds four installable platform binaries and rejects changed assets", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "oce-cli-release-test-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "oce-cli-release-test-");
   const output = join(directory, "dist");
   // Builds use the toolchain's normal cache (GOCACHEPROG or the setup-go cache on CI, the user
   // cache locally). A fresh cache recompiled the standard library for four platforms every run.

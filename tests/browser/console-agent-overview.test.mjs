@@ -3,13 +3,14 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 
 import { DELETION_POLL_MS } from "../../apps/controller/src/console/agents/deletion.mjs";
-import {
-  DEPLOYMENT_POLL_MS,
-  deploymentFailureStep,
-  FIRST_ACTIVITY_WAIT_MS,
-} from "../../apps/controller/src/console/agents/detail.mjs";
+import { FIRST_ACTIVITY_WAIT_MS } from "../../apps/controller/src/console/agents/detail.mts";
+import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/deployment-evidence.mts";
+import { deploymentFailureStep } from "../../apps/controller/src/console/agents/deployment-recovery.mts";
 import { fileConsoleApp } from "../helpers/console-app.mjs";
-import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.mjs";
+import {
+  createProviderSandboxDriver,
+  createRuntimeLogComputeDriver,
+} from "../helpers/runtime-logs.mjs";
 import {
   apiRequests,
   asksBeforeUnload,
@@ -29,6 +30,7 @@ import {
   settledView,
   takeLayoutShifts,
   trackSettledFetches,
+  waitForEnabled,
   waitForIdleFetches,
   waitForSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
@@ -236,7 +238,7 @@ test("the Share Agent form shows disabled while the sharing policy loads", async
 
   roles.release();
   await sharing.getByText("Current policy loaded.", { exact: false }).waitFor();
-  assert.equal(await principal.isEnabled(), true);
+  await waitForEnabled(principal);
   // The read's placeholder held the line its result takes, so nothing below moved.
   const after = await grants.boundingBox();
   assert.ok(Math.abs(after.y - before.y) < 1, `the grants moved ${after.y - before.y}px`);
@@ -282,6 +284,145 @@ test("A failed older version raises no recovery while the current version is hid
   assert.equal(await page.locator(".deployment-recovery").isHidden(), true);
   assert.equal(await page.getByText("v1 deployment failed").count(), 0);
   assert.equal(await summary.getByText("May be offline").count(), 0);
+});
+
+// Nothing restarts a lost Sandbox (finding 2152): after a node restart the current version's
+// Sandbox can stay stopped while the Agent still reads active and its gateway refuses requests.
+// Live serving says so with the next step. Its note line is reserved from the first paint, so a
+// Sandbox read that lands after the page shows moves nothing. A healthy Sandbox carries no
+// warning, and a Sandbox the Driver cannot read is unknown, never lost.
+test("Live serving shows a lost Sandbox and its next step without moving the page", async (t) => {
+  const { driver: sandboxDriver, state } = createProviderSandboxDriver();
+  const { fixture, namespace } = await readyNamespace(t, "Lost Sandbox", {
+    computeDriver: createRuntimeLogComputeDriver({ sandboxNamespace: "tenant-console" }),
+    sandboxDriver,
+  });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Lost Sandbox",
+    nativeValues("v1", { harnessId: "codex" }),
+    { executionMode: "dedicated" },
+  );
+  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const liveServing = (page) =>
+    page
+      .getByRole("region", { name: "Agent state at a glance" })
+      .locator(".stat")
+      .filter({ hasText: "Live serving" });
+  async function openOverview(viewport, { statusFailure = false } = {}) {
+    const { page } = await newPage(t, fixture, { browser, context: { viewport } });
+    const harnessReads = [];
+    page.on("request", (request) => {
+      if (request.url().endsWith("/harness-status")) {
+        harnessReads.push(request.url());
+      }
+    });
+    // The fixture has no worker; the deployment that made v1 current succeeded.
+    await page.route(deploymentRecordUrl(fixture, namespace.id, agent.id, revision.id), (route) =>
+      route.fulfill(deploymentStatusResponse(revision, { status: "succeeded" })),
+    );
+    await trackSettledFetches(page);
+    await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+    await page.getByRole("link", { name: "Lost Sandbox" }).waitFor();
+    await waitForIdleFetches(page);
+    // The Agents list reads no Sandbox: a list costs no Sandbox Driver call per Agent. A read it
+    // started later would still count against the one read per page checked below.
+    assert.deepEqual(harnessReads, []);
+    // The Sandbox read lands after the page shows, as on a gateway that takes a moment: it is
+    // held until the page shows Live serving's note waiting for it.
+    const sandboxRead = await holdRequests(
+      t,
+      page,
+      `${fixture.origin}/namespaces/**/harness-status`,
+      {
+        fulfill: statusFailure
+          ? {
+              status: 503,
+              json: { error: { code: "DEPENDENCY_UNAVAILABLE", message: "Unavailable." } },
+            }
+          : null,
+      },
+    );
+    await page.addInitScript(recordLayoutShifts);
+    // A full load, so no recent input excuses a shift.
+    await page.goto(detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").href);
+    await liveServing(page).locator(".stat-help", { hasText: "Checking Sandbox…" }).waitFor();
+    await sandboxRead.requested;
+    await nextFrames(page);
+    sandboxRead.release();
+    // The answer renders before any click below, which would excuse a shift it causes.
+    await waitForSettledFetches(page, new URL(harnessReads[0]).pathname, 1);
+    await nextFrames(page);
+    await expectDeploymentOutcome(page, "Completed");
+    return { page, harnessReads };
+  }
+
+  // The node-restart case: OpenShell keeps the Sandbox record, stopped. Beside the sidebar
+  // (900 wide) the Live serving column is narrowest; its note still fits the reserved line.
+  state.harness = { state: "lost", code: "SANDBOX_STOPPED" };
+  for (const viewport of [...consoleViewports, { width: 900, height: 900 }]) {
+    const { page, harnessReads } = await openOverview(viewport);
+    const badge = liveServing(page).locator(".badge");
+    await liveServing(page).getByText("Deploy a new version.", { exact: true }).waitFor();
+    assert.equal(await badge.textContent(), "Sandbox lost");
+    assert.equal(await badge.getAttribute("data-tone"), "danger");
+    await page.evaluate(() => globalThis.document.fonts.ready);
+    await waitForIdleFetches(page);
+    await nextFrames(page);
+    const { shift, shifts } = await takeLayoutShifts(page);
+    t.diagnostic(`${viewport.width}x${viewport.height} shift ${shift}: ${JSON.stringify(shifts)}`);
+    assert.ok(shift < 0.01, `${viewport.width}x${viewport.height} shift ${shift}`);
+    // Only the Live serving fact itself may change; nothing below it moves.
+    const moved = shifts
+      .flatMap((entry) => entry.sources)
+      .filter((source) => !/stat-value|stat-help/.test(source.node));
+    assert.deepEqual(moved, [], `${viewport.width}x${viewport.height}`);
+    // One read for the page's serving state, not a poll.
+    assert.equal(harnessReads.length, 1);
+  }
+
+  // A healthy Sandbox, one the Driver cannot read and a status read that fails leave Live
+  // serving unverified, with no warning.
+  for (const [harness, harnessError, statusFailure, note] of [
+    [{ state: "running" }, undefined, false, "Sandbox running."],
+    [
+      undefined,
+      new Error("gateway refused sandbox:read token-secret"),
+      false,
+      "Sandbox status unknown.",
+    ],
+    [{ state: "lost", code: "SANDBOX_STOPPED" }, undefined, true, "Sandbox status unknown."],
+  ]) {
+    state.harness = harness;
+    state.harnessError = harnessError;
+    const { page } = await openOverview(consoleViewports[0], { statusFailure });
+    await liveServing(page).getByText(note, { exact: true }).waitFor();
+    const badge = liveServing(page).locator(".badge");
+    assert.equal(await badge.textContent(), "Not verified");
+    assert.equal(await badge.getAttribute("data-tone"), null);
+    assert.equal(await page.getByText("Sandbox lost").count(), 0);
+    assert.equal(await page.getByText("token-secret", { exact: false }).count(), 0);
+  }
+
+  // Stopping the Agent drops the answer for the old serving state: a stopped Agent's Sandbox
+  // is removed by design, so Live serving no longer reports it lost, and nothing is read.
+  {
+    state.harness = { state: "lost", code: "SANDBOX_STOPPED" };
+    state.harnessError = undefined;
+    const { page, harnessReads } = await openOverview(consoleViewports[0]);
+    await liveServing(page).getByText("Sandbox lost", { exact: true }).waitFor();
+    await page.getByRole("button", { name: "Stop Agent" }).click();
+    await page
+      .getByRole("dialog", { name: "Stop this Agent?" })
+      .getByRole("button", { name: "Stop Agent" })
+      .click();
+    const summary = page.getByRole("region", { name: "Agent state at a glance" });
+    await summary.getByText("Stop requested", { exact: true }).waitFor();
+    await waitForIdleFetches(page);
+    assert.equal(await liveServing(page).locator(".badge").textContent(), "Not verified");
+    assert.equal(await liveServing(page).locator(".stat-help").textContent(), "");
+    assert.equal(harnessReads.length, 1);
+  }
 });
 
 // One readable version per history page: the first page lists the newest readable version.
@@ -2251,7 +2392,7 @@ test("A share in flight holds version and page changes until it finishes", async
   const panel = page.getByRole("region", { name: "Share Agent", exact: true });
   await panel.getByText("Current policy loaded.", { exact: true }).waitFor();
   const version = page.getByRole("button", { name: "View version v1, current version" });
-  assert.equal(await version.isEnabled(), true);
+  await waitForEnabled(version);
   await panel.getByLabel("Existing person’s Principal ID").fill(person.principal.id);
   await panel.getByRole("checkbox").check();
   assert.equal(await asksBeforeUnload(page), false);
@@ -2278,7 +2419,7 @@ test("A share in flight holds version and page changes until it finishes", async
   write.release();
   await panel.getByText("Agent access is shared.", { exact: false }).waitFor();
   await held.waitFor({ state: "detached" });
-  assert.equal(await version.isEnabled(), true);
+  await waitForEnabled(version);
   assert.equal(await asksBeforeUnload(page), false);
   const bindings = (
     await fixture.request("GET", `/namespaces/${namespace.id}/iam/access-bindings`)
@@ -2582,7 +2723,7 @@ for (const viewport of [
 
     // Deploy is the page's one primary.
     const deploy = card.getByRole("button", { name: "Deploy new version" });
-    assert.equal(await deploy.isEnabled(), true);
+    await waitForEnabled(deploy);
     const layout = await page.evaluate(() => {
       const doc = globalThis.document;
       const box = (node) => node.getBoundingClientRect();

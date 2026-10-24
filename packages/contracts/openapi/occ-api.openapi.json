@@ -487,6 +487,22 @@
                 "maxProperties": 32,
                 "type": "object"
               },
+              "egress": {
+                "additionalProperties": false,
+                "description": "Protected live static, eligible prepared, or explicitly credential-free metadata access. Each profile requires its own grant; missing material never selects credential-free access. Runtime readiness requires current authenticated supervisor evidence.",
+                "properties": {
+                  "adoption": {
+                    "anyOf": [
+                      { "const": "live", "type": "string" },
+                      { "const": "prepared", "type": "string" },
+                      { "const": "credential_free", "type": "string" }
+                    ]
+                  },
+                  "retention": { "const": "none", "type": "string" }
+                },
+                "required": ["adoption", "retention"],
+                "type": "object"
+              },
               "id": {
                 "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                 "type": "string"
@@ -500,6 +516,13 @@
               "namespaceId": {
                 "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                 "type": "string"
+              },
+              "ownerCapability": {
+                "anyOf": [
+                  { "const": "credential_gateway", "type": "string" },
+                  { "const": "credential_proxy", "type": "string" }
+                ],
+                "description": "The Driver capability that admitted this source. Changing the selected Driver does not transfer ownership."
               },
               "ref": {
                 "additionalProperties": false,
@@ -549,7 +572,7 @@
               },
               "status": {
                 "additionalProperties": false,
-                "description": "Live status reported by the selected Credential Gateway. It never contains credential values.",
+                "description": "Source admission or selected Credential Gateway status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values.",
                 "properties": {
                   "reason": { "maxLength": 512, "type": "string" },
                   "refresh": {
@@ -599,7 +622,17 @@
                 "type": "string"
               }
             },
-            "required": ["id", "namespaceId", "name", "type", "config", "secrets", "state", "ref"],
+            "required": [
+              "id",
+              "namespaceId",
+              "name",
+              "type",
+              "ownerCapability",
+              "config",
+              "secrets",
+              "state",
+              "ref"
+            ],
             "type": "object"
           },
           "meta": {
@@ -747,6 +780,26 @@
                   {
                     "const": "CREDENTIAL_WITHDRAWAL_IN_PROGRESS",
                     "description": "Only credential withdrawal work still queued or running for an Agent revision that held the source keeps it from being deleted.",
+                    "type": "string"
+                  },
+                  {
+                    "const": "CREDENTIAL_TOKEN_UNSETTLED",
+                    "description": "A provider token issued for the source may still be valid after a lost issue or revocation outcome; retry the deletion after the time in the message.",
+                    "type": "string"
+                  },
+                  {
+                    "const": "SANDBOX_POLICY_PROTECTED_EXECUTION",
+                    "description": "Protected execution keeps only its Credential Proxy egress policy: Agent network policy additions are refused at save and deploy while the running or next revision is protected, and live application to a protected revision is refused.",
+                    "type": "string"
+                  },
+                  {
+                    "const": "REPOSITORY_GIT_SENDER_UNQUALIFIED",
+                    "description": "Deploy is refused because the selected Credential Proxy has no qualified enforcement for the Agent's git-write repository binding; the version could never start.",
+                    "type": "string"
+                  },
+                  {
+                    "const": "REPOSITORY_GIT_PROFILE_UNSUPPORTED",
+                    "description": "Deploy is refused because the selected Credential Proxy delivers repository Git only for one binding with the git-write or github-installation profile; git-read, git-full or several bindings could never start.",
                     "type": "string"
                   },
                   {
@@ -16063,17 +16116,6 @@
         "operationId": "listRepositoryOptions",
         "parameters": [
           {
-            "description": "Up to 20 visible repository references to enrich with provider descriptions.",
-            "in": "query",
-            "name": "descriptionRefs",
-            "required": false,
-            "schema": {
-              "maxLength": 2579,
-              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}(,[A-Za-z0-9][A-Za-z0-9._-]{0,127}){0,19}$",
-              "type": "string"
-            }
-          },
-          {
             "in": "path",
             "name": "namespaceId",
             "required": true,
@@ -16129,13 +16171,12 @@
                     "meta": {
                       "additionalProperties": false,
                       "properties": {
-                        "descriptionsPending": { "type": "boolean" },
                         "requestId": {
                           "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
                         }
                       },
-                      "required": ["requestId", "descriptionsPending"],
+                      "required": ["requestId"],
                       "type": "object"
                     }
                   },
@@ -17396,6 +17437,63 @@
                     },
                     "maxItems": 16,
                     "type": "array"
+                  },
+                  "repositoryStandingApproval": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "approvalId": {
+                            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+                            "type": "string"
+                          },
+                          "approved": { "const": true, "type": "boolean" },
+                          "duration": { "const": "until-removed", "type": "string" },
+                          "expectedScopeFingerprint": {
+                            "pattern": "^[a-f0-9]{64}$",
+                            "type": "string"
+                          },
+                          "repositoryRef": {
+                            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "repositoryRef",
+                          "approvalId",
+                          "approved",
+                          "duration",
+                          "expectedScopeFingerprint"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "approvalId": {
+                            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+                            "type": "string"
+                          },
+                          "approved": { "const": false, "type": "boolean" },
+                          "expectedGeneration": {
+                            "maximum": 9007199254740991,
+                            "minimum": 1,
+                            "type": "integer"
+                          },
+                          "repositoryRef": {
+                            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "repositoryRef",
+                          "approvalId",
+                          "approved",
+                          "expectedGeneration"
+                        ],
+                        "type": "object"
+                      }
+                    ]
                   }
                 },
                 "required": ["configurationId"],
@@ -21034,6 +21132,157 @@
         ]
       }
     },
+    "/namespaces/{namespaceId}/agents/{agentId}/harness-status": {
+      "get": {
+        "description": "Requires read permission on the requested Agent.",
+        "operationId": "getAgentHarnessStatus",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "agentId",
+            "required": true,
+            "schema": {
+              "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "harness": {
+                          "additionalProperties": false,
+                          "description": "The Sandbox Driver reports this provider-owned Harness Sandbox (OpenShell). `lost` means that the Sandbox does not serve this Agent revision. OCC will not restart it. Deploy the Agent again to replace it. `starting` with `HARNESS_RESTARTING` means that the provider is restarting a Harness process that exited.",
+                          "properties": {
+                            "code": {
+                              "anyOf": [
+                                { "const": "SANDBOX_MISSING", "type": "string" },
+                                { "const": "SANDBOX_DELETING", "type": "string" },
+                                { "const": "SANDBOX_STOPPED", "type": "string" },
+                                { "const": "SANDBOX_FAILED", "type": "string" },
+                                { "const": "HARNESS_EXITED", "type": "string" },
+                                { "const": "HARNESS_RESTARTING", "type": "string" },
+                                { "const": "UNAVAILABLE", "type": "string" }
+                              ]
+                            },
+                            "exitCode": {
+                              "description": "Present only with HARNESS_RESTARTING: the Harness process's last exit code.",
+                              "maximum": 2147483647,
+                              "minimum": -2147483648,
+                              "type": "integer"
+                            },
+                            "restarts": {
+                              "description": "Present only with HARNESS_RESTARTING: the restart number in the current crash loop (1 for a first restart).",
+                              "maximum": 4294967295,
+                              "minimum": 1,
+                              "type": "integer"
+                            },
+                            "state": {
+                              "anyOf": [
+                                { "const": "running", "type": "string" },
+                                { "const": "starting", "type": "string" },
+                                { "const": "lost", "type": "string" },
+                                { "const": "unknown", "type": "string" }
+                              ]
+                            }
+                          },
+                          "required": ["state"],
+                          "type": "object"
+                        },
+                        "revisionId": {
+                          "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "status": {
+                          "anyOf": [
+                            { "const": "observed", "type": "string" },
+                            { "const": "unobserved", "type": "string" }
+                          ],
+                          "description": "`observed` when OCC read the Sandbox record of the running Agent's active revision. `unobserved` when there is nothing to read: the Agent is stopped, deleting or has no active revision, its Harness is not dedicated, or the selected Sandbox Driver keeps no lifecycle record."
+                        }
+                      },
+                      "required": ["status"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "Read the Sandbox Driver's record of a running Agent's dedicated Harness Sandbox",
+        "tags": ["Agents"],
+        "x-openclaw-permissions": [
+          { "action": "read", "resourceKind": "agent", "scope": "requested" }
+        ]
+      }
+    },
     "/namespaces/{namespaceId}/agents/{agentId}/native-admin": {
       "get": {
         "description": "Requires a human session with administer permission on the exact Agent. Service API keys cannot launch or inspect native admin UI access.",
@@ -21896,22 +22145,343 @@
         ]
       }
     },
+    "/namespaces/{namespaceId}/agents/{agentId}/repository-approval-scopes": {
+      "get": {
+        "description": "Requires administer permission on the requested Agent.",
+        "operationId": "listAgentStandingApprovalScopes",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "agentId",
+            "required": true,
+            "schema": {
+              "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "properties": {
+                          "binding": { "additionalProperties": {}, "type": "object" },
+                          "repositoryRef": { "type": "string" },
+                          "scope": { "additionalProperties": {}, "type": "object" },
+                          "scopeFingerprint": { "type": "string" }
+                        },
+                        "required": ["repositoryRef", "binding", "scope", "scopeFingerprint"],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "meta": {
+                      "properties": { "requestId": { "type": "string" } },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "Review resolved repository scope before explicitly approving it",
+        "tags": ["Agents"],
+        "x-openclaw-permissions": [
+          { "action": "administer", "resourceKind": "agent", "scope": "requested" }
+        ]
+      }
+    },
+    "/namespaces/{namespaceId}/agents/{agentId}/repository-approvals": {
+      "get": {
+        "description": "Requires administer permission on the requested Agent.",
+        "operationId": "listAgentStandingApprovals",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "agentId",
+            "required": true,
+            "schema": {
+              "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "properties": {
+                          "approvedBy": { "type": "string" },
+                          "createdAt": { "type": "string" },
+                          "generation": { "minimum": 1, "type": "integer" },
+                          "id": { "type": "string" },
+                          "profile": { "type": "string" },
+                          "repositoryRef": { "type": "string" },
+                          "revokedAt": { "type": "string" },
+                          "scopeFingerprint": { "type": "string" },
+                          "status": {
+                            "anyOf": [
+                              { "const": "active", "type": "string" },
+                              { "const": "removed", "type": "string" }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "repositoryRef",
+                          "profile",
+                          "generation",
+                          "scopeFingerprint",
+                          "status",
+                          "approvedBy",
+                          "createdAt"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "meta": {
+                      "properties": { "requestId": { "type": "string" } },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "Read attributable repository approvals and removed generations for one Agent",
+        "tags": ["Agents"],
+        "x-openclaw-permissions": [
+          { "action": "administer", "resourceKind": "agent", "scope": "requested" }
+        ]
+      }
+    },
+    "/namespaces/{namespaceId}/agents/{agentId}/repository-approvals/{approvalId}/remove": {
+      "post": {
+        "description": "Requires administer permission on the requested Agent.",
+        "operationId": "removeAgentStandingApproval",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "agentId",
+            "required": true,
+            "schema": {
+              "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "approvalId",
+            "required": true,
+            "schema": { "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$", "type": "string" }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "expectedGeneration": {
+                    "maximum": 9007199254740991,
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "required": ["expectedGeneration"],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": { "description": "Default Response" },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "409": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "413": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "415": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "Remove repository approval independently of configuration or runtime cleanup",
+        "tags": ["Agents"],
+        "x-openclaw-permissions": [
+          { "action": "administer", "resourceKind": "agent", "scope": "requested" }
+        ]
+      }
+    },
     "/namespaces/{namespaceId}/agents/{agentId}/repository-options": {
       "get": {
         "description": "Requires update permission on the requested Agent.",
         "operationId": "listAgentRepositoryOptions",
         "parameters": [
-          {
-            "description": "Up to 20 visible repository references to enrich with provider descriptions.",
-            "in": "query",
-            "name": "descriptionRefs",
-            "required": false,
-            "schema": {
-              "maxLength": 2579,
-              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}(,[A-Za-z0-9][A-Za-z0-9._-]{0,127}){0,19}$",
-              "type": "string"
-            }
-          },
           {
             "in": "path",
             "name": "namespaceId",
@@ -21977,13 +22547,12 @@
                     "meta": {
                       "additionalProperties": false,
                       "properties": {
-                        "descriptionsPending": { "type": "boolean" },
                         "requestId": {
                           "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
                         }
                       },
-                      "required": ["requestId", "descriptionsPending"],
+                      "required": ["requestId"],
                       "type": "object"
                     }
                   },
@@ -23662,9 +24231,20 @@
                           },
                           "required": ["id", "namespaceId", "agentId", "version", "additions"],
                           "type": "object"
+                        },
+                        "protectedExecution": {
+                          "description": "True while the active revision or the next deploy runs under protected execution. Saving network policy additions is then refused with SANDBOX_POLICY_PROTECTED_EXECUTION; saving an empty policy stays allowed.",
+                          "type": "boolean"
                         }
                       },
-                      "required": ["policy", "editingEnabled", "ceiling", "defaults", "capability"],
+                      "required": [
+                        "policy",
+                        "editingEnabled",
+                        "protectedExecution",
+                        "ceiling",
+                        "defaults",
+                        "capability"
+                      ],
                       "type": "object"
                     },
                     "meta": {
@@ -26691,6 +27271,22 @@
                             "maxProperties": 32,
                             "type": "object"
                           },
+                          "egress": {
+                            "additionalProperties": false,
+                            "description": "Protected live static, eligible prepared, or explicitly credential-free metadata access. Each profile requires its own grant; missing material never selects credential-free access. Runtime readiness requires current authenticated supervisor evidence.",
+                            "properties": {
+                              "adoption": {
+                                "anyOf": [
+                                  { "const": "live", "type": "string" },
+                                  { "const": "prepared", "type": "string" },
+                                  { "const": "credential_free", "type": "string" }
+                                ]
+                              },
+                              "retention": { "const": "none", "type": "string" }
+                            },
+                            "required": ["adoption", "retention"],
+                            "type": "object"
+                          },
                           "id": {
                             "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                             "type": "string"
@@ -26704,6 +27300,13 @@
                           "namespaceId": {
                             "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                             "type": "string"
+                          },
+                          "ownerCapability": {
+                            "anyOf": [
+                              { "const": "credential_gateway", "type": "string" },
+                              { "const": "credential_proxy", "type": "string" }
+                            ],
+                            "description": "The Driver capability that admitted this source. Changing the selected Driver does not transfer ownership."
                           },
                           "ref": {
                             "additionalProperties": false,
@@ -26753,7 +27356,7 @@
                           },
                           "status": {
                             "additionalProperties": false,
-                            "description": "Live status reported by the selected Credential Gateway. It never contains credential values.",
+                            "description": "Source admission or selected Credential Gateway status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values.",
                             "properties": {
                               "reason": { "maxLength": 512, "type": "string" },
                               "refresh": {
@@ -26808,6 +27411,7 @@
                           "namespaceId",
                           "name",
                           "type",
+                          "ownerCapability",
                           "config",
                           "secrets",
                           "state",
@@ -27200,8 +27804,18 @@
             "application/json": {
               "schema": {
                 "additionalProperties": false,
-                "description": "Re-reads the source's Secret values, or those of replacement Secret references, and updates the Credential Gateway copy. A refresh token field (`refresh_token` of `oauth2-refresh-token`) must reference a new Secret. Non-secret config is immutable.",
+                "description": "For a legacy source, omitting adoption and authorityScope updates the Credential Gateway copy. To admit an unbound legacy or narrower source for protected per-operation reads, send adoption: live and authorityScope: execution together. Existing approvals never expand because of an upgrade or a Secret change. Already-admitted sources remain live. PATCH requires an unbound source. A refresh token field (`refresh_token` of `oauth2-refresh-token`) must reference a new Secret. Non-secret config is immutable.",
                 "properties": {
+                  "adoption": {
+                    "const": "live",
+                    "description": "Opt an unbound static source into protected live Secret reads. A legacy or narrower source also requires explicit authorityScope: execution. Requires source update and Secret operate permission.",
+                    "type": "string"
+                  },
+                  "authorityScope": {
+                    "const": "execution",
+                    "description": "Consent to every process in this dedicated execution using the constrained inference grant. An older executable-specific grant is never broadened by an upgrade or Secret change.",
+                    "type": "string"
+                  },
                   "secrets": {
                     "additionalProperties": {
                       "additionalProperties": false,
@@ -27229,7 +27843,7 @@
               }
             }
           },
-          "description": "Re-reads the source's Secret values, or those of replacement Secret references, and updates the Credential Gateway copy. A refresh token field (`refresh_token` of `oauth2-refresh-token`) must reference a new Secret. Non-secret config is immutable.",
+          "description": "For a legacy source, omitting adoption and authorityScope updates the Credential Gateway copy. To admit an unbound legacy or narrower source for protected per-operation reads, send adoption: live and authorityScope: execution together. Existing approvals never expand because of an upgrade or a Secret change. Already-admitted sources remain live. PATCH requires an unbound source. A refresh token field (`refresh_token` of `oauth2-refresh-token`) must reference a new Secret. Non-secret config is immutable.",
           "required": true
         },
         "responses": {

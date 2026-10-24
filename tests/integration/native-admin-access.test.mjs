@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:https";
 import { once } from "node:events";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getCACertificates, setDefaultCACertificates } from "node:tls";
@@ -25,6 +24,7 @@ import { signInToControllerApp } from "../helpers/auth-session.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { sharedRsaPrivateKeyPem } from "../fixtures/repository-credentials/shared-keys.mjs";
+import { selfSigned } from "../helpers/certificates.mjs";
 
 const cookieDomain = "oce.example.test";
 const nativeDomain = `agents.${cookieDomain}`;
@@ -96,32 +96,13 @@ function nativeComputeDriver(upstreamPort, { exclusiveReplacement = false } = {}
 async function startNativeHttpsUpstream(t) {
   const directory = await mkdtemp(join(tmpdir(), "openclaw-native-admin-upstream-"));
   t.after(async () => rm(directory, { recursive: true, force: true }));
-  const keyPath = join(directory, "tls.key");
-  const certPath = join(directory, "tls.crt");
-  await writeFile(keyPath, sharedRsaPrivateKeyPem("native-admin-upstream"), { mode: 0o600 });
-  const generated = spawnSync(
-    "openssl",
-    [
-      "req",
-      "-x509",
-      "-key",
-      keyPath,
-      "-days",
-      "2",
-      "-out",
-      certPath,
-      "-subj",
-      "/CN=localhost",
-      "-addext",
-      "subjectAltName=DNS:localhost,IP:127.0.0.1",
-    ],
-    { encoding: "utf8" },
-  );
-  assert.equal(generated.status, 0, generated.stderr || generated.error?.message);
+  const { key, cert } = await selfSigned(directory, {
+    keyPem: sharedRsaPrivateKeyPem("native-admin-upstream"),
+    days: 2,
+  });
 
   const requests = [];
-  const cert = await readFile(certPath, "utf8");
-  const server = createServer({ key: await readFile(keyPath), cert }, async (request, response) => {
+  const server = createServer({ key, cert }, async (request, response) => {
     const chunks = [];
     for await (const chunk of request) {
       chunks.push(chunk);

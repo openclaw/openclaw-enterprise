@@ -4,8 +4,11 @@ import {
   asRecord,
   cookieHeaderFromSetCookie,
   deepFreeze,
+  freezeSnapshot,
   hasControlCharacter,
   immutableCopy,
+  immutableSnapshot,
+  isImmutableSnapshot,
   isNonEmptyString,
   isPositiveSafeInteger,
   numericErrorStatus,
@@ -29,6 +32,35 @@ test("immutableCopy detaches and deeply freezes resource snapshots", () => {
   assert.equal(Object.isFrozen(snapshot.identity), true);
   assert.equal(Object.isFrozen(snapshot.roles), true);
   assert.equal(Object.isFrozen(original), false);
+});
+
+test("freezeSnapshot freezes a new value in place and records it like immutableSnapshot", () => {
+  const permissions = Object.freeze([Object.freeze({ action: "read", resourceKind: "agent" })]);
+  const state = { roles: [{ id: "role-a", permissions }], groups: [{ id: "group-a" }] };
+  const snapshot = freezeSnapshot(state);
+
+  // No copy: the snapshot is the value, and its already frozen parts stay shared.
+  assert.equal(snapshot, state);
+  assert.equal(snapshot.roles[0].permissions, permissions);
+  assert.equal(isImmutableSnapshot(snapshot), true);
+  for (const part of [
+    snapshot,
+    snapshot.roles,
+    snapshot.roles[0],
+    snapshot.roles[0].permissions[0],
+    snapshot.groups[0],
+  ]) {
+    assert.equal(Object.isFrozen(part), true);
+  }
+  assert.throws(() => {
+    state.groups[0].id = "group-b";
+  }, TypeError);
+
+  // immutableSnapshot copies first; a plain or merely frozen object is not a snapshot.
+  const copied = { roles: [] };
+  assert.notEqual(immutableSnapshot(copied), copied);
+  assert.equal(isImmutableSnapshot(copied), false);
+  assert.equal(isImmutableSnapshot(deepFreeze({ roles: [] })), false);
 });
 
 test("asRecord preserves object identity without accepting null, arrays, or primitives", () => {

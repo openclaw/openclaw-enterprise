@@ -23,9 +23,10 @@ service OpenShell {
   rpc GetSandboxPolicyStatus(GetSandboxPolicyStatusRequest) returns (GetSandboxPolicyStatusResponse);
   rpc UpdateConfig(UpdateConfigRequest) returns (UpdateConfigResponse);
   rpc ExecSandbox(ExecSandboxRequest) returns (stream ExecSandboxEvent);
-  // Operator mTLS only; uses upstream GetProviderCredentials at 4c1b16a4.
+  // Operator mTLS only; upstream v0.1.4 (5a7728c3) credential retrieval.
   rpc GetProviderCredentials(GetProviderCredentialsRequest) returns (GetProviderCredentialsResponse);
   rpc Health(HealthRequest) returns (HealthResponse);
+  rpc GetGatewayInfo(GetGatewayInfoRequest) returns (GetGatewayInfoResponse);
   rpc CreateWorkspace(CreateWorkspaceRequest) returns (CreateWorkspaceResponse);
   rpc GetWorkspace(GetWorkspaceRequest) returns (GetWorkspaceResponse);
   rpc DeleteWorkspace(DeleteWorkspaceRequest) returns (DeleteWorkspaceResponse);
@@ -38,6 +39,10 @@ service OpenShell {
   rpc DeleteSandbox(DeleteSandboxRequest) returns (DeleteSandboxResponse);
   // Read-only. Upstream authorization: bearer, scope sandbox:read, workspace role user.
   rpc GetSandboxLogs(GetSandboxLogsRequest) returns (GetSandboxLogsResponse);
+  rpc GetSandboxConfig(GetSandboxConfigRequest) returns (GetSandboxConfigResponse);
+  rpc ListSandboxes(ListSandboxesRequest) returns (ListSandboxesResponse);
+  rpc ListWorkspaceMembers(ListWorkspaceMembersRequest) returns (ListWorkspaceMembersResponse);
+  // A receipt-less request records an observation; reading a pending receipt may complete it.
   rpc GetSandboxProviderStatus(GetSandboxProviderStatusRequest)
       returns (GetSandboxProviderStatusResponse);
   rpc CreateProvider(CreateProviderRequest) returns (ProviderResponse);
@@ -48,6 +53,7 @@ service OpenShell {
   rpc ListProviders(ListProvidersRequest) returns (ListProvidersResponse);
   rpc DeleteProvider(DeleteProviderRequest) returns (DeleteProviderResponse);
   rpc GetProviderProfile(GetProviderProfileRequest) returns (ProviderProfileResponse);
+  rpc ListProviderProfiles(ListProviderProfilesRequest) returns (ListProviderProfilesResponse);
   rpc ImportProviderProfiles(ImportProviderProfilesRequest)
       returns (ImportProviderProfilesResponse);
   rpc UpdateProviderProfiles(UpdateProviderProfilesRequest)
@@ -154,6 +160,7 @@ message SandboxSpec {
   ResourceRequirements resource_requirements = 9;
   repeated string command = 12;
   bool tty = 13;
+  string provider_attachment_epoch = 14;
   SandboxRestartPolicy restart_policy = 15;
 }
 
@@ -251,6 +258,11 @@ message NetworkMiddlewareConfig {
   MiddlewareEndpointSelector endpoints = 5;
   // Execution order. Values must be unique within a policy; lower values run first.
   int32 order = 6;
+  // Supplier extensions retain their existing wire numbers; stock v0.1.4
+  // has only fields 1-6 and cannot enforce protected execution.
+  bool credential_authority = 7;
+  repeated CredentialConnector credential_connectors = 8;
+  bool execution_authority = 9;
 }
 
 // Host selector controlling which admitted destinations use a middleware config.
@@ -519,6 +531,74 @@ message NetworkBinary {
   reserved "harness";
 }
 
+
+// OpenShell 0.1.5. These queries return desired configuration, membership and sandbox
+// identity, never provider credentials. List both without filters or a truncated second page.
+message GetSandboxConfigRequest {
+  string name = 1;
+  WorkspaceSelector workspace_scope = 3;
+}
+message GetSandboxConfigResponse {
+  SandboxPolicy policy = 1;
+  uint32 version = 2;
+  string policy_hash = 3;
+  uint64 config_revision = 5;
+  int32 policy_source = 6;
+  uint32 global_policy_version = 7;
+  uint64 provider_env_revision = 8;
+  repeated SupervisorMiddlewareService supervisor_middleware_services = 9;
+  string workspace = 10;
+  string policy_validation_failure_mode = 11;
+  bool extension_authentication_enabled = 12;
+  bool configuration_admitted = 13;
+  string provider_attachment_epoch = 14;
+  string configuration_instance_id = 15;
+  string configuration_error = 16;
+}
+message SupervisorMiddlewareService {
+  string name = 1;
+  string grpc_endpoint = 2;
+  uint64 max_payload_bytes = 3;
+  google.protobuf.Duration request_timeout = 104;
+  bytes tls_ca_cert_pem = 5;
+  string audience = 6;
+  bool allow_insecure_transport = 7;
+}
+message ListSandboxesRequest {
+  int32 page_size = 1;
+  WorkspaceSelector workspace_scope = 4;
+}
+message ListSandboxesResponse {
+  repeated Sandbox sandboxes = 1;
+  string next_page_token = 2;
+}
+message ListWorkspaceMembersRequest {
+  WorkspaceSelector workspace_scope = 1;
+  int32 page_size = 2;
+}
+message ListWorkspaceMembersResponse {
+  repeated WorkspaceMemberPresent members = 1;
+  string next_page_token = 2;
+}
+// Presence alone is relevant: an isolated preview workspace may have no members.
+message WorkspaceMemberPresent {}
+message SandboxConfigurationAdmission {
+  string instance_id = 1;
+  int32 state = 2;
+  uint32 policy_version = 3;
+  string policy_hash = 4;
+  uint64 config_revision = 5;
+  uint64 provider_env_revision = 6;
+  string error = 7;
+}
+message ConfigUpdateOperation {
+  string operation_id = 1;
+  string sandbox_id = 2;
+  int32 state = 5;
+  int32 outcome = 6;
+  google.protobuf.Timestamp completed_time = 110;
+}
+
 message SandboxStatus {
   string agent_pod = 2;
   string agent_fd = 3;
@@ -528,7 +608,10 @@ message SandboxStatus {
   uint32 current_policy_version = 7;
   string main_process_instance_id = 8;
   optional int32 exit_code = 9;
+  SandboxConfigurationAdmission configuration_admission = 11;
+  optional bool configuration_activated = 12;
   uint32 restart_count = 14;
+  google.protobuf.Timestamp main_process_started_time = 16;
 }
 
 message SandboxCondition {
@@ -661,6 +744,8 @@ message CreateProviderRequest {
 
 message ProviderResponse {
   Provider provider = 1;
+  repeated ProviderMutationReceipt target_receipts = 2;
+  string mutation_id = 3;
 }
 
 // Non-empty config or credential values merge into the existing provider; type and profile are fixed.
@@ -690,6 +775,41 @@ message ProviderMutationReceipt {
   string mutation_id = 2;
   string provider = 3;
   string workspace = 4;
+  ProviderMutationKind kind = 5;
+  ProviderDesiredIdentity desired = 6;
+}
+
+enum ProviderMutationKind {
+  PROVIDER_MUTATION_KIND_UNSPECIFIED = 0;
+  PROVIDER_MUTATION_KIND_ATTACH = 1;
+  PROVIDER_MUTATION_KIND_DETACH = 2;
+  PROVIDER_MUTATION_KIND_UPDATE = 3;
+  PROVIDER_MUTATION_KIND_OBSERVE = 4;
+}
+
+message ProviderDesiredIdentity {
+  string sandbox_id = 1;
+  string sandbox = 2;
+  string attachment_epoch = 3;
+  string provider_id = 4;
+  uint64 provider_resource_version = 5;
+  uint64 provider_env_revision = 6;
+  uint64 config_revision = 7;
+  string policy_hash = 8;
+}
+
+message ProviderReadinessObservation {
+  string session_id = 1;
+  uint64 sequence = 2;
+  string attachment_epoch = 3;
+  uint64 provider_env_revision = 4;
+  uint64 config_revision = 5;
+  string policy_hash = 6;
+  bool credentials_installed = 7;
+  bool policy_active = 8;
+  bool launch_environment_installed = 9;
+  string process_instance_id = 10;
+  ProviderReadinessReason reason = 11;
 }
 
 message GetProviderRequest {
@@ -740,6 +860,8 @@ message ProviderProfileCredential {
   string auth_style = 5;
   string header_name = 6;
   ProviderCredentialRefresh refresh = 8;
+  // v0.1.4: identity-bound placeholder retained across static value rotations.
+  bool stable_placeholder = 12;
 }
 
 enum ProviderCredentialRefreshStrategy {
@@ -882,6 +1004,17 @@ message ProviderProfileResponse {
   ProviderProfile profile = 1;
 }
 
+message ListProviderProfilesRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+  WorkspaceSelector workspace_scope = 3;
+}
+
+message ListProviderProfilesResponse {
+  repeated ProviderProfile profiles = 1;
+  string next_page_token = 2;
+}
+
 message ImportProviderProfilesRequest {
   repeated ProviderProfileImportItem profiles = 1;
   WorkspaceSelector workspace_scope = 2;
@@ -933,9 +1066,14 @@ message GetSandboxProviderStatusResponse {
 }
 
 message ProviderReadinessStatus {
+  ConfigUpdateOperation operation = 8;
   ProviderMutationReceipt receipt = 1;
   ProviderReadinessState state = 2;
   ProviderReadinessReason reason = 3;
+  ProviderReadinessObservation observed = 4;
+  string network_instance_id = 5;
+  google.protobuf.Timestamp observed_time = 106;
+  google.protobuf.Timestamp evaluated_time = 107;
 }
 
 enum ProviderReadinessState {
@@ -998,20 +1136,21 @@ message SandboxLogLine {
   map<string, string> fields = 7;
 }
 
-// Policy RPCs pinned to 021400be8af471f8669369e679de3e18cf0bd672.
+// Upstream v0.1.4 (5a7728c3): ExecSandbox and credential retrieval retain
+// their independent operations and original field numbers.
+// Draft and update policy RPCs match the pinned v0.1.4 wire fixture.
 message GetDraftPolicyRequest { string sandbox = 1; string status_filter = 2; WorkspaceSelector workspace_scope = 3; }
 message GetDraftPolicyResponse { repeated PolicyChunk chunks = 1; uint64 draft_version = 3; }
 message PolicyChunk {
   string id = 1; string status = 2; string rule_name = 3; NetworkPolicyRule proposed_rule = 4;
   string rationale = 5; int32 hit_count = 13; string binary = 16;
 }
-message GetSandboxPolicyStatusRequest { string sandbox = 1; uint32 version = 2; bool global = 3; WorkspaceSelector workspace_scope = 4; }
-message GetSandboxPolicyStatusResponse { SandboxPolicyRevision revision = 1; uint32 active_version = 2; }
-message SandboxPolicyRevision { uint32 version = 1; string policy_hash = 2; PolicyStatus status = 3; string load_error = 4; SandboxPolicy policy = 7; map<string,string> provenance = 8; }
 enum PolicyStatus { POLICY_STATUS_UNSPECIFIED = 0; POLICY_STATUS_PENDING = 1; POLICY_STATUS_LOADED = 2; POLICY_STATUS_FAILED = 3; POLICY_STATUS_SUPERSEDED = 4; }
 message UpdateConfigRequest { string sandbox = 1; SandboxPolicy policy = 2; uint64 expected_resource_version = 8; map<string,string> annotations = 9; WorkspaceSelector workspace_scope = 10; string request_id = 11; }
 message UpdateConfigResponse { uint32 version = 1; string policy_hash = 2; }
 message ExecSandboxRequest {
+  reserved 5;
+  reserved "timeout_seconds";
   string sandbox = 1;
   repeated string command = 2;
   string workdir = 3;
@@ -1054,4 +1193,72 @@ message ProviderCredentialValue {
 
 message GetProviderCredentialsResponse {
   map<string, ProviderCredentialValue> credentials = 1;
+}
+
+message GetGatewayInfoRequest {}
+message GetGatewayInfoResponse {
+  ServiceStatus status = 1;
+  string gateway_version = 2;
+  repeated NegotiatedExtensionInfo extensions = 4;
+}
+message NegotiatedExtensionInfo {
+  uint32 kind = 1;
+  string configured_name = 2;
+  string implementation_name = 3;
+  string implementation_version = 4;
+  uint32 protocol_major = 5;
+  uint32 protocol_minor = 6;
+  repeated string supported_capabilities = 7;
+  repeated string required_capabilities = 8;
+}
+message GetSandboxPolicyStatusRequest {
+  string sandbox = 1;
+  uint32 version = 2;
+  bool global = 3;
+  WorkspaceSelector workspace_scope = 4;
+}
+message GetSandboxPolicyStatusResponse {
+  SandboxPolicyRevision revision = 1;
+  uint32 active_version = 2;
+  // Supplier extension fields, absent from stock v0.1.4. Protected execution
+  // requires their negotiated capabilities and rejects missing observations.
+  LoadedEnforcementEvidence loaded_enforcement = 3;
+  LoadedPolicyObservationV1 loaded_policy_observation = 4;
+}
+// Source revision is unchanged; enforcement identifies the effective policy.
+// Field 3 above retains its source == effective semantics.
+message LoadedPolicyObservationV1 {
+  string source_policy_hash = 1;
+  SandboxPolicy effective_policy = 2;
+  LoadedEnforcementEvidence enforcement = 3;
+  string inert_provider_rule = 4;
+  // Ed25519 public key observed on the gateway current supervisor session.
+  bytes registered_exchange_public_key = 5;
+}
+// Additive supplier contract: current accepted registration after runtime installation.
+message LoadedEnforcementEvidence {
+  string sandbox_id = 1;
+  string instance_id = 2;
+  uint32 policy_version = 3;
+  string policy_hash = 4;
+  uint64 config_revision = 5;
+  uint64 provider_env_revision = 6;
+  repeated string enforced_capabilities = 7;
+}
+message SandboxPolicyRevision {
+  reserved 5, 6;
+  reserved "created_at_ms", "loaded_at_ms";
+  uint32 version = 1;
+  string policy_hash = 2;
+  PolicyStatus status = 3;
+  string load_error = 4;
+  google.protobuf.Timestamp created_time = 105;
+  google.protobuf.Timestamp loaded_time = 106;
+  SandboxPolicy policy = 7;
+  map<string, string> provenance = 8;
+}
+
+message CredentialConnector {
+  string path = 1;
+  string sha256 = 2;
 }

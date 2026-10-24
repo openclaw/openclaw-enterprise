@@ -104,7 +104,7 @@ graph TD
 `apps/controller/src/api-startup.mjs:startApi` loads an optional
 [theme bundle](../reference/console/theming.md) once. Invalid bundles stop startup;
 ConfigMap links must resolve inside the bundle. `renderConsoleThemeShell` escapes
-branding and links the generated stylesheet. `console/shell.mjs:brandContents`
+branding and links the generated stylesheet. `console/shell.mts:brandContents`
 renders the name as text. `/console/theme/` serves only referenced images and
 generated CSS, returns a plain 404 for missing assets, and uses `no-store` so an
 API restart can replace the theme.
@@ -125,10 +125,10 @@ paths return the shell with `404`; API routes retain JSON errors.
 encodings. The shell, which also answers sign-in, stays identity.
 
 `scripts/build-console-metadata.mjs` bakes the publisher's checked
-`OCC_BUILD_REVISION` into HTML. With `debug=true`, `shell.mjs:renderShell` displays
+`OCC_BUILD_REVISION` into HTML. With `debug=true`, `shell.mts:renderShell` displays
 the full commit; invalid or absent metadata remains unknown.
 
-`runtime-images.mjs:renderRuntimeImages` issues at most three concurrent reads for
+`runtime-images.mts:renderRuntimeImages` issues at most three concurrent reads for
 readable Agents in the selected Namespace.
 `packages/occ/src/index.ts:OpenClawController.getAgentRuntimeImages` authorizes
 exact Agent read, resolves its selected version, then calls its Compute Driver.
@@ -139,6 +139,11 @@ stops reads. Missing provenance stays explicit.
 ### 2. Resolve the session before private reads
 
 `apps/controller/src/console/console.mjs:loadPage`
+
+`agents/collection.mts:renderAgentList` forwards plain clicks on row content to
+its Agent-name link. It ignores links, buttons (including disabled buttons),
+modified clicks, and selected text. Focusing the name before activation preserves
+the same return-focus target. Keyboard users activate the existing name link.
 
 `loadPage` starts with `GET /api/auth/session`. Opening an Agent from the list
 immediately shows **Loading agent details…** and **Back to Agents**. Its name,
@@ -183,9 +188,9 @@ After authentication, `loadPage` reads `GET /namespaces`, preserving URL
 selection or choosing the first ready/readable Namespace. Unreadable IDs stay
 unavailable; selection never becomes an API query selector.
 
-`shell.mjs:namespaceSelector` disables and hides choices through session and
+`shell.mts:namespaceSelector` disables and hides choices through session and
 Namespace checks, naming a known selection; retained-view reads do not extend this.
-`shell.mjs:createShell` listens for the 760px mobile breakpoint; widening closes
+`shell.mts:createShell` listens for the 760px mobile breakpoint; widening closes
 the drawer without focusing its hidden toggle and releases `main.inert`.
 Empty lists show access guidance. `navigation.mts:navigate` returns Agent detail/creation
 to Agents; global pages remain open; recovered warnings disappear.
@@ -250,7 +255,7 @@ Responses follow the ordering checks below.
 owns DM policies and channel-only reply defaults. Admission snapshots native values;
 Kubernetes `prepareRevision` carries them into `openclaw.json` without adding defaults.
 
-`apps/controller/src/console/agents/detail.mjs:renderAgentDetail` registers tab
+`apps/controller/src/console/agents/detail.mts:renderAgentDetail` registers tab
 navigation with `console.mjs:loadPage`. For the same Agent, Namespace, and
 version, tab clicks/history replace only tab content; shell, native-admin panel,
 and version controls stay mounted. Configuration and Agent revision reads are shared;
@@ -260,7 +265,7 @@ read is an audited denial, so `console.mjs:deniedReadsFor` remembers that path i
 `sessionStorage` for the session owner; later views show **Configuration unavailable**
 without asking again, and **Retry** forgets the path and rereads. Logout clears it.
 
-`agents/detail.mjs:renderTab` brings a clipped selected tab into the horizontal
+`agents/detail.mts:renderTab` brings a clipped selected tab into the horizontal
 strip without moving page focus or vertical scroll. A strip ResizeObserver repeats
 this on viewport changes, disconnects for inactive or detached views, and re-arms
 through the retained view's resume hook.
@@ -345,7 +350,7 @@ refresh and inspection.
   They verify navigation, isolation, creation, draft/history/channel editing, and
   authentication, not PostgreSQL persistence, Backend health, runtime dispatch,
   worker leases, or Compute effects.
-- `node --test tests/browser/console-secrets.test.mjs` exercises Secret mutation,
+- `node --test tests/browser/console-secrets.test.ts` exercises Secret mutation,
   Agent references, denials, and lost replies with passive test Secret storage.
   The `console-secrets` [QA scenario](../testing/ci.md#qa-matrix) selects real
   shipped storage; it requires the documented runtime and credential setup.

@@ -2,6 +2,8 @@ import { type ErrorDetail } from "@openclaw-enterprise/contracts";
 import { requireConfiguration, ConfigurationValidationError } from "@openclaw-enterprise/contracts";
 /// <reference lib="es2024.string" />
 
+import type { CredentialInputRead, VersionedSecretValue } from "@openclaw-enterprise/contracts";
+
 import {
   asRecord,
   isNonEmptyString,
@@ -22,7 +24,11 @@ import {
   ResourceConflictError,
   ScopeViolationError,
 } from "@openclaw-enterprise/occ";
-import { resolveKubernetesControlNamespace } from "../../compute/kubernetes/index.ts";
+import {
+  type PreprovisionedKubernetesNamespace,
+  resolveKubernetesControlNamespace,
+} from "../../compute/kubernetes/index.ts";
+import { withComputeOperationDeadline } from "../../compute/operation-context.ts";
 import { createKubernetesClientConfiguration } from "../../kubernetes/client.ts";
 import { kubernetesRequest } from "../../kubernetes/request.ts";
 import {
@@ -38,6 +44,7 @@ export interface KubernetesSecretDriverOptions {
 }
 
 interface KubernetesSecretDriverSelection {
+  readonly preprovisionedNamespace?: PreprovisionedKubernetesNamespace | undefined;
   readonly id?: string;
   readonly implementation?: string;
 }
@@ -189,6 +196,7 @@ export class KubernetesSecretDriver implements SecretDriver {
   readonly id: string;
   readonly capability = "secret" as const;
   readonly implementation: string;
+  private readonly preprovisionedNamespace: PreprovisionedKubernetesNamespace | undefined;
   private readonly options: KubernetesSecretDriverOptions;
   private client: Promise<CoreV1Api> | undefined;
 
@@ -202,6 +210,7 @@ export class KubernetesSecretDriver implements SecretDriver {
     if (this.implementation !== IMPLEMENTATION) {
       throw new SecretValidationError("Unsupported Kubernetes Secret implementation.");
     }
+    this.preprovisionedNamespace = selection.preprovisionedNamespace;
     this.options = Object.freeze({ authentication: Object.freeze({ ...options.authentication }) });
   }
 
@@ -437,6 +446,26 @@ export class KubernetesSecretDriver implements SecretDriver {
     return reference;
   }
 
+  async readCredentialInput(input: CredentialInputRead): Promise<VersionedSecretValue> {
+    if (input.retention !== "none") {
+      throw new SecretOwnershipError("Credential read retention must be none.");
+    }
+    // Namespace verification, Secret GET and retries share the effective enclosing lifetime.
+    return withComputeOperationDeadline(input.lifetime, async (lifetime) => {
+      const { observed } = await this.readOwnedSecret(input.secret);
+      lifetime.signal.throwIfAborted();
+      const version = observed.metadata?.resourceVersion;
+      if (!isNonEmptyString(version) || lifetime.deadline <= Date.now()) {
+        throw new SecretOwnershipError("Versioned credential material is unavailable.");
+      }
+      return {
+        value: decodedValue(observed),
+        version,
+        authoritativeObservedAt: new Date().toISOString(),
+      };
+    });
+  }
+
   async withValue<T>(secret: Secret, use: (value: string) => Promise<T>): Promise<T> {
     const { observed } = await this.readOwnedSecret(secret);
     return use(decodedValue(observed));
@@ -563,7 +592,9 @@ export class KubernetesSecretDriver implements SecretDriver {
   private async readyNamespace(client: CoreV1Api, namespaceId: string): Promise<string> {
     try {
       const placement = await this.request(
-        () => resolveKubernetesControlNamespace(client, namespaceId),
+        () =>
+          this.preprovisionedNamespace?.read(client, namespaceId) ??
+          resolveKubernetesControlNamespace(client, namespaceId),
         "namespace verification",
       );
       return placement.name;

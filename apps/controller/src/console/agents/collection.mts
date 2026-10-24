@@ -14,7 +14,7 @@ import type { createDraftStore } from "../drafts.mjs";
 import {
   DELETE_CONFIRMATION,
   STOP_CONFIRMATION,
-  keptResourcesText,
+  keptResources,
 } from "./lifecycle-confirmation.mjs";
 import {
   type AgentNavigation,
@@ -565,15 +565,16 @@ export function renderAgentList(context: AgentListContext) {
 
   function confirmAction(item: AgentRead, kind: RowAction, invoker: HTMLButtonElement) {
     const stopping = kind === "stop";
-    const descriptions = stopping
-      ? [STOP_CONFIRMATION]
-      : [DELETE_CONFIRMATION, keptResourcesText(item)];
+    const description = element(
+      "p",
+      { id: "agent-row-confirm-description", "aria-live": "polite" },
+      stopping ? STOP_CONFIRMATION : DELETE_CONFIRMATION,
+    );
+    const kept = stopping ? null : keptResources(item);
     const dialog = element("dialog", {
       className: stopping ? "dialog agent-stop-dialog" : "dialog agent-delete-dialog",
       "aria-labelledby": "agent-row-confirm-title",
-      "aria-describedby": descriptions
-        .map((_, index) => `agent-row-confirm-description-${index}`)
-        .join(" "),
+      "aria-describedby": kept ? `${description.id} ${kept.summary.id}` : description.id,
     });
     let pending = false;
     let submitted = false;
@@ -598,13 +599,6 @@ export function renderAgentList(context: AgentListContext) {
       },
       { className: "danger" },
     );
-    const descriptionNodes = descriptions.map((text, index) =>
-      element(
-        "p",
-        { id: `agent-row-confirm-description-${index}`, "aria-live": index ? "off" : "polite" },
-        text,
-      ),
-    );
     // A refusal that arrives while the dialog is open disables confirmation, as on Agent
     // detail. A late answer cannot recall a request already sent.
     const restrict: RestrictDialog = (id, answer) => {
@@ -612,7 +606,7 @@ export function renderAgentList(context: AgentListContext) {
         return;
       }
       confirm.disabled = true;
-      descriptionNodes[0]!.textContent = stopping
+      description.textContent = stopping
         ? "Your access does not include stopping this Agent."
         : "Your access does not include deleting this Agent.";
       cancel.focus();
@@ -624,7 +618,8 @@ export function renderAgentList(context: AgentListContext) {
         { id: "agent-row-confirm-title" },
         `${stopping ? "Stop" : "Delete"} ${item.name}?`,
       ),
-      ...descriptionNodes,
+      description,
+      ...(kept ? [kept.summary, kept.commands] : []),
       element("div", { className: "dialog-actions" }, cancel, confirm),
     );
     dialog.addEventListener("cancel", (event) => {
@@ -827,52 +822,68 @@ export function renderAgentList(context: AgentListContext) {
       );
       cells.set(deployment, { item, current });
       showDeployment(item, deployment, current);
-      body.append(
+      const row = element(
+        "tr",
+        {},
         element(
-          "tr",
+          "td",
           {},
-          element(
-            "td",
-            {},
-            name,
-            element("span", { className: "resource-id" }, item.id),
-            item.status === "deleting"
-              ? element(
-                  "span",
-                  { className: "badge", "data-tone": "warning", id: `agent-row-badge-${item.id}` },
-                  "Deleting",
-                )
-              : null,
-            // New Agents start stopped; only a stop with a selected version awaits shutdown.
-            item.status === "active" &&
-              item.desiredRuntimeState === "stopped" &&
-              item.activeRevisionId
-              ? element(
-                  "span",
-                  { className: "badge", "data-tone": "info", id: `agent-row-badge-${item.id}` },
-                  "Stop requested",
-                )
-              : null,
-            "configurationReadError" in item && item.configurationReadError
-              ? element(
-                  "span",
-                  { className: "badge", "data-tone": "danger" },
-                  "Saved configuration unreadable",
-                )
-              : null,
-          ),
-          // On a phone each cell shows its column's name (console.css, `data-label`).
-          element(
-            "td",
-            { "data-label": "Execution mode" },
-            item.executionMode === "dedicated" ? "Dedicated" : "Embedded",
-          ),
-          current,
-          deployment,
-          element("td", { "data-label": "Created" }, displayDate(item.createdAt)),
-          cell,
+          name,
+          element("span", { className: "resource-id" }, item.id),
+          item.status === "deleting"
+            ? element(
+                "span",
+                { className: "badge", "data-tone": "warning", id: `agent-row-badge-${item.id}` },
+                "Deleting",
+              )
+            : null,
+          // New Agents start stopped; only a stop with a selected version awaits shutdown.
+          item.status === "active" &&
+            item.desiredRuntimeState === "stopped" &&
+            item.activeRevisionId
+            ? element(
+                "span",
+                { className: "badge", "data-tone": "info", id: `agent-row-badge-${item.id}` },
+                "Stop requested",
+              )
+            : null,
+          "configurationReadError" in item && item.configurationReadError
+            ? element(
+                "span",
+                { className: "badge", "data-tone": "danger" },
+                "Saved configuration unreadable",
+              )
+            : null,
         ),
+        // On a phone each cell shows its column's name (console.css, `data-label`).
+        element(
+          "td",
+          { "data-label": "Execution mode" },
+          item.executionMode === "dedicated" ? "Dedicated" : "Embedded",
+        ),
+        current,
+        deployment,
+        element("td", { "data-label": "Created" }, displayDate(item.createdAt)),
+        cell,
       );
+      row.addEventListener("click", (event) => {
+        if (
+          event.defaultPrevented ||
+          event.button !== 0 ||
+          event.metaKey ||
+          event.ctrlKey ||
+          event.shiftKey ||
+          event.altKey ||
+          (event.target instanceof Element && event.target.closest("a, button")) ||
+          window.getSelection()?.isCollapsed === false
+        ) {
+          return;
+        }
+        // Reuse the name link so navigation and return focus follow the same path.
+        name.focus({ preventScroll: true });
+        name.click();
+      });
+      body.append(row);
     }
     table.append(body);
     // On a phone the rows stack (console.css), and a table part whose CSS display changes can

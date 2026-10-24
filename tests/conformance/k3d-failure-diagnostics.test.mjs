@@ -1,16 +1,19 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import test from "node:test";
 import { failureSecrets } from "../../scripts/ci/failure-redaction.mjs";
 import {
   codexTurnTrace,
   observeSandboxProbe,
   podFailureDiagnostic,
+  tokenEchoDigest,
+  tokenEchoReply,
 } from "../helpers/k3d-failure-diagnostics.mjs";
+import { commandCalls, prependPath, writeCommand } from "../helpers/fake-commands.mjs";
 import { diagnosticRequestTimeout, withinDiagnosticDeadline } from "../helpers/kubernetes-real.mjs";
 import { withHelmInstallDiagnostic } from "../helpers/production-helm-real.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 // Synthetic values only; none is a real credential.
 const syntheticSecret = "synthetic-diagnostic-secret-0123456789";
@@ -89,7 +92,12 @@ const events = [
   },
 ];
 
-function fakeKubectl({ pods = [hookPod, postgresPod], logs = {}, fail = {} } = {}) {
+function fakeKubectl({
+  pods = [hookPod, postgresPod],
+  events: items = events,
+  logs = {},
+  fail = {},
+} = {}) {
   const calls = [];
   const kubectl = async (...args) => {
     calls.push(args);
@@ -101,7 +109,7 @@ function fakeKubectl({ pods = [hookPod, postgresPod], logs = {}, fail = {} } = {
       return JSON.stringify({ items: pods });
     }
     if (verb === "get" && kindOrPod === "events") {
-      return JSON.stringify({ items: events });
+      return JSON.stringify({ items });
     }
     if (verb === "logs") {
       const container = args[args.indexOf("--container") + 1];
@@ -379,6 +387,47 @@ test("the event and log budgets keep the newest entries", async () => {
   assert.doesNotMatch(detail, /log line 0\d/);
 });
 
+test("events are ordered by when they were last observed, across timestamp precision", async () => {
+  const event = (reason, times) => ({
+    ...times,
+    type: "Normal",
+    reason,
+    involvedObject: { kind: "Pod", name: "postgres" },
+    message: reason,
+  });
+  const { kubectl } = fakeKubectl({
+    events: [
+      // Text order put "05.400000Z" before "05Z", so the whole-second event read as the newer
+      // one and the budget dropped the newest (finding 2225).
+      event("FractionalSameSecond", { eventTime: "2026-10-16T18:15:05.400000Z" }),
+      event("WholeSecond", { lastTimestamp: "2026-10-16T18:15:05Z" }),
+      // A repeating event's last sighting is its series', not its first eventTime.
+      event("SeriesLatest", {
+        eventTime: "2026-10-16T18:15:01.000000Z",
+        series: { lastObservedTime: "2026-10-16T18:15:04.900000Z", count: 2 },
+      }),
+      event("Undated", {}),
+    ],
+  });
+  const lines = (await podFailureDiagnostic({ kubectl, namespace: "oce-observe-1234" }))
+    .split("\n")
+    .filter((line) => / Normal /.test(line));
+  assert.deepEqual(lines, [
+    "unknown-time Normal Undated Pod/postgres: Undated",
+    "2026-10-16T18:15:04.900000Z Normal SeriesLatest Pod/postgres x2: SeriesLatest",
+    "2026-10-16T18:15:05Z Normal WholeSecond Pod/postgres: WholeSecond",
+    "2026-10-16T18:15:05.400000Z Normal FractionalSameSecond Pod/postgres: FractionalSameSecond",
+  ]);
+  // A budget for one line keeps the newest event.
+  const newest = await podFailureDiagnostic({
+    kubectl,
+    namespace: "oce-observe-1234",
+    budgets: { events: 100 },
+  });
+  assert.match(newest, /FractionalSameSecond/);
+  assert.doesNotMatch(newest, /WholeSecond|SeriesLatest|Undated/);
+});
+
 test("a stalled pod diagnostic gives way to its deadline and starts no read after it", async () => {
   const calls = [];
   const result = await withinDiagnosticDeadline(
@@ -418,16 +467,14 @@ test("a stalled pod diagnostic gives way to its deadline and starts no read afte
 test("a failed Helm install's error gains the hook Job Pod's logs through kubectl", async (t) => {
   // A fake kubectl on PATH, like #2613's: it records its arguments and answers from fixtures.
   // No cluster is involved.
-  const directory = await mkdtemp(join(tmpdir(), "occ-fake-kubectl-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "occ-fake-kubectl-");
   const calls = join(directory, "calls");
   await writeFile(join(directory, "pods.json"), JSON.stringify({ items: [hookPod, postgresPod] }));
   await writeFile(join(directory, "events.json"), JSON.stringify({ items: events }));
-  await writeFile(
-    join(directory, "kubectl"),
+  await writeCommand(
+    directory,
+    "kubectl",
     [
-      "#!/bin/sh",
-      `echo "$*" >> '${calls}'`,
       'case "$*" in',
       `  *" get pods "*) cat '${join(directory, "pods.json")}' ;;`,
       `  *" get events "*) cat '${join(directory, "events.json")}' ;;`,
@@ -436,13 +483,9 @@ test("a failed Helm install's error gains the hook Job Pod's logs through kubect
       "esac",
       "",
     ].join("\n"),
-    { mode: 0o755 },
+    { log: calls },
   );
-  const path = process.env.PATH;
-  process.env.PATH = `${directory}${delimiter}${path}`;
-  t.after(() => {
-    process.env.PATH = path;
-  });
+  prependPath(t, directory);
   const failure = new Error(
     "helm: Error: failed pre-install: 1 error occurred:\n\t* job obs-1234-initialization failed: BackoffLimitExceeded",
   );
@@ -462,7 +505,7 @@ test("a failed Helm install's error gains the hook Job Pod's logs through kubect
     /Logs obs-1234-initialization-abcde\/migration:\nrunning migrations\nerror: connect ECONNREFUSED/,
   );
   assert.doesNotMatch(error.message, new RegExp(syntheticSecret));
-  const recorded = (await readFile(calls, "utf8")).trim().split("\n");
+  const recorded = await commandCalls(calls);
   assert.equal(recorded.length, 3, recorded.join("\n"));
   for (const line of recorded) {
     assert.ok(
@@ -653,4 +696,70 @@ test("OpenShell settles observed commands before deciding whether to ask for ano
       assert.equal(calls, turns.length);
     });
   }
+});
+
+// Finding 2281: a Harness call to the token echo printed something other than the echo's JSON,
+// and the check reported only digest `undefined`. Values are synthetic.
+const echoUrl = "http://token-echo.oce-token-echo-1.svc:8080/tool-a";
+const syntheticToolToken = "oce-tool-synthetic-0123456789abcdef";
+const syntheticPlaceholder = "openshell:resolve:env:v3_OCE_TOOL_A_TOKEN";
+const echoSecrets = failureSecrets([{ TOOL_TOKEN_0: syntheticToolToken }]);
+const echoCommand = (aggregatedOutput, exitCode = 0) => ({
+  type: "commandExecution",
+  command: `/bin/bash -lc 'curl -sS --max-time 20 -H "Authorization: Bearer $OCE_TOOL_A" ${echoUrl}'`,
+  exitCode,
+  aggregatedOutput,
+});
+const sha256 = "a".repeat(64);
+
+test("a token echo call that prints no JSON fails naming the command and its redacted output", () => {
+  const output =
+    `curl: (56) Recv failure: Connection reset by peer\n` +
+    `> Authorization: Bearer ${syntheticToolToken}\n` +
+    `placeholder ${syntheticPlaceholder}\n` +
+    `{"path":"/tool-a","digest":"${sha256}"}\n` +
+    "x".repeat(5_000);
+  const reply = tokenEchoReply([echoCommand(output, 56)], echoUrl, echoSecrets);
+  // The refresh phase's checks read it as a reply with no token; the tool checks fail on it.
+  assert.deepEqual(Object.keys(reply), ["unparsed", "shown"]);
+  assert.throws(
+    () => tokenEchoDigest(reply),
+    (error) => {
+      assert.equal(error.name, "AssertionError");
+      assert.match(error.message, /^the token echo call must print JSON: `/);
+      assert.ok(error.message.includes(`${echoUrl}'\``), "names the command");
+      assert.match(error.message, /\(exit 56\) printed curl: \(56\) Recv failure/);
+      assert.match(error.message, /openshell:resolve:\[placeholder\]/);
+      assert.match(error.message, /"digest":"\[sha256\]"/);
+      assert.ok(error.message.length < 1_000, "the output start is bounded");
+      for (const hidden of [syntheticToolToken, syntheticPlaceholder, sha256]) {
+        assert.equal(JSON.stringify(error).includes(hidden), false, hidden);
+        assert.equal(error.message.includes(hidden), false, hidden);
+        assert.equal(reply.unparsed.includes(hidden), false, hidden);
+      }
+      return true;
+    },
+  );
+  assert.throws(() => tokenEchoReply([], echoUrl, echoSecrets), /the Harness must call/);
+});
+
+test("a token echo reply gives its digest, and OpenShell's refusal is shown without one", () => {
+  const echoed = tokenEchoReply(
+    [echoCommand(`{"path":"/tool-a","digest":"${sha256}","placeholder":false,"length":43}\n`)],
+    echoUrl,
+    echoSecrets,
+  );
+  assert.equal(tokenEchoDigest(echoed), sha256);
+  assert.equal(echoed.shown.includes(sha256), false, "digests are compared, never shown");
+  const refused = tokenEchoReply(
+    [
+      echoCommand(
+        '{"error":"credential_unavailable","message":"Credential placeholder could not be resolved"}',
+      ),
+    ],
+    echoUrl,
+    echoSecrets,
+  );
+  assert.equal(tokenEchoDigest(refused), undefined);
+  assert.match(refused.shown, /\(exit 0\) printed \{"error":"credential_unavailable"/);
 });

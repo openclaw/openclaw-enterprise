@@ -201,8 +201,16 @@
                     "label": "Credential Sources"
                   },
                   {
+                    "page": "guides/credential-proxy",
+                    "label": "Set Up Credential Proxy"
+                  },
+                  {
                     "page": "reference/credential-sources/withdrawal",
                     "label": "Credential Withdrawal"
+                  },
+                  {
+                    "page": "reference/credential-sources/protected-inference",
+                    "label": "Protected Inference"
                   },
                   {
                     "page": "guides/topics/audit-log",
@@ -406,6 +414,14 @@
                         "label": "Push Guardrail"
                       },
                       {
+                        "page": "reference/repository-credentials/prepared-native-git",
+                        "label": "Native Git with a Prepared Credential"
+                      },
+                      {
+                        "page": "reference/repository-credentials/protected-openshell-git",
+                        "label": "Protected Git with OpenShell"
+                      },
+                      {
                         "page": "reference/public-github-reads",
                         "label": "Public GitHub Reads"
                       }
@@ -439,7 +455,10 @@
             "hidden": [
               "guides/repository-credentials/standalone-service",
               "guides/repository-credentials/development-token",
-              "reference/repository-credentials/development-token"
+              "reference/repository-credentials/development-token",
+              "reference/repository-credentials/openshell-git",
+              "reference/repository-credentials/openshell-git-refusals",
+              "reference/repository-credentials/openshell-git-restarts"
             ]
           },
           {
@@ -480,6 +499,10 @@
                   {
                     "page": "guides/deploy/breaking-changes",
                     "label": "Breaking Changes"
+                  },
+                  {
+                    "page": "guides/deploy/breaking-changes-before-2026-10-15",
+                    "label": "Breaking Changes Before 2026-10-15"
                   },
                   {
                     "page": "guides/deploy/breaking-changes-archive",
@@ -657,6 +680,10 @@
                   {
                     "page": "guides/deploy/credential-lifecycle",
                     "label": "Credential Rotation"
+                  },
+                  {
+                    "page": "guides/deploy/credential-proxy-upgrade",
+                    "label": "Migrate to Credential Proxy"
                   }
                 ]
               }
@@ -796,6 +823,10 @@
                     "label": "Driver Development"
                   },
                   {
+                    "page": "contributing/credential-proxy-driver",
+                    "label": "Implement a Credential Proxy Driver"
+                  },
+                  {
                     "group": "Driver Contracts",
                     "pages": [
                       {
@@ -817,6 +848,10 @@
                       {
                         "page": "reference/drivers/credential-gateway",
                         "label": "Credential Gateway"
+                      },
+                      {
+                        "page": "reference/drivers/credential-proxy",
+                        "label": "Credential Proxy"
                       },
                       {
                         "page": "reference/drivers/credential-refresh",
@@ -964,6 +999,8 @@
               "guides/deploy/local-compose-kubernetes",
               "guides/deploy/local-sandbox-network-policy",
               "guides/deploy/openshell-credential-sources",
+              "guides/deploy/local-openshell-images",
+              "guides/deploy/protected-egress-development",
               "reference/settings/development",
               "design/resources",
               "design/access",
@@ -1035,6 +1072,9 @@
               "flows/repository-credential-configuration",
               "testing/repository-credentials",
               "flows/agent-presets",
+              "flows/credential-source-egress",
+              "testing/static-egress",
+              "testing/protected-repository-custody",
               "reference/sandbox-policies",
               "guides/topics/agent-sandbox-policy",
               "flows/agent-sandbox-policy"

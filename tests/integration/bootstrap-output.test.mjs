@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, readFile, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import test from "node:test";
@@ -8,10 +8,10 @@ import {
   requireAbsentBootstrapOutput,
   writeProtectedBootstrapFile,
 } from "../../apps/controller/src/composition/bootstrap-output.ts";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 test("protected bootstrap output rejects relative paths, existing files, symlinks, and public parents", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "openclaw-bootstrap-output-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "openclaw-bootstrap-output-");
   assert.throws(
     () => bootstrapOutputPath("relative.json", "OCC_BOOTSTRAP_SERVICE_KEY_FILE"),
     /absolute output path/,
@@ -33,8 +33,7 @@ test("protected bootstrap output rejects relative paths, existing files, symlink
   );
   assert.equal(await readFile(existing, "utf8"), "existing");
 
-  const publicDirectory = await mkdtemp(join(tmpdir(), "openclaw-bootstrap-public-"));
-  t.after(() => rm(publicDirectory, { recursive: true, force: true }));
+  const publicDirectory = await temporaryDirectory(t, "openclaw-bootstrap-public-");
   await chmod(publicDirectory, 0o705);
   await assert.rejects(
     writeProtectedBootstrapFile(join(publicDirectory, "key.json"), "secret"),
@@ -63,8 +62,7 @@ test("protected bootstrap output rejects a trailing path separator", () => {
 });
 
 test("bootstrap distinguishes an absent output, a dangling link, and an unverified parent", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "occ-bootstrap-preflight-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "occ-bootstrap-preflight-");
   const output = join(directory, "output");
   await requireAbsentBootstrapOutput(output);
   await symlink("missing", output);
