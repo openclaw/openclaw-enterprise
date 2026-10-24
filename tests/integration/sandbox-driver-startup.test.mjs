@@ -3368,7 +3368,9 @@ test("OpenShell gateway readiness checks once more at its deadline, not a poll i
   configuration.gateway.readiness = {
     serviceName: "openshell-gateway",
     podSelector: { "app.kubernetes.io/name": "openshell" },
-    timeoutMs: 50,
+    // The first check must come before the deadline, or the wait throws after one check. With 50 ms
+    // a CPU-starved runner sometimes missed it; one second leaves room and stays inside the 10 s abort.
+    timeoutMs: 1_000,
     pollIntervalMs: 600_000,
   };
   const gatewayClient = workspaceGatewayClient();
