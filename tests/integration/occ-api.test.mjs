@@ -3463,6 +3463,7 @@ test("Channel directory lookup checks the exact edit target and Secret before an
     tooManyIds.body.error.message,
     "The request does not match the operation contract: body /ids has an unsupported value (expected at most 20 items).",
   );
+  assert.deepEqual(tooManyIds.body.error.details, [{ path: "/ids", code: "INVALID_VALUE" }]);
   // An unknown kind fits no shape, so every shape's problem stays, but the three hydration
   // shapes' identical missing /ids is listed once.
   const unknownKind = await controller.request("POST", path, {

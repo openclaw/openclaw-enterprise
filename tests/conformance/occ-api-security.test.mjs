@@ -179,12 +179,22 @@ test("existing namespace adoption requires installation administration and waits
   assert.equal(duplicate.response.status, 409);
 
   // A Kubernetes Namespace name: a DNS label of at most 63 characters.
-  for (const existingNamespace of ["Operator.Owned", "a".repeat(64), "operator-", "-operator"]) {
+  for (const [existingNamespace, code] of [
+    ["Operator.Owned", "INVALID_FORMAT"],
+    ["a".repeat(64), "TOO_LONG"],
+    ["operator-", "INVALID_FORMAT"],
+    ["-operator", "INVALID_FORMAT"],
+  ]) {
     const invalid = await request(fixture.app, "/namespaces", {
       body: { name: "Invalid adoption", existingNamespace },
     });
     assert.equal(invalid.response.status, 400, existingNamespace);
     assert.equal(invalid.payload.error.code, "INVALID_REQUEST", existingNamespace);
+    assert.deepEqual(
+      invalid.payload.error.details,
+      [{ path: "/existingNamespace", code }],
+      existingNamespace,
+    );
   }
 
   // Unauthorized callers cannot infer provisioning state or bypass denial auditing.
@@ -1782,6 +1792,11 @@ test("runtime log cursors bind one principal and view and are re-authorized on e
     });
     assert.equal(outOfRange.status, 400, query);
     assert.equal(outOfRange.body.error.code, "INVALID_REQUEST", query);
+    assert.deepEqual(
+      outOfRange.body.error.details,
+      [{ path: `/${query.split("=")[0]}`, code: "INVALID_FORMAT" }],
+      query,
+    );
   }
   assert.equal(driverReads(fixture).length, readsBefore);
 
