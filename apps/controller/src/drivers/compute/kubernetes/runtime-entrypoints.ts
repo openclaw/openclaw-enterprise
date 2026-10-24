@@ -3465,6 +3465,19 @@ ${CODEX_STDERR_FILTER_HELPER}
 ${HARNESS_EGRESS_ENROLLMENT_HELPER}
 ${startupPhaseHelper("agent")}
 
+// codex is the npm launcher: a timeout's SIGKILL ended only it and left its native child
+// running (finding 2274). Login and the model check run that native binary instead.
+function codexExecutable() {
+  for (const directory of (process.env.PATH ?? "").split(":")) {
+    let root;
+    try { root = require("node:fs").realpathSync(directory + "/codex"); } catch { continue; }
+    if (!root.endsWith("/@openai/codex/bin/codex.js")) return "codex";
+    try { root = require("node:module").createRequire(root).resolve("@openai/codex-linux-" + process.arch + "/package.json"); } catch {}
+    return root.slice(0, -12) + "vendor/" + (process.arch === "arm64" ? "aarch64" : "x86_64") + "-unknown-linux-musl/bin/codex";
+  }
+  return "codex";
+}
+
 function agentRuntimeReady() {
   if (
     process.env.OPENCLAW_PLUGIN_READY_MARKER !== undefined &&
@@ -3747,7 +3760,7 @@ ${
     }
 `
     : ""
-}    login = spawnSync("codex", loginArguments, {
+}    login = spawnSync(codexExecutable(), loginArguments, {
       input: loginMode === "api_key" ? apiKey : accessToken,
       env: codexChildEnvironment(),
       encoding: "utf8",
@@ -3876,7 +3889,7 @@ function probeCodexAuthentication(timeout) {
       "sleep_tool", "goals", "workspace_dependencies", "skill_search",
       "skill_mcp_dependency_install", "tool_suggest", "recommended_plugins", "request_permissions_tool",
     ];
-${currentLaunch ? '    if (credentialHomeValid?.() === false) return finish(probeFailure("WRAPPER_ERROR"));\n' : ""}    result = spawnSync("codex", [
+${currentLaunch ? '    if (credentialHomeValid?.() === false) return finish(probeFailure("WRAPPER_ERROR"));\n' : ""}    result = spawnSync(codexExecutable(), [
 ${disableUnboundedConnectionRetries ? '      "--disable", "unbounded_connection_retries",\n' : ""}      ...disabled.flatMap((feature) => ["--disable", feature]),
       "-a", "never", "exec", "--ephemeral", "--ignore-user-config", "--ignore-rules",
       "--skip-git-repo-check", "--json", "--sandbox", "read-only", "--cd", directory,

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { NAMESPACE_NOT_READY_MESSAGE } from "../../apps/controller/src/console/agents/list.mts";
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
 import { createConsoleRepositoryLaunchFixture } from "../helpers/console-repository-launch.mjs";
@@ -1310,6 +1311,17 @@ test("Agent deployment shows the API's typed 403 and 409 refusals", async (t) =>
   await waitForEnabled(deploy);
   fixture.policy.restrictions.pop();
 
+  // Deploys against a routed 409 with `body` and waits for `text`, with Deploy enabled again.
+  async function routedConflict(body, text, exact) {
+    await page.route(`${fixture.origin}${path}/deploy`, (route) =>
+      route.fulfill({ status: 409, contentType: "application/json", body }),
+    );
+    await deploy.click();
+    await page.getByText(text, { exact }).waitFor();
+    await waitForEnabled(deploy);
+    await page.unroute(`${fixture.origin}${path}/deploy`);
+  }
+
   // An untyped conflict, or a proxy reply with no error envelope, also names nothing to fix.
   for (const body of [
     JSON.stringify({
@@ -1320,16 +1332,18 @@ test("Agent deployment shows the API's typed 403 and 409 refusals", async (t) =>
     }),
     "",
   ]) {
-    await page.route(`${fixture.origin}${path}/deploy`, (route) =>
-      route.fulfill({ status: 409, contentType: "application/json", body }),
-    );
-    await deploy.click();
-    await page
-      .getByText("Deployment conflicts with the saved Agent state.", { exact: false })
-      .waitFor();
-    await waitForEnabled(deploy);
-    await page.unroute(`${fixture.origin}${path}/deploy`);
+    await routedConflict(body, "Deployment conflicts with the saved Agent state.", false);
   }
+
+  // A Namespace that isn't ready gets the console's pointer to the Namespaces page, not the
+  // API's bare sentence.
+  await routedConflict(
+    JSON.stringify({
+      error: { code: "NAMESPACE_NOT_READY", message: "The requested Namespace is not ready." },
+    }),
+    NAMESPACE_NOT_READY_MESSAGE,
+    true,
+  );
 });
 
 for (const mutation of ["authentication", "channel Secrets"]) {

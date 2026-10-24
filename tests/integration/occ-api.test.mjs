@@ -7924,6 +7924,41 @@ test("SSH Compute refuses at Agent save and deploy a roster or workspace whose m
   assert.equal(redeployed.status, 400, JSON.stringify(redeployed.body));
   assert.equal(redeployed.body.error.message, workspace("agents.entries.Main.workspace"));
   assert.deepEqual((await controller.request("GET", `${path}/revisions`)).data, []);
+
+  // Finding 2286: after the setup completed, every later deployment still delivers it, and the
+  // host refuses the same roster again at preparation, where the refusal was retried until the
+  // deployment failed. Deployment refuses it with the same message instead.
+  const restored = await controller.request(
+    "PATCH",
+    `/namespaces/${namespace.id}/configurations/${configuration.id}`,
+    { body: { values: withAgents({ entries: { Main: {} } }) } },
+  );
+  assert.equal(restored.status, 200, JSON.stringify(restored.body));
+  const first = await controller.request("POST", `${path}/deploy`);
+  assert.equal(first.status, 202, JSON.stringify(first.body));
+  // What the worker records when the first revision activates: the revision becomes active,
+  // then the setup completes.
+  const [revision] = (await controller.request("GET", `${path}/revisions`)).data;
+  await controller.fixture.platformState.transact(async (unit) => {
+    await unit.agents.compareAndSetActiveRevision(
+      namespace.id,
+      created.data.id,
+      undefined,
+      revision.id,
+    );
+    const setup = await unit.workspaceSetups.find(namespace.id, created.data.id);
+    await unit.workspaceSetups.complete(namespace.id, created.data.id, setup.id);
+  });
+  const emptied = await controller.request(
+    "PATCH",
+    `/namespaces/${namespace.id}/configurations/${configuration.id}`,
+    { body: { values: withAgents({ entries: {} }) } },
+  );
+  assert.equal(emptied.status, 200, JSON.stringify(emptied.body));
+  const completed = await controller.request("POST", `${path}/deploy`);
+  assert.equal(completed.status, 400, JSON.stringify(completed.body));
+  assert.equal(completed.body.error.message, roster);
+  assert.equal((await controller.request("GET", `${path}/revisions`)).data.length, 1);
 });
 
 test("Slack validation rejects swapped credentials and preserves authorization", async () => {

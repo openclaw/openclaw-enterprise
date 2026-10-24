@@ -2563,9 +2563,63 @@ function runtimeProviderSetupUpdate(
   });
 }
 
+// bb7df09b7 changed four immutable Codex commands without changing their admission.
+// Pin each public-main payload to its one earlier payload. The OpenShell prefix
+// includes workspace links and setup. It must still match the current request exactly.
+const priorCodexPayload = new Map([
+  [
+    "6fce3240ec51f51102477d6379836ebcb784ba2bbc4a62109ac846bc84a4b2a8",
+    "82afa5ad13028f284c9c2e3a2f7c6362d5fa6c41f70e1c40f3dff7538f85877b",
+  ],
+  [
+    "128a31e16844bc38c97c308b7a18f970e572d19d098e4a0068b40b131258b3bc",
+    "647a06eec296df95ba8be08cf24de0167f797d56dc4aa475add40547977b0c53",
+  ],
+  [
+    "protected:29297382ca2ad87806c73fd5663da35e0e00ae303d6a3c3838fbd1aa698fb9e9",
+    "17dfa3dd15bec0d0c6801e6f2214539bbad5862668d73c8f3d6fff722ad4c9c6",
+  ],
+  [
+    "protected:cf33567a3f0f5b524f51b3bba43e07917d6e5e88fd0f3dbbf36494f7c3c212c4",
+    "321192786091b6aab8408aaf9ccbbac49f12b70a8b7adc71df6d528c4d4711b3",
+  ],
+]);
+
+function existingSandboxSpec(
+  existing: OpenShellSandboxResponse,
+  request: OpenShellSandboxCreateRequest,
+  revision: Readonly<AgentRevision>,
+) {
+  const observed = existing.spec?.command;
+  const expected = request.spec.command;
+  const payload = RUNTIME_WRAPPER_COMMAND.length + 1;
+  const admission = revision.compute.admission;
+  const protectedRetry = admission === "protected-codex-no-connection-retry:v1";
+  if (
+    revision.harness.id === "codex" &&
+    revision.harness.mode === "dedicated" &&
+    (admission === undefined ||
+      protectedRetry ||
+      /^public-github-read:v1:[a-f0-9]{64}$/.test(admission)) &&
+    Array.isArray(expected) &&
+    Array.isArray(observed) &&
+    observed.length === expected.length &&
+    isDeepStrictEqual(observed.slice(0, payload), expected.slice(0, payload)) &&
+    !isDeepStrictEqual(observed.slice(payload), expected.slice(payload)) &&
+    observed.slice(payload).every((part) => typeof part === "string" && part.length <= 32768) &&
+    priorCodexPayload.get(
+      (protectedRetry ? "protected:" : "") + sha256Hex(JSON.stringify(expected.slice(payload))),
+    ) === sha256Hex(JSON.stringify(observed.slice(payload)))
+  ) {
+    return canonicalSandboxSpec({ ...existing.spec, command: expected });
+  }
+  return canonicalSandboxSpec(existing.spec);
+}
+
 function verifyExistingSandbox(
   existing: OpenShellSandboxResponse,
   request: OpenShellSandboxCreateRequest,
+  revision: Readonly<AgentRevision>,
 ): void {
   if (
     existing.name !== request.name ||
@@ -2576,7 +2630,10 @@ function verifyExistingSandbox(
       request.annotations,
       "internal.openshell.ai/",
     ) ||
-    !isDeepStrictEqual(canonicalSandboxSpec(existing.spec), canonicalSandboxSpec(request.spec))
+    !isDeepStrictEqual(
+      existingSandboxSpec(existing, request, revision),
+      canonicalSandboxSpec(request.spec),
+    )
   ) {
     throw new OpenShellSandboxConfigurationFailure(
       `Refusing OpenShell Sandbox ${request.name} without exact AgentRevision ownership and content.`,
@@ -3071,7 +3128,12 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         );
       await this.openShellGit!.bind(
         context.revision.id,
-        (observed) => verifyExistingSandbox(observed, { ...create, requestId: requestIds[0]! }),
+        (observed) =>
+          verifyExistingSandbox(
+            observed,
+            { ...create, requestId: requestIds[0]! },
+            context.revision,
+          ),
         originalModel ? continuity : undefined,
       );
     }
@@ -3178,7 +3240,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       }
     }
     // Adopt only this revision's own live Sandbox, with its Harness service in place.
-    verifyExistingSandbox(existing, { ...create, requestId: requestIds[0]! });
+    verifyExistingSandbox(existing, { ...create, requestId: requestIds[0]! }, context.revision);
     if (existing.phase === "SANDBOX_PHASE_DELETING" || existing.phase === 4) {
       throw new OpenShellSandboxConfigurationFailure(
         `OpenShell Sandbox ${sandbox.resourceName} is being deleted; it can be created again once deletion finishes.`,

@@ -68,6 +68,27 @@ export function readRuntimeStatusFromHandler(handler) {
   return readStatusFromHandler(handler, "/openclaw/runtime/status");
 }
 
+// Inspect the single CLI override for this provider, including its option boundary.
+export function assertWorkspaceProviderUrl(args) {
+  const key = "model_providers.oce-codex-workspace.base_url";
+  const assignments = [];
+  for (let i = 0; i < args.length; i++) {
+    const flag = args[i];
+    const value =
+      flag === "-c" || flag === "--config"
+        ? args[++i]
+        : flag.startsWith("--config=")
+          ? flag.slice(9)
+          : flag.startsWith("-c")
+            ? flag.slice(2)
+            : undefined;
+    if (value?.split("=", 1)[0]?.trim() === key) {
+      assignments.push([flag, value]);
+    }
+  }
+  assert.deepEqual(assignments, [["-c", key + '="https://chatgpt.com/backend-api/codex"']]);
+}
+
 // Substitute only native process output; execute the production login/probe
 // parser and readiness control flow unmodified. No native provider is contacted.
 export function createCodexStartup(
@@ -75,6 +96,7 @@ export function createCodexStartup(
   {
     native,
     nativeRunner,
+    nativePath,
     workspacePat = false,
     model = "gpt-4.1",
     providerPat = false,
@@ -163,8 +185,10 @@ export function createCodexStartup(
       idleTimers.push({ callback, delay });
     },
     process: {
+      arch: process.arch,
       geteuid: process.geteuid,
       env: {
+        ...(nativePath === undefined ? {} : { PATH: nativePath }),
         CODEX_HOME: codexHome,
         TMPDIR: directory,
         OPENCLAW_WORKSPACE_DIR: join(directory, "workspace"),
@@ -261,7 +285,9 @@ export function createCodexStartup(
             const step = native[nativeCalls++];
             try {
               assert.ok(step, "unexpected native invocation after script exhausted");
-              assert.equal(command, "codex");
+              if (!nativeRunner) {
+                assert.equal(command, "codex");
+              }
               assert.equal(args.includes("login") ? "login" : "probe", step.operation);
               const childEnvironment = options.env ?? sandbox.process.env;
               absent(childEnvironment, transportCredentials);

@@ -3,7 +3,13 @@ import test from "node:test";
 import vm from "node:vm";
 import { CODEX_FAILURE_OUTPUT_CLASS_HELPER } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { CODEX_FAILURE_OUTPUT_CLASSES } from "../../packages/contracts/src/runtime-failure.mjs";
-import { checkCodexStartup, login, probe, timedOut } from "../fixtures/codex-native-startup.mjs";
+import {
+  assertWorkspaceProviderUrl,
+  checkCodexStartup,
+  login,
+  probe,
+  timedOut,
+} from "../fixtures/codex-native-startup.mjs";
 
 const ready = {
   phases: [
@@ -35,6 +41,22 @@ const probeAuthenticationFailure = { ...probeFailure(), code: "AUTHENTICATION_FA
 const errorEvent = (message) => ({ type: "error", message });
 const failedTurn = (message) => ({ type: "turn.failed", error: { message } });
 
+test("workspace URL evidence requires the single canonical CLI override", () => {
+  const key = "model_providers.oce-codex-workspace.base_url";
+  const correct = key + '="https://chatgpt.com/backend-api/codex"';
+  const lookalike = key + '="https://chatgpt.com.attacker.invalid/backend-api/codex"';
+  assertWorkspaceProviderUrl(["-c", correct]);
+  for (const args of [
+    ["-c", lookalike],
+    ["-c", correct.replace('/codex"', '/codex.attacker"')],
+    ["--model", correct],
+    ["-c", correct, "-c", lookalike],
+    ["-c", correct, "--config=" + lookalike],
+  ]) {
+    assert.throws(() => assertWorkspaceProviderUrl(args), assert.AssertionError);
+  }
+});
+
 // Component conformance: scripted native output, real generated entrypoint and status handler.
 test("Codex runtime gates startup and readiness on a successful native authentication turn", async (t) => {
   const started = { type: "turn.started" };
@@ -64,7 +86,7 @@ test("Codex runtime gates startup and readiness on a successful native authentic
           return { status: 0 };
         }
         assert.ok(args.includes("exec"));
-        assert.ok(args.some((arg) => arg.includes("https://chatgpt.com/backend-api/codex")));
+        assertWorkspaceProviderUrl(args);
         return { status: 0, stdout: completedTurn().map(JSON.stringify).join("\n") };
       },
       expect: ready,

@@ -294,6 +294,12 @@ pluginApproverOverrides["codex-plugin:calendar@openai-curated-remote"].approvers
 pluginApproverOverrides["codex-plugin:calendar@openai-curated-remote"].tools[
   "app_calendar/create_event"
 ].approvers = [{ channel: "slack", id: "team:TDEMO123:user:UDEMO124" }];
+const pluginApproverNoneHints = JSON.parse(pluginSelections);
+pluginApproverNoneHints["codex-plugin:calendar@openai-curated-remote"].approvers = [];
+const pluginApproverPreservedHints = JSON.parse(pluginSelections);
+pluginApproverPreservedHints["codex-plugin:calendar@openai-curated-remote"].approvers = [
+  { channel: "teams", id: "person-1" },
+];
 const pluginPreviewGap =
   "Catalog entries, local placeholder logos, and Driver capabilities are passed directly to the production component as Storybook fixtures. These previews do not verify PAT access, plugin availability, or runtime policy enforcement.";
 const pluginDiscovery = {
@@ -4233,6 +4239,55 @@ export const scenarios = {
     steps: [
       "Change Calendar to Inherit Agent default approvers and inspect Plugin selections JSON.",
       "Search Create event tool approvers people to distinguish the two Alex Chen results by their handles.",
+      "Open No Slack approvers hints and Preserved non-Slack approver for the hidden no-approvers sentences.",
+    ],
+    gap: overrideApproverGap,
+  },
+  pluginApproversNoneHints: {
+    group: "Pages/Agent detail",
+    name: "No Slack approvers hints",
+    path: draft,
+    slack: true,
+    auth: "codex_pat",
+    agentPlugins: pluginApproverNoneHints,
+    agentPluginApprovers: [{ channel: "slack", id: "team:TDEMO123:user:UDEMO123" }],
+    pluginCapabilities: overrideApproverCapabilities,
+    pluginDiscovery,
+    actions: [
+      click("Plugins"),
+      click("Configure plugins"),
+      { selector: 'button[aria-label="Calendar"]', click: true },
+    ],
+    description:
+      "Calendar starts with an empty approver list on No Slack approvers. The hint says no Slack user can approve and the people picker is hidden. Selected Slack users with that empty list asks for people and shows the picker.",
+    steps: [
+      "Read Calendar plugin approvers: No Slack user can approve. The people picker is hidden.",
+      "Change Calendar plugin approvers to Selected Slack users and leave the list empty. The hint asks you to select people, and the picker is visible.",
+      "Change it back to No Slack approvers. The first sentence returns and the picker hides again.",
+    ],
+    gap: overrideApproverGap,
+  },
+  pluginApproversPreservedChannel: {
+    group: "Pages/Agent detail",
+    name: "Preserved non-Slack approver",
+    path: draft,
+    slack: true,
+    auth: "codex_pat",
+    agentPlugins: pluginApproverPreservedHints,
+    agentPluginApprovers: [{ channel: "slack", id: "team:TDEMO123:user:UDEMO123" }],
+    pluginCapabilities: overrideApproverCapabilities,
+    pluginDiscovery,
+    actions: [
+      click("Plugins"),
+      click("Configure plugins"),
+      { selector: 'button[aria-label="Calendar"]', click: true },
+    ],
+    description:
+      "Calendar has no Slack approvers and keeps one simulated non-Slack entry. No Slack approvers says no Slack user can approve, names that preserved entry, and hides the people picker. Selected Slack users still counts zero Slack approvers while that entry remains.",
+    steps: [
+      "Read Calendar plugin approvers: No Slack user can approve. 1 other channel entries are preserved. The people picker is hidden.",
+      "Change Calendar plugin approvers to Selected Slack users. The picker is shown, and the hint stays 0 Slack approvers selected because the simulated non-Slack entry remains.",
+      "Change it back to No Slack approvers. The preserved-entry sentence returns and the picker hides again. The teams / person-1 entry is fixture data, not a real channel.",
     ],
     gap: overrideApproverGap,
   },

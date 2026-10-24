@@ -6,7 +6,7 @@ import (
 )
 
 func (app *application) agentPolicyCommand() *cobra.Command {
-	command := &cobra.Command{Use: "policy", Short: "Read and explicitly change an Agent's sandbox network additions"}
+	command := commandGroup("policy", "Read and explicitly change an Agent's sandbox network additions")
 	var facet string
 	command.PersistentFlags().StringVar(&facet, "facet", "networking", "Sandbox policy facet (currently networking only)")
 	get := &cobra.Command{Use: "get AGENT_ID", Args: idArgs(agentIDArg), Short: "Read desired policy, application evidence, and delegation ceiling", RunE: func(_ *cobra.Command, args []string) error {

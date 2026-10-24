@@ -1714,6 +1714,10 @@ test(
   imageTestOptions,
   async () => {
     const defaultPluginPolicy = codexRuntimeArtifact({}, []).configuration.plugins;
+    const codexExecutableSource = AGENT_RUNTIME_ENTRYPOINT.match(
+      /^function codexExecutable\(\) \{\n[\s\S]*?\n\}\n/m,
+    )?.[0];
+    assert.ok(codexExecutableSource, "the Harness entrypoint must define codexExecutable()");
     const script = String.raw`
 const assert = require("node:assert/strict");
 const { createHash } = require("node:crypto");
@@ -1781,6 +1785,13 @@ const codexPackage = JSON.parse(readFileSync(resolve(codexPackageRoot, "package.
 const platformPackageRoot = resolve(codexPackageRoot, "..", platform.packageDirectory);
 const platformPackage = JSON.parse(readFileSync(resolve(platformPackageRoot, "package.json"), "utf8"));
 const platformBinary = resolve(platformPackageRoot, platform.binaryPath);
+// Login and the model check spawn codexExecutable() so a timeout's SIGKILL ends native
+// Codex, not just the npm launcher (finding 2274). Run the generated helper on this
+// image's PATH: a shim in place of the launcher symlink would make it fall back.
+${codexExecutableSource}
+const harnessCodex = codexExecutable();
+assert.ok(harnessCodex.startsWith("/"), "codexExecutable() fell back to " + harnessCodex + " on PATH " + process.env.PATH);
+assert.equal(realpathSync(harnessCodex), realpathSync(platformBinary));
 const platformBinarySha256 = createHash("sha256").update(readFileSync(platformBinary)).digest("hex");
 const platformInventoryPath = relative("/app/node_modules/openclaw", realpathSync(platformBinary));
 assert.ok(!platformInventoryPath.startsWith(".."), "Codex platform binary must live under the inventoried OpenClaw package root.");

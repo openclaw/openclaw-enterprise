@@ -514,6 +514,20 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- end -}}
 {{- end -}}
+{{- /* YAML and --set read yes/no, true/false, or a bare number as a boolean or number. An unquoted name would mount ConfigMap "true" or skip the theme. */ -}}
+{{- if kindIs "map" .Values.api.consoleTheme -}}
+{{- if hasKey .Values.api.consoleTheme "configMapName" -}}
+{{- $consoleThemeName := .Values.api.consoleTheme.configMapName -}}
+{{- if not (kindIs "string" $consoleThemeName) -}}
+{{- fail "api.consoleTheme.configMapName must be a string: quote a name YAML reads as a number or boolean, or pass it with --set-string" -}}
+{{- else if ne $consoleThemeName "" -}}
+{{- include "openclaw.validateResourceName" (dict "label" "api.consoleTheme.configMapName" "value" $consoleThemeName) -}}
+{{- end -}}
+{{- end -}}
+{{- if and (hasKey .Values.api.consoleTheme "checksum") (not (kindIs "string" .Values.api.consoleTheme.checksum)) -}}
+{{- fail "api.consoleTheme.checksum must be a string: quote a value YAML reads as a number or boolean, or pass it with --set-string" -}}
+{{- end -}}
+{{- end -}}
 {{- if .Values.slackProxy.enabled -}}
 {{- $proxy := .Values.slackProxy -}}
 {{- if .Values.api.channelDirectoryProxyUrl -}}{{- fail "api.channelDirectoryProxyUrl must be empty when slackProxy.enabled uses the chart-managed Service" -}}{{- end -}}
@@ -624,6 +638,8 @@ an allowlist without its provider is refused: the API treats it as a startup err
 
 {{- if not $routing.gatewayClassName -}}{{- fail "gatewayRouting.gatewayClassName must reference an operator-created GatewayClass" -}}{{- end -}}
 {{- include "openclaw.validateResourceName" (dict "label" "gatewayRouting.gatewayClassName" "value" $routing.gatewayClassName) -}}
+{{- /* The EnvoyProxy envoyService.type enum. The API server refuses any other value at apply, after the pre-install hooks have run. */ -}}
+{{- if not (has $routing.serviceType (list "ClusterIP" "LoadBalancer" "NodePort")) -}}{{- fail "gatewayRouting.serviceType must be ClusterIP, LoadBalancer or NodePort" -}}{{- end -}}
 {{- /* Compute required() keeps the original string. validateGatewayName then refuses a name that is not DNS-safe, or longer than 63 characters, because Envoy copies it into the owning-gateway-name label. Check the name the Gateway template emits, including surrounding spaces. */ -}}
 {{- $gatewayName := include "openclaw.gatewayRouting.gatewayName" . -}}
 {{- if or (gt (len $gatewayName) 63) (not (regexMatch "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*$" $gatewayName)) -}}

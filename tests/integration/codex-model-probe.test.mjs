@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -90,11 +90,39 @@ if (args.includes("login")) {
 }
 `;
 
+// The process shape of the image's npm launcher (@openai/codex bin/codex.js): it resolves the
+// platform package, starts its native binary with inherited stdio, forwards termination signals
+// and mirrors the child's exit. The native binary keeps the pipes when only the launcher dies.
+const nativeTriple = `${process.arch === "arm64" ? "aarch64" : "x86_64"}-unknown-linux-musl`;
+const npmLauncherFixture = String.raw`#!/usr/bin/env node
+const { spawn } = require("node:child_process");
+const root = require.resolve("@openai/codex-linux-" + process.arch + "/package.json").slice(0, -12);
+const child = spawn(root + "vendor/${nativeTriple}/bin/codex", process.argv.slice(2), { stdio: "inherit" });
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => child.kill(signal));
+child.on("exit", (code, signal) => (signal ? process.kill(process.pid, signal) : process.exit(code ?? 1)));
+`;
+
+// Lay out the npm packages the image installs and put the launcher on PATH, as the image does.
+async function writeNpmLauncher(directory) {
+  const modules = join(directory, "node_modules", "@openai");
+  const native = join(modules, `codex-linux-${process.arch}`);
+  await mkdir(join(modules, "codex", "bin"), { recursive: true });
+  await mkdir(join(native, "vendor", nativeTriple, "bin"), { recursive: true });
+  await Promise.all([
+    writeFile(join(modules, "codex", "package.json"), '{"name":"@openai/codex"}'),
+    writeFile(join(modules, "codex", "bin", "codex.js"), npmLauncherFixture, { mode: 0o755 }),
+    writeFile(join(native, "package.json"), '{"name":"@openai/codex"}'),
+    writeFile(join(native, "vendor", nativeTriple, "bin", "codex"), codexFixture, { mode: 0o755 }),
+    symlink("node_modules/@openai/codex/bin/codex.js", join(directory, "codex")),
+  ]);
+}
+
 async function startLauncher(
   t,
   scenario,
   stopAfterTimeout = false,
   auth = { CODEX_LOGIN_MODE: "api_key", OPENAI_API_KEY: "credential-canary" },
+  npmLauncher = false,
 ) {
   const directory = await mkdtemp(join(tmpdir(), "oce-codex-probe-"));
   const name = `oce-codex-probe-${randomUUID()}`;
@@ -107,7 +135,9 @@ async function startLauncher(
   });
   await Promise.all([
     writeFile(join(directory, "entrypoint.cjs"), AGENT_RUNTIME_ENTRYPOINT),
-    writeFile(join(directory, "codex"), codexFixture, { mode: 0o755 }),
+    npmLauncher
+      ? writeNpmLauncher(directory)
+      : writeFile(join(directory, "codex"), codexFixture, { mode: 0o755 }),
     writeFile(join(directory, "scenario"), scenario),
     writeFile(join(directory, "calls"), ""),
   ]);
@@ -196,9 +226,14 @@ async function startLauncher(
           `
         const fs = require('node:fs');
         fetch('http://127.0.0.1:18791/openclaw/runtime/status').then(async response => {
+          // Every other process in the container, by command line.
+          const processes = fs.readdirSync('/proc').filter(pid => /^[0-9]+$/.test(pid) && Number(pid) !== process.pid)
+            .map(pid => { try { return fs.readFileSync('/proc/' + pid + '/cmdline', 'utf8').split('\\0').join(' ').trim(); } catch { return ''; } })
+            .filter(Boolean);
           console.log(JSON.stringify({ status: await response.json(), ready: fs.existsSync('/home/node/ready'),
             calls: fs.readFileSync('/home/node/calls', 'utf8').trim().split('\\n').filter(Boolean).map(JSON.parse),
-            probeDirectories: fs.readdirSync('/tmp').filter(name => name.startsWith('codex-auth-probe-')) }));
+            probeDirectories: fs.readdirSync('/tmp').filter(name => name.startsWith('codex-auth-probe-')),
+            codexProcesses: processes.filter(command => command.includes('codex')) }));
         });
       `,
         ],
@@ -319,6 +354,15 @@ test(
     const scenarios = [
       { name: "timeout then success", input: "recover", attempts: 2, ready: true },
       { name: "two timeouts", input: "timeout", attempts: 2, code: "MODEL_PROBE_TIMEOUT" },
+      // Finding 2274: behind the image's npm launcher, the timeout must still end the native
+      // process; its open pipes held the first attempt past the timeout, and it kept running.
+      {
+        name: "timeout then success behind the npm launcher",
+        input: "recover",
+        npmLauncher: true,
+        attempts: 2,
+        ready: true,
+      },
       { name: "credential rejection", input: "rejected", attempts: 1, code: "MODEL_PROBE_FAILED" },
       // An outside kill is transient: it gets the one retry and, when that fails too,
       // holds the second attempt's cause marked as retried (finding 1576).
@@ -338,7 +382,13 @@ test(
     await Promise.all([
       ...scenarios.map((scenario) =>
         t.test(scenario.name, { concurrency: true }, async (t) => {
-          const launcher = await startLauncher(t, scenario.input);
+          const launcher = await startLauncher(
+            t,
+            scenario.input,
+            false,
+            undefined,
+            scenario.npmLauncher,
+          );
           await waitFor(
             () =>
               launcher.output().includes("APP_SERVER_STARTED") ||
@@ -361,6 +411,13 @@ test(
             assert.deepEqual(snapshot.status.runtimeFailure.cause, scenario.cause);
           }
           assert.deepEqual(snapshot.probeDirectories, []);
+          // A timed-out or failed check leaves no Codex process behind: only a ready launcher
+          // runs one, app-server (behind the npm launcher, the launcher and its native child).
+          assert.deepEqual(
+            snapshot.codexProcesses.filter((command) => !command.includes("app-server")),
+            [],
+          );
+          assert.equal(snapshot.codexProcesses.length > 0, scenario.ready === true);
           assert.doesNotMatch(
             launcher.output() + launcher.errors() + JSON.stringify(snapshot.status),
             new RegExp(`${canary}|credential-canary|transport-canary`),

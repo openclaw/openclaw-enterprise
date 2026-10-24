@@ -147,6 +147,16 @@ func TestDevUpRejectsUnsupportedOrEmptySandboxPolicyFlag(t *testing.T) {
 	}
 }
 
+func TestDevUpRejectsEmptySandboxPolicyCeilingFlag(t *testing.T) {
+	t.Setenv("OCC_DEVELOPMENT_COMPUTE_DRIVER", "docker")
+	command := New(&bytes.Buffer{}, &bytes.Buffer{})
+	command.SetArgs([]string{"dev", "up", "--sandbox-network-policy-ceiling-file="})
+	err := command.Execute()
+	if err == nil || !strings.Contains(err.Error(), "--sandbox-network-policy-ceiling-file must name a Sandbox network policy ceiling file") {
+		t.Fatalf("empty ceiling file = %v", err)
+	}
+}
+
 // Interrupting occ dev up must let scripts/dev-up run its EXIT trap, which
 // removes the private temporary directory holding the rendered Compose
 // configuration (with interpolated development secrets).

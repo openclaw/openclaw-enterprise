@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { join } from "node:path";
 import test from "node:test";
 
 import { GATEWAY_STOP_TIMEOUT_MS } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
@@ -27,6 +27,8 @@ import {
   waitFor,
   watchCluster,
 } from "../../scripts/ci/first-agent-smoke.mjs";
+import { withEnvironment } from "../helpers/environment.mjs";
+import { commandPath } from "../helpers/fake-commands.mjs";
 
 const revision = "rev_00000000-0000-4000-8000-000000000001";
 const chatNonce = "OCE_SMOKE_00000000-0000-4000-8000-000000000001";
@@ -354,17 +356,14 @@ async function withRecordedK3d(operation) {
   await writeFile(join(directory, "k3d"), `#!/bin/sh\necho "$@" >> '${calls}'\nexit 1\n`, {
     mode: 0o755,
   });
-  const path = process.env.PATH;
-  process.env.PATH = `${directory}${delimiter}${path}`;
   try {
     const started = Date.now();
-    await operation();
+    await withEnvironment({ PATH: commandPath(directory) }, operation);
     return {
       seconds: (Date.now() - started) / 1000,
       calls: await readFile(calls, "utf8").catch(() => ""),
     };
   } finally {
-    process.env.PATH = path;
     await rm(directory, { recursive: true, force: true });
   }
 }

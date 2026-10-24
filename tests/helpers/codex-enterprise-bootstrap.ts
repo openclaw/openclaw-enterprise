@@ -17,7 +17,12 @@ import type {
   EgressRoute,
 } from "../../packages/contracts/src/index.ts";
 import { createCodexWorkspacePatProvider } from "../../apps/controller/src/drivers/egress-proxy/codex-workspace-provider.ts";
-import { createCodexStartup, login, probe } from "../fixtures/codex-native-startup.mjs";
+import {
+  assertWorkspaceProviderUrl,
+  createCodexStartup,
+  login,
+  probe,
+} from "../fixtures/codex-native-startup.mjs";
 import { caAndLeaf } from "./certificates.mjs";
 
 const model = "fixture-model";
@@ -126,6 +131,7 @@ async function nativeStartup(proxy: string, ca: string, challenge: string) {
       providerPat: true,
       protectedInference: "signed",
       workspacePat: true,
+      nativePath: process.env.PATH,
       model,
       nativeRunner(command: string, args: string[], options: SpawnSyncOptionsWithStringEncoding) {
         for (const name of [
@@ -143,13 +149,13 @@ async function nativeStartup(proxy: string, ca: string, challenge: string) {
         assert.deepEqual(JSON.parse(readFileSync(join(home, "auth.json"), "utf8")), {
           personal_access_token: placeholder,
         });
-        const actual = args;
+        assert.ok(command.startsWith("/"), "native login and probe must bypass the npm launcher");
         if (args.includes("exec")) {
           assert.equal(runtime.marker(), undefined, "stale readiness removed at native exec");
-          assert.ok(args.some((arg) => arg.includes("https://chatgpt.com/backend-api/codex")));
+          assertWorkspaceProviderUrl(args);
           childExecs++;
         }
-        const result = spawnSync(command, actual, {
+        const result = spawnSync(command, args, {
           ...options,
           encoding: "utf8",
           env: {

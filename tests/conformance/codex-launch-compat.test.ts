@@ -1,4 +1,5 @@
 import type { AgentRevision, ProxyPlan } from "../../packages/contracts/src/index.ts";
+import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -14,33 +15,37 @@ import {
 const fixture: {
   revision: AgentRevision;
   cases: { node: boolean; command: string[]; args: string[] }[];
-  protectedPrograms: { plainSha256: string; nodeSha256: string };
+  protectedPrograms: {
+    plainSha256: string;
+    nodeSha256: string;
+    plainArgs: string[];
+    nodeArgs: string[];
+  };
 } = JSON.parse(
   readFileSync(new URL("../fixtures/codex-launch-before-workspace.json", import.meta.url), "utf8"),
 );
 const program = (args: readonly string[]) =>
   inflateRawSync(Buffer.from(args.slice(1).join(""), "base64")).toString();
 
-function innerProgram(args: readonly string[], node: boolean) {
-  const outer = program(args);
-  if (!node) {
-    return outer;
-  }
-  const encoded = /name: "Codex",\n {4}args: (\[.*\]),/.exec(outer);
-  assert.ok(encoded?.[1], "workspace supervisor contains the Codex invocation");
-  return program(JSON.parse(encoded[1]).slice(1));
-}
-
+const hash = (text: string) => createHash("sha256").update(text).digest("hex");
+// Independently captured from the unversioned commands at 108782a40, after the native timeout fix.
+const mainCommands = {
+  plain: "4f7c80a40d965b6a53c67a486484a74a03fcdea6731440e0f7fa20c4bbf1175a",
+  node: "bffcc3ffde3308c2b966fffe175133bb77c02de602c4ccead5929668e5ad5135",
+};
 for (const sample of fixture.cases) {
   test(`stored Codex ${sample.node ? "workspace-node" : "plain"} admission retains pre-change bytes and adopts without replay`, async () => {
     const compute = launchCompute();
     const rendered = launchRequirements(compute, fixture.revision, sample.node);
     assert.equal(
-      JSON.stringify({ command: rendered.command, args: rendered.args }),
-      JSON.stringify({ command: sample.command, args: sample.args }),
+      hash(JSON.stringify({ command: rendered.command, args: rendered.args })),
+      sample.node ? mainCommands.node : mainCommands.plain,
     );
-    assert.equal(program(rendered.args), program(sample.args));
-    assert.equal(innerProgram(rendered.args, sample.node), innerProgram(sample.args, sample.node));
+    const mainPeer = sandboxPeer();
+    const mainContext = sandboxContext(fixture.revision, rendered.requirements);
+    await mainPeer.driver().provisionHarness(mainContext);
+    await mainPeer.driver().provisionHarness(mainContext);
+    assert.equal(mainPeer.creates, 1);
     const peer = sandboxPeer();
     const oldContext = sandboxContext(fixture.revision, {
       ...rendered.requirements,
@@ -62,15 +67,17 @@ for (const sample of fixture.cases) {
       admittedCommand,
       "coordination wrapper also retains exact bytes",
     );
-    command.push("substituted");
+    const part = command.at(-1);
+    assert.ok(typeof part === "string");
+    command[command.length - 1] = part.slice(0, -1) + (part.endsWith("A") ? "B" : "A");
     await assert.rejects(
-      peer.driver().provisionHarness(oldContext),
+      peer.driver().provisionHarness(mainContext),
       /exact AgentRevision ownership and content/,
     );
-    command.pop();
+    command[command.length - 1] = part;
     annotations["openclaw.dev/revision-id"] = "wrong-owner";
     await assert.rejects(
-      peer.driver().provisionHarness(oldContext),
+      peer.driver().provisionHarness(mainContext),
       /exact AgentRevision ownership and content/,
     );
     annotations["openclaw.dev/revision-id"] = fixture.revision.id;
@@ -164,7 +171,7 @@ test("launch binding rejects unknown payloads and wrong Harness", () => {
   );
 });
 
-test("stored protected and public-reader bindings retain their semantics across launch versions", () => {
+test("stored protected and public-reader bindings retain their semantics across launch versions", async () => {
   const compute = launchCompute();
   const protectedRevision: AgentRevision = {
     ...fixture.revision,
@@ -184,10 +191,44 @@ test("stored protected and public-reader bindings retain their semantics across 
     undefined,
     "https://127.0.0.1/v1",
   );
-  const hash = (value: string) => createHash("sha256").update(value).digest("hex");
   assert.ok(old);
-  assert.equal(hash(old.entrypoint), fixture.protectedPrograms.plainSha256);
-  assert.equal(hash(old.workspaceEntrypoint), fixture.protectedPrograms.nodeSha256);
+  assert.equal(
+    hash(old.entrypoint),
+    "ad842f41da06dee8c9e48afe2a3c45fc3d22faf75cb33d7cfc2af319b1ddb4ef",
+  );
+  assert.equal(
+    hash(old.workspaceEntrypoint),
+    "9f10d1438112b82ef3f8047f2c1a6830d4ecdfa19e2c7dd0e1446f0183b6d5b2",
+  );
+  for (const node of [false, true]) {
+    const args = node ? fixture.protectedPrograms.nodeArgs : fixture.protectedPrograms.plainArgs;
+    assert.equal(
+      hash(program(args)),
+      node ? fixture.protectedPrograms.nodeSha256 : fixture.protectedPrograms.plainSha256,
+    );
+    const requirements = launchRequirements(compute, fixture.revision, node);
+    const peer = sandboxPeer();
+    // The Compute snapshot above verifies the protected grant. Exercise the Sandbox
+    // command comparison with its stored retry binding and synthetic transport.
+    const stored = { ...fixture.revision, compute: protectedRevision.compute };
+    const expected = node ? old.workspaceEntrypoint : old.entrypoint;
+    const historicalContext = sandboxContext(stored, {
+      ...requirements.requirements,
+      command: [...requirements.command, ...args],
+    });
+    await peer.driver().provisionHarness(historicalContext);
+    await peer.driver().provisionHarness(
+      sandboxContext(stored, {
+        ...requirements.requirements,
+        command: [...requirements.command, ...nodeProgramArguments(expected)],
+      }),
+    );
+    assert.equal(peer.creates, 1);
+    await assert.rejects(
+      peer.driver().provisionHarness(sandboxContext(stored, requirements.requirements)),
+      /exact AgentRevision ownership and content/,
+    );
+  }
   const next: AgentRevision = {
     ...protectedRevision,
     compute: { ...protectedRevision.compute, admission: admission(compute, protectedRevision) },
