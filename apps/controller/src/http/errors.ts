@@ -3,7 +3,6 @@ import { PresetValidationError } from "@openclaw-enterprise/contracts";
 import { UNTRUSTED_ORIGIN_MESSAGE } from "../admission/admission-verifier.ts";
 import {
   AgentCredentialSourceBindingError,
-  RepositoryBindingSelectionError,
   AgentDeletingError,
   AgentPrincipalAuthorizationError,
   AuthorizationDeniedError,
@@ -36,6 +35,7 @@ import {
   ResourceConflictError,
   ResourceStateConflictError,
   ProtectedExecutionNetworkPolicyError,
+  RepositoryBindingSelectionError,
   RepositoryGitProfileUnsupportedError,
   RepositoryGitSenderUnqualifiedError,
   RuntimeCredentialsForbiddenByClusterError,

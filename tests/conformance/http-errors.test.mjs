@@ -49,6 +49,7 @@ import {
   PostgresCommitOutcomeUnknownError,
   ProtectedExecutionNetworkPolicyError,
   ProvisioningSecretDriverError,
+  RepositoryBindingSelectionError,
   RepositoryGitProfileUnsupportedError,
   RepositoryGitSenderUnqualifiedError,
   ResourceConflictError,
@@ -368,6 +369,16 @@ const cases = [
       status: 400,
       code: "INVALID_REQUEST",
       message: "The Harness credential source must be listed in the Agent's credentialSources.",
+    },
+  ],
+  [
+    "Installation-wide repository access next to another binding",
+    new RepositoryBindingSelectionError(),
+    {
+      status: 400,
+      code: "INVALID_REQUEST",
+      message:
+        "Installation-wide repository access (profile github-installation) must be the Agent's only repository selection. Remove the other entries from repositoryBindings or repositoryAccess.repositories, or select each repository with its own profile instead.",
     },
   ],
   [

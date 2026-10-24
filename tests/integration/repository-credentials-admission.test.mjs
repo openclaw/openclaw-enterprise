@@ -711,13 +711,18 @@ test("Installation-wide repository access refuses other bindings at save, as dep
   const message =
     "Installation-wide repository access (profile github-installation) must be the Agent's only repository selection. Remove the other entries from repositoryBindings or repositoryAccess.repositories, or select each repository with its own profile instead.";
   const mixed = [installation, ...selection];
+  const access = {
+    defaultProfile: "git-write",
+    repositories: [installation, { repositoryRef: "project" }],
+  };
   for (const [method, target, fields] of [
-    ["POST", f.collection, { name: "Refused Agent" }],
-    ["PATCH", path, {}],
+    ["POST", f.collection, { name: "Refused Agent", repositoryBindings: mixed }],
+    ["PATCH", path, { repositoryBindings: mixed }],
+    ["POST", f.collection, { name: "Refused Agent", repositoryAccess: access }],
+    ["PATCH", path, { repositoryAccess: access }],
   ]) {
     const response = await f.request(method, target, {
       configurationId: f.configuration.id,
-      repositoryBindings: mixed,
       ...fields,
     });
     assert.equal(response.status, 400, JSON.stringify(response));
