@@ -18,11 +18,11 @@ import {
   advanceCleanupRetries,
   completedPasses,
   completion,
+  makeWorkDue,
+  parkWork,
   removeAccessBindings,
   repositoryAttempts,
   repositoryBoundary,
-  makeWorkDue,
-  parkWork,
 } from "../helpers/postgres-worker-revision-support.mjs";
 
 // Agent stop and its Gateway drain, Agent deletion and Namespace teardown, moved unchanged from

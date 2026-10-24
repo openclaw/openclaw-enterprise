@@ -20,12 +20,12 @@ import {
 import {
   advanceCleanupRetries,
   completion,
+  deferWork,
+  makeWorkDue,
   removeAccessBindings,
   repositoryAttempts,
   repositoryBoundary,
   withUnavailableIAM,
-  deferWork,
-  makeWorkDue,
 } from "../helpers/postgres-worker-revision-support.mjs";
 import { gitCommandBodies, gitExpiryGateway } from "../helpers/openshell-online-git-journey.mjs";
 import { openShellOnlineGitWire } from "../helpers/openshell-online-git-wire.mjs";

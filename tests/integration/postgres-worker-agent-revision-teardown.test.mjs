@@ -9,11 +9,11 @@ import {
   advanceCleanupRetries,
   completedPasses,
   completion,
+  expireWorkLease,
   removeAccessBindings,
   repositoryAttempts,
   repositoryBoundary,
   withUnavailableIAM,
-  expireWorkLease,
 } from "../helpers/postgres-worker-revision-support.mjs";
 
 // Repository sessions through admission, maintenance and cleanup. Agent stop, its Gateway drain,

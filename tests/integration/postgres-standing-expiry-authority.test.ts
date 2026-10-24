@@ -9,10 +9,10 @@ import {
 } from "../helpers/postgres-backend-state.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 import {
-  waitForRevisionPass,
   deferWork,
   expireWorkLease,
   makeWorkDue,
+  waitForRevisionPass,
 } from "../helpers/postgres-worker-revision-support.mjs";
 import {
   observationGateway,
@@ -614,7 +614,7 @@ for (const scenario of [
           });
         }
         if (scenario === "optional withdrawn") {
-          // One parked queued owner and one live companion claim exercise both duplicate
+          // One deferred queued owner and one live companion claim exercise both duplicate
           // guards. Claim through the real queue, after making only this companion due.
           await deferWork(f.observerPool, { namespaceId: f.namespace.id, state: "queued" });
           await makeWorkDue(f.observerPool, {

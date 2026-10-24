@@ -2598,17 +2598,17 @@ test(
     // A lower attempt limit after a restart leaves queued work at the limit.
     const { pool, queue, PostgresWorkQueue } = await dependencies(context, { maxAttempts: 3 });
     const { namespaceId, agents } = await createResources(pool, 2);
-    const park = (key) => deferWork(pool, key);
+    const defer = (key) => deferWork(pool, key);
     const yielded = await predecessorDeployment(pool, queue, namespaceId, agents[0], {
       yielded: true,
       failures: 2,
     });
-    await park(yielded);
+    await defer(yielded);
     const plain = await predecessorDeployment(pool, queue, namespaceId, agents[1], {
       yielded: false,
       failures: 2,
     });
-    await park(plain);
+    await defer(plain);
     const restarted = new PostgresWorkQueue(pool, { maxAttempts: 2, random: () => 0 });
     // Parked rows sort last in the sweep; the limit keeps other tests' leftovers from crowding
     // them out.

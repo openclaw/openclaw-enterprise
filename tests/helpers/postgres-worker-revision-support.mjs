@@ -39,7 +39,8 @@ export async function completedPasses(events, work, outcome = "success") {
 //   "key"             idempotency_key = key
 //   ["key", ...]      idempotency_key = ANY(keys)
 //   { key, keys, keyLike, namespaceId, revisionId, agentTarget, state, claimToken }
-// An empty match is refused, so a helper never updates more rows than its caller names.
+// An empty filter object, an unknown filter or an undefined value is refused, so a helper never
+// updates more rows than its caller names.
 const workColumns = {
   key: (n) => `idempotency_key = $${n}`,
   keys: (n) => `idempotency_key = ANY($${n}::text[])`,
@@ -54,6 +55,9 @@ const workColumns = {
 function updateWork(pool, set, match, setParams = []) {
   const filters =
     typeof match === "string" ? { key: match } : Array.isArray(match) ? { keys: match } : match;
+  if (filters === null || typeof filters !== "object") {
+    throw new Error(`Unsupported Work match ${match}`);
+  }
   const params = [...setParams];
   const where = Object.entries(filters).map(([name, value]) => {
     const column = workColumns[name];
@@ -74,7 +78,7 @@ export function makeWorkDue(pool, match) {
   return updateWork(pool, "available_at = clock_timestamp()", match);
 }
 
-// Push the matched Work's due time `delay` (an interval such as "1 hour") into the future.
+// Make the matched Work due `delay` (an interval such as "1 hour") from now.
 export function deferWork(pool, match, delay = "1 hour") {
   return updateWork(pool, "available_at = clock_timestamp() + $1::interval", match, [delay]);
 }

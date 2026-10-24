@@ -44,9 +44,9 @@ import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revisio
 import {
   advanceCleanupRetries,
   completion,
+  makeWorkDue,
   repositoryAttempts,
   repositoryBoundary,
-  makeWorkDue,
 } from "../helpers/postgres-worker-revision-support.mjs";
 
 // Deployment, dispatch, convergence and the persisted lifecycle. Credential-source withdrawals and

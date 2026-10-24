@@ -15,9 +15,9 @@ import { waitFor } from "../helpers/wait-for.mjs";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
 import {
   completedPasses,
+  expireWorkLease,
   waitForWorkPass,
   waitForWorkStateDue,
-  expireWorkLease,
 } from "../helpers/postgres-worker-revision-support.mjs";
 import {
   assertWorkEnds,
