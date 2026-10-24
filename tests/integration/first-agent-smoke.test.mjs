@@ -29,6 +29,7 @@ import {
 } from "../../scripts/ci/first-agent-smoke.mjs";
 import { withEnvironment } from "../helpers/environment.mjs";
 import { commandPath } from "../helpers/fake-commands.mjs";
+import { listen } from "../helpers/listen.mjs";
 
 const revision = "rev_00000000-0000-4000-8000-000000000001";
 const chatNonce = "OCE_SMOKE_00000000-0000-4000-8000-000000000001";
@@ -88,6 +89,23 @@ test("smoke API sends its key only to the selected controller origin", async (t)
   const other = createApi("http://127.0.0.1:1", key);
   await assert.rejects(other("GET", "//" + host + "/unexpected"), /outside the controller origin/);
   assert.deepEqual(requests, [["/namespaces", key]]);
+});
+
+test("smoke API refuses a redirect instead of resending its key", async (t) => {
+  const requests = [];
+  const origin = async (handler) => "http://127.0.0.1:" + (await listen(t, createServer(handler)));
+  const elsewhere = await origin((request, response) => {
+    requests.push([request.url, request.headers["x-api-key"]]);
+    response.end('{"data":"ok"}');
+  });
+  const controller = await origin((request, response) => {
+    response.writeHead(307, { location: elsewhere + "/collected" }).end();
+  });
+  await assert.rejects(
+    createApi(controller, "synthetic-smoke-key")("GET", "/namespaces"),
+    /^Error: GET \/namespaces: fetch failed/,
+  );
+  assert.deepEqual(requests, []);
 });
 
 function virtualClock() {
@@ -552,11 +570,14 @@ test("bake metadata selects both pushed images by registry digest", () => {
   ]);
   for (const name of ["smoke-controller", "smoke-runtime"]) {
     const incomplete = structuredClone(metadata);
-    incomplete[name]["containerimage.digest"] = "sha256:short";
-    assert.throws(
-      () => bakeReferences(incomplete, bakeInput),
-      new RegExp(`no containerimage.digest for ${name}`),
-    );
+    // A non-hex value, and a hex digest one character short.
+    for (const value of ["sha256:short", `sha256:${"1".repeat(63)}`]) {
+      incomplete[name]["containerimage.digest"] = value;
+      assert.throws(
+        () => bakeReferences(incomplete, bakeInput),
+        new RegExp(`no containerimage.digest for ${name}`),
+      );
+    }
   }
   // The provider runs by its per-slot, per-revision name, in either engine image store.
   assert.equal(
