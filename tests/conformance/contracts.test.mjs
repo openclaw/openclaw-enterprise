@@ -711,10 +711,10 @@ test("only the model probe's own failure carries a cause, recorded only for a he
     code: "MODEL_PROBE_FAILED",
   };
   const cause = { kind: "PROBE_STATUS", detail: "turn-failed" };
-  assert.throws(
-    () => validateRuntimeFailureEvidence({ ...probe, code: "STARTUP_FAILED", cause }),
-    { name: "ScopeViolationError", message: "Runtime failure cause is invalid." },
-  );
+  assert.throws(() => validateRuntimeFailureEvidence({ ...probe, code: "STARTUP_FAILED", cause }), {
+    name: "ScopeViolationError",
+    message: "Runtime failure cause is invalid.",
+  });
   // The deadline records its runtime failure without the cause, so a stored cause is refused.
   assert.throws(
     () =>
