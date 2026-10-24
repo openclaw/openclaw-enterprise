@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import fs, {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -102,6 +109,7 @@ function startup(t: TestContext, token: string, loginAccepted = true) {
     },
     process: {
       env: environment,
+      geteuid: process.geteuid,
       on() {},
       exit() {
         throw new Error("unexpected process exit");
@@ -172,8 +180,38 @@ test("protected native Codex rejects a non-marker before filesystem writes or lo
   assert.deepEqual(fixture.calls, []);
 });
 
-async function release(fixture: ReturnType<typeof startup>) {
-  const handler = fixture.run();
+test("protected native Codex refuses a replaced home without writing credentials into it", (t) => {
+  const fixture = startup(t, marker);
+  const { CODEX_HOME: home, TMPDIR: root } = fixture.environment;
+  const replacement = mkdtempSync(join(root, "replacement-"));
+  const chmod = fs.fchmodSync;
+  let replaced = false;
+  // Substitute the path exactly when startup has checked and tightened its directory.
+  t.mock.method(fs, "fchmodSync", (fd: number, mode: fs.Mode) => {
+    chmod(fd, mode);
+    if (fs.readlinkSync("/proc/self/fd/" + fd) === home) {
+      fs.renameSync(home, join(root, "original"));
+      fs.symlinkSync(replacement, home);
+      replaced = true;
+    }
+  });
+  let failure: unknown;
+  try {
+    fixture.run();
+  } catch (error) {
+    failure = error;
+  }
+  assert.ok(replaced);
+  assert.equal(
+    existsSync(join(replacement, "auth.json")),
+    false,
+    "credential reached the replacement",
+  );
+  assert.match(String(failure), /credential home changed/i);
+  assert.deepEqual(fixture.calls, []);
+});
+
+async function release(fixture: ReturnType<typeof startup>, handler = fixture.run()) {
   assert.ok(handler);
   assert.deepEqual(fixture.calls, [], "native login waits for signed enrollment");
   assert.equal(existsSync(fixture.environment.OPENCLAW_PLUGIN_READY_MARKER), false);
@@ -219,6 +257,30 @@ async function release(fixture: ReturnType<typeof startup>) {
   ).toString("base64url");
   await exchange("POST", { challenge, installation, expiresAt, signature });
   await new Promise((resolve) => setImmediate(resolve));
+}
+
+for (const mutation of ["recreated home", "wider home mode", "replaced credential"] as const) {
+  test(`protected native Codex refuses a ${mutation} at signed release`, async (t) => {
+    const fixture = startup(t, marker);
+    const handler = fixture.run();
+    assert.ok(handler);
+    const { CODEX_HOME: home, TMPDIR: root } = fixture.environment;
+    if (mutation === "recreated home") {
+      const entries = fs.readdirSync(home);
+      for (const entry of entries) fs.renameSync(join(home, entry), join(root, entry));
+      fs.rmdirSync(home);
+      fs.mkdirSync(home, { mode: 0o700 });
+      for (const entry of entries) fs.renameSync(join(root, entry), join(home, entry));
+    } else if (mutation === "wider home mode") {
+      fs.chmodSync(home, 0o755);
+    } else {
+      fs.renameSync(join(home, "auth.json"), join(root, "original-auth"));
+      writeFileSync(join(home, "auth.json"), "{}", { mode: 0o600 });
+    }
+    await release(fixture, handler);
+    assert.deepEqual(fixture.calls, []);
+    assert.equal(existsSync(fixture.environment.OPENCLAW_PLUGIN_READY_MARKER), false);
+  });
 }
 
 test("protected native Codex passes its fixed workspace profile to startup and the app server", async (t) => {

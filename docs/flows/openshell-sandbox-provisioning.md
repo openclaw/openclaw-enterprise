@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
-updated: 2026-10-21
-last_updated_session: authoring-run/67a0706e-56ab-4514-adca-35cf217b0c3b
+updated: 2026-10-24
+last_updated_session: authoring-run/e2810921-00cc-4f69-85ab-017b0b89ed89
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -177,9 +177,15 @@ shell tools; `--replace-key` deploys current policy.
 OpenShell blocks nested bubblewrap; model readiness does not prove shell execution.
 
 PAT bootstrap (`prepareHarnessAuth`;
-`apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:AGENT_RUNTIME_ENTRYPOINT`)
-writes an opaque placeholder to private `auth.json`, clears the child override,
-and validates native login status. Scoped [PAT routes](../reference/drivers/openshell-credential-gateway.md#source-type-catalog)
+`apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:agentRuntimeEntrypoint`)
+writes an opaque placeholder, clears the child override, and validates native login
+status. The current launcher sets `CODEX_HOME` to mode `0700` on each start and
+replaces `auth.json` with a mode-`0600` file in that directory. It holds the
+opened directory through signed release, each native login and probe attempt,
+and app-server launch. Before each invocation it verifies the directory and
+credential file still have their admitted identities, owner, and permissions.
+A mismatch holds startup unready. A held failure or successful app-server
+spawn closes the descriptor. Exiting the launcher also releases it. Scoped [PAT routes](../reference/drivers/openshell-credential-gateway.md#source-type-catalog)
 admit bootstrap/model traffic; failure keeps versions inactive.
 API-key profiles bind immutable `config.base_url` plus `/**` (default OpenAI `/v1`),
 preserving prefixes including `/api/v1`. [Registration validation](credential-source-lifecycle.md#1-admit-the-registration-request)
@@ -364,6 +370,8 @@ proof on a Landlock-capable host; Console admission and initialized files are in
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-24 10:23: Document credential placement and directory ownership through native Codex PAT startup. (authoring-run/e2810921-00cc-4f69-85ab-017b0b89ed89 - 04c1318d744ddfc810c51b2aa308fab5e6e62a7f)
 
 - 2026-10-21 23:23: Record per-source retirement refusal in the accompanying worker change. (authoring-run/67a0706e-56ab-4514-adca-35cf217b0c3b - 7e5773662f34dc38be8138757ee47fd246bc3f9e)
 

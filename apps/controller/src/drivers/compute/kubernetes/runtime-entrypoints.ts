@@ -2035,9 +2035,10 @@ export const PLUGIN_RUNTIME_HELPERS = pluginRuntimeHelpers(false);
 // Holds unready until an explicit restart; readiness polls never submit model calls.
 // A failed probe's cause is a closed kind and a fixed token, never native output,
 // provider text or a credential; the controller drops a cause outside that vocabulary.
-const AUTH_PROBE_FAILURE_HELPER = String.raw`
+function authProbeFailureHelper(currentCodexLaunch = false) {
+  return String.raw`
 function holdFailedAuthentication(check = "model-probe", code = "UNAVAILABLE", cause) {
-  publishRuntimeFailure(check, code, cause);
+${currentCodexLaunch ? "  closeCredentialHome?.();\n" : ""}  publishRuntimeFailure(check, code, cause);
   serveHeldRuntimeFailureToTransportPeer(check, code, cause);
   console.error("Harness model authentication probe failed.");
   setInterval(() => {}, 3600000);
@@ -2060,6 +2061,7 @@ function probeExitFailure({ error, status, signal }) {
     : /^SIG[A-Z0-9]{1,10}$/.test(signal) ? "signal-" + signal : undefined);
 }
 `;
+}
 
 // The native probe disables tools and fallback and performs a bounded model turn.
 // Its JSON status, not its process exit status alone, establishes provider acceptance.
@@ -2082,7 +2084,7 @@ function probeExitFailure({ error, status, signal }) {
 // The Gateway times its model-probe phase from wrapper start: it is the first step.
 // Generated code stays compact: the Gateway program is near the exec limit.
 const OPENCLAW_AUTH_PROBE_HELPERS = String.raw`
-${AUTH_PROBE_FAILURE_HELPER}
+${authProbeFailureHelper()}
 function probeOpenClawAuthenticationFailure() {
   const fs = require("node:fs");
   const cgroup = (name) => { try { return fs.readFileSync("/sys/fs/cgroup/" + name, "utf8"); } catch { return ""; } };
@@ -3457,7 +3459,7 @@ const { spawn, spawnSync } = require("node:child_process");
 const { performance } = require("node:perf_hooks");
 
 ${pluginRuntimeHelpers(currentLaunch)}
-${AUTH_PROBE_FAILURE_HELPER}
+${authProbeFailureHelper(currentLaunch)}
 ${CODEX_FAILURE_OUTPUT_CLASS_HELPER}
 ${CODEX_STDERR_FILTER_HELPER}
 ${HARNESS_EGRESS_ENROLLMENT_HELPER}
@@ -3563,11 +3565,69 @@ if (loginMode === "codex_pat" &&
     (pluginRuntime?.manifest.nativePat !== true || accessToken !== ${JSON.stringify(PROTECTED_EGRESS_MARKER)})) {
   throw new Error("Codex protected native PAT profile or marker is invalid.");
 }
-mkdirSync(process.env.CODEX_HOME, { recursive: true });
+const providerManagedPat = loginMode === "codex_pat" && process.env.OCE_CODEX_CREDENTIAL_SOURCE === "1";
+let credentialHomeValid;
+let closeCredentialHome;
+if (providerManagedPat) {
+  const fs = require("node:fs");
+  const home = process.env.CODEX_HOME;
+  if (home === "/" || home !== pluginResolve(home)) throw new Error("Codex credential home must be an absolute directory.");
+  // OpenShell may have created a link parent on a previous start under its own umask.
+  let existing = home;
+  while (!fs.lstatSync(existing, { throwIfNoEntry: false })) existing = pluginDirname(existing);
+  if (fs.realpathSync(existing) !== existing) throw new Error("Codex credential home must not traverse a symlink.");
+  mkdirSync(home, { recursive: true, mode: 0o700 });
+  let directory = fs.openSync(home, fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW);
+  // Pin the inode across signed release and retries. A wrapper exit also releases it.
+  closeCredentialHome = () => {
+    if (directory !== undefined) {
+      fs.closeSync(directory);
+      directory = undefined;
+    }
+  };
+  try {
+    const held = "/proc/self/fd/" + directory;
+    if (fs.readlinkSync(held) !== home) throw new Error("Codex credential home changed during startup.");
+    const admitted = fs.fstatSync(directory, { bigint: true });
+    const owner = BigInt(process.geteuid());
+    if (admitted.uid !== owner) throw new Error("Codex credential home owner is invalid.");
+    fs.fchmodSync(directory, 0o700);
+    // Keep both sides of the rename in the opened directory even if its name moves.
+    const temporary = held + "/.pat-auth-" + pluginRandomUUID();
+    const file = fs.openSync(temporary, "wx", 0o600);
+    try {
+      fs.writeFileSync(file, JSON.stringify({ personal_access_token: accessToken }));
+      fs.renameSync(temporary, held + "/auth.json");
+      const prepared = fs.fstatSync(file, { bigint: true });
+      credentialHomeValid = () => {
+        if (directory === undefined) return false;
+        try {
+          const current = fs.lstatSync(home, { bigint: true });
+          const auth = fs.lstatSync(held + "/auth.json", { bigint: true });
+          return current.dev === admitted.dev && current.ino === admitted.ino &&
+            current.uid === owner && (current.mode & 0o7777n) === 0o700n && fs.realpathSync(home) === home &&
+            auth.isFile() && auth.dev === prepared.dev && auth.ino === prepared.ino &&
+            auth.ctimeNs === prepared.ctimeNs && auth.uid === owner && (auth.mode & 0o7777n) === 0o600n;
+        } catch {
+          return false;
+        }
+      };
+    } catch (error) {
+      rmSync(temporary, { force: true });
+      throw error;
+    } finally {
+      fs.closeSync(file);
+    }
+    if (!credentialHomeValid()) throw new Error("Codex credential home changed during startup.");
+  } catch (error) {
+    closeCredentialHome();
+    throw error;
+  }
+} else {
+  mkdirSync(process.env.CODEX_HOME, { recursive: true });
+}
 mkdirSync(workspaceDirectory, { recursive: true });
 if (pluginRuntime !== undefined) writeCodexConfigToml(pluginRuntime);
-// Credential sources can supply opaque markers, so native CLI prefix detection cannot
-// classify them. The native PAT auth-file contract still hydrates and validates account metadata.
 `
     : String.raw`mkdirSync(process.env.CODEX_HOME, { recursive: true });
 mkdirSync(workspaceDirectory, { recursive: true });
@@ -3581,13 +3641,13 @@ if (pluginRuntime !== undefined) {
 }
 // A Credential Gateway supplies an opaque token, so native CLI prefix detection cannot
 // classify it. The native PAT auth-file contract still hydrates and validates account metadata.
-`
-}const providerManagedPat = loginMode === "codex_pat" && process.env.OCE_CODEX_CREDENTIAL_SOURCE === "1";
+const providerManagedPat = loginMode === "codex_pat" && process.env.OCE_CODEX_CREDENTIAL_SOURCE === "1";
 if (providerManagedPat) {
   require("node:fs").writeFileSync(process.env.CODEX_HOME + "/auth.json",
     JSON.stringify({ personal_access_token: accessToken }), { mode: 0o600 });
 }
-const loginFlag = loginMode === "api_key" ? "--with-api-key" : "--with-access-token";
+`
+}const loginFlag = loginMode === "api_key" ? "--with-api-key" : "--with-access-token";
 const loginArguments = [
   "-c", "cli_auth_credentials_store=file", "login", providerManagedPat ? "status" : loginFlag,
 ];
@@ -3679,7 +3739,15 @@ if (noInference) {
   const loginDeadline = performance.now() + 90000;
   for (let attempt = 1; ; attempt++) {
     const attemptStartedAt = performance.now();
-    login = spawnSync("codex", loginArguments, {
+${
+  currentLaunch
+    ? `    if (credentialHomeValid?.() === false) {
+      login = { status: 1 };
+      break;
+    }
+`
+    : ""
+}    login = spawnSync("codex", loginArguments, {
       input: loginMode === "api_key" ? apiKey : accessToken,
       env: codexChildEnvironment(),
       encoding: "utf8",
@@ -3808,7 +3876,7 @@ function probeCodexAuthentication(timeout) {
       "sleep_tool", "goals", "workspace_dependencies", "skill_search",
       "skill_mcp_dependency_install", "tool_suggest", "recommended_plugins", "request_permissions_tool",
     ];
-    result = spawnSync("codex", [
+${currentLaunch ? '    if (credentialHomeValid?.() === false) return finish(probeFailure("WRAPPER_ERROR"));\n' : ""}    result = spawnSync("codex", [
 ${disableUnboundedConnectionRetries ? '      "--disable", "unbounded_connection_retries",\n' : ""}      ...disabled.flatMap((feature) => ["--disable", feature]),
       "-a", "never", "exec", "--ephemeral", "--ignore-user-config", "--ignore-rules",
       "--skip-git-repo-check", "--json", "--sandbox", "read-only", "--cd", directory,
@@ -4010,7 +4078,15 @@ if (pluginRuntimeStatusPort() !== undefined) {
   }
   process.env.APP_SERVER_TOKEN = derivePluginAppServerToken(pluginStatusReport.startupId);
 }
-publishRuntimeReady();
+${
+  currentLaunch
+    ? `if (credentialHomeValid?.() === false) {
+  holdFailedAuthentication("login", "LOGIN_FAILED");
+  return;
+}
+`
+    : ""
+}publishRuntimeReady();
 // Everything before this line delays the Codex app-server.
 logStartupPhase("native-spawn", startupPhaseOrigin);
 let digest = configuredTokenSha;
@@ -4050,7 +4126,7 @@ ${disableUnboundedConnectionRetries ? '    "--disable", "unbounded_connection_re
   // stdout is the protocol stream; stderr passes through the span-noise filter.
   { stdio: ["inherit", "inherit", "pipe"], cwd: workspaceDirectory, env: codexChildEnvironment() },
 );
-forwardTermination(child);
+${currentLaunch ? "closeCredentialHome?.();\n" : ""}forwardTermination(child);
 const codexStderrDone = child.stderr ? forwardCodexStderr(child.stderr) : Promise.resolve();
 child.on("exit", (code, signal) => {
   const status = code ?? (signal === "SIGTERM" ? 0 : 1);

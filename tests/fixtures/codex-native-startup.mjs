@@ -163,8 +163,10 @@ export function createCodexStartup(
       idleTimers.push({ callback, delay });
     },
     process: {
+      geteuid: process.geteuid,
       env: {
         CODEX_HOME: codexHome,
+        TMPDIR: directory,
         OPENCLAW_WORKSPACE_DIR: join(directory, "workspace"),
         CODEX_LOGIN_MODE: loginMode,
         ...(providerPat ? { OCE_CODEX_CREDENTIAL_SOURCE: "1" } : {}),
@@ -213,14 +215,24 @@ export function createCodexStartup(
         return { performance: { now: () => clock } };
       }
       if (specifier === "node:fs") {
+        const fs = nodeRequire(specifier);
         return {
+          closeSync: fs.closeSync,
+          constants: fs.constants,
+          fchmodSync: fs.fchmodSync,
+          fstatSync: fs.fstatSync,
+          lstatSync: fs.lstatSync,
           mkdirSync,
-          mkdtempSync: () => mkdtempSync(join(directory, "probe-")),
+          mkdtempSync,
+          openSync: fs.openSync,
+          readlinkSync: fs.readlinkSync,
+          realpathSync: fs.realpathSync,
+          renameSync: fs.renameSync,
           rmSync,
+          writeFileSync,
           readFileSync() {
             throw new Error("no plugin runtime payload is configured");
           },
-          writeFileSync,
         };
       }
       if (specifier === "node:http") {
