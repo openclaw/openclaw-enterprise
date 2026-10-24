@@ -13,7 +13,14 @@
 {{- end -}}
 {{- if not (regexMatch (include "openclaw.ipv4Cidr" .) $cidr) -}}{{- fail (printf "%s requires explicit IPv4 CIDRs with prefixes 1 through 32" $label) -}}{{- end -}}
 {{- end -}}
+{{- /* YAML and --set read yes/no, on/off, true/false or a bare number as a boolean or number, which would otherwise render as the name "true" or "1". */ -}}
+{{- define "openclaw.requireString" -}}
+{{- if not (kindIs "string" .value) -}}
+{{- fail (printf "%s must be a string: quote a value YAML reads as a number or boolean, or pass it with --set-string" .label) -}}
+{{- end -}}
+{{- end -}}
 {{- define "openclaw.validateSecretKey" -}}
+{{- include "openclaw.requireString" . -}}
 {{- if or (eq (toString .value) ".") (hasPrefix ".." (toString .value)) (gt (len (toString .value)) 253) (not (regexMatch "^[-._A-Za-z0-9]+$" (toString .value))) -}}
 {{- fail (printf "%s must be a Kubernetes Secret key of at most 253 characters" .label) -}}
 {{- end -}}
@@ -74,7 +81,8 @@
 {{- end -}}
 {{- /* An operator-named Secret or ConfigMap: a Kubernetes resource name (DNS subdomain) of at most 253 characters, as the profile renderer's resourceNameRule checks. */ -}}
 {{- define "openclaw.validateResourceName" -}}
-{{- $value := toString .value -}}
+{{- include "openclaw.requireString" . -}}
+{{- $value := .value -}}
 {{- if or (gt (len $value) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" $value)) -}}
 {{- fail (printf "%s must be a Kubernetes resource name of at most 253 characters" .label) -}}
 {{- end -}}
@@ -368,6 +376,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- fail (printf "api.clients[%d] requires an exact namespace and nonempty Pod selector" $index) -}}
 {{- end -}}
 {{- /* NetworkPolicies select these peers by kubernetes.io/metadata.name, which holds a Namespace name: a DNS label of at most 63 characters. */ -}}
+{{- include "openclaw.requireString" (dict "label" (printf "api.clients[%d].namespace" $index) "value" $client.namespace) -}}
 {{- if or (gt (len (toString $client.namespace)) 63) (not (regexMatch "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$" (toString $client.namespace))) -}}
 {{- fail (printf "api.clients[%d].namespace must be a Kubernetes namespace name (a DNS label of at most 63 characters)" $index) -}}
 {{- end -}}
@@ -375,6 +384,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if or (not .Values.dns.namespace) (not .Values.dns.podLabels) -}}
 {{- fail "dns requires an exact namespace and nonempty Pod selector" -}}
 {{- end -}}
+{{- include "openclaw.requireString" (dict "label" "dns.namespace" "value" .Values.dns.namespace) -}}
 {{- if or (gt (len (toString .Values.dns.namespace)) 63) (not (regexMatch "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$" (toString .Values.dns.namespace))) -}}
 {{- fail "dns.namespace must be a Kubernetes namespace name (a DNS label of at most 63 characters)" -}}
 {{- end -}}
@@ -755,7 +765,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- $groups := dict -}}
 {{- range $role := $roles -}}
 {{- if index $role 1 -}}
-{{- $name := toString (index $role 1) -}}
+{{- $name := index $role 1 -}}
 {{- include "openclaw.validateResourceName" (dict "label" (index $role 0) "value" $name) -}}
 {{- $group := ternary (last $role) "" (eq (len $role) 3) -}}
 {{- if not (hasKey $holders $name) -}}
