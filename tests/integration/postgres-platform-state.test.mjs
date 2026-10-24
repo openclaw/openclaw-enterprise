@@ -5,10 +5,10 @@ import { execFile } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { makeWorkDue } from "../helpers/postgres-worker-revision-support.mjs";
 import { promisify } from "node:util";
 import { Agent, request as httpRequest } from "node:http";
 import test from "node:test";
-import { makeWorkDue } from "../helpers/postgres-worker-revision-support.mjs";
 import {
   adminEmail,
   adminPassword,
