@@ -167,7 +167,8 @@
 {{- $prefix := int (first $cidr) -}}
 {{- range $index, $value := $block.except -}}
 {{- $except := splitList " " (include "openclaw.networkPolicy.cidrBits" (dict "name" (printf "%s.ipBlock.except[%d]" $name $index) "value" $value)) -}}
-{{- /* The API server requires a strict subset: same family, a longer prefix, inside cidr's range. */ -}}
+{{- /* The API server requires a strict subset: same family, a longer prefix, inside cidr's range.
+An IPv4-mapped IPv6 except under an IPv4 cidr counts as a family mismatch here, on purpose. */ -}}
 {{- if or (ne (len (last $except)) (len (last $cidr))) (le (int (first $except)) $prefix) (ne (substr 0 $prefix (last $except)) (substr 0 $prefix (last $cidr))) -}}
 {{- fail (printf "%s.ipBlock.except[%d] must be a strict subset of %s.ipBlock.cidr: the same IP family, inside its range, with a longer prefix" $name $index $name) -}}
 {{- end -}}
