@@ -1923,11 +1923,20 @@ export async function renderAgentDetail(
     renderVersionNotice();
   }
 
+  // The failed version the recovery block leads with, if any. The viewed version's record does
+  // not repeat that version's error below it (finding 2368).
+  let recoveryRevisionId: string | null = null;
+  function showRecovery(failure: Parameters<typeof recovery.show>[0]) {
+    recovery.show(failure);
+    recoveryRevisionId = failure?.latest.id ?? null;
+    versionRecord?.setFailureShownAbove(recoveryRevisionId === selected);
+  }
+
   function renderLatestDeployment() {
     markVersionOutcomes();
     const latest = visibleRevisions[0];
     if (!latest) {
-      recovery.show(null);
+      showRecovery(null);
       delete latestDeploymentValue.dataset.outcome;
       if (latestRevisionResult) {
         const rejected = latestRevisionResult.status === "rejected";
@@ -2058,7 +2067,7 @@ export async function renderAgentDetail(
       currentHidden ||
       currentUnknown ||
       !callerPermissionsSettled;
-    recovery.show(
+    showRecovery(
       hideRecovery
         ? null
         : {
@@ -2372,6 +2381,7 @@ export async function renderAgentDetail(
         operateAllowed: latestPermissionsRead.then((permissions) => permissions?.operate),
       });
       versionEvidence.append(...versionRecord.panels);
+      versionRecord.setFailureShownAbove(recoveryRevisionId === selected);
       if (latestDeploymentRecord?.deploymentId === selected) {
         versionRecord.show(latestDeploymentRecord);
       }

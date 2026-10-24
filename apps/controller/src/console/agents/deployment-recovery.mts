@@ -163,6 +163,9 @@ export function createDeploymentRecovery(
       code ?? "",
     );
     setText(recoveryLabel, `Deployment failed · ${version}`);
+    // The label names the failed version above a line about serving; a title that already says
+    // "vN deployment failed" stands alone (finding 2368).
+    setHidden(recoveryLabel, !servingImpact);
     setText(
       recoveryTitle,
       servingImpact ? "This Agent may be offline" : `${version} deployment failed`,

@@ -598,6 +598,9 @@ export function createVersionDeploymentEvidence(
   let error: unknown = null;
   let loading = false;
   let awaitingShared = shared;
+  // Set while the page's failed-deployment block leads with this version's failure, so the
+  // record names its outcome without repeating the error text (finding 2368).
+  let failureShownAbove = false;
   // A shared read that never settles must not leave this panel loading.
   const sharedTimer = shared ? setTimeout(release, DEPLOYMENT_POLL_MS) : undefined;
   const diagnostics = createVersionDiagnostics(
@@ -681,7 +684,13 @@ export function createVersionDeploymentEvidence(
               "div",
               {},
               element("p", {}, `Recorded outcome: ${outcomeLabel(deploymentOutcome(status))}`),
-              deploymentResult(status),
+              failureShownAbove && deploymentOutcome(status) === "failed"
+                ? element(
+                    "p",
+                    { className: "muted deployment-failure-above" },
+                    "The error and its next step are at the top of this page.",
+                  )
+                : deploymentResult(status),
               status.warnings?.length
                 ? element(
                     "div",
@@ -717,10 +726,18 @@ export function createVersionDeploymentEvidence(
   if (!shared) {
     void load();
   }
+  function setFailureShownAbove(shown: boolean) {
+    if (failureShownAbove !== shown) {
+      failureShownAbove = shown;
+      render();
+    }
+  }
+
   return {
     panels: [section, diagnostics.section],
     show,
     release,
+    setFailureShownAbove,
     applyOperate: diagnostics.applyOperate,
   };
 }

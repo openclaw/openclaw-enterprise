@@ -754,6 +754,9 @@ test("A replaced current version still says who can check the logs once Logs is 
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
   const recovery = page.getByRole("region", { name: "Deployment needs attention" });
   await recovery.getByRole("heading", { name: "This Agent may be offline" }).waitFor();
+  // Over a line about serving, the label names the failed version.
+  assert.equal(await recovery.locator(".status-label").textContent(), "Deployment failed · v2");
+  assert.equal(await recovery.locator(".status-label").isVisible(), true);
   await recovery.getByRole("link", { name: "Open v2 Logs" }).click();
   await page
     .getByText("Log text requires Agent read_logs (or administer) and read access.")
@@ -923,11 +926,13 @@ for (const c of [
         await recovery.getByText("before deploying a new version", { exact: false }).count(),
         0,
       );
-      // A danger status block (spec 3.4): the label names the failed version, the code ends the
-      // message's first sentence, and the page's one primary is Deploy again where the message
-      // says to deploy again, else the failed version's Logs; the other actions are secondary.
+      // A danger status block (spec 3.4): the title names the failed version (with nothing else
+      // selected, no label above it repeats that, finding 2368), the code ends the message's
+      // first sentence, and the page's one primary is Deploy again where the message says to
+      // deploy again, else the failed version's Logs; the other actions are secondary.
       assert.equal(await recovery.getAttribute("data-tone"), "danger");
-      assert.equal(await recovery.locator(".status-label").textContent(), "Deployment failed · v1");
+      await recovery.getByRole("heading", { name: "v1 deployment failed", exact: true }).waitFor();
+      assert.equal(await recovery.locator(".status-label").isVisible(), false);
       assert.equal(await recovery.locator(".status-body code").textContent(), c.code);
       const actions = await recovery.locator(".status-actions a").evaluateAll((links) =>
         links.map((link) => {
@@ -1915,6 +1920,14 @@ for (const viewport of [
       (await logs.boundingBox()).y + 40 < viewport.height,
       "the card's action is above the fold",
     );
+    // The version's Configuration tab shows its deployment record too: it names the outcome and
+    // points at the card rather than repeating the error (finding 2368).
+    await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+    const versionRecord = await expectVersionRecord(page, "Failed");
+    await versionRecord
+      .getByText("The error and its next step are at the top of this page.", { exact: true })
+      .waitFor();
+    assert.equal((await layout()).errorShown, 1, "the error shows once with the record in view");
     // Folded once, the details stay open when the reader opens them.
     await openDeploymentActivity(page);
     assert.equal(await deploymentDetailsOpen(page), true);
