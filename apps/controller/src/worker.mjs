@@ -52,6 +52,11 @@ function configuration() {
   };
 }
 
+// workerStartupFailureCode maps this message to the setting's code; the path is never logged.
+function markerRefusal(name, cause) {
+  return new Error(`${name} must identify an absolute writable path.`, { cause });
+}
+
 function workerStartupFailureCode(error) {
   if (error instanceof PresetFileError) {
     return "PRESET_FILE_INVALID";
@@ -130,13 +135,13 @@ try {
       continue;
     }
     if (!marker.startsWith("/")) {
-      throw new Error(`${name} must identify an absolute writable path.`);
+      throw markerRefusal(name);
     }
     try {
       await unlink(marker);
     } catch (error) {
       if (error?.code !== "ENOENT") {
-        throw new Error(`${name} must identify an absolute writable path.`, { cause: error });
+        throw markerRefusal(name, error);
       }
     }
   }
@@ -146,9 +151,7 @@ try {
     try {
       await writeFile(livenessPath, `${Date.now()}\n`, { encoding: "utf8", mode: 0o600 });
     } catch (cause) {
-      throw new Error("OCC_WORKER_LIVENESS_PATH must identify an absolute writable path.", {
-        cause,
-      });
+      throw markerRefusal("OCC_WORKER_LIVENESS_PATH", cause);
     }
   }
   // The readiness marker appears only once queue health is observed, so its directory is probed
@@ -165,9 +168,7 @@ try {
       await writeFile(probe, "", { flag: "wx", mode: 0o600 });
       await unlink(probe);
     } catch (cause) {
-      throw new Error("OCC_WORKER_READINESS_PATH must identify an absolute writable path.", {
-        cause,
-      });
+      throw markerRefusal("OCC_WORKER_READINESS_PATH", cause);
     }
   }
   const drivers = await loadInstallationConfiguration({ mode, startupConfiguration });
