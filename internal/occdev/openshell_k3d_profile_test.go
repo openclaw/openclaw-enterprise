@@ -491,13 +491,14 @@ const controlPlaneNetworkCase = `"network inspect k3d-occ-dev-owned") echo '[{"I
 
 // The restart egress rule covers the k3d network's subnet, so the subnet must
 // contain the API endpoint, be a masked IPv4 prefix and be no broader than /16.
-// Docker and Podman report subnets in different shapes.
+// Docker and Podman report subnets in different shapes; the parser ignores
+// the engine name, so one fake engine answers with both.
 func TestDevelopmentNodeSubnet(t *testing.T) {
 	for name, tc := range map[string]struct {
 		endpoint, networks, want, wantErr string
 	}{
-		"docker":            {endpoint: "172.30.42.3", networks: `[{"IPAM":{"Config":[{"Subnet":"172.30.42.0/24"}]}}]`, want: "172.30.42.0/24"},
-		"podman":            {endpoint: "10.89.3.4", networks: `[{"subnets":[{"subnet":"fd00::/64"},{"subnet":"10.89.0.0/16"}]}]`, want: "10.89.0.0/16"},
+		"docker shape":      {endpoint: "172.30.42.3", networks: `[{"IPAM":{"Config":[{"Subnet":"172.30.42.0/24"}]}}]`, want: "172.30.42.0/24"},
+		"podman shape":      {endpoint: "10.89.3.4", networks: `[{"subnets":[{"subnet":"fd00::/64"},{"subnet":"10.89.0.0/16"}]}]`, want: "10.89.0.0/16"},
 		"broader than /16":  {endpoint: "10.88.3.4", networks: `[{"subnets":[{"subnet":"10.88.0.0/15"}]}]`, wantErr: "broader than /16"},
 		"endpoint outside":  {endpoint: "172.30.43.3", networks: `[{"IPAM":{"Config":[{"Subnet":"172.30.42.0/24"}]}}]`, wantErr: "no IPv4 subnet containing"},
 		"unmasked prefix":   {endpoint: "172.30.42.3", networks: `[{"IPAM":{"Config":[{"Subnet":"172.30.42.7/24"}]}}]`, wantErr: "no IPv4 subnet containing"},
@@ -518,6 +519,7 @@ func TestDevelopmentNodeSubnet(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("subnet = %q, %v; want an error containing %q", subnet, err, tc.wantErr)
 			}
+			// A row without networks is refused before network inspect runs.
 			if tc.networks == "" && len(commands()) != 0 {
 				t.Fatalf("an invalid endpoint reached the engine: %v", commands())
 			}
