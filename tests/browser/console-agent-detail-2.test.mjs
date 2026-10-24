@@ -2353,6 +2353,17 @@ test("a read-only viewer is denied saved settings and native admin once per tab,
   await waitForSettledFetches(page, configurationPath, 1);
   assert.equal(reads(configurationPath), 2);
   assert.equal(denials("openclaw.configurations.read"), 2);
+
+  // The tab keeps denials for one session owner. Signing in again after the session expired
+  // starts another session, even for the same person, so its first view asks again.
+  expireSessions(fixture);
+  await page.reload();
+  await page.getByText("Your session has expired").waitFor();
+  await login(page, fixture, detail, viewer.credentials);
+  await unavailable.waitFor();
+  await waitForSettledFetches(page, configurationPath, 1);
+  assert.equal(reads(configurationPath), 3);
+  assert.equal(denials("openclaw.configurations.read"), 3);
 });
 
 test("a failed native admin status read keeps the card, its error and Refresh access", async (t) => {
