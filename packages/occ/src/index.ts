@@ -291,6 +291,7 @@ import {
   RepositoryBindingSelectionError,
   RepositoryGitProfileUnsupportedError,
   RepositoryOptionsUnavailableError,
+  RepositoryDriverNotConfiguredError,
   SandboxRepositoryRecipientUnverifiedError,
   ResourceConflictError,
   ResourceStateConflictError,
@@ -453,6 +454,7 @@ export {
   RepositoryGitProfileUnsupportedError,
   RepositoryGitSenderUnqualifiedError,
   RepositoryOptionsUnavailableError,
+  RepositoryDriverNotConfiguredError,
   ResourceConflictError,
   ResourceStateConflictError,
   RuntimeCredentialsForbiddenByClusterError,
@@ -1312,7 +1314,9 @@ function provisioningFailureMessage(code: string, error: unknown): string {
       // Fixed, id-free text that names the fix (save replacement Secrets, submit a new request).
       error instanceof SecretDriverOwnershipError ||
       // Fixed, id-free text naming the missing ChatGPT Backend.
-      error instanceof ServiceAccountDriverNotConfiguredError
+      error instanceof ServiceAccountDriverNotConfiguredError ||
+      // Fixed, id-free text naming the missing repository settings (finding 2362).
+      error instanceof RepositoryDriverNotConfiguredError
     ) {
       return error.message;
     }
@@ -8947,7 +8951,8 @@ export class OpenClawController {
         throw new ScopeViolationError("Agent does not belong to the exact Namespace.");
       }
       // TODO: support multiple independently approved bindings when session admission supports them.
-      if (agent.repositoryBindings?.length !== 1) {
+      // Without a repository Driver nothing can be approved (finding 2362).
+      if (agent.repositoryBindings?.length !== 1 || !this.selections.has("repo")) {
         return [];
       }
       const resolved = this.resolveRepositoryBindings(namespaceId, agent.repositoryBindings);
@@ -13584,6 +13589,9 @@ export class OpenClawController {
     }
     if (bindings.length === 0) {
       return undefined;
+    }
+    if (!this.selections.has("repo")) {
+      throw new RepositoryDriverNotConfiguredError();
     }
     let driver: RepositoryPolicyDriver;
     try {

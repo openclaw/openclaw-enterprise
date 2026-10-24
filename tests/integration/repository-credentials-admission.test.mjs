@@ -29,6 +29,7 @@ import {
   CredentialSourceUnprotectedError,
   InstalledDriver,
   OpenClawController,
+  RepositoryDriverNotConfiguredError,
   RepositoryGitProfileUnsupportedError,
   RepositoryGitSenderUnqualifiedError,
   SandboxNetworkPolicyConflictError,
@@ -108,23 +109,22 @@ class OpenShellGitComputeDriver extends KubernetesComputeDriver {
   }
 }
 
-function kubernetesCompute(Driver = KubernetesComputeDriver, provisioning = false) {
+// An Installation with runtime storage that dedicated Agents can use: gateway routing, node
+// enrollment and a Gateway node selector (deployment admission refuses dedicated Agents
+// otherwise, finding 2349).
+function kubernetesCompute(Driver = KubernetesComputeDriver) {
   const resources = {
     requests: { cpu: "100m", memory: "64Mi" },
     limits: { cpu: "250m", memory: "128Mi" },
   };
   const compute = new Driver(
     {
-      ...(provisioning
-        ? {
-            gatewayRouting: {
-              hostname: "agents.example.test",
-              gatewayName: "gateways",
-              gatewayNamespace: "controller",
-              envoyNamespace: "envoy",
-            },
-          }
-        : {}),
+      gatewayRouting: {
+        hostname: "agents.example.test",
+        gatewayName: "gateways",
+        gatewayNamespace: "controller",
+        envoyNamespace: "envoy",
+      },
       authentication: { mode: "inCluster" },
       images: { gateway: "gateway:local", agent: "agent:local", requireImmutableDigest: false },
       resources: {
@@ -132,14 +132,15 @@ function kubernetesCompute(Driver = KubernetesComputeDriver, provisioning = fals
         agent: resources,
         namespace: { quota: { pods: "10" }, containerDefaults: resources },
       },
-      runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+      runtime: {
+        transportSecretPrefix: "transport",
+        gatewayStorageClassName: "local-path",
+        gatewayNodeSelector: { "oce-role": "control" },
+      },
       network: {
         dns: { namespace: "kube-system", podLabels: { app: "dns" } },
         gatewayPort: 8080,
         gatewayTrustedProxyCidrs: ["127.0.0.1/32"],
-        ...(provisioning
-          ? {}
-          : { gatewayClients: [{ namespace: "controller", podLabels: { app: "controller" } }] }),
         repositoryCredentials: {
           namespace: "controller",
           podLabels: { app: "worker" },
@@ -148,7 +149,7 @@ function kubernetesCompute(Driver = KubernetesComputeDriver, provisioning = fals
       },
       servicePrincipalCredentials: { mode: "disabled" },
     },
-    provisioning ? { nodeEnrollment: {} } : {},
+    { nodeEnrollment: {} },
   );
   // Repository admission has no cluster; its transport credential prerequisite is satisfied.
   compute.getAgentRuntimeCredentialStatus = async () => ({ transportConfigured: true });
@@ -163,7 +164,7 @@ function sshCompute() {
       nodePath: "/usr/bin/node",
       openclawPath: "/opt/openclaw/index.js",
       user: "openclaw",
-      root: "/tmp/admission-runtime",
+      root: "/var/lib/admission-runtime",
     },
     network: { gatewayPortRange: { start: 18800, end: 18899 } },
   });
@@ -1109,12 +1110,30 @@ test("Repository capability remains optional when no repository Backend or Drive
   const deployed = await f.request("POST", `${f.collection}/${agent.id}/deploy`);
   assert.equal(deployed.status, 202, JSON.stringify(deployed));
   assert.equal(Object.hasOwn(deployed.data, "repositoryCredentials"), false);
-  const missingDriver = await f.request("PATCH", `${f.collection}/${agent.id}`, {
-    configurationId: f.configuration.id,
-    repositoryBindings: selection,
-  });
-  assert.equal(missingDriver.status, 503, JSON.stringify(missingDriver));
-  assert.equal(missingDriver.error.code, "DEPENDENCY_UNAVAILABLE");
+  // Finding 2362: binding a repository with no repository Driver configured is a permanent
+  // Installation state, not an outage, so create and update name the setting instead of a 503.
+  for (const [method, path, body] of [
+    [
+      "PATCH",
+      `${f.collection}/${agent.id}`,
+      { configurationId: f.configuration.id, repositoryBindings: selection },
+    ],
+    [
+      "POST",
+      f.collection,
+      {
+        name: `Repository Agent ${randomUUID()}`,
+        configurationId: f.configuration.id,
+        repositoryBindings: selection,
+      },
+    ],
+  ]) {
+    const missingDriver = await f.request(method, path, body);
+    assert.equal(missingDriver.status, 409, `${method}: ${JSON.stringify(missingDriver)}`);
+    assert.equal(missingDriver.error.code, "RESOURCE_CONFLICT", method);
+    assert.equal(missingDriver.error.message, RepositoryDriverNotConfiguredError.description);
+  }
+  assert.equal((await f.request("GET", f.collection)).data.length, 1, "no Agent was created");
   const unchanged = await f.request("GET", `${f.collection}/${agent.id}`);
   assert.equal(Object.hasOwn(unchanged.data, "repositoryBindings"), false);
   const options = await f.request("GET", `${f.collection}/repository-options`);
@@ -1132,7 +1151,7 @@ test("Provisioning rejects a forbidden repository profile before queueing or cre
   const f = await fixture(t, {
     harness: "codex",
     configurationDriver,
-    compute: kubernetesCompute(KubernetesComputeDriver, true),
+    compute: kubernetesCompute(),
   });
   await f.state.transact((unit) =>
     unit.namespaces.transitionNamespaceStatus(f.namespace.id, "provisioning", "ready"),
@@ -1170,7 +1189,7 @@ test("Provisioning refuses repository bindings on a topology Agent create refuse
   const f = await fixture(t, {
     harness: "codex",
     configurationDriver,
-    compute: kubernetesCompute(KubernetesComputeDriver, true),
+    compute: kubernetesCompute(),
   });
   await f.state.transact((unit) =>
     unit.namespaces.transitionNamespaceStatus(f.namespace.id, "provisioning", "ready"),

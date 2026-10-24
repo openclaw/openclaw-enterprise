@@ -6321,6 +6321,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
   // The API log names it with the request ID for the operator.
   const unrouted = createTestKubernetesComputeDriver("compute-provisioning-unrouted", {
     repositoryCredentials: true,
+    routed: false,
   });
   computeDriver.validateAgentProvisioning = (input) => unrouted.validateAgentProvisioning(input);
   const computeRefused = await injectedRequest(
@@ -7925,7 +7926,7 @@ test("runtime auth admits SSH revisions without source permissions but retains d
       nodePath: "/usr/bin/node",
       openclawPath: "/opt/openclaw/index.js",
       user: "openclaw",
-      root: "/tmp/ssh-runtime-test",
+      root: "/var/lib/ssh-runtime-test",
     },
     network: { gatewayPortRange: { start: 18800, end: 18899 } },
   });
@@ -8016,7 +8017,7 @@ test("SSH Compute names a Harness authentication method other than runtime at Ag
       nodePath: "/usr/bin/node",
       openclawPath: "/opt/openclaw/index.js",
       user: "openclaw",
-      root: "/tmp/ssh-runtime-test",
+      root: "/var/lib/ssh-runtime-test",
     },
     network: { gatewayPortRange: { start: 18800, end: 18899 } },
   });
@@ -8060,7 +8061,7 @@ test("SSH Compute refuses at deploy gateway authentication and Secret bindings i
       nodePath: "/usr/bin/node",
       openclawPath: "/opt/openclaw/index.js",
       user: "openclaw",
-      root: "/tmp/ssh-runtime-test",
+      root: "/var/lib/ssh-runtime-test",
     },
     network: { gatewayPortRange: { start: 18800, end: 18899 } },
   });
@@ -8196,7 +8197,7 @@ test("SSH Compute refuses at Agent save and deploy a roster or workspace whose m
       nodePath: "/usr/bin/node",
       openclawPath: "/opt/openclaw/index.js",
       user: "openclaw",
-      root: "/tmp/ssh-runtime-test",
+      root: "/var/lib/ssh-runtime-test",
     },
     network: { gatewayPortRange: { start: 18800, end: 18899 } },
   });

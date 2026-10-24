@@ -582,7 +582,7 @@ export class ProtectedExecutionNetworkPolicyError extends ResourceStateConflictE
 export class RepositoryGitSenderUnqualifiedError extends ResourceStateConflictError {
   static readonly code = "REPOSITORY_GIT_SENDER_UNQUALIFIED";
   static readonly description =
-    "The selected Credential Proxy cannot enforce the Agent's git-write repository binding: no OpenShell release is qualified for it. Use native prepared Git or a qualified installed sender, or remove the binding, then deploy again.";
+    "The selected Credential Proxy cannot enforce the Agent's git-write repository binding: no OpenShell release is qualified for it. Remove the binding, select a qualified installed sender, or use native prepared Git without a Sandbox, then deploy again.";
   readonly code = RepositoryGitSenderUnqualifiedError.code;
 
   constructor() {
@@ -1276,6 +1276,23 @@ export class CredentialSourceTypeNotOfferedError extends ResourceStateConflictEr
       "The selected Credential Gateway does not offer this credential source type. An administrator must enable it, for example toolBinaries for OpenShell bearer-token; see https://docs-enterprise.openclaw.org/reference/drivers/openshell-credential-gateway/",
     );
     this.name = "CredentialSourceTypeNotOfferedError";
+  }
+}
+
+/**
+ * Finding 2362: the Installation selects no repository credential Driver (it has no
+ * `repository` settings), so an Agent cannot bind repositories. Save answered a generic 503
+ * for this permanent configuration state; it now names the setting, as
+ * CredentialSourceTypeNotOfferedError does for sources. An Installation property, raised only
+ * after the caller's Agent grant.
+ */
+export class RepositoryDriverNotConfiguredError extends ResourceStateConflictError {
+  static readonly description =
+    "This Installation has no repository settings, so no repository credential Driver is selected and an Agent cannot bind repositories. Remove the repository bindings, or ask an administrator to configure repository in the Installation.";
+
+  constructor() {
+    super(RepositoryDriverNotConfiguredError.description);
+    this.name = "RepositoryDriverNotConfiguredError";
   }
 }
 

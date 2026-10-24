@@ -217,8 +217,14 @@ function closeServer(server) {
   return new Promise((resolve) => server.close(resolve));
 }
 
+// Startup refuses a runtime.root (and Node or OpenClaw path) under /tmp or /var/tmp, which the
+// unit's PrivateTmp hides, and tmpdir() is /tmp on CI runners. Fixture hosts live in the
+// gitignored test-results directory instead.
+const fixtureHosts = fileURLToPath(new URL("../../test-results/ssh-compute/", import.meta.url));
+
 async function fixture(t, selection = {}) {
-  const base = await mkdtemp(join(tmpdir(), "occ-ssh-"));
+  await mkdir(fixtureHosts, { recursive: true });
+  const base = await mkdtemp(join(fixtureHosts, "occ-ssh-"));
   const root = join(base, "root");
   const units = join(base, "units");
   const state = join(base, "fixture");
@@ -412,6 +418,93 @@ function setOption(object, keys, value) {
   }
   target[keys.at(-1)] = value;
 }
+
+// The unit's PrivateTmp hides /tmp and /var/tmp, so a state root there timed out every deploy;
+// docs already forbade it (finding 2358).
+test("SSH startup refuses a runtime.root and Node or OpenClaw paths the unit cannot use", () => {
+  const dedicated =
+    "Use a dedicated absolute directory without . or .. segments, such as /var/lib/openclaw-enterprise.";
+  const privateTmp =
+    "Use a path outside /tmp and /var/tmp, such as /var/lib/openclaw-enterprise: the unit's PrivateTmp hides those.";
+  for (const [root, message] of [
+    ["/", dedicated],
+    ["//", dedicated],
+    ["/var/lib/../../tmp/oce", dedicated],
+    ["/var/lib/./oce", dedicated],
+    ["/tmp", privateTmp],
+    ["/tmp/openclaw-enterprise", privateTmp],
+    ["//var/tmp/oce", privateTmp],
+  ]) {
+    const candidate = options();
+    candidate.runtime.root = root;
+    assert.throws(
+      () => requireConfiguration(SshComputeDriver, candidate),
+      (error) => {
+        assert.ok(error instanceof SharedConfigurationValidationError, root);
+        assert.deepEqual(error.error.details, [
+          { path: "/runtime/root", code: "INVALID_VALUE", message },
+        ]);
+        return true;
+      },
+    );
+  }
+  for (const root of [
+    "/var/lib/openclaw-enterprise",
+    "/srv/tmp/oce",
+    "/tmpdata",
+    "/var/tmpfiles",
+  ]) {
+    const candidate = options();
+    candidate.runtime.root = root;
+    requireConfiguration(SshComputeDriver, candidate);
+  }
+  // The unit's ExecStart and ExecStartPre run the Node and OpenClaw paths, which PrivateTmp
+  // hides just the same.
+  for (const [edit, path, prefix] of [
+    [(candidate) => (candidate.runtime.nodePath = "/tmp/node"), "/runtime/nodePath", ""],
+    [
+      (candidate) => (candidate.runtime.openclawPath = "/var/tmp/oc.js"),
+      "/runtime/openclawPath",
+      "",
+    ],
+    [
+      (candidate) => (candidate.hosts.stable.nodePath = "/tmp/node"),
+      "/hosts",
+      "hosts.stable.nodePath: ",
+    ],
+    [
+      (candidate) => (candidate.hosts.stable.openclawPath = "//tmp/oc.js"),
+      "/hosts",
+      "hosts.stable.openclawPath: ",
+    ],
+    [
+      (candidate) => (candidate.runtime.openclawPath = "/var/./tmp/oc.js"),
+      "/runtime/openclawPath",
+      "",
+    ],
+    [
+      (candidate) => (candidate.hosts.stable.nodePath = "/usr/../tmp/node"),
+      "/hosts",
+      "hosts.stable.nodePath: ",
+    ],
+  ]) {
+    const candidate = options();
+    edit(candidate);
+    assert.throws(
+      () => requireConfiguration(SshComputeDriver, candidate),
+      (error) => {
+        assert.ok(error instanceof SharedConfigurationValidationError, path);
+        assert.deepEqual(error.error.details, [
+          { path, code: "INVALID_VALUE", message: `${prefix}${privateTmp}` },
+        ]);
+        return true;
+      },
+    );
+  }
+  const elsewhere = options();
+  elsewhere.hosts.stable.openclawPath = "/srv/tmp/oc.js";
+  requireConfiguration(SshComputeDriver, elsewhere);
+});
 
 test("SSH closed schema and semantic validation reject every invalid option", () => {
   const schema = SshComputeDriver.configurationSchema;
