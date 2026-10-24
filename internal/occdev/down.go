@@ -98,9 +98,10 @@ func (r *runner) cleanup(ctx context.Context, s *developmentState, clusterAttemp
 	var failures []error
 	if s.DeploymentMode == "k3d" {
 		if clusterAttempted {
-			// Before the delete, which keeps a network the registry still uses.
+			// Before the delete, which keeps a network the registry still uses
+			// and would leave it behind; a retry detaches, then deletes.
 			if err := r.detachRecordedDevelopmentImageRegistry(ctx, s); err != nil {
-				failures = append(failures, err)
+				return err
 			}
 			exists, err := r.clusterExists(ctx, s.Cluster)
 			if err != nil {

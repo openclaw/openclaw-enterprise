@@ -325,8 +325,9 @@ func (r *runner) detachDevelopmentImageRegistryLocked(ctx context.Context, g *de
 	g.network, g.address = "", ""
 	if s := g.state; s != nil && s.ImageRegistryNetwork != "" {
 		s.ImageRegistryContainer, s.ImageRegistryNetwork = "", ""
+		// A stale record only makes occ dev down find nothing to detach.
 		if err := rewriteState(s); err != nil {
-			return fmt.Errorf("clear the development image registry attachment: %w", err)
+			fmt.Fprintf(r.opts.Err, "warning: clear the development image registry attachment in state.json: %v\n", err)
 		}
 	}
 	return nil
@@ -348,8 +349,8 @@ func (r *runner) detachRecordedDevelopmentImageRegistry(ctx context.Context, s *
 func (r *runner) disconnectDevelopmentImageRegistry(ctx context.Context, container, network string) error {
 	value, err := r.registryNetworkAddress(ctx, container, network)
 	if err != nil {
-		names, listErr := r.output(ctx, r.engine, "container", "ls", "--all", "--format", "{{.Names}}")
-		if listErr != nil || slices.Contains(strings.Fields(string(names)), container) {
+		listed, listErr := r.output(ctx, r.engine, "container", "ls", "--all", "--no-trunc", "--format", "{{.ID}} {{.Names}}")
+		if listErr != nil || containerListed(string(listed), container) {
 			return fmt.Errorf("detach the development image registry from %s: %w", network, err)
 		}
 		value = ""
@@ -420,4 +421,20 @@ func (r *runner) pullDevelopmentImage(ctx context.Context, s *developmentState, 
 		}
 	}
 	return image, nil
+}
+
+// containerListed reports whether a "<ID> <names>" container listing has a
+// container named container, or one whose ID starts with it (the setting
+// accepts an ID or a prefix of one). Names may be comma-separated.
+func containerListed(listing, container string) bool {
+	for _, line := range strings.Split(listing, "\n") {
+		fields := strings.FieldsFunc(line, func(c rune) bool { return c == ' ' || c == '\t' || c == ',' })
+		if len(fields) == 0 {
+			continue
+		}
+		if strings.HasPrefix(fields[0], container) || slices.Contains(fields[1:], container) {
+			return true
+		}
+	}
+	return false
 }

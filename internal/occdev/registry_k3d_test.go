@@ -118,7 +118,7 @@ func registryPullCases(cluster, marker, listed string) string {
 	return registryPortsCase(registryTestPorts) + `
 "network connect k3d-` + cluster + ` ` + registryTestContainer + `") : > ` + shellQuote(marker) + ` ;;
 "container inspect --format {{with index .NetworkSettings.Networks \"k3d-` + cluster + `\"}}{{.IPAddress}}{{end}} ` + registryTestContainer + `") if [ -f ` + shellQuote(marker) + ` ]; then echo ` + registryTestAddress + `; fi ;;
-"network disconnect k3d-` + cluster + ` ` + registryTestContainer + `") rm ` + shellQuote(marker) + ` ;;
+"network disconnect k3d-` + cluster + ` ` + registryTestContainer + `") /bin/rm ` + shellQuote(marker) + ` ;;
 "image inspect --format {{.Os}}/{{.Architecture}} 127.0.0.1:15001/"*) echo linux/amd64 ;;
 "exec ` + server + ` ctr -n k8s.io images pull --plain-http --platform linux/amd64 ` + registryTestAddress + `:5000/oce-smoke/"*) echo "progress that stays hidden" ;;
 "exec ` + server + ` ctr -n k8s.io images tag ` + registryTestAddress + `:5000/oce-smoke/"*) ;;
@@ -279,7 +279,7 @@ func TestDevelopmentImageRegistryAttachEdgeCases(t *testing.T) {
 		marker := filepath.Join(t.TempDir(), "connected")
 		commands := fakeProfileCommands(t, map[string]string{"docker": `"network connect ` + network + ` ` + registryTestContainer + `") : > ` + shellQuote(marker) + ` ;;
 ` + inspect + ` if [ -f ` + shellQuote(marker) + ` ]; then echo fd00::5; fi ;;
-"network disconnect ` + network + ` ` + registryTestContainer + `") rm ` + shellQuote(marker) + ` ;;`})
+"network disconnect ` + network + ` ` + registryTestContainer + `") /bin/rm ` + shellQuote(marker) + ` ;;`})
 		r := newRegistry()
 		err := r.attachDevelopmentImageRegistry(context.Background(), state)
 		if err == nil || !strings.Contains(err.Error(), "no IPv4 address") {
@@ -432,8 +432,12 @@ func TestK3dRegistryAttachmentOrdering(t *testing.T) {
 	defer cancel()
 	err := upK3d(ctx, Options{Repository: root, Out: &bytes.Buffer{}, Err: &bytes.Buffer{}}, "none", nil, nil)
 	calls := commands()
-	if err == nil || !strings.Contains(err.Error(), "dedicated Codex sandbox preparation failed") || ctx.Err() != nil {
+	// The rollback detaches the registry and deletes the cluster cleanly.
+	if err == nil || !strings.Contains(err.Error(), "dedicated Codex sandbox preparation failed") || strings.Contains(err.Error(), "rollback incomplete") || ctx.Err() != nil {
 		t.Fatalf("want the Codex refusal, got %v; commands: %v", err, calls)
+	}
+	if _, err := os.Lstat(state); !os.IsNotExist(err) {
+		t.Fatalf("the rollback kept its state: %v", err)
 	}
 	index := func(prefix string) int {
 		for i, call := range calls {
@@ -870,9 +874,9 @@ func TestDownDetachesARecordedRegistryAttachment(t *testing.T) {
 "network disconnect ` + network + ` ` + registryTestContainer + `") ;;`, disconnects: 1, recorded: true},
 		"already detached": {docker: inspect + ` ;;`, recorded: true},
 		"container removed": {docker: inspect + ` echo 'Error: No such container' >&2; exit 1 ;;
-"container ls --all --format {{.Names}}") echo other-container ;;`, recorded: true},
+"container ls --all --no-trunc --format {{.ID}} {{.Names}}") echo 0123abcd other-container,other-alias ;;`, recorded: true},
 		"container present but unreadable": {docker: inspect + ` exit 1 ;;
-"container ls --all --format {{.Names}}") printf '%s\n' other-container ` + registryTestContainer + ` ;;`, recorded: true, want: "detach the development image registry from " + network},
+"container ls --all --no-trunc --format {{.ID}} {{.Names}}") printf '%s\n' '0123abcd other-container' '4567cdef other-alias,` + registryTestContainer + `' ;;`, recorded: true, want: "detach the development image registry from " + network},
 		"nothing recorded": {},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -900,10 +904,33 @@ func TestDownDetachesARecordedRegistryAttachment(t *testing.T) {
 			if countCalls(calls, disconnect) != tc.disconnects || countCalls(calls, "docker ") > 0 && !tc.recorded {
 				t.Fatalf("unexpected registry commands: %v", calls)
 			}
-			// The delete still runs, after any disconnect.
-			if i := slices.Index(calls, "k3d cluster delete occ-dev-recorded"); i < 0 || (tc.disconnects > 0 && slices.Index(calls, disconnect) > i) {
+			// The delete runs only after any disconnect. A failed detach keeps
+			// the cluster, whose delete would keep the network still in use.
+			i := slices.Index(calls, "k3d cluster delete occ-dev-recorded")
+			if tc.want != "" {
+				if i >= 0 {
+					t.Fatalf("deleted the cluster with the registry still attached: %v", calls)
+				}
+			} else if i < 0 || (tc.disconnects > 0 && slices.Index(calls, disconnect) > i) {
 				t.Fatalf("the registry was not detached before the cluster delete: %v", calls)
 			}
 		})
+	}
+}
+
+func TestContainerListed(t *testing.T) {
+	listing := "0123456789abcdef first-registry\nfedcba9876543210 other,oce-registry\n"
+	for container, want := range map[string]bool{
+		"first-registry":   true,
+		"oce-registry":     true,
+		"fedcba98":         true,
+		"0123456789abcdef": true,
+		"registry":         false,
+		"other-registry":   false,
+		"abcdef":           false,
+	} {
+		if got := containerListed(listing, container); got != want {
+			t.Errorf("containerListed(%q) = %v, want %v", container, got, want)
+		}
 	}
 }
