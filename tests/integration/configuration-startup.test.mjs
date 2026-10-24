@@ -6,7 +6,7 @@ import {
   randomBytes,
   randomUUID,
 } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -1591,6 +1591,45 @@ test("production server and worker resolve singleton startup without an Installa
     "PERSISTENCE_UNAVAILABLE",
   );
   assert.doesNotMatch(worker.stderr, /OCC_INSTALLATION_ID|explicit Installation/);
+});
+
+// An unwritable readiness path left the worker running but never Ready (finding 2311). Both
+// health markers are probed before PostgreSQL; readiness through a sibling file, since its
+// marker must not appear before queue health does.
+test("worker refuses an unwritable readiness or liveness path before opening PostgreSQL", async (t) => {
+  const path = await fixture(t);
+  const directory = await temporaryDirectory(t, "occ-worker-markers-");
+  const shared = {
+    PATH: process.env.PATH,
+    NODE_ENV: "production",
+    OCC_CONFIG_PATH: path,
+    OCC_DATABASE_URL: "postgresql://127.0.0.1:1/occ",
+  };
+  const missing = join(directory, "missing", "marker");
+  const ready = join(directory, "ready");
+  const [readiness, liveness, writable] = await settled([
+    boot("apps/controller/src/worker.mjs", { ...shared, OCC_WORKER_READINESS_PATH: missing }),
+    boot("apps/controller/src/worker.mjs", { ...shared, OCC_WORKER_LIVENESS_PATH: missing }),
+    boot("apps/controller/src/worker.mjs", { ...shared, OCC_WORKER_READINESS_PATH: ready }),
+  ]);
+  for (const [name, worker] of [
+    ["readiness", readiness],
+    ["liveness", liveness],
+  ]) {
+    assert.equal(worker.status, 1, name);
+    assert.equal(
+      startupDiagnostic(worker.stderr, "worker.startup-error").code,
+      "WORKER_STARTUP_FAILED",
+      name,
+    );
+  }
+  // A writable path reaches PostgreSQL, leaving neither the marker nor the probe behind.
+  assert.equal(writable.status, 1);
+  assert.equal(
+    startupDiagnostic(writable.stderr, "worker.startup-error").code,
+    "PERSISTENCE_UNAVAILABLE",
+  );
+  assert.deepEqual(await readdir(directory), []);
 });
 
 test("only the actual API process reads ChatGPT admin credentials and backend accounts require PostgreSQL", async (t) => {

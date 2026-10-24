@@ -138,6 +138,20 @@ try {
   if (livenessPath !== undefined) {
     await writeFile(livenessPath, `${Date.now()}\n`, { encoding: "utf8", mode: 0o600 });
   }
+  // The readiness marker appears only once queue health is observed, so its directory is probed
+  // through a sibling file. An unwritable path left the worker running but never Ready
+  // (finding 2311).
+  if (readinessPath !== undefined) {
+    const probe = `${readinessPath}.probe`;
+    try {
+      await writeFile(probe, "", { mode: 0o600 });
+      await unlink(probe);
+    } catch (cause) {
+      throw new Error("OCC_WORKER_READINESS_PATH must identify an absolute writable path.", {
+        cause,
+      });
+    }
+  }
   const drivers = await loadInstallationConfiguration({ mode, startupConfiguration });
   let computeDriver;
   if (drivers === undefined && mode === "development") {
