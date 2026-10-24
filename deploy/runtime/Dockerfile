@@ -189,7 +189,10 @@ RUN echo '964c500f981f343d8c131a213aad65ea47e2de4a9a5d11dbb57c3f30bead7065  /tmp
 # generates its database types and compiler cache under .artifacts.
 RUN --network=none --mount=type=tmpfs,target=/source/.artifacts \
     node scripts/run-tsgo-core-test-shards.mjs --ci-graphs-json '["core-test-ui-chat","core-test-ui-app"]'
+# Select only the Node projects that own these files: the browser project starts a
+# Vite server on localhost, which Buildah's network-less RUN cannot resolve.
 RUN --network=none cd ui && node ../scripts/run-node-package-bin.mts vitest run --config vitest.config.ts \
+    --project unit --project unit-node \
     src/api/gateway-reachability.node.test.ts src/app/gateway-store.observers.test.ts
 # Follow the pinned upstream Docker assembly; plugin-local dependencies remain
 # separate when a plugin and core require different versions.
