@@ -11,11 +11,19 @@ export {
   humanText,
 } from "./github/protocol.mjs";
 
-// createTlsMaterial shares one certificate per process, so two fixtures' issuer authorities
-// (origin plus CA) differ only by port. A fixture on an earlier fixture's reused ephemeral port
-// would adopt that fixture's leftover prepared custody rows in the shared database and fail to
-// decrypt them with its own key. Keep a reused port bound and listen again: no origin repeats.
+// createTlsMaterial shares one certificate per process, so issuer authorities differ only by port.
+// Never reuse an origin, or a fixture adopts an earlier one's prepared rows and cannot decrypt them.
 const origins = new Set();
+
+/** Listen on an origin no earlier issuer in this process used; a reused port stays bound. */
+export async function listenOnNewOrigin(t, createIssuer) {
+  let origin;
+  do {
+    origin = await listen(t, createIssuer());
+  } while (origins.has(origin));
+  origins.add(origin);
+  return origin;
+}
 
 export async function startGitHubFixture(
   t,
@@ -23,10 +31,6 @@ export async function startGitHubFixture(
 ) {
   tls ??= await createTlsMaterial(t);
   const { handleRequest, ...fixture } = createGitHubProtocol({ clock, ...options });
-  let origin;
-  do {
-    origin = await listen(t, createServer(tls, handleRequest));
-  } while (origins.has(origin));
-  origins.add(origin);
+  const origin = await listenOnNewOrigin(t, () => createServer(tls, handleRequest));
   return { origin, tls, ...fixture };
 }
