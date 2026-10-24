@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { createServer } from "node:http";
 import { resolveGitHubRepositoryBinding } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import { chmod, mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -36,6 +37,7 @@ import { validateOpenShellRepositoryTransport } from "../../apps/controller/src/
 import { formatStartupConfigurationFailure } from "../../apps/controller/src/startup-failure.ts";
 import { ProtectedExecutionDriver } from "../../apps/controller/src/drivers/compute/protected-execution-driver.ts";
 import {
+  GrpcOpenShellGatewayClient,
   normalizeServiceUrl,
   OpenShellProviderAlreadyExistsError,
   OpenShellRequestReplayRefusedError,
@@ -5131,6 +5133,119 @@ test("installation refuses OpenShell repository credentials before reading sessi
     loadInstallationFile(t, configuration),
     /repository requires explicitly selected protected Git delivery/,
   );
+});
+
+test("observed-hook preview recognizes a released Codex through its authenticated WebSocket", async (t) => {
+  const token = "fixture-preview-transport";
+  let acknowledged = false;
+  let serving = true;
+  // Native Codex answers ordinary HTTP with 400 after its launch endpoint closes.
+  // Real HTTP/WebSocket transport proves this Driver check; the recorded release is its input.
+  const server = createServer((_request, response) => {
+    response.writeHead(400);
+    response.end("WebSocket upgrade required");
+  });
+  const sockets = new Set();
+  server.on("upgrade", (request, socket) => {
+    sockets.add(socket);
+    socket.on("error", () => {});
+    socket.once("close", () => sockets.delete(socket));
+    if (!serving || request.headers.authorization !== `Bearer ${token}`) {
+      socket.end("HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n");
+      return;
+    }
+    const accept = createHash("sha1")
+      .update(request.headers["sec-websocket-key"] + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
+      .digest("base64");
+    socket.write(
+      "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" +
+        `Sec-WebSocket-Accept: ${accept}\r\n\r\n`,
+    );
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(async () => {
+    for (const peer of sockets) {
+      peer.destroy();
+    }
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  });
+  const transport = new GrpcOpenShellGatewayClient({
+    endpoint: `http://127.0.0.1:${server.address().port}`,
+  });
+  t.after(() => transport.close());
+  const gateway = workspaceGatewayClient();
+  gateway.getServiceDocument = (...args) => transport.getServiceDocument(...args);
+  gateway.serviceWebSocketHandshake = (...args) => transport.serviceWebSocketHandshake(...args);
+  gateway.getService = async (_workspace, sandbox, name) =>
+    harnessService(sandbox, name, "http://preview--codex.openshell.test/");
+  gateway.getSandbox = async () => ({ id: "preview-sandbox" });
+  const git = {
+    configuration: { observedHookPreviewWorkspace: namespaceContext().namespace.name },
+    overlappingPolicy: () => undefined,
+    previewReleased: () => acknowledged,
+  };
+  const driver = new OpenShellSandboxDriver(sandboxInstallation().drivers.sandbox.configuration, {
+    id: "openshell-sandbox",
+    backend: backendFor(gateway),
+    openShellGit: git,
+  });
+  const { context, revision, requirements } = runtimeSandboxFixture(driver);
+  revision.executionAdmission = { version: 6, mode: "protected" };
+  const registry = {
+    version: 1,
+    backendId: "github-primary",
+    providerInstanceId: "github-com-primary",
+    appId: "12345",
+    githubInstallationId: "67890",
+    maximumDurationSeconds: 600,
+    repositories: [],
+    installationAccess: {
+      repositoryRef: "installation",
+      namespaces: [{ namespaceId: revision.namespaceId, accessMode: "installation" }],
+    },
+  };
+  revision.repositoryCredentials = {
+    driver: { id: "repository", implementation: "github" },
+    deadlineWallMs: Date.now() + 600000,
+    bindings: [
+      resolveGitHubRepositoryBinding(registry, {
+        namespaceId: revision.namespaceId,
+        repositoryRef: "installation",
+        profile: "github-installation",
+      }),
+    ],
+  };
+  const plan = {
+    id: randomUUID(),
+    generation: 1,
+    routes: [],
+    driver: { id: driver.id, implementation: "openshell", configurationId: "a".repeat(64) },
+    execution: {
+      installationId: "ins_fixture",
+      namespaceId: revision.namespaceId,
+      agentId: revision.agentId,
+      servicePrincipalId: "sp_fixture",
+      revisionId: revision.id,
+      executionId: randomUUID(),
+    },
+    repositoryGit: revision.repositoryCredentials,
+    repositoryGitAuthorization: "request-hook-observed",
+  };
+  revision.egressPlan = plan;
+  const input = { ...context, revision, requirements, transportToken: token };
+  const installation = { plan, sandboxId: "preview-sandbox" };
+  const release = () => assert.fail("an acknowledged release must never be sent again");
+  // A serving socket without a receipt, or a receipt without an authenticated socket, stays pending.
+  assert.equal(await driver.observeHeldRepositoryGitPreview(input), undefined);
+  await assert.rejects(driver.enrollHarness(input, installation, release), /Cannot verify/);
+  acknowledged = true;
+  serving = false;
+  assert.equal(await driver.observeHeldRepositoryGitPreview(input), undefined);
+  await assert.rejects(driver.enrollHarness(input, installation, release), /Cannot verify/);
+  serving = true;
+  assert.equal(await driver.observeHeldRepositoryGitPreview(input), "installed");
+  await driver.enrollHarness(input, installation, release);
 });
 
 test("OpenShell refuses repository provision and enrollment before any gateway or release call", async () => {

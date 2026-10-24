@@ -1,20 +1,15 @@
 ---
 created: "2026-09-21"
-updated: 2026-10-21
-last_updated_session: authoring-run/67a0706e-56ab-4514-adca-35cf217b0c3b
+updated: 2026-10-23
+last_updated_session: authoring-run/5f5f89f5-e1c7-4af8-9b15-abd7a29db02e
 ---
 
 # OpenShell Sandbox provisioning flow
 
 ## Overview
 
-Kubernetes Compute delegates dedicated Codex/OpenClaw to OpenShell. Operator mode
-owns Namespace Workspaces; managed mode fails before mutation.
-[Credential sources](credential-source-lifecycle.md) provide model access without
-Agent Secret permission. Agent revision files and bearer passthrough authenticate Codex Gateway requests
-without a Harness Service.
-
-Development workspace-node setup uses a scoped token in its provider file.
+Kubernetes Compute provisions dedicated Codex and OpenClaw Harnesses through
+OpenShell. [Credential sources](credential-source-lifecycle.md) supply model access.
 
 ## Entry Points
 
@@ -260,6 +255,9 @@ bounds trust. Native exposure ends once a post-enrollment pass confirms its
 delete, by `withdrawHarnessExposure`, adoption or recreation with
 `workspaceNodeEnrolled`.
 
+After release, `observeHeldRepositoryGitPreview` and `enrollHarness` confirm the
+recorded acknowledgment and authenticated WebSocket, even when HTTP returns `400`.
+
 The Backend reuses clients, retrying setup. Cancellation is checked after
 setup/credential preparation; stalled initialization/file reads have no cancellation deadline. After dispatch, cancellation stops local gRPC; remote mutations
 may continue, requiring recovery.
@@ -364,6 +362,8 @@ proof on a Landlock-capable host; Console admission and initialized files are in
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-23 14:21: Confirm released preview WebSocket readiness. (authoring-run/5f5f89f5-e1c7-4af8-9b15-abd7a29db02e - 725e2371e5984fbe72d679e0fb7a55833225d70d)
 
 - 2026-10-21 23:23: Record per-source retirement refusal in the accompanying worker change. (authoring-run/67a0706e-56ab-4514-adca-35cf217b0c3b - 7e5773662f34dc38be8138757ee47fd246bc3f9e)
 
