@@ -30,7 +30,7 @@ routing, and the per-Agent Gateway. Sandbox owns:
   resources, and NetworkPolicies, then owns the exact active Workspace.
 - `provisionHarness` creates one Workspace Sandbox, with a loopback app-server
   exposure for dedicated Codex; native OpenClaw requests no inbound service. The Driver adds each
-  [credential attachment](#credential-attachments) and that Agent revision's Harness runtime provider
+  [credential attachment](openshell-sandbox/harness-providers.md#credential-attachments) and that Agent revision's Harness runtime provider
   to the Sandbox's providers, validates any Codex route, and returns the stable Sandbox reference.
   Private [workspace initialization](../../flows/workspace-files.md#2-deployment-initializes-storage-before-execution) completes before execution.
 - OpenShell's controller creates and owns the Sandbox's Harness Pod.
@@ -115,6 +115,15 @@ runtime baseline: `/bin`, `/usr`, `/lib`, `/proc`, `/dev/urandom`, `/etc`,
 approved mounts, and `/sandbox/.openclaw-runtime` are writable. An explicit `filesystem` block replaces the baseline; the Driver still adds
 required mounts, runtime root, and `/tmp`.
 
+Startup refuses an unknown key in `kubernetes`, `kubernetes.serviceAccount`,
+`kubernetes.sandboxDataMount`, `kubernetes.agentResources`, `policy`,
+`policy.process` and `gateway.readiness`, so a misspelled key never falls back
+to its default. Each `kubernetes.agentResources.requests` and `limits` value is
+a quoted, non-negative Kubernetes quantity (`cpu: "500m"`), and a request may
+not exceed its limit. The Driver always sets the Agent container's
+`ephemeral-storage` to a `256Mi` request and `1Gi` limit, replacing configured
+values.
+
 The Driver requires `policy.process.runAsUser` and `runAsGroup`, but the pinned
 OpenShell ignores them: every Sandbox process runs as the workload identity,
 default `10001:10001`.
@@ -126,7 +135,11 @@ that host conflicts.
 v0.1.5 requires unique network policy names and nonempty executable
 paths. `workspace-node-enrollment` is reserved. Options are `tls: skip|terminate`, `enforcement: enforce|audit`, and
 `access: read_only|read_write|full`; `skip` replaces the rejected `passthrough`
-spelling. `gatewayConfigured` is the only ServiceAccount mode; the
+spelling. An endpoint `protocol` is `tcp`, `rest`, `websocket`, `graphql` or
+`sql` in any case (OCE sends it lowercase), or omitted. `tcp` takes neither
+`access` nor `enforcement`; the other protocols need `access`, and `sql` allows
+only `enforcement: audit`. `json-rpc` and `mcp` need rules this setting cannot
+express, so startup refuses them. `gatewayConfigured` is the only ServiceAccount mode; the
 gateway's configured sandbox ServiceAccount applies to every Sandbox and does
 not satisfy the per-Agent production requirement below.
 
@@ -210,76 +223,9 @@ untrusted sessions within one Agent. Kubernetes defaults to eight native workers
 `runtime.nativeOpenClawSessionCapacity` accepts `1` through `1024`. Stopping a
 hosted session releases its slot; idle workers are not retired automatically.
 
-## Credential attachments
-
-For an Agent revision that uses a [credential source](../credential-sources.md),
-Compute passes one attachment per source in `credentialAttachments`. The Driver
-appends each attachment's provider name to the static `providers` list in
-`SandboxSpec`, rejecting a name outside the OCC `oce-cs-` provider shape or one
-that repeats a static provider. Startup rejects
-static `providers` entries that use the OCC shape, so operator-configured
-providers cannot impersonate a credential source. After the Harness is ready,
-Compute requires every attachment to report `ready` before activation.
-
-<span id="dedicated-codex-runtime-provider"></span>
-
-For external ChatGPT authentication, the Sandbox stores account metadata but
-omits static `CODEX_ACCESS_TOKEN`. Only the attached OpenShell provider supplies
-its bound alias. Withdrawal therefore leaves no placeholder on restart, and the
-Harness holds its authentication failure without starting Codex or using cached state.
-
-## Dedicated runtime providers
-
-Each Agent revision's runtime providers use `oce-codex-runtime` or `oce-openclaw-runtime` profiles.
-Both expose node-enrollment and Gateway CA files after the Agent Gateway issues
-setup. Codex requires nonsecret `runtime.json` and
-`config.toml`, each at most 65,536 UTF-8 bytes, addressed through `OPENCLAW_PLUGIN_RUNTIME_MANIFEST` and
-`OPENCLAW_PLUGIN_CODEX_CONFIG_TOML`; native OpenClaw rejects them. Ordinary
-Secret-backed environment projections remain unsupported.
-
-The expiring setup token is visible inside the Sandbox, without a production
-credential guarantee. Policy limits node egress to the Gateway and executable.
-Codex waits for its provider route; native OpenClaw connects outbound. Renewal
-updates `node_setup_json` only if the provider's resource version still matches;
-endpoint, TLS fingerprint, runtime files, CA, and identity labels must also match.
-Native startup reads the envelope; the Codex
-supervisor rereads it before node retries and retains valid setup during projection
-gaps. The raw app-server token stays outside the provider. Plugins and repository
-broker configuration fail before creation.
-
-Agent revision cleanup deletes the Sandbox before its Git and runtime providers; Namespace
-cleanup removes leftover Git providers and unused profiles. Adoption requires matching
-Namespace, Agent, and Agent revision IDs and nonsecret configuration,
-except when renewing an expired setup envelope. Failed or timed-out Sandbox creation may complete remotely. The provider remains
-for normal Agent revision cleanup with the Sandbox.
-
-## Create-time app-server exposure
-
-For dedicated Codex, `CreateSandbox` includes one unnamed exposure for Compute's
-literal `APP_SERVER_PORT`. The UUID from the Agent revision ID is the first `request_id`.
-With no Sandbox,
-[create retries](../../flows/openshell-sandbox-provisioning.md#4-call-the-versioned-gateway-contract)
-after unresolved refusals use at most 16 request IDs. Adoption requires an
-exact Sandbox and, before enrollment, exposure. The client keeps a normalized control URL and the
-advertised workload URL, which `harnessEndpoint` returns
-as a WebSocket origin.
-
-Compute supplies only `APP_TOKEN_SHA`, never the raw token; bearer passthrough
-forwards the header Codex, or a native held failure, authenticates. Other
-exposures keep OpenShell's authorization-stripping default. A Sandbox without a
-replayable Create receipt must be removed, not mutated by `ExposeService`.
-
-Compute replaces the fail-closed Gateway target and omits its direct Agent
-Service and Harness route. Drivers without provider transport retain Kubernetes transport.
-
-A native worker's node opens its Gateway connection. Its exposure serves
-only Compute's held-failure read before enrollment; OpenShell routes it
-unauthenticated, so once the node enrolls the Driver deletes it
-(`DeleteService`, fail closed); adoption or recreation has none. A missing
-service, Sandbox or credential attachment is gone only if `GetWorkspace` answers
-and a second read still misses it (OpenShell hides unauthorized Sandboxes as
-missing); a refusal fails with `SANDBOX_GATEWAY_UNAUTHORIZED`. The worker's
-sweep covers Agent revisions without a current reconciliation pass and failed candidates.
+[Harness providers and exposure](openshell-sandbox/harness-providers.md)
+covers credential attachments, the dedicated runtime providers and the
+create-time app-server exposure.
 
 ## Kubernetes and admission requirements
 
@@ -404,6 +350,7 @@ Errors include:
 
 - [OpenShell testing](../../testing/openshell.md)
 - [OpenShell Sandbox provisioning flow](../../flows/openshell-sandbox-provisioning.md)
+- [OpenShell Harness providers and exposure](openshell-sandbox/harness-providers.md)
 - [SandboxDriver contract](sandbox.md) and [OpenShell Credential Gateway](openshell-credential-gateway.md)
 - [ComputeDriver contract](compute.md)
 - [Kubernetes ComputeDriver](kubernetes-compute.md)

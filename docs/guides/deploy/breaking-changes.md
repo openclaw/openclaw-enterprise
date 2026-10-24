@@ -19,6 +19,47 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-24: chart container resources are checked at render
+
+**What breaks.** `helm install` and `helm upgrade` refuse a `resources`,
+`slackProxy.resources` or `logging.collector.resources` entry with a negative
+quantity or a resource name other than `cpu`, `memory`,
+`ephemeral-storage`, `hugepages-<size>` or a domain-prefixed extended resource
+such as `example.com/gpu`. They also refuse a negative
+`logging.collector.state.sizeLimit` or `tmp.sizeLimit`. Earlier builds rendered
+these and Kubernetes refused the Deployment or Pod when Helm applied it, after
+other objects of the release had changed. With `gatewayRouting.enabled`, a
+release name whose first 34 characters end in `.` now renders a valid Envoy
+NetworkPolicy name; earlier builds failed to create it.
+
+**Who is affected.** Releases that set one of these values by hand.
+
+**How to tell.** Helm fails before applying anything, naming the value, for
+example `resources.limits.cpu must not be negative`. A request above its limit
+is still left to Kubernetes, which refuses it when Helm applies the release.
+
+**Steps.** Remove the negative or unknown entry, and run the upgrade again.
+
+## 2026-10-24: SSH Compute refuses runtime paths under /tmp
+
+**What breaks.** Controller startup refuses an SSH Compute `runtime.root` that
+is `/`, has a `.` or `..` segment, or lies under `/tmp` or `/var/tmp`, as the
+[SSH Compute reference](../../reference/drivers/ssh-compute.md) already said,
+and a `nodePath` or `openclawPath` under `/tmp` or `/var/tmp`. Earlier builds
+started, but each Agent unit runs with `PrivateTmp`, so it could not reach paths
+under those and every deployment timed out. A root such as `/var/lib/./oce`
+worked and is now refused too.
+
+**Who is affected.** SSH Installations with such a path.
+
+**How to tell.** Startup fails with `INVALID_VALUE` at `/runtime/root`,
+`/runtime/nodePath`, `/runtime/openclawPath` or `/hosts`.
+
+**Steps.** Write a root with `.` or `..` segments in its resolved form (the same
+directory, so state is kept). Move a path under `/tmp` or `/var/tmp`, for example
+the state root to `/var/lib/openclaw-enterprise`. Then restart the controller
+and deploy again.
+
 ## 2026-10-24: Kubernetes Compute checks dedicated placement and selector labels
 
 **What breaks.** Agent create and update and deployment admission refuse a
@@ -116,27 +157,6 @@ example `gatewayRouting.sandbox.ingressPeers[0].ipBlock.cidr requires an IPv4 or
 IPv6 CIDR`.
 
 **Steps.** Correct or remove the named field, then run the upgrade again.
-
-## 2026-10-24: chart container resources are checked at render
-
-**What breaks.** `helm install` and `helm upgrade` refuse a `resources`,
-`slackProxy.resources` or `logging.collector.resources` entry with a negative
-quantity or a resource name other than `cpu`, `memory`,
-`ephemeral-storage`, `hugepages-<size>` or a domain-prefixed extended resource
-such as `example.com/gpu`. They also refuse a negative
-`logging.collector.state.sizeLimit` or `tmp.sizeLimit`. Earlier builds rendered
-these and Kubernetes refused the Deployment or Pod when Helm applied it, after
-other objects of the release had changed. With `gatewayRouting.enabled`, a
-release name whose first 34 characters end in `.` now renders a valid Envoy
-NetworkPolicy name; earlier builds failed to create it.
-
-**Who is affected.** Releases that set one of these values by hand.
-
-**How to tell.** Helm fails before applying anything, naming the value, for
-example `resources.limits.cpu must not be negative`. A request above its limit
-is still left to Kubernetes, which refuses it when Helm applies the release.
-
-**Steps.** Remove the negative or unknown entry, and run the upgrade again.
 
 ## 2026-10-24: OpenShell refuses OpenClaw Agents without user namespaces off
 
@@ -305,23 +325,3 @@ Compute` (or names the `main` entry's `workspace`).
 
 **Steps.** Remove that `workspace` setting, or use a Configuration without it,
 then save or deploy again. _untested_
-
-## 2026-10-24: SSH Compute refuses runtime paths under /tmp
-
-**What breaks.** Controller startup refuses an SSH Compute `runtime.root` that
-is `/`, has a `.` or `..` segment, or lies under `/tmp` or `/var/tmp`, as the
-[SSH Compute reference](../../reference/drivers/ssh-compute.md) already said,
-and a `nodePath` or `openclawPath` under `/tmp` or `/var/tmp`. Earlier builds
-started, but each Agent unit runs with `PrivateTmp`, so it could not reach paths
-under those and every deployment timed out. A root such as `/var/lib/./oce`
-worked and is now refused too.
-
-**Who is affected.** SSH Installations with such a path.
-
-**How to tell.** Startup fails with `INVALID_VALUE` at `/runtime/root`,
-`/runtime/nodePath`, `/runtime/openclawPath` or `/hosts`.
-
-**Steps.** Write a root with `.` or `..` segments in its resolved form (the same
-directory, so state is kept). Move a path under `/tmp` or `/var/tmp`, for example
-the state root to `/var/lib/openclaw-enterprise`. Then restart the controller
-and deploy again.
