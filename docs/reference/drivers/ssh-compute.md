@@ -222,8 +222,8 @@ When native Configuration omits `gateway.auth.mode`, the Driver renders
 `OPENCLAW_GATEWAY_PASSWORD`. Explicit `password` and `trusted-proxy` modes are
 supported. An explicit password must use that variable's default-provider
 environment SecretRef; trusted proxy can opt into the same loopback password.
-The Driver admits only supported authentication fields and modes before host
-changes.
+Deployment refuses any other mode, an unsupported authentication field, or
+another password reference with `409` naming the setting, before admitting a revision.
 
 The helper creates a private per-Agent `gateway-password.env` when the managed
 password is needed. Later versions reuse that file; the Driver does not rotate
@@ -249,7 +249,8 @@ load changed environment values. Agent and Namespace deletion remove this file.
 
 Enabled Slack requires [Secret-backed credential validation](slack-channel.md#credential-validation).
 The host environment file cannot satisfy that requirement, and SSH does not
-deliver OCC Secrets. Use [Kubernetes Compute](kubernetes-compute.md) for that path.
+deliver OCC Secrets: deployment refuses non-empty Configuration `secretBindings` with
+`400`. Use [Kubernetes Compute](kubernetes-compute.md) for that path.
 
 Other native channels require both OCC admission and support in the host's
 OpenClaw build. Separate Unix users and private groups protect sibling state and native

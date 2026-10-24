@@ -7906,6 +7906,137 @@ test("SSH Compute names a Harness authentication method other than runtime at Ag
   );
 });
 
+test("SSH Compute refuses at deploy gateway authentication and Secret bindings it cannot deliver", async () => {
+  // Finding 2351: only preparation refused these, so deploy admitted a revision every
+  // preparation attempt failed. Deploy now names the setting, without its value.
+  const computeDriver = new SshComputeDriver({
+    ssh: { identityFile: "/tmp/ssh-test-key", knownHostsFile: "/tmp/ssh-test-hosts" },
+    hosts: { "gateway-auth": { address: "127.0.0.1", user: "root" } },
+    runtime: {
+      nodePath: "/usr/bin/node",
+      openclawPath: "/opt/openclaw/index.js",
+      user: "openclaw",
+      root: "/tmp/ssh-runtime-test",
+    },
+    network: { gatewayPortRange: { start: 18800, end: 18899 } },
+  });
+  const controller = await configuredController({ computeDriver });
+  await bootstrap(controller);
+  const namespace = await createNamespace(controller, "gateway-auth");
+  await controller.fixture.platformState.transact((unit) =>
+    unit.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+  );
+  const values = createHarnessConfiguration("openclaw", "gpt-5.1");
+  const collection = `/namespaces/${namespace.id}/agents`;
+  const createAgentFor = async (name, configuration) => {
+    const created = await controller.request("POST", collection, {
+      body: { name, configurationId: configuration.id, harnessAuth: { method: "runtime" } },
+    });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    return created.data;
+  };
+  const deploy = (agent) => controller.request("POST", `${collection}/${agent.id}/deploy`);
+  const assertNoRevision = async (agent) => {
+    const revisions = await controller.request("GET", `${collection}/${agent.id}/revisions`);
+    assert.deepEqual(revisions.data, [], JSON.stringify(revisions.body));
+  };
+  const setting = (path, requirement) => `Configuration setting ${path} ${requirement}.`;
+  for (const [name, gateway, message] of [
+    [
+      "token-mode",
+      { auth: { mode: "token" } },
+      setting(
+        "gateway.auth.mode",
+        "must be trusted-proxy or password: SSH Compute supports only native trusted-proxy or password gateway authentication",
+      ),
+    ],
+    [
+      "token-field",
+      { auth: { token: "synthetic-gateway-token" } },
+      setting("gateway.auth.token", "is not a supported native gateway authentication field"),
+    ],
+    ["auth-not-object", { auth: "password" }, setting("gateway.auth", "must be an object")],
+    [
+      "literal-password",
+      {
+        auth: {
+          mode: "password",
+          password: { source: "env", provider: "default", id: "SYNTHETIC_GATEWAY_PASSWORD" },
+        },
+      },
+      setting(
+        "gateway.auth.password",
+        'must be the environment reference {source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD"}, whose value SSH Compute generates',
+      ),
+    ],
+    ["password", { auth: { mode: "password" } }],
+    ["omitted", undefined],
+  ]) {
+    const configuration = await createConfiguration(controller, namespace.id, {
+      ...values,
+      ...(gateway === undefined ? {} : { gateway: { ...values.gateway, ...gateway } }),
+    });
+    const agent = await createAgentFor(`gateway-${name}`, configuration);
+    const deployed = await deploy(agent);
+    assert.equal(deployed.status, message === undefined ? 202 : 409, JSON.stringify(deployed.body));
+    if (message !== undefined) {
+      assert.deepEqual(
+        { code: deployed.body.error.code, message: deployed.body.error.message },
+        { code: "RESOURCE_CONFLICT", message },
+      );
+      assert.doesNotMatch(JSON.stringify(deployed.body), /synthetic-gateway|SYNTHETIC/);
+      await assertNoRevision(agent);
+    }
+  }
+
+  // Agent save passes no bindings (a Configuration may stage them later); deploy refuses them.
+  const secret = await controller.request("POST", `/namespaces/${namespace.id}/secrets`, {
+    body: { name: "tool", value: "synthetic-tool-key" },
+  });
+  assert.equal(secret.status, 201, JSON.stringify(secret.body));
+  const bound = await controller.request("POST", `/namespaces/${namespace.id}/configurations`, {
+    body: {
+      kind: "agent",
+      values,
+      secretBindings: { TOOL_API_KEY: { source: secret.data.ref, delivery: { type: "env" } } },
+    },
+  });
+  assert.equal(bound.status, 201, JSON.stringify(bound.body));
+  const agent = await createAgentFor("secret-bindings", bound.data);
+  // Grant the Agent the bound Secret, so only the Compute Driver's refusal remains.
+  const { state } = controller.fixture;
+  state.identities.push({
+    kind: "service_principal",
+    id: agent.servicePrincipalId,
+    namespaceId: namespace.id,
+  });
+  state.roles.push({
+    id: "ssh-tool-key",
+    namespaceId: namespace.id,
+    permissions: [{ action: "operate", resourceKind: "secret" }],
+  });
+  state.bindings.push({
+    id: "ssh-tool-key",
+    namespaceId: namespace.id,
+    subjectKind: "identity",
+    subjectId: agent.servicePrincipalId,
+    roleId: "ssh-tool-key",
+    resourceKind: "secret",
+    resourceId: secret.data.id,
+  });
+  const deployed = await deploy(agent);
+  assert.equal(deployed.status, 400, JSON.stringify(deployed.body));
+  assert.deepEqual(
+    { code: deployed.body.error.code, message: deployed.body.error.message },
+    {
+      code: "INVALID_REQUEST",
+      message:
+        "Configuration secretBindings must be empty on SSH Compute: provision credentials in the operator-owned <agentDir>/env file.",
+    },
+  );
+  await assertNoRevision(agent);
+});
+
 test("SSH Compute refuses at Agent save and deploy a roster or workspace whose main Agent cannot read initial workspace files", async () => {
   // Findings 2285 and 2289: only the host refused these, at deployment, which retried until it
   // failed. The host accepts only a path derived from each Agent's id, which a Configuration

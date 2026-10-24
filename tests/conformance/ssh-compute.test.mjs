@@ -969,7 +969,7 @@ test("SSH activation invokes lifecycle start hooks and cleans them up after acti
   bind(f.driver, invalidAuth);
   await assert.rejects(
     f.driver.activateRevision(invalidAuth),
-    /unsupported field unsupportedField/,
+    /gateway\.auth\.unsupportedField is not a supported native gateway authentication field/,
   );
   assert.deepEqual(hooks, beforeInvalidAuth);
 });
