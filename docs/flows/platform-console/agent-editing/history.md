@@ -9,6 +9,7 @@ This record preserves the dated changes to the Console Agent editing flow. See t
 ## Changelog
 
 - 2026-10-24 23:40: Apply a newer Agent operate answer when parked Workspace files return, and keep unsaved text if operate is removed. (workspace-operate-restore)
+- 2026-10-24 22:05: Say in the Secret value help that line breaks are saved as LF, as browsers normalize textarea CRLF. (fix-backlog-1024b)
 - 2026-10-24 19:00: Check inline Create Secret names and values with the API's rules, keeping multiline values exact. (fix-2339-2341)
 - 2026-10-22 13:00: Rebuild after a plugin save from the save response, so a Stop requested on the page stays shown. (bughunt-1022b)
 - 2026-10-22 10:28: Distinguish a missing workspace file from an unavailable Agent, on first read and after an uncertain save. (01a162e5-4303-7a21-81d4-bb51cec37c66 - 596fdb088)
