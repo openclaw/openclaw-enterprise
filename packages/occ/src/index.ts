@@ -1529,9 +1529,11 @@ function admitsOpenClawExecutionMode(
   sandbox: SandboxDriver | undefined,
   executionMode: HarnessExecutionMode,
   nativeWorkers: NativeWorkerSupportSource | undefined,
+  compute: ComputeDriver | undefined,
 ): boolean {
   try {
     requireSandboxExecutionMode(sandbox, executionMode);
+    compute?.validateExecutionPlacement?.(executionMode);
     const harness = Object.freeze({ id: "openclaw", version: "capability", mode: executionMode });
     requireDedicatedNativeSupport(harness, sandbox, nativeWorkers);
     // Admission's Sandbox view can refuse on Driver settings alone (OpenShell's userNamespaces
@@ -1991,8 +1993,8 @@ export class OpenClawController {
   }
 
   /**
-   * The OpenClaw execution modes this Installation's Sandbox Driver and runtime let an Agent
-   * deploy. A selected Sandbox Driver that is unavailable admits none until it returns.
+   * The OpenClaw execution modes this Installation's Sandbox Driver, Compute settings and runtime
+   * let an Agent deploy. A selected Sandbox Driver that is unavailable admits none until it returns.
    */
   private openClawExecutionModes(): {
     executionModes: HarnessExecutionMode[];
@@ -2009,7 +2011,12 @@ export class OpenClawController {
     }
     return {
       executionModes: HARNESS_EXECUTION_MODES.filter((mode) =>
-        admitsOpenClawExecutionMode(sandbox, mode, this.nativeWorkers),
+        admitsOpenClawExecutionMode(
+          sandbox,
+          mode,
+          this.nativeWorkers,
+          this.selections.get("compute")?.driver as ComputeDriver | undefined,
+        ),
       ),
     };
   }
@@ -13432,6 +13439,8 @@ export class OpenClawController {
     const sandbox = this.sandboxDriver();
     requireSandboxExecutionMode(sandbox, agent.executionMode);
     const compute = this.selections.get("compute")?.driver as ComputeDriver | undefined;
+    // Compute settings alone can rule out a mode; deployment refuses the same (finding 2376).
+    compute?.validateExecutionPlacement?.(agent.executionMode);
     if (resolveHarness === undefined || compute === undefined) {
       return;
     }

@@ -43,6 +43,7 @@ export const backendFixtures = Object.freeze([
 function computeDriver({
   repositoryCredentials = false,
   channelRuntime = false,
+  routed = true,
   discoverHarnessModels = async () => [],
   agentProvisioning = false,
   sandboxDriver,
@@ -53,6 +54,7 @@ function computeDriver({
     sandboxDriver,
     credentialGatewayDriver,
     channelRuntime,
+    routed,
   });
 
   return Object.assign(driver, {
@@ -413,6 +415,7 @@ export async function createConsoleAppFixture(t, options = {}) {
       computeDriver({
         repositoryCredentials: options.repositoryCredentials === true,
         channelRuntime: options.channelRuntime === true,
+        routed: options.routed !== false,
         discoverHarnessModels: options.discoverHarnessModels,
         agentProvisioning: options.agentProvisioning,
         sandboxDriver: options.sandboxDriver,

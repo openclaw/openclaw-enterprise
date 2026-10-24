@@ -1,7 +1,7 @@
 ---
 created: 2026-08-20
-updated: 2026-10-09 23:11
-last_updated_session: authoring-run/b2bd682f-f0c3-4476-8725-2f9174362221
+updated: 2026-10-24 23:10
+last_updated_session: fix-2376-2378
 ---
 
 # Compute Driver Lifecycle Hooks Flow
@@ -104,9 +104,10 @@ gateway Deployment and Service, then checks gateway readiness.
 
 `runtime.nodeSelector` schedules Harness and embedded Pods. Dedicated real Gateways require
 `runtime.gatewayNodeSelector` and run in the logical Namespace's managed control-plane runtime
-namespace. With `runtime` set, deployment admission (`validateHarnessAuth`) refuses a dedicated
-Harness without that selector, gateway routing or node enrollment, before the replacement stops
-its predecessors. The Pod-level selector also schedules the Gateway's private-state initializer
+namespace. With `runtime` set, `validateExecutionPlacement` refuses a dedicated Harness without
+that selector, gateway routing or node enrollment: at Agent save, in the Installation's OpenClaw
+execution modes and, through `validateHarnessAuth`, at deployment admission before the
+replacement stops its predecessors. The Pod-level selector also schedules the Gateway's private-state initializer
 there.
 Compute owns both targets through the same version lifecycle; teardown selects each resource's
 physical namespace and preserves newer versions and durable Agent claims.
@@ -176,6 +177,8 @@ after the remaining resources. The worker settles deletion only from the resulti
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-24 23:10: Check dedicated placement at Agent save and in the offered execution modes. (fix-2376-2378)
 
 - 2026-10-09 23:11: Reject invalid Kubernetes peer Pod selectors before Namespace effects in the accompanying validation repair. (authoring-run/b2bd682f-f0c3-4476-8725-2f9174362221 - 21f34928437fb7d6f4391ba4af5d3e15bf9ce480)
 

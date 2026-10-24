@@ -512,3 +512,53 @@ test("Agent create refuses dedicated OpenClaw on OpenShell settings its workspac
     assert.equal(created.status, 201, JSON.stringify(created.body));
   }
 });
+
+// Kubernetes Compute with runtime storage but no gateway routing cannot place a dedicated Harness,
+// and deployment refuses it after Agent save answered 201. Save refuses it with the deployment
+// message and the Installation stops offering dedicated OpenClaw (finding 2376).
+test("Agent create refuses a dedicated Harness the Kubernetes Compute settings cannot place", async (t) => {
+  // The fixture's unrouted Driver has no node enrollment either (composition always supplies it).
+  const message =
+    "Dedicated Agents need gateway routing and node enrollment in this Installation's Kubernetes Compute configuration. Select an embedded Agent, or ask an operator to configure it.";
+  for (const routed of [false, true]) {
+    const f = await setup(t, { channelRuntime: true, routed });
+    const codex = await storeConfiguration(f, "codex", "codex/gpt-5.1");
+    const dedicated = await f.create("Codex", {
+      configurationId: codex.data.id,
+      executionMode: "dedicated",
+    });
+    const embedded = await f.create("Embedded");
+    assert.equal(embedded.status, 201, JSON.stringify(embedded.body));
+    const update = await f.request("PATCH", `${f.path}/${embedded.data.id}`, {
+      body: { configurationId: codex.data.id, executionMode: "dedicated" },
+    });
+    for (const response of [dedicated, update]) {
+      if (routed) {
+        assert.equal(
+          response.status,
+          dedicated === response ? 201 : 200,
+          JSON.stringify(response.body),
+        );
+        continue;
+      }
+      assert.equal(response.status, 400, JSON.stringify(response.body));
+      assert.equal(response.body.error.code, "INVALID_REQUEST");
+      assert.equal(response.body.error.message, message);
+    }
+    if (!routed) {
+      const stored = (await f.request("GET", f.path)).data;
+      assert.deepEqual(
+        stored.map(({ name, executionMode }) => [name, executionMode]),
+        [["Embedded", "embedded"]],
+      );
+    }
+    // Dedicated OpenClaw needs a Sandbox Driver; the Installation offers it only when placed.
+    const sandboxed = await setup(t, { ...openShellSandbox(t), channelRuntime: true, routed });
+    const installation = await sandboxed.request("GET", "/installation");
+    assert.equal(installation.status, 200, JSON.stringify(installation.body));
+    assert.deepEqual(
+      installation.data.capabilities.openclaw.executionModes,
+      routed ? ["dedicated"] : [],
+    );
+  }
+});

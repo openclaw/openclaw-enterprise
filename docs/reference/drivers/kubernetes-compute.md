@@ -211,7 +211,7 @@ Kubernetes API certificates must be verified in either mode.
 Configure Gateway and Agent images, resource requests/limits, namespace quotas
 and container defaults. `runtime.nodeSelector` selects Harness and embedded Pods;
 dedicated real Gateways require `runtime.gatewayNodeSelector` (checked at
-deployment admission), including their private-state initializer. Use disjoint
+Agent save and deployment admission), including their private-state initializer. Use disjoint
 trusted and tenant node pools in
 production. Quotas and defaults cover both roles in a shared tenant namespace;
 the two-cluster profile applies them separately to each physical target. The

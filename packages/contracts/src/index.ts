@@ -2342,6 +2342,13 @@ export interface ComputeDriver extends Driver {
     configuration: Readonly<OpenClawConfigurationDocument>,
     sandboxDriverId?: string,
   ): void;
+  /**
+   * Side-effect-free check that this Installation's Compute settings alone can place a Harness
+   * in this execution mode, at Agent save and for the Installation's OpenClaw execution modes.
+   * Throws ConfigurationHarnessError naming the setting. Deployment admission must refuse the
+   * same mode.
+   */
+  validateExecutionPlacement?(executionMode: HarnessExecutionMode): void;
   validateHarnessAuth?(
     harness: RevisionHarnessDescriptor,
     auth: HarnessAuthSnapshot,

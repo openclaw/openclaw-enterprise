@@ -91,6 +91,7 @@ import type {
   AgentRuntimeCredentialStatus,
   ComputeAgentProvisioningInput,
   ComputeDriver,
+  HarnessExecutionMode,
   ComputeAgentBinding,
   ComputeAgentRevisionBinding,
   ComputePendingReason,
@@ -4442,9 +4443,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
     // Preparation renders these settings and checks the rendered document
     // (validateAdmittedHarnessAuth), so a conflicting caller value is refused here, before a
     // dedicated deployment stops its predecessors. They follow the Installation's runtime and
-    // routing, so Agent save leaves them to deployment.
+    // routing, so Agent save leaves them to deployment; it checks placement through
+    // validateExecutionPlacement.
     if (secretBindings !== null) {
-      this.requireDedicatedRuntimePlacement(harness);
+      this.validateExecutionPlacement(harness.mode);
       this.requireComputeRenderedSettings(harness, configuration);
     }
   }
@@ -4452,11 +4454,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
   // With runtime set, preparation refuses a dedicated Harness without these Installation
   // settings (DEDICATED_STORAGE_ROUTING_REQUIRED, DEDICATED_GATEWAY_NODE_SELECTOR_REQUIRED) only
   // after the deployment stopped its predecessors (finding 2349). Embedded and channel-runtime
-  // Installations need none of them, so startup accepts them and deployment admission refuses
-  // here, naming the setting.
-  private requireDedicatedRuntimePlacement(harness: RevisionHarnessDescriptor): void {
+  // Installations need none of them, so startup accepts them; Agent save, deployment admission
+  // and the Installation's OpenClaw execution modes refuse here, naming the setting (finding 2376).
+  validateExecutionPlacement(executionMode: HarnessExecutionMode): void {
     const runtime = this.options.runtime;
-    if (harness.mode !== "dedicated" || runtime === undefined) {
+    if (executionMode !== "dedicated" || runtime === undefined) {
       return;
     }
     // Composition supplies node enrollment in every controller, so gatewayRouting is the
