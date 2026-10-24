@@ -93,8 +93,22 @@ import { writeSafeKubeconfig, writeUnsafeKubeconfigs } from "../helpers/unsafe-k
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const { kubeconfigPath, context: contextName } = conformanceKubeconfig;
-test("Kubernetes peer Pod selectors reject labels the API refuses before provisioning", () => {
+test("Kubernetes peer Pod selectors and node selectors reject labels the API refuses before provisioning", () => {
+  // Node selectors reach the API server only in a deployment's Deployment, after a dedicated
+  // deployment stopped its predecessors (finding 2357).
+  const nodeSelector = (setting) => [
+    `runtime.${setting}`,
+    (configured, labels) => {
+      configured.runtime = {
+        transportSecretPrefix: "transport",
+        gatewayStorageClassName: "local-path",
+        [setting]: labels,
+      };
+    },
+  ];
   const peers = [
+    nodeSelector("nodeSelector"),
+    nodeSelector("gatewayNodeSelector"),
     ["DNS peer", (configured, podLabels) => (configured.network.dns.podLabels = podLabels)],
     [
       "Gateway client",
@@ -744,6 +758,57 @@ test("dedicated runtime rejects missing workspace transport before cluster acces
     }
     assert.equal(clusterReads, 0);
   }
+});
+
+// Preparation refused these Installation settings only after a dedicated deployment stopped
+// its predecessors (finding 2349). Embedded and channel-runtime Installations need none of
+// them, so startup accepts them and deployment admission names the setting.
+test("deployment admission refuses a dedicated Harness the Installation cannot place", () => {
+  const runtime = { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" };
+  const codex = { id: "codex", version: "1.0.0", mode: "dedicated" };
+  const embedded = { id: "openclaw", version: "1.0.0", mode: "embedded" };
+  const codexConfiguration = createHarnessConfiguration("codex", "gpt-5");
+  const embeddedConfiguration = { agents: { defaults: { model: "openai/gpt-5" } } };
+  const named = (setting) =>
+    new RegExp(
+      `^Dedicated Agents need ${setting} in this Installation's Kubernetes Compute configuration\\. Select an embedded Agent, or ask an operator to configure it\\.$`,
+    );
+  // Composition always supplies node enrollment, so gatewayRouting is the setting to name.
+  const routing = named("gatewayRouting");
+  const storage = named("gateway routing and node enrollment");
+  const selector = named("runtime\\.gatewayNodeSelector");
+  const withoutSelector = routedOptions({ runtime });
+  delete withoutSelector.runtime.gatewayNodeSelector;
+  for (const [driver, message] of [
+    [new KubernetesComputeDriver(options({ runtime }), { nodeEnrollment: {} }), routing],
+    [new KubernetesComputeDriver(routedOptions({ runtime })), storage],
+    [new KubernetesComputeDriver(withoutSelector, { nodeEnrollment: {} }), selector],
+    [
+      new KubernetesComputeDriver(
+        routedOptions({ runtime: { ...runtime, gatewayNodeSelector: {} } }),
+        { nodeEnrollment: {} },
+      ),
+      selector,
+    ],
+  ]) {
+    assert.throws(
+      () => driver.validateHarnessAuth(codex, apiKeyAuth, codexConfiguration, {}),
+      (error) => error instanceof ConfigurationHarnessError && message.test(error.message),
+    );
+    // Agent save leaves the Installation to deployment; embedded Agents need none of these.
+    driver.validateHarnessAuth(codex, apiKeyAuth, codexConfiguration, null);
+    driver.validateHarnessAuth(embedded, apiKeyAuth, embeddedConfiguration, {});
+  }
+  new KubernetesComputeDriver(routedOptions({ runtime }), {
+    nodeEnrollment: {},
+  }).validateHarnessAuth(codex, apiKeyAuth, codexConfiguration, {});
+  // Without runtime storage nothing is rendered that needs them.
+  new KubernetesComputeDriver(options()).validateHarnessAuth(
+    codex,
+    apiKeyAuth,
+    codexConfiguration,
+    {},
+  );
 });
 
 test("activation refuses a missing or foreign workspace node before changing the serving Gateway", async () => {
@@ -5202,7 +5267,7 @@ test("sandbox routing keeps generated HTML off the administrative origin and bac
 // document, and refused a caller's conflicting value only after a dedicated deployment had
 // stopped its predecessors (findings 2315, 2317). Deployment admission now names the setting.
 test("deployment admission refuses the Compute-rendered settings preparation refuses", () => {
-  const driver = createKubernetesComputeDriver(
+  const driver = new KubernetesComputeDriver(
     routedOptions({
       runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
       gatewayRouting: {
@@ -5210,6 +5275,7 @@ test("deployment admission refuses the Compute-rendered settings preparation ref
         sandbox: { domain: "previews.example.test", publicPort: 9443 },
       },
     }),
+    { nodeEnrollment: {} },
   );
   const codex = { id: "codex", version: "1.0.0", mode: "dedicated" };
   const configuration = createHarnessConfiguration("codex", "gpt-5");
@@ -5320,16 +5386,23 @@ test("deployment admission refuses the Compute-rendered settings preparation ref
     ...relayed,
     mcp: { apps: { sandboxOrigin: "https://preview.example.test", sandboxPort: 1234 } },
   };
-  for (const unrendered of [
-    createKubernetesComputeDriver(routedOptions()),
-    createKubernetesComputeDriver(
-      options({
-        runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
-      }),
-    ),
-  ]) {
-    unrendered.validateHarnessAuth(codex, apiKeyAuth, previews, {});
-  }
+  createKubernetesComputeDriver(routedOptions()).validateHarnessAuth(
+    codex,
+    apiKeyAuth,
+    previews,
+    {},
+  );
+  // Runtime storage without gateway routing renders neither, and admission refuses the
+  // dedicated deployment itself (finding 2349).
+  assert.throws(
+    () =>
+      createKubernetesComputeDriver(
+        options({
+          runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+        }),
+      ).validateHarnessAuth(codex, apiKeyAuth, previews, {}),
+    /Dedicated Agents need gateway routing and node enrollment/,
+  );
   // Compute relays native hooks only for Codex: a dedicated OpenClaw document keeps the key.
   const openclaw = {
     ...revision,
@@ -8637,10 +8710,10 @@ test("deployment admission refuses Gateway breakers before a dedicated deploymen
     sandboxDriver,
   });
   const unrouted = new KubernetesComputeDriver(options());
-  // Without node enrollment or runtime storage no Gateway hosts a workspace node.
+  // Without runtime storage no Gateway hosts a workspace node. (Runtime storage without node
+  // enrollment refuses every dedicated deployment at admission.)
   const withoutNode = [
     unrouted,
-    new KubernetesComputeDriver(routedOptions({ runtime })),
     new KubernetesComputeDriver(routedOptions(), { nodeEnrollment: {} }),
   ];
 
@@ -8743,7 +8816,8 @@ test("deployment admission refuses Gateway breakers before a dedicated deploymen
     ),
   );
   const withChannels = new KubernetesComputeDriver(
-    options({ runtime: { ...runtime, channels: { proxyUrl: "http://10.42.0.15:3128" } } }),
+    routedOptions({ runtime: { ...runtime, channels: { proxyUrl: "http://10.42.0.15:3128" } } }),
+    { nodeEnrollment: {} },
   );
   assert.throws(
     () => withChannels.validateHarnessAuth(embedded, apiKeyAuth, { ...embeddedBase, ...slack }),
@@ -9092,7 +9166,7 @@ test("dedicated OpenClaw gateway receives Agent plugin approvers without plugin 
 });
 
 test("dedicated OpenClaw renders an enrolled Harness without exposing model credentials to its gateway", async () => {
-  const driverOptions = options({
+  const driverOptions = routedOptions({
     runtime: {
       transportSecretPrefix: "transport",
       gatewayStorageClassName: "local-path",
@@ -9107,7 +9181,7 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
     async provisionHarness() {},
     async cleanup() {},
   };
-  const driver = new KubernetesComputeDriver(driverOptions, { sandboxDriver });
+  const driver = new KubernetesComputeDriver(driverOptions, { sandboxDriver, nodeEnrollment: {} });
   const namespace = kubernetesNamespaceName(tenant.id);
   const namespaceAddress = { name: namespace, plane: "execution" };
   const agentId = "agent-native-worker";
@@ -9714,14 +9788,15 @@ test("account-token authentication grants only the exact Codex revision outbound
 });
 
 test("native channel providers require Secret bindings and project them only to the gateway", async () => {
-  const driver = createKubernetesComputeDriver(
-    options({
+  const driver = new KubernetesComputeDriver(
+    routedOptions({
       runtime: {
         transportSecretPrefix: "transport",
         gatewayStorageClassName: "local-path",
         channels: { proxyUrl: "http://10.42.0.15:3128" },
       },
     }),
+    { nodeEnrollment: {} },
   );
   const namespace = kubernetesNamespaceName(tenant.id);
   const agentId = "agent-a";
@@ -13834,7 +13909,7 @@ test("revision lifecycle rejects another driver or missing identity before clust
   }
 
   const production = new KubernetesComputeDriver(
-    options({
+    routedOptions({
       runtime: {
         transportSecretPrefix: "transport",
         gatewayStorageClassName: "local-path",
@@ -13847,6 +13922,7 @@ test("revision lifecycle rejects another driver or missing identity before clust
       },
     }),
     {
+      nodeEnrollment: {},
       sandboxDriver: {
         id: "sandbox-native-worker",
         implementation: "test/native-worker",
@@ -14258,6 +14334,43 @@ test("resource quantities reject bare numbers with structured field diagnostics"
     () => requireConfiguration(KubernetesComputeDriver, quota),
     SharedConfigurationValidationError,
   );
+  // The API server refuses the Namespace's ResourceQuota at the first deployment otherwise
+  // (finding 2357): resource names are qualified names, and a name without a prefix is a
+  // standard quota resource; values are non-negative quantities.
+  for (const [resource, value, message] of [
+    ["bad key", "1", /Namespace quota resource "bad key" must be a Kubernetes resource name/],
+    ["count/", "1", /must be a Kubernetes resource name/],
+    ["Example.com/gpu", "1", /must be a Kubernetes resource name/],
+    ["podz", "1", /Namespace quota resource "podz" must be a Kubernetes resource name/],
+    [
+      "pods",
+      "ten",
+      /Namespace quota resource pods must be a non-negative Kubernetes quantity string/,
+    ],
+    ["limits.memory", "8 Gi", /must be a non-negative Kubernetes quantity string/],
+    ["requests.cpu", "-1", /must be a non-negative Kubernetes quantity string/],
+  ]) {
+    const configured = separateResources();
+    configured.resources.namespace.quota[resource] = value;
+    assert.throws(
+      () => requireConfiguration(KubernetesComputeDriver, configured),
+      (error) => {
+        assert.ok(error instanceof SharedConfigurationValidationError);
+        assert.match(error.error.details.map((detail) => detail.message).join("\n"), message);
+        return true;
+      },
+    );
+  }
+  const extended = separateResources();
+  Object.assign(extended.resources.namespace.quota, {
+    "count/deployments.apps": "4",
+    "requests.nvidia.com/gpu": "2",
+    "limits.memory": "8Gi",
+    "requests.storage": "100Gi",
+    "services.loadbalancers": "0",
+    "requests.hugepages-2Mi": "1Gi",
+  });
+  requireConfiguration(KubernetesComputeDriver, extended);
   // A missing value is still reported as missing, and quoted cores pass.
   const missing = separateResources();
   delete missing.resources.gateway.limits.cpu;
