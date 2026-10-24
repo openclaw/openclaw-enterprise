@@ -678,8 +678,20 @@ export async function loadInstallationConfiguration(options: {
     serviceAccount = Object.freeze({ id: nonempty(selection.id, "drivers.service_account.id") });
   }
   if (drivers.repo !== undefined) {
+    // Finding 2361: startup refuses repository.nativeSender beside a Sandbox or Credential Proxy,
+    // and repository.openShell beside an installed Sandbox package, so name what fits the
+    // selected Sandbox.
+    const sandbox = drivers.sandbox === undefined ? undefined : asRecord(drivers.sandbox);
+    const native =
+      "or repository.nativeSender without drivers.sandbox or drivers.credential_proxy.";
     throw new Error(
-      "drivers.repo native admission is retired. Drain accepted work ON THE ORIGINAL owner before cutover, then configure repository.nativeSender with repository.preparedGitHub. Do not replay uncertain work.",
+      `drivers.repo native admission is retired. Drain accepted work ON THE ORIGINAL owner before cutover, then ${
+        sandbox === undefined
+          ? "configure repository.nativeSender with repository.preparedGitHub."
+          : sandbox.package === undefined
+            ? `configure repository.openShell with repository.preparedGitHub (the bundled OpenShell Driver refuses git-write), ${native}`
+            : `configure repository.preparedGitHub with the package's drivers.credential_proxy and no repository.openShell, ${native}`
+      } Do not replay uncertain work.`,
     );
   }
   const repositoryConfiguration = githubRepositoryConfiguration(

@@ -135,7 +135,7 @@ function productionInstallation(adminKeyPath) {
             networkPolicies: [
               {
                 name: "dns",
-                endpoints: [{ host: "1.1.1.1", ports: [53], protocol: "udp" }],
+                endpoints: [{ host: "1.1.1.1", ports: [53], protocol: "tcp" }],
                 binaries: [{ path: "/app/bin/dns-client" }],
               },
             ],

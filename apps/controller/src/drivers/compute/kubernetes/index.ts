@@ -19,7 +19,7 @@ import {
   openAiBaseUrlRewritesIpv4,
   openAiBaseUrlSpellingMessage,
 } from "../../openai-endpoint.ts";
-import { compareResourceQuantities } from "./resource-quantities.ts";
+import { compareResourceQuantities, isResourceQuantity } from "./resource-quantities.ts";
 import {
   asRecord,
   hasControlCharacter,
@@ -1453,6 +1453,10 @@ const RESOURCE_REQUIREMENTS_SCHEMA = Object.freeze({
     },
   },
 });
+const DEDICATED_GATEWAY_NODE_SELECTOR_REQUIRED =
+  "Dedicated Gateways require runtime.gatewayNodeSelector for control-plane scheduling.";
+const DEDICATED_STORAGE_ROUTING_REQUIRED =
+  "Dedicated Harness storage requires gateway routing and node enrollment.";
 const POD_LABEL_VALUE_PATTERN = "^(?:[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?)?$";
 const POD_LABEL_VALUE = new RegExp(POD_LABEL_VALUE_PATTERN);
 const POD_LABELS_SCHEMA = {
@@ -1766,33 +1770,55 @@ function validatePeer(value: KubernetesWorkloadPeer, description: string, path?:
       path === undefined ? undefined : `${path}/podLabels`,
     );
   }
+  validateKubernetesLabels(
+    labels,
+    description,
+    path === undefined ? undefined : `${path}/podLabels`,
+  );
+}
+
+// ValidateResourceQuotaResourceName: a quota resource name without a "/" must be a standard
+// quota resource.
+const STANDARD_QUOTA_RESOURCE =
+  /^(?:(?:requests\.|limits\.)?(?:cpu|memory|ephemeral-storage)|requests\.storage|(?:requests\.)?hugepages-.+|pods|services|services\.nodeports|services\.loadbalancers|replicationcontrollers|resourcequotas|secrets|configmaps|persistentvolumeclaims)$/;
+
+// A label key (also a ResourceQuota resource name) as the API server checks it: a qualified
+// name, an optional DNS subdomain prefix and a name of at most 63 characters.
+function isKubernetesQualifiedName(key: string): boolean {
+  const parts = key.split("/");
+  const name = parts.at(-1) ?? "";
+  const prefix = parts.length === 2 ? parts[0] : undefined;
+  return (
+    parts.length <= 2 &&
+    name.length > 0 &&
+    name.length <= 63 &&
+    POD_LABEL_VALUE.test(name) &&
+    (prefix === undefined || isKubernetesResourceName(prefix))
+  );
+}
+
+// NetworkPolicy peers and node selectors: the API server refuses a Pod, Deployment or
+// NetworkPolicy whose labels break these rules, after a dedicated deploy stopped its predecessors.
+function validateKubernetesLabels(
+  labels: Readonly<Record<string, unknown>>,
+  description: string,
+  path?: string,
+): void {
   for (const [key, label] of Object.entries(labels)) {
-    required(key, `${description} label key`, path === undefined ? undefined : `${path}/podLabels`);
+    required(key, `${description} label key`, path);
     if (typeof label !== "string") {
-      throw configurationConstraintFailure(
-        `${description} labels must be strings.`,
-        path === undefined ? undefined : `${path}/podLabels`,
-      );
+      throw configurationConstraintFailure(`${description} labels must be strings.`, path);
     }
-    const parts = key.split("/");
-    const name = parts.at(-1) ?? "";
-    const prefix = parts.length === 2 ? parts[0] : undefined;
-    if (
-      parts.length > 2 ||
-      name.length === 0 ||
-      name.length > 63 ||
-      !POD_LABEL_VALUE.test(name) ||
-      (prefix !== undefined && !isKubernetesResourceName(prefix))
-    ) {
+    if (!isKubernetesQualifiedName(key)) {
       throw configurationConstraintFailure(
         `${description} label keys must be Kubernetes label keys.`,
-        path === undefined ? undefined : `${path}/podLabels`,
+        path,
       );
     }
     if (label.length > 63 || !POD_LABEL_VALUE.test(label)) {
       throw configurationConstraintFailure(
         `${description} label values must be Kubernetes label values.`,
-        path === undefined ? undefined : `${path}/podLabels`,
+        path,
       );
     }
   }
@@ -3573,7 +3599,27 @@ export class KubernetesComputeDriver implements ComputeDriver {
       }
       for (const [key, quantity] of Object.entries(quota)) {
         required(key, "Quota resource", "/resources/namespace/quota");
-        resourceQuantity(quantity, "Namespace quota resource", "resources.namespace.quota");
+        // The API server refuses the Namespace's ResourceQuota otherwise, at the first deploy.
+        if (
+          !isKubernetesQualifiedName(key) ||
+          (!key.includes("/") && !STANDARD_QUOTA_RESOURCE.test(key))
+        ) {
+          throw configurationConstraintFailure(
+            `Namespace quota resource ${JSON.stringify(key)} must be a Kubernetes resource name, such as requests.cpu or count/pods.`,
+            "/resources/namespace/quota",
+          );
+        }
+        const value = resourceQuantity(
+          quantity,
+          "Namespace quota resource",
+          "resources.namespace.quota",
+        );
+        if (!isResourceQuantity(value) || (compareResourceQuantities(value, "0") ?? 0) < 0) {
+          throw configurationConstraintFailure(
+            `Namespace quota resource ${key} must be a non-negative Kubernetes quantity string, such as 4 or 8Gi.`,
+            "/resources/namespace/quota",
+          );
+        }
       }
       if (asRecord(options.network) === undefined) {
         throw configurationConstraintFailure("Network policy is required.", "/network");
@@ -3739,6 +3785,16 @@ export class KubernetesComputeDriver implements ComputeDriver {
             );
           }
           throw error;
+        }
+        for (const setting of ["nodeSelector", "gatewayNodeSelector"] as const) {
+          const selector = options.runtime[setting];
+          if (selector !== undefined) {
+            validateKubernetesLabels(
+              asRecord(selector) ?? {},
+              `runtime.${setting}`,
+              `/runtime/${setting}`,
+            );
+          }
         }
         const gatewayStorageClassName = required(
           options.runtime.gatewayStorageClassName,
@@ -4388,7 +4444,35 @@ export class KubernetesComputeDriver implements ComputeDriver {
     // dedicated deployment stops its predecessors. They follow the Installation's runtime and
     // routing, so Agent save leaves them to deployment.
     if (secretBindings !== null) {
+      this.requireDedicatedRuntimePlacement(harness);
       this.requireComputeRenderedSettings(harness, configuration);
+    }
+  }
+
+  // With runtime set, preparation refuses a dedicated Harness without these Installation
+  // settings (DEDICATED_STORAGE_ROUTING_REQUIRED, DEDICATED_GATEWAY_NODE_SELECTOR_REQUIRED) only
+  // after the deployment stopped its predecessors (finding 2349). Embedded and channel-runtime
+  // Installations need none of them, so startup accepts them and deployment admission refuses
+  // here, naming the setting.
+  private requireDedicatedRuntimePlacement(harness: RevisionHarnessDescriptor): void {
+    const runtime = this.options.runtime;
+    if (harness.mode !== "dedicated" || runtime === undefined) {
+      return;
+    }
+    // Composition supplies node enrollment in every controller, so gatewayRouting is the
+    // setting an operator can change; only a Driver built without enrollment names both.
+    const missing =
+      this.nodeEnrollment === undefined
+        ? "gateway routing and node enrollment"
+        : this.options.gatewayRouting === undefined
+          ? "gatewayRouting"
+          : Object.keys(runtime.gatewayNodeSelector ?? {}).length === 0
+            ? "runtime.gatewayNodeSelector"
+            : undefined;
+    if (missing !== undefined) {
+      throw new ConfigurationHarnessError(
+        `Dedicated Agents need ${missing} in this Installation's Kubernetes Compute configuration. Select an embedded Agent, or ask an operator to configure it.`,
+      );
     }
   }
 
@@ -5646,9 +5730,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       this.options.runtime !== undefined &&
       Object.keys(this.options.runtime.gatewayNodeSelector ?? {}).length === 0
     ) {
-      throw new ConfigurationFailure(
-        "Dedicated Gateways require runtime.gatewayNodeSelector for control-plane scheduling.",
-      );
+      throw new ConfigurationFailure(DEDICATED_GATEWAY_NODE_SELECTOR_REQUIRED);
     }
     const observed = await this.getNamespace(namespace);
     if (observed === undefined) {
@@ -13314,9 +13396,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       revision.harness.mode === "dedicated" &&
       (this.options.gatewayRouting === undefined || this.nodeEnrollment === undefined)
     ) {
-      throw new ConfigurationFailure(
-        "Dedicated Harness storage requires gateway routing and node enrollment.",
-      );
+      throw new ConfigurationFailure(DEDICATED_STORAGE_ROUTING_REQUIRED);
     }
     if (this.options.gatewayRouting === undefined) {
       return;
@@ -16152,9 +16232,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       runtime !== undefined &&
       (selectedNodes === undefined || Object.keys(selectedNodes).length === 0)
     ) {
-      throw new ConfigurationFailure(
-        "Dedicated Gateways require runtime.gatewayNodeSelector for control-plane scheduling.",
-      );
+      throw new ConfigurationFailure(DEDICATED_GATEWAY_NODE_SELECTOR_REQUIRED);
     }
     const runtimeNodeSelector = selectedNodes === undefined ? {} : { nodeSelector: selectedNodes };
     const codexSeccompProfile =

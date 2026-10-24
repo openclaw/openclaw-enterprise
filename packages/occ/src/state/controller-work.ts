@@ -717,7 +717,7 @@ function deploymentErrorMessage(code: string): string {
     case "REPOSITORY_GIT_ROUTE_BLOCKED":
       return "This version's repository Git access was closed by the controller: its Sandbox or supervisor was replaced, a credential write's outcome is unknown, or the access was withdrawn. The worker log names the reason (OPENSHELL_GIT_RECONCILIATION_REQUIRED). Deploy a new version.";
     case "REPOSITORY_GIT_SENDER_UNQUALIFIED":
-      return "This version was admitted with repository Git delivery that the selected Credential Proxy cannot enforce: no OpenShell release is qualified for the git-write profile, so it could never start. Use native prepared Git or a qualified installed sender, or remove the Agent's repository binding, then deploy again.";
+      return "This version was admitted with repository Git delivery that the selected Credential Proxy cannot enforce: no OpenShell release is qualified for the git-write profile, so it could never start. Remove the Agent's repository binding, select a qualified installed sender, or use native prepared Git without a Sandbox, then deploy again.";
     case "REPOSITORY_GIT_PROFILE_UNSUPPORTED":
       return "This version was admitted with repository Git delivery that has no delivery profile: a Credential Proxy delivers only one binding with the git-write or github-installation profile, so it could never start. Keep one binding with a supported profile, use native prepared Git, or remove the Agent's repository bindings, then deploy again.";
     case "REPOSITORY_CREDENTIAL_DEADLINE_EXCEEDED":

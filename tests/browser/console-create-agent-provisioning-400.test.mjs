@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { KubernetesConfigurationDriver } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
+import { ConfigurationHarnessError } from "../../packages/occ/src/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -946,6 +947,48 @@ test("With a selected Sandbox Driver that admits no OpenClaw mode, Create Agent 
   assert.notEqual((await createStatus.innerText()).trim(), "");
 });
 
+// A Sandbox Driver that provisions dedicated OpenClaw can still refuse it on its settings alone,
+// as OpenShell does without kubernetes.userNamespaces: false. Create Agent shows admission's own
+// refusal, which names the setting, instead of asking for another Sandbox Driver (finding 2373).
+test("When the Sandbox Driver's settings refuse Dedicated OpenClaw, Create Agent names the setting", async (t) => {
+  const settingRefusal =
+    "Dedicated OpenClaw needs example.setting: false in the Sandbox Driver configuration. Select Codex, or ask an operator to set it.";
+  const sandboxDriver = {
+    ...nativeSandboxDriver(),
+    configureAgent(values, harness) {
+      if (harness.id === "openclaw") {
+        throw new ConfigurationHarnessError(settingRefusal);
+      }
+      return values;
+    },
+  };
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Setting refusal", {
+    filesystemConfiguration: true,
+    sandboxDriver,
+  });
+  const installation = await fixture.request("GET", "/installation");
+  assert.deepEqual(installation.data.capabilities?.openclaw, {
+    executionModes: [],
+    settingRefusals: { dedicated: settingRefusal },
+  });
+  const { page, writesSinceFill } = await fillOpenClawDraft(t, fixture, namespace, "Setting");
+  const alert = page.getByRole("alert").filter({ hasText: /^OpenClaw is unavailable / });
+  await alert.waitFor();
+  assert.equal(
+    await alert.textContent(),
+    `OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and its settings refuse Dedicated OpenClaw. ${settingRefusal}`,
+  );
+  assert.equal(
+    await page.locator("#agent-harness-hint").textContent(),
+    "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and its settings refuse Dedicated OpenClaw.",
+  );
+  assert.equal(
+    await page.getByRole("button", { name: "Create Agent", exact: true }).isDisabled(),
+    true,
+  );
+  assert.deepEqual(writesSinceFill(), []);
+});
+
 const SANDBOX_DRIVER_OUTAGE =
   "Agents cannot be created right now: this installation's Sandbox Driver is unavailable. Reload this page to check again, or ask an administrator if it persists.";
 
@@ -1257,6 +1300,11 @@ test("Operator-managed Preset credentials name the Preset when the Installation 
     [
       { executionModes: [] },
       "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and it cannot run Dedicated OpenClaw. This Preset's operator-managed credentials require OpenClaw. Ask an administrator, or start without a Preset.",
+    ],
+    // A setting refusal is shown as the API words it (finding 2373).
+    [
+      { executionModes: [], settingRefusals: { dedicated: "Set example.setting: false." } },
+      "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and its settings refuse Dedicated OpenClaw. Set example.setting: false. This Preset's operator-managed credentials require OpenClaw. Ask an administrator, or start without a Preset.",
     ],
     [
       { executionModes: ["dedicated"] },

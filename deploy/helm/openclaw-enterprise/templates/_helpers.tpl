@@ -932,7 +932,19 @@ capabilities:
 {{- end -}}
 {{- end -}}
 
-{{/* A null map clears chart defaults. Skip it; indexing nil aborts install and upgrade. */}}
+{{/* openclaw.quantity, and Kubernetes refuses a negative resource quantity or emptyDir sizeLimit.
+     A syntax check, not a parser: a leading "-" before a nonzero digit is negative ("-0" is zero).
+     Range and request-to-limit checks stay Kubernetes' responsibility (see openclaw.quantity). */}}
+{{- define "openclaw.nonNegativeQuantity" -}}
+{{- include "openclaw.quantity" . -}}
+{{- if regexMatch "^-[0-9.]*[1-9]" (trim (toString .value)) -}}
+{{- fail (printf "%s must not be negative" .name) -}}
+{{- end -}}
+{{- end -}}
+
+{{/* A null map clears chart defaults. Skip it; indexing nil aborts install and upgrade. Kubernetes
+     refuses a Deployment whose container resources name another resource or are negative, after
+     the release's other objects changed. */}}
 {{- define "openclaw.resourceRequirements" -}}
 {{- if .requirements -}}
 {{- $name := .name -}}
@@ -940,7 +952,13 @@ capabilities:
 {{- range $section := list "requests" "limits" -}}
 {{- with index $requirements $section -}}
 {{- range $key, $qty := . -}}
-{{- include "openclaw.quantity" (dict "name" (printf "%s.%s.%s" $name $section $key) "value" $qty) -}}
+{{- $field := printf "%s.%s.%s" $name $section $key -}}
+{{- if not (or (regexMatch "^(cpu|memory|ephemeral-storage|hugepages-[0-9]+(\\.[0-9]+)?([KMGTPE]i|[kMGTPE]|[eE][0-9]+)?)$" $key) (and (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$" $key) (not (hasPrefix "requests." $key)))) -}}
+{{- fail (printf "%s names a resource Kubernetes does not accept: use cpu, memory, ephemeral-storage, hugepages-<size> or a domain-prefixed resource such as example.com/gpu, not starting with requests." $field) -}}
+{{- end -}}
+{{- if not (kindIs "invalid" $qty) -}}
+{{- include "openclaw.nonNegativeQuantity" (dict "name" $field "value" $qty) -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
@@ -960,7 +978,8 @@ capabilities:
 {{- end -}}
 
 {{- define "openclaw.gatewayRouting.envoyNetworkPolicyName" -}}
-{{- printf "%s-%s-envoy-dataplane" (.Release.Name | trunc 34 | trimSuffix "-") (include "openclaw.gatewayRouting.routeNamespaceLabel" .) -}}
+{{- /* A truncated dotted release name can end in "." as well as "-" (finding 2338). */ -}}
+{{- printf "%s-%s-envoy-dataplane" (regexReplaceAll "[-.]+$" (.Release.Name | trunc 34) "") (include "openclaw.gatewayRouting.routeNamespaceLabel" .) -}}
 {{- end -}}
 
 {{/*
