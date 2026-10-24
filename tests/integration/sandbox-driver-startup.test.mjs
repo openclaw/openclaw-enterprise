@@ -309,13 +309,14 @@ function openShellDriver(gatewayClient, configuration) {
   );
 }
 
-/** A dedicated Codex revision on `driver`; `n` is the 12-digit tail of its ids. */
-function dedicatedRevision(driver, context, n) {
+/** A dedicated Harness revision on `driver`; `n` is the 12-digit tail of its ids. */
+function dedicatedRevision(driver, context, n, harnessId = "codex") {
   return {
     id: `rev_00000000-0000-4000-8000-${n}`,
     namespaceId: context.namespace.id,
     agentId: `agt_00000000-0000-4000-8000-${n}`,
-    harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
+    harness: { id: harnessId, version: "1.0.0", mode: "dedicated" },
+    compute: { id: "compute-kubernetes-local", implementation: "kubernetes-local" },
     sandboxDriverId: driver.id,
   };
 }
@@ -501,13 +502,7 @@ function runtimeSandboxFixture(
   } = {},
 ) {
   const context = namespaceContext();
-  const revision = {
-    id: "rev_00000000-0000-4000-8000-000000000003",
-    namespaceId: context.namespace.id,
-    agentId: "agt_00000000-0000-4000-8000-000000000003",
-    harness: { id: harnessId, version: "1.0.0", mode: "dedicated" },
-    sandboxDriverId: driver.id,
-  };
+  const revision = dedicatedRevision(driver, context, "000000000003", harnessId);
   const nodeSetup = {
     url: nodeSetupUrl(revision, context),
     bootstrapToken: "one-shot-node-setup",
