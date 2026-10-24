@@ -515,6 +515,7 @@ test("sandbox ingress uses a separate listener outside OCE cookie scope", toolin
     render({ ...sandboxValues, "gatewayRouting.tenantGatewayPort": "65535" }),
     /gatewayRouting\.tenantGatewayPort must leave room for the adjacent sandbox port/,
   );
+  // 65534 leaves 65535 for the sandbox route, so it renders.
   await render({ ...sandboxValues, "gatewayRouting.tenantGatewayPort": "65534" });
   // Dedicated Agent hostnames are agent-<32 hex>.<domain>, so the domain stops at 253 - 39.
   const longestLabel = "a".repeat(63);
@@ -570,9 +571,7 @@ test("database and Kubernetes API egress refuse an empty host list", tooling, as
     await writeFile(valuesFile, `${name}:\n  cidrs: []\n`);
     await assert.rejects(
       render({}, { valuesFiles: [valuesFile], omit: [`${name}.cidrs[0]`, `${name}.cidrs[1]`] }),
-      ({ code, stderr }) =>
-        code !== 0 &&
-        stderr.includes(`${name}.cidrs must contain at least one explicit IPv4 /32 host`),
+      new RegExp(`${name}\\.cidrs must contain at least one explicit IPv4 /32 host`),
       name,
     );
   }

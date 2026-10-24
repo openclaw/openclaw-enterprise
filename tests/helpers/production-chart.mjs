@@ -68,7 +68,8 @@ export async function renderProductionChart(overrides = {}, options = {}) {
   for (const file of options.valuesFiles ?? []) {
     args.push("--values", file);
   }
-  // `omit` drops a default --set so a values file can supply that key (an empty list, say).
+  // `omit` drops a --set (a default or an override) so a values file can supply that key,
+  // such as an empty list.
   for (const [key, value] of Object.entries({ ...productionValues, ...overrides })) {
     if (options.omit?.includes(key)) {
       continue;
