@@ -260,12 +260,18 @@ export function createVersionDiagnostics(
     ]);
   }
 
-  render();
-  void operateAllowed.then((permitted) => {
-    if (permitted === false && context.isCurrent()) {
-      operateDenied = true;
-      render();
+  // The page passes each newer Agent operate answer it reads (finding 2328); a missing answer
+  // leaves the button enabled, and the API still decides.
+  function applyOperate(permitted: boolean | undefined) {
+    const denied = permitted === false;
+    if (denied === operateDenied || !context.isCurrent()) {
+      return;
     }
-  });
-  return { section, render };
+    operateDenied = denied;
+    render();
+  }
+
+  render();
+  void operateAllowed.then(applyOperate);
+  return { section, render, applyOperate };
 }

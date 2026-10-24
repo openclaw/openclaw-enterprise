@@ -2367,7 +2367,7 @@ export async function renderAgentDetail(
     if ("revision" in found) {
       versionRecord = createVersionDeploymentEvidence(context, path, selected, {
         shared: activityRevisionId === selected && !latestDeploymentUnavailable,
-        operateAllowed: callerPermissionsRead.then((permissions) => permissions?.operate),
+        operateAllowed: latestPermissionsRead.then((permissions) => permissions?.operate),
       });
       versionEvidence.append(...versionRecord.panels);
       if (latestDeploymentRecord?.deploymentId === selected) {
@@ -3003,6 +3003,17 @@ export async function renderAgentDetail(
     }
   }
 
+  // Every operate-gated control follows the newest answer read, without a reload: the Stop row,
+  // the shown version's Run diagnostics, and Workspace editors, shown or parked (finding 2328).
+  function applyOperateAnswer(allowed: boolean | undefined) {
+    stopPanel.applyOperate(allowed);
+    versionRecord?.applyOperate(allowed);
+    mountedTab?.applyOperate?.(allowed);
+    for (const tab of retainedTabs.values()) {
+      tab.applyOperate?.(allowed);
+    }
+  }
+
   // Reads the caller's permission answer again; a failed read keeps the last answer.
   function rereadPermissions() {
     const previous = latestPermissionsRead;
@@ -3014,6 +3025,7 @@ export async function renderAgentDetail(
           if (latestDeploymentStatus === "failed" && !deleting) {
             renderLatestDeployment();
           }
+          applyOperateAnswer(permissions?.operate);
         }
         return permissions;
       },
@@ -3163,14 +3175,6 @@ export async function renderAgentDetail(
       // The deployment may have settled while this tab was parked.
       renderVersionNotice();
       retained.resumeDrafts?.();
-      // Logs can observe a newer Agent operate answer while this editor is parked.
-      if (retained.applyOperate) {
-        void latestPermissionsRead.then((permissions) => {
-          if (context.isCurrent() && mountedTab === retained) {
-            retained.applyOperate?.(permissions?.operate);
-          }
-        });
-      }
       return;
     }
     showDraftEditorNavigationBlock = showBlockInPanel;

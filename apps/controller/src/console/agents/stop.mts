@@ -404,16 +404,26 @@ export function createAgentStop(
     cancel.focus();
   }
 
-  render();
-  void allowed?.then((permitted) => {
-    if (permitted === false && context.isCurrent()) {
-      state.forbidden = true;
-      restrictConfirmation?.();
-      render();
+  // The page passes each newer Agent operate answer it reads, so a grant or revocation seen by
+  // Logs applies without a reload (finding 2328). Only a denial hides the row; a missing answer
+  // keeps it, and the API still decides.
+  function applyOperate(permitted: boolean | undefined) {
+    const forbidden = permitted === false;
+    if (forbidden === state.forbidden || !context.isCurrent()) {
+      return;
     }
-  });
+    state.forbidden = forbidden;
+    if (forbidden) {
+      restrictConfirmation?.();
+    }
+    render();
+  }
+
+  render();
+  void allowed?.then(applyOperate);
   return {
     section,
+    applyOperate,
     // The detail page reports whether its version list loaded empty (true), loaded with
     // versions (false), or failed (null).
     setNoReadableVersions(value: boolean | null) {

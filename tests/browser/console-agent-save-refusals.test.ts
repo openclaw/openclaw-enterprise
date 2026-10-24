@@ -475,8 +475,25 @@ test("a member without Agent operate sees workspace Saves unavailable with the r
   assert.deepEqual(writes, []);
 });
 
+const DIAGNOSTICS_DENIED = "Your access does not include running diagnostics for this Agent.";
+
+// The page's other operate-gated controls follow the same observed answer as Workspace: the Stop
+// row hides and each version's Run diagnostics disables while operate is denied (finding 2328).
+async function expectOperateControls(page: Page, allowed: boolean) {
+  const stopRow = page.getByRole("region", { name: "Stop Agent", exact: true });
+  await stopRow.waitFor({ state: allowed ? "visible" : "hidden" });
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  const run = page.getByRole("button", { name: "Run diagnostics for this version", exact: true });
+  await run.waitFor();
+  const denial = page.getByText(DIAGNOSTICS_DENIED, { exact: true });
+  await denial.waitFor({ state: allowed ? "hidden" : "visible" });
+  assert.equal(await run.isDisabled(), !allowed);
+  await page.getByRole("tab", { name: "Workspace files", exact: true }).click();
+}
+
 // The Workspace editor is kept while the reader visits Logs. Logs can observe a newer Agent
-// operate answer. Coming back must apply that answer and keep any unsaved text.
+// operate answer. Coming back must apply that answer and keep any unsaved text; Stop and Run
+// diagnostics follow it too, without a reload.
 test("restoring Workspace applies the operate answer the page already observed", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -526,6 +543,7 @@ test("restoring Workspace applies the operate answer the page already observed",
     await page.getByText(`${name} loaded.`, { exact: true }).waitFor();
   }
   assert.equal(await editor.isEditable(), false);
+  await expectOperateControls(page, false);
 
   // The first Logs visit records the status denial without a fresh permission read.
   await page.getByRole("tab", { name: "Logs", exact: true }).click();
@@ -556,6 +574,8 @@ test("restoring Workspace applies the operate answer the page already observed",
   await page.getByText("AGENTS.md loaded.", { exact: true }).waitFor();
   assert.equal(await page.getByText(reason, { exact: true }).count(), 0);
   assert.equal(await editor.isEditable(), true);
+  await expectOperateControls(page, true);
+  await page.getByText("AGENTS.md loaded.", { exact: true }).waitFor();
   await editor.fill("kept across the revocation");
 
   fixture.policy.bindings.splice(
@@ -575,6 +595,8 @@ test("restoring Workspace applies the operate answer the page already observed",
   await page.getByRole("tab", { name: "Workspace files", exact: true }).click();
   await page.getByText(reason, { exact: true }).waitFor();
   assert.equal(await editor.isEditable(), false);
+  assert.equal(await editor.inputValue(), "kept across the revocation");
+  await expectOperateControls(page, false);
   assert.equal(await editor.inputValue(), "kept across the revocation");
 });
 
