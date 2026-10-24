@@ -3537,6 +3537,177 @@ test(
   },
 );
 
+// Kubernetes validates NetworkPolicy peers only when Helm applies them, after earlier objects
+// of the upgrade have changed, so the chart refuses a peer the API server would (finding 2336).
+test("NetworkPolicy peers from values are refused before install", tooling, async (t) => {
+  const sandbox = {
+    ...gatewayRoutingValues,
+    "gatewayRouting.sandbox.enabled": "true",
+    "gatewayRouting.sandbox.domain": "sandbox.example.test",
+    "gatewayRouting.sandbox.tlsSecretName": "sandbox-tls",
+  };
+  const peer = "gatewayRouting.sandbox.ingressPeers[0]";
+  const selectorPeer = {
+    [`${peer}.namespaceSelector.matchLabels.team`]: "public",
+    [`${peer}.podSelector.matchLabels.app`]: "edge",
+  };
+  const expression = (selector, fields) =>
+    Object.fromEntries(
+      Object.entries(fields).map(([field, value]) => [
+        `${peer}.${selector}.matchExpressions[0].${field}`,
+        value,
+      ]),
+    );
+  // Match Helm's own message on stderr: the error message also holds the --set command line.
+  const refuses = async (values, message, options = {}) =>
+    assert.rejects(
+      render({ ...sandbox, ...values }, options),
+      ({ stderr }) => stderr.includes(message),
+      message,
+    );
+  const at = "gatewayRouting.sandbox.ingressPeers[0]";
+  for (const [values, message] of [
+    [
+      { [`${peer}.ipBlock.cidr`]: "10.0.0.0/33" },
+      `${at}.ipBlock.cidr requires an IPv4 or IPv6 CIDR`,
+    ],
+    [
+      { [`${peer}.ipBlock.cidr`]: "not-a-cidr" },
+      `${at}.ipBlock.cidr requires an IPv4 or IPv6 CIDR`,
+    ],
+    [
+      { [`${peer}.ipBlock.cidr`]: "10.0.0.0/8", [`${peer}.ipBlock.except[0]`]: "10.1.0.0" },
+      `${at}.ipBlock.except[0] requires an IPv4 or IPv6 CIDR`,
+    ],
+    [
+      { [`${peer}.ipBlock.cidr`]: "10.0.0.0/8", [`${peer}.ipBlock.excepts[0]`]: "10.1.0.0/16" },
+      `${at}.ipBlock has unknown field excepts`,
+    ],
+    [
+      { ...selectorPeer, [`${peer}.ipBlock.cidr`]: "10.0.0.0/8" },
+      `${at} must set either ipBlock or selectors, not both`,
+    ],
+    [{ [`${peer}.podSelectors.matchLabels.app`]: "edge" }, `${at} has unknown field podSelectors`],
+    [
+      { [`${peer}.podSelector.matchExpression[0].key`]: "app" },
+      `${at}.podSelector has unknown field matchExpression`,
+    ],
+    [
+      expression("namespaceSelector", { key: "team", operator: "Equals", "values[0]": "public" }),
+      `${at}.namespaceSelector.matchExpressions[0].operator must be In, NotIn, Exists or DoesNotExist`,
+    ],
+    [
+      expression("podSelector", { key: "bad key!", operator: "Exists" }),
+      `${at}.podSelector.matchExpressions[0] contains an invalid Kubernetes label key`,
+    ],
+    [
+      expression("podSelector", { key: "app", operator: "In" }),
+      `${at}.podSelector.matchExpressions[0].values must list label values for In and NotIn`,
+    ],
+    [
+      expression("podSelector", { key: "app", operator: "In", "values[0]": "bad value" }),
+      `${at}.podSelector.matchExpressions[0].values contains an invalid Kubernetes label value`,
+    ],
+    [
+      expression("podSelector", { key: "app", operator: "In", "values[0]": "1" }),
+      `${at}.podSelector.matchExpressions[0].values must be strings`,
+    ],
+    [
+      expression("podSelector", { key: "app", operator: "Exists", "values[0]": "edge" }),
+      `${at}.podSelector.matchExpressions[0].values must be empty for Exists and DoesNotExist`,
+    ],
+  ]) {
+    await refuses(values, message);
+  }
+
+  // Shapes --set cannot write: an empty peer, and null fields the API server reads as unset.
+  const directory = await temporaryDirectory(t, "occ-peer-shapes-");
+  const peersFile = async (name, ingressPeers) => {
+    const path = join(directory, `${name}.json`);
+    await writeFile(path, JSON.stringify({ gatewayRouting: { sandbox: { ingressPeers } } }));
+    return path;
+  };
+  await refuses({}, `${at} must set either ipBlock or selectors`, {
+    valuesFiles: [await peersFile("empty", [{ ipBlock: null }])],
+  });
+  const policyPeers = async (values, options = {}) => {
+    const objects = await resources((await render({ ...sandbox, ...values }, options)).stdout);
+    const policy = objects.find(
+      ({ kind, metadata }) =>
+        kind === "NetworkPolicy" && metadata.name.endsWith("-envoy-dataplane"),
+    );
+    return policy.spec.ingress[0].from;
+  };
+  const nullSibling = [
+    { ipBlock: null, namespaceSelector: null, podSelector: { matchLabels: { app: "edge" } } },
+  ];
+  assert.deepEqual(
+    await policyPeers({}, { valuesFiles: [await peersFile("null-sibling", nullSibling)] }),
+    nullSibling,
+  );
+
+  // Control: each valid peer shape still renders as written.
+  for (const [values, expected] of [
+    [
+      { [`${peer}.ipBlock.cidr`]: "0.0.0.0/0", [`${peer}.ipBlock.except[0]`]: "10.0.0.0/8" },
+      [{ ipBlock: { cidr: "0.0.0.0/0", except: ["10.0.0.0/8"] } }],
+    ],
+    [{ [`${peer}.ipBlock.cidr`]: "::/0" }, [{ ipBlock: { cidr: "::/0" } }]],
+    [
+      {
+        ...expression("namespaceSelector", {
+          key: "kubernetes.io/metadata.name",
+          operator: "NotIn",
+          "values[0]": "kube-system",
+        }),
+        ...expression("podSelector", { key: "app", operator: "Exists" }),
+      },
+      [
+        {
+          namespaceSelector: {
+            matchExpressions: [
+              { key: "kubernetes.io/metadata.name", operator: "NotIn", values: ["kube-system"] },
+            ],
+          },
+          podSelector: { matchExpressions: [{ key: "app", operator: "Exists" }] },
+        },
+      ],
+    ],
+  ]) {
+    assert.deepEqual(await policyPeers(values), expected);
+  }
+
+  const git = {
+    ...protectedRepositoryValues,
+    "openshellGit.enabled": "true",
+    "openshellGit.tlsSecretName": "openshell-git-tls",
+    "openshellGit.issuerPublicKeyConfigMapName": "openshell-gateway-public",
+    "openshellGit.clients[0].namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name":
+      "openshell-system",
+    "openshellGit.clients[0].podSelector.matchLabels.app": "openshell-supervisor",
+  };
+  for (const [values, message] of [
+    [
+      { "openshellGit.clients[0].podSelector.matchLabels.app": "-bad-" },
+      "openshellGit.clients[0].podSelector.matchLabels contains an invalid Kubernetes label value",
+    ],
+    [
+      {
+        "openshellGit.clients[0].namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name":
+          "openshell system",
+      },
+      "openshellGit.clients[0].namespaceSelector.matchLabels contains an invalid Kubernetes label value",
+    ],
+  ]) {
+    await assert.rejects(
+      render({ ...git, ...values }),
+      ({ stderr }) => stderr.includes(message),
+      message,
+    );
+  }
+  await render(git);
+});
+
 test("database CA mounts stay distinct from active production volume mounts", tooling, async () => {
   const authorityValues = {
     "egressAuthority.enabled": "true",

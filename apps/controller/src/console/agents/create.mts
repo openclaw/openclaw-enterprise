@@ -1393,7 +1393,9 @@ function renderAgentForm(
     if (values) {
       retainPendingModel(values);
     }
-    const selected = configuredModelSelection(values);
+    // A cleared Model ID stays cleared until the JSON changes a model selection: a roster entry
+    // still names the previous primary, but the defaults no longer select it (finding 2342).
+    const selected = pendingModelSelections ? undefined : configuredModelSelection(values);
     const ref = modelPrimary(selected);
     const selectedHarness = values && configuredHarnessId(values);
     if (typeof ref === "string" && selectedHarness) {

@@ -464,6 +464,11 @@ test("Changing a Preset model keeps explicit and inherited roster selections dep
         await model.press("Tab");
         const cleared: typeof values = JSON.parse(await editor.inputValue());
         assert.equal(cleared.agents.entries.main.model, reference(replacement));
+        // An edit that leaves every selection unchanged keeps the clear pending: the control must
+        // not refill from a roster entry while the defaults select no primary (finding 2342).
+        await openAdvancedSettings(page);
+        await editor.fill(JSON.stringify(cleared));
+        assert.equal(await model.inputValue(), "");
         if (values.agents.entries.inherited) {
           assert.deepEqual(cleared.agents.entries.inherited?.models, {
             [reference(replacement)]: values.agents.entries.inherited.models[reference(original)],
