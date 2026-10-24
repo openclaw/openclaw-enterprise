@@ -1888,6 +1888,7 @@ test("Create Agent's preflight refuses what Configuration and Agent create would
     "A plugin selection names a plugin that the selected Plugin Driver (occ-plugin) does not offer: occ-plugin:missing. Check each plugin ID and its Driver prefix against that Driver's catalog; an Installation selects one Plugin Driver.",
   );
 
+  // No route lists Configurations; the Agent and Secret collections stay empty.
   for (const collection of ["agents", "secrets"]) {
     const listed = await controller.request("GET", `/namespaces/${namespace.id}/${collection}`);
     assert.deepEqual(listed.data, [], collection);

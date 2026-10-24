@@ -842,7 +842,8 @@ test("an Agent reader sees a stopped OpenShell Sandbox; an unreadable record is 
   assert.equal(failed.text.includes("sandbox:read"), false);
   gateway.state.sandboxError = undefined;
 
-  // Another selected Compute Driver cannot locate the revision's Sandbox, so it is unknown.
+  // A revision is read only through the Compute Driver it was placed on: with another one
+  // selected, even a ready Sandbox is unknown and OpenShell is not read.
   const placed = fixture.computeDriver;
   const replacement = createRuntimeLogComputeDriver({
     id: "replacement-compute",
@@ -851,10 +852,12 @@ test("an Agent reader sees a stopped OpenShell Sandbox; an unreadable record is 
   fixture.controller.registerDriver(replacement);
   fixture.controller.selectDriver("compute", replacement.id);
   gateway.state.sandbox = record("SANDBOX_PHASE_READY");
+  const before = gateway.requests.length;
   assert.deepEqual(
     (await read(reader.session)).data,
     observed({ state: "unknown", code: "UNAVAILABLE" }),
   );
+  assert.equal(gateway.requests.length, before, "no read through an unplaced Compute Driver");
   fixture.controller.selectDriver("compute", placed.id);
 
   // Without Agent read the request is denied before any Sandbox read.
@@ -1096,16 +1099,20 @@ test("without a log-reading Sandbox Driver the sandbox source is absent", async 
     false,
   );
   assert.equal("harness" in runtime.data, false, "an embedded Agent has no Harness Sandbox");
+  const logs = await fixture.request("GET", target.logsPath("source=sandbox"));
+  assert.equal(logs.status, 400, logs.text);
+  assert.equal(logs.body.error.code, "RUNTIME_LOGS_SOURCE_UNAVAILABLE");
   await fixture.activate(target);
   const harness = await fixture.request(
     "GET",
     `/namespaces/${target.namespace.id}/agents/${target.agent.id}/harness-status`,
   );
   assert.equal(harness.status, 200, harness.text);
-  assert.deepEqual(harness.data, { status: "unobserved" });
-  const logs = await fixture.request("GET", target.logsPath("source=sandbox"));
-  assert.equal(logs.status, 400, logs.text);
-  assert.equal(logs.body.error.code, "RUNTIME_LOGS_SOURCE_UNAVAILABLE");
+  assert.deepEqual(
+    harness.data,
+    { status: "unobserved" },
+    "an active embedded Agent is unobserved, not unknown",
+  );
 });
 
 test("the OpenShell log reader exposes GetSandboxLogs and nothing else", async () => {
