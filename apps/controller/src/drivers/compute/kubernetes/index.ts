@@ -91,7 +91,6 @@ import type {
   AgentRuntimeCredentialStatus,
   ComputeAgentProvisioningInput,
   ComputeDriver,
-  HarnessExecutionMode,
   ComputeAgentBinding,
   ComputeAgentRevisionBinding,
   ComputePendingReason,
@@ -4440,13 +4439,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
       secretBindings,
       credentialSourceType,
     );
+    // The Agent's execution mode decides placement, so Agent save (null bindings) refuses it too
+    // (finding 2376).
+    this.requireDedicatedRuntimePlacement(harness);
     // Preparation renders these settings and checks the rendered document
     // (validateAdmittedHarnessAuth), so a conflicting caller value is refused here, before a
     // dedicated deployment stops its predecessors. They follow the Installation's runtime and
-    // routing, so Agent save leaves them to deployment; it checks placement through
-    // validateExecutionPlacement.
+    // routing, so Agent save leaves them to deployment.
     if (secretBindings !== null) {
-      this.validateExecutionPlacement(harness.mode);
       this.requireComputeRenderedSettings(harness, configuration);
     }
   }
@@ -4454,11 +4454,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
   // With runtime set, preparation refuses a dedicated Harness without these Installation
   // settings (DEDICATED_STORAGE_ROUTING_REQUIRED, DEDICATED_GATEWAY_NODE_SELECTOR_REQUIRED) only
   // after the deployment stopped its predecessors (finding 2349). Embedded and channel-runtime
-  // Installations need none of them, so startup accepts them; Agent save, deployment admission
-  // and the Installation's OpenClaw execution modes refuse here, naming the setting (finding 2376).
-  validateExecutionPlacement(executionMode: HarnessExecutionMode): void {
+  // Installations need none of them, so startup accepts them; Agent save and deployment admission
+  // refuse here, naming the setting.
+  private requireDedicatedRuntimePlacement(harness: RevisionHarnessDescriptor): void {
     const runtime = this.options.runtime;
-    if (executionMode !== "dedicated" || runtime === undefined) {
+    if (harness.mode !== "dedicated" || runtime === undefined) {
       return;
     }
     // Composition supplies node enrollment in every controller, so gatewayRouting is the

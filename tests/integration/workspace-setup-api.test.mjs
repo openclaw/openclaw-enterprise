@@ -517,56 +517,52 @@ test("Agent create refuses dedicated OpenClaw on OpenShell settings its workspac
 });
 
 // Kubernetes Compute with runtime storage but no gateway routing cannot place a dedicated Harness,
-// and deployment refuses it after Agent save answered 201. Save refuses it with the deployment
-// message and the Installation stops offering dedicated OpenClaw (finding 2376).
-test("Agent create refuses a dedicated Harness the Kubernetes Compute settings cannot place", async (t) => {
+// and deployment refused it after Agent save answered 201. Save now refuses it with the deployment
+// message wherever it checks Harness authentication: a Configuration that selects a model and a
+// Secret or runtime binding (finding 2376).
+test("Agent save refuses a dedicated Harness the Kubernetes Compute settings cannot place", async (t) => {
   // The fixture's unrouted Driver has no node enrollment either (composition always supplies it).
   const message =
     "Dedicated Agents need gateway routing and node enrollment in this Installation's Kubernetes Compute configuration. Select an embedded Agent, or ask an operator to configure it.";
   for (const routed of [false, true]) {
     const f = await setup(t, { channelRuntime: true, routed });
+    const secret = await f.createSecret(f.namespace.id, `model-key-${routed}`, "test-api-key");
+    const harnessAuth = { method: "api_key", source: secret.ref };
     const codex = await storeConfiguration(f, "codex", "codex/gpt-5.1");
+    const openclaw = await storeConfiguration(f, "openclaw", "openai/gpt-4.1");
     const dedicated = await f.create("Codex", {
       configurationId: codex.data.id,
       executionMode: "dedicated",
+      harnessAuth,
     });
-    const embedded = await f.create("Embedded");
+    const embedded = await f.create("Embedded", { configurationId: openclaw.data.id, harnessAuth });
     assert.equal(embedded.status, 201, JSON.stringify(embedded.body));
     const update = await f.request("PATCH", `${f.path}/${embedded.data.id}`, {
       body: { configurationId: codex.data.id, executionMode: "dedicated" },
     });
-    for (const response of [dedicated, update]) {
+    for (const [response, saved] of [
+      [dedicated, 201],
+      [update, 200],
+    ]) {
       if (routed) {
-        assert.equal(
-          response.status,
-          dedicated === response ? 201 : 200,
-          JSON.stringify(response.body),
-        );
+        assert.equal(response.status, saved, JSON.stringify(response.body));
         continue;
       }
       assert.equal(response.status, 400, JSON.stringify(response.body));
       assert.equal(response.body.error.code, "INVALID_REQUEST");
       assert.equal(response.body.error.message, message);
     }
-    if (!routed) {
-      const stored = (await f.request("GET", f.path)).data;
-      assert.deepEqual(
-        stored.map(({ name, executionMode }) => [name, executionMode]),
-        [["Embedded", "embedded"]],
-      );
+    if (routed) {
+      continue;
     }
-    // Dedicated OpenClaw needs a Sandbox Driver; the Installation offers it only when placed.
-    const sandboxed = await setup(t, { ...openShellSandbox(t), channelRuntime: true, routed });
-    const installation = await sandboxed.request("GET", "/installation");
-    assert.equal(installation.status, 200, JSON.stringify(installation.body));
-    assert.deepEqual(
-      installation.data.capabilities.openclaw.executionModes,
-      routed ? ["dedicated"] : [],
-    );
-    // Create Agent names the setting from admission's own message (finding 2373).
-    assert.equal(
-      installation.data.capabilities.openclaw.settingRefusals?.dedicated,
-      routed ? undefined : message,
-    );
+    // A draft Configuration that selects no model has nothing to check Harness authentication
+    // against, so save accepts it; deployment refuses it.
+    const draft = await f.create("Draft", { executionMode: "dedicated", harnessAuth });
+    assert.equal(draft.status, 201, JSON.stringify(draft.body));
+    const stored = (await f.request("GET", f.path)).data;
+    assert.deepEqual(stored.map(({ name, executionMode }) => [name, executionMode]).sort(), [
+      ["Draft", "dedicated"],
+      ["Embedded", "embedded"],
+    ]);
   }
 });
