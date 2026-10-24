@@ -932,43 +932,19 @@ capabilities:
 {{- end -}}
 {{- end -}}
 
-{{/* The value of a quantity openclaw.quantity accepted, as a float for sign and request-to-limit
-     checks. ParseQuantity reads a missing numerator as zero. The API server compares exact
-     fixed-point values, rounded up to nano units; a float differs past about 15 significant
-     digits and below 1n. */}}
-{{- define "openclaw.quantityValue" -}}
-{{- $quantity := trim (toString .) -}}
-{{- $suffix := regexFind "([KMGTPE]i|[eE][+-]?[0-9]+|[numkMGTPE])$" $quantity -}}
-{{- $number := trimSuffix $suffix $quantity -}}
-{{- if not (regexMatch "[0-9]" $number) -}}{{- $number = "0" -}}{{- end -}}
-{{- $binary := dict "Ki" 1024 "Mi" 1048576 "Gi" 1073741824 "Ti" 1099511627776 "Pi" 1125899906842624 "Ei" 1152921504606846976 -}}
-{{- $decimal := dict "" 0 "n" -9 "u" -6 "m" -3 "k" 3 "M" 6 "G" 9 "T" 12 "P" 15 "E" 18 -}}
-{{- if hasKey $binary $suffix -}}
-{{- mulf (float64 $number) (index $binary $suffix) -}}
-{{- else if hasKey $decimal $suffix -}}
-{{- float64 (printf "%se%d" $number (index $decimal $suffix)) -}}
-{{- else -}}
-{{- float64 (printf "%s%s" $number $suffix) -}}
-{{- end -}}
-{{- end -}}
-
 {{/* openclaw.quantity, and Kubernetes refuses a negative resource quantity or emptyDir sizeLimit.
-     sprig's float64 reads an exponent beyond float range as 0, so a nonzero numerator that reads
-     as 0 is refused rather than compared as 0. */}}
+     A syntax check, not a parser: a leading "-" before a nonzero digit is negative ("-0" is zero).
+     Range and request-to-limit checks stay Kubernetes' responsibility (see openclaw.quantity). */}}
 {{- define "openclaw.nonNegativeQuantity" -}}
 {{- include "openclaw.quantity" . -}}
-{{- $value := float64 (include "openclaw.quantityValue" .value) -}}
-{{- if and (eq $value 0.0) (regexMatch "^[+-]?[0-9.]*[1-9]" (trim (toString .value))) -}}
-{{- fail (printf "%s is outside the range this chart can check" .name) -}}
-{{- end -}}
-{{- if lt $value 0.0 -}}
+{{- if regexMatch "^-[0-9.]*[1-9]" (trim (toString .value)) -}}
 {{- fail (printf "%s must not be negative" .name) -}}
 {{- end -}}
 {{- end -}}
 
 {{/* A null map clears chart defaults. Skip it; indexing nil aborts install and upgrade. Kubernetes
-     refuses a Deployment whose container resources name another resource, are negative, or
-     request more than their limit, after the release's other objects changed. */}}
+     refuses a Deployment whose container resources name another resource or are negative, after
+     the release's other objects changed. */}}
 {{- define "openclaw.resourceRequirements" -}}
 {{- if .requirements -}}
 {{- $name := .name -}}
@@ -983,16 +959,6 @@ capabilities:
 {{- if not (kindIs "invalid" $qty) -}}
 {{- include "openclaw.nonNegativeQuantity" (dict "name" $field "value" $qty) -}}
 {{- end -}}
-{{- end -}}
-{{- end -}}
-{{- end -}}
-{{- $limits := index $requirements "limits" | default dict -}}
-{{- range $key, $request := index $requirements "requests" | default dict -}}
-{{- $limit := index $limits $key -}}
-{{- if and (not (kindIs "invalid" $request)) (not (kindIs "invalid" $limit)) -}}
-{{- /* Kubernetes saturates larger values to the int64 maximum, which reads as 2^63 here. */ -}}
-{{- if gt (minf 9223372036854775807.0 (include "openclaw.quantityValue" $request)) (minf 9223372036854775807.0 (include "openclaw.quantityValue" $limit)) -}}
-{{- fail (printf "%s.requests.%s (%v) must not exceed %s.limits.%s (%v)" $name $key $request $name $key $limit) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}

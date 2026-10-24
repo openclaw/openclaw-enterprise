@@ -163,7 +163,7 @@ Before emitting the DaemonSet,
 `deploy/helm/openclaw-enterprise/templates/_helpers.tpl:openclaw.quantity`
 checks the Collector resource and volume quantities for obvious syntax errors,
 and `openclaw.nonNegativeQuantity` and `openclaw.resourceRequirements` refuse
-negative values, unknown resource names and requests above limits. Malformed
+negative values and unknown resource names. Malformed
 values stop rendering with the setting name; absent optional limits pass
 through. Kubernetes performs complete validation after rendering. See the
 [production settings](../reference/settings/production.md#production-operational-logging-collection)

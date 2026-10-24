@@ -5948,98 +5948,63 @@ const collectorValues = {
 };
 
 // Kubernetes refuses these at apply, after other objects of the release changed (finding 2337).
-test(
-  "Helm refuses resource names, negative quantities and requests above limits",
-  tooling,
-  async () => {
-    const values = { ...collectorValues, ...slackProxyValues };
-    for (const [field, value, message] of [
-      ["resources.limits.cpu", "-1", "resources.limits.cpu must not be negative"],
-      [
-        "slackProxy.resources.requests.memory",
-        "-64Mi",
-        "slackProxy.resources.requests.memory must not be negative",
-      ],
-      [
-        "logging.collector.state.sizeLimit",
-        "-1Mi",
-        "logging.collector.state.sizeLimit must not be negative",
-      ],
-      [
-        "logging.collector.tmp.sizeLimit",
-        "-1",
-        "logging.collector.tmp.sizeLimit must not be negative",
-      ],
-      [
-        "resources.limits.gpu",
-        "1",
-        "resources.limits.gpu names a resource Kubernetes does not accept",
-      ],
-      [
-        "logging.collector.resources.requests.requests\\.example\\.com/gpu",
-        "1",
-        "requests.example.com/gpu names a resource",
-      ],
-      [
-        "slackProxy.resources.limits.hugepages-huge",
-        "4Mi",
-        "slackProxy.resources.limits.hugepages-huge names a resource",
-      ],
-      [
-        "resources.requests.cpu",
-        "1e400",
-        "resources.requests.cpu is outside the range this chart can check",
-      ],
-      [
-        "resources.requests.memory",
-        "1Gi",
-        "resources.requests.memory (1Gi) must not exceed resources.limits.memory (512Mi)",
-      ],
-      [
-        "resources.requests.cpu",
-        "501m",
-        "resources.requests.cpu (501m) must not exceed resources.limits.cpu (500m)",
-      ],
-      [
-        "slackProxy.resources.requests.cpu",
-        "0.26",
-        "slackProxy.resources.requests.cpu (0.26) must not exceed",
-      ],
-      [
-        "logging.collector.resources.requests.memory",
-        "385Mi",
-        "logging.collector.resources.requests.memory (385Mi) must not exceed",
-      ],
-    ]) {
-      await assert.rejects(render({ ...values, [field]: value }), (error) => {
-        assert.ok(error.stderr.includes(message), `${field}: ${error.stderr}`);
-        return true;
-      });
-    }
-    // Equal values in other spellings, extended and huge page resources, and zero pass.
-    await render({
-      ...values,
-      "resources.requests.cpu": "0.5",
-      "resources.limits.cpu": "500m",
-      "resources.requests.memory": "512Mi",
-      "resources.limits.memory": "536870912",
-      "resources.requests.example\\.com/gpu": "1",
-      "resources.limits.example\\.com/gpu": "1",
-      "slackProxy.resources.limits.hugepages-2Mi": "4Mi",
-      "slackProxy.resources.requests.ephemeral-storage": "0",
-      "logging.collector.resources.requests.memory": "384e6",
-      "logging.collector.state.sizeLimit": "0",
+test("Helm refuses unknown resource names and negative quantities", tooling, async () => {
+  const values = { ...collectorValues, ...slackProxyValues };
+  for (const [field, value, message] of [
+    ["resources.limits.cpu", "-1", "resources.limits.cpu must not be negative"],
+    ["resources.requests.cpu", "-.5m", "resources.requests.cpu must not be negative"],
+    [
+      "slackProxy.resources.requests.memory",
+      "-64Mi",
+      "slackProxy.resources.requests.memory must not be negative",
+    ],
+    [
+      "logging.collector.state.sizeLimit",
+      "-1Mi",
+      "logging.collector.state.sizeLimit must not be negative",
+    ],
+    [
+      "logging.collector.tmp.sizeLimit",
+      "-1",
+      "logging.collector.tmp.sizeLimit must not be negative",
+    ],
+    [
+      "resources.limits.gpu",
+      "1",
+      "resources.limits.gpu names a resource Kubernetes does not accept",
+    ],
+    [
+      "logging.collector.resources.requests.requests\\.example\\.com/gpu",
+      "1",
+      "requests.example.com/gpu names a resource",
+    ],
+    [
+      "slackProxy.resources.limits.hugepages-huge",
+      "4Mi",
+      "slackProxy.resources.limits.hugepages-huge names a resource",
+    ],
+  ]) {
+    await assert.rejects(render({ ...values, [field]: value }), (error) => {
+      assert.ok(error.stderr.includes(message), `${field}: ${error.stderr}`);
+      return true;
     });
-    // Kubernetes saturates both values to the int64 maximum, and reads page sizes as quantities.
-    await render({
-      ...values,
-      "resources.requests.memory": "9Ei",
-      "resources.limits.memory": "8Ei",
-      "slackProxy.resources.requests.hugepages-1\\.5Gi": "3Gi",
-      "slackProxy.resources.limits.hugepages-1\\.5Gi": "3Gi",
-    });
-  },
-);
+  }
+  // Extended and huge page resources pass, and so does zero, signed or not. Request above
+  // limit is left to Kubernetes (#1676 keeps the chart to syntax checks).
+  await render({
+    ...values,
+    "resources.requests.cpu": "2",
+    "resources.limits.cpu": "500m",
+    "resources.requests.example\\.com/gpu": "1",
+    "resources.limits.example\\.com/gpu": "1",
+    "slackProxy.resources.limits.hugepages-2Mi": "4Mi",
+    "slackProxy.resources.requests.hugepages-1\\.5Gi": "3Gi",
+    "slackProxy.resources.requests.ephemeral-storage": "-0",
+    "logging.collector.resources.requests.memory": "384e6",
+    "logging.collector.state.sizeLimit": "0",
+    "logging.collector.tmp.sizeLimit": "-0.0Mi",
+  });
+});
 
 test("Helm rejects obvious malformed quantity syntax", tooling, async () => {
   const collector = collectorValues;
@@ -6098,8 +6063,6 @@ test("Helm rejects obvious malformed quantity syntax", tooling, async () => {
       {
         ...collector,
         "resources.requests.memory": "1E",
-        "resources.limits.memory": "1E",
-        "logging.collector.resources.limits.memory": "1E",
         "logging.collector.resources.requests.memory": "1E",
         "logging.collector.state.sizeLimit": "1E",
       },
@@ -6170,10 +6133,7 @@ test("Helm rejects obvious malformed quantity syntax", tooling, async () => {
     );
     const withDigit = await render(
       {},
-      {
-        ...options,
-        strings: { "resources.requests.memory": "1Pi", "resources.limits.memory": "1Pi" },
-      },
+      { ...options, strings: { "resources.requests.memory": "1Pi" } },
     );
     assert.match(withDigit.stdout, /memory: 1Pi/);
 

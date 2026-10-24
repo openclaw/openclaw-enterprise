@@ -89,8 +89,7 @@ IPv6 CIDR`.
 
 **What breaks.** `helm install` and `helm upgrade` refuse a `resources`,
 `slackProxy.resources` or `logging.collector.resources` entry with a negative
-quantity, a request above its limit (for example a `1Gi` memory request with
-the default `512Mi` limit), or a resource name other than `cpu`, `memory`,
+quantity or a resource name other than `cpu`, `memory`,
 `ephemeral-storage`, `hugepages-<size>` or a domain-prefixed extended resource
 such as `example.com/gpu`. They also refuse a negative
 `logging.collector.state.sizeLimit` or `tmp.sizeLimit`. Earlier builds rendered
@@ -102,11 +101,10 @@ NetworkPolicy name; earlier builds failed to create it.
 **Who is affected.** Releases that set one of these values by hand.
 
 **How to tell.** Helm fails before applying anything, naming the value, for
-example `resources.requests.memory (1Gi) must not exceed
-resources.limits.memory (512Mi)`.
+example `resources.limits.cpu must not be negative`. A request above its limit
+is still left to Kubernetes, which refuses it when Helm applies the release.
 
-**Steps.** Raise the limit or lower the request, remove the negative or
-unknown entry, and run the upgrade again.
+**Steps.** Remove the negative or unknown entry, and run the upgrade again.
 
 ## 2026-10-24: OpenShell refuses OpenClaw Agents without user namespaces off
 
