@@ -1,7 +1,7 @@
 ---
 created: 2026-09-02
 updated: 2026-10-23
-last_updated_session: authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d
+last_updated_session: worker-termination-observation
 ---
 
 # Common Operational Logging Flow
@@ -51,6 +51,9 @@ graph TD
     M --> N["Classify records and strip unapproved content"]
     N --> O["Queue with a size limit and OTLP HTTP exporter"]
   end
+  R["Operator starts worker observer"] --> S["Scoped Pod LIST then WATCH"]
+  S --> T["Project and deduplicate termination fields"]
+  T --> U["Private file receiver and retained backend"]
   O --> P["Optional demo Loki stores event body and structured metadata"]
   P --> Q["Grafana filters and formats retained metadata"]
 ```
@@ -90,12 +93,9 @@ characters, matching the work ID the API and worker share.
 Unsupported values and key shapes are excluded.
 The local worker emitter also retains `stopYields` from throttled drain-yield and
 completion records as a nonnegative safe integer; the Collector does not export this count.
-For any process, the sanitizer keeps `check`, `failure`, `reasonCode` and `harnessState`
-only as short identifier codes, never free text, and `fence` only as a nonnegative safe
-integer. The worker and the OpenShell Git runtime use them for expiry steps, failure
-classes, the reason code an Agent is shown, Harness state and route generations.
-`hintCode` (named refusal guidance) is a code too, and so is `command` on
-`auth:maintain` events. `installationId` and `orphanedConfigurationId` are kept only as
+The sanitizer keeps `check`, `failure`, `reasonCode`, `harnessState`, `hintCode`
+and the `auth:maintain` event's `command` as identifier codes, never free text;
+`fence` must be a nonnegative safe integer. `installationId` and `orphanedConfigurationId` are kept only as
 OCC-assigned `ins_` and `cfg_` UUIDs.
 
 Compute preparation failures may include a Driver-reviewed stage, classification,
@@ -153,19 +153,14 @@ for enablement and existing-Collector reuse, and the
 for isolation limits.
 
 `k8sattributes` maps identity before `transform/kubernetes-resource` removes
-internal Pod labels; removing shared labels per record would lose identity for
-later records in the batch. It also blocks pipeline start until its Pod cache
-syncs: `filelog` reads existing CRI files immediately, and a record processed
-without Pod identity is filtered out while its offset is still committed, so
-startup events such as `worker.started` would otherwise be lost for good.
+shared Pod labels, preserving identity across the batch. It blocks startup until
+its Pod cache syncs. Otherwise a downstream filter drops records without Pod
+identity while `filelog` commits their offsets, losing those startup events.
 
-Before emitting the DaemonSet,
 `deploy/helm/openclaw-enterprise/templates/_helpers.tpl:openclaw.quantity`
-checks the Collector resource and volume quantities for obvious syntax errors.
-Malformed values stop rendering with the setting name; absent optional limits
-pass through. Kubernetes performs complete validation after rendering. See the
-[production settings](../reference/settings/production.md#production-operational-logging-collection)
-for the supported scope.
+rejects obvious syntax errors in Collector resource and volume quantities, naming the setting;
+absent optional limits pass. Kubernetes completes validation after rendering.
+See [production settings](../reference/settings/production.md#production-operational-logging-collection).
 
 The chart validates one exporter destination: an IPv4 `/32` or paired namespace/Pod
 selectors, with a decimal TCP port from 1 to 65535. Leading zeros fail rendering:
@@ -213,12 +208,10 @@ letter, then at most 63 letters, digits, `_` or `-`, and no key or token shape):
 `check`, `failure`, `harnessState`, `hintCode` and `reasonCode` as `occ.check`,
 `occ.failure` (a device login keeps its own, below), `occ.harness_state`,
 `occ.hint_code` and `occ.reason_code`, and `fence`, a nonnegative safe integer, as
-`occ.fence`. So `worker.openshell-git-expiry` names the OpenShell Git expiry step
-and why it is pending, with `work.outcome` `pending`, `withdrawn` or
-`retire-runtime`, and `worker.repository-delivery-pending` shows that protected Git
-delivery is retrying. The reconcile retries every second, but that line is written when
-delivery starts failing (the first failed pass after the worker starts or after a completed
-pass), then at most once a minute. Its Sandbox Driver ID stays local, as do Installation and
+`occ.fence`. `worker.openshell-git-expiry` keeps `work.outcome` (`pending`,
+`withdrawn` or `retire-runtime`); `worker.repository-delivery-pending` reports Git
+delivery retries. Reconciliation retries every second; this event logs the first failure after
+worker startup or a completed pass, then at most once a minute. Its Sandbox Driver ID stays local, as do Installation and
 Configuration IDs.
 `worker.compute-prepare-failed` (a Compute Driver could not prepare a version) is
 ERROR and keeps `occ.code` plus the Namespace, Agent and Agent revision IDs and work identity
@@ -232,9 +225,8 @@ and its failure class of at most 64 allowed characters (such as `TimeoutError`) 
 `agent_runtime_credentials.cluster_denied` keeps only `request.id`; the denied verb,
 resource and Kubernetes namespace stay local. `agent_provisioning.compute_refused` (the
 Compute Driver refused a provisioning plan for a reason the caller cannot fix) keeps only
-`request.id`; the Driver's reason stays local. `http.dependency_unavailable` (the cause
-of an API `503 DEPENDENCY_UNAVAILABLE`, whose response keeps generic text) keeps only
-`request.id`; its route, error class, message and causes stay in the API's local log.
+`request.id`; the Driver's reason stays local. `http.dependency_unavailable` keeps only `request.id`; the API returns generic
+`503 DEPENDENCY_UNAVAILABLE` text. Its route, error class, message and causes stay local.
 `native_admin.websocket_audit_failed`
 keeps the Namespace, Agent and Agent revision IDs, and `native_admin.websocket_denial_audit_failed`
 carries none. `native_admin.compute_owner_mismatch` (native admin refused because the selected version belongs to another Compute Driver) keeps the same three IDs; the Driver IDs and
@@ -265,25 +257,32 @@ service, worker reconciliation, or PostgreSQL audit persistence.
 `deploy/helm/openclaw-observability-demo/templates/grafana.yaml:logs.json`
 
 `deploy/helm/openclaw-observability-demo/templates/_helpers.tpl:demo.serviceName`
-preserves short DNS-label Service names. For dotted, leading-digit or overlong
-release names, it prefixes the component and a normalized release name,
-then appends the original release hash. Ending with the hash separates these
-names from unchanged component-suffixed Service names. `templates/deployments.yaml` creates those Services;
-`templates/grafana.yaml` uses the same names in both datasource URLs.
-Deployment names, Pod selectors and discovery identity keep the full release.
-Before rendering, `demo.validate` refuses an uppercase image repository path
-that kubelet cannot pull. Registry hosts and tags may retain uppercase spelling.
-The separately configured Collector endpoint remains in its exporter Secret.
-If an upgrade renames Loki, the operator updates that endpoint and refreshes
-the Collector Pods before new records can reach Loki; the
-[recovery procedure](../guides/observability/demo-cleanup.md#refresh-a-renamed-loki-address)
-covers managed and external exporters.
+preserves short DNS-label Service names. Other release names use the component,
+normalized release and original release hash, avoiding collisions with unchanged
+names. Deployments and Grafana datasource URLs share these Service names;
+Deployment names, selectors and discovery keep the full release.
+`demo.validate` rejects uppercase image repository paths, but permits uppercase
+registry hosts and tags. The Collector endpoint remains in its exporter Secret.
+After a Loki rename, update that endpoint and refresh Collector Pods as described
+in [recovery](../guides/observability/demo-cleanup.md#refresh-a-renamed-loki-address).
 
 For the bundled Collector path, Loki retains event names and normalizes attributes
 as structured metadata. Grafana formats metadata at query time without changing
 records. External and Driver-owned pipelines require separate operator review.
 See the [demo guide](../guides/observability/demo.md#read-and-narrow-operational-logs)
 for panels, correlation, and authorization limits.
+
+### 9. The optional operator command observes worker exits
+
+`scripts/observe-worker-terminations.ts:main` uses existing operator privileges
+for a namespace- and release-scoped Pod LIST/WATCH. It projects observed worker
+terminations, deduplicates recent identities and records coverage gaps in a
+private file. `deploy/logging/worker-observer.yaml` validates that file's schema
+and exports allowlisted fields through the protected exporter. This log pipeline
+has no network log receiver; export and Collector self-telemetry can use the
+network. The [operator procedure](../guides/observability/worker-terminations.md)
+owns setup, retention, supervision and observation limits. Helm enablement does
+not start this command; existing application logging is unchanged.
 
 ## Debugging and Verification
 
@@ -311,6 +310,8 @@ for panels, correlation, and authorization limits.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-23 22:59: Add opt-in worker termination observation through scoped Pod LIST/WATCH, a private file and a fixed Collector schema; document coverage limits and operator setup. (worker-termination-observation - 341952eef)
 
 - 2026-10-23 21:00: Log `worker.repository-delivery-pending` when delivery starts failing, then at most once a minute, not on every one-second retry. (fix-2251)
 

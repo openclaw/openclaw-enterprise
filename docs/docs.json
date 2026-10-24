@@ -653,6 +653,10 @@
                     "label": "Observability"
                   },
                   {
+                    "page": "guides/observability/worker-terminations",
+                    "label": "Worker Exits"
+                  },
+                  {
                     "page": "guides/observability/metrics",
                     "label": "Metrics Scraping"
                   },

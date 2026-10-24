@@ -52,6 +52,9 @@ using this guide for OCC logs; the Driver does not change how OCC records audits
   enforcing NetworkPolicies, and permission to install the Collector DaemonSet,
   its Pod-read ClusterRole, and dedicated Secrets.
 
+For independent Kubernetes control-plane exit observations, set up the
+[worker termination observer](observability/worker-terminations.md) separately.
+
 ## Steps
 
 ### 1. Choose the log level
