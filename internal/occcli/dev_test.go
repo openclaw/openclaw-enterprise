@@ -17,13 +17,15 @@ func TestDevUpRejectsSandboxPolicyFlagsBeforeDockerStartup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Pin every selector so a developer's exported settings cannot stop the script before usage.
+	dockerEnv := []string{"OCC_DEVELOPMENT_COMPUTE_DRIVER=docker", "OCC_DEVELOPMENT_SANDBOX_DRIVER=none", "OCC_DEVELOPMENT_CONTROL_PLANE="}
 	for _, args := range [][]string{
 		{"--sandbox-network-policy-file", "/tmp/policy.yaml"},
 		{"--sandbox-network-policy-ceiling-file=/tmp/ceiling.yaml"},
 	} {
 		command := exec.Command("bash", append([]string{"scripts/dev-up"}, args...)...)
 		command.Dir = repository
-		command.Env = append(os.Environ(), "OCC_DEVELOPMENT_COMPUTE_DRIVER=docker")
+		command.Env = append(os.Environ(), dockerEnv...)
 		output, err := command.CombinedOutput()
 		var exited *exec.ExitError
 		if !errors.As(err, &exited) || exited.ExitCode() != 2 {
@@ -33,6 +35,17 @@ func TestDevUpRejectsSandboxPolicyFlagsBeforeDockerStartup(t *testing.T) {
 		if !strings.Contains(text, "Sandbox policy input requires Kubernetes Compute and a Sandbox Driver") || strings.Contains(text, "unknown option") {
 			t.Fatalf("%v:\n%s", args, text)
 		}
+		// Finding 2323: the usage printed after the refusal must not offer the refused flags.
+		if !strings.Contains(text, "usage: scripts/dev-up") || strings.Contains(text, "--sandbox-network-policy") {
+			t.Fatalf("%v: usage offers Kubernetes-only flags:\n%s", args, text)
+		}
+	}
+	help := exec.Command("bash", "scripts/dev-up", "--help")
+	help.Dir = repository
+	help.Env = append(os.Environ(), dockerEnv...)
+	output, err := help.CombinedOutput()
+	if err != nil || !strings.Contains(string(output), "usage: scripts/dev-up") || strings.Contains(string(output), "--sandbox-network-policy") {
+		t.Fatalf("--help: err = %v\n%s", err, output)
 	}
 }
 
