@@ -202,17 +202,19 @@ Compute` (or names the `main` entry's `workspace`).
 **Steps.** Remove that `workspace` setting, or use a Configuration without it,
 then save or deploy again. _untested_
 
-## 2026-10-24: SSH Compute refuses a runtime.root under /tmp
+## 2026-10-24: SSH Compute refuses runtime paths under /tmp
 
 **What breaks.** Controller startup refuses an SSH Compute `runtime.root` that
 is `/`, has a `.` or `..` segment, or lies under `/tmp` or `/var/tmp`, as the
-[SSH Compute reference](../../reference/drivers/ssh-compute.md) already said.
-Earlier builds started, but each Agent unit runs with `PrivateTmp`, so it could
-not reach its working directory and every deployment timed out.
+[SSH Compute reference](../../reference/drivers/ssh-compute.md) already said,
+and a `nodePath` or `openclawPath` under `/tmp` or `/var/tmp`. Earlier builds
+started, but each Agent unit runs with `PrivateTmp`, so it could not reach those
+paths and every deployment timed out.
 
-**Who is affected.** SSH Installations with such a state root.
+**Who is affected.** SSH Installations with such a path.
 
-**How to tell.** Startup fails with `INVALID_VALUE` at `/runtime/root`.
+**How to tell.** Startup fails with `INVALID_VALUE` at `/runtime/root`,
+`/runtime/nodePath`, `/runtime/openclawPath` or `/hosts`.
 
-**Steps.** Set `runtime.root` to a dedicated directory such as
+**Steps.** Move the path, for example the state root to
 `/var/lib/openclaw-enterprise`, then restart the controller and deploy again.

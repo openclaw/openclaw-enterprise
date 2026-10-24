@@ -76,10 +76,10 @@ PluginDriver proof paths.
 | `hosts`                                  | Nonempty map keyed by exact platform Namespace **name**, not resource ID.                                                                              |
 | `hosts.<name>.address`, `.user`          | Required hostname/IP and SSH user `root`.                                                                                                              |
 | `hosts.<name>.port`                      | Integer `1`–`65535`, default `22`.                                                                                                                     |
-| `hosts.<name>.nodePath`, `.openclawPath` | Optional absolute host-specific overrides.                                                                                                             |
-| `runtime.nodePath`, `.openclawPath`      | Required absolute shared host executable/entrypoint paths.                                                                                             |
+| `hosts.<name>.nodePath`, `.openclawPath` | Optional absolute host-specific overrides, outside `/tmp` and `/var/tmp`.                                                                              |
+| `runtime.nodePath`, `.openclawPath`      | Required absolute shared host executable/entrypoint paths, outside `/tmp` and `/var/tmp`.                                                              |
 | `runtime.user`                           | Required non-root account-name prefix for Driver-managed per-Agent users and private groups.                                                           |
-| `runtime.root`                           | Required absolute state root, such as `/var/lib/openclaw-enterprise`. Startup refuses `/`, `..` and paths in `/tmp` or `/var/tmp` (unit `PrivateTmp`). |
+| `runtime.root`                           | Required absolute state root, such as `/var/lib/openclaw-enterprise`. Startup refuses `/`, `.` or `..` segments, `/tmp` and `/var/tmp` (`PrivateTmp`). |
 | `runtime.systemdUnitDirectory`           | Absolute path, default `/etc/systemd/system`.                                                                                                          |
 | `network.gatewayPortRange`               | Inclusive integers `1024 <= start <= end <= 65535`.                                                                                                    |
 

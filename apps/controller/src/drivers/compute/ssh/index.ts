@@ -136,18 +136,35 @@ function path(value: unknown, description: string): void {
   }
 }
 
-// The unit runs with PrivateTmp=true and its WorkingDirectory under runtime.root, so a root under
-// /tmp or /var/tmp is hidden from it and every deploy times out (finding 2358); "/" or a "." or
-// ".." segment makes the state root ambiguous.
+// The unit runs with PrivateTmp=true, so a path under /tmp or /var/tmp is hidden from it: a
+// runtime.root there (its WorkingDirectory and state) times out every deploy (finding 2358), and
+// a Node or OpenClaw path there cannot start. The check is lexical; the controller cannot see a
+// host symlink into those directories.
+function privateTmpProblem(value: string): string | undefined {
+  const segments = value.split("/").filter((segment) => segment !== "");
+  return segments[0] === "tmp" || (segments[0] === "var" && segments[1] === "tmp")
+    ? "Use a path outside /tmp and /var/tmp, such as /var/lib/openclaw-enterprise: the unit's PrivateTmp hides those."
+    : undefined;
+}
+
+// "/" or a "." or ".." segment makes the state root ambiguous.
 function stateRootProblem(root: string): string | undefined {
   const segments = root.split("/").filter((segment) => segment !== "");
   if (segments.length === 0 || segments.some((segment) => segment === "." || segment === "..")) {
     return "Use a dedicated absolute directory without . or .. segments, such as /var/lib/openclaw-enterprise.";
   }
-  if (segments[0] === "tmp" || (segments[0] === "var" && segments[1] === "tmp")) {
-    return "Use a directory outside /tmp and /var/tmp, such as /var/lib/openclaw-enterprise: the unit's PrivateTmp hides those.";
+  return privateTmpProblem(root);
+}
+
+function requireUsablePath(
+  value: string,
+  pointer: string,
+  problem: (value: string) => string | undefined,
+): void {
+  const message = problem(value);
+  if (message !== undefined) {
+    throw new ConfigurationValidationError([{ path: pointer, code: "INVALID_VALUE", message }]);
   }
-  return undefined;
 }
 
 function port(value: unknown, minimum: number, description: string): number {
@@ -354,11 +371,9 @@ export class SshComputeDriver implements ComputeDriver {
       for (const key of ["nodePath", "openclawPath", "root"] as const) {
         path(runtime[key], `runtime.${key}`);
       }
-      const rootProblem = stateRootProblem(runtime.root);
-      if (rootProblem !== undefined) {
-        throw new ConfigurationValidationError([
-          { path: "/runtime/root", code: "INVALID_VALUE", message: rootProblem },
-        ]);
+      requireUsablePath(runtime.root, "/runtime/root", stateRootProblem);
+      for (const key of ["nodePath", "openclawPath"] as const) {
+        requireUsablePath(runtime[key], `/runtime/${key}`, privateTmpProblem);
       }
       if (runtime.systemdUnitDirectory !== undefined) {
         path(runtime.systemdUnitDirectory, "runtime.systemdUnitDirectory");
@@ -387,6 +402,11 @@ export class SshComputeDriver implements ComputeDriver {
         for (const key of ["nodePath", "openclawPath"] as const) {
           if (host[key] !== undefined) {
             path(host[key], `Host ${key}`);
+            // Startup reports problems under a map's own path, so the message names the host.
+            requireUsablePath(host[key], "/hosts", (value) => {
+              const problem = privateTmpProblem(value);
+              return problem === undefined ? undefined : `hosts.${name}.${key}: ${problem}`;
+            });
           }
         }
       }
