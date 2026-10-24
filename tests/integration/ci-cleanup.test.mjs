@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import { restoreLaneImages } from "../../scripts/ci/lane-images.mjs";
+import { postgresSuperuserPassword, runPostgresAdmin } from "../../scripts/ci/postgres-admin.mjs";
 import { withStateLock } from "../../scripts/ci/state-lock.mjs";
 import { commandCalls, writeCommand } from "../helpers/fake-commands.mjs";
 import { startFakePostgres } from "../helpers/fake-postgres-server.mjs";
@@ -586,6 +587,54 @@ function imageTagState() {
     ],
   };
 }
+
+// Preparation and cleanup classify these failures (run-tests.mjs keeps `failure`); psql's
+// ON_ERROR_STOP ran statements in order on one session and stopped at the first error.
+test("PostgreSQL admin SQL runs in order, stops at the first refusal and names each failure", async (t) => {
+  const postgres = await laneFakePostgres(t, (query) =>
+    query === "SELECT 2"
+      ? { error: "deliberate refusal" }
+      : query === "SELECT 4"
+        ? { hang: true }
+        : undefined,
+  );
+  const failure = (statement, kind, timedOut) => (error) => {
+    assert.match(error.message, new RegExp(`/openclaw_ci_admin: ${statement} `));
+    assert.doesNotMatch(error.message, new RegExp(postgresSuperuserPassword));
+    assert.equal(error.failure, kind);
+    assert.equal(error.timedOut, timedOut);
+    return true;
+  };
+  const admin = (statements, timeoutMs) =>
+    runPostgresAdmin({
+      port: postgres.port,
+      database: "openclaw_ci_admin",
+      statements,
+      timeoutMs,
+    });
+  await assert.rejects(
+    admin(["SELECT 1", "SELECT 2", "SELECT 3"]),
+    failure("SELECT 2", "query", false),
+  );
+  await assert.rejects(admin(["SELECT 1", "SELECT 4", "SELECT 3"], 300), (error) => {
+    assert.match(error.message, /SELECT 4 timed out after 300 ms$/);
+    return failure("SELECT 4", "timeout", true)(error);
+  });
+  assert.deepEqual(postgres.sessionLines(), [
+    "openclaw_ci_admin\tSELECT 1\tSELECT 2",
+    "openclaw_ci_admin\tSELECT 1\tSELECT 4",
+  ]);
+  // Neither reaches the server.
+  await assert.rejects(
+    runPostgresAdmin({ port: 0, statements: ["SELECT 1"] }),
+    /^Error: Invalid lane PostgreSQL port: 0$/,
+  );
+  await assert.rejects(
+    runPostgresAdmin({ port: postgres.port, statements: [] }),
+    /^Error: runPostgresAdmin needs at least one statement\.$/,
+  );
+  assert.equal(postgres.sessions.length, 2);
+});
 
 test("cleanup bounds a database drop the server never answers and retains it", async (t) => {
   const root = await fixture(t);
