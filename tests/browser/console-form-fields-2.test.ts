@@ -411,8 +411,12 @@ test("Create Agent refuses what the API would refuse before any write", async (t
   const fixture = await createConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset] });
   await fixture.bootstrap();
   const NAME_RULE = "Remove tabs, line breaks and other control characters from the name.";
-  const createForm = async (t: TestContext, label: string) => {
+  // The form lists the Namespace's Secrets when it opens, so a Secret to choose exists first.
+  const createForm = async (t: TestContext, label: string, secretName?: string) => {
     const namespace = await fixture.createNamespace(label, { ready: true });
+    const secret = secretName
+      ? await fixture.createSecret(namespace.id, secretName, `${label} value`)
+      : null;
     const { page } = await newPage(t, fixture, { browser });
     const invalidEvents = await countInvalidEvents(page);
     await routeInstallationWithoutProvisioning(page, fixture);
@@ -420,15 +424,22 @@ test("Create Agent refuses what the API would refuse before any write", async (t
     await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
     await page.getByRole("button", { name: "Start with default Preset" }).click();
     await waitForCreateFormReads(page);
-    return { namespace, page, invalidEvents, requests };
+    if (secret) {
+      // A complete form apart from the field under test, so that field is the first to fix.
+      await selectSecret(page, "API key Secret", secret);
+      const model = page.getByLabel("Model ID", { exact: true });
+      if (!(await model.isVisible())) {
+        await page.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
+      }
+      await model.fill("gpt-4.1");
+    }
+    return { page, invalidEvents, requests };
   };
 
   // Finding 2340: a control character in the Agent name was sent, and in the existing-Secret
   // flow the Configuration was saved before the API refused the name.
   await t.test("the Agent name follows the API's Name rule", async (t) => {
-    const { namespace, page, invalidEvents, requests } = await createForm(t, "Agent name rule");
-    const secret = await fixture.createSecret(namespace.id, "Name rule key", "name-rule-value");
-    await selectSecret(page, "API key Secret", secret);
+    const { page, invalidEvents, requests } = await createForm(t, "Agent name rule", "Name key");
     const name = page.getByLabel("Agent name", { exact: true });
     const create = page.getByRole("button", { name: "Create Agent", exact: true });
     for (const value of ["Support\tbot", "Support\u0085bot", "Support\u2028bot"]) {
@@ -443,9 +454,7 @@ test("Create Agent refuses what the API would refuse before any write", async (t
   // Finding 2341: an oversized or NUL workspace file was refused by the API with a message that
   // named no file, inside the collapsed Advanced settings.
   await t.test("initial workspace files follow the Workspace tab's rule", async (t) => {
-    const { namespace, page, invalidEvents, requests } = await createForm(t, "Workspace rule");
-    const secret = await fixture.createSecret(namespace.id, "Workspace key", "workspace-value");
-    await selectSecret(page, "API key Secret", secret);
+    const { page, invalidEvents, requests } = await createForm(t, "Workspace rule", "Files key");
     await page.getByLabel("Agent name", { exact: true }).fill("Workspace rule");
     await openAdvancedSettings(page);
     const agents = page.getByLabel("AGENTS.md", { exact: true });
