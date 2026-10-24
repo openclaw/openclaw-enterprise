@@ -41,6 +41,7 @@ import {
   createModelProviderFiles,
   writeModelProviderTrust,
 } from "../../tests/helpers/runtime-model-provider.mjs";
+import { ensureImage } from "./image-pull.mjs";
 import { compareEvents, eventObservedTime } from "./kubernetes-event-time.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -341,6 +342,95 @@ async function recordedDigest(tag) {
   return reference;
 }
 
+// Local Setup's PostgreSQL pin: developmentPostgres in internal/occdev/openshell_k3d.go.
+export const postgresImage =
+  "docker.io/library/postgres:18.6@sha256:86c951e05bf56c93d95d397747fb8820ac76cc3bedb78f43abd83eedbe3666ae";
+
+// The image-pull.mjs retry helper over `run`.
+async function pullExecFile(command, args, { timeoutMs }) {
+  try {
+    return await run(command, args, { timeout: timeoutMs });
+  } catch (error) {
+    error.stderr = error.result?.stderr ?? "";
+    error.timedOut = error.result?.signal === "SIGKILL";
+    throw error;
+  }
+}
+
+// Fetch an image manifest from the loopback registry by digest and check its
+// bytes against that digest.
+export async function registryManifest({ registry, path, digest, fetchRegistry = fetch }) {
+  const reference = `${registry}/${path}@${digest}`;
+  const response = await fetchRegistry(`http://${registry}/v2/${path}/manifests/${digest}`, {
+    headers: {
+      accept:
+        "application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json",
+    },
+    redirect: "error",
+    signal: AbortSignal.timeout(30_000),
+  });
+  assert.ok(response.ok, `registry manifest ${reference}: HTTP ${response.status}`);
+  const manifest = Buffer.from(await response.arrayBuffer());
+  assert.equal(
+    `sha256:${createHash("sha256").update(manifest).digest("hex")}`,
+    digest,
+    `the registry manifest does not match ${reference}`,
+  );
+  return JSON.parse(manifest.toString("utf8"));
+}
+
+// Copy the pinned PostgreSQL image into the loopback registry, so the k3d node
+// pulls it by digest like the checkout's images, instead of Local Setup pulling
+// it from Docker Hub and exporting and importing it beside the cluster checks.
+// The engine verified the pin when it pulled the image. Its push recompresses
+// the layers, so the registry digest differs from the pin, but the registry's
+// manifest must name the pinned image's config, which fixes every layer's
+// uncompressed digest (containerd checks them as it unpacks). The engine's
+// containerd image store reports other IDs and pushes indexes, so there the
+// copy is skipped and PostgreSQL keeps the archive path.
+export async function publishPostgresImage({
+  registry,
+  runCommand = run,
+  fetchRegistry = fetch,
+  pull = (image) => ensureImage(image, { execFile: pullExecFile }),
+}) {
+  assert.match(registry, /^127\.0\.0\.1:\d+$/, "the PostgreSQL copy needs a loopback registry");
+  const { stdout: driverStatus } = await runCommand("docker", [
+    "info",
+    "--format",
+    "{{json .DriverStatus}}",
+  ]);
+  if (driverStatus.includes("io.containerd.snapshotter")) {
+    log("PostgreSQL keeps the archive path: the engine uses the containerd image store");
+    return undefined;
+  }
+  await pull(postgresImage);
+  const id = (
+    await runCommand("docker", ["image", "inspect", "--format", "{{.Id}}", postgresImage])
+  ).stdout.trim();
+  assert.match(id, /^sha256:[a-f0-9]{64}$/, `no image ID for ${postgresImage}`);
+  const tag = `${registry}/oce-smoke/postgres:${/:([^:/@]+)@/.exec(postgresImage)[1]}`;
+  await runCommand("docker", ["tag", id, tag]);
+  // This push's own digest: a long-lived engine keeps every digest it ever
+  // recorded for the image.
+  const { stdout } = await runCommand("docker", ["push", tag], { timeout: 10 * minute });
+  const digest = /: digest: (sha256:[a-f0-9]{64}) size: \d+/.exec(stdout)?.[1];
+  assert.ok(digest, `docker push reported no digest for ${tag}`);
+  const reference = `${registry}/oce-smoke/postgres@${digest}`;
+  const manifest = await registryManifest({
+    registry,
+    path: "oce-smoke/postgres",
+    digest,
+    fetchRegistry,
+  });
+  assert.equal(
+    manifest.config?.digest,
+    id,
+    `the registry copy of PostgreSQL is not the pinned image: ${reference}`,
+  );
+  return reference;
+}
+
 async function buildImages({ preparedGit = false } = {}) {
   const revision = (await run("git", ["rev-parse", "--verify", "HEAD"])).stdout.trim();
   assert.match(revision, /^[a-f0-9]{40}$/);
@@ -378,9 +468,11 @@ async function buildImages({ preparedGit = false } = {}) {
   // Labels, user, entrypoint and every other layer are inherited unchanged.
   const context = join(workDirectory, "runtime-trust");
   await writeModelProviderTrust({ context, caPath: join(modelDirectory, "ca.pem") });
-  const [controller, runtime, providerImage] =
-    (await builderDriver()) === "docker-container"
-      ? await bakeAndPushImages({
+  const driver = await builderDriver();
+  // Both finish before a failure is reported, so neither keeps running unseen.
+  const settled = await Promise.allSettled([
+    driver === "docker-container"
+      ? bakeAndPushImages({
           revision,
           controllerTag,
           smokeRuntimeTag,
@@ -388,7 +480,17 @@ async function buildImages({ preparedGit = false } = {}) {
           // The prepared-Git acceptance imports archives, so the engine needs both.
           load: preparedGit,
         })
-      : await buildAndPushImages({ revision, controllerTag, smokeRuntimeTag, context });
+      : buildAndPushImages({ revision, controllerTag, smokeRuntimeTag, context }),
+    // The prepared-Git acceptance keeps the archive path for every image.
+    preparedGit
+      ? undefined
+      : step("PostgreSQL image to the loopback registry", () => publishPostgresImage({ registry })),
+  ]);
+  const failure = settled.find(({ status }) => status === "rejected");
+  if (failure) {
+    throw failure.reason;
+  }
+  const [[controller, runtime, providerImage], postgres] = settled.map(({ value }) => value);
   const repository = {};
   if (preparedGit) {
     const tag = `${registry}/oce-smoke/repository:${revision}`;
@@ -419,11 +521,14 @@ async function buildImages({ preparedGit = false } = {}) {
   }
   await exportEnvironment({
     ...repository,
-    // The k3d node pulls the controller and runtime images from this loopback
-    // registry by digest instead of importing exported archives.
+    // The k3d node pulls the controller, runtime and PostgreSQL images from
+    // this loopback registry by digest instead of importing exported archives.
     ...(preparedGit
       ? {}
-      : { OCC_DEVELOPMENT_IMAGE_REGISTRY_CONTAINER: slotNames.registryContainer }),
+      : {
+          OCC_DEVELOPMENT_IMAGE_REGISTRY_CONTAINER: slotNames.registryContainer,
+          ...(postgres ? { OCC_DEVELOPMENT_POSTGRES_IMAGE: postgres } : {}),
+        }),
     OCC_DEVELOPMENT_CONTROLLER_IMAGE: controller,
     OCC_KUBERNETES_RUNTIME_IMAGE: runtime,
     OCC_FIRST_AGENT_SMOKE_MODEL_DIRECTORY: modelDirectory,
@@ -431,6 +536,9 @@ async function buildImages({ preparedGit = false } = {}) {
   });
   log(`controller ${controller}`);
   log(`runtime ${runtime}`);
+  if (postgres) {
+    log(`PostgreSQL ${postgres}`);
+  }
 }
 
 async function builderDriver() {
@@ -507,7 +615,7 @@ export function smokeBakeDefinition({
       context: providerContext,
       contexts: { "smoke-runtime-base": "target:smoke-runtime-base" },
       args: { NODE_RUNTIME_BASE_IMAGE: nodeRuntimeBaseImage },
-      output: [`type=docker,name=${slotNames.model}-provider:${revision}`],
+      output: [`type=docker,name=${providerImageTag(revision)}`],
     };
   }
   return { target };
@@ -584,27 +692,39 @@ async function bakeAndPushImages({ revision, controllerTag, smokeRuntimeTag, con
       Promise.all([pulledDigest(controllerTag), pulledDigest(smokeRuntimeTag)]),
     );
   }
-  return bakeReferences(JSON.parse(await readFile(metadataFile, "utf8")), {
+  const references = bakeReferences(JSON.parse(await readFile(metadataFile, "utf8")), {
     controllerTag,
     smokeRuntimeTag,
   });
+  // Local Setup reads both from loopback; check here that they are there.
+  await step("registry digests", () =>
+    Promise.all(
+      references.map((reference) => {
+        const [name, digest] = reference.split("@");
+        return registryManifest({ registry, path: name.slice(registry.length + 1), digest });
+      }),
+    ),
+  );
+  return [...references, providerImageTag(revision)];
 }
 
-// Registry references for the pushed images and the loaded provider image's
-// ID, from the bake's metadata file.
+// The provider image's local name: per slot and revision.
+export function providerImageTag(revision) {
+  return `${slotNames.model}-provider:${revision}`;
+}
+
+// Registry references for the pushed images, from the bake's metadata file.
 export function bakeReferences(metadata, { controllerTag, smokeRuntimeTag }) {
-  const digest = (name, key) => {
-    const value = metadata[name]?.[key];
-    assert.match(value ?? "", /^sha256:[a-f0-9]{64}$/, `bake metadata has no ${key} for ${name}`);
-    return value;
+  const pinned = (name, tag) => {
+    const digest = metadata[name]?.["containerimage.digest"];
+    assert.match(
+      digest ?? "",
+      /^sha256:[a-f0-9]{64}$/,
+      `bake metadata has no containerimage.digest for ${name}`,
+    );
+    return `${tag.slice(0, tag.lastIndexOf(":"))}@${digest}`;
   };
-  const pinned = (name, tag) =>
-    `${tag.slice(0, tag.lastIndexOf(":"))}@${digest(name, "containerimage.digest")}`;
-  return [
-    pinned("smoke-controller", controllerTag),
-    pinned("smoke-runtime", smokeRuntimeTag),
-    digest("smoke-provider", "containerimage.config.digest"),
-  ];
+  return [pinned("smoke-controller", controllerTag), pinned("smoke-runtime", smokeRuntimeTag)];
 }
 
 // The engine's own builder: build, add the trust layer, then push.

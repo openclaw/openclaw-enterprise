@@ -592,22 +592,24 @@ func (r *runner) developmentImageRevision(ctx context.Context, image string) (st
 
 // requireSelectedDevelopmentImage checks that an explicitly selected image
 // exists locally, or in the development image registry that serves it.
-func (r *runner) requireSelectedDevelopmentImage(ctx context.Context, image string) error {
+func (r *runner) requireSelectedDevelopmentImage(ctx context.Context, role, image string) error {
 	if _, err := r.output(ctx, r.engine, "image", "inspect", image); err == nil {
 		return nil
 	}
 	if _, _, ok := r.imageRegistry.source(image); ok {
-		_, err := r.readRegistryImage(ctx, image)
-		return err
+		if _, err := r.readRegistryImage(ctx, image); err != nil {
+			return fmt.Errorf("explicitly selected %s image must already exist locally or in the development image registry: %w", role, err)
+		}
+		return nil
 	}
-	return errors.New("not found")
+	return fmt.Errorf("explicitly selected %s image must already exist locally: %s", role, image)
 }
 
 func (r *runner) importDevelopmentController(ctx context.Context, state *developmentState) (string, error) {
 	image := r.setting("OCC_DEVELOPMENT_CONTROLLER_IMAGE", developmentController)
 	if r.env["OCC_DEVELOPMENT_CONTROLLER_IMAGE"] != "" {
-		if err := r.requireSelectedDevelopmentImage(ctx, image); err != nil {
-			return "", fmt.Errorf("explicitly selected controller image must already exist locally or in the development image registry: %s", image)
+		if err := r.requireSelectedDevelopmentImage(ctx, "controller", image); err != nil {
+			return "", err
 		}
 	} else {
 		base := r.setting("OCC_DEVELOPMENT_NODE_BASE_IMAGE", developmentNodeBase)

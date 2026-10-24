@@ -467,6 +467,11 @@ func newRegistryTestServer(t *testing.T) *registryTestServer {
 		s.seen = append(s.seen, request.URL.Path)
 		route, ok := s.routes[request.URL.Path]
 		s.mu.Unlock()
+		// A registry answers a manifest request only for the media types it accepts.
+		if strings.Contains(request.URL.Path, "/manifests/") && !strings.Contains(request.Header.Get("Accept"), "application/vnd.oci.image.manifest.v1+json") {
+			http.NotFound(w, request)
+			return
+		}
 		if !ok {
 			http.NotFound(w, request)
 			return
@@ -560,7 +565,8 @@ func TestDevelopmentRegistryImageRead(t *testing.T) {
 			},
 			want: "no single image manifest",
 		},
-		"a config without a platform": {mediaType: ociManifest, config: []byte(`{"config":{"Labels":{}}}`), want: "invalid image config"},
+		"a config without a platform":          {mediaType: ociManifest, config: []byte(`{"config":{"Labels":{}}}`), want: "invalid image config"},
+		"a platform field holding a separator": {mediaType: ociManifest, config: registryTestConfig("linux/x/arm64", registryTestRevision), want: "invalid image config"},
 		"an unknown image": {
 			mediaType: ociManifest, config: registryTestConfig("linux/arm64", registryTestRevision),
 			tamper: func(s *registryTestServer, _ string) { clear(s.routes) },
@@ -679,15 +685,17 @@ func TestDevelopmentRegistryImageWithoutALocalCopy(t *testing.T) {
 		r := newRunner(Options{})
 		r.engine = "docker"
 		r.imageRegistry = server.registry()
-		if err := r.requireSelectedDevelopmentImage(context.Background(), runtime); err != nil {
+		if err := r.requireSelectedDevelopmentImage(context.Background(), "runtime", runtime); err != nil {
 			t.Fatal(err)
 		}
-		if err := r.requireSelectedDevelopmentImage(context.Background(), server.host+"/oce-smoke/runtime@"+profileTestDigest); err == nil {
-			t.Fatal("accepted an image neither the engine nor the registry holds")
+		err := r.requireSelectedDevelopmentImage(context.Background(), "runtime", server.host+"/oce-smoke/runtime@"+profileTestDigest)
+		if err == nil || !strings.Contains(err.Error(), "must already exist locally or in the development image registry") || !strings.Contains(err.Error(), "HTTP 404") {
+			t.Fatalf("want the registry refusal with its cause, got %v", err)
 		}
 		r.imageRegistry = nil
-		if err := r.requireSelectedDevelopmentImage(context.Background(), runtime); err == nil {
-			t.Fatal("accepted a registry image without a selected registry")
+		err = r.requireSelectedDevelopmentImage(context.Background(), "runtime", runtime)
+		if err == nil || err.Error() != "explicitly selected runtime image must already exist locally: "+runtime {
+			t.Fatalf("want the local-only refusal, got %v", err)
 		}
 	})
 	t.Run("the node pulls it for the registry's platform", func(t *testing.T) {

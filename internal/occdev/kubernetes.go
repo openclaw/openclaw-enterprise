@@ -219,8 +219,8 @@ func dockerHubReference(reference string) (string, bool) {
 func (r *runner) importRuntime(ctx context.Context, s *developmentState) (string, error) {
 	image := r.setting("OCC_KUBERNETES_RUNTIME_IMAGE", "openclaw-enterprise-runtime:kubernetes-quickstart")
 	if r.env["OCC_KUBERNETES_RUNTIME_IMAGE"] != "" {
-		if err := r.requireSelectedDevelopmentImage(ctx, image); err != nil {
-			return "", fmt.Errorf("explicitly selected runtime image must already exist locally or in the development image registry: %s", image)
+		if err := r.requireSelectedDevelopmentImage(ctx, "runtime", image); err != nil {
+			return "", err
 		}
 	} else {
 		if err := r.run(ctx, r.engine, "build", "-f", "deploy/runtime/Dockerfile", "--tag", image, "."); err != nil {
