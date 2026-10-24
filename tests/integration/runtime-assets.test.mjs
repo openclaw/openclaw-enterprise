@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  readlink,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -147,19 +156,22 @@ packages:
   assert.equal(Object.hasOwn(provenance, "codexPatchSha256"), false);
   assert.equal(Object.hasOwn(provenance, "codexVersion"), false);
   // Provenance must name every patch the image build applies, in order, so images with and
-  // without a patch differ there (finding 2290: three applied patches were missing).
+  // without a patch differ there (finding 2290: four applied patches were missing).
   const dockerfile = await readFile("deploy/runtime/Dockerfile", "utf8");
   const applied = [
     ...dockerfile.matchAll(
-      /^RUN echo '([a-f0-9]{64}) {2}\/tmp\/([^'\s]+\.patch)' \| sha256sum --check --strict \\\n\s+&& git apply /gm,
+      /^COPY deploy\/runtime\/(\S+\.patch) \/tmp\/\1\nRUN echo '([a-f0-9]{64}) {2}\/tmp\/\1' \| sha256sum --check --strict \\\n\s+&& git apply /gm,
     ),
-  ].map(([, sha256, file]) => [file, sha256]);
-  // Each patch the build copies in must be one it verifies and applies.
-  assert.equal(
-    applied.length,
-    [...dockerfile.matchAll(/^COPY deploy\/runtime\/\S+\.patch /gm)].length,
-  );
-  assert.ok(applied.length > 0);
+  ].map(([, file, sha256]) => [file, sha256]);
+  // Every patch kept beside the Dockerfile is copied, verified and applied in that form, and
+  // each pinned hash is the file's own (a format the pattern misses fails here, not silently).
+  const patchFiles = (await readdir("deploy/runtime")).filter((name) => name.endsWith(".patch"));
+  assert.ok(patchFiles.length > 0);
+  assert.deepEqual(applied.map(([file]) => file).sort(), patchFiles.sort());
+  for (const [file, sha256] of applied) {
+    const bytes = await readFile(join("deploy/runtime", file));
+    assert.equal(createHash("sha256").update(bytes).digest("hex"), sha256, file);
+  }
   assert.deepEqual(Object.entries(provenance.patches), applied);
   // The per-patch fields recorded before `patches` keep their names and values.
   for (const [field, file] of [
