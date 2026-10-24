@@ -886,7 +886,8 @@ capabilities:
 {{/* Decimal, matching JavaScript Number. Sprig int is octal, so it must not parse these.
      A values file delivers a float64, and toString prints 1000000 and above as an exponent.
      With "port", also refuse leading zeros: callers pass the value through Sprig int, and
-     startup's listener comparison refuses "08443". */}}
+     startup's listener comparison refuses "08443". With "timer", also refuse values above
+     2147483647: Node.js fires a longer timer after 1 ms (the worker's MAX_TIMER_DELAY_MS). */}}
 {{- define "openclaw.positiveSafeInteger" -}}
 {{- $raw := toString .value -}}
 {{- if and (kindIs "float64" .value) (eq (floor .value) .value) -}}
@@ -898,6 +899,9 @@ capabilities:
 {{- end -}}
 {{- if and .port (hasPrefix "0" $raw) -}}
 {{- fail (printf "%s must be a TCP port without leading zeros" .name) -}}
+{{- end -}}
+{{- if and .timer (gt $parsed 2147483647) -}}
+{{- fail (printf "%s must be at most 2147483647 milliseconds" .name) -}}
 {{- end -}}
 {{- $raw -}}
 {{- end -}}

@@ -17,6 +17,24 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-24: worker timer settings are capped at 2147483647 ms
+
+**What breaks.** `helm install` and `helm upgrade` refuse `worker.pollIntervalMs`
+or `worker.leaseDurationMs` above `2147483647`, and the worker refuses to start
+when `OCC_WORKER_POLL_INTERVAL_MS`, `OCC_WORKER_LEASE_DURATION_MS` or
+`OCC_WORKER_DATABASE_TIMEOUT_MS` is above it. Earlier builds accepted values up
+to `9007199254740991`, but Node.js fires a longer timer after 1 ms: the worker
+aborted every claim and polled without pause.
+
+**Who is affected.** Only Installations that set one of these above
+`2147483647` (about 24.8 days); such a worker could not complete work.
+
+**How to tell.** The render fails with `worker.leaseDurationMs must be at most
+2147483647 milliseconds` (or the poll interval), or the worker exits with
+`WORKER_STARTUP_FAILED`.
+
+**Steps.** Set the value to `2147483647` or less, then run the upgrade again.
+
 ## 2026-10-24: chart refuses unquoted numeric or boolean names
 
 **What breaks.** `helm install` and `helm upgrade` refuse a Secret,

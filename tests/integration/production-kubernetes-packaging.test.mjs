@@ -15,6 +15,7 @@ import {
   createKubernetesComputeDriver,
   PLUGIN_RUNTIME_STATUS_PORT,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { MAX_TIMER_DELAY_MS } from "../../apps/controller/src/worker/timer-settings.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 
@@ -5437,6 +5438,30 @@ test("Helm rejects worker timings the worker process rejects", tooling, async ()
   }
   const rendered = await render({ "worker.pollIntervalMs": "010" });
   assert.match(rendered.stdout, /name: OCC_WORKER_POLL_INTERVAL_MS\n\s+value: "010"/);
+});
+
+test("Helm refuses worker timer settings a Node.js timer cannot wait for", tooling, async () => {
+  // Node fires a longer timer after 1 ms; the chart shares the worker's bound (finding 2303).
+  const over = String(MAX_TIMER_DELAY_MS + 1);
+  for (const key of ["worker.pollIntervalMs", "worker.leaseDurationMs"]) {
+    await assert.rejects(
+      render({ [key]: over }),
+      new RegExp(`${key.replace(".", "\\.")} must be at most ${MAX_TIMER_DELAY_MS} milliseconds`),
+    );
+  }
+  const rendered = await render({
+    "worker.pollIntervalMs": String(MAX_TIMER_DELAY_MS),
+    "worker.leaseDurationMs": String(MAX_TIMER_DELAY_MS),
+    // Only compared with work age, never a timer delay: the safe-integer bound still applies.
+    "worker.convergenceTimeoutMs": over,
+  });
+  for (const name of ["OCC_WORKER_POLL_INTERVAL_MS", "OCC_WORKER_LEASE_DURATION_MS"]) {
+    assert.match(rendered.stdout, new RegExp(`name: ${name}\\n\\s+value: "${MAX_TIMER_DELAY_MS}"`));
+  }
+  assert.match(
+    rendered.stdout,
+    new RegExp(`name: OCC_WORKER_CONVERGENCE_TIMEOUT_MS\\n\\s+value: "${over}"`),
+  );
 });
 
 test("Helm renders a values-file worker timeout of 1800000 as digits", tooling, async (t) => {

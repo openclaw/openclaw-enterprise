@@ -93,11 +93,11 @@ The worker shares `NODE_ENV`, `OCC_DATABASE_URL`, and `OCC_CONFIG_PATH` with
 the API. It does not use API listener or session-authentication settings. See
 [worker settings](../settings/operations.md#controller-worker-environment).
 
-- `OCC_WORKER_POLL_INTERVAL_MS` — Idle polling delay; default: `250` ms.
-- `OCC_WORKER_LEASE_DURATION_MS` — Claim lease; default: `5000` ms.
+- `OCC_WORKER_POLL_INTERVAL_MS` — Idle polling delay; default: `250` ms; at most `2147483647`.
+- `OCC_WORKER_LEASE_DURATION_MS` — Claim lease; default: `5000` ms; at most `2147483647`.
 - `OCC_WORKER_MAX_ATTEMPTS` — Maximum work attempts; default: `5`.
 - `OCC_WORKER_CONVERGENCE_TIMEOUT_MS` — Namespace convergence timeout; default: `900000` ms.
-- `OCC_WORKER_DATABASE_TIMEOUT_MS` — Client-side bound on each worker database query; default: `60000` ms.
+- `OCC_WORKER_DATABASE_TIMEOUT_MS` — Client-side bound on each worker database query; default: `60000` ms; at most `2147483647`.
 - `OCC_WORKER_READINESS_PATH` — Optional absolute path for the readiness marker; packaged probes require it.
 - `OCC_WORKER_LIVENESS_PATH` — Optional absolute path for the run-loop progress marker; the packaged liveness probe checks its age.
 
