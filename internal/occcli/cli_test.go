@@ -956,6 +956,14 @@ func TestAgentRuntimePrintsALostHarnessSandboxFirst(t *testing.T) {
 			"Harness Sandbox: starting (HARNESS_RESTARTING). The Harness process exited",
 		},
 		{map[string]any{"state": "unknown", "code": "UNAVAILABLE"}, "Harness Sandbox: unknown (UNAVAILABLE)\n\n"},
+		// Only a starting Harness is restarting: any other state keeps the bare code.
+		{
+			map[string]any{"state": "running", "code": "HARNESS_RESTARTING", "exitCode": float64(1), "restarts": float64(2)},
+			"Harness Sandbox: running (HARNESS_RESTARTING)\n\n",
+		},
+		// A code is echoed up to OCC's 64-character limit.
+		{map[string]any{"state": "unknown", "code": strings.Repeat("A", 64)}, "Harness Sandbox: unknown (" + strings.Repeat("A", 64) + ")\n\n"},
+		{map[string]any{"state": "unknown", "code": strings.Repeat("A", 65)}, "Harness Sandbox: unknown\n\n"},
 		// Anything but OCC's fixed states and codes is not echoed to the terminal.
 		{map[string]any{"state": "lost\u202e", "code": "x\u001b[2J"}, "Harness Sandbox: unknown\n\n"},
 		{nil, "No resources found."},
@@ -1400,6 +1408,25 @@ func TestAgentPolicyFacetMustBeNetworkingBeforeAnyRequest(t *testing.T) {
 		}
 		if requests != 0 {
 			t.Errorf("%v: sent %d requests", args, requests)
+		}
+	}
+	// apply and recommendations check their flags before a request too.
+	for _, test := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"agent", "policy", "apply", "agt_1", "--revision", "rev_1", "--expected-version", "0"}, "--expected-version must be positive"},
+		{[]string{"agent", "policy", "apply", "agt_1", "--revision", "deploy-1", "--expected-version", "1"}, `"deploy-1" is not a valid deployment ID: OCC accepts IDs that start with "rev_", not names; run "occ --namespace ns_1 agent revisions AGENT_ID" to find the ID`},
+		{[]string{"agent", "policy", "recommendations", "agt_1", "--revision", "deploy-1"}, `"deploy-1" is not a valid deployment ID: OCC accepts IDs that start with "rev_", not names; run "occ --namespace ns_1 agent revisions AGENT_ID" to find the ID`},
+	} {
+		requests = 0
+		command := New(io.Discard, io.Discard)
+		command.SetArgs(append(slices.Clone(connection), test.args...))
+		if err := command.Execute(); err == nil || err.Error() != test.want {
+			t.Errorf("%v: error = %v, want %q", test.args, err, test.want)
+		}
+		if requests != 0 {
+			t.Errorf("%v: sent %d requests", test.args, requests)
 		}
 	}
 	requests = 0
