@@ -271,6 +271,30 @@ func (p *developmentNetworkProbe) check(ctx context.Context, namespace, pod, mod
 	return err == nil
 }
 
+type developmentProbePeer struct{ namespace, pod string }
+
+// Check independent peers together, between the caller's two allowed requests.
+// Each denial still requires a working control before and after. On failure,
+// cancel the sibling exec and collect both results before the next attempt.
+func (p *developmentNetworkProbe) checkDeniedPeers(ctx context.Context, target, control string, peers [2]developmentProbePeer) bool {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	results := make(chan bool, len(peers))
+	for _, peer := range peers {
+		go func() {
+			results <- p.check(ctx, peer.namespace, peer.pod, "deny", target, control)
+		}()
+	}
+	ok := true
+	for range peers {
+		if !<-results {
+			ok = false
+			cancel()
+		}
+	}
+	return ok
+}
+
 // verifyDevelopmentNetworkPolicy checks actual packet delivery, not merely the
 // existence of NetworkPolicy objects. A successful run is a point-in-time proof.
 func (r *runner) verifyDevelopmentNetworkPolicy(ctx context.Context, state *developmentState, image, targetNamespace, envoyNamespace string, actual bool, timeout time.Duration) (result error) {
@@ -385,8 +409,9 @@ func (r *runner) verifyDevelopmentNetworkPolicy(ctx context.Context, state *deve
 	consecutive := 0
 	err = poll(ctx, timeout, func(ctx context.Context) (bool, error) {
 		ok := p.check(ctx, envoyNamespace, allowed, "allow", targetIP, controlIP) &&
-			p.check(ctx, otherNamespace, wrongNamespace, "deny", targetIP, controlIP) &&
-			p.check(ctx, envoyNamespace, wrongLabel, "deny", targetIP, controlIP) &&
+			p.checkDeniedPeers(ctx, targetIP, controlIP, [2]developmentProbePeer{
+				{otherNamespace, wrongNamespace}, {envoyNamespace, wrongLabel},
+			}) &&
 			p.check(ctx, envoyNamespace, allowed, "allow", targetIP, controlIP)
 		if !ok {
 			consecutive = 0

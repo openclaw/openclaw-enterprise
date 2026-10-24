@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-10-15
-last_updated_session: authoring-run/c11897e0-33a6-4276-b620-aaec6d57ab00
+updated: 2026-10-22
+last_updated_session: authoring-run/14511ad6-a089-4565-822e-ce25bd5b834d
 ---
 
 # Compose development startup
@@ -191,30 +191,26 @@ Without OpenShell, startup verifies pinned cert-manager and Envoy manifests,
 waits for the k3s Gateway API CRDs, then installs Envoy before rollback on
 failure.
 `internal/occdev/gateway_k3d.go:waitDevelopmentCRDEstablished` polls each CRD
-until `Established`, a `kubectl` error, or timeout. Before gateway proxy trust,
-`internal/occdev/network_k3d.go:verifyDevelopmentNetworkPolicy` checks allowed
-and denied Pod traffic with credential-free Pods and a temporary policy, then
-rechecks Driver policies after bootstrap creates the initial gateway Namespace.
-Probe Pods use short grace periods and UID-preconditioned deletes. Cleanup waits
-for selector-matching Pods before removing their egress policy; probe or cleanup
-failure fails startup. Checks are point-in-time and single-node.
+until `Established`, a `kubectl` error, or timeout.
+`internal/occdev/network_k3d.go:verifyDevelopmentNetworkPolicy` tests a temporary policy before
+gateway trust, then the initial gateway Namespace’s policies. Three consecutive rounds must pass:
+connect from the allowed peer, probe wrong namespace and wrong label concurrently, then reconnect
+from the allowed peer. Each denial needs a reachable control before and after. Either failure
+cancels its sibling; both local execs return before retry or cleanup, without proving remote exit.
+Credential-free Pods use short grace periods and UID-guarded deletes; cleanup waits for selector-matching
+Pods before removing their egress policy. Probe or cleanup failure stops startup. Checks are point-in-time, single-node.
 
-Before writing the Installation, `scripts/prepare-development-codex-seccomp.mjs`
-probes the runtime in a credential-free Pod. If `RuntimeDefault` blocks it, the
-reviewed generator derives and verifies a content-addressed Localhost profile
-for dedicated Codex; failure rolls back the cluster. The
-[local Kubernetes guide](../../guides/deploy/local-kubernetes-development.md#start-the-profile)
-owns the verified boundaries and provenance.
+Before writing the Installation, `scripts/prepare-development-codex-seccomp.mjs` probes
+`RuntimeDefault` without credentials. If blocked, it derives and verifies the dedicated Codex
+[content-addressed Localhost profile](../../guides/deploy/local-kubernetes-development.md#start-the-profile)
+or rolls back.
 
-Startup waits for the Gateway, certificate, and proxy Pods before reporting
-success. Envoy source addresses must fall inside the selected node's Pod CIDR;
-the tenant ingress policy must still admit only the Gateway's exact proxy peer.
+Startup waits for Gateway, certificate and proxy Pods. Envoy sources must be in the node’s
+Pod CIDR; tenant ingress must admit only the exact Gateway proxy peer.
 
-Loopback HTTPS uses a per-installation CA whose leaf covers only its console
-and Agent hosts. API and browser NodePorts publish only on host loopback; the CA
-key stays private. `internal/occdev/openshell_k3d.go:upK3d` prints
-[required browser trust instructions](../../guides/operate/troubleshooting.md#the-local-console-reports-a-certificate-error)
-beside the URL and public CA path. Stack readiness does not establish browser trust.
+API and browser NodePorts bind to loopback. The CA key stays private; its leaf covers only console and
+Agent hosts. Readiness does not establish [browser trust](../../guides/operate/troubleshooting.md#the-local-console-reports-a-certificate-error);
+`upK3d` prints the instructions, URL and public CA path.
 
 ### 12. Select Kubernetes development and preserve cleanup ownership
 
@@ -384,6 +380,8 @@ DNS/TLS, both Helm passes, recovery and destructive teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-22 08:41: Explain concurrent denials, cancellation and join. (authoring-run/14511ad6-a089-4565-822e-ce25bd5b834d - 0f87eb17a49ede96b2b1603daa73642d5dd7a578)
 
 - 2026-10-15 01:49: Build enabled browser proxy before startup. (authoring-run/c11897e0-33a6-4276-b620-aaec6d57ab00 - c7468f5965686a75474d81ba0fd11b9a16ccff75)
 
