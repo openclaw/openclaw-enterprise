@@ -3804,11 +3804,13 @@ test("startup refuses unknown OpenShell settings and invalid Agent resource quan
       structuralRefusal(path, "additionalProperties", "UNKNOWN_FIELD"),
     );
   }
-  const quantity = "Each value must be a quoted Kubernetes quantity, such as 500m or 1Gi.";
+  const quantity =
+    "Each value must be a quoted, non-negative Kubernetes quantity, such as 500m or 1Gi.";
   for (const agentResources of [
     { requests: { cpu: "one" } },
     { limits: { memory: 5 } },
     { limits: { cpu: "1", "example.com/gpu": "1 Gi" } },
+    { requests: { cpu: "-500m" } },
   ]) {
     const [section] = Object.keys(agentResources);
     await rejectsAtStartup(
@@ -3817,12 +3819,27 @@ test("startup refuses unknown OpenShell settings and invalid Agent resource quan
       invalidValue(`/kubernetes/agentResources/${section}`, quantity),
     );
   }
+  await rejectsAtStartup(
+    t,
+    (c) =>
+      (sandboxOf(c).kubernetes.agentResources = {
+        requests: { cpu: "1500m", memory: "1Gi" },
+        limits: { cpu: "1", memory: "2Gi" },
+      }),
+    [
+      {
+        path: "/kubernetes/agentResources/requests",
+        code: "INVALID_RANGE",
+        message: "The cpu request (1500m) cannot exceed its limit (1).",
+      },
+    ],
+  );
   // Control: every known key, and quantities in each spelling the API server accepts, load.
   const accepted = sandboxInstallation();
   Object.assign(sandboxOf(accepted).kubernetes, {
     agentResources: {
-      requests: { cpu: "500m", memory: "1Gi" },
-      limits: { cpu: "2", memory: "4e9", "example.com/gpu": "1" },
+      requests: { cpu: "500m", memory: "1Gi", "example.com/gpu": "1" },
+      limits: { cpu: "0.5", memory: "4e9", "example.com/gpu": "1" },
     },
   });
   sandboxOf(accepted).kubernetes.sandboxDataMount.claimName = "workspace";
@@ -3831,10 +3848,13 @@ test("startup refuses unknown OpenShell settings and invalid Agent resource quan
 });
 
 // The Gateway refuses these protocols at CreateSandbox (finding 2335): unknown names, L7
-// protocols without an access preset, access on tcp, and json-rpc or mcp, which need rules.
+// protocols without an access preset, access or enforcement on tcp, enforce on sql, and json-rpc
+// or mcp, which need rules.
 test("startup refuses OpenShell endpoint protocols the gateway refuses", async (t) => {
   const unknown =
     "Use tcp, rest, websocket, graphql or sql, or omit protocol; OpenShell needs rules for json-rpc and mcp, which this setting cannot express.";
+  const tcpExtras =
+    "Protocol tcp takes neither an access preset nor enforcement; remove them, or use an L7 protocol.";
   for (const [endpoint, message] of [
     [{ protocol: "http" }, unknown],
     [{ protocol: "json-rpc" }, unknown],
@@ -3844,9 +3864,11 @@ test("startup refuses OpenShell endpoint protocols the gateway refuses", async (
       { protocol: "WebSocket" },
       "Protocol websocket needs an access preset (read_only, read_write or full).",
     ],
+    [{ protocol: "tcp", access: "full" }, tcpExtras],
+    [{ protocol: "TCP", enforcement: "audit" }, tcpExtras],
     [
-      { protocol: "tcp", access: "full" },
-      "Protocol tcp does not take an access preset; remove access, or use an L7 protocol.",
+      { protocol: "sql", access: "read_only", enforcement: "enforce" },
+      "Protocol sql supports enforcement audit only, since OpenShell cannot fully parse SQL.",
     ],
   ]) {
     await rejectsAtStartup(
@@ -3862,7 +3884,8 @@ test("startup refuses OpenShell endpoint protocols the gateway refuses", async (
     { protocol: "" },
     { protocol: "rest", access: "read_only" },
     { protocol: "sql", access: "full" },
-    { protocol: "graphql", access: "read_write" },
+    { protocol: "SQL", access: "full", enforcement: "audit" },
+    { protocol: "graphql", access: "read_write", enforcement: "enforce" },
   ]) {
     const configuration = sandboxInstallation();
     Object.assign(endpointOf(configuration), endpoint);

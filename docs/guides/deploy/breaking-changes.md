@@ -111,24 +111,27 @@ configuration with an unknown key in `kubernetes`, `kubernetes.serviceAccount`,
 `kubernetes.sandboxDataMount`, `kubernetes.agentResources`, `policy`,
 `policy.process` or `gateway.readiness` (for example `policy.filesytem` or
 `kubernetes.userNamespace`), an `agentResources.requests` or `limits` value
-that is not a quoted Kubernetes quantity, or a
-`policy.networkPolicies[].endpoints[].protocol` that OpenShell refuses: a name
-other than `tcp`, `rest`, `websocket`, `graphql` or `sql`, an L7 protocol
-without `access`, or `access` on `tcp`. Earlier builds started: they ignored a
-misspelled key, so its default applied, and every Sandbox creation failed on the
-other values.
+that is not a quoted, non-negative Kubernetes quantity or a request above its
+limit, or a `policy.networkPolicies[].endpoints[].protocol` that OpenShell
+refuses: a name other than `tcp`, `rest`, `websocket`, `graphql` or `sql`, an L7
+protocol without `access`, `access` or `enforcement` on `tcp`, or `enforcement:
+enforce` on `sql`. Earlier builds started: they ignored a misspelled key, so its
+default applied (OpenShell refused one under `agentResources` at Sandbox
+creation), and every Sandbox creation failed on the other values. OCE now sends
+protocol names lowercase.
 
 **Who is affected.** OpenShell Installations with such a setting. Endpoints
 with `json-rpc` or `mcp` never worked, because OpenShell needs rules this
 setting cannot express.
 
 **How to tell.** Startup fails with `UNKNOWN_FIELD` at the object that holds
-the key, or `INVALID_VALUE` at `/kubernetes/agentResources/requests` (or
-`limits`) or at the endpoint's `protocol`.
+the key, `INVALID_VALUE` or `INVALID_RANGE` at
+`/kubernetes/agentResources/requests` (or `limits`), or `INVALID_VALUE` at the
+endpoint's `protocol`.
 
-**Steps.** Fix or remove the key, quote each quantity (`cpu: "500m"`), and
-give each L7 endpoint an `access` preset or remove its protocol; then restart
-the controller.
+**Steps.** Fix or remove the key, quote each quantity (`cpu: "500m"`) and keep
+requests within limits, give each L7 endpoint an `access` preset or remove its
+protocol, and use `enforcement: audit` for `sql`; then restart the controller.
 
 ## 2026-10-24: OpenShell readiness poll interval is capped at 2147483647 ms
 

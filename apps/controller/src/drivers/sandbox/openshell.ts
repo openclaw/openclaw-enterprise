@@ -110,7 +110,10 @@ import {
 import { OpenShellServiceTransportError } from "./openshell-service-transport.ts";
 import { RUNTIME_WRAPPER_COMMAND } from "../compute/kubernetes/runtime-entrypoints.ts";
 import { harnessWorkspacePreparationScript } from "../compute/kubernetes/index.ts";
-import { isResourceQuantity } from "../compute/kubernetes/resource-quantities.ts";
+import {
+  compareResourceQuantities,
+  isResourceQuantity,
+} from "../compute/kubernetes/resource-quantities.ts";
 import { nodeProgramArguments } from "../compute/node-program.ts";
 import {
   requireWorkspaceSetupConfiguration,
@@ -1923,17 +1926,45 @@ function validatePolicySettings(options: OpenShellSandboxDriverOptions): void {
       message: "The Sandbox data mount is read-only; remove it from readWrite.",
     });
   }
+  // The API server refuses the Sandbox Pod otherwise, after a deploy stopped its predecessors.
+  // Startup reports problems under each map's own path, so messages name the resource.
+  const agentResources = {
+    requests: asRecord(options.kubernetes.agentResources?.requests) ?? {},
+    limits: asRecord(options.kubernetes.agentResources?.limits) ?? {},
+  };
+  const quantitiesValid = { requests: true, limits: true };
   for (const section of ["requests", "limits"] as const) {
-    const quantities = Object.values(asRecord(options.kubernetes.agentResources?.[section]) ?? {});
-    // The API server refuses the Sandbox Pod otherwise, after a deploy stopped its predecessors.
     if (
-      quantities.some((quantity) => typeof quantity !== "string" || !isResourceQuantity(quantity))
+      Object.values(agentResources[section]).some(
+        (quantity) =>
+          typeof quantity !== "string" ||
+          !isResourceQuantity(quantity) ||
+          (compareResourceQuantities(quantity, "0") ?? 0) < 0,
+      )
     ) {
+      quantitiesValid[section] = false;
       details.push({
         path: `/kubernetes/agentResources/${section}`,
         code: "INVALID_VALUE",
-        message: "Each value must be a quoted Kubernetes quantity, such as 500m or 1Gi.",
+        message:
+          "Each value must be a quoted, non-negative Kubernetes quantity, such as 500m or 1Gi.",
       });
+    }
+  }
+  if (quantitiesValid.requests && quantitiesValid.limits) {
+    for (const [resource, request] of Object.entries(agentResources.requests)) {
+      const limit = agentResources.limits[resource];
+      if (
+        typeof request === "string" &&
+        typeof limit === "string" &&
+        (compareResourceQuantities(request, limit) ?? 0) > 0
+      ) {
+        details.push({
+          path: "/kubernetes/agentResources/requests",
+          code: "INVALID_RANGE",
+          message: `The ${resource} request (${request}) cannot exceed its limit (${limit}).`,
+        });
+      }
     }
   }
   const policies: readonly OpenShellNetworkPolicyRule[] = Array.isArray(
@@ -1962,9 +1993,10 @@ function validatePolicySettings(options: OpenShellSandboxDriverOptions): void {
   }
 }
 
-// The pinned Gateway's validate_l7_endpoint_semantics refuses these at CreateSandbox. Its L7
-// protocols need an access preset or rules; this configuration has no rules, so json-rpc and
-// mcp cannot be expressed.
+// The pinned Gateway refuses these at CreateSandbox (validate_l7_endpoint_semantics and the
+// sandbox policy checks). Its L7 protocols need an access preset or rules; this configuration has
+// no rules, so json-rpc and mcp cannot be expressed. The Gateway reads protocol names in any letter
+// case, but some of its checks compare lowercase names, so OCE sends them lowercase.
 const ACCESS_PRESET_PROTOCOLS = new Set(["rest", "websocket", "graphql", "sql"]);
 
 function endpointProtocolProblem(endpoint: OpenShellNetworkEndpoint): string | undefined {
@@ -1974,13 +2006,16 @@ function endpointProtocolProblem(endpoint: OpenShellNetworkEndpoint): string | u
   }
   const normalized = typeof protocol === "string" ? protocol.toLowerCase() : "";
   if (normalized === "tcp") {
-    return endpoint.access === undefined
+    return endpoint.access === undefined && endpoint.enforcement === undefined
       ? undefined
-      : "Protocol tcp does not take an access preset; remove access, or use an L7 protocol.";
+      : "Protocol tcp takes neither an access preset nor enforcement; remove them, or use an L7 protocol.";
   }
   if (ACCESS_PRESET_PROTOCOLS.has(normalized)) {
-    return endpoint.access === undefined
-      ? `Protocol ${normalized} needs an access preset (read_only, read_write or full).`
+    if (endpoint.access === undefined) {
+      return `Protocol ${normalized} needs an access preset (read_only, read_write or full).`;
+    }
+    return normalized === "sql" && endpoint.enforcement === "enforce"
+      ? "Protocol sql supports enforcement audit only, since OpenShell cannot fully parse SQL."
       : undefined;
   }
   return "Use tcp, rest, websocket, graphql or sql, or omit protocol; OpenShell needs rules for json-rpc and mcp, which this setting cannot express.";
@@ -2062,7 +2097,9 @@ function networkPolicies(options: OpenShellSandboxDriverOptions) {
           return {
             host: nonempty(endpoint.host, `${description} host`),
             ports: endpoint.ports.map((value) => port(value, `${description} port`)),
-            ...(endpoint.protocol === undefined ? {} : { protocol: endpoint.protocol }),
+            ...(endpoint.protocol === undefined
+              ? {}
+              : { protocol: endpoint.protocol.toLowerCase() }),
             ...(tls === undefined ? {} : { tls }),
             ...(enforcement === undefined ? {} : { enforcement }),
             ...(access === undefined ? {} : { access }),
