@@ -62,12 +62,12 @@ and deploy again.
 
 ## 2026-10-24: Kubernetes Compute checks dedicated placement and selector labels
 
-**What breaks.** Agent create and update and deployment admission refuse a
-dedicated Agent (Codex or OpenClaw) when the Kubernetes Compute configuration
-sets `runtime` without `runtime.gatewayNodeSelector` or `gatewayRouting`, and
-Create Agent no longer offers Dedicated OpenClaw there. A stored dedicated
-Agent still reads, but each update is refused until the setting is fixed.
-Controller startup refuses
+**What breaks.** Deployment admission refuses a dedicated Agent (Codex or
+OpenClaw) when the Kubernetes Compute configuration sets `runtime` without
+`runtime.gatewayNodeSelector` or `gatewayRouting`. Agent create and update
+refuse it too when the Configuration selects a model and the Agent binds a
+Secret or `runtime` authentication; a stored such Agent still reads, but each
+update is refused until the setting is fixed. Controller startup refuses
 `runtime.nodeSelector` or `runtime.gatewayNodeSelector` label keys or values
 that Kubernetes refuses, and `resources.namespace.quota` entries whose name is
 not a Kubernetes quota resource name or whose value is not a non-negative
@@ -81,8 +81,7 @@ placement check.
 
 **How to tell.** Saving or deploying the Agent fails with 400 and `Dedicated Agents need
 runtime.gatewayNodeSelector` (or `gatewayRouting`) `in this Installation's
-Kubernetes Compute configuration`; with a Sandbox Driver, the Installation's
-`openclaw.settingRefusals` shows it too. Or startup fails at
+Kubernetes Compute configuration`. Or startup fails at
 `/runtime/nodeSelector`, `/runtime/gatewayNodeSelector` or
 `/resources/namespace/quota`.
 
