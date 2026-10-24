@@ -134,6 +134,8 @@ test("Agent detail separates the current version, viewed version, and latest dep
   await overview.nth(0).getByText("v1", { exact: true }).waitFor();
   await overview.nth(1).getByText("v2 · Queued").waitFor();
   await overview.nth(2).getByText("Not verified").waitFor();
+  // A running version's unverified serving says why (finding 2367).
+  await overview.nth(2).getByText("OCC sends no test request.", { exact: true }).waitFor();
   const activity = await expectDeploymentOutcome(page, "Queued");
   await activity.getByText("Most recent visible deployment · v2").waitFor();
   await activity.getByText("Waiting for a worker claim.").waitFor();
