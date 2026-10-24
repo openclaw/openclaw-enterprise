@@ -198,7 +198,7 @@ provisioning job or credential registration exists.
 
 `agents/create.mts:updateModelConfiguration` synchronizes qualified shared primaries
 and existing local policies. Empty maps and inherited selections remain. Invalid
-rosters stay for admission validation. JSON edits update selection and clear pending
+rosters stay for admission validation. JSON selection edits update controls and clear pending
 state. Clearing/navigation retain policies, fallbacks and referenced metadata.
 
 ### 4. Save an independent draft
