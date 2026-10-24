@@ -231,10 +231,16 @@ it during prepare, activation, or stop. The systemd unit loads it for managed
 password access and omits it for trusted proxy without a password.
 
 The optional `EnvironmentFile=-<agentDir>/env` is operator-owned and never read
-or written by the Driver. Provision model credential lines there and
-reference them through native environment SecretRefs. Systemd reads this file
-as root; keep it `root:root 0600`. Protect the state root and SSH identity and
-never put plaintext credentials in native Configuration or Installation YAML.
+or written by the Driver. Provision model/channel credential lines there and
+reference them through native environment SecretRefs. The Driver sets
+`operatorProvisionedSecrets`, so OCC does not validate unbound channel
+references; verify channel access separately. It still refuses bound Secrets, so
+the Console's Slack credentials step cannot deploy to SSH; set the unbound
+references in native Configuration instead. Keep only that Agent's credentials
+in its file, since a Configuration can reference any non-reserved variable
+there. Systemd reads this file as root; keep it `root:root 0600`. Protect the
+state root and SSH identity and never put plaintext credentials in native
+Configuration or Installation YAML.
 
 The Agent revision records only `{ "method": "runtime" }`; there is no Secret source,
 account identity, key value, or configurable environment-variable field in this
@@ -247,9 +253,10 @@ Redeployment, stop, and version retirement preserve the operator file. Changing
 it can affect an existing version without redeployment; restart the process to
 load changed environment values. Agent and Namespace deletion remove this file.
 
-Enabled Slack requires [Secret-backed credential validation](slack-channel.md#credential-validation).
-The host environment file cannot satisfy that requirement, and SSH does not
-deliver OCC Secrets. Use [Kubernetes Compute](kubernetes-compute.md) for that path.
+Enabled Slack normally requires [Secret-backed credential validation](slack-channel.md#credential-validation).
+SSH does not deliver OCC Secrets, so it accepts unbound environment references
+that OCC does not validate, as described above. Use
+[Kubernetes Compute](kubernetes-compute.md) when OCC must validate Slack credentials.
 
 Other native channels require both OCC admission and support in the host's
 OpenClaw build. Separate Unix users and private groups protect sibling state and native
