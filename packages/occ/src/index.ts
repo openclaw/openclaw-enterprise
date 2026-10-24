@@ -1522,23 +1522,23 @@ function requireDedicatedNativeSupport(
 
 /**
  * Whether an OpenClaw Agent in this execution mode passes both save and deploy admission on this
- * Installation shape. It runs admission's own checks, so the Installation capability built from
- * it cannot disagree with them (#2670).
+ * Installation shape: true, or the refusal. It runs admission's own checks, so the Installation
+ * capability built from it cannot disagree with them (#2670).
  */
 function admitsOpenClawExecutionMode(
   sandbox: SandboxDriver | undefined,
   executionMode: HarnessExecutionMode,
   nativeWorkers: NativeWorkerSupportSource | undefined,
   compute: ComputeDriver | undefined,
-): boolean {
+): true | Error {
   try {
     requireSandboxExecutionMode(sandbox, executionMode);
-    compute?.validateExecutionPlacement?.(executionMode);
     const harness = Object.freeze({ id: "openclaw", version: "capability", mode: executionMode });
     requireDedicatedNativeSupport(harness, sandbox, nativeWorkers);
-    // Admission's Sandbox view can refuse on Driver settings alone (OpenShell's userNamespaces
-    // or ServiceAccounts).
+    // Admission's Sandbox view and Compute placement can refuse on Driver settings alone
+    // (OpenShell's userNamespaces or ServiceAccounts, Kubernetes gateway routing).
     sandbox?.configureAgent?.(Object.freeze({}), harness);
+    compute?.validateExecutionPlacement?.(executionMode);
     return true;
   } catch (error) {
     if (
@@ -1546,7 +1546,7 @@ function admitsOpenClawExecutionMode(
       error instanceof NativeWorkerSupportError ||
       error instanceof DedicatedOpenClawSandboxError
     ) {
-      return false;
+      return error;
     }
     throw error;
   }
@@ -1998,6 +1998,7 @@ export class OpenClawController {
    */
   private openClawExecutionModes(): {
     executionModes: HarnessExecutionMode[];
+    settingRefusals?: Partial<Record<HarnessExecutionMode, string>>;
     sandboxDriverUnavailable?: true;
   } {
     let sandbox: SandboxDriver | undefined;
@@ -2009,15 +2010,26 @@ export class OpenClawController {
       }
       throw error;
     }
+    const executionModes: HarnessExecutionMode[] = [];
+    const settingRefusals: Partial<Record<HarnessExecutionMode, string>> = {};
+    for (const mode of HARNESS_EXECUTION_MODES) {
+      const admission = admitsOpenClawExecutionMode(
+        sandbox,
+        mode,
+        this.nativeWorkers,
+        this.selections.get("compute")?.driver as ComputeDriver | undefined,
+      );
+      if (admission === true) {
+        executionModes.push(mode);
+      } else if (mode === "dedicated" && admission instanceof ConfigurationHarnessError) {
+        // A Sandbox Driver that provisions dedicated OpenClaw but whose settings, or the Compute
+        // Driver's, refuse it: say which setting, in admission's own words (findings 2373, 2376).
+        settingRefusals[mode] = admission.message;
+      }
+    }
     return {
-      executionModes: HARNESS_EXECUTION_MODES.filter((mode) =>
-        admitsOpenClawExecutionMode(
-          sandbox,
-          mode,
-          this.nativeWorkers,
-          this.selections.get("compute")?.driver as ComputeDriver | undefined,
-        ),
-      ),
+      executionModes,
+      ...(Object.keys(settingRefusals).length ? { settingRefusals } : {}),
     };
   }
 

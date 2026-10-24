@@ -345,9 +345,12 @@ export interface InstallationCapabilities {
   /**
    * The OpenClaw execution modes an Agent can deploy in; empty when none. sandboxDriverUnavailable
    * marks an empty list caused by a selected Sandbox Driver outage, not the Installation's shape.
+   * settingRefusals holds admission's refusal for a mode the Sandbox Driver could provision but
+   * its settings refuse, naming the setting.
    */
   readonly openclaw?: {
     readonly executionModes: readonly HarnessExecutionMode[];
+    readonly settingRefusals?: { readonly dedicated?: string };
     readonly sandboxDriverUnavailable?: true;
   };
 }
