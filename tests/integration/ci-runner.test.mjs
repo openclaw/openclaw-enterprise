@@ -1,21 +1,13 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import {
-  chmod,
-  mkdir,
-  mkdtemp,
-  readdir,
-  readFile,
-  realpath,
-  rm,
-  writeFile,
-} from "node:fs/promises";
+import { chmod, mkdir, readdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test, { describe } from "node:test";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 const runnerPath = join(repositoryRoot, "scripts/ci/run-tests.mjs");
@@ -26,8 +18,7 @@ const runnerPath = join(repositoryRoot, "scripts/ci/run-tests.mjs");
 const fixtureGitEnv = { GIT_CEILING_DIRECTORIES: tmpdir() };
 
 async function fixture(t) {
-  const root = await mkdtemp(join(tmpdir(), "ci-runner-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await temporaryDirectory(t, "ci-runner-");
   await mkdir(join(root, "scripts/ci"), { recursive: true });
   await mkdir(join(root, "tests/integration"), { recursive: true });
   await mkdir(join(root, "results"), { recursive: true });

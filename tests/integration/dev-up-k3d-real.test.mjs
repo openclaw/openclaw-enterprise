@@ -12,6 +12,7 @@ import { promisify } from "node:util";
 import { devUpUnrelatedImage, prepareDevUpImage } from "../../scripts/ci/prepare.mjs";
 import { availablePort } from "../helpers/available-port.mjs";
 import { runDevUpModelProviderCase } from "../helpers/dev-up-model-provider.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const { loadYaml } = createRequire(new URL("../../apps/controller/package.json", import.meta.url))(
   "@kubernetes/client-node",
@@ -41,8 +42,7 @@ test(
     timeout: 60_000,
   },
   async (t) => {
-    const root = await mkdtemp(join(tmpdir(), "oce-dev-image-preflight-"));
-    t.after(() => rm(root, { recursive: true, force: true }));
+    const root = await temporaryDirectory(t, "oce-dev-image-preflight-");
     const stateDirectory = join(root, "state");
     const environment = {
       ...process.env,

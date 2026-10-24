@@ -83,6 +83,7 @@ import {
   supervisorPeerLabels,
 } from "../fixtures/kubernetes-provider-readiness.mjs";
 import { writeSafeKubeconfig, writeUnsafeKubeconfigs } from "../helpers/unsafe-kubeconfigs.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const { kubeconfigPath, context: contextName } = conformanceKubeconfig;
 test("Kubernetes peer Pod selectors reject labels the API refuses before provisioning", () => {
@@ -6148,8 +6149,7 @@ test("Kubernetes renders an all-interfaces native listener when gateway.bind is 
 
 test("Kubernetes keeps a revision's gateway document rendered before the lan bind", async (t) => {
   // A two-cluster Installation's gateway document carries the execution cluster's CA beside it.
-  const directory = await mkdtemp(join(tmpdir(), "oce-execution-ca-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "oce-execution-ca-");
   const certificate = join(directory, "execution-ca.pem");
   const generated = spawnSync(
     "openssl",
@@ -14510,8 +14510,7 @@ test("runtime node selector schedules gateways and their private-state initializ
 });
 
 test("Harness workspace preparation creates private directories and resumes an interrupted move", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "oce-harness-workspace-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await temporaryDirectory(t, "oce-harness-workspace-");
   const prepare = () => {
     const result = spawnSync(
       process.execPath,
