@@ -424,6 +424,25 @@ const cases = [
       details: [{ path: "/configuration/secretBindings/OPENCLAW_TOKEN", code: "INVALID_VALUE" }],
     },
   ],
+  // The detail path cap is 512 characters: a key that ends the path exactly there is named,
+  // and one character more points at the bindings instead.
+  ...[
+    ["exactly at", "K".repeat(482), `/configuration/secretBindings/${"K".repeat(482)}`],
+    ["one past", "K".repeat(483), "/configuration/secretBindings"],
+  ].map(([where, key, path]) => [
+    `a Secret binding destination whose path ends ${where} the 512-character cap`,
+    new SecretBindingValidationError("A secret binding destination is invalid.", {
+      bindingsPath: "/configuration/secretBindings",
+      key,
+      code: "INVALID_VALUE",
+    }),
+    {
+      status: 400,
+      code: "INVALID_REQUEST",
+      message: "A secret binding destination is invalid.",
+      details: [{ path, code: "INVALID_VALUE" }],
+    },
+  ]),
   [
     "plugin selections that alias the same plugin",
     new PluginPolicyValidationError("aliasedPlugin"),
@@ -552,6 +571,21 @@ const cases = [
       message: "Channel directory lookup is unavailable. Retry or enter an exact ID.",
     },
   ],
+  // Only a recognized reason may pick the public message and code. Each of these is another
+  // discovery's reason or an inherited property name, so none maps.
+  ...[
+    ["channel directory", new ChannelDirectoryError("constructor")],
+    ["model discovery", new ModelDiscoveryError("missing_scope")],
+    ["plugin discovery", new PluginDiscoveryError("missing_scope")],
+  ].map(([kind, error]) => [
+    `a ${kind} reason it does not define`,
+    error,
+    {
+      status: 500,
+      code: "INTERNAL_ERROR",
+      message: "The platform request could not be completed.",
+    },
+  ]),
   [
     "a model provider that rejects discovery",
     new ModelDiscoveryError("credentials_rejected"),
@@ -1313,4 +1347,48 @@ test("a multi-megabyte first segment is capped in bounded time and heap", () => 
   // About 0.1 MB with the cut, 85 to 120 MB without it.
   assert.ok(grewMb < 16, `heap grew ${grewMb.toFixed(1)} MB`);
   assert.ok(elapsedMs < 1000, `took ${Math.round(elapsedMs)} ms`);
+});
+
+function contractFailure(validation) {
+  return requestFailure(
+    Object.assign(new Error("body is invalid"), {
+      statusCode: 400,
+      validationContext: "body",
+      validation,
+    }),
+  );
+}
+
+test("a contract refusal lists at most the 32 details the error contract allows", () => {
+  const failure = contractFailure(
+    Array.from({ length: 40 }, (_, index) => ({
+      keyword: "required",
+      instancePath: "",
+      schemaPath: "#/required",
+      params: { missingProperty: `field${index}` },
+    })),
+  );
+  assert.equal(failure.details.length, 32);
+  assert.deepEqual(failure.details.at(-1), { path: "/field31", code: "REQUIRED" });
+  assert.equal(
+    failure.message,
+    "The request does not match the operation contract: body /field0 is required; body /field1 is required; body /field2 is required; and 29 more.",
+  );
+});
+
+test("a contract message shows fewer problems rather than cut a path below 32 characters", () => {
+  // Three of these would leave each path about 25 characters, so the message names two.
+  const failure = contractFailure(
+    ["0", "1", "2", "3"].map((digit) => ({
+      keyword: "type",
+      instancePath: `/${digit.repeat(40)}`,
+      schemaPath: "#/type",
+      params: { type: "string" },
+    })),
+  );
+  assert.equal(
+    failure.message,
+    `The request does not match the operation contract: body /${"0".repeat(40)} has the wrong type (expected string); body /${"1".repeat(40)} has the wrong type (expected string); and 2 more.`,
+  );
+  assert.equal(failure.details.length, 4);
 });
