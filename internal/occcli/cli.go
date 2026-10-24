@@ -1197,6 +1197,7 @@ func (app *application) validateOptions(command *cobra.Command) error {
 // key; Namespace commands refuse it), so neither is listed. The other string
 // flags refuse an empty value themselves.
 var emptyFlagValues = map[string]string{
+	"facet":                       "a sandbox policy facet such as networking",
 	"file":                        "a JSON document",
 	"key-output":                  "a key file path",
 	"sandbox-network-policy-file": "a Sandbox network policy file",
