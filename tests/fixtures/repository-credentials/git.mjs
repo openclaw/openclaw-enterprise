@@ -14,7 +14,8 @@ import {
 
 // Seeding a repository takes nine Git processes. The first fixture for a repository name in a
 // process seeds a template; every fixture copies it into its own directory without Git, so a
-// fixture that receives pushes or adds commits changes only its copy.
+// fixture that receives pushes or adds commits changes only its copy. Templates are removed when
+// the process exits; like any temporary directory, a process killed by a signal leaves them.
 const repositoryTemplates = new Map();
 const templateDirectories = new Set();
 process.once("exit", () => {
@@ -57,6 +58,30 @@ async function seedRepositoryTemplate(repository) {
   return { bare, seed };
 }
 
+async function copyRepositoryTemplate(repository, bare, seed) {
+  const pending = repositoryTemplate(repository);
+  const template = await pending;
+  try {
+    // About a millisecond each; fs.promises.cp takes several times as long for the same copy.
+    cpSync(template.bare, bare, { recursive: true });
+    cpSync(template.seed, seed, { recursive: true });
+  } catch (error) {
+    if (error.code !== "ENOENT") {
+      throw error;
+    }
+    // The template lives as long as the process; if something swept it from the temporary
+    // directory, seed it again once rather than failing every later fixture.
+    if (repositoryTemplates.get(repository) === pending) {
+      repositoryTemplates.delete(repository);
+    }
+    rmSync(bare, { recursive: true, force: true });
+    rmSync(seed, { recursive: true, force: true });
+    const reseeded = await repositoryTemplate(repository);
+    cpSync(reseeded.bare, bare, { recursive: true });
+    cpSync(reseeded.seed, seed, { recursive: true });
+  }
+}
+
 // git-http-backend owns the protocol and repository mutation; the fixture only
 // supplies CGI framing and a controlled provider authentication check.
 export async function startGitSmartHttpFixture(
@@ -67,10 +92,7 @@ export async function startGitSmartHttpFixture(
   const directory = await temporaryDirectory(t, "repository-credentials-git-");
   const bare = join(directory, `${repository}.git`);
   const seed = join(directory, "seed");
-  const template = await repositoryTemplate(repository);
-  // About a millisecond each; fs.promises.cp takes several times as long for the same copy.
-  cpSync(template.bare, bare, { recursive: true });
-  cpSync(template.seed, seed, { recursive: true });
+  await copyRepositoryTemplate(repository, bare, seed);
   const trace = [];
   const children = new Set();
   let disconnectPush = false;
