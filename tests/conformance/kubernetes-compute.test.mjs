@@ -96,6 +96,7 @@ const { kubeconfigPath, context: contextName } = conformanceKubeconfig;
 test("Kubernetes peer Pod selectors and node selectors reject labels the API refuses before provisioning", () => {
   // Node selectors reach the API server only in a deployment's Deployment, after a dedicated
   // deployment stopped its predecessors (finding 2357).
+  // Startup names the selector's own path.
   const nodeSelector = (setting) => [
     `runtime.${setting}`,
     (configured, labels) => {
@@ -105,6 +106,7 @@ test("Kubernetes peer Pod selectors and node selectors reject labels the API ref
         [setting]: labels,
       };
     },
+    `/runtime/${setting}`,
   ];
   const peers = [
     nodeSelector("nodeSelector"),
@@ -154,7 +156,7 @@ test("Kubernetes peer Pod selectors and node selectors reject labels the API ref
       },
     ],
   ];
-  for (const [description, configure] of peers) {
+  for (const [description, configure, path] of peers) {
     for (const podLabels of [
       { app: "kube/dns" },
       { app: "a".repeat(64) },
@@ -170,8 +172,17 @@ test("Kubernetes peer Pod selectors and node selectors reject labels the API ref
       configure(configured, podLabels);
       assert.throws(
         () => createKubernetesComputeDriver(configured),
-        SharedConfigurationValidationError,
-        description,
+        (error) => {
+          assert.ok(error instanceof SharedConfigurationValidationError, description);
+          if (path !== undefined) {
+            assert.deepEqual(
+              error.error.details.map((detail) => detail.path),
+              [path],
+              description,
+            );
+          }
+          return true;
+        },
       );
     }
     // Kubernetes accepts empty values and DNS-subdomain key prefixes up to253
@@ -14348,6 +14359,8 @@ test("resource quantities reject bare numbers with structured field diagnostics"
     ["count/", "1", /must be a Kubernetes resource name/],
     ["Example.com/gpu", "1", /must be a Kubernetes resource name/],
     ["podz", "1", /Namespace quota resource "podz" must be a Kubernetes resource name/],
+    // A standard name must match whole: the API server refuses a longer one.
+    ["podsx", "1", /Namespace quota resource "podsx" must be a Kubernetes resource name/],
     [
       "pods",
       "ten",
@@ -14377,6 +14390,27 @@ test("resource quantities reject bare numbers with structured field diagnostics"
     "requests.hugepages-2Mi": "1Gi",
   });
   requireConfiguration(KubernetesComputeDriver, extended);
+  // Every standard quota resource without a prefix (ValidateResourceQuotaResourceName) loads.
+  for (const resource of [
+    "cpu",
+    "memory",
+    "ephemeral-storage",
+    "limits.cpu",
+    "requests.ephemeral-storage",
+    "limits.ephemeral-storage",
+    "hugepages-1Gi",
+    "services",
+    "services.nodeports",
+    "replicationcontrollers",
+    "resourcequotas",
+    "secrets",
+    "configmaps",
+    "persistentvolumeclaims",
+  ]) {
+    const standard = separateResources();
+    standard.resources.namespace.quota[resource] = "1";
+    requireConfiguration(KubernetesComputeDriver, standard);
+  }
   // A missing value is still reported as missing, and quoted cores pass.
   const missing = separateResources();
   delete missing.resources.gateway.limits.cpu;
