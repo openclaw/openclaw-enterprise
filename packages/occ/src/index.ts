@@ -30,6 +30,7 @@ import {
   credentialSourceMatchesSnapshot,
   revisionCredentialSourceSnapshot,
   credentialFreeProviderRef,
+  pluginRuntimeHarnessRequirement,
 } from "@openclaw-enterprise/contracts";
 import { EgressSendReceipts } from "./egress-send-receipts.ts";
 import type {
@@ -2933,6 +2934,14 @@ export class OpenClawController {
           },
           this.sandboxDriver()?.id,
         );
+      }
+      // Plugins the Plugin Driver cannot run in this Harness, as Agent save refuses them;
+      // authorizeProvisioningRecord repeats this check for the stored record.
+      if (plugins !== undefined && Object.keys(plugins).length > 0) {
+        this.validatePluginHarness(plugins, {
+          id: resolveConfiguredHarnessId(configurationInput.values),
+          mode: executionMode,
+        });
       }
       const record = await state.provisioning.create({
         workId,
@@ -8708,6 +8717,7 @@ export class OpenClawController {
           harnessAuth,
           repositoryBindings,
           workspaceSetup: initialWorkspaceFiles !== undefined,
+          plugins,
         },
         savedConfiguration,
       );
@@ -8812,6 +8822,7 @@ export class OpenClawController {
           harnessAuth: null,
           repositoryBindings: undefined,
           workspaceSetup: initialWorkspaceFiles !== undefined,
+          plugins,
         },
         configuration,
       );
@@ -9051,6 +9062,7 @@ export class OpenClawController {
           harnessAuth: requestedAuth === undefined ? previousAuth : requestedAuth,
           repositoryBindings: repositoryBindings ?? agent.repositoryBindings,
           workspaceSetup: workspaceSetup !== undefined && !workspaceSetup.completed,
+          plugins: plugins ?? agent.plugins,
         },
         savedConfiguration,
       );
@@ -9464,6 +9476,7 @@ export class OpenClawController {
       // Agent saves check the plugins against the Configuration they name, but a later
       // Configuration save does not know which Agents use it: check the admitted pair again.
       this.validatePluginConfiguration(pluginState?.plugins, admittedConfiguration);
+      this.validatePluginHarness(pluginState?.plugins, revisionHarness);
       // Decode every earlier revision: one that is unreadable refuses the deploy here (503,
       // nothing created), because the worker must decode them all to stop or retire them.
       const previous = await state.revisions.listRevisions(namespace.id, lockedAgent.id);
@@ -11262,11 +11275,13 @@ export class OpenClawController {
     // Plugin policy is admission for writes (replay, retry, the worker). A status read reports
     // the stored work, so an Installation Plugin Driver switch does not turn it into a 400.
     if (!statusRead) {
+      const plugins = normalizeAgentPlugins(record.plan.plugins as PluginDesiredState | undefined);
       this.validatePluginPolicies(
-        normalizeAgentPlugins(record.plan.plugins as PluginDesiredState | undefined),
+        plugins,
         normalizeAgentPluginApprovers(record.plan.pluginApprovers as PluginApprovers | undefined),
         "stored",
       );
+      this.validatePluginHarness(plugins, harness);
     }
     if (agent !== undefined) {
       this.admitRepositoryCredentials(
@@ -13250,6 +13265,24 @@ export class OpenClawController {
     }
   }
 
+  // Compute runs a bundled Plugin Driver's runtime only in the Harness it supports, and its
+  // preparation refuses any other pair after a dedicated deployment stopped the running
+  // revision. Agent save, provisioning and deployment refuse the pair first (finding 2348).
+  private validatePluginHarness(
+    plugins: PluginDesiredState | undefined,
+    harness: Readonly<Pick<RevisionHarnessDescriptor, "id" | "mode">>,
+  ): void {
+    if (plugins === undefined || Object.keys(plugins).length === 0) {
+      return;
+    }
+    const required = pluginRuntimeHarnessRequirement(this.pluginDriver().implementation, harness);
+    if (required !== undefined) {
+      throw new ConfigurationHarnessError(
+        `The Installation's Plugin Driver runs plugins only in ${required}: remove the Agent's plugins or select a Harness that runs them.`,
+      );
+    }
+  }
+
   // An Agent save names both its plugins and its Configuration, so it refuses a pair the
   // Plugin Driver cannot run instead of leaving the refusal to deployment. The values live in
   // the Configuration Driver: read them only when there is something to check.
@@ -13305,6 +13338,7 @@ export class OpenClawController {
       readonly harnessAuth: HarnessAuthBinding | null;
       readonly repositoryBindings: readonly RepositoryBindingSelection[] | undefined;
       readonly workspaceSetup: boolean;
+      readonly plugins: PluginDesiredState | undefined;
     },
     readConfiguration: () => Promise<Readonly<Configuration>>,
   ): Promise<void> {
@@ -13334,6 +13368,7 @@ export class OpenClawController {
       return;
     }
     const harness = Object.freeze({ ...approved, mode: agent.executionMode });
+    this.validatePluginHarness(agent.plugins, harness);
     const values = this.agentRuntimeConfiguration(configuration.values, harness, compute, sandbox);
     // A Configuration that selects no model yet is a draft: the binding has nothing to deliver
     // to, so deployment refuses that pair and save does not.
