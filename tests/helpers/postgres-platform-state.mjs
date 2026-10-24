@@ -74,14 +74,18 @@ async function kubectl(...args) {
 }
 
 // Under the CI runner (prepared ownership in OPENCLAW_ENTERPRISE_CI_STATE) a case can own a
-// database: a copy of the one prepared for its file (OCC_TEST_DATABASE_URL), which is then only
-// the template. PostgreSQL copies only a database without sessions, so a file whose cases use
-// this connects nothing to OCC_TEST_DATABASE_URL itself. The OCC processes started below with
-// the same context use the copy. It is dropped after the case's other after hooks, which stop
-// those processes and end its pools: node:test runs a hook added while the after hooks run after
-// the ones already registered. Lane cleanup drops a copy a failed hook left. Without prepared
-// ownership the cases share OCC_TEST_DATABASE_URL, so they must run one at a time.
+// database: prepareFile's fresh copy of the lane's migrated template, the same empty database
+// the runner prepared for the file (OCC_TEST_DATABASE_URL), which such a file leaves unused.
+// Nothing connects to the lane template (PostgreSQL copies only a database without sessions),
+// so a step that still used OCC_TEST_DATABASE_URL could not break another case's copy. The OCC
+// processes started below with the same context use the copy. It is dropped after the case's
+// other after hooks, which stop those processes and end its pools: node:test runs a hook added
+// while the after hooks run after the ones already registered. A failing after hook makes
+// node:test skip the later ones, the drop included; lane cleanup drops that copy. Without
+// prepared ownership the cases share OCC_TEST_DATABASE_URL, so they must run one at a time.
 const caseDatabasesAvailable = Boolean(process.env.OPENCLAW_ENTERPRISE_CI_STATE);
+// The worker revision fixture's limit for the drop's wait for the CI state lock.
+const caseDatabaseDropLockTimeoutMs = 120_000;
 
 async function prepareCaseDatabase(context, { lane, testFile }) {
   if (!caseDatabasesAvailable) {
@@ -92,9 +96,10 @@ async function prepareCaseDatabase(context, { lane, testFile }) {
     lane,
     file: fileURLToPath(testFile),
     statePath: process.env.OPENCLAW_ENTERPRISE_CI_STATE,
-    template: databaseUrl,
   });
-  context.after(() => context.after(() => prepared.cleanup()));
+  context.after(() =>
+    context.after(() => prepared.cleanup({ lockTimeoutMs: caseDatabaseDropLockTimeoutMs })),
+  );
   caseDatabases.set(context, prepared.env.OCC_TEST_DATABASE_URL);
   return prepared.env.OCC_TEST_DATABASE_URL;
 }

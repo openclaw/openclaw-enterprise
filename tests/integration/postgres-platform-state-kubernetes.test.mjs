@@ -38,8 +38,9 @@ const revisionSummary = (revision) => ({
 
 // Each case owns a database (prepareCaseDatabase), so its own Installation, and its own scoped
 // controller identity, platform namespace, ClusterRoles and binding (named from a random hash).
-// Its tenant namespaces, the bootstrap default one included, are named from random Namespace
-// IDs. Its API and worker connect only to its database, so neither claims another case's work,
+// Its tenant namespaces are named from random Namespace IDs; it deletes the ones it creates,
+// and the one its bootstrap default Namespace gets stays until the lane deletes the cluster.
+// Its API and worker connect only to its database, so neither claims another case's work,
 // and every count and row a case asserts is its own. Nothing cluster-scoped is shared beyond
 // what the lane's other files already use at the same time, so under the CI runner the cases
 // run two at a time (the describe at the end of this file).
