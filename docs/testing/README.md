@@ -101,6 +101,8 @@ only resources created by the run.
 - [Docker, images, and Helm](docker.md)
 - [Kubernetes, Keycloak, gateway routing, and production TUI](kubernetes.md)
 - [OpenShell](openshell.md)
+- [Protected inference](static-egress.md): source checks, PostgreSQL proof, and prepared OpenShell qualification.
+- [Protected repository custody](protected-repository-custody.md): qualify dispatch and response handling on an installed controller and OpenShell pair.
 - [SSH](ssh.md)
 - [Agent plugins](plugins.md)
 - [Repository credentials](repository-credentials.md)

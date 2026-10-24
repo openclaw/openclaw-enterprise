@@ -13,9 +13,11 @@
   line-height: 1.5;
   font-synthesis: none;
   color: var(--text);
-  background: var(--bg);
+  background: var(--color-canvas);
   /* Colour roles shared by the Console, its controls and its navigation. */
   --color-bg: #f7f5f0;
+  /* Themes with a translucent background resolve it over Canvas once, for both root and body. */
+  --color-canvas: var(--color-bg);
   --color-surface: #ffffff;
   --color-surface-2: #f1f4f6;
   --color-surface-hover: #eaf1f6;
@@ -37,7 +39,9 @@
   --color-danger-subtle: rgba(185, 28, 28, 0.08);
   --color-info: #193e61;
   --color-info-subtle: #e8f1f9;
-  --color-overlay: rgba(15, 23, 42, 0.4);
+  /* One tint and opacity for the translucent backdrop and its colour over the page canvas. */
+  --color-overlay-mix: #0f172a 40%;
+  --color-overlay: color-mix(in srgb, var(--color-overlay-mix), transparent);
   --color-focus: var(--color-link);
   /* Inverse surfaces use the same palette with light text, selection and focus. */
   --color-surface-inverse: var(--color-text-strong);
@@ -127,8 +131,7 @@
   --overlay: var(--color-overlay);
   --shadow: var(--shadow-1);
   --radius: var(--radius-md);
-  /* Keep the scrollbar's space whether or not the page scrolls, so the header and content do not
-     move sideways between short and long pages with classic scrollbars (finding 1520). */
+  /* Keep desktop pages aligned when a classic scrollbar comes and goes (finding 1520). */
   scrollbar-gutter: stable;
 }
 @media (prefers-reduced-motion: reduce) {
@@ -142,7 +145,7 @@
 }
 body {
   margin: 0;
-  background: var(--bg);
+  background: var(--color-canvas);
 }
 button,
 input,
@@ -227,8 +230,8 @@ a.overview-primary {
   color: var(--color-on-accent);
 }
 /* Tone hovers name the element so they outrank the plain button hover above. */
-button.button--primary:not(:disabled):hover,
-button.primary:not(:disabled):hover,
+button.button--primary:not(:disabled, [aria-disabled="true"]):hover,
+button.primary:not(:disabled, [aria-disabled="true"]):hover,
 a.button--primary:hover,
 a.primary:hover,
 a.overview-primary:hover {
@@ -646,6 +649,28 @@ p {
 .topbar .brand,
 .runtime-debug h2 {
   color: inherit;
+}
+/* The inverse mascot has its contour in the artwork. In forced colours, picture uses the
+   original mark at the same size as an operator-supplied logo. */
+.brand-mascot {
+  display: flex;
+  flex: none;
+}
+@media (forced-colors: none) {
+  .brand-mascot img {
+    width: 48px;
+    height: 38px;
+  }
+  .brand:has(.brand-mascot) {
+    gap: var(--space-1);
+  }
+  .topbar:has(.brand-mascot) {
+    column-gap: 0;
+  }
+  .brand--bar:has(.brand-mascot) {
+    font-size: clamp(var(--text-base), 4.4vw, var(--text-xl));
+    line-height: var(--text-lg--line-height);
+  }
 }
 .sidebar .brand {
   padding: var(--space-2) var(--space-3) 0;
@@ -1348,6 +1373,11 @@ p {
   display: none;
 }
 @media (max-width: 760px) {
+  /* Let the top bar, modal backdrop and sheet reach the edge when there is no scrollbar.
+     A real classic scrollbar still gets its space, including while a sheet is open. */
+  :root {
+    scrollbar-gutter: auto;
+  }
   .shell {
     /* A flow root keeps the menu button's margin inside the shell; collapsing through body,
        it moved the whole page when the shell replaced the startup status (finding 1413). */
@@ -1425,6 +1455,10 @@ p {
     position: absolute;
     top: var(--space-5);
     right: var(--space-2);
+  }
+  .sidebar .brand:has(.brand-mascot) {
+    /* Let the full installation name wrap beside the close button's touch target. */
+    padding-inline-end: var(--touch-min);
   }
   .resource {
     align-items: start;
@@ -1547,11 +1581,14 @@ select:not([multiple])[size="1"] {
   font-size: var(--text-sm);
   line-height: var(--text-sm--line-height);
 }
+/* A value is as tall as its badge, so a recorded outcome's badge replacing loading text moves
+   nothing (finding 2163). */
 .stat-value {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
+  min-height: calc(var(--text-sm) * var(--text-sm--line-height) + 2 * var(--space-1));
   color: var(--color-text-strong);
   font-size: var(--text-xl);
   line-height: var(--text-xl--line-height);
@@ -1566,6 +1603,10 @@ select:not([multiple])[size="1"] {
 }
 .stat-help:empty {
   display: none;
+}
+.stat-help.stat-help-line:empty {
+  display: block;
+  min-height: calc(var(--text-sm) * var(--text-sm--line-height));
 }
 /* Beside the sidebar (761-1100) the columns narrow; a fourth fact (Stop requested) stacks. */
 @media (max-width: 1100px) {
@@ -1729,6 +1770,16 @@ select:not([multiple])[size="1"] {
 }
 .deployment-evidence-content {
   padding-bottom: var(--space-3);
+}
+/* Deployment activity's stand-in before the latest record is read: one row as tall as the
+   folded summary, so the panel that replaces it moves nothing (finding 2163). */
+.deployment-evidence-loading {
+  margin: 0;
+  padding: var(--space-3) 0;
+  line-height: inherit;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .native-admin-heading {
   display: flex;
@@ -2332,6 +2383,9 @@ select:not([multiple])[size="1"] {
   font-weight: var(--weight-medium);
   color: var(--muted);
 }
+.agent-table tbody tr {
+  cursor: pointer;
+}
 .agent-table tbody tr:hover {
   background: var(--hover);
 }
@@ -2470,7 +2524,7 @@ select:not([multiple])[size="1"] {
   color: var(--accent);
   font-weight: var(--weight-semibold);
 }
-/* An edge with more tabs past it fades (detail.mjs sets the attributes as the strip scrolls).
+/* An edge with more tabs past it fades (detail.mts sets the attributes as the strip scrolls).
    A mask reads only alpha, so the opaque stop may be any opaque colour. */
 .agent-tabs[data-more-before] {
   --agent-tabs-fade-before: var(--space-8);
@@ -2623,6 +2677,23 @@ select:not([multiple])[size="1"] {
   background: var(--color-danger);
   color: var(--color-on-accent);
 }
+.agent-kept-resources {
+  margin-top: var(--space-3);
+}
+.agent-kept-command {
+  display: grid;
+  justify-items: start;
+  gap: var(--space-1);
+  margin-top: var(--space-2);
+  padding: var(--space-3);
+  background: var(--color-surface-2);
+  border-radius: var(--radius-sm);
+}
+.agent-kept-command code {
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+  user-select: all;
+}
 /* Dialog pattern (UX plan C6): every modal shares this chrome, backdrop, shadow and open motion.
    `--wide` holds a workspace (plugins), `--drawer` sits at the right edge (channels), and at
    760px and below each one is a bottom sheet. Sizes use % of the viewport box a modal dialog
@@ -2661,8 +2732,7 @@ select:not([multiple])[size="1"] {
   animation: dialog-backdrop-open var(--duration-base) var(--ease);
 }
 /* Cancel first (left), the confirming action last (right). */
-.dialog-actions,
-.dialog > .form-actions {
+.dialog-actions {
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
@@ -2773,6 +2843,18 @@ select:not([multiple])[size="1"] {
 }
 .dialog::backdrop {
   background: var(--color-overlay);
+}
+/* The native backdrop stops before a classic scrollbar gutter. Paint the same tint over the
+   root canvas there; body keeps its own background so the page is dimmed only once. */
+@media (forced-colors: none) {
+  :root:has(.dialog:modal) {
+    background-color: color-mix(in srgb, var(--color-overlay-mix), var(--color-canvas));
+    transition: background-color var(--duration-base) var(--ease);
+    scrollbar-color: var(--color-text-muted) transparent;
+  }
+  body {
+    scrollbar-color: auto;
+  }
 }
 /* A framed dialog keeps its destination in the header and its actions together in the footer. */
 .dialog--framed {
@@ -2945,6 +3027,12 @@ select:not([multiple])[size="1"] {
 
 .workspace-files .configuration-editor {
   min-height: 200px;
+}
+/* Save stays focusable when the caller lacks Agent operate (aria-disabled, not disabled), so it
+   takes the disabled look here. */
+.workspace-files button[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.6;
 }
 
 .channel-secrets {
@@ -3957,13 +4045,17 @@ select:not([multiple])[size="1"] {
 .agent-logs-opening > .danger-zone {
   visibility: hidden;
 }
+/* Pod cards share the panel's width: auto-fit collapses the empty columns that left one or two
+   cards near the 260 px minimum with the rest of the row blank (finding 2100). */
 .runtime-strip {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
   gap: var(--space-3);
   margin: var(--space-2) 0 var(--space-5);
 }
 .runtime-pod {
+  min-width: 0;
+  overflow-wrap: break-word;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--surface);

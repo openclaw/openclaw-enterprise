@@ -231,24 +231,6 @@ async function fakeCommand({ command, args, env, cwd, root, store, hungCommandEx
         return finish();
       }
     }
-    if (
-      equals(args.slice(0, 3), ["inspect", "--format", "{{json .NetworkSettings.Networks}}"]) &&
-      args[3] === "k3d-" + state.cluster + "-server-0"
-    ) {
-      return finish(
-        JSON.stringify({
-          ["k3d-" + state.cluster]: {
-            Gateway: scenario === "public-gateway" ? "203.0.113.1" : "172.19.0.1",
-          },
-        }),
-      );
-    }
-    if (args[0] === "build" && args.includes("--build-arg")) {
-      assert.equal(args[args.indexOf("--build-arg") + 1], "RUNTIME_IMAGE=" + state.runtime);
-      assert.ok(args[args.indexOf("-f") + 1].endsWith("/Dockerfile.platform-fixture"));
-      state.tag = args[args.indexOf("-t") + 1];
-      return finish();
-    }
     // The cache-only probe reports each image's config digest. In the engine-*
     // scenarios the cache resolves to images the engine may hold: engine-holds-images
     // holds both; the others fail one step of the probe.

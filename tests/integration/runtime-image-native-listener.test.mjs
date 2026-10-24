@@ -5,11 +5,11 @@
 import { plaintextGatewayComputeDrivers } from "../helpers/plaintext-gateway-compute.mjs";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import {
   image,
@@ -19,8 +19,8 @@ import {
   failureTail,
   createAdmittedRuntimeImageConfiguration,
   runGatewaySmoke,
-  eachSettled,
 } from "../helpers/runtime-image-startup.mjs";
+import { eachSettled } from "../helpers/child-processes.mjs";
 
 // The loopback provider owns all possible requests; no model turn is sent.
 const countingProvider = String.raw`
@@ -69,8 +69,7 @@ test(
   imageTestOptions,
   async (t) => {
     const drivers = plaintextGatewayComputeDrivers();
-    const directory = await mkdtemp(join(tmpdir(), "oce-native-listener-tls-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
+    const directory = await temporaryDirectory(t, "oce-native-listener-tls-");
     // Each case owns its container and configuration file, so both run at once.
     await eachSettled([true, false], async (enabled) => {
       const configuration = drivers[0][1].kubernetesGatewayConfigurationDocument(
@@ -156,8 +155,7 @@ test(
       }
       await runDocker(["network", "rm", network]);
     });
-    const directory = await mkdtemp(join(tmpdir(), "oce-native-bind-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
+    const directory = await temporaryDirectory(t, "oce-native-bind-");
     // Each case owns its container and configuration file, so the cases run
     // concurrently on the shared internal network.
     const bindCases = [

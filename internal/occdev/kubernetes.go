@@ -403,6 +403,15 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 			// Native OpenClaw uses Node; retain both architecture-specific Codex allowances.
 			"configuration": map[string]any{"binaries": append(openShellCodexBinaries(), "/usr/local/bin/node")},
 		}
+		if s.ProtectedEgress {
+			if s.egressKeyID == "" {
+				return fmt.Errorf("protected egress requires the generated OpenShell JWT key identifier")
+			}
+			config["drivers"].(map[string]any)["credential_proxy"] = developmentEgressConfiguration(s)
+			sandbox := config["drivers"].(map[string]any)["sandbox"].(map[string]any)["configuration"].(map[string]any)
+			gateway := sandbox["gateway"].(map[string]any)
+			gateway["networkPolicyResources"] = append(gateway["networkPolicyResources"].([]any), developmentAuthorityEgressPolicy(s))
+		}
 		config["backend"] = []any{openShellBackendConfiguration(s)}
 	}
 	data, err := yaml.Marshal(config)
@@ -429,6 +438,17 @@ func openShellCodexBinaries() []string {
 // openShellBackendConfiguration owns the gateway connection shared by the Sandbox and
 // Credential Gateway Drivers.
 func openShellBackendConfiguration(s *developmentState) map[string]any {
+	if s.ProtectedEgress {
+		return map[string]any{
+			"id": "openshell", "type": "openshell",
+			"configuration": map[string]any{
+				"endpoint":            fmt.Sprintf("https://%s.%s.svc.cluster.local:8080", openShellGatewayService, s.PlatformNamespace),
+				"rootCertificatePath": "/etc/openclaw/openshell/ca.crt", "requestTimeoutMs": 30000,
+				"auth": map[string]string{"mode": "mtls", "certificatePath": "/etc/openclaw/openshell/tls.crt", "privateKeyPath": "/etc/openclaw/openshell/tls.key"},
+			},
+			"drivers": map[string]string{"sandbox": openShellSandboxID, "credential_gateway": openShellCredentialGatewayID, "credential_proxy": developmentEgressDriver},
+		}
+	}
 	endpoint := fmt.Sprintf("http://k3d-%s-server-0:%d", s.Cluster, openShellNodePort)
 	if s.DeploymentMode == "k3d" {
 		endpoint = fmt.Sprintf("http://%s.%s.svc.cluster.local:8080", openShellGatewayService, s.PlatformNamespace)

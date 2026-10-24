@@ -81,7 +81,9 @@ The approved OCE mascot source is [`lobster-mech-transparent.png`](../assets/lob
 (SHA256 `207a83faca81a49521b31e73800af235bd912470ce8f9c09bc37d8075c22330c`).
 Preserve this original PNG and its transparency. The README and docs header use
 `docs/assets/oce-mascot.png` at 400 × 400; the console uses its own
-`apps/controller/src/console/oce-mascot.png` at 96 × 96.
+`apps/controller/src/console/oce-mascot.png` at 96 × 96. For the Console’s dark navigation,
+`oce-mascot-inverse.png` crops the transparent margins and adds a single white contour to the
+same artwork. Its 144 × 114 pixels render at 48 × 38 CSS pixels.
 
 Both asset directories contain transparent 16- and 32-pixel PNG favicons, a
 16/32/48-pixel ICO, and a 180-pixel touch icon derived from that source. Resize

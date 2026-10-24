@@ -67,7 +67,8 @@ and stored ownership before accepting work. With the bundled Kubernetes Compute
 Driver, `drivers.compute.configuration` holds the
 [`KubernetesComputeDriverOptions` shape](../drivers/kubernetes-compute.md#configuration).
 Production use of that Driver requires `images.requireImmutableDigest: true`,
-digest-pinned gateway and Agent image references, and exactly one in-cluster
+digest-pinned gateway and Agent image references, projected ServicePrincipal
+credentials unless a Sandbox Driver is selected, and exactly one in-cluster
 identity or explicitly named kubeconfig/context. The processes then verify
 authenticated, TLS-checked, read-only Kubernetes Namespace access before serving
 requests or claiming work. Installed Drivers validate their own reviewed

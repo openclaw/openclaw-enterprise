@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { once } from "node:events";
 import { createServer } from "node:http";
 import test from "node:test";
 import { message } from "../../apps/controller/src/console/agents/list.mts";
 import { createApiClient } from "../../apps/controller/src/console/api-client.mts";
 import { createViewLifetime } from "../../apps/controller/src/console/view-lifetime.mts";
+import { listen } from "../helpers/listen.mjs";
 
 async function interruptedResponse(t, interrupt, responseType = "json") {
   const controller = new AbortController();
@@ -21,19 +21,14 @@ async function interruptedResponse(t, interrupt, responseType = "json") {
     const timer = setTimeout(() => interrupt(response, controller), 100);
     response.on("close", () => clearTimeout(timer));
   });
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  t.after(async () => {
-    server.closeAllConnections();
-    await new Promise((resolve) => server.close(resolve));
-  });
+  const port = await listen(t, server);
   const request = createApiClient({
     lifetime: createViewLifetime(),
     hasSession: () => true,
     onExpired() {},
   });
   return {
-    result: request(`http://127.0.0.1:${server.address().port}/namespaces`, {
+    result: request(`http://127.0.0.1:${port}/namespaces`, {
       signal: controller.signal,
       responseType,
     }),
@@ -62,18 +57,13 @@ test("a complete malformed JSON body retains the invalid-response error", async 
     response.writeHead(200, { "content-type": "application/json" });
     response.end("not JSON");
   });
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  t.after(async () => {
-    server.closeAllConnections();
-    await new Promise((resolve) => server.close(resolve));
-  });
+  const port = await listen(t, server);
   const request = createApiClient({
     lifetime: createViewLifetime(),
     hasSession: () => true,
     onExpired() {},
   });
-  await assert.rejects(request(`http://127.0.0.1:${server.address().port}/namespaces`), {
+  await assert.rejects(request(`http://127.0.0.1:${port}/namespaces`), {
     name: "Error",
     status: 200,
     message: "The request could not be completed.",

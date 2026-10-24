@@ -1,5 +1,4 @@
 import { createRequire } from "node:module";
-import { createServer } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
 
 export const { loadYaml, dumpYaml } = createRequire(
@@ -40,15 +39,4 @@ export async function waitFor(
     }
   }
   throw new Error(`Timed out: ${description}${detail}`);
-}
-
-export async function unusedPort() {
-  const server = createServer();
-  await new Promise((accept, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", accept);
-  });
-  const port = server.address().port;
-  await new Promise((accept) => server.close(accept));
-  return port;
 }

@@ -8,7 +8,6 @@ import type {
   ServiceConfig,
   SessionStatus,
   RepositoryCredentialBoundSessionInput,
-  RepositoryDescriptions,
 } from "./service-contracts.ts";
 import { inspectRequestHead } from "./transport/request.ts";
 import { RepositoryReceiptClient } from "./receipt-client.ts";
@@ -46,6 +45,7 @@ export function createControlAdmission(
   config: ServiceConfig,
   clock: Clock,
   durableRequired: boolean,
+  preparedAuthority = false,
 ) {
   const records = new Map<string, AdmissionRecord>();
   const sessions = new Map<string, string>();
@@ -208,6 +208,13 @@ export function createControlAdmission(
     if (isBoundInput(admittedInput) && (!journal || input.durableAdmission !== true)) {
       throw new Error("INVALID_ADMISSION");
     }
+    if (
+      isBoundInput(admittedInput) &&
+      ((admittedInput.preparedOnly === true && !preparedAuthority) ||
+        (!recoverOnly && admittedInput.preparedOnly !== true))
+    ) {
+      throw new Error("INVALID_ADMISSION");
+    }
     sweep(id);
     const refence = refencing.get(id);
     if (refence) {
@@ -267,6 +274,9 @@ export function createControlAdmission(
     let early: SessionStatus | undefined;
     if (isBoundInput(admittedInput)) {
       const lookupOnly = recoverOnly || age >= admissionWindowMs;
+      // Only the durable owner selects standing. Until it answers, the unopened
+      // bearer cannot acquire or use provider material.
+      let standing: boolean | undefined;
       let refused: unknown;
       // Open before reserving. Only bind advances a reserved receipt, so an open
       // refused after reservation (capacity, shutdown) would strand it. Such a
@@ -274,7 +284,14 @@ export function createControlAdmission(
       // keeps the journal-first answer; the unreserved session is never handed out.
       if (!lookupOnly) {
         try {
-          opened = service.open(admittedInput);
+          opened = service.open(admittedInput, async (sessionId) => {
+            if (standing === undefined) {
+              throw new Error("ADMISSION_UNCONFIRMED");
+            }
+            if (standing) {
+              await journal!.authorizeStanding(id, sessionId, admittedInput);
+            }
+          });
         } catch (error) {
           if (!(error instanceof Error && invalidAdmissionErrors.has(error.message))) {
             throw error;
@@ -293,6 +310,9 @@ export function createControlAdmission(
       let result: Awaited<ReturnType<RepositoryReceiptClient["admission"]>>;
       try {
         result = await journal!.admission(id, admittedInput, lookupOnly);
+        if (result.kind === "reserved") {
+          standing = result.standing;
+        }
       } catch (error) {
         discard();
         throw error;
@@ -488,7 +508,6 @@ export async function handleControl(
   config: ServiceConfig,
   clock: Clock,
   admissions: ReturnType<typeof createControlAdmission>,
-  repositoryDescriptions?: RepositoryDescriptions,
 ): Promise<void> {
   const inspected = inspectRequestHead(request, {
     authority: "localhost",
@@ -512,14 +531,12 @@ export async function handleControl(
     return;
   }
   const open = head.method === "POST" && head.rawTarget === "/v1/sessions";
-  const descriptions = head.method === "POST" && head.rawTarget === "/v1/repository-descriptions";
   const health = head.method === "GET" && head.rawTarget === "/healthz";
   const capabilities = head.method === "GET" && head.rawTarget === "/v1/capabilities";
   const status = /^\/v1\/sessions\/([A-Za-z0-9_-]{1,128})$/.exec(head.rawTarget);
   const close = /^\/v1\/sessions\/([A-Za-z0-9_-]{1,128})\/close$/.exec(head.rawTarget);
   if (
     !open &&
-    !descriptions &&
     !health &&
     !capabilities &&
     !(head.method === "GET" && status) &&
@@ -540,7 +557,7 @@ export async function handleControl(
       }
       chunks.push(Buffer.from(chunk));
     }
-    if (open || descriptions) {
+    if (open) {
       if (head.headers["content-type"] !== "application/json") {
         reply(response, 400, { error: "invalid-request" });
         return;
@@ -550,29 +567,6 @@ export async function handleControl(
         body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
       } catch {
         reply(response, 400, { error: "invalid-request" });
-        return;
-      }
-      if (descriptions) {
-        if (
-          !repositoryDescriptions ||
-          !body ||
-          typeof body !== "object" ||
-          Array.isArray(body) ||
-          Object.keys(body).length !== 2 ||
-          typeof (body as Record<string, unknown>).namespaceId !== "string" ||
-          !Array.isArray((body as Record<string, unknown>).repositoryRefs)
-        ) {
-          reply(response, 400, { error: "invalid-request" });
-          return;
-        }
-        reply(
-          response,
-          200,
-          repositoryDescriptions.list(
-            (body as { namespaceId: string }).namespaceId,
-            (body as { repositoryRefs: string[] }).repositoryRefs,
-          ),
-        );
         return;
       }
       const input = snapshotSessionInput(body);

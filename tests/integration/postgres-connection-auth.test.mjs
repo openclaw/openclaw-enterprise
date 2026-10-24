@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createServer as createTlsServer, rootCertificates } from "node:tls";
@@ -10,6 +9,9 @@ import { promisify } from "node:util";
 import { startupDependencyFailure } from "../../apps/controller/src/startup-failure.ts";
 import { createPostgresPool } from "../../packages/occ/src/state/postgres-pool.ts";
 import { PostgresPlatformState } from "../../packages/occ/src/state/postgres-state.ts";
+import { listen } from "../helpers/listen.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { waitUntil } from "../helpers/wait-for.mjs";
 
 const requireOcc = createRequire(new URL("../../packages/occ/package.json", import.meta.url));
 const { Client } = requireOcc("pg");
@@ -99,8 +101,7 @@ test("the real pg client retains the Azure token callback and verified TLS after
 
     // libpq-compatible require/verify-ca can trust a CA while disabling hostname
     // checks. Reject those parsed options before acquiring a bearer token.
-    const directory = await mkdtemp(join(tmpdir(), "occ-postgres-ca-"));
-    context.after(() => rm(directory, { recursive: true, force: true }));
+    const directory = await temporaryDirectory(context, "occ-postgres-ca-");
     const certificate = join(directory, "root.crt");
     await writeFile(certificate, rootCertificates[0]);
     for (const sslmode of ["require", "verify-ca"]) {
@@ -204,11 +205,9 @@ test(
       const { rows } = await killer.query("SELECT pg_terminate_backend($1) AS ok", [pid]);
       assert.equal(rows[0].ok, true);
       // pg-pool discards the broken idle client after emitting its error.
-      const deadline = Date.now() + 5000;
-      while (pool.idleCount !== 0) {
-        assert.ok(Date.now() < deadline, "the terminated idle client was not discarded");
-        await new Promise((resolve) => setTimeout(resolve, 20));
-      }
+      await waitUntil("the terminated idle client to be discarded", () => pool.idleCount === 0, {
+        timeoutMs: 5000,
+      });
       const next = await pool.query("SELECT pg_backend_pid() AS pid");
       assert.notEqual(next.rows[0].pid, pid);
     } finally {
@@ -221,8 +220,7 @@ test(
 );
 
 test("verify-full checks the server certificate against an IP database host", async (context) => {
-  const directory = await mkdtemp(join(tmpdir(), "occ-postgres-ip-tls-"));
-  context.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(context, "occ-postgres-ip-tls-");
   const pki = await databaseCertificates(directory);
   const caPath = join(directory, "ca.pem");
   const servers = { v4: await tlsServer(context, "127.0.0.1", pki.dnsLocalhost) };
@@ -343,8 +341,7 @@ test("verify-full checks the server certificate against an IP database host", as
 });
 
 test("the IP host identity check leaves other connection configurations unchanged", async (context) => {
-  const directory = await mkdtemp(join(tmpdir(), "occ-postgres-ip-config-"));
-  context.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(context, "occ-postgres-ip-config-");
   const certificate = join(directory, "root.crt");
   await writeFile(certificate, rootCertificates[0]);
   const unchanged = [
@@ -472,28 +469,13 @@ async function databaseCertificates(directory) {
 
 async function tlsServer(context, host, identity) {
   const state = { accepted: 0 };
-  const sockets = new Set();
   const server = createTlsServer(identity, (socket) => {
     state.accepted++;
     socket.once("data", () => socket.destroy());
   });
-  server.on("connection", (socket) => {
-    sockets.add(socket);
-    socket.once("close", () => sockets.delete(socket));
-  });
   server.on("tlsClientError", () => {});
-  await new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, host, resolve);
-  });
-  context.after(async () => {
-    for (const socket of sockets) {
-      socket.destroy();
-    }
-    await new Promise((resolve) => server.close(resolve));
-  });
   return Object.assign(state, {
-    port: server.address().port,
+    port: await listen(context, server, host),
     use: (next) => server.setSecureContext(next),
   });
 }

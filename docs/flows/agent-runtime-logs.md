@@ -174,7 +174,7 @@ Signed checkpoints retain prefix digest/count, query floor and baseline, with
 ambiguous replacements reset with gaps. Sandbox pins short/unordered windows,
 untimed rows and overflowing groups. Full timed groups use counted overlap;
 cuts retain a rollover witness. Uncertain context resets with a gap and replay;
-container recovery retains reset gaps without duplicates.
+container recovery gaps once unless a short uncut window precedes the delivered frontier.
 All-untimed Driver byte cuts retain progress;
 mixed cuts advance through time with an explicit reset that may replay untimed rows.
 Matching checkpoints retain positional proof. Stable windows drain overflowing groups. UID/restarts reset progress; PEM recovery

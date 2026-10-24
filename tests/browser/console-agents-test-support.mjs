@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 
-import { GitHubRepoDriver } from "../../apps/controller/src/drivers/repo/github/driver.ts";
+import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { nativeValues, pathRequests } from "./console-agents-browser-helpers.mjs";
+
+/** @import { GitHubRepositoryRegistration } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts" */
 
 const defaultCodexPreset = JSON.parse(
   await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
@@ -16,6 +19,16 @@ export const STARTER_CONTROL_UI = {
   enabled: true,
   allowedOrigins: ["http://127.0.0.1:18789", "http://localhost:18789"],
 };
+
+// Let the real operation finish, then change only the returned Agent ID. This tests a
+// plausible success that cannot settle the selected Agent's Stop or Delete request.
+export async function replyWithDifferentAgentId(route, agentId, expectedStatus) {
+  const response = await route.fetch();
+  assert.equal(response.status(), expectedStatus);
+  const { data, meta } = await response.json();
+  assert.equal(data.id, agentId);
+  await route.fulfill({ response, json: { data: { ...data, id: `agt_${randomUUID()}` }, meta } });
+}
 
 export async function openCreateSecretDialog(scope, label, options = {}) {
   const field = scope.getByLabel(label, { exact: true });
@@ -186,9 +199,13 @@ export function configurationPatchRequests(requests, namespaceId, configurationI
   );
 }
 
+/** @param {import("playwright").Locator} locator */
 export async function optionValues(locator) {
-  return locator.evaluate((node) =>
-    Array.from(node.options).map((option) => ({ value: option.value, text: option.textContent })),
+  return locator.evaluate((element) =>
+    Array.from(/** @type {HTMLSelectElement} */ (element).options).map((option) => ({
+      value: option.value,
+      text: option.textContent,
+    })),
   );
 }
 
@@ -225,6 +242,11 @@ export const repositoryBackendFixture = Object.freeze({
   drivers: Object.freeze({ repo: "console-repository-driver" }),
 });
 
+/**
+ * @param {import("node:test").TestContext} t
+ * @param {(namespaceId: string) => readonly GitHubRepositoryRegistration[]} buildRepositories
+ * @param {{ reloadablePolicy?: boolean, controlSocket?: string }} [options]
+ */
 export async function createRepositoryLaunchFixture(
   t,
   buildRepositories,
@@ -258,6 +280,7 @@ export async function createRepositoryLaunchFixture(
   return {
     fixture,
     namespace,
+    /** @param {readonly GitHubRepositoryRegistration[]} repositories */
     replacePolicy(repositories) {
       assert.equal(reloadablePolicy, true);
       currentPolicy = repositoryPolicyDriver(repositories, controlSocket);
@@ -282,7 +305,7 @@ function repositoryPolicyDriver(
     },
     backend.id,
   );
-  return new GitHubRepoDriver(
+  return new GitHubRepositoryPolicy(
     {
       id: backend.id,
       client: new UnixRepositoryCredentialControlClient({ controlSocket }),

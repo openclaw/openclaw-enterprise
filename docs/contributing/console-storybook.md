@@ -190,8 +190,9 @@ seven-day release-age policy, independently of root dependencies.
   also blocks network connections. Authentication and authorization
   responses are examples, not a security implementation.
 - `public/frame.mjs` starts the production console and opens configured controls.
-- `*.stories.mjs` exports named stories by group; `story.mjs` adds instructions,
-  UI-gap notices, the preview, and Reset story.
+- `*.stories.ts` exports named stories by group. `story.ts` adds instructions,
+  UI-gap notices, the preview, and Reset story. The repository's `pnpm typecheck`
+  checks these files without installing the separate Storybook dependencies.
 
 Update scenarios and instructions with console changes, exporting new scenarios
 from their owning story file. Configure API responses; the console owns failure
