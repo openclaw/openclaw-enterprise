@@ -63,3 +63,10 @@ can be satisfied by this preview, and no existing admission changes meaning.
 3. **Send the read.** Credential Proxy binds the request and reply to their origin, checks current authority before material access and again before sending, and protects the response. Withdrawal racing the final check may not stop that send.
 
 [Request protocol and failure semantics](protocol.md#capture-and-authorize-a-request) · [Verification and migration](security.md)
+
+A metadata read is not a Git clone or push. For the developer workflow, the
+[repository broker](../../../docs/reference/repository-credentials/prepared-native-git.md)
+authenticates the Agent session and checks the Git operation and review ref before
+using a separately granted, already prepared installation token. Creating a draft pull
+request requires an additional grant. Git verifies TLS to the broker. Qualify that
+path's admission and recipient separately from the OpenShell release requirements.

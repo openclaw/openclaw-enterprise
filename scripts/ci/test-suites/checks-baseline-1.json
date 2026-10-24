@@ -101,7 +101,22 @@
     "tests/conformance/grafana-overview-dashboard.test.mjs",
     "tests/conformance/split-layout-tenants.test.mjs",
     "tests/conformance/split-layout-adopt.test.mjs",
-    "tests/conformance/url-authority.test.mjs"
+    "tests/conformance/url-authority.test.mjs",
+    "tests/integration/static-egress.test.mjs",
+    "tests/integration/credential-proxy-peer-pin.test.ts",
+    "tests/integration/egress-stock-online-authority.test.mjs",
+    "tests/integration/egress-stock-online-git-authority.test.mjs",
+    "tests/conformance/openshell-prepared-git-provider.test.mjs",
+    "tests/conformance/openshell-git-runtime.test.mjs",
+    "tests/integration/openshell-observed-request-hook.test.ts",
+    "tests/integration/credential-free-online-grant.test.mjs",
+    "tests/integration/credential-free-metadata-grant.test.ts",
+    "tests/integration/egress-enrollment.test.mjs",
+    "tests/integration/protected-driver-registration.test.ts",
+    "tests/integration/credential-policy-recovery.test.ts",
+    "tests/conformance/kubernetes-prepared-repository.test.mjs",
+    "tests/integration/egress-installation-exchange.test.mjs",
+    "tests/integration/egress-prepared-github-metadata.test.mjs"
   ],
   "files": [
     {
@@ -201,7 +216,8 @@
       "path": "tests/conformance/kubernetes-configuration.test.mjs"
     },
     {
-      "path": "tests/conformance/kubernetes-ownership.test.mjs"
+      "path": "tests/conformance/kubernetes-ownership.test.mjs",
+      "expectedTests": ["sealed Namespace compares SDK-deserialized ingress exactly"]
     },
     {
       "path": "tests/conformance/kubernetes-secret-driver.test.mjs"
@@ -314,7 +330,10 @@
       "path": "tests/integration/json-body-depth.test.mjs"
     },
     {
-      "path": "tests/integration/configuration-startup.test.mjs"
+      "path": "tests/integration/configuration-startup.test.mjs",
+      "expectedTests": [
+        "closed Installation observes only its operator-bound Namespace, including Secret and Configuration custody"
+      ]
     },
     {
       "path": "tests/integration/installation-change-preflight.test.mjs"
@@ -442,6 +461,115 @@
     },
     {
       "path": "tests/conformance/url-authority.test.mjs"
+    },
+    {
+      "path": "tests/integration/credential-proxy-peer-pin.test.ts",
+      "expectedTests": [
+        "exchange send rejects identity changes before receipt creation",
+        "exchange response and renewal reject identity changes",
+        "exchange accepts stable keys and both absent keys",
+        "exchange rejects malformed peer expiry at each public boundary",
+        "exchange renewal preserves progress while bounded by original peer expiry",
+        "exchange renewal respects a shorter fresh peer expiry",
+        "exchange send snapshots authenticated peers across receipt reservation",
+        "exchange held response respects a shorter authenticated lifetime",
+        "exchange busy phases retain concurrent authenticated lifetime reductions",
+        "exchange reserves simultaneous response phases without discarding the winner",
+        "exchange busy lifetime observation requires a live exact owner",
+        "duplicate send retains only an exact authenticated lifetime contraction",
+        "duplicate send contraction bounds pending receipt work"
+      ]
+    },
+    {
+      "path": "tests/integration/static-egress.test.mjs",
+      "expectedTests": [
+        "Responses output text assembled across parts and messages cannot reveal selected material",
+        "Responses assistant projections protect independent items and seeded deltas",
+        "Responses incremental text snapshots cannot reveal selected material",
+        "signed Responses Plan projections protect completed and response-wide streamed text",
+        "live-shaped Responses envelopes pass while undeclared or credential-bearing envelope fields refuse",
+        "protected admission refuses an Agent's network policy additions instead of dropping them",
+        "the policy endpoint refuses additions and live application while the active revision is protected",
+        "the policy endpoint refuses additions before an Agent's first protected deploy",
+        "the OpenShell Driver refuses a protected revision carrying Agent network policy additions",
+        "the policy worker names protected execution when it fails queued live application"
+      ]
+    },
+    {
+      "path": "tests/integration/egress-stock-online-authority.test.mjs"
+    },
+    {
+      "path": "tests/integration/egress-stock-online-git-authority.test.mjs",
+      "expectedTests": [
+        "signed stock Git RPC admits discovery, fetch and push, then honors live denial",
+        "stock Git admits gzip only on the upload-pack negotiation, which it never inspects",
+        "protected Git replies to this online decision before its authority deadline"
+      ]
+    },
+    {
+      "path": "tests/conformance/openshell-git-runtime.test.mjs",
+      "expectedTests": [
+        "a gateway that does not answer closes the Git route and restores it without a tombstone",
+        "the Git route tombstone stays for a replaced execution, an unknown write and withdrawal",
+        "the Git route reports bootstrap, material and binding states for Compute readiness"
+      ]
+    },
+    {
+      "path": "tests/conformance/openshell-prepared-git-provider.test.mjs",
+      "expectedTests": [
+        "prepared Git static token and rotation use released fields without returning credentials or readiness",
+        "prepared Git bootstraps without privilege and distinguishes accepted rotation from exact installed state",
+        "prepared Git refuses stale, partial, mismatched and unavailable installation observations"
+      ]
+    },
+    {
+      "path": "tests/integration/openshell-observed-request-hook.test.ts",
+      "expectedTests": [
+        "a per-start denial joins the authenticated request to the refusal actually returned; neither side can substitute",
+        "observed-hook preview has its own durable admission and cannot reinterpret v4, v5, or narrow Git"
+      ]
+    },
+    {
+      "path": "tests/integration/credential-free-online-grant.test.mjs",
+      "expectedTests": [
+        "signed stock request observes an OCC credential-free grant and its withdrawal",
+        "a signed stock request cannot carry a credential-free grant across revision replacement",
+        "a signed stock request loses a credential-free grant when OCC IAM access is removed",
+        "OCC cannot observe a live credential grant as credential-free metadata"
+      ]
+    },
+    {
+      "path": "tests/integration/credential-free-metadata-grant.test.ts",
+      "expectedTests": [
+        "credential-free metadata exchange accepts a reordered Driver grant",
+        "credential-free route admission rejects changed, missing and undefined extra grant fields"
+      ]
+    },
+    {
+      "path": "tests/integration/protected-driver-registration.test.ts",
+      "expectedTests": [
+        "one installed Driver owns both protected capabilities, lifecycle and verified release",
+        "the running OpenShell recipient refuses a changed Repo ref or foreign supplier identity without restoring access",
+        "repository scope changes invalidate the external Driver identity while a reload preserves it"
+      ]
+    },
+    {
+      "path": "tests/integration/credential-policy-recovery.test.ts",
+      "expectedTests": [
+        "Git reduction recovery observes its original operation despite discovery failure"
+      ]
+    },
+    {
+      "path": "tests/integration/egress-enrollment.test.mjs"
+    },
+    {
+      "path": "tests/conformance/kubernetes-prepared-repository.test.mjs"
+    },
+    {
+      "path": "tests/integration/egress-installation-exchange.test.mjs"
+    },
+    {
+      "path": "tests/integration/egress-prepared-github-metadata.test.mjs"
     }
   ]
 }

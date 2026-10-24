@@ -25,6 +25,10 @@ const echoPattern =
     : new RegExp(process.env.PROBE_ENDPOINT_ECHO_PATTERN, "g");
 const observing = process.env.PROBE_OBSERVE_NATIVE_PORT !== undefined;
 const publicReadJourney = process.env.PROBE_PUBLIC_READ_JOURNEY === "1";
+const skipperFixture =
+  process.env.PROBE_SKIPPER_PREPARED_COMPUTE === "1"
+    ? (await import("./skipper-prepared-compute-model.mjs")).skipperPreparedComputeEvents
+    : undefined;
 const nativePort = Number(process.env.PROBE_OBSERVE_NATIVE_PORT);
 const statusPort = Number(process.env.PROBE_OBSERVE_STATUS_PORT);
 const credentialLabels = readCredentialLabels(process.env.PROBE_ENDPOINT_CREDENTIAL_DIGESTS);
@@ -228,7 +232,11 @@ function turn(transport, model, request, respond, closed, caller) {
     if (closed()) {
       return;
     }
-    respond(publicReadEvents(model, request) ?? answerEvents(model, text));
+    respond(
+      skipperFixture?.({ model, request, answerEvents, emit }) ??
+        publicReadEvents(model, request) ??
+        answerEvents(model, text),
+    );
     emit({
       event: "turn-answered",
       transport,

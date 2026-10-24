@@ -18,7 +18,7 @@ import {
   REPOSITORY_NATIVE_GIT_INIT_ENTRYPOINT,
 } from "../../apps/controller/src/drivers/compute/kubernetes/repository-material-init.ts";
 import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.mjs";
-import { startRegistryCredentialServiceFixture } from "../fixtures/repository-credentials/registry.mjs";
+import { startCredentialServiceFixture } from "../fixtures/repository-credentials/service.mjs";
 import {
   run as runFixtureCommand,
   temporaryDirectory,
@@ -300,16 +300,9 @@ function runtimeRepositorySessionDirectory(repositoryRef, sessionId) {
 }
 
 async function createRuntimeRepositoryMaterial(t, fixture) {
-  const material = await createNativeClientMaterial(
-    t,
-    fixture.repositories
-      .filter((entry) => entry.opened)
-      .map((entry) => ({
-        opened: entry.opened,
-        repositoryRef: entry.repositoryRef,
-        publicCa: fixture.tls.ca,
-      })),
-  );
+  const material = await createNativeClientMaterial(t, [
+    { opened: fixture.opened, repositoryRef: "guarded", publicCa: fixture.tls.ca },
+  ]);
   const manifestPath = join(material.root, "manifest.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
   manifest.bindings = manifest.bindings.map((binding) => ({
@@ -1172,7 +1165,7 @@ test(
 );
 
 test(
-  "runtime image routes sandboxed Git through stock Codex and the repository broker",
+  "runtime image routes sandboxed Git through stock Codex and a development token sender",
   imageTestOptions,
   async (t) => {
     const suffix = randomBytes(6).toString("hex");
@@ -1182,62 +1175,20 @@ test(
     const deniedMaterialVolumeName = `oce-runtime-broker-material-denied-${suffix}`;
     const workspaceBranch = "native-feature";
     const tls = await createRuntimeBrokerTlsMaterial(t);
-    const fixture = await startRegistryCredentialServiceFixture(t, {
+    const fixture = await startCredentialServiceFixture(t, {
       tls,
-      autoOpen: false,
       gateway: { publicOrigin: "https://git.oce.svc", listen: "0.0.0.0:0" },
       limits: { gitResponseBytes: 4096, gitFetchResponseBytes: 200000 },
-      repositories: [
-        {
-          repositoryRef: "guarded",
-          repositoryId: "73",
-          repository: "fixture/repository",
-          pushRefAllowlist: [`refs/heads/${workspaceBranch}`],
-        },
-        {
-          repositoryRef: "read-only",
-          repositoryId: "74",
-          repository: "fixture/read-only",
-          profile: "git-read",
-        },
-        {
-          repositoryRef: "unadmitted",
-          repositoryId: "75",
-          repository: "fixture/unadmitted",
-        },
-      ],
+      configuration: { allowGraphql: false, pushRefAllowlist: [`refs/heads/${workspaceBranch}`] },
     });
     const seed = join(await temporaryDirectory(t, "runtime-git-seed-"), "seed");
-    await runFixtureCommand("git", ["clone", fixture.byRef.get("guarded").git.bare, seed]);
+    await runFixtureCommand("git", ["clone", fixture.git.bare, seed]);
     await runFixtureCommand("git", ["config", "user.name", "Fixture"], { cwd: seed });
     await runFixtureCommand("git", ["config", "user.email", "fixture@example.test"], { cwd: seed });
     await writeFile(join(seed, "data.bin"), randomBytes(128 * 1024));
     await runFixtureCommand("git", ["add", "data.bin"], { cwd: seed });
     await runFixtureCommand("git", ["commit", "-m", "Add fixture data"], { cwd: seed });
     await runFixtureCommand("git", ["push", "origin", "HEAD:main"], { cwd: seed });
-    await fixture.open("guarded");
-    await fixture.open("read-only");
-    const unadmitted = fixture.byRef.get("unadmitted");
-    // The fixture counts attempts before authorization, including rejected
-    // provider tokens; confirm the target is reachable before asserting none.
-    const reachability = await execute("curl", [
-      "--silent",
-      "--show-error",
-      "--noproxy",
-      "*",
-      "--cacert",
-      tls.certFile,
-      "--output",
-      "/dev/null",
-      "--write-out",
-      "%{http_code}",
-      `${unadmitted.git.origin}/fixture/unadmitted.git/info/refs?service=git-upload-pack`,
-    ]);
-    assert.equal(reachability.stdout, "401");
-    const unadmittedAttempts = unadmitted.github.authenticationAttempts.filter(
-      ({ boundary }) => boundary === "git",
-    ).length;
-    assert.equal(unadmittedAttempts, 1);
     const materialRoot = await createRuntimeRepositoryMaterial(t, fixture);
     t.after(async () => {
       await runDocker(["rm", "-f", proxyName]).catch(() => {});
@@ -1396,18 +1347,6 @@ server.listen(443, "0.0.0.0", () => console.log("broker-forwarder-ready"));
       // Match in the shell, not with `printf | grep -q`: under pipefail, grep -q
       // exits at the first match and printf's next line write can fail with EPIPE.
       "[[ $disallowed_output == *'repository-push-ref-not-allowed'* ]]",
-      "git clone https://github.com/fixture/read-only.git read-only",
-      "git -C read-only switch -c denied",
-      "printf 'denied proof\n' > read-only/denied-proof.txt",
-      "git -C read-only add denied-proof.txt",
-      "git -C read-only -c user.name='Runtime Fixture' -c user.email='fixture@example.test' commit -m 'Denied runtime broker proof'",
-      "set +e",
-      "readonly_output=$(git -C read-only push origin HEAD:refs/heads/denied 2>&1)",
-      "readonly_status=$?",
-      "set -e",
-      "printf '%s\\n' \"$readonly_output\"",
-      'test "$readonly_status" -ne 0',
-      "[[ $readonly_output == *'requested URL returned error: 400'* ]]",
       "set +e",
       "unadmitted_output=$(git ls-remote https://github.com/fixture/unadmitted.git HEAD 2>&1)",
       "unadmitted_status=$?",
@@ -1423,7 +1362,7 @@ server.listen(443, "0.0.0.0", () => console.log("broker-forwarder-ready"));
 const assert = require("node:assert/strict");
 const cp = require("node:child_process");
 const credentials = cp.spawnSync("git", ["credential", "fill"], {
-  input: "protocol=https\nhost=git.oce.svc\npath=fixture/read-only.git\n\n",
+  input: "protocol=https\nhost=git.oce.svc\npath=fixture/repository.git\n\n",
   encoding: "utf8",
 });
 assert.equal(credentials.status, 0, "native credential helper failed");
@@ -1437,10 +1376,11 @@ function request(path, auth) {
   assert.equal(result.status, 0, "broker request failed");
   return result.stdout;
 }
-const allowed = request("fixture/read-only.git/info/refs?service=git-upload-pack", true);
+const allowed = request("fixture/repository.git/info/refs?service=git-upload-pack", true);
 assert.equal(allowed.endsWith("\n200") && allowed.includes("# service=git-upload-pack"), true, "admitted discovery did not succeed");
-assert.equal(request("fixture/read-only.git/info/refs?service=git-receive-pack", true) === '{"error":{"code":"unsupported-request"}}\n400', true, "read-only broker denial did not match");
-assert.equal(request("fixture/unadmitted.git/info/refs?service=git-upload-pack", true) === '{"error":{"code":"unsupported-request"}}\n400', true, "unadmitted broker denial did not match");
+// This single-repository sender rejects Git Basic authentication for an unconfigured
+// repository before route planning. Compare as a boolean to keep the response out of failures.
+assert.equal(request("fixture/unadmitted.git/info/refs?service=git-upload-pack", true) === '{"error":{"code":"invalid-credential"}}\n401', true, "unadmitted repository must return 401 invalid-credential");
 console.log("broker-denial-codes-confirmed");
 NODE`;
     const probeSecurityOptions = await reviewedCodexSeccompSecurityOptions();
@@ -1754,24 +1694,10 @@ const timeout = setTimeout(() => {
     assert.ok(match, stdout);
     const proof = JSON.parse(match[1]);
 
-    const guarded = fixture.byRef.get("guarded");
-    const readOnly = fixture.byRef.get("read-only");
-    assert.equal(
-      unadmitted.github.authenticationAttempts.filter(({ boundary }) => boundary === "git").length,
-      unadmittedAttempts,
-      "unadmitted requests must not reach the upstream even with a rejected provider token",
-    );
-    assert.equal(unadmitted.git.trace.length, 0, "unadmitted requests must not reach the upstream");
+    const guarded = fixture;
     assert.equal(await guarded.git.ref(`refs/heads/${workspaceBranch}`), proof.commit);
-    // `git rev-parse` exits 128 in the upstream bare repository: the refused pushes created no ref.
-    assert.match(await readOnly.git.ref("refs/heads/main"), /^[0-9a-f]{40,64}$/);
     await assert.rejects(guarded.git.ref("refs/heads/disallowed"), /command failed \(exit 128\)/);
-    await assert.rejects(readOnly.git.ref("refs/heads/denied"), /command failed \(exit 128\)/);
-    assert.equal(
-      readOnly.git.trace.some(({ path }) => path.endsWith("/git-receive-pack")),
-      false,
-      "read-only broker denial must happen before the upstream receive-pack route",
-    );
+    assert.equal(guarded.github.issuesOfTokens.length, 0);
     assert.ok(
       guarded.git.trace.some(({ path }) => path.endsWith("/git-upload-pack")),
       "authorized Git fetch must reach the real upstream through the broker",

@@ -3,7 +3,6 @@ import { readFile } from "node:fs/promises";
 import test, { type TestContext } from "node:test";
 import type { Page, Route } from "playwright";
 
-import type { Permission, Principal } from "../../packages/contracts/src/index.ts";
 import type {
   AgentResponse,
   NamespaceListResponse,
@@ -15,6 +14,7 @@ import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   holdRequests,
   login,
+  MEMBER_WRITE,
   newPage,
   selectSecret,
   waitForEnabled,
@@ -28,43 +28,6 @@ import { waitForCreateFormReads } from "./console-agents-test-support.mjs";
 const defaultCodexPreset = JSON.parse(
   await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
 );
-type ConsoleFixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
-type Grant = [action: Permission["action"], resourceKind: Permission["resourceKind"]];
-
-// What a member who writes Agents holds in one Namespace (the ux-audit-1018 member-write persona).
-const MEMBER_WRITE: Grant[] = [
-  ["read", "namespace"],
-  ["read", "agent"],
-  ["update", "agent"],
-  ["deploy", "agent"],
-  ["operate", "agent"],
-  ["read", "agent_revision"],
-  ["read", "configuration"],
-  ["update", "configuration"],
-  ["read", "secret"],
-  ["operate", "secret"],
-  ["create", "agent"],
-  ["create", "configuration"],
-  ["create", "secret"],
-  ["read", "preset"],
-];
-
-function member(fixture: ConsoleFixture, namespaceId: string, label: string, actions: Grant[]) {
-  return fixture.createAccountWithPolicy(label, (principal: Principal) => {
-    fixture.policy.roles.push({
-      id: `role-${label}`,
-      namespaceId,
-      permissions: actions.map(([action, resourceKind]) => ({ action, resourceKind })),
-    });
-    fixture.policy.bindings.push({
-      id: `binding-${label}`,
-      namespaceId,
-      subjectKind: "identity",
-      subjectId: principal.id,
-      roleId: `role-${label}`,
-    });
-  });
-}
 
 const ACCESS_FROM_PRESET =
   "You can create Agents in Member team. Installation-wide capabilities are not readable with your access, so the options below come from this Namespace's Presets.";
@@ -111,7 +74,7 @@ async function fillDefaultPreset(page: Page, secret: SecretWire, name: string) {
 
 test("a member with Agent create completes the default Preset path without Installation access", async (t) => {
   const { fixture, namespace, secret } = await setup(t);
-  const writer = await member(fixture, namespace.id, "member-write", MEMBER_WRITE);
+  const writer = await fixture.createNamespaceMember("member-write", namespace.id, MEMBER_WRITE);
   const { page } = await newPage(t, fixture);
   const answers = apiResponses(page, fixture.origin);
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`, writer.credentials);
@@ -201,7 +164,7 @@ test("a member without Agent create never sees the form, and Create Agent names 
   const actions = MEMBER_WRITE.filter(
     ([action, kind]) => !(action === "create" && kind === "agent"),
   );
-  const limited = await member(fixture, namespace.id, "member-no-create", actions);
+  const limited = await fixture.createNamespaceMember("member-no-create", namespace.id, actions);
   const { page } = await newPage(t, fixture);
   const answers = apiResponses(page, fixture.origin);
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`, limited.credentials);
@@ -261,7 +224,7 @@ function unavailable(route: Route) {
 
 test("a member whose permission check failed is told so and retries only that check", async (t) => {
   const { fixture, namespace } = await setup(t);
-  const writer = await member(fixture, namespace.id, "member-write", MEMBER_WRITE);
+  const writer = await fixture.createNamespaceMember("member-write", namespace.id, MEMBER_WRITE);
   const { page } = await newPage(t, fixture);
   const answers = apiResponses(page, fixture.origin);
   const permissionsPath = `${fixture.origin}/namespaces/${namespace.id}/permissions`;
@@ -367,7 +330,7 @@ test("a temporary Installation read failure keeps an administrator off the membe
 
 test("a member's unconfirmed credential grant offers a retry until the API refuses it", async (t) => {
   const { fixture, namespace, secret } = await setup(t);
-  const writer = await member(fixture, namespace.id, "member-write", MEMBER_WRITE);
+  const writer = await fixture.createNamespaceMember("member-write", namespace.id, MEMBER_WRITE);
   const { page } = await newPage(t, fixture);
   const answers = apiResponses(page, fixture.origin);
   // The session never learns whether this account administers the Installation, so the form
@@ -429,7 +392,7 @@ test("an administrator's refused credential grant keeps the retry and the API's 
 
 test("a member's form links Create Agent to why a Namespace that turned failed refuses it", async (t) => {
   const { fixture, namespace } = await setup(t);
-  const writer = await member(fixture, namespace.id, "member-write", MEMBER_WRITE);
+  const writer = await fixture.createNamespaceMember("member-write", namespace.id, MEMBER_WRITE);
   const { page } = await newPage(t, fixture);
   let status: NamespaceWire["status"] = "provisioning";
   await page.route(`${fixture.origin}/namespaces`, async (route) => {
@@ -457,16 +420,14 @@ test("a member's form links Create Agent to why a Namespace that turned failed r
 
 test("a member's refused Configuration create and empty Secret list name the access they need", async (t) => {
   const { fixture, namespace, secret } = await setup(t);
-  const noConfiguration = await member(
-    fixture,
-    namespace.id,
+  const noConfiguration = await fixture.createNamespaceMember(
     "member-no-configuration",
+    namespace.id,
     MEMBER_WRITE.filter(([action, kind]) => !(action === "create" && kind === "configuration")),
   );
-  const noSecretRead = await member(
-    fixture,
-    namespace.id,
+  const noSecretRead = await fixture.createNamespaceMember(
     "member-no-secret-read",
+    namespace.id,
     MEMBER_WRITE.filter(([action, kind]) => !(action === "read" && kind === "secret")),
   );
 

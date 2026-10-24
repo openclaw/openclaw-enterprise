@@ -1,7 +1,7 @@
 ---
 created: 2026-08-19
-updated: 2026-10-13
-last_updated_session: fix-1276-1278
+updated: 2026-10-23
+last_updated_session: fix-1828
 ---
 
 # Configuration Driver and Agent Revision Flow
@@ -140,8 +140,7 @@ generation-mismatched, or ownership-invalid persisted ConfigMaps fail with
 `503`.
 Authorization denial fails with `403`, a missing exact resource with `404`, an
 Agent dependency conflict with `409`, and unavailable IAM or storage with
-`503`. OpenClaw resolves inline SecretRefs at runtime; Configuration CRUD
-preserves them in `values`. OCC separately authorizes `operate` on each Secret
+`503`. OCC separately authorizes `operate` on each Secret
 selected by `secretBindings`, including retained bindings when PATCH omits the
 field. Omission preserves bindings; `{}` clears them. A submitted binding with a
 reserved or invalid destination, or a Secret reference to another Namespace, fails
@@ -216,6 +215,7 @@ its optional integration is skipped.
 
 ## Changelog
 
+- 2026-10-23 13:40: Writes and Preset saves refuse an `agents` model without its provider, with deployment's text. (fix-1828, finding 1828)
 - 2026-10-14 10:30: Writes refuse literals in the other slots OpenClaw marks sensitive ([rules](configuration-driver/persistence-and-revisions.md)). (fix-1309, finding 1309)
 - 2026-10-14 09:30: Writes and deployment require references in the other key and header slots the Gateway sends ([list](../reference/configuration/secrets.md#secret-boundaries)); those header slots and MCP headers refuse invalid header names. Stored documents still read. (fix-1307, finding 1307)
 - 2026-10-14 09:00: The Kubernetes model provider rule also checks `agents.*.modelPolicy.allow` entries, which the Dedicated Codex projection qualifies like `models` keys; Dedicated Codex refuses `mediaModels.*` and `voiceModel`. Preset saves run the `agents` shape and roster rules Configuration save runs, checking a templated Agent ID or ownership as far as its written text goes. (fix-1306-1308, findings 1306, 1308)

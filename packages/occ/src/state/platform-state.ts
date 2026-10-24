@@ -1,4 +1,14 @@
+import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
+import { assertExecutionAdmission } from "@openclaw-enterprise/contracts";
+import { memoryEgressSendReceipts } from "./egress-send-receipts.ts";
+import type { EgressSendReceiptRepository, StoredSendReceipt } from "../egress-send-receipts.ts";
 import { isDeepStrictEqual } from "node:util";
+import type {
+  ProtectedEgressSource,
+  EgressInstallation,
+  EgressMaterialEvidence,
+} from "@openclaw-enterprise/contracts";
+import type { CredentialPolicyReductionState } from "../ports/credential-policy-reduction.ts";
 import { validateSandboxNetworkGrants } from "@openclaw-enterprise/contracts";
 import { RepositoryTransactionLifetime } from "../ports/transaction.ts";
 import { bindPlatformUnitOfWork } from "../ports/platform-unit-of-work.ts";
@@ -7,6 +17,7 @@ import type { SandboxPolicy } from "@openclaw-enterprise/contracts";
 import type {
   RepositorySessionAttempt,
   RepositoryBrokerReceipt,
+  RepositoryStandingApproval,
   RepositorySessionReadRepository,
   RepositorySessionRepository,
 } from "../ports/repository-sessions.ts";
@@ -75,6 +86,7 @@ import {
   CREDENTIAL_SOURCE_NAME_CONFLICT,
   DELETED_NAMESPACE_NAME_CONFLICT,
   DependencyUnavailableError,
+  EGRESS_REVISION_INSTALLED_CONFLICT,
   IAMPolicyValidationError,
   IAMRoleInUseError,
   NAMESPACE_NAME_CONFLICT,
@@ -95,6 +107,8 @@ import type {
   AgentProvisioningReadRepository,
   AgentProvisioningRepository,
 } from "./agent-provisioning.ts";
+
+export type { CredentialPolicyReductionState } from "../ports/credential-policy-reduction.ts";
 
 export interface InstallationReadRepository {
   findInstallation(installationId: string): Promise<Readonly<Installation> | undefined>;
@@ -371,7 +385,24 @@ export interface SecretRepository extends SecretReadRepository {
   hasReferences(namespaceId: string, secretId: string): Promise<boolean>;
 }
 
+export type StoredCredentialWithdrawal = CredentialWithdrawal;
+
 export interface CredentialSourceReadRepository {
+  listCredentialPolicyReductions(
+    namespaceId: string,
+    revisionId: string,
+  ): Promise<readonly CredentialPolicyReductionState[]>;
+  isEgressMaterialRejected(evidence: EgressMaterialEvidence): Promise<boolean>;
+  findEgressInstallation(
+    senderId: string,
+    sandboxId: string,
+  ): Promise<Readonly<EgressInstallation> | undefined>;
+
+  findRevisionEgressInstallation(
+    namespaceId: string,
+    revisionId: string,
+  ): Promise<Readonly<EgressInstallation> | undefined>;
+
   findCredentialSource(
     namespaceId: string,
     credentialSourceId: string,
@@ -381,16 +412,32 @@ export interface CredentialSourceReadRepository {
     namespaceId: string,
     revisionId: string,
     credentialSourceId: string,
-  ): Promise<Readonly<CredentialWithdrawal> | undefined>;
+  ): Promise<Readonly<StoredCredentialWithdrawal> | undefined>;
   listCredentialWithdrawals(
     namespaceId: string,
     revisionId: string,
-  ): Promise<readonly Readonly<CredentialWithdrawal>[]>;
+  ): Promise<readonly Readonly<StoredCredentialWithdrawal>[]>;
 }
 
 export type CredentialSourceBlockingReference = "reference" | "withdrawal_work";
 
 export interface CredentialSourceRepository extends CredentialSourceReadRepository {
+  rejectEgressMaterial(evidence: EgressMaterialEvidence): Promise<void>;
+  recordEgressInstallation(installation: EgressInstallation): Promise<void>;
+  saveCredentialPolicyReduction(
+    namespaceId: string,
+    revisionId: string,
+    sourceId: string,
+    expected: CredentialPolicyReductionState | undefined,
+    next: CredentialPolicyReductionState,
+  ): Promise<boolean>;
+  admitEgressSource(
+    namespaceId: string,
+    sourceId: string,
+    expectedGeneration: number,
+    egress: ProtectedEgressSource,
+  ): Promise<Readonly<CredentialSource> | undefined>;
+
   lockCredentialSource(
     namespaceId: string,
     credentialSourceId: string,
@@ -760,9 +807,11 @@ export function validCredentialSourceSnapshots(value: unknown): boolean {
     const keys = Object.keys(entry).sort();
     const snapshot = entry as Record<string, unknown>;
     const valid =
-      keys.join(",") === "credentialGatewayId,sourceId,sourceType" &&
+      ["credentialGatewayId,sourceId,sourceType", "credentialProxyId,sourceId,sourceType"].includes(
+        keys.join(","),
+      ) &&
       isNonEmptyString(snapshot.sourceId) &&
-      isNonEmptyString(snapshot.credentialGatewayId) &&
+      isNonEmptyString(snapshot.credentialGatewayId ?? snapshot.credentialProxyId) &&
       isNonEmptyString(snapshot.sourceType) &&
       !seen.has(snapshot.sourceId);
     seen.add(snapshot.sourceId as string);
@@ -771,6 +820,7 @@ export function validCredentialSourceSnapshots(value: unknown): boolean {
 }
 
 function assertAdmittedAgentRevision(revision: AgentRevision): void {
+  assertExecutionAdmission(revision);
   if (
     (revision.backendId !== null && !isBackendId(revision.backendId)) ||
     !/^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
@@ -924,6 +974,8 @@ export interface PlatformReadView {
 }
 
 export interface PlatformUnitOfWork extends PlatformReadView {
+  readonly preparedTokenProof: PreparedTokenCurrentProof;
+  readonly egressSendReceipts: EgressSendReceiptRepository;
   readonly sandboxPolicies: SandboxPolicyRepository;
   readonly installations: InstallationRepository;
   readonly namespaces: NamespaceRepository;
@@ -961,6 +1013,7 @@ export interface PlatformAuditSink {
 }
 
 export interface InMemoryPlatformStateOptions {
+  readonly preparedTokenProof?: PreparedTokenCurrentProof;
   readonly auditSink?: PlatformAuditSink;
   /** Preprovisioned identities copied at construction; later input changes are not observed. */
   readonly iamIdentities?: readonly Identity[];
@@ -977,13 +1030,17 @@ interface IAMSubjectSource {
 }
 
 interface PlatformSnapshot {
+  readonly egressSendReceipts: Map<string, StoredSendReceipt>;
   installation: Readonly<Installation> | undefined;
   readonly namespaces: Map<string, Readonly<PersistedNamespace>>;
   readonly configurations: Map<string, Readonly<ConfigurationOwnership>>;
   readonly presets: Map<string, Readonly<Preset>>;
   readonly secrets: Map<string, Readonly<Secret>>;
   readonly credentialSources: Map<string, Readonly<CredentialSource>>;
-  readonly credentialWithdrawals: Map<string, Readonly<CredentialWithdrawal>>;
+  readonly credentialPolicyReductions: Map<string, CredentialPolicyReductionState>;
+  readonly credentialWithdrawals: Map<string, Readonly<StoredCredentialWithdrawal>>;
+  readonly egressInstallations: Map<string, Readonly<EgressInstallation>>;
+  readonly egressRejected: Set<string>;
   readonly serviceAccounts: Map<string, Readonly<ServiceAccount>>;
   readonly agents: Map<string, Readonly<Agent>>;
   readonly sandboxPolicies: Map<string, Readonly<SandboxPolicy>>;
@@ -992,6 +1049,11 @@ interface PlatformSnapshot {
   readonly roles: Map<string, Readonly<Role>>;
   readonly bindings: Map<string, Readonly<AccessBinding>>;
   readonly servicePrincipals: Map<string, Readonly<ServicePrincipal>>;
+  readonly repositoryStandingExecutions: Map<
+    string,
+    { executionId: string; fingerprint: string; closed: boolean }
+  >;
+  readonly repositoryStandingApprovals: Map<string, Readonly<RepositoryStandingApproval>>;
   readonly repositorySessions: Map<string, Readonly<RepositorySessionAttempt>>;
   readonly repositoryBrokerReceipts: Map<string, Readonly<RepositoryBrokerReceipt>>;
   readonly audit: Readonly<AuditEvent>[];
@@ -1047,6 +1109,12 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
     ),
     presets: new Map(Array.from(snapshot.presets, ([key, preset]) => [key, immutableCopy(preset)])),
     secrets: new Map(Array.from(snapshot.secrets, ([key, secret]) => [key, immutableCopy(secret)])),
+    egressRejected: new Set(snapshot.egressRejected),
+    egressSendReceipts: new Map(snapshot.egressSendReceipts),
+    egressInstallations: new Map(
+      Array.from(snapshot.egressInstallations, ([key, value]) => [key, immutableCopy(value)]),
+    ),
+    credentialPolicyReductions: new Map(snapshot.credentialPolicyReductions),
     credentialWithdrawals: new Map(
       Array.from(snapshot.credentialWithdrawals, ([key, withdrawal]) => [
         key,
@@ -1074,6 +1142,8 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
       Array.from(snapshot.bindings, ([key, binding]) => [key, immutableCopy(binding)]),
     ),
     servicePrincipals: new Map(snapshot.servicePrincipals),
+    repositoryStandingExecutions: new Map(snapshot.repositoryStandingExecutions),
+    repositoryStandingApprovals: new Map(snapshot.repositoryStandingApprovals),
     repositorySessions: new Map(
       Array.from(snapshot.repositorySessions, ([key, attempt]) => [key, immutableCopy(attempt)]),
     ),
@@ -1237,8 +1307,135 @@ function isPlainRecord(value: unknown): value is Readonly<Record<string, unknown
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+function validEgressRef(value: unknown): boolean {
+  if (!isPlainRecord(value)) {
+    return false;
+  }
+  return (
+    Object.keys(value).length === 2 &&
+    typeof value.id === "string" &&
+    value.id.length >= 1 &&
+    value.id.length <= 200 &&
+    typeof value.generation === "number" &&
+    /^[1-9][0-9]{0,14}$/.test(String(value.generation))
+  );
+}
+
+/** Mirrors egress_source_is_valid; static and prepared sources each have a closed admitted shape. */
+function assertProtectedEgressSource(
+  value: ProtectedEgressSource,
+  namespaceId: string,
+  sourceId: string,
+): void {
+  const key = value?.key;
+  const common =
+    isPlainRecord(value) &&
+    isPlainRecord(key) &&
+    Object.keys(key).length === 5 &&
+    /^ins_[0-9a-f-]{36}$/.test(key.installationId) &&
+    key.namespaceId === namespaceId &&
+    key.source?.id === sourceId &&
+    [key.source, key.backend, key.provider, value.sender, value.resolver].every(validEgressRef);
+  if (value.adoption === "credential_free") {
+    const { grant } = value;
+    if (
+      !common ||
+      key.provider.id !== "credential-free-repository-metadata" ||
+      key.provider.generation !== 1 ||
+      Object.keys(value).length !== 8 ||
+      value.schemaVersion !== 3 ||
+      value.retention !== "none" ||
+      Object.keys(grant).length !== 5 ||
+      grant.kind !== "credential_free_repository_metadata" ||
+      grant.profile !== "metadata-read" ||
+      !/^[1-9]\d*$/.test(grant.repositoryId) ||
+      !Number.isSafeInteger(Number(grant.repositoryId)) ||
+      !/^[a-zA-Z\d_-]+\/[a-zA-Z\d_.-]+$/.test(grant.repository) ||
+      /\/(?:\.|\.)$/.test(grant.repository) ||
+      !/^agt_[0-9a-f-]{36}$/.test(grant.isolationId) ||
+      !/^https:\/\/[a-z0-9.-]+(?::\d+)?$/.test(value.origin)
+    ) {
+      throw new ScopeViolationError("The credential-free metadata schema or scope is invalid.");
+    }
+    return;
+  }
+  if (value.adoption === "prepared") {
+    const { grant } = value;
+    if (grant.kind === "prepared_scope") {
+      const scope = Object.entries(grant.scope ?? {});
+      if (
+        !common ||
+        value.schemaVersion !== 4 ||
+        key.provider.id === "github-app-metadata" ||
+        value.retention !== "none" ||
+        Object.keys(value).length !== 8 ||
+        Object.keys(grant).length !== 3 ||
+        !/^agt_[0-9a-f-]{36}$/.test(grant.isolationId) ||
+        !/^https:\/\/[a-z0-9.-]+(?::\d+)?$/.test(value.origin) ||
+        !isPlainRecord(grant.scope) ||
+        !scope.length ||
+        scope.length > 16 ||
+        scope.some(
+          ([k, v]) =>
+            !/^[a-z][a-z0-9_]{0,63}$/.test(k) ||
+            typeof v !== "string" ||
+            !v.length ||
+            v.length > 1024,
+        )
+      ) {
+        throw new ScopeViolationError("The prepared credential scope or source schema is invalid.");
+      }
+      return;
+    }
+    if (
+      !common ||
+      key.provider.id !== "github-app-metadata" ||
+      key.provider.generation !== 1 ||
+      Object.keys(value).length !== 8 ||
+      value.schemaVersion !== 2 ||
+      value.retention !== "none" ||
+      Object.keys(grant).length !== 7 ||
+      grant.kind !== "github_repository_metadata" ||
+      grant.profile !== "metadata-read" ||
+      ![grant.appId, grant.installationId, grant.repositoryId].every(
+        (id) => /^[1-9]\d*$/.test(id) && Number.isSafeInteger(Number(id)),
+      ) ||
+      !/^[a-zA-Z\d_-]+\/[a-zA-Z\d_.-]+$/.test(grant.repository) ||
+      !/^agt_[0-9a-f-]{36}$/.test(grant.isolationId) ||
+      !/^https:\/\/[a-z0-9.-]+(?::\d+)?$/.test(value.origin)
+    ) {
+      throw new ScopeViolationError(
+        "The prepared GitHub metadata source schema or scope is invalid.",
+      );
+    }
+    return;
+  }
+  const secret = value?.secret;
+  if (
+    !common ||
+    Object.keys(value).length !== 9 ||
+    value.schemaVersion !== 1 ||
+    value.adoption !== "live" ||
+    value.retention !== "none" ||
+    typeof value.materialRefId !== "string" ||
+    value.materialRefId.length < 1 ||
+    value.materialRefId.length > 200 ||
+    !validEgressRef(value.secretDriver) ||
+    !isPlainRecord(secret) ||
+    Object.keys(secret).length !== 3 ||
+    secret.kind !== "secret" ||
+    secret.namespaceId !== namespaceId ||
+    !/^sec_[0-9a-f-]{36}$/.test(secret.id)
+  ) {
+    throw new ScopeViolationError("The protected source schema or scope is invalid.");
+  }
+}
+
 /** Mirrors the PostgreSQL credential source constraints for the in-memory adapter. */
 function assertCredentialSource(source: CredentialSource): void {
+  if (source.egress !== undefined) {
+    assertProtectedEgressSource(source.egress, source.namespaceId, source.id);
+  }
   const config: unknown = source.config;
   const secretInputs: unknown = source.secrets;
   if (
@@ -1264,6 +1461,8 @@ function assertCredentialSource(source: CredentialSource): void {
         value.length > 2048,
     ) ||
     !isPlainRecord(secretInputs) ||
+    (source.ownerCapability !== "credential_gateway" &&
+      (source.ownerCapability !== "credential_proxy" || source.egress === undefined)) ||
     typeof source.driverId !== "string" ||
     source.driverId.length < 1 ||
     source.driverId.length > 200 ||
@@ -1297,6 +1496,7 @@ function assertCredentialSource(source: CredentialSource): void {
 function repositories(
   snapshot: PlatformSnapshot,
   iamSubjects: IAMSubjectSource,
+  preparedTokenProof: PreparedTokenCurrentProof,
 ): PlatformUnitOfWork {
   const installations: InstallationRepository = {
     findInstallation: async (installationId) =>
@@ -1827,7 +2027,112 @@ function repositories(
     return found === undefined || !liveWithdrawal(found) ? undefined : immutableCopy(found);
   };
 
+  const materialKey = (evidence: EgressMaterialEvidence) =>
+    JSON.stringify([
+      evidence.source.namespaceId,
+      evidence.kind === "static" ? evidence.secretDriver.id : evidence.source.provider.id,
+      evidence.materialId,
+      evidence.materialVersion,
+    ]);
+  const currentInstallation = (original: EgressInstallation): EgressInstallation =>
+    [...snapshot.credentialPolicyReductions.values()].reduce(
+      (current, { request, observed }) =>
+        observed &&
+        request.expected.plan.execution.revisionId === original.plan.execution.revisionId &&
+        observed.plan.generation > current.plan.generation
+          ? observed
+          : current,
+      original,
+    );
   const credentialSources: CredentialSourceRepository = {
+    listCredentialPolicyReductions: async (namespaceId, revisionId) =>
+      [...snapshot.credentialPolicyReductions.values()].filter(
+        ({ request }) =>
+          request.expected.plan.execution.namespaceId === namespaceId &&
+          request.expected.plan.execution.revisionId === revisionId,
+      ),
+    isEgressMaterialRejected: async (evidence) =>
+      snapshot.egressRejected.has(materialKey(evidence)),
+    rejectEgressMaterial: async (evidence) => {
+      snapshot.egressRejected.add(materialKey(evidence));
+    },
+    findEgressInstallation: async (senderId, sandboxId) => {
+      const found = snapshot.egressInstallations.get(JSON.stringify([senderId, sandboxId]));
+      return found === undefined ||
+        !(
+          snapshot.revisions.get(
+            agentKey(found.plan.execution.namespaceId, found.plan.execution.agentId),
+          ) ?? []
+        ).some((revision) => revision.id === found.plan.execution.revisionId)
+        ? undefined
+        : currentInstallation(found);
+    },
+    findRevisionEgressInstallation: async (namespaceId, revisionId) => {
+      const found = [...snapshot.egressInstallations.values()].find(
+        ({ plan: { execution } }) =>
+          execution.namespaceId === namespaceId && execution.revisionId === revisionId,
+      );
+      return found && currentInstallation(found);
+    },
+    saveCredentialPolicyReduction: async (namespaceId, revisionId, bindingId, expected, next) => {
+      const key = JSON.stringify([namespaceId, revisionId, bindingId]);
+      if (!isDeepStrictEqual(snapshot.credentialPolicyReductions.get(key), expected)) {
+        return false;
+      }
+      snapshot.credentialPolicyReductions.set(key, immutableCopy(next));
+      return true;
+    },
+    recordEgressInstallation: async (installation) => {
+      const execution = installation.plan.execution;
+      const revision = (
+        snapshot.revisions.get(agentKey(execution.namespaceId, execution.agentId)) ?? []
+      ).find((item) => item.id === execution.revisionId);
+      if (!revision || !isDeepStrictEqual(revision.egressPlan, installation.plan)) {
+        throw new ScopeViolationError("Egress installation does not match an admitted revision.");
+      }
+      const key = JSON.stringify([installation.sender.id, installation.sandboxId]);
+      const prior = snapshot.egressInstallations.get(key);
+      if (
+        prior !== undefined &&
+        (!isDeepStrictEqual(prior.plan, installation.plan) ||
+          !isDeepStrictEqual(prior.sender, installation.sender) ||
+          !isDeepStrictEqual(prior.enforcement, installation.enforcement))
+      ) {
+        throw new ResourceStateConflictError("Egress execution identity is already bound.");
+      }
+      if (
+        Array.from(snapshot.egressInstallations.entries()).some(
+          ([otherKey, other]) =>
+            otherKey !== key &&
+            other.plan.execution.namespaceId === execution.namespaceId &&
+            other.plan.execution.revisionId === execution.revisionId,
+        )
+      ) {
+        throw new ResourceStateConflictError(EGRESS_REVISION_INSTALLED_CONFLICT);
+      }
+      snapshot.egressInstallations.set(key, prior ?? immutableCopy(installation));
+    },
+    admitEgressSource: async (namespaceId, sourceId, expectedGeneration, egress) => {
+      const current = await findCredentialSource(namespaceId, sourceId);
+      if (
+        !current ||
+        current.state !== "ready" ||
+        (current.egress?.key.source.generation ?? 0) !== expectedGeneration
+      ) {
+        return undefined;
+      }
+      if (
+        egress.key.source.id !== sourceId ||
+        egress.key.namespaceId !== namespaceId ||
+        egress.key.source.generation !== expectedGeneration + 1
+      ) {
+        throw new ScopeViolationError("Egress source generation or scope is invalid.");
+      }
+      assertProtectedEgressSource(egress, namespaceId, sourceId);
+      const saved = immutableCopy({ ...current, egress });
+      snapshot.credentialSources.set(agentKey(namespaceId, sourceId), saved);
+      return saved;
+    },
     findCredentialSource,
     findCredentialWithdrawal,
     listCredentialWithdrawals: async (namespaceId, revisionId) =>
@@ -2498,6 +2803,15 @@ function repositories(
       ) {
         return undefined;
       }
+      if (next !== "running" && agent.activeRevisionId) {
+        const execution = snapshot.repositoryStandingExecutions.get(agent.activeRevisionId);
+        if (execution) {
+          snapshot.repositoryStandingExecutions.set(agent.activeRevisionId, {
+            ...execution,
+            closed: true,
+          });
+        }
+      }
       const saved = immutableCopy({ ...agent, desiredRuntimeState: next });
       snapshot.agents.set(key, saved);
       return saved;
@@ -2623,6 +2937,13 @@ function repositories(
       if (!current || current.activeRevisionId !== expectedRevisionId) {
         return undefined;
       }
+      const execution = snapshot.repositoryStandingExecutions.get(expectedRevisionId);
+      if (execution) {
+        snapshot.repositoryStandingExecutions.set(expectedRevisionId, {
+          ...execution,
+          closed: true,
+        });
+      }
       const { activeRevisionId: _activeRevisionId, ...stopped } = current;
       const updated = immutableCopy(stopped);
       snapshot.agents.set(agentKey(namespaceId, agentId), updated);
@@ -2641,6 +2962,15 @@ function repositories(
       const candidate = await revisions.findRevision(namespaceId, agentId, candidateRevisionId);
       if (!candidate) {
         throw new ScopeViolationError("The active AgentRevision belongs to another Agent.");
+      }
+      if (current.activeRevisionId && current.activeRevisionId !== candidateRevisionId) {
+        const execution = snapshot.repositoryStandingExecutions.get(current.activeRevisionId);
+        if (execution) {
+          snapshot.repositoryStandingExecutions.set(current.activeRevisionId, {
+            ...execution,
+            closed: true,
+          });
+        }
       }
       const updated = immutableCopy({ ...current, activeRevisionId: candidateRevisionId });
       snapshot.agents.set(agentKey(namespaceId, agentId), updated);
@@ -3021,6 +3351,8 @@ function repositories(
   };
 
   const repositorySessions = memoryRepositorySessions(
+    snapshot.repositoryStandingExecutions,
+    snapshot.repositoryStandingApprovals,
     snapshot.repositorySessions,
     snapshot.repositoryBrokerReceipts,
     (owner) =>
@@ -3034,6 +3366,16 @@ function repositories(
         namespace?.status === "ready" &&
         agent?.status === "active" &&
         agent.desiredRuntimeState === "running"
+      );
+    },
+    (owner) => {
+      const namespace = snapshot.namespaces.get(owner.namespaceId);
+      const agent = snapshot.agents.get(agentKey(owner.namespaceId, owner.agentId));
+      return (
+        namespace?.status === "ready" &&
+        agent?.status === "active" &&
+        agent.desiredRuntimeState === "running" &&
+        agent.activeRevisionId === owner.revisionId
       );
     },
   );
@@ -3060,6 +3402,8 @@ function repositories(
     revisions,
     iamPolicy,
     repositorySessions,
+    preparedTokenProof,
+    egressSendReceipts: memoryEgressSendReceipts(snapshot.egressSendReceipts),
     provisioning: {
       findByWorkId: provisioningAbsent,
       findWithWork: provisioningAbsent,
@@ -3338,7 +3682,11 @@ export class InMemoryPlatformState implements PlatformStateStore {
     presets: new Map(),
     secrets: new Map(),
     credentialSources: new Map(),
+    credentialPolicyReductions: new Map(),
     credentialWithdrawals: new Map(),
+    egressInstallations: new Map(),
+    egressRejected: new Set(),
+    egressSendReceipts: new Map(),
     serviceAccounts: new Map(),
     agents: new Map(),
     sandboxPolicies: new Map(),
@@ -3347,6 +3695,8 @@ export class InMemoryPlatformState implements PlatformStateStore {
     roles: new Map(),
     bindings: new Map(),
     servicePrincipals: new Map(),
+    repositoryStandingExecutions: new Map(),
+    repositoryStandingApprovals: new Map(),
     repositorySessions: new Map(),
     repositoryBrokerReceipts: new Map(),
     audit: [],
@@ -3355,9 +3705,11 @@ export class InMemoryPlatformState implements PlatformStateStore {
   private pending: Promise<void> = Promise.resolve();
   private readonly auditSink: PlatformAuditSink | undefined;
   private readonly iamSubjects: IAMSubjectSource;
+  private readonly preparedTokenProof: PreparedTokenCurrentProof;
 
   constructor(options: InMemoryPlatformStateOptions = {}) {
     this.auditSink = options.auditSink;
+    this.preparedTokenProof = options.preparedTokenProof ?? { current: async () => false };
     this.iamSubjects = {
       identities: immutableCopy(options.iamIdentities ?? []),
       resolve: options.resolveIAMIdentity,
@@ -3374,7 +3726,7 @@ export class InMemoryPlatformState implements PlatformStateStore {
     try {
       return await work(
         createPlatformReadView(
-          repositories(cloneSnapshot(this.snapshot), this.iamSubjects),
+          repositories(cloneSnapshot(this.snapshot), this.iamSubjects, this.preparedTokenProof),
           lifetime,
         ),
       );
@@ -3385,7 +3737,12 @@ export class InMemoryPlatformState implements PlatformStateStore {
 
   async transact<T>(work: (state: PlatformUnitOfWork) => Promise<T>): Promise<T> {
     return this.commit((working, lifetime) =>
-      work(bindPlatformUnitOfWork(repositories(working, this.iamSubjects), lifetime)),
+      work(
+        bindPlatformUnitOfWork(
+          repositories(working, this.iamSubjects, this.preparedTokenProof),
+          lifetime,
+        ),
+      ),
     );
   }
 

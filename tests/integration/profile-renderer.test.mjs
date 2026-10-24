@@ -129,6 +129,8 @@ function managedCodexInput(overrides = {}) {
 function repositoryConfiguration(upstreamCidrs = ["192.0.2.30/32"]) {
   return {
     enabled: true,
+    authority: "prepared-git",
+    preparedCustodySecretName: "occ-repository-custody",
     image: `registry.example.invalid/openclaw-enterprise/repository-credentials@sha256:${digestC}`,
     backendId: "github-primary",
     registryConfigMapName: "occ-repository-registry-v1",
@@ -834,6 +836,7 @@ const credentialSecretNames = [
 const repositorySecretKeys = [
   "serviceConfigSecretName",
   "appKeySecretName",
+  "preparedCustodySecretName",
   "tlsSecretName",
   "publicCaSecretName",
 ];
@@ -862,6 +865,7 @@ test(
       "occ-chatgpt-admin",
       "occ-repository-service-config",
       "occ-repository-app-key",
+      "occ-repository-custody",
       "occ-repository-tls",
       "occ-repository-public-ca",
     ]) {
@@ -937,6 +941,12 @@ test(
         ["appKeySecretName", root, "the generated Gateway root CA"],
         ["appKeySecretName", "occ-database", "database.secretName"],
         ["appKeySecretName", "occ-private-gateway-key", "gatewayRouting.apiKeySecretName"],
+        ["preparedCustodySecretName", "occ-database", "database.secretName"],
+        [
+          "preparedCustodySecretName",
+          "occ-repository-app-key",
+          "repositoryCredentials.appKeySecretName",
+        ],
         ["tlsSecretName", "occ-chatgpt-admin", "backend.chatgpt.secretName"],
         ["tlsSecretName", "occ-repository-app-key", "repositoryCredentials.appKeySecretName"],
       ].map(([key, secretName, other]) => [
@@ -2047,6 +2057,7 @@ function checkoutWithoutDependencies() {
   const sources = [
     "package.json",
     "scripts/render-installation-profile.mjs",
+    "scripts/lib/prepared-repository-installation.mjs",
     "deploy/profiles",
     "apps/controller/package.json",
     "apps/controller/src",
@@ -2839,6 +2850,32 @@ test("the codex profile carries a Codex model endpoint under Compute startup's r
       SharedConfigurationValidationError,
       JSON.stringify(value),
     );
+  }
+  // Generated Harness model egress is TCP/443 to non-excluded IPv4, but an operator's own
+  // NetworkPolicy can admit more: preflight warns like Compute startup (findings 1740, 2284).
+  assert.doesNotMatch(accepted.preflight.warnings.join("\n"), /model egress/);
+  for (const [value, blocked] of [
+    [
+      "https://models.example.com:8443/v1",
+      "uses port 8443 but Harness model egress allows only TCP/443",
+    ],
+    [
+      "https://10.0.0.5:8443/v1",
+      "uses port 8443 but Harness model egress allows only TCP/443 and has an IPv4 host in 10.0.0.0/8 which Harness model egress excludes",
+    ],
+    ["https://[2001:db8::1]/v1", "is an IPv6 address but Harness model egress allows only IPv4"],
+    ["https://10.0.0.1/v1", "has an IPv4 host in 10.0.0.0/8 which Harness model egress excludes"],
+  ]) {
+    const warned = await render("codex", codexInput({ runtime: { codexModelBaseUrl: value } }));
+    assert.ok(
+      warned.preflight.warnings.includes(
+        `${field} ${blocked}: the generated policy will not admit it unless another NetworkPolicy does.`,
+      ),
+      value,
+    );
+    const configured = loadYaml(warned.installation).drivers.compute.configuration;
+    assert.equal(configured.runtime.codexModelBaseUrl, value);
+    requireConfiguration(KubernetesComputeDriver, configured);
   }
 });
 

@@ -1399,6 +1399,7 @@ async function runLane(root, manifest, laneName, statePath, resultsPath) {
       return next;
     };
     const results = new Array(lane.files.length);
+    let annotateFailure = process.env.GITHUB_ACTIONS === "true";
     const runAt = async (index, mode) => {
       const fileStarted = performance.now();
       const result = await runFile(root, lane, lane.files[index], statePath, prepareFile, setup);
@@ -1408,6 +1409,17 @@ async function runLane(root, manifest, laneName, statePath, resultsPath) {
       result.startOffsetMs = Math.round(fileStarted - laneStarted);
       result.wallDurationMs = Math.round(performance.now() - laneStarted) - result.startOffsetMs;
       results[index] = result;
+      if (annotateFailure && result.status === "failed") {
+        annotateFailure = false;
+        // A workflow command must never contain the child test's name, path, or output.
+        const message =
+          result.counts.failed > 0 && result.cleanup?.status === "passed"
+            ? "A test file reported failed tests and its cleanup passed."
+            : "A test file failed.";
+        process.stderr.write(
+          `::error title=Test lane failure::${message} Final lane results will follow.\n`,
+        );
+      }
       process.stderr.write(
         `run-tests: ${result.status} ${result.path} ${(result.wallDurationMs / 1000).toFixed(1)}s${mode === "parallel" ? " (parallel)" : ""}\n`,
       );

@@ -177,6 +177,29 @@ const inPlaceFix = new RegExp(
   `This form cannot edit saved Configuration cfg_[0-9a-f-]+\\. Deselect plugin ${pluginId} under Plugins and select Create Agent again;`,
 );
 
+test("Create Agent keeps the form ready to retry when the configuration check times out", async (t) => {
+  const form = await filledCreateForm(t, "Configuration check timeout", {}, { selected: "{}" });
+  const { page, agentsUrl, configuration } = form;
+  const entered = await configuration.inputValue();
+  // The real check succeeds, but its reply does not reach the form before the client deadline.
+  const checked = Promise.withResolvers();
+  await page.route(`${agentsUrl}/validate`, async (route) => {
+    checked.resolve((await route.fetch()).status());
+  });
+  await submitWithKeyboard(page);
+  assert.equal(await checked.promise, 204);
+  // Chromium's virtual time advances the native AbortSignal.timeout, unlike a JavaScript clock.
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Emulation.setVirtualTimePolicy", { policy: "advance", budget: 15_001 });
+  await page.getByRole("button", { name: "Create Agent", disabled: false }).waitFor();
+  assert.equal(
+    await page.getByRole("alert").and(page.locator(":focus")).textContent(),
+    "The configuration check timed out. Your entries are still here. Try Create Agent again.",
+  );
+  assert.equal(await configuration.inputValue(), entered);
+  await assertNothingSaved(form);
+});
+
 // Create Agent saved its Secret and Configuration before Agent create refused the plugin pair,
 // and the saved Configuration locked its editor, so the refusal's own fix (edit the setting)
 // was out of reach (finding 1863). The form now asks the API first and saves nothing. A long

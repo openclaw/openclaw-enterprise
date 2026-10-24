@@ -6,17 +6,27 @@
 //
 // `images` builds the controller and runtime images from this checkout (reading
 // the hosted image caches when available), adds a private test CA to the
-// runtime image's trust store, and pushes both to a loopback registry so Local
-// Setup can select them by digest. `run` starts the Kubernetes-only Local Setup
-// with those images, answers api.openai.com from a stand-in Responses provider,
-// runs scripts/first-agent.mjs for an embedded OpenClaw Agent, deploys one
-// dedicated Codex Agent through the API, reads both Agents' logs through
-// `occ agent logs`, stops and starts each once, and checks that every reported
-// status matches the cluster and a real model turn.
+// runtime image's trust store, and publishes both to a local registry, reachable
+// on loopback, so Local Setup can select them by digest. `run` starts the
+// Kubernetes-only Local Setup with those images, answers api.openai.com from a
+// stand-in Responses provider, runs scripts/first-agent.mjs for an embedded
+// OpenClaw Agent, deploys one dedicated Codex Agent through the API, reads both
+// Agents' logs through `occ agent logs`, stops and starts each once, and checks
+// that every reported status matches the cluster and a real model turn.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { appendFile, mkdir, readFile, realpath, rm, statfs, writeFile } from "node:fs/promises";
+import {
+  appendFile,
+  chmod,
+  copyFile,
+  mkdir,
+  readFile,
+  realpath,
+  rm,
+  statfs,
+  writeFile,
+} from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
@@ -31,10 +41,11 @@ import {
   createModelProviderFiles,
   writeModelProviderTrust,
 } from "../../tests/helpers/runtime-model-provider.mjs";
+import { compareEvents, eventObservedTime } from "./kubernetes-event-time.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const occ = join(root, "bin", "occ");
-const workDirectory = resolve(
+export const workDirectory = resolve(
   process.env.OCC_FIRST_AGENT_SMOKE_DIRECTORY ??
     join(process.env.RUNNER_TEMP ?? "/tmp", "first-agent-smoke"),
 );
@@ -85,7 +96,7 @@ const nodeBaseImage =
 const modelNetwork = { name: slotNames.model, subnet: slotNames.subnet };
 const modelAddress = slotNames.modelAddress;
 const nodeModelAddress = slotNames.nodeModelAddress;
-const modelContainer = slotNames.model;
+export const modelContainer = slotNames.model;
 const noncePattern = "OCE_SMOKE_[A-Za-z0-9-]+|FIRST_AGENT_[A-Za-z0-9-]+";
 const minute = 60_000;
 // Both stop requests share one serial worker. Per Agent, allow the selected
@@ -100,7 +111,7 @@ function log(message) {
   process.stdout.write(`[first-agent-smoke] ${message}\n`);
 }
 
-function run(command, args, { env = process.env, input, timeout = 5 * minute, label } = {}) {
+export function run(command, args, { env = process.env, input, timeout = 5 * minute, label } = {}) {
   return new Promise((resolveRun, reject) => {
     const child = spawn(command, args, { cwd: root, env, stdio: ["pipe", "pipe", "pipe"] });
     const stdout = [];
@@ -278,7 +289,7 @@ async function exportEnvironment(values) {
 // ---------------------------------------------------------------------------
 // images
 
-function cacheArguments(role) {
+function cacheSources(role) {
   // Restore only: main's cache is written by the warm workflow alone.
   if (
     process.env.GITHUB_ACTIONS !== "true" ||
@@ -288,7 +299,11 @@ function cacheArguments(role) {
     return [];
   }
   const scope = `oce-ci-${role}-${process.platform}-${process.arch}-v1`;
-  return ["--cache-from", `type=gha,version=2,scope=${scope},timeout=60s`];
+  return [`type=gha,version=2,scope=${scope},timeout=60s`];
+}
+
+function cacheArguments(role) {
+  return cacheSources(role).flatMap((source) => ["--cache-from", source]);
 }
 
 // The image lanes and the warm job build with a fixed SOURCE_DATE_EPOCH, and
@@ -297,10 +312,22 @@ function cacheArguments(role) {
 // smoke run reinstalled both images' packages (finding 1273). It sets only
 // timestamps (image config, history, WORKDIR); the smoke reads none of them.
 // RUN steps do not see it: an `ARG SOURCE_DATE_EPOCH` would change their keys.
-const cacheBuildArguments = ["--build-arg", "SOURCE_DATE_EPOCH=0"];
+const cacheEpoch = "0";
+const cacheBuildArguments = ["--build-arg", `SOURCE_DATE_EPOCH=${cacheEpoch}`];
 
+// Local Setup selects images by registry digest, which the engine records when it
+// pushes or pulls a tag.
 async function pushedDigest(tag) {
   await run("docker", ["push", tag], { timeout: 10 * minute });
+  return recordedDigest(tag);
+}
+
+async function pulledDigest(tag) {
+  await run("docker", ["pull", tag], { timeout: 10 * minute });
+  return recordedDigest(tag);
+}
+
+async function recordedDigest(tag) {
   const { stdout } = await run("docker", [
     "image",
     "inspect",
@@ -314,7 +341,7 @@ async function pushedDigest(tag) {
   return reference;
 }
 
-async function buildImages() {
+async function buildImages({ preparedGit = false } = {}) {
   const revision = (await run("git", ["rev-parse", "--verify", "HEAD"])).stdout.trim();
   assert.match(revision, /^[a-f0-9]{40}$/);
   await mkdir(workDirectory, { recursive: true });
@@ -326,7 +353,14 @@ async function buildImages() {
       run,
     }),
   );
-  await step("loopback registry", () =>
+  if (preparedGit) {
+    const name = "skipper-prepared-compute-model.mjs";
+    const companion = join(modelDirectory, name);
+    await copyFile(join(root, "tests", "fixtures", name), companion);
+    await chmod(companion, 0o644); // The model fixture runs as the image's non-root user.
+    await rm(join(modelDirectory, "ca-key.pem"));
+  }
+  const registryContainer = await step("loopback registry", () =>
     run("docker", [
       "run",
       "--detach",
@@ -338,8 +372,141 @@ async function buildImages() {
     ]),
   );
   const controllerTag = `${registry}/oce-smoke/controller:${revision}`;
-  const runtimeTag = `${registry}/oce-smoke/runtime-base:${revision}`;
   const smokeRuntimeTag = `${registry}/oce-smoke/runtime:${revision}`;
+  // The only difference from the checkout's runtime image: the stand-in
+  // provider's private CA in the system store (Codex) and for Node (OpenClaw).
+  // Labels, user, entrypoint and every other layer are inherited unchanged.
+  const context = join(workDirectory, "runtime-trust");
+  await writeModelProviderTrust({ context, caPath: join(modelDirectory, "ca.pem") });
+  const [controller, runtime] =
+    (await builderDriver()) === "docker-container"
+      ? await bakeAndPushImages({ revision, controllerTag, smokeRuntimeTag, context })
+      : await buildAndPushImages({ revision, controllerTag, smokeRuntimeTag, context });
+  const repository = {};
+  if (preparedGit) {
+    const tag = `${registry}/oce-smoke/repository:${revision}`;
+    await step("repository service image build", () =>
+      run(
+        "docker",
+        [
+          "buildx",
+          "build",
+          "--load",
+          ...cacheArguments("runtime"),
+          ...cacheBuildArguments,
+          "--file",
+          "deploy/runtime/Dockerfile",
+          "--target",
+          "repository-credentials-service",
+          "--label",
+          `org.opencontainers.image.revision=${revision}`,
+          "--tag",
+          tag,
+          ".",
+        ],
+        { timeout: 30 * minute, label: "repository-build" },
+      ),
+    );
+    repository.OCC_DEVELOPMENT_REPOSITORY_IMAGE = await pushedDigest(tag);
+    repository.OCC_SKIPPER_IMAGE_REGISTRY_CONTAINER = registryContainer.stdout.trim();
+  }
+  await exportEnvironment({
+    ...repository,
+    OCC_DEVELOPMENT_CONTROLLER_IMAGE: controller,
+    OCC_KUBERNETES_RUNTIME_IMAGE: runtime,
+    OCC_FIRST_AGENT_SMOKE_MODEL_DIRECTORY: modelDirectory,
+  });
+  log(`controller ${controller}`);
+  log(`runtime ${runtime}`);
+}
+
+async function builderDriver() {
+  const { stdout } = await run("docker", ["buildx", "inspect"]);
+  return /^Driver:\s+(\S+)/m.exec(stdout)?.[1] ?? "";
+}
+
+// A builder in its own container (the hosted job's) builds, adds the trust
+// layer and pushes both images in one bake. The push sends the compressed
+// layers the hosted cache already holds, so only layers this checkout changed
+// are compressed, and the base runtime image is never loaded into the engine.
+// The builder reaches the registry over the default bridge network, so it must
+// run there (setup-buildx's default) or on the host network; the engine pulls
+// the same tags back from loopback, which records their digests without
+// copying layers it already loaded.
+async function bakeAndPushImages({ revision, controllerTag, smokeRuntimeTag, context }) {
+  const address = (
+    await run("docker", [
+      "inspect",
+      "--format",
+      '{{with index .NetworkSettings.Networks "bridge"}}{{.IPAddress}}{{end}}',
+      slotNames.registryContainer,
+    ])
+  ).stdout.trim();
+  assert.match(address, /^\d+\.\d+\.\d+\.\d+$/, "registry has no bridge address");
+  const outputs = (tag) => [
+    `type=docker,name=${tag}`,
+    `type=image,name=${address}:5000${tag.slice(registry.length)},push=true,registry.insecure=true`,
+  ];
+  const definition = {
+    target: {
+      "smoke-controller": {
+        context: root,
+        target: "runtime",
+        args: { NODE_BASE_IMAGE: nodeBaseImage, SOURCE_DATE_EPOCH: cacheEpoch },
+        labels: { "org.opencontainers.image.revision": revision },
+        "cache-from": cacheSources("controller"),
+        pull: false,
+        output: outputs(controllerTag),
+      },
+      "smoke-runtime-base": {
+        context: root,
+        dockerfile: "deploy/runtime/Dockerfile",
+        args: { OCC_BUILD_REVISION: revision, SOURCE_DATE_EPOCH: cacheEpoch },
+        "cache-from": cacheSources("runtime"),
+        pull: false,
+      },
+      "smoke-runtime": {
+        context,
+        contexts: { "smoke-runtime-base": "target:smoke-runtime-base" },
+        args: { RUNTIME_IMAGE: "smoke-runtime-base" },
+        output: outputs(smokeRuntimeTag),
+      },
+    },
+  };
+  const file = join(workDirectory, "images.bake.json");
+  await writeFile(file, `${JSON.stringify(definition, null, 2)}\n`);
+  // Both builds read the hosted caches main's warm job (ci-image-cache.yml) writes.
+  await step("controller and runtime image builds", () =>
+    // The trust context lies outside the working directory, so bake needs an
+    // explicit read grant for it (its check sometimes missed it, by target order).
+    run(
+      "docker",
+      [
+        "buildx",
+        "bake",
+        `--allow=fs.read=${context}`,
+        "--file",
+        file,
+        "smoke-controller",
+        "smoke-runtime",
+      ],
+      {
+        // Single-platform image manifests without attestation indexes, so the
+        // recorded digest is the image manifest's.
+        env: { ...process.env, BUILDX_NO_DEFAULT_ATTESTATIONS: "1" },
+        timeout: 40 * minute,
+        label: "image-bake",
+      },
+    ),
+  );
+  return step("registry digests", () =>
+    Promise.all([pulledDigest(controllerTag), pulledDigest(smokeRuntimeTag)]),
+  );
+}
+
+// The engine's own builder: build, add the trust layer, then push.
+async function buildAndPushImages({ revision, controllerTag, smokeRuntimeTag, context }) {
+  const runtimeTag = `${registry}/oce-smoke/runtime-base:${revision}`;
   // Both builds read the hosted caches main's warm job (ci-image-cache.yml) writes.
   await step("controller and runtime image builds", () =>
     Promise.all([
@@ -385,11 +552,6 @@ async function buildImages() {
       ),
     ]),
   );
-  // The only difference from the checkout's runtime image: the stand-in
-  // provider's private CA in the system store (Codex) and for Node (OpenClaw).
-  // Labels, user, entrypoint and every other layer are inherited unchanged.
-  const context = join(workDirectory, "runtime-trust");
-  await writeModelProviderTrust({ context, caPath: join(modelDirectory, "ca.pem") });
   await step("runtime trust layer", () =>
     run("docker", [
       "buildx",
@@ -404,26 +566,25 @@ async function buildImages() {
       context,
     ]),
   );
-  const [controller, runtime] = await step("registry digests", () =>
+  return step("registry digests", () =>
     Promise.all([pushedDigest(controllerTag), pushedDigest(smokeRuntimeTag)]),
   );
-  await exportEnvironment({
-    OCC_DEVELOPMENT_CONTROLLER_IMAGE: controller,
-    OCC_KUBERNETES_RUNTIME_IMAGE: runtime,
-    OCC_FIRST_AGENT_SMOKE_MODEL_DIRECTORY: modelDirectory,
-  });
-  log(`controller ${controller}`);
-  log(`runtime ${runtime}`);
 }
 
 // ---------------------------------------------------------------------------
 // run
 
-function createApi(origin, key) {
+export function createApi(origin, key) {
   return async (method, path, body) => {
+    const url = new URL(path, origin);
+    assert.equal(
+      url.origin,
+      origin,
+      "refusing to send the smoke key outside the controller origin",
+    );
     let response;
     try {
-      response = await fetch(new URL(path, origin), {
+      response = await fetch(url, {
         method,
         redirect: "error",
         signal: AbortSignal.timeout(30_000),
@@ -559,16 +720,21 @@ async function printWatchLog() {
   }
 }
 
-async function startLocalSetup(environment) {
-  const stopWatching = watchCluster();
-  try {
-    await run(occ, ["dev", "up"], { env: environment, timeout: 25 * minute, label: "dev-up" });
-  } catch (error) {
-    await stopWatching({ finalCapture: true });
-    await printWatchLog();
-    throw error;
+export async function startLocalSetup(environment, { privateInstall = false } = {}) {
+  if (privateInstall) {
+    // Private acceptance retains only named stages, never installation or cluster logs.
+    await run(occ, ["dev", "up"], { env: environment, timeout: 30 * minute });
+  } else {
+    const stopWatching = watchCluster();
+    try {
+      await run(occ, ["dev", "up"], { env: environment, timeout: 25 * minute, label: "dev-up" });
+    } catch (error) {
+      await stopWatching({ finalCapture: true });
+      await printWatchLog();
+      throw error;
+    }
+    await stopWatching();
   }
-  await stopWatching();
   const directory = environment.OCC_DEVELOPMENT_STATE_DIRECTORY;
   const state = JSON.parse(await readFile(join(directory, "state.json"), "utf8"));
   const key = JSON.parse(await readFile(state.keyPath, "utf8"));
@@ -583,7 +749,7 @@ async function startLocalSetup(environment) {
   };
 }
 
-function kubectl(stack, args, options = {}) {
+export function kubectl(stack, args, options = {}) {
   return run("kubectl", ["--kubeconfig", stack.kubeconfig, "--context", stack.context, ...args], {
     timeout: 2 * minute,
     ...options,
@@ -593,8 +759,14 @@ function kubectl(stack, args, options = {}) {
 // Answer api.openai.com inside the cluster with the stand-in provider. Agent
 // Pods reach it through their ordinary model egress NetworkPolicy and verify
 // its certificate against the CA added to the runtime image.
-async function routeModelProvider(stack, modelDirectory, runtimeImage, credentialDigests) {
+export async function routeModelProvider(
+  stack,
+  modelDirectory,
+  runtimeImage,
+  { journey = "PROBE_PUBLIC_READ_JOURNEY", cleanup = [], credentialDigests } = {},
+) {
   await run("docker", ["network", "create", "--subnet", modelNetwork.subnet, modelNetwork.name]);
+  cleanup.push(() => run("docker", ["network", "rm", modelNetwork.name]));
   // Fixed addresses: Docker would otherwise give the node the provider's address.
   await run("docker", [
     "network",
@@ -604,6 +776,14 @@ async function routeModelProvider(stack, modelDirectory, runtimeImage, credentia
     modelNetwork.name,
     `k3d-${stack.state.cluster}-server-0`,
   ]);
+  cleanup.push(() =>
+    run("docker", [
+      "network",
+      "disconnect",
+      modelNetwork.name,
+      `k3d-${stack.state.cluster}-server-0`,
+    ]),
+  );
   const providerArgs = [
     "run",
     "--detach",
@@ -624,17 +804,23 @@ async function routeModelProvider(stack, modelDirectory, runtimeImage, credentia
     "--env",
     `PROBE_ENDPOINT_ECHO_PATTERN=${noncePattern}`,
     "--env",
-    "PROBE_ENDPOINT_CREDENTIAL_DIGESTS",
-    "--env",
-    "PROBE_PUBLIC_READ_JOURNEY=1",
+    `${journey}=1`,
+    // With digests, the stand-in answers only these credentials and names each caller.
+    ...(credentialDigests === undefined ? [] : ["--env", "PROBE_ENDPOINT_CREDENTIAL_DIGESTS"]),
     "--entrypoint",
     "node",
     runtimeImage,
     "/fixture/endpoint.mjs",
   ];
-  await run("docker", providerArgs, {
-    env: { ...process.env, PROBE_ENDPOINT_CREDENTIAL_DIGESTS: JSON.stringify(credentialDigests) },
+  const { stdout: containerId } = await run("docker", providerArgs, {
+    env: {
+      ...process.env,
+      ...(credentialDigests === undefined
+        ? {}
+        : { PROBE_ENDPOINT_CREDENTIAL_DIGESTS: JSON.stringify(credentialDigests) }),
+    },
   });
+  cleanup.push(() => run("docker", ["rm", "--force", containerId.trim()]));
   await waitFor(
     "the stand-in provider to listen",
     async () => ({ done: (await modelEvents()).some(({ event }) => event === "listening") }),
@@ -837,23 +1023,32 @@ async function gatewayTurn({ prompt }) {
       }),
       signal: AbortSignal.timeout(170_000),
     });
-    const text = await response.text();
-    let content;
-    try {
-      content = JSON.parse(text).choices?.[0]?.message?.content;
-    } catch {
-      content = undefined;
-    }
+    const payload = await response.json().catch(() => undefined);
+    const message = response.status === 200 ? payload?.choices?.[0]?.message : undefined;
     process.stdout.write(
       JSON.stringify({
         status: response.status,
-        content: typeof content === "string" ? content : undefined,
-        body: response.status === 200 ? undefined : text.slice(0, 2_000),
+        role: message?.role === "assistant" ? "assistant" : undefined,
+        content: typeof message?.content === "string" ? message.content : undefined,
+        invalidResponse: payload === undefined,
       }),
     );
-  } catch (error) {
-    process.stdout.write(JSON.stringify({ error: String(error?.message ?? error) }));
+  } catch {
+    process.stdout.write("{}");
   }
+}
+
+export function assertChatReply(result, nonce, label) {
+  assert.ok(result.status !== undefined, `${label}: chat request failed before an HTTP response`);
+  assert.equal(result.status, 200, `${label}: chat turn failed`);
+  assert.ok(!result.invalidResponse, `${label}: chat turn returned an unreadable response`);
+  assert.ok(result.role === "assistant", `${label}: reply was not an assistant message`);
+  // This smoke uses a deterministic provider that returns the nonce verbatim.
+  // Whitespace is harmless; an echoed prompt is not a completed answer.
+  assert.ok(
+    typeof result.content === "string" && result.content.trim() === nonce,
+    `${label}: assistant reply did not equal the nonce`,
+  );
 }
 
 async function chatTurn(stack, agent, revisionId) {
@@ -867,11 +1062,7 @@ async function chatTurn(stack, agent, revisionId) {
     { input: script, timeout: 4 * minute },
   );
   const result = JSON.parse(stdout);
-  assert.equal(result.status, 200, `${agent.label}: chat turn failed ${JSON.stringify(result)}`);
-  assert.ok(
-    result.content?.includes(nonce),
-    `${agent.label}: reply did not carry the nonce ${JSON.stringify(result)}`,
-  );
+  assertChatReply(result, nonce, agent.label);
   const transport = await assertModelAnswered(nonce, agent.label);
   log(`${agent.label}: chat turn on ${revisionId} answered over ${transport}`);
 }
@@ -895,16 +1086,101 @@ async function readLogs(stack, agent, source) {
   );
 }
 
-async function stopAgent(stack, agent) {
-  const stopped = await cliJson(stack, ["agent", "stop", agent.id]);
-  assert.equal(stopped.desiredRuntimeState, "stopped", `${agent.label}: stop not accepted`);
-  // The active revision clears only after Compute reports shutdown; still
-  // verify that no Agent workload remains after the controller reports it.
-  await observeAgentStop(
-    agent.label,
-    () => stack.api("GET", `/namespaces/${stack.namespaceId}/agents/${agent.id}`),
-    () => agentPods(stack, agent.id, { includeTerminating: true }),
+// Finding 2198: a stopped Gateway left its agent database lease unreleased,
+// and its Pod and logs were gone before diagnostics ran. Keep the end of each
+// stopping Gateway's log, which carries OpenClaw's shutdown and the agent
+// database clean-close receipt.
+const STOPPED_GATEWAY_LOG_LINES = 300;
+const STOPPED_GATEWAY_LOG_SETTLE_MS = 15_000;
+
+// One line naming how the stopped Gateway's shutdown ended, for green runs too.
+export function stoppedGatewaySummary(output) {
+  const receipts = [...output.matchAll(/agent database clean-close receipt: ([a-z-]+)/g)].map(
+    (match) => match[1],
   );
+  // OpenClaw's gateway/shutdown wording; other subsystems also log "shutdown failed".
+  const shutdown =
+    /shutdown (completed cleanly|failed) in \d+ms|shutdown completed in \d+ms (with warnings)/.exec(
+      output,
+    );
+  const outcome = shutdown === null ? "not logged" : (shutdown[1] ?? `completed ${shutdown[2]}`);
+  return `shutdown ${outcome}; clean-close receipts: ${
+    receipts.length === 0 ? "none" : receipts.join(", ")
+  }`;
+}
+
+// Follows a Gateway container's log until the container exits, keeping the last lines.
+function followGatewayLog(stack, pod) {
+  const child = spawn(
+    "kubectl",
+    [
+      "--kubeconfig",
+      stack.kubeconfig,
+      "--context",
+      stack.context,
+      "logs",
+      "--follow",
+      "--tail",
+      String(STOPPED_GATEWAY_LOG_LINES),
+      "-n",
+      pod.metadata.namespace,
+      pod.metadata.name,
+      "-c",
+      "gateway",
+    ],
+    { cwd: root, stdio: ["ignore", "pipe", "ignore"] },
+  );
+  let lines = [];
+  let partial = "";
+  child.stdout.on("data", (chunk) => {
+    const parts = (partial + chunk.toString()).split("\n");
+    partial = parts.pop();
+    lines.push(...parts);
+    if (lines.length > 2 * STOPPED_GATEWAY_LOG_LINES) {
+      lines = lines.slice(-STOPPED_GATEWAY_LOG_LINES);
+    }
+  });
+  const closed = new Promise((resolveClosed) => {
+    child.once("error", resolveClosed);
+    child.once("close", resolveClosed);
+  });
+  return {
+    async finish() {
+      const settle = delay(STOPPED_GATEWAY_LOG_SETTLE_MS, undefined, { ref: false });
+      await Promise.race([closed, settle]);
+      child.kill("SIGKILL");
+      return [...lines, ...(partial === "" ? [] : [partial])]
+        .slice(-STOPPED_GATEWAY_LOG_LINES)
+        .join("\n");
+    },
+  };
+}
+
+async function stopAgent(stack, agent) {
+  // A failed Pod read only loses the kept log; it must not fail the stop.
+  const gateways = (await agentPods(stack, agent.id).catch(() => [])).filter(
+    (pod) => pod.metadata.labels?.["openclaw.dev/workload-role"] === "gateway",
+  );
+  if (gateways.length === 0) {
+    log(`${agent.label}: no running gateway Pod to follow through the stop`);
+  }
+  const followers = gateways.map((pod) => followGatewayLog(stack, pod));
+  try {
+    const stopped = await cliJson(stack, ["agent", "stop", agent.id]);
+    assert.equal(stopped.desiredRuntimeState, "stopped", `${agent.label}: stop not accepted`);
+    // The active revision clears only after Compute reports shutdown; still
+    // verify that no Agent workload remains after the controller reports it.
+    await observeAgentStop(
+      agent.label,
+      () => stack.api("GET", `/namespaces/${stack.namespaceId}/agents/${agent.id}`),
+      () => agentPods(stack, agent.id, { includeTerminating: true }),
+    );
+  } finally {
+    agent.stoppedGatewayLogs = await Promise.all(followers.map((follower) => follower.finish()));
+    for (const output of agent.stoppedGatewayLogs) {
+      log(`${agent.label}: stopped gateway ${stoppedGatewaySummary(output)}`);
+    }
+  }
 }
 
 async function deployAgent(stack, agent) {
@@ -1498,6 +1774,25 @@ req.on('error', error => { clearTimeout(timer); process.exit(error.message === '
   }
 }
 
+// Finding 2224: `kubectl --sort-by=.lastTimestamp` put events that carry only eventTime (written
+// through events.k8s.io) first, so the 20 kB tail printed could drop the newest of them. Order by the
+// last observed instant (compareEvents), newest last; equal instants keep the API's order.
+export function clusterEventLines(list) {
+  return [...(list.items ?? [])]
+    .sort(compareEvents)
+    .map((event) => {
+      const time = eventObservedTime(event) ?? "unknown-time";
+      const object = event.involvedObject ?? {};
+      const count = event.series?.count ?? event.count ?? 1;
+      return `${time} ${event.metadata?.namespace ?? "-"} ${event.type ?? "-"} ${
+        event.reason ?? "-"
+      } ${object.kind ?? "-"}/${object.name ?? "-"}${count > 1 ? ` x${count}` : ""}: ${
+        event.message ?? ""
+      }`;
+    })
+    .join("\n");
+}
+
 async function diagnostics(stack) {
   log("collecting diagnostics");
   const attempt = async (label, operation) => {
@@ -1515,9 +1810,11 @@ async function diagnostics(stack) {
     return;
   }
   await attempt("pods", () => kubectl(stack, ["get", "pods", "-A", "-o", "wide"]));
-  await attempt("events", () =>
-    kubectl(stack, ["get", "events", "-A", "--sort-by=.lastTimestamp"]),
-  );
+  await attempt("events", async () => ({
+    stdout: clusterEventLines(
+      JSON.parse((await kubectl(stack, ["get", "events", "-A", "-o", "json"])).stdout),
+    ),
+  }));
   for (const agent of stack.agents ?? []) {
     const stopState = await agentStopDiagnostic(() =>
       stack.api("GET", `/namespaces/${stack.namespaceId}/agents/${agent.id}`),
@@ -1530,6 +1827,9 @@ async function diagnostics(stack) {
       await attempt(`${agent.label} ${source} logs`, () =>
         cli(stack, ["agent", "logs", agent.id, "--source", source, "--tail", "300"]),
       );
+    }
+    for (const [index, output] of (agent.stoppedGatewayLogs ?? []).entries()) {
+      process.stdout.write(`----- ${agent.label} stopped gateway ${index + 1} logs\n${output}\n`);
     }
   }
   try {
@@ -1602,12 +1902,9 @@ async function smoke() {
       enablePublicReader(stack),
     );
     await step("route api.openai.com to the stand-in provider", () =>
-      routeModelProvider(
-        stack,
-        modelDirectory,
-        process.env.OCC_KUBERNETES_RUNTIME_IMAGE,
+      routeModelProvider(stack, modelDirectory, process.env.OCC_KUBERNETES_RUNTIME_IMAGE, {
         credentialDigests,
-      ),
+      }),
     );
     // The two Agents are independent; deploy them together to bound CI time.
     const [embedded, codex, control] = await Promise.all([
@@ -1679,12 +1976,14 @@ async function summarize() {
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const command = process.argv[2];
   try {
-    if (command === "images") {
-      await buildImages();
+    if (command === "images" || command === "prepared-git-images") {
+      await buildImages({ preparedGit: command === "prepared-git-images" });
     } else if (command === "run") {
       await smoke();
     } else {
-      throw new Error("Usage: node scripts/ci/first-agent-smoke.mjs images|run");
+      throw new Error(
+        "Usage: node scripts/ci/first-agent-smoke.mjs images|prepared-git-images|run",
+      );
     }
   } catch (error) {
     process.stderr.write(`first-agent-smoke: ${error.stack ?? error.message}\n`);
