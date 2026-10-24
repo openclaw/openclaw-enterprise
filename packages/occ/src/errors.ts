@@ -579,13 +579,14 @@ export class RepositoryGitSenderUnqualifiedError extends ResourceStateConflictEr
 /**
  * Finding 2360: with repository.openShell, the bundled OpenShell Credential Proxy's only
  * registration is the request-phase Git service, which never advertises the execution profile.
- * It delivers repository Git, so a model credential source or an Agent without a repository
- * binding can never be admitted. Source creation answered a generic 503 for this permanent
- * configuration and such a deploy a bare 404; both now name the Installation settings.
+ * It delivers repository Git, so a Proxy-owned credential source (static, prepared or
+ * credential-free metadata) or an Agent without a repository binding can never be admitted.
+ * Source creation answered a generic 503 for this permanent configuration and such a deploy a
+ * 503 or a bare 404; both now name the Installation settings.
  */
 export class CredentialProxyRepositoryOnlyError extends ResourceStateConflictError {
   static readonly description =
-    "repository.openShell selects a Credential Proxy that serves only repository Git, so it cannot admit a model credential source or an Agent without a repository binding. To allow them, an admin removes repository.openShell and drivers.credential_proxy.";
+    "With repository.openShell the Credential Proxy serves only repository Git, not a Proxy-owned credential source or an Agent without a repository binding. An admin can drop repository.openShell and drivers.credential_proxy, losing protected Git.";
 
   constructor() {
     super(CredentialProxyRepositoryOnlyError.description);
@@ -594,14 +595,15 @@ export class CredentialProxyRepositoryOnlyError extends ResourceStateConflictErr
 }
 
 /**
- * Finding 2360: a protected revision admits only credential sources admitted for live reads,
- * and beside repository Git only the Agent's Gateway Harness source. Deploy refused any other
+ * Finding 2360: a protected revision admits only credential sources the Proxy admitted
+ * (created or adopted while it is selected), and beside repository Git only the Agent's ready
+ * Gateway Harness source. Deploy refused any other
  * binding, such as a Gateway source registered before the Proxy was selected, as a bare 404;
  * the caller already holds deploy on the Agent, whose bindings it can read.
  */
 export class CredentialSourceUnprotectedError extends ResourceStateConflictError {
   static readonly description =
-    "With drivers.credential_proxy selected, a revision can use only credential sources admitted for live reads, and beside repository Git its Gateway Harness source. Bind a source created or adopted for live reads, then deploy again.";
+    "With drivers.credential_proxy selected, a revision can use only credential sources created or adopted under the Proxy, and beside repository Git its ready Gateway Harness source. Replace the other bindings, then deploy again.";
 
   constructor() {
     super(CredentialSourceUnprotectedError.description);

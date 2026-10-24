@@ -38,6 +38,25 @@ import {
 } from "./openshell-exchange-capabilities.ts";
 import { openAiStaticProvider } from "./openai-provider.ts";
 
+/** Whether `registration` is a registered supervisor middleware advertising no execution capability. */
+function registeredWithoutExecution(extensions: unknown, registration: string): boolean {
+  return (
+    Array.isArray(extensions) &&
+    extensions.some((value) => {
+      const item = asRecord(value);
+      return (
+        item?.configured_name === registration &&
+        (item.kind === "EXTENSION_KIND_SUPERVISOR_MIDDLEWARE" || item.kind === 4) &&
+        item.protocol_major === 1 &&
+        ![item.required_capabilities, item.supported_capabilities].some(
+          (list) =>
+            Array.isArray(list) && list.some((entry) => capabilities.includes(entry as string)),
+        )
+      );
+    })
+  );
+}
+
 export interface OpenShellProxyOptions {
   readonly middlewareName: string;
   readonly repositoryMiddlewareName?: string;
@@ -341,29 +360,29 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
         const extensions = info.extensions;
         const git = profile === "repository_git" || profile === "github_installation";
         const registration = git ? options.repositoryMiddlewareName : options.middlewareName;
-        const registered = (execution: boolean) =>
-          Array.isArray(extensions) &&
-          extensions.some((value) => {
+        if (
+          !registration ||
+          !Array.isArray(extensions) ||
+          !extensions.some((value) => {
             const item = asRecord(value);
             return (
-              item !== undefined &&
-              item.configured_name === registration &&
+              item?.configured_name === registration &&
               (item.kind === "EXTENSION_KIND_SUPERVISOR_MIDDLEWARE" || item.kind === 4) &&
               item.protocol_major === 1 &&
-              (!execution ||
+              (git ||
                 (advertisesOpenShellExecutionProfile(item.required_capabilities) &&
                   advertisesOpenShellExecutionProfile(item.supported_capabilities)))
             );
-          });
-        if (!registration || !registered(!git)) {
+          })
+        ) {
           // Finding 2360: repository.openShell makes the request-phase Git service the only
-          // registration. Registered without the execution profile, it is a configuration that
-          // never serves a model source or an Agent without Git, not an outage.
+          // registration. Registered with no execution capability at all, it is a configuration
+          // that never serves a non-Git profile, not an outage or a partial negotiation.
           if (
             !git &&
-            registration &&
             registration === options.repositoryMiddlewareName &&
-            registered(false)
+            registration !== undefined &&
+            registeredWithoutExecution(extensions, registration)
           ) {
             throw new CredentialProxyRepositoryOnlyError();
           }

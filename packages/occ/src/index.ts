@@ -1302,6 +1302,9 @@ function provisioningFailureMessage(code: string, error: unknown): string {
   if (code === "PROVISIONING_REJECTED") {
     if (
       (error instanceof ResourceStateConflictError && error.message === AGENT_NAME_CONFLICT) ||
+      // Fixed, id-free text naming the Credential Proxy refusal (finding 2360).
+      error instanceof CredentialProxyRepositoryOnlyError ||
+      error instanceof CredentialSourceUnprotectedError ||
       error instanceof ComputeGatewaySettingError ||
       error instanceof ComputeProvisioningRefusedError ||
       // Fixed, id-free text that names the fix (save replacement Secrets, submit a new request).

@@ -586,7 +586,7 @@ export function createWorkerRevisionFixtures(
             );
           await assert.rejects(
             plan({ ...auth, sourceId: "unselected" }),
-            /admitted for live reads/,
+            /created or adopted under the Proxy/,
           );
           const egressPlan = await plan(auth);
           assert.deepEqual(egressPlan.harnessCredentialSource, auth);

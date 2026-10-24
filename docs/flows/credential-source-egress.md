@@ -69,12 +69,11 @@ Compute validates admission for OCC and rechecks it with the worker before launc
 PostgreSQL rejects unknown decisions and mixed v2/v3 fields. Older workers refuse v3;
 upgrade all writers before admitting it. Qualify release and installed deny-all behavior.
 
-Deploy refuses Git that cannot start: no delivery profile in `admitProxyPlan`
-(409 `REPOSITORY_GIT_PROFILE_UNSUPPORTED`), bundled OpenShell `git-write` in
+Deploy refuses with 409 what cannot start: Git without a delivery profile in `admitProxyPlan`
+(`REPOSITORY_GIT_PROFILE_UNSUPPORTED`), bundled `git-write` in
 `apps/controller/src/drivers/egress-proxy/openshell.ts:assertRepositoryGitProfileAvailable`
-(409 `REPOSITORY_GIT_SENDER_UNQUALIFIED`). Bundled preparation repeats both, failing older `git-write` revisions.
-`admitProxyPlan` refuses non-live bindings, except Git's Harness source, with 409; the Git-only
-`repository.openShell` Proxy refuses sources and Agents without Git by name.
+(`REPOSITORY_GIT_SENDER_UNQUALIFIED`), bindings the Proxy did not admit, and Agents without
+Git on a Git-only Proxy. Preparation repeats both Git refusals.
 
 Compute passes Credential Proxy wiring to Sandbox provisioning. Protected sources
 require admission, API-key login, an exact plan source-key match and no Gateway
@@ -309,13 +308,13 @@ None.
 
 - 2026-10-22: Streamline flow; preserve authority and recovery boundaries.
 
-- 2026-10-22 04:16: Enforce delivery settlement policy, operation fences and retained detach confirmation. (authoring-run/bcd1284f-0d04-4fc7-92e1-b4d5ac1eeb7f - 1544403a30a747898deaf3cf0935094b7812390d)
+- 2026-10-22 04:16: Enforce delivery settlement policy, operation fences and retained detach confirmation in the accompanying changes. (authoring-run/bcd1284f-0d04-4fc7-92e1-b4d5ac1eeb7f - 1544403a30a747898deaf3cf0935094b7812390d)
 
 - 2026-10-22 01:51: Describe final withdrawal and delivery custody in the accompanying schema consolidation. (authoring-run/c692ffd7-9ade-4cb3-80b7-cd02340e0537 - fe6b0002a5bf41e6e418df9848337b285ce53199)
 
 - 2026-10-21 23:40: Describe versioned policy reduction, durable operation recovery and the reference-peer proof boundary. (authoring-run/3e4e8e77-728c-435a-90e9-fe6c9758551c - d8a5a9c77963836fbe54f1dc28f2f8a0c01c5622)
 
-- 2026-10-21 22:39: Explain conditional recovery of rejected prepared material and its classification limit. (authoring-run/8ffbb140-b3c1-48de-ac47-8e2450bae002 - df297cd59e8de130e9eb0599e67f47fa6d85079e)
+- 2026-10-21 22:39: Explain conditional recovery of rejected prepared material and its classification limit in the accompanying change. (authoring-run/8ffbb140-b3c1-48de-ac47-8e2450bae002 - df297cd59e8de130e9eb0599e67f47fa6d85079e)
 
 - 2026-10-16 22:49: Preserve Credential Proxy ownership when deriving Harness authentication environment. (authoring-run/bf50675b-2b74-4724-aeaf-8daecd2a5a29 - 6e302a4851b20191990bcb83d20b045a1462257a)
 
@@ -337,7 +336,7 @@ None.
 
 - 2026-10-14 21:54: Join durable sender receipts to the authority, separate response observations from supplier proof, and fence positive rejection atomically. (authoring-run/c11e8dcb-9e87-4682-b47e-e8640a65706d - fc20eb0174eaf8ae9d4ccb327ec65236c49ef4fb)
 
-- 2026-10-14 21:15: Bind protected provider enrollment to a dedicated admitted-revision literal. (authoring-run/a26c0140-0882-40ec-949d-c5fc6eecd0da - 765f1ef22aeba3e98c58a739700c9a0ffba14af4)
+- 2026-10-14 21:15: Bind protected provider enrollment to a dedicated admitted-revision literal in the accompanying source fix. (authoring-run/a26c0140-0882-40ec-949d-c5fc6eecd0da - 765f1ef22aeba3e98c58a739700c9a0ffba14af4)
 
 - 2026-10-14 14:11: Consume current instance-fenced evidence, finite replay identity and selected Responses HTTP/SSE profile. (01a13a97-c578-77a2-81a7-7366f1380110 - e42cb1674fadaf14ba3d61a4164d1ad3fde9935c)
 
