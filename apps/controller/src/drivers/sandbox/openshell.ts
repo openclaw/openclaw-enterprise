@@ -1568,6 +1568,15 @@ async function cleanupNativeWorkspace(
   }
 }
 
+/** The ServiceAccounts operator mode applies; native workspace preparation runs as at most one. */
+function sandboxServiceAccounts(
+  options: OpenShellSandboxDriverOptions,
+): readonly KubernetesNamespacedResource[] {
+  return (options.gateway.operatorWorkspaceResources ?? []).filter(
+    (resource) => resource.kind === "ServiceAccount",
+  );
+}
+
 // TODO(openshell-private-subpath-preparation): Remove if OpenShell adds support for preparing private subpaths
 // and OCE adopts that support.
 // Use existing Deployment permissions; never grant OCC direct Pod creation for this.
@@ -1604,9 +1613,7 @@ async function prepareNativeWorkspace(
   if (uid < 1 || gid < 1) {
     throw new OpenShellSandboxConfigurationFailure("Workspace preparation requires non-root IDs.");
   }
-  const accounts = (options.gateway.operatorWorkspaceResources ?? []).filter(
-    (resource) => resource.kind === "ServiceAccount",
-  );
+  const accounts = sandboxServiceAccounts(options);
   if (accounts.length > 1) {
     throw new OpenShellSandboxConfigurationFailure(
       "OpenShell workspace requires one Sandbox ServiceAccount.",
@@ -2795,10 +2802,15 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         "OpenShell SandboxDriver does not support the selected Harness runtime.",
       );
     }
-    // prepareNativeWorkspace refuses this only after a deploy has stopped its predecessors.
+    // prepareNativeWorkspace refuses these only after a deploy has stopped its predecessors.
     if (harness.id === "openclaw" && this.options.kubernetes.userNamespaces !== false) {
       throw new ConfigurationHarnessError(
         "Dedicated OpenClaw needs kubernetes.userNamespaces: false in the OpenShell Sandbox Driver configuration. Select Codex, or ask an operator to set it.",
+      );
+    }
+    if (harness.id === "openclaw" && sandboxServiceAccounts(this.options).length > 1) {
+      throw new ConfigurationHarnessError(
+        "Dedicated OpenClaw needs at most one ServiceAccount in gateway.operatorWorkspaceResources of the OpenShell Sandbox Driver configuration. Select Codex, or ask an operator to remove the others.",
       );
     }
     const agents = optionalAgentConfiguration(

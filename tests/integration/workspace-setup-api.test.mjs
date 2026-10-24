@@ -316,6 +316,7 @@ test("Agent save refuses initial workspace files in a Sandbox with a 409 that na
       return OpenShellSandboxDriver.prototype.configureAgent.call(
         {
           options: {
+            gateway: {},
             kubernetes: { userNamespaces: false, sandboxDataMount: { mountPath: "/sandbox/data" } },
           },
         },
@@ -361,9 +362,9 @@ test("Agent save refuses initial workspace files in a Sandbox with a 409 that na
   );
 });
 
-/** A real OpenShell Sandbox Driver whose Kubernetes settings `kubernetes` overrides; an
- * undefined value removes the setting. */
-function openShellSandbox(t, overrides = {}) {
+/** A real OpenShell Sandbox Driver whose Kubernetes settings `overrides` overrides (an
+ * undefined value removes the setting), with extra `gateway` settings. */
+function openShellSandbox(t, overrides = {}, gateway = {}) {
   const kubernetes = {
     runtimeClassName: "openshell-sandbox",
     // Native OpenClaw workspace preparation requires it.
@@ -391,7 +392,7 @@ function openShellSandbox(t, overrides = {}) {
   t.after(() => backend.client.close());
   const sandboxDriver = new OpenShellSandboxDriver(
     {
-      gateway: { workspaceMode: "operator" },
+      gateway: { workspaceMode: "operator", ...gateway },
       kubernetes,
       policy: {
         process: { runAsUser: "1000", runAsGroup: "1000" },
@@ -455,22 +456,49 @@ test("Agent create admits private workspace files through the OpenShell initiali
   }
 });
 
-// Native OpenClaw's workspace preparation needs userNamespaces: false and runs only after a
-// deploy has stopped its predecessors, so Agent save refuses the pair first (finding 2334).
-test("Agent create refuses dedicated OpenClaw on OpenShell unless user namespaces are off", async (t) => {
-  for (const kubernetes of [{ userNamespaces: undefined }, { userNamespaces: true }]) {
-    const f = await setup(t, openShellSandbox(t, kubernetes));
+// Native OpenClaw's workspace preparation needs userNamespaces: false and at most one operator
+// ServiceAccount, and runs only after a deploy has stopped its predecessors, so Agent save refuses
+// those settings first and the Installation stops offering dedicated OpenClaw (findings 2334,
+// 2346, 2347).
+test("Agent create refuses dedicated OpenClaw on OpenShell settings its workspace preparation refuses", async (t) => {
+  const userNamespaces =
+    "Dedicated OpenClaw needs kubernetes.userNamespaces: false in the OpenShell Sandbox Driver configuration. Select Codex, or ask an operator to set it.";
+  const serviceAccounts = ["a", "b"].map((name) => ({
+    apiVersion: "v1",
+    kind: "ServiceAccount",
+    metadata: { name },
+  }));
+  for (const [kubernetes, gateway, message] of [
+    [{ userNamespaces: undefined }, {}, userNamespaces],
+    [{ userNamespaces: true }, {}, userNamespaces],
+    [
+      {},
+      { operatorWorkspaceResources: serviceAccounts },
+      "Dedicated OpenClaw needs at most one ServiceAccount in gateway.operatorWorkspaceResources of the OpenShell Sandbox Driver configuration. Select Codex, or ask an operator to remove the others.",
+    ],
+    // Control: the shape workspace preparation accepts.
+    [{}, { operatorWorkspaceResources: serviceAccounts.slice(0, 1) }],
+  ]) {
+    const f = await setup(t, openShellSandbox(t, kubernetes, gateway));
+    const installation = await f.request("GET", "/installation");
+    assert.equal(installation.status, 200, JSON.stringify(installation.body));
+    // Create Agent offers only the modes admission accepts.
+    assert.deepEqual(
+      installation.data.capabilities.openclaw.executionModes,
+      message === undefined ? ["dedicated"] : [],
+    );
     const openclaw = await storeConfiguration(f, "openclaw", "openai/gpt-4.1");
     const refused = await f.create("OpenShell openclaw", {
       configurationId: openclaw.data.id,
       executionMode: "dedicated",
     });
+    if (message === undefined) {
+      assert.equal(refused.status, 201, JSON.stringify(refused.body));
+      continue;
+    }
     assert.equal(refused.status, 400, JSON.stringify(refused.body));
     assert.equal(refused.body.error.code, "INVALID_REQUEST");
-    assert.equal(
-      refused.body.error.message,
-      "Dedicated OpenClaw needs kubernetes.userNamespaces: false in the OpenShell Sandbox Driver configuration. Select Codex, or ask an operator to set it.",
-    );
+    assert.equal(refused.body.error.message, message);
     assert.equal(
       (await f.request("GET", f.path)).data.some(({ name }) => name === "OpenShell openclaw"),
       false,
