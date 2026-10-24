@@ -496,6 +496,26 @@ test("sandbox ingress uses a separate listener outside OCE cookie scope", toolin
     render({ ...sandboxValues, "gatewayRouting.sandbox.listenerPort": "10443" }),
     /distinct from private Envoy HTTPS/,
   );
+  // The public listener binds in the unprivileged Envoy container.
+  await assert.rejects(
+    render({ ...sandboxValues, "gatewayRouting.sandbox.listenerPort": "1023" }),
+    /gatewayRouting\.sandbox\.listenerPort must be an integer unprivileged port/,
+  );
+  const lowestListener = await resources(
+    (await render({ ...sandboxValues, "gatewayRouting.sandbox.listenerPort": "1024" })).stdout,
+  );
+  assert.equal(
+    lowestListener
+      .find((item) => item.kind === "Gateway")
+      .spec.listeners.find((item) => item.name === "sandbox").port,
+    1024,
+  );
+  // The sandbox route takes the port after the tenant Gateway port.
+  await assert.rejects(
+    render({ ...sandboxValues, "gatewayRouting.tenantGatewayPort": "65535" }),
+    /gatewayRouting\.tenantGatewayPort must leave room for the adjacent sandbox port/,
+  );
+  await render({ ...sandboxValues, "gatewayRouting.tenantGatewayPort": "65534" });
   // Dedicated Agent hostnames are agent-<32 hex>.<domain>, so the domain stops at 253 - 39.
   const longestLabel = "a".repeat(63);
   const longestDomain = [longestLabel, longestLabel, "a".repeat(22), longestLabel].join(".");
@@ -540,6 +560,22 @@ test("sandbox ingress uses a separate listener outside OCE cookie scope", toolin
     }),
     /sandbox requires gatewayRouting.enabled/,
   );
+});
+
+test("database and Kubernetes API egress refuse an empty host list", tooling, async (t) => {
+  // An empty list would render NetworkPolicies with no route to the database or API server.
+  const directory = await temporaryDirectory(t, "oce-empty-cidrs-");
+  for (const name of ["database", "cluster"]) {
+    const valuesFile = join(directory, `${name}.yaml`);
+    await writeFile(valuesFile, `${name}:\n  cidrs: []\n`);
+    await assert.rejects(
+      render({}, { valuesFiles: [valuesFile], omit: [`${name}.cidrs[0]`, `${name}.cidrs[1]`] }),
+      ({ code, stderr }) =>
+        code !== 0 &&
+        stderr.includes(`${name}.cidrs must contain at least one explicit IPv4 /32 host`),
+      name,
+    );
+  }
 });
 
 test(
@@ -1714,10 +1750,13 @@ test("Installation checksum rolls both control-plane Deployments", tooling, asyn
       checksum,
     );
   }
-  await assert.rejects(
-    render({ "controlPlane.installationChecksum": "not-a-checksum" }),
-    /must be an empty string or a lowercase SHA-256 digest/,
-  );
+  for (const invalid of ["not-a-checksum", "c".repeat(63), "c".repeat(65), "C".repeat(64)]) {
+    await assert.rejects(
+      render({ "controlPlane.installationChecksum": invalid }),
+      /must be an empty string or a lowercase SHA-256 digest/,
+      invalid,
+    );
+  }
 });
 
 test(
