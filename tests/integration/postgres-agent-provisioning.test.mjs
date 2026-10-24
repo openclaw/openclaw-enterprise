@@ -3169,6 +3169,7 @@ test(
           return OpenShellSandboxDriver.prototype.configureAgent.call(
             {
               options: {
+                gateway: {},
                 kubernetes: { userNamespaces, sandboxDataMount: { mountPath: "/sandbox/data" } },
               },
             },
