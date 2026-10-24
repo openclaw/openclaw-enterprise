@@ -86,9 +86,13 @@ linux_amd64_or_manual() {
 require_node() {
   need_command node
   node <<'NODE'
-const [major, minor] = process.versions.node.split(".").map(Number);
-if (major < 24 || (major === 24 && minor < 15)) {
-  throw new Error(`Node >=24.15 is required; found ${process.versions.node}.`);
+const [major, minor, patch] = process.versions.node.split(".").map(Number);
+if (
+  major < 24 ||
+  (major === 24 && (minor < 22 || (minor === 22 && patch < 1))) ||
+  (major === 26 && (minor < 12 || (minor === 12 && patch < 1)))
+) {
+  throw new Error(`Node >=24.22.1 (26.x >=26.12.1) is required; found ${process.versions.node}.`);
 }
 NODE
 }

@@ -54,7 +54,7 @@ startup is unsupported.
 export OCC_IMAGE_REGISTRY="${OCC_IMAGE_REGISTRY:-registry.example.com}"
 export OCC_IMAGE_REPOSITORY="${OCC_IMAGE_REPOSITORY:-$OCC_IMAGE_REGISTRY/your-team/openclaw-enterprise}"
 export OCC_IMAGE_PLATFORM="${OCC_IMAGE_PLATFORM:-linux/amd64}"
-export NODE_BASE_IMAGE='docker.io/library/node:24-bookworm@sha256:3d27e5c11e5786e309ec3e03f93ae536eb36e6e5eb3714d5eb3300a36157add0'
+export NODE_BASE_IMAGE='docker.io/library/node:24.22.1-bookworm@sha256:6449e19d8184d84062525b6a7524def03146c2cb04a7f08b076680d0e8e4240a'
 if unset CONTROLLER_IMAGE RUNTIME_IMAGE OCC_IMAGE_METADATA &&
   OCC_IMAGE_TAG="$(git rev-parse HEAD)" &&
   OCC_IMAGE_METADATA="$(mktemp -d)" &&
@@ -116,7 +116,7 @@ Kubernetes older than 1.35 is unsupported; the API and worker emit
 ### Recommended: generate profile configuration
 
 Choose `openclaw` or `codex` from the [profile options](installation-profiles.md#choose-a-profile).
-Generation requires Node.js 24+ on the operator host (and `pnpm install` with
+Generation requires Node.js 24.22.1+ on the operator host (and `pnpm install` with
 native admin). Manual YAML does not, but
 the later Agent transport-provisioning example does; without Node, provision
 transports in the console.

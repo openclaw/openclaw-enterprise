@@ -26,7 +26,7 @@ You need:
 - Kubernetes 1.35 or later, IPv4 connectivity, and a network plugin that enforces NetworkPolicies. You need permissions to create the control-plane namespace, RBAC, Secrets, and storage claims.
 - Envoy Gateway, Gateway API CRDs, cert-manager, and an existing Envoy GatewayClass. Complete the [workspace routing requirements](deploy/workspace-routing.md#requirements) before installing OCC; the OCC chart does not install these controllers.
 - Helm, a version-compatible `kubectl`, Python 3, `yq` v4, and the [OCC CLI](cli.md).
-- Bash for the image-selection and model-verification commands. Node.js 24 or newer
+- Bash for the image-selection and model-verification commands. Node.js 24.22.1 or newer
   for profile generation and the API transport-credential example. Manual YAML
   plus console transport provisioning avoids those Node commands.
 - Docker and Git to [select the latest published images](deploy/published-images.md)

@@ -117,7 +117,7 @@ export async function runPinnedClients(t, fixture, { signal = t.signal } = {}) {
       { env, cwd: directory, signal, ...options },
     );
   const version = await run("gh", ["--version"], { env, signal });
-  assert.match(version.stdout, /^gh version 2\.100\.0\b/);
+  assert.match(version.stdout, /^gh version 2\.103\.2\b/);
   return {
     directory,
     material,

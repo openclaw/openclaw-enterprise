@@ -7,7 +7,7 @@ credentials. To build or change a page, start with
 
 ## Run locally
 
-From the repository root, with Node.js 24+ and the pinned pnpm version:
+From the repository root, with Node.js 24.22.1+ and the pinned pnpm version:
 
 ```sh
 npm run storybook:install
