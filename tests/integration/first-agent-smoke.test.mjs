@@ -467,16 +467,20 @@ test("the smoke copies Local Setup's PostgreSQL pin, not another image", async (
 const pinnedPostgresId = `sha256:${"c".repeat(64)}`;
 
 // A fake engine and registry for publishPostgresImage. The registry serves
-// `manifest` under the digest the push records, unless `servedDigest` differs.
-function postgresCopyFixture({ config = pinnedPostgresId, manifestBody, servedDigest } = {}) {
+// `manifest` under the digest the push reports, unless `servedDigest` differs.
+function postgresCopyFixture({
+  config = pinnedPostgresId,
+  servedDigest,
+  status = 200,
+  driverStatus = '[["Backing Filesystem","extfs"]]',
+} = {}) {
   const manifest = Buffer.from(
-    manifestBody ??
-      JSON.stringify({
-        schemaVersion: 2,
-        mediaType: "application/vnd.docker.distribution.manifest.v2+json",
-        config: { digest: config },
-        layers: [],
-      }),
+    JSON.stringify({
+      schemaVersion: 2,
+      mediaType: "application/vnd.docker.distribution.manifest.v2+json",
+      config: { digest: config },
+      layers: [],
+    }),
   );
   const digest = servedDigest ?? `sha256:${createHash("sha256").update(manifest).digest("hex")}`;
   const commands = [];
@@ -493,22 +497,22 @@ function postgresCopyFixture({ config = pinnedPostgresId, manifestBody, servedDi
     runCommand: async (command, args) => {
       commands.push([command, ...args]);
       const joined = args.join(" ");
+      if (joined === "info --format {{json .DriverStatus}}") {
+        return { stdout: `${driverStatus}\n` };
+      }
       if (joined === `image inspect --format {{.Id}} ${postgresImage}`) {
         return { stdout: `${pinnedPostgresId}\n` };
       }
-      if (joined.startsWith("image inspect --format {{json .RepoDigests}} ")) {
+      if (joined.startsWith("push ")) {
         return {
-          stdout: JSON.stringify([
-            "postgres@sha256:" + "d".repeat(64),
-            `127.0.0.1:5000/oce-smoke/postgres@${digest}`,
-          ]),
+          stdout: `The push refers to repository [127.0.0.1:5000/oce-smoke/postgres]\n18.6: digest: ${digest} size: 3036\n`,
         };
       }
       return { stdout: "" };
     },
     fetchRegistry: async (url, init) => {
       fetches.push({ url, accept: init.headers.accept, redirect: init.redirect });
-      return new Response(manifest, { status: 200 });
+      return new Response(manifest, { status });
     },
   };
 }
@@ -519,18 +523,11 @@ test("the PostgreSQL copy pulls the pin and returns the loopback registry digest
   assert.equal(reference, `127.0.0.1:5000/oce-smoke/postgres@${fixture.digest}`);
   assert.deepEqual(fixture.pulls, [postgresImage]);
   assert.deepEqual(fixture.commands, [
+    ["docker", "info", "--format", "{{json .DriverStatus}}"],
     ["docker", "image", "inspect", "--format", "{{.Id}}", postgresImage],
     // Tagged by the verified image ID, never by a name that could resolve elsewhere.
     ["docker", "tag", pinnedPostgresId, "127.0.0.1:5000/oce-smoke/postgres:18.6"],
     ["docker", "push", "127.0.0.1:5000/oce-smoke/postgres:18.6"],
-    [
-      "docker",
-      "image",
-      "inspect",
-      "--format",
-      "{{json .RepoDigests}}",
-      "127.0.0.1:5000/oce-smoke/postgres:18.6",
-    ],
   ]);
   assert.deepEqual(fixture.fetches, [
     {
@@ -568,4 +565,33 @@ test("the PostgreSQL copy needs a loopback registry and touches nothing otherwis
     );
     assert.deepEqual([fixture.pulls, fixture.commands, fixture.fetches], [[], [], []], registry);
   }
+});
+
+test("the PostgreSQL copy refuses a registry that does not serve the pushed manifest", async () => {
+  const fixture = postgresCopyFixture({ status: 404 });
+  await assert.rejects(
+    publishPostgresImage({ registry: "127.0.0.1:5000", ...fixture }),
+    /registry manifest 127\.0\.0\.1:5000\/oce-smoke\/postgres@sha256:[a-f0-9]{64}: HTTP 404/,
+  );
+});
+
+test("the PostgreSQL copy needs the digest docker push reports", async () => {
+  const fixture = postgresCopyFixture();
+  const runCommand = fixture.runCommand;
+  fixture.runCommand = async (command, args) =>
+    args[0] === "push" ? { stdout: "pushed\n" } : runCommand(command, args);
+  await assert.rejects(
+    publishPostgresImage({ registry: "127.0.0.1:5000", ...fixture }),
+    /docker push reported no digest/,
+  );
+  assert.deepEqual(fixture.fetches, []);
+});
+
+test("with the containerd image store PostgreSQL keeps the archive path", async () => {
+  const fixture = postgresCopyFixture({
+    driverStatus: '[["driver-type","io.containerd.snapshotter.v1"]]',
+  });
+  assert.equal(await publishPostgresImage({ registry: "127.0.0.1:5000", ...fixture }), undefined);
+  assert.deepEqual(fixture.pulls, []);
+  assert.deepEqual(fixture.commands, [["docker", "info", "--format", "{{json .DriverStatus}}"]]);
 });

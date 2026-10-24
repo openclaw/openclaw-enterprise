@@ -328,8 +328,8 @@ async function pulledDigest(tag) {
   return recordedDigest(tag);
 }
 
-async function recordedDigest(tag, runCommand = run) {
-  const { stdout } = await runCommand("docker", [
+async function recordedDigest(tag) {
+  const { stdout } = await run("docker", [
     "image",
     "inspect",
     "--format",
@@ -357,41 +357,18 @@ async function pullExecFile(command, args, { timeoutMs }) {
   }
 }
 
-// Copy the pinned PostgreSQL image into the loopback registry, so the k3d node
-// pulls it by digest like the checkout's images, instead of Local Setup pulling
-// it from Docker Hub and exporting and importing it beside the cluster checks.
-// The engine verifies the pin when it pulls. Its push recompresses the layers,
-// so the registry digest differs from the pin, but the registry's manifest must
-// name the pinned image's config, which fixes every layer's uncompressed digest
-// (containerd checks them as it unpacks).
-export async function publishPostgresImage({
-  registry,
-  runCommand = run,
-  fetchRegistry = fetch,
-  pull = (image) => ensureImage(image, { execFile: pullExecFile }),
-}) {
-  assert.match(registry, /^127\.0\.0\.1:\d+$/, "the PostgreSQL copy needs a loopback registry");
-  await pull(postgresImage);
-  const id = (
-    await runCommand("docker", ["image", "inspect", "--format", "{{.Id}}", postgresImage])
-  ).stdout.trim();
-  assert.match(id, /^sha256:[a-f0-9]{64}$/, `no image ID for ${postgresImage}`);
-  const tag = `${registry}/oce-smoke/postgres:${/:([^:/@]+)@/.exec(postgresImage)[1]}`;
-  await runCommand("docker", ["tag", id, tag]);
-  await runCommand("docker", ["push", tag], { timeout: 10 * minute });
-  const reference = await recordedDigest(tag, runCommand);
-  const digest = reference.slice(reference.indexOf("@") + 1);
-  const response = await fetchRegistry(
-    `http://${registry}/v2/oce-smoke/postgres/manifests/${digest}`,
-    {
-      headers: {
-        accept:
-          "application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json",
-      },
-      redirect: "error",
-      signal: AbortSignal.timeout(30_000),
+// Fetch an image manifest from the loopback registry by digest and check its
+// bytes against that digest.
+export async function registryManifest({ registry, path, digest, fetchRegistry = fetch }) {
+  const reference = `${registry}/${path}@${digest}`;
+  const response = await fetchRegistry(`http://${registry}/v2/${path}/manifests/${digest}`, {
+    headers: {
+      accept:
+        "application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json",
     },
-  );
+    redirect: "error",
+    signal: AbortSignal.timeout(30_000),
+  });
   assert.ok(response.ok, `registry manifest ${reference}: HTTP ${response.status}`);
   const manifest = Buffer.from(await response.arrayBuffer());
   assert.equal(
@@ -399,8 +376,55 @@ export async function publishPostgresImage({
     digest,
     `the registry manifest does not match ${reference}`,
   );
+  return JSON.parse(manifest.toString("utf8"));
+}
+
+// Copy the pinned PostgreSQL image into the loopback registry, so the k3d node
+// pulls it by digest like the checkout's images, instead of Local Setup pulling
+// it from Docker Hub and exporting and importing it beside the cluster checks.
+// The engine verified the pin when it pulled the image. Its push recompresses
+// the layers, so the registry digest differs from the pin, but the registry's
+// manifest must name the pinned image's config, which fixes every layer's
+// uncompressed digest (containerd checks them as it unpacks). The engine's
+// containerd image store reports other IDs and pushes indexes, so there the
+// copy is skipped and PostgreSQL keeps the archive path.
+export async function publishPostgresImage({
+  registry,
+  runCommand = run,
+  fetchRegistry = fetch,
+  pull = (image) => ensureImage(image, { execFile: pullExecFile }),
+}) {
+  assert.match(registry, /^127\.0\.0\.1:\d+$/, "the PostgreSQL copy needs a loopback registry");
+  const { stdout: driverStatus } = await runCommand("docker", [
+    "info",
+    "--format",
+    "{{json .DriverStatus}}",
+  ]);
+  if (driverStatus.includes("io.containerd.snapshotter")) {
+    log("PostgreSQL keeps the archive path: the engine uses the containerd image store");
+    return undefined;
+  }
+  await pull(postgresImage);
+  const id = (
+    await runCommand("docker", ["image", "inspect", "--format", "{{.Id}}", postgresImage])
+  ).stdout.trim();
+  assert.match(id, /^sha256:[a-f0-9]{64}$/, `no image ID for ${postgresImage}`);
+  const tag = `${registry}/oce-smoke/postgres:${/:([^:/@]+)@/.exec(postgresImage)[1]}`;
+  await runCommand("docker", ["tag", id, tag]);
+  // This push's own digest: a long-lived engine keeps every digest it ever
+  // recorded for the image.
+  const { stdout } = await runCommand("docker", ["push", tag], { timeout: 10 * minute });
+  const digest = /: digest: (sha256:[a-f0-9]{64}) size: \d+/.exec(stdout)?.[1];
+  assert.ok(digest, `docker push reported no digest for ${tag}`);
+  const reference = `${registry}/oce-smoke/postgres@${digest}`;
+  const manifest = await registryManifest({
+    registry,
+    path: "oce-smoke/postgres",
+    digest,
+    fetchRegistry,
+  });
   assert.equal(
-    JSON.parse(manifest.toString("utf8")).config?.digest,
+    manifest.config?.digest,
     id,
     `the registry copy of PostgreSQL is not the pinned image: ${reference}`,
   );
@@ -496,7 +520,7 @@ async function buildImages({ preparedGit = false } = {}) {
       ? {}
       : {
           OCC_DEVELOPMENT_IMAGE_REGISTRY_CONTAINER: slotNames.registryContainer,
-          OCC_DEVELOPMENT_POSTGRES_IMAGE: postgres,
+          ...(postgres ? { OCC_DEVELOPMENT_POSTGRES_IMAGE: postgres } : {}),
         }),
     OCC_DEVELOPMENT_CONTROLLER_IMAGE: controller,
     OCC_KUBERNETES_RUNTIME_IMAGE: runtime,
