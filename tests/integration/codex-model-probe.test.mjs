@@ -68,6 +68,13 @@ if (args.includes("login")) {
   } else if (scenario === "rejected") {
     process.stdout.write(JSON.stringify({ type: "error", message: "probe-output-must-remain-private" }) + "\n");
     process.exitCode = 1;
+  } else if (scenario === "rejected-retrying") {
+    // The pinned Codex's notice before it resends a request the provider refused
+    // with 401; it then keeps retrying with backoff on each transport.
+    const message = "Reconnecting... 2/5 (unexpected status 401 Unauthorized: probe-output-must-remain-private, url: wss://api.openai.com/v1/responses)";
+    process.stdout.write([{ type: "thread.started" }, { type: "turn.started" }, { type: "error", message }]
+      .map(JSON.stringify).join("\n") + "\n");
+    setInterval(() => {}, 1000);
   } else if (scenario === "malformed") {
     process.stdout.write("probe-output-must-remain-private\n");
   } else {
@@ -323,6 +330,14 @@ test(
       { name: "timeout then success", input: "recover", attempts: 2, ready: true },
       { name: "two timeouts", input: "timeout", attempts: 2, code: "MODEL_PROBE_TIMEOUT" },
       { name: "credential rejection", input: "rejected", attempts: 1, code: "MODEL_PROBE_FAILED" },
+      // Codex retries a 401 inside its turn; its first notice ends the check.
+      {
+        name: "credential rejection while Codex retries",
+        input: "rejected-retrying",
+        attempts: 1,
+        code: "AUTHENTICATION_FAILED",
+        withinMs: 10000,
+      },
       // An outside kill is transient: it gets the one retry and, when that fails too,
       // holds the second attempt's cause marked as retried (finding 1576).
       { name: "external SIGKILL then success", input: "killed-once", attempts: 2, ready: true },
@@ -380,6 +395,9 @@ test(
             diagnostics.map((entry) => entry.attempt),
             scenario.attempts === 2 ? [1, 2] : [1],
           );
+          if (scenario.withinMs !== undefined) {
+            assert.ok(diagnostics[0].elapsedMs < scenario.withinMs, JSON.stringify(diagnostics));
+          }
           if (scenario.input === "timeout") {
             assert.ok(
               diagnostics.every((entry) => entry.elapsedMs >= 29000 && entry.elapsedMs < 32000),

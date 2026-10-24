@@ -1472,7 +1472,7 @@ test("provider Harness protected execution is released only on current signed in
             if (disabled) {
               assert.match(
                 codex,
-                /spawnSync\("codex", \[\s+"--disable", "unbounded_connection_retries",\s+\.\.\.disabled/,
+                /runCodexModelCheck\(\[\s+"--disable", "unbounded_connection_retries",\s+\.\.\.disabled/,
               );
               assert.match(codex, /"--disable", "unbounded_connection_retries",\s+"app-server",/);
             }
