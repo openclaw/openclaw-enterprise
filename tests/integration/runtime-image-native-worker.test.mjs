@@ -22,8 +22,9 @@ import {
   runGatewaySmoke,
 } from "../helpers/runtime-image-startup.mjs";
 
-// Each case starts its own container (random name, no published port) from its
-// own configuration directory, so the cases share no container, port, volume or
+// Each case starts its own randomly named container with no published port.
+// Only the first writes host files, into its own temporary directory; the others
+// pass their programs over stdin. The cases share no container, port, volume or
 // fixture state. Two run at a time.
 describe("runtime image native worker", { concurrency: 2 }, () => {
   test(
@@ -77,18 +78,18 @@ describe("runtime image native worker", { concurrency: 2 }, () => {
         ]),
       );
       const launch = String.raw`
-  const { mkdirSync, readFileSync, writeFileSync } = require("node:fs");
-  const { dirname, join } = require("node:path");
-  const { spawnSync } = require("node:child_process");
-  for (const [relative, content] of JSON.parse(readFileSync(0, "utf8"))) {
-    const target = join("/tmp/proof", relative);
-    mkdirSync(dirname(target), { recursive: true });
-    writeFileSync(target, content);
-  }
-  const child = spawnSync(process.execPath, ["--test", "/tmp/proof/tests/conformance/workspace-node-supervisor.test.mjs"], { stdio: "inherit" });
-  if (child.error) throw child.error;
-  process.exit(child.status ?? 1);
-  `;
+const { mkdirSync, readFileSync, writeFileSync } = require("node:fs");
+const { dirname, join } = require("node:path");
+const { spawnSync } = require("node:child_process");
+for (const [relative, content] of JSON.parse(readFileSync(0, "utf8"))) {
+  const target = join("/tmp/proof", relative);
+  mkdirSync(dirname(target), { recursive: true });
+  writeFileSync(target, content);
+}
+const child = spawnSync(process.execPath, ["--test", "/tmp/proof/tests/conformance/workspace-node-supervisor.test.mjs"], { stdio: "inherit" });
+if (child.error) throw child.error;
+process.exit(child.status ?? 1);
+`;
       const { stdout } = await runDocker(
         [
           "run",
@@ -151,79 +152,79 @@ describe("runtime image native worker", { concurrency: 2 }, () => {
       // Exercise both production launchers against the selected native image. No
       // model or Slack credentials are provided, and the container has no network.
       const launch = String.raw`
-  const assert = require("node:assert/strict");
-  const fs = require("node:fs");
-  const cp = require("node:child_process");
-  const entrypoints = JSON.parse(fs.readFileSync(0, "utf8"));
-  const manifest = { kind: "openclaw", selections: {}, pluginApprovers: [] };
-  const base = {
-    gateway: { mode: "local", bind: "loopback", controlUi: { enabled: false },
-      auth: { mode: "token", token: "synthetic-approver-startup-token" } },
-    logging: { consoleLevel: "error" },
-  };
-  const schemaResult = cp.spawnSync("node", ["/app/openclaw.mjs", "config", "schema", "--json"], { encoding: "utf8", timeout: 30000, maxBuffer: 8 * 1024 * 1024 });
-  assert.equal(schemaResult.status, 0, schemaResult.stderr);
-  const supportsSlackApprovers = JSON.parse(schemaResult.stdout).properties?.approvals?.properties?.plugin?.properties?.slack !== undefined;
-  async function scenario(entrypoint, channel, label) {
-    const directory = fs.mkdtempSync("/tmp/oce-approver-startup-");
-    const config = { ...base, ...(channel === undefined ? {} : { channels: { slack: channel } }) };
-    const configPath = directory + "/base.json";
-    fs.writeFileSync(configPath, JSON.stringify(config));
-    const environment = { ...process.env, HOME: "/home/node", OPENCLAW_CONFIG_PATH: configPath,
-      OPENCLAW_STATE_DIR: directory, OPENCLAW_CONFIG_JSON: JSON.stringify(config),
-      OPENCLAW_PLUGIN_RUNTIME_JSON: JSON.stringify({ manifest }), OPENCLAW_GATEWAY_PORT: "18789",
-      OPENCLAW_RUNTIME_STATUS_PORT: "18888", OPENCLAW_RUNTIME_STATUS_CONTAINER: "gateway",
-      OPENCLAW_AGENT_REVISION_ID: "rev_approver-startup", OPENCLAW_POD_UID: "pod_approver-startup" };
-    const child = cp.spawn("node", ["-e", ...entrypoint], { env: environment, stdio: ["ignore", "pipe", "pipe"] });
-    let output = "";
-    child.stdout.on("data", value => { output += value; });
-    child.stderr.on("data", value => { output += value; });
-    const exited = new Promise(resolve => child.once("exit", resolve));
-    const deadline = Date.now() + 45000;
-    const incompatible = channel?.enabled !== false && channel !== undefined && !supportsSlackApprovers;
-    try {
-      let observed = false;
-      while (Date.now() < deadline) {
-        if (child.exitCode !== null) throw new Error(label + " exited before readiness: " + output);
-        if (incompatible) {
-          observed = output.includes("cannot validate approvals.plugin.slack");
-        } else {
-          try { observed = (await fetch("http://127.0.0.1:18789/healthz", { signal: AbortSignal.timeout(1000) })).ok; } catch {}
-        }
-        if (observed) break;
-        await new Promise(resolve => setTimeout(resolve, 100));
-      }
-      assert.ok(observed, label + " did not report its expected startup outcome: " + output);
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const cp = require("node:child_process");
+const entrypoints = JSON.parse(fs.readFileSync(0, "utf8"));
+const manifest = { kind: "openclaw", selections: {}, pluginApprovers: [] };
+const base = {
+  gateway: { mode: "local", bind: "loopback", controlUi: { enabled: false },
+    auth: { mode: "token", token: "synthetic-approver-startup-token" } },
+  logging: { consoleLevel: "error" },
+};
+const schemaResult = cp.spawnSync("node", ["/app/openclaw.mjs", "config", "schema", "--json"], { encoding: "utf8", timeout: 30000, maxBuffer: 8 * 1024 * 1024 });
+assert.equal(schemaResult.status, 0, schemaResult.stderr);
+const supportsSlackApprovers = JSON.parse(schemaResult.stdout).properties?.approvals?.properties?.plugin?.properties?.slack !== undefined;
+async function scenario(entrypoint, channel, label) {
+  const directory = fs.mkdtempSync("/tmp/oce-approver-startup-");
+  const config = { ...base, ...(channel === undefined ? {} : { channels: { slack: channel } }) };
+  const configPath = directory + "/base.json";
+  fs.writeFileSync(configPath, JSON.stringify(config));
+  const environment = { ...process.env, HOME: "/home/node", OPENCLAW_CONFIG_PATH: configPath,
+    OPENCLAW_STATE_DIR: directory, OPENCLAW_CONFIG_JSON: JSON.stringify(config),
+    OPENCLAW_PLUGIN_RUNTIME_JSON: JSON.stringify({ manifest }), OPENCLAW_GATEWAY_PORT: "18789",
+    OPENCLAW_RUNTIME_STATUS_PORT: "18888", OPENCLAW_RUNTIME_STATUS_CONTAINER: "gateway",
+    OPENCLAW_AGENT_REVISION_ID: "rev_approver-startup", OPENCLAW_POD_UID: "pod_approver-startup" };
+  const child = cp.spawn("node", ["-e", ...entrypoint], { env: environment, stdio: ["ignore", "pipe", "pipe"] });
+  let output = "";
+  child.stdout.on("data", value => { output += value; });
+  child.stderr.on("data", value => { output += value; });
+  const exited = new Promise(resolve => child.once("exit", resolve));
+  const deadline = Date.now() + 45000;
+  const incompatible = channel?.enabled !== false && channel !== undefined && !supportsSlackApprovers;
+  try {
+    let observed = false;
+    while (Date.now() < deadline) {
+      if (child.exitCode !== null) throw new Error(label + " exited before readiness: " + output);
       if (incompatible) {
-        assert.equal(fs.existsSync(directory + "/openclaw.json"), false, "Rejected policy must not replace the native config");
-        assert.deepEqual(JSON.parse(fs.readFileSync(configPath, "utf8")), config);
-        await assert.rejects(fetch("http://127.0.0.1:18789/healthz", { signal: AbortSignal.timeout(1000) }));
-        if (label.startsWith("kubernetes")) {
-          const status = await (await fetch("http://127.0.0.1:18888/openclaw/runtime/status")).json();
-          assert.equal(status.runtimeFailure.check, "plugin-approvers");
-          assert.equal(status.runtimeFailure.code, "INCOMPATIBLE_RESPONSE");
-        }
+        observed = output.includes("cannot validate approvals.plugin.slack");
       } else {
-        const effective = JSON.parse(fs.readFileSync(directory + "/openclaw.json", "utf8"));
-        assert.deepEqual(effective.approvals?.plugin?.slack, channel === undefined || channel.enabled === false ? undefined : { approvers: [] });
+        try { observed = (await fetch("http://127.0.0.1:18789/healthz", { signal: AbortSignal.timeout(1000) })).ok; } catch {}
       }
-      assert.deepEqual(manifest.pluginApprovers, []);
-      assert.equal(fs.readdirSync("/tmp").some(name => name.startsWith("oce-plugin-approvers-")), false, "Capability probe must clean up its private config");
-    } finally {
-      child.kill("SIGTERM");
-      await exited;
-      fs.rmSync(directory, { recursive: true, force: true });
+      if (observed) break;
+      await new Promise(resolve => setTimeout(resolve, 100));
     }
+    assert.ok(observed, label + " did not report its expected startup outcome: " + output);
+    if (incompatible) {
+      assert.equal(fs.existsSync(directory + "/openclaw.json"), false, "Rejected policy must not replace the native config");
+      assert.deepEqual(JSON.parse(fs.readFileSync(configPath, "utf8")), config);
+      await assert.rejects(fetch("http://127.0.0.1:18789/healthz", { signal: AbortSignal.timeout(1000) }));
+      if (label.startsWith("kubernetes")) {
+        const status = await (await fetch("http://127.0.0.1:18888/openclaw/runtime/status")).json();
+        assert.equal(status.runtimeFailure.check, "plugin-approvers");
+        assert.equal(status.runtimeFailure.code, "INCOMPATIBLE_RESPONSE");
+      }
+    } else {
+      const effective = JSON.parse(fs.readFileSync(directory + "/openclaw.json", "utf8"));
+      assert.deepEqual(effective.approvals?.plugin?.slack, channel === undefined || channel.enabled === false ? undefined : { approvers: [] });
+    }
+    assert.deepEqual(manifest.pluginApprovers, []);
+    assert.equal(fs.readdirSync("/tmp").some(name => name.startsWith("oce-plugin-approvers-")), false, "Capability probe must clean up its private config");
+  } finally {
+    child.kill("SIGTERM");
+    await exited;
+    fs.rmSync(directory, { recursive: true, force: true });
   }
-  (async () => {
-    for (const [label, entrypoint] of Object.entries(entrypoints)) {
-      await scenario(entrypoint, undefined, label + " absent");
-      await scenario(entrypoint, { enabled: false }, label + " disabled");
-      await scenario(entrypoint, { enabled: true }, label + " configured");
-    }
-    console.log("PLUGIN_APPROVER_STARTUP_PASSED");
-  })().catch(error => { console.error(error); process.exitCode = 1; });
-  `;
+}
+(async () => {
+  for (const [label, entrypoint] of Object.entries(entrypoints)) {
+    await scenario(entrypoint, undefined, label + " absent");
+    await scenario(entrypoint, { enabled: false }, label + " disabled");
+    await scenario(entrypoint, { enabled: true }, label + " configured");
+  }
+  console.log("PLUGIN_APPROVER_STARTUP_PASSED");
+})().catch(error => { console.error(error); process.exitCode = 1; });
+`;
       const { stdout } = await runDocker(
         [
           "run",
