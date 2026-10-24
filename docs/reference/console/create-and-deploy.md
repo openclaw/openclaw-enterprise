@@ -151,7 +151,8 @@ provider acceptance or runtime readiness. See
 
 Successful draft saves retain IDs and freeze inputs, including authentication.
 Correct names or permissions, then retry failed resources.
-If model/Slack Secret grants fail after Agent creation,
+Creation grants the Agent `operate` on its model Secret or Credential Source and each bound Configuration Secret.
+If credential grants fail after Agent creation,
 select **Retry credential access** or ask an administrator to check its grants.
 The same action is safe if the Console saved the Agent but could not confirm its service
 principal. It checks the saved Agent before granting access, without creating another Agent.

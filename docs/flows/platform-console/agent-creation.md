@@ -1,7 +1,7 @@
 ---
 created: 2026-10-20
 updated: 2026-10-20
-last_updated_session: fix-1020c
+last_updated_session: authoring-run/763e9c69-84db-4150-9937-6713ed931906
 ---
 
 # Console Agent creation
@@ -87,9 +87,9 @@ access, and Secret references to [provisioning](../agent-provisioning.md), even 
 a `503 REPOSITORY_OPTIONS_UNAVAILABLE` outage. The worker reauthorizes, creates resources and exact Secret grants,
 and deploys; Console polls and opens the saved version.
 
-`create.mts:renderAgentForm` checks draft values and plugins with
-`POST /namespaces/:namespaceId/agents/validate`, then posts
-`{kind: "agent", values, secretBindings}` to `.../configurations` and submits its ID,
+Ordinary drafts in `create.mts:renderAgentForm` first check values and plugins with
+`POST /namespaces/:namespaceId/agents/validate`, then post
+`{kind: "agent", values, secretBindings}` to `.../configurations` and submit its ID,
 plugins, `initialWorkspaceFiles`, and `workspaceDefaultsId` to `.../agents`.
 Console checks the returned Secret name and Namespace, the Configuration values and bindings
 it sent, and the Agent name, Namespace and Configuration. Before granting credential access it
@@ -106,8 +106,10 @@ Agent/Configuration for [workspace setup](../workspace-files.md).
 
 ### 5. Grant Secret access and edit authentication
 
-`create.mts:grantConfigurationSecretAccess` grants exact Secret `operate` for final
-same-Namespace `env` bindings. Failure retains the Agent; **Retry credential access**
+`create.mts:grantConfigurationSecretAccess` deduplicates same-Namespace `env` Secret
+sources in the saved Configuration and grants exact `operate` through
+`agents/credential-access.mts:ensureCredentialOperateBinding`.
+Failure retains the Agent; **Retry credential access**
 rereads grants without duplication. Grants are Installation administration: a session
 whose `/observability` probe was refused sends no IAM request and names the administrator
 step, and a member's refused grant offers no retry. After a refused Installation read, a
@@ -141,4 +143,5 @@ Switching methods hides that feedback without changing the lookup or saved choic
 ## Changelog
 
 - 2026-10-22 10:56: Confirm creation responses before granting access or continuing provisioning. (console-create-delivery-20261022 - eef3442ff)
+- 2026-10-20 12:09: Trace saved Configuration Secret grants through the shared credential helper. (authoring-run/763e9c69-84db-4150-9937-6713ed931906 - 81ce5d06aebbf935b150cab6afb2227a320fb20f)
 - 2026-10-20 05:00: Split from the platform console flow's step 3. (docs-split-1020)

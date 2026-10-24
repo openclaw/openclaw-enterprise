@@ -671,6 +671,9 @@ export function installFixture(scenario, evidence) {
   if (scenario.presetAgent) {
     Object.assign(preset.template.agent, structuredClone(scenario.presetAgent));
   }
+  if (scenario.presetSecretBindings) {
+    preset.template.configuration.secretBindings = structuredClone(scenario.presetSecretBindings);
+  }
   if (scenario.presetWorkspaceFiles) {
     preset.template.agent.initialWorkspaceFiles = structuredClone(scenario.presetWorkspaceFiles);
   }

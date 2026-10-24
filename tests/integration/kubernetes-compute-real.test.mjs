@@ -260,7 +260,10 @@ test(
         },
         ...(payload === undefined ? {} : { payload }),
       });
-      return { status: response.statusCode, ...response.json() };
+      return {
+        status: response.statusCode,
+        ...(response.statusCode === 204 ? {} : response.json()),
+      };
     }
 
     async function startWorker({ convergenceTimeoutMs } = {}) {
@@ -374,19 +377,79 @@ test(
       "the real worker must recover explicit namespace selection from PostgreSQL",
     );
 
-    async function grantSecretOperate(namespaceId, servicePrincipalId, secretId, label) {
+    async function grantSecretOperate(
+      namespaceId,
+      servicePrincipalId,
+      secretId,
+      label,
+      { proveDeniedWrite = false } = {},
+    ) {
       const role = await request("POST", `/namespaces/${namespaceId}/iam/roles`, {
         name: `${label} Secret operate ${randomUUID()}`,
         permissions: [{ action: "operate", resourceKind: "secret" }],
       });
       assert.equal(role.status, 201, JSON.stringify(role.error));
-      const binding = await request("POST", `/namespaces/${namespaceId}/iam/access-bindings`, {
+      const payload = {
         subjectKind: "identity",
         subjectId: servicePrincipalId,
         roleId: role.data.id,
         resourceKind: "secret",
         resourceId: secretId,
-      });
+      };
+      if (proveDeniedWrite) {
+        // Provision an ordinary Installation reader with no policy authority. The
+        // migrator seeds only its existing Role; every account and grant request
+        // then uses the supported API with the restricted application database role.
+        const readerRoleId = `role-${randomUUID()}`;
+        const migrationUrl = new URL(databaseUrl);
+        migrationUrl.username = "occ_migrator";
+        migrationUrl.password = "occ-migrator-local";
+        const migrator = new pg.Pool({ connectionString: migrationUrl.toString() });
+        try {
+          await migrator.query(
+            "INSERT INTO occ.iam_roles (id, name, permissions) VALUES ($1, $2, $3::jsonb)",
+            [
+              readerRoleId,
+              "Grant-denial Installation reader",
+              JSON.stringify([{ action: "read", resourceKind: "installation" }]),
+            ],
+          );
+        } finally {
+          await migrator.end();
+        }
+        const credentials = {
+          email: `grant-reader-${randomUUID()}@example.test`,
+          password: `fixture-password-${randomUUID()}`,
+        };
+        const account = await request("POST", "/api/auth/accounts", {
+          ...credentials,
+          roleId: readerRoleId,
+        });
+        assert.equal(account.status, 201, JSON.stringify(account.error));
+        const readerSession = await signInToControllerApp(app, credentials);
+        const denied = await request(
+          "POST",
+          `/namespaces/${namespaceId}/iam/access-bindings`,
+          payload,
+          { session: readerSession },
+        );
+        assert.equal(denied.status, 403, JSON.stringify(denied.error));
+        const persisted = await observerPool.query(
+          `SELECT count(*)::integer AS count FROM occ.iam_access_bindings
+           WHERE namespace_id = $1 AND identity_subject_id = $2
+             AND resource_kind = 'secret' AND resource_id = $3`,
+          [namespaceId, servicePrincipalId, secretId],
+        );
+        assert.equal(persisted.rows[0].count, 0);
+        context.diagnostic(
+          "Configuration Secret grant: authenticated reader POST=403; persisted exact bindings=0.",
+        );
+      }
+      const binding = await request(
+        "POST",
+        `/namespaces/${namespaceId}/iam/access-bindings`,
+        payload,
+      );
       assert.equal(binding.status, 201, JSON.stringify(binding.error));
       return { role: role.data, binding: binding.data };
     }
@@ -440,6 +503,7 @@ test(
       assert.equal(secret.status, 201, JSON.stringify(secret.error));
       let boundSecret;
       let boundSecretValue;
+      let boundSecretGrant;
       if (options.boundSecret === true) {
         boundSecretValue = `bound-secret-${randomUUID()}`;
         boundSecret = await request("POST", `/namespaces/${namespaceId}/secrets`, {
@@ -561,18 +625,19 @@ test(
           created.data.id,
           `${label} before bound Secret grant`,
         );
-        await grantSecretOperate(
+        boundSecretGrant = await grantSecretOperate(
           namespaceId,
           created.data.servicePrincipalId,
           boundSecret.data.id,
           `${label} bound`,
+          { proveDeniedWrite: true },
         );
       }
       return {
         ...created.data,
         ...(boundSecret === undefined
           ? {}
-          : { boundSecretId: boundSecret.data.id, boundSecretValue }),
+          : { boundSecretId: boundSecret.data.id, boundSecretValue, boundSecretGrant }),
       };
     }
 
@@ -646,6 +711,89 @@ test(
     for (const name of embeddedCredentialSecrets) {
       await resource("secret", name, placements.get(namespaceIds[1]));
     }
+    // Pause the real worker to put revocation strictly after admission and before
+    // delivery. No patched IAM decision or Compute implementation can satisfy this proof.
+    await worker.stop();
+    worker = undefined;
+    workerPool = undefined;
+    const deliveryTargets = new Set([
+      placements.get(namespaceIds[0]),
+      kubernetesNamespaceName(namespaceIds[0]),
+    ]);
+    const existingSecretUids = new Map();
+    for (const target of deliveryTargets) {
+      // Optional real-runtime fixtures preprovision transport credentials; revoking
+      // the generic binding must add no Secret without confusing those existing objects.
+      existingSecretUids.set(
+        target,
+        (await resources("secrets", target))
+          .filter(({ metadata }) => metadata.labels?.["openclaw.dev/agent"] === boundSecretAgent.id)
+          .map(({ metadata }) => metadata.uid)
+          .sort(),
+      );
+    }
+    const revokedRevision = await deploy(namespaceIds[0], boundSecretAgent.id);
+    const revokedGrant = await request(
+      "DELETE",
+      `/namespaces/${namespaceIds[0]}/iam/access-bindings/${boundSecretAgent.boundSecretGrant.binding.id}`,
+    );
+    assert.equal(revokedGrant.status, 204, JSON.stringify(revokedGrant.error));
+    const queued = await observerPool.query(
+      "SELECT state FROM occ.controller_work WHERE idempotency_key = $1",
+      [`agent_revision:${revokedRevision.id}:reconcile`],
+    );
+    assert.equal(queued.rows[0].state, "queued");
+    context.diagnostic(
+      "Configuration Secret revocation: admission=202; revoke=204; work remained queued before worker restart.",
+    );
+    await startWorker();
+    const refused = await waitFor(
+      "revoked Configuration Secret to refuse queued delivery",
+      async () => {
+        const work = await observerPool.query(
+          "SELECT state, reason_code FROM occ.controller_work WHERE idempotency_key = $1",
+          [`agent_revision:${revokedRevision.id}:reconcile`],
+        );
+        return work.rows[0]?.state === "failed_permanent" ? work.rows[0] : undefined;
+      },
+    );
+    assert.equal(refused.reason_code, "AUTHORIZATION_DENIED");
+    const refusedAgent = await request(
+      "GET",
+      `/namespaces/${namespaceIds[0]}/agents/${boundSecretAgent.id}`,
+    );
+    assert.equal(refusedAgent.status, 200);
+    assert.equal(refusedAgent.data.activeRevisionId, undefined);
+    for (const target of deliveryTargets) {
+      for (const kind of ["deployments", "pods", "secrets"]) {
+        const delivered = (await resources(kind, target)).filter(
+          ({ metadata }) => metadata.labels?.["openclaw.dev/agent"] === boundSecretAgent.id,
+        );
+        if (kind === "secrets") {
+          assert.deepEqual(
+            delivered.map(({ metadata }) => metadata.uid).sort(),
+            existingSecretUids.get(target),
+            "revocation must prevent new Secret delivery",
+          );
+        } else {
+          assert.equal(delivered.length, 0, `${kind} must not be delivered for the refused Agent`);
+        }
+      }
+    }
+    context.diagnostic(
+      "Configuration Secret revocation: work=failed_permanent/AUTHORIZATION_DENIED; no active revision, Deployments, Pods, or new delivered Secrets.",
+    );
+    // Restore only this exact grant. The ordinary deployments below prove recovery
+    // and compare the real gateway's BOUND_SENTINEL with the original synthetic value.
+    const restored = await request("POST", `/namespaces/${namespaceIds[0]}/iam/access-bindings`, {
+      subjectKind: "identity",
+      subjectId: boundSecretAgent.servicePrincipalId,
+      roleId: boundSecretAgent.boundSecretGrant.role.id,
+      resourceKind: "secret",
+      resourceId: boundSecretAgent.boundSecretId,
+    });
+    assert.equal(restored.status, 201, JSON.stringify(restored.error));
+
     const admitted = await Promise.all([
       deploy(namespaceIds[0], first.id),
       deploy(namespaceIds[0], second.id),
@@ -805,6 +953,9 @@ test(
               script,
             );
             assert.equal(observedSecret, "matched");
+            context.diagnostic(
+              "Configuration Secret recovery: exact grant restored; revision active; ready real Gateway Pod observed BOUND_SENTINEL=matched.",
+            );
           }
         } else {
           assert.equal(await missing("deployment", revisionName(candidate), placement), true);
