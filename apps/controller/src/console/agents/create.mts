@@ -2952,9 +2952,12 @@ function renderAgentForm(
         if (failure.status === 401) {
           context.onExpired();
         } else {
+          const detail =
+            error instanceof Error && error.name === "TimeoutError"
+              ? "The configuration check timed out. Your entries are still here. Try Create Agent again."
+              : rejectionMessage(error);
           feedback.textContent =
-            rejectionMessage(error) +
-            (failure.requestId ? ` Request ID: ${failure.requestId}` : "");
+            detail + (failure.requestId ? ` Request ID: ${failure.requestId}` : "");
           // While the pressed control is still disabled, as after a save.
           focusFeedbackLine(feedback);
         }

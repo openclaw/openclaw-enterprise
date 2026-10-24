@@ -357,6 +357,76 @@ test("run preserves nonzero child Node exits and rejects zero-case files", async
   );
 });
 
+test(
+  "run annotates the first failed file before the lane finishes",
+  { timeout: 30_000 },
+  async (t) => {
+    const root = await fixture(t);
+    const first = "first.test.mjs";
+    const second = "second.test.mjs";
+    const files = [first, second].map((path) => ({ path }));
+    await writePrepare(root);
+    await writeJson(join(root, "manifest.json"), {
+      version: 1,
+      lanes: { sample: { files } },
+      groups: {},
+    });
+    await writeFile(
+      join(root, first),
+      'import test from "node:test";\ntest("private-case-canary", () => { throw new Error("::warning::private-message-canary"); });\n',
+    );
+    // Hold another failing file open to distinguish live reporting from a final summary.
+    const release = join(root, "release");
+    await writeFile(
+      join(root, second),
+      `import { existsSync } from "node:fs";
+     import { setTimeout } from "node:timers/promises";
+     import test from "node:test";
+     test("second failure", {timeout: 20000}, async () => {
+       while (!existsSync(${JSON.stringify(release)})) await setTimeout(50);
+       throw new Error("second failure");
+     });\n`,
+    );
+    const args = [
+      "run",
+      "sample",
+      "--manifest",
+      "manifest.json",
+      "--root",
+      root,
+      "--state",
+      "state/lane.jsonl",
+      "--results",
+      "results/sample.json",
+    ];
+    const child = spawn(process.execPath, [runnerPath, ...args], {
+      env: runnerEnv({ GITHUB_ACTIONS: "true" }),
+    });
+    let stderr = "";
+    child.stderr.on("data", (chunk) => (stderr += chunk));
+    const closed = new Promise((resolve, reject) =>
+      child.once("error", reject).once("close", resolve),
+    );
+    let code;
+    const commands = () => stderr.match(/^::.*$/gm) ?? [];
+    try {
+      // Match the entire workflow command: no child-controlled text or extra commands.
+      assert.ok(await waitFor(() => /^::.*\n/m.test(stderr), 10_000), "live workflow command");
+      assert.deepEqual(commands(), [
+        "::error title=Test lane failure::A test file reported failed tests and its cleanup passed. Final lane results will follow.",
+      ]);
+    } finally {
+      await writeFile(release, "");
+      code = await closed;
+    }
+    assert.equal(code, 1);
+    assert.equal(commands().length, 1);
+    assert.equal(await readFile(join(root, "state/lane.jsonl"), "utf8"), `${first}\n${second}\n`);
+    const result = JSON.parse(await readFile(join(root, "results/sample.json"), "utf8"));
+    assert.equal(result.counts.failed, 2);
+  },
+);
+
 test("run records a sanitized file failure after all reported cases pass", async (t) => {
   const root = await fixture(t);
   const resultsPath = join(root, "results/file-failure.json");

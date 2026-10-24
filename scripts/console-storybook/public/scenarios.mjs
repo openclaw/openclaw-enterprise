@@ -3669,6 +3669,19 @@ export const scenarios = {
       "Choose Codex, or Embedded execution if the installation selects no Sandbox Driver, then create the Agent again.",
     ],
   },
+  createPreflightTimeout: {
+    group: "Pages/Create Agent",
+    name: "Configuration check timed out",
+    path: create,
+    unsupportedProvisioning: true,
+    rules: [{ suffix: "/agents/validate", method: "POST", hold: true, once: true }],
+    actions: readyForm,
+    description: "The first configuration check stays pending until the Console stops waiting.",
+    steps: [
+      "Select Create Agent. After 15 seconds, the timeout message takes focus and the button is available again.",
+      "Select Create Agent again to check the same entries and continue creating the draft.",
+    ],
+  },
   createPluginPreflightRefusal: {
     group: "Pages/Create Agent",
     name: "Plugin refusal before anything is saved",
