@@ -202,16 +202,15 @@ func TestDevelopmentImageImportPullsRegistryImagesByDigest(t *testing.T) {
 			if countCalls(calls, disconnect) != 1 {
 				t.Fatalf("expected one disconnect: %v", calls)
 			}
-			if countCalls(calls, "docker exec k3d-"+state.Cluster+"-server-0 ctr -n k8s.io images pull --plain-http --platform linux/amd64 "+registryTestAddress+":5000/oce-smoke/runtime@"+profileTestDigest) != 1 {
-				t.Fatalf("expected one pull from the container port: %v", calls)
-			}
-			// The fixture lists the selected name whatever was tagged, so pin the
-			// tag itself: the pulled image gets exactly the selected name, before
-			// the inventory check reads it.
-			server := "docker exec k3d-" + state.Cluster + "-server-0 ctr -n k8s.io images "
-			tag := slices.Index(calls, server+"tag "+registryTestAddress+":5000/oce-smoke/runtime@"+profileTestDigest+" "+registryTestRuntime)
-			if tag < 0 || countCalls(calls, server+"tag ") != 1 || slices.Index(calls, server+"list") < tag {
-				t.Fatalf("expected one tag to the selected name before the inventory check: %v", calls)
+			// One pull from the container port, then one tag to the selected name,
+			// then the inventory check. The fixture lists the selected name whatever
+			// was tagged, so the tag itself is pinned here.
+			ctr := "docker exec k3d-" + state.Cluster + "-server-0 ctr -n k8s.io images "
+			source := registryTestAddress + ":5000/oce-smoke/runtime@" + profileTestDigest
+			pull := slices.Index(calls, ctr+"pull --plain-http --platform linux/amd64 "+source)
+			tag := slices.Index(calls, ctr+"tag "+source+" "+registryTestRuntime)
+			if pull < 0 || tag <= pull || slices.Index(calls, ctr+"list") <= tag || countCalls(calls, ctr+"pull ") != 1 || countCalls(calls, ctr+"tag ") != 1 {
+				t.Fatalf("expected one pull from the container port, one tag to the selected name, then the inventory check: %v", calls)
 			}
 			if strings.Contains(stdout.String(), "progress that stays hidden") {
 				t.Fatalf("pull progress reached the output: %s", &stdout)
@@ -292,10 +291,7 @@ func TestDevelopmentImageRegistryAttachEdgeCases(t *testing.T) {
 	t.Run("a detach after the caller's context ended", func(t *testing.T) {
 		// An interrupted start cancels the context before the deferred detach
 		// runs; the detach must still remove the registry from the network.
-		marker := filepath.Join(t.TempDir(), "connected")
-		commands := fakeProfileCommands(t, map[string]string{"docker": `"network connect ` + network + ` ` + registryTestContainer + `") : > ` + shellQuote(marker) + ` ;;
-` + inspect + ` if [ -f ` + shellQuote(marker) + ` ]; then echo ` + registryTestAddress + `; fi ;;
-"network disconnect ` + network + ` ` + registryTestContainer + `") rm ` + shellQuote(marker) + ` ;;`})
+		commands := fakeProfileCommands(t, map[string]string{"docker": registryPullCases(state.Cluster, filepath.Join(t.TempDir(), "connected"), "")})
 		r := newRegistry()
 		if err := r.attachDevelopmentImageRegistry(context.Background(), state); err != nil {
 			t.Fatal(err)
