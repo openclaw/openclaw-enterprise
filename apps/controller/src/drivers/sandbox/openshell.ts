@@ -29,7 +29,13 @@ import type {
   SandboxPolicyRecommendations,
   SandboxPolicyRecommendation,
 } from "@openclaw-enterprise/contracts";
-import { asRecord, immutableCopy, isNonEmptyString, sha256Hex } from "@openclaw-enterprise/utils";
+import {
+  asRecord,
+  immutableCopy,
+  isNonEmptyString,
+  MAX_TIMER_DELAY_MS,
+  sha256Hex,
+} from "@openclaw-enterprise/utils";
 import {
   KubernetesObjectApi,
   type KubernetesObject,
@@ -53,7 +59,6 @@ import {
 } from "@openclaw-enterprise/occ";
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
-import { MAX_TIMER_DELAY_MS } from "../../worker/timer-settings.ts";
 import type {
   AgentRevision,
   EgressInstallation,
@@ -1245,10 +1250,12 @@ async function waitForGatewayReadiness(
       }
       unavailable = "OpenShell gateway Pod is not ready.";
     }
-    if (Date.now() >= deadline) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
       throw new OpenShellSandboxConfigurationFailure(unavailable);
     }
-    await delay(pollIntervalMs, undefined, { signal: context.signal });
+    // Check once more at the deadline rather than a whole poll interval past it.
+    await delay(Math.min(pollIntervalMs, remaining), undefined, { signal: context.signal });
   }
 }
 

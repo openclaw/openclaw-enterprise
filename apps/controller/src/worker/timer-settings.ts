@@ -1,16 +1,13 @@
 // The worker process's numeric environment settings, and the bound for those that feed
 // Node.js timers.
 
-import { isPositiveSafeInteger } from "@openclaw-enterprise/utils";
+import { isPositiveSafeInteger, MAX_TIMER_DELAY_MS } from "@openclaw-enterprise/utils";
 
 /**
- * The longest delay a Node.js timer honours. A longer delay (up to 2^53 passes the safe-integer
- * check) fires after 1 ms instead: a claim-lapse timer would abort every claim and the poll loop
- * would spin (finding 2303). The chart's worker timing validator uses the same bound.
+ * A positive integer number of milliseconds that a Node.js timer can wait for. A longer delay
+ * fires after 1 ms: a claim-lapse timer would abort every claim and the poll loop would spin
+ * (finding 2303). The chart's worker timing validator uses the same bound.
  */
-export const MAX_TIMER_DELAY_MS = 2_147_483_647;
-
-/** A positive integer number of milliseconds that a Node.js timer can wait for. */
 export function timerDelayMs(value: number, name: string): number {
   if (!isPositiveSafeInteger(value)) {
     throw new Error(`${name} must be a positive safe integer.`);

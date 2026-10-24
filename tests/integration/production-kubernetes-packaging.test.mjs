@@ -15,7 +15,7 @@ import {
   createKubernetesComputeDriver,
   PLUGIN_RUNTIME_STATUS_PORT,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
-import { MAX_TIMER_DELAY_MS } from "../../apps/controller/src/worker/timer-settings.ts";
+import { MAX_TIMER_DELAY_MS } from "../../packages/utils/src/index.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 

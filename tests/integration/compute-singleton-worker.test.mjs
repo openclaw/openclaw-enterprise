@@ -56,11 +56,13 @@ test("worker timer settings must fit a Node.js timer", async () => {
   const [
     { Pool },
     { createControllerWorker, workerDatabasePoolOptions },
-    { MAX_TIMER_DELAY_MS, workerEnvironmentSettings },
+    { workerEnvironmentSettings },
+    { MAX_TIMER_DELAY_MS },
   ] = await Promise.all([
     import("pg"),
     import("../../apps/controller/src/worker.ts"),
     import("../../apps/controller/src/worker/timer-settings.ts"),
+    import("../../packages/utils/src/index.ts"),
   ]);
   const over = MAX_TIMER_DELAY_MS + 1;
   const timers = [

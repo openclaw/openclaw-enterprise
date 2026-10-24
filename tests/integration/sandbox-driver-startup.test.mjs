@@ -3361,6 +3361,35 @@ test("OpenShell managed mode fails before mutating Kubernetes or the Gateway", a
   assert.deepEqual(gatewayClient.calls, []);
 });
 
+// The wait slept a whole poll interval past its deadline: timeoutMs 30000 with pollIntervalMs
+// 600000 checked again only after ten minutes (finding 2324).
+test("OpenShell gateway readiness checks once more at its deadline, not a poll interval later", async () => {
+  const configuration = sandboxInstallation().drivers.sandbox.configuration;
+  configuration.gateway.readiness = {
+    serviceName: "openshell-gateway",
+    podSelector: { "app.kubernetes.io/name": "openshell" },
+    timeoutMs: 50,
+    pollIntervalMs: 600_000,
+  };
+  const gatewayClient = workspaceGatewayClient();
+  const driver = openShellDriver(gatewayClient, configuration);
+  const context = namespaceContext();
+  const kubernetes = kubernetesObjectClient([]);
+  kubernetes.read = async (resource) => resource;
+  let podLists = 0;
+  kubernetes.list = async () => {
+    podLists += 1;
+    return { items: [{ status: { conditions: [{ type: "Ready", status: "False" }] } }] };
+  };
+  context.kubernetes = kubernetes;
+  // A wait that sleeps the whole poll interval is aborted here instead of after ten minutes.
+  context.signal = AbortSignal.timeout(10_000);
+
+  await assert.rejects(driver.ensureNamespace(context), /OpenShell gateway Pod is not ready\./);
+  assert.equal(podLists, 2, "one check at the start and one at the deadline");
+  assert.deepEqual(gatewayClient.calls, []);
+});
+
 test("OpenShell Namespace cleanup refuses a same-name foreign Workspace", async () => {
   const context = namespaceContext();
   const gatewayClient = workspaceGatewayClient([

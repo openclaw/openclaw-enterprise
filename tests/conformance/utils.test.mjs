@@ -11,11 +11,13 @@ import {
   isImmutableSnapshot,
   isNonEmptyString,
   isPositiveSafeInteger,
+  MAX_TIMER_DELAY_MS,
   numericErrorStatus,
   numericLastLabel,
   sha256Hex,
 } from "../../packages/utils/src/index.ts";
 import { hasControlCharacter as clientHasControlCharacter } from "../../apps/controller/src/drivers/repo/credentials/client-contracts.ts";
+import { MAX_TIMER_DELAY_MS as clockMaxTimerDelayMs } from "../../apps/controller/src/drivers/repo/credentials/clock.ts";
 
 test("immutableCopy detaches and deeply freezes resource snapshots", () => {
   const original = { identity: { namespaceId: "tenant-a" }, roles: ["reader"] };
@@ -92,6 +94,12 @@ test("positive safe integers reject coercion, fractional values, and unsafe limi
   for (const value of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, NaN, Infinity, "1", null]) {
     assert.equal(isPositiveSafeInteger(value), false);
   }
+});
+
+test("the timer bound is the longest delay Node.js honours, and the clock copy agrees", () => {
+  assert.equal(MAX_TIMER_DELAY_MS, 2 ** 31 - 1);
+  // The repository-credentials clock keeps a reviewed-boundary copy.
+  assert.equal(clockMaxTimerDelayMs, MAX_TIMER_DELAY_MS);
 });
 
 test("SHA-256 output and resource-name prefixes match fixed digest vectors", () => {
