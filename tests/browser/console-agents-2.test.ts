@@ -873,6 +873,7 @@ test("Dedicated Agent creation keeps one provisioning label while the job retrie
     }),
   );
 
+  await trackSettledFetches(page);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
   await page.getByRole("button", { name: "Start without Preset" }).click();
@@ -881,7 +882,16 @@ test("Dedicated Agent creation keeps one provisioning label while the job retrie
   await createModelCredentialSecret(page, "model-secret-value");
   await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
   await page.evaluate(recordProvisioningWrites, ["Provisioning"]);
+  const start = Date.now();
+  await page.clock.install({ time: start });
+  await page.clock.pauseAt(start + 1_000);
   await page.getByRole("button", { name: "Create Agent" }).click();
+  // Advance each poll only after the page has consumed the preceding response.
+  for (let poll = 0; poll < reads.length; poll += 1) {
+    await waitForCondition(() => clientRequestId && read === poll, `job read ${poll}`);
+    await waitForIdleFetches(page);
+    await page.clock.runFor(1_000);
+  }
   await page.getByText("Provisioning failed.", { exact: true }).waitFor();
   assert.equal(read, reads.length);
   assert.deepEqual(await page.evaluate(() => globalThis.provisioningWrites), [

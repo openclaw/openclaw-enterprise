@@ -56,14 +56,30 @@ export class RepositoryDeliveryPendingLog {
   }
 }
 
+/** How long a protected Git Driver's reconcile waits after a pass ends before the next one. */
+const REPOSITORY_RECONCILE_INTERVAL_MS = 1_000;
+
+/**
+ * Test-only construction options. The worker passes none, so production always reconciles every
+ * REPOSITORY_RECONCILE_INTERVAL_MS; no configuration or environment value reaches them.
+ */
+interface RepositoryGitTransportOptions {
+  /** Tests pass one with a fake clock. */
+  pendingLog?: RepositoryDeliveryPendingLog;
+  /** Tests that count reconcile passes shorten the wait between them. */
+  reconcileIntervalMs?: number;
+}
+
 /** Bind the selected sender. The worker retains storage and the right to start the credential owner. */
 export async function bindRepositoryGitTransport(
   drivers: InstallationRuntimeDrivers,
   owner: Awaited<ReturnType<typeof startPreparedGitHubGitOwner>>,
   pool: PostgresPool,
   emit?: OpenShellGitRuntimeEmit,
-  // Tests pass one with a fake clock.
-  pendingLog = new RepositoryDeliveryPendingLog(),
+  {
+    pendingLog = new RepositoryDeliveryPendingLog(),
+    reconcileIntervalMs = REPOSITORY_RECONCILE_INTERVAL_MS,
+  }: RepositoryGitTransportOptions = {},
 ): Promise<CredentialProxyBinding | undefined> {
   const { repositoryTransport, repositoryGitDriver } = drivers;
   if (
@@ -102,7 +118,7 @@ export async function bindRepositoryGitTransport(
         if (!stop.signal.aborted) {
           timer = setTimeout(() => {
             running = tick();
-          }, 1_000);
+          }, reconcileIntervalMs);
           timer.unref();
         }
       }

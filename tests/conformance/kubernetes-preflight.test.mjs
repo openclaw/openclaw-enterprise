@@ -16,6 +16,8 @@ import {
   createTestKubernetesComputeDriver,
 } from "../helpers/kubernetes-compute.mjs";
 import { refusingPort } from "../helpers/available-port.mjs";
+import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { loadInstallationFile } from "../helpers/installation-file.mjs";
 
 function driverForVersion(gitVersion) {
   const driver = createTestKubernetesComputeDriver("compute-kubernetes-preflight");
@@ -276,7 +278,16 @@ function executionOptions(network = {}) {
   return configured;
 }
 
-test("execution-cluster diagnostics name the operator's original fields", () => {
+test("startup reports Kubernetes configuration errors at their original paths", async (t) => {
+  const config = createInstallationDriverConfiguration();
+  const { compute } = config.drivers;
+  const start = () => loadInstallationFile(t, config);
+  const twoClusters = { ...executionOptions(), images: compute.configuration.images };
+
+  assert.equal((await start()).computeDriver.id, compute.id);
+  compute.configuration = twoClusters;
+  assert.equal((await start()).computeDriver.id, compute.id);
+
   for (const [change, path, message, code = "INVALID_FORMAT"] of [
     [
       (c) => {
@@ -328,18 +339,42 @@ test("execution-cluster diagnostics name the operator's original fields", () => 
       "/executionCluster/harnessRouting/hostname",
       "Harness routing hostname must be a DNS hostname without a port or path.",
     ],
-  ]) {
-    const options = executionOptions();
-    change(options);
-    assert.throws(
-      () => createKubernetesComputeDriver(options),
-      (error) => {
-        assert.ok(error instanceof ConfigurationValidationError);
-        assert.deepEqual(error.error.details, [{ path, code, message }]);
-        assert.doesNotMatch(JSON.stringify(error.error.details), /relative|Bad_NS|Bad_Host/);
-        return true;
+    [
+      (c) => {
+        c.executionCluster.authentication = { mode: "inCluster" };
       },
-    );
+      "/executionCluster/authentication",
+      "The execution cluster requires its own explicit kubeconfig.",
+    ],
+    [
+      (c) => {
+        c.executionCluster.network.dns = {
+          namespace: "kube-system",
+          podLabels: { "private/key/name": "dns" },
+        };
+      },
+      "/executionCluster/network/dns/podLabels",
+      "DNS peer label keys must be Kubernetes label keys.",
+    ],
+    [
+      (c) => {
+        c.network.gatewayClients = [c.network.dns];
+      },
+      "/network/gatewayClients",
+      "Gateway routing derives the Envoy gateway client peer; do not configure network.gatewayClients.",
+    ],
+  ]) {
+    compute.configuration = structuredClone(twoClusters);
+    change(compute.configuration);
+    await assert.rejects(start, (error) => {
+      assert.ok(error instanceof ConfigurationValidationError);
+      assert.deepEqual(error.error.details, [{ path, code, message }]);
+      assert.doesNotMatch(
+        JSON.stringify(error.error.details),
+        /relative|Bad_NS|Bad_Host|private\/key\/name/,
+      );
+      return true;
+    });
   }
 });
 

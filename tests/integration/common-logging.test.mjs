@@ -773,7 +773,7 @@ function bindDeliveryTransport(reconcile, emit, pendingLog) {
     { protectedGit: {} },
     undefined,
     emit,
-    pendingLog,
+    { pendingLog },
   );
 }
 

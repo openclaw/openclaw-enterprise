@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test, { after } from "node:test";
+import test from "node:test";
 import { kubernetesConfigurationName } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
 import { createGatewayNodeEnrollment } from "../../apps/controller/src/gateway/node-enrollment-client.ts";
 import {
@@ -29,11 +29,8 @@ import {
   assertHarnessWorkspaceClaim,
   createDriver,
   createScopedController,
-  createNamespaceReaper,
+  deleteNamespaces,
 } from "../helpers/kubernetes-compute-real.mjs";
-
-const { deleteNamespaces, waitForDeletedVolumes } = createNamespaceReaper();
-after(waitForDeletedVolumes);
 
 test(
   "real Kubernetes Drivers safely use and preserve an externally managed tenant namespace",

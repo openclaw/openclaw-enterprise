@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import test, { after } from "node:test";
+import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import { WORKSPACE_DEFAULTS_ID } from "../../packages/contracts/src/index.ts";
@@ -34,11 +34,8 @@ import {
   workloadPod,
   assertExecDenied,
   createDnsTrafficFixture,
-  createNamespaceReaper,
+  deleteNamespaces,
 } from "../helpers/kubernetes-compute-real.mjs";
-
-const { deleteNamespaces, waitForDeletedVolumes } = createNamespaceReaper();
-after(waitForDeletedVolumes);
 
 test(
   "authenticated PostgreSQL OCC API and worker deploy real Agent-owned gateways, Secret bindings, and revisions",
