@@ -103,7 +103,8 @@ selected runtime before relying on it.
    that creating it needs Installation access.
 2. Choose your Preset in **Preset template**, fill its variables,
    and select **Use Preset**. The chooser closes and the Agent form opens with
-   the rendered copy. To load the installed `default-codex` copy, select **Start with default Preset**.
+   the rendered copy. **Start with default Preset** chooses the
+   [readable default](../../reference/presets.md#plain-console-default) for you.
    To create an Agent without a saved setup, select **Start without Preset** instead.
 3. Review the model, execution mode, native Configuration JSON, authentication,
    plugin selections, and workspace files under Advanced settings. Configure Slack

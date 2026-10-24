@@ -497,6 +497,10 @@
                     "label": "Profiles"
                   },
                   {
+                    "page": "guides/deploy/custom-installation-profiles",
+                    "label": "Custom Profiles"
+                  },
+                  {
                     "page": "guides/deploy/breaking-changes",
                     "label": "Breaking Changes"
                   },

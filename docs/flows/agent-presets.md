@@ -146,16 +146,13 @@ path records mutations and denials without template or variable contents.
 
 ### 3. Read and render the selected copy
 
-`apps/controller/src/console/agents/presets.mts:createPresetFields`
-
 [`createPresetFields`](../../apps/controller/src/console/agents/presets.mts)
-lists readable Preset summaries, requiring Namespace read, then reads the selection
-once. **Start with default Preset** reads the listed `default-codex` resource.
-Variable-free templates apply immediately; customized variables keep the chooser
-and its shortcut origin. Missing defaults or failed reads do not open a hardcoded
-starter; other readable Presets remain selectable. **Start without Preset** opens
-the form without a Preset read, not as a fallback for a denied selection. Normal
-creation authorization applies.
+lists readable summaries with Namespace read permission. Quick-start prefers
+`default-codex`, otherwise the first by case-insensitive locale order
+and exact-name tie-breaking. Shortcut and hint name custom starters.
+An exact-resource read applies variable-free templates; otherwise edits and
+shortcut origin persist. Empty lists or failed reads apply nothing.
+**Start without Preset** skips Preset reads, not creation authorization.
 
 `console-assets.ts:readConsoleAsset` serves the public
 [`default-codex`](../../deploy/presets/default-codex.json) as
@@ -288,6 +285,8 @@ or an immutable saved version.
 ## Changelog
 
 - 2026-10-24 14:11: Align Console roster model selections and local policies. (authoring-run/f070add2-5557-42f3-a399-1af757d219cd - de058b77e4f996c848520d8bee2e9c6122d3e2e1)
+
+- 2026-10-19 22:48: Add named quick-start from the first readable Preset when default-codex is unavailable, preserving exact-resource authorization and draft handling. (authoring-run/d45560cc-1312-47a3-bc97-9e85137cdea9 - a0e909fda01709486815fcc113db4229eba646bc)
 
 - 2026-10-15 18:50: Allow search-only Slack Secret selection during Agent creation. (authoring-run/23d60562-6525-4593-ad0c-29ce57483c38 - aad21c63837ef24f9f9bae152877812abe9b1abd)
 

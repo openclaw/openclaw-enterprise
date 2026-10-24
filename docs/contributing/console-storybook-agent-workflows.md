@@ -64,6 +64,10 @@ Configuration and needs a current nonempty repository selection to retry.
 The fixture does not verify operator prerequisites: GitHub App setup, Namespace
 approvals, runtime images, and credential-service networking.
 
+**Custom Preset quick-start** names the starter; check variables, retention and Cancel.
+**Preset name tie-break** checks uppercase selection. Compare **No Presets**,
+**Loading default Preset**, and **Default Preset access denied**.
+
 ## Return to loaded pages
 
 In **Return to loaded pages**, Tab to Namespaces and press Enter: its heading
