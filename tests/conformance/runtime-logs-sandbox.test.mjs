@@ -842,6 +842,21 @@ test("an Agent reader sees a stopped OpenShell Sandbox; an unreadable record is 
   assert.equal(failed.text.includes("sandbox:read"), false);
   gateway.state.sandboxError = undefined;
 
+  // Another selected Compute Driver cannot locate the revision's Sandbox, so it is unknown.
+  const placed = fixture.computeDriver;
+  const replacement = createRuntimeLogComputeDriver({
+    id: "replacement-compute",
+    sandboxNamespace: SANDBOX_NAMESPACE,
+  });
+  fixture.controller.registerDriver(replacement);
+  fixture.controller.selectDriver("compute", replacement.id);
+  gateway.state.sandbox = record("SANDBOX_PHASE_READY");
+  assert.deepEqual(
+    (await read(reader.session)).data,
+    observed({ state: "unknown", code: "UNAVAILABLE" }),
+  );
+  fixture.controller.selectDriver("compute", placed.id);
+
   // Without Agent read the request is denied before any Sandbox read.
   const outsider = await fixture.createPrincipal("harness-outsider", target, []);
   const reads = gateway.requests.length;
@@ -1081,6 +1096,13 @@ test("without a log-reading Sandbox Driver the sandbox source is absent", async 
     false,
   );
   assert.equal("harness" in runtime.data, false, "an embedded Agent has no Harness Sandbox");
+  await fixture.activate(target);
+  const harness = await fixture.request(
+    "GET",
+    `/namespaces/${target.namespace.id}/agents/${target.agent.id}/harness-status`,
+  );
+  assert.equal(harness.status, 200, harness.text);
+  assert.deepEqual(harness.data, { status: "unobserved" });
   const logs = await fixture.request("GET", target.logsPath("source=sandbox"));
   assert.equal(logs.status, 400, logs.text);
   assert.equal(logs.body.error.code, "RUNTIME_LOGS_SOURCE_UNAVAILABLE");

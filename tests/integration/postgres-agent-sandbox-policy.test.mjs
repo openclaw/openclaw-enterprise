@@ -825,6 +825,26 @@ test(
       revisionId: revision.id,
     });
     assert.equal(admitted.statusCode, 202, admitted.body);
+    // The pending application applies its snapshot of version 2: neither a save nor a second
+    // application may replace that policy until it finishes.
+    for (const [method, url, body, message] of [
+      [
+        "PUT",
+        path,
+        { expectedVersion: 2, additions: [] },
+        "The policy changed or an application is still pending. Reload before editing.",
+      ],
+      [
+        "POST",
+        `${path}/apply`,
+        { expectedVersion: 2, revisionId: revision.id },
+        "A policy application is already pending.",
+      ],
+    ]) {
+      const refused = await inject(method, url, body);
+      assert.equal(refused.statusCode, 409, refused.body);
+      assert.equal(refused.json().error.message, message);
+    }
     const claim = await queue.claim();
     assert.equal(claim.agentTarget, "sandbox_policy");
     await expireWorkLease(pool, claim.idempotencyKey);

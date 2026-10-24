@@ -1853,6 +1853,47 @@ test("a state conflict names what blocks the request, after authorization only",
   }
 });
 
+// Create Agent's preflight (#2830) applies Configuration create's content rules and Agent
+// create's Namespace and plugin checks to an unsaved Configuration, so the console reports a
+// refusal before it saves the Secret or Configuration. It writes nothing.
+test("Create Agent's preflight refuses what Configuration and Agent create would, writing nothing", async () => {
+  const controller = await configuredController();
+  await bootstrap(controller);
+  const namespace = await createNamespace(controller, "agent-preflight");
+  const validate = (values, extra = {}) =>
+    controller.request("POST", `/namespaces/${namespace.id}/agents/validate`, {
+      body: { configuration: { kind: "agent", values }, ...extra },
+    });
+
+  // Agent create accepts a Namespace that is still provisioning, and so does its preflight.
+  const accepted = await validate({});
+  assert.equal(accepted.status, 204, JSON.stringify(accepted.body));
+
+  // Configuration create's content rules, as the form's first save would answer.
+  const inline = await validate({ gateway: { auth: { password: "literal-password" } } });
+  assert.equal(inline.status, 400, JSON.stringify(inline.body));
+  assert.equal(
+    inline.body.error.message,
+    "Configuration field /gateway/auth/password holds a credential value inline, where a reference is required. Use the OPENCLAW_GATEWAY_PASSWORD environment reference, whose value the Compute Driver generates, instead.",
+  );
+
+  const pluginDriver = new OCCPluginDriver();
+  controller.fixture.controller.registerDriver(pluginDriver);
+  controller.fixture.controller.selectDriver("plugin", pluginDriver.id);
+  // Agent create's plugin policy check, before the Plugin Driver reads the Configuration.
+  const unknown = await validate({}, { plugins: { "occ-plugin:missing": pluginPolicy() } });
+  assert.equal(unknown.status, 400, JSON.stringify(unknown.body));
+  assert.equal(
+    unknown.body.error.message,
+    "A plugin selection names a plugin that the selected Plugin Driver (occ-plugin) does not offer: occ-plugin:missing. Check each plugin ID and its Driver prefix against that Driver's catalog; an Installation selects one Plugin Driver.",
+  );
+
+  for (const collection of ["agents", "secrets"]) {
+    const listed = await controller.request("GET", `/namespaces/${namespace.id}/${collection}`);
+    assert.deepEqual(listed.data, [], collection);
+  }
+});
+
 test("Namespace IAM reports invalid policy input as 400 with the field and refuses inert Permissions", async () => {
   const fixture = await createInjectedFixture();
   const member = await fixture.createAuthPrincipal("policy-validation-member");
