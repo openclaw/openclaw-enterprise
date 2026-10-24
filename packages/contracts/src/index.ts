@@ -1873,6 +1873,11 @@ export interface SandboxDriver extends Driver {
     harness: Readonly<RevisionHarnessDescriptor>,
     configuration: Readonly<OpenClawConfigurationDocument>,
   ): void;
+  /**
+   * The Agent Configuration this Driver admits for a dedicated Harness. Refusals that Driver
+   * settings alone decide throw ConfigurationHarnessError, also for an empty Configuration:
+   * the Installation's OpenClaw execution modes probe it that way.
+   */
   configureAgent?(
     configuration: Readonly<OpenClawConfigurationDocument>,
     harness: Readonly<RevisionHarnessDescriptor>,
