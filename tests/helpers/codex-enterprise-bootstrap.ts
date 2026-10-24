@@ -89,7 +89,11 @@ export function enterpriseCustodian() {
   };
 }
 
-export function enterprisePolicy(incompatible: boolean, instruction: string) {
+export function enterprisePolicy(
+  incompatible: boolean,
+  instruction: string,
+  managedInstruction: string,
+) {
   return {
     config_toml: {
       enterprise_managed: [
@@ -105,9 +109,12 @@ export function enterprisePolicy(incompatible: boolean, instruction: string) {
         {
           id: "restriction",
           name: "Restriction",
-          contents: incompatible
-            ? 'model_provider = "unconfigured-fixture-provider"'
-            : 'allowed_sandbox_modes = ["read-only"]',
+          contents: [
+            `additional_developer_instructions = ${JSON.stringify(managedInstruction)}`,
+            incompatible
+              ? 'model_provider = "unconfigured-fixture-provider"'
+              : 'allowed_sandbox_modes = ["read-only"]',
+          ].join("\n"),
         },
       ],
     },
@@ -214,12 +221,12 @@ async function nativeStartup(proxy: string, ca: string, challenge: string) {
 async function packagedBootstrap(incompatible: boolean) {
   const directory = await mkdtemp(join(tmpdir(), "enterprise-bootstrap-"));
   const instruction = `Use concise answers. Policy ${randomUUID()}`;
+  const managedInstruction = `Follow workspace policy ${randomUUID()}.`;
   const challenge = `READY ${randomUUID()}`;
   const protect = enterpriseCustodian();
   let posts = 0;
   let modelRequests = 0;
   let bundles = 0;
-  let typed = false;
   let firstError: unknown;
   const observations: { path: string; released: boolean }[] = [];
   const servers: ReturnType<typeof createProxy>[] = [];
@@ -306,7 +313,7 @@ async function packagedBootstrap(incompatible: boolean) {
           };
         } else if (url.pathname === paths[3]) {
           bundles++;
-          value = enterprisePolicy(incompatible, instruction);
+          value = enterprisePolicy(incompatible, instruction, managedInstruction);
         }
         let response: EgressResponse = {
           status: 200,
@@ -322,21 +329,36 @@ async function packagedBootstrap(incompatible: boolean) {
             parsed.input.at(-1).content.at(-1).text,
             "Reply only READY. Do not use tools.",
           );
-          typed = parsed.input.some(
-            (item: {
-              role: string;
-              content?: { text?: string }[];
-              internal_chat_message_metadata_passthrough?: { content_item_kinds?: string[] };
-            }) =>
-              item.role === "developer" &&
-              item.content?.some(
-                (part, i) =>
-                  part.text === instruction &&
-                  item.internal_chat_message_metadata_passthrough?.content_item_kinds?.[i] ===
-                    "generic.developer_instructions",
-              ),
+          const hasDeveloperInstruction = (kind: string, matches: (text: string) => boolean) =>
+            parsed.input.some(
+              (item: {
+                role: string;
+                content?: { type: string; text?: string }[];
+                internal_chat_message_metadata_passthrough?: { content_item_kinds?: string[] };
+              }) =>
+                item.role === "developer" &&
+                item.content?.some(
+                  (part, i) =>
+                    part.type === "input_text" &&
+                    typeof part.text === "string" &&
+                    item.internal_chat_message_metadata_passthrough?.content_item_kinds?.[i] ===
+                      kind &&
+                    matches(part.text),
+                ),
+            );
+          assert.ok(
+            hasDeveloperInstruction(
+              "generic.developer_instructions",
+              (text) => text === instruction,
+            ),
+            "config instruction missing from its annotated developer part",
           );
-          assert.equal(typed, true);
+          assert.ok(
+            hasDeveloperInstruction("managed_config.developer_instructions", (text) =>
+              text.includes(managedInstruction),
+            ),
+            "requirements instruction missing from its annotated developer part",
+          );
           assert.equal(
             JSON.parse(parsed.client_metadata["x-codex-turn-metadata"]).sandbox_mode,
             "read-only",
@@ -470,8 +492,7 @@ async function packagedBootstrap(incompatible: boolean) {
       assert.equal(result.marker, false);
       assert.equal(result.failure, "MODEL_PROBE_FAILED");
     } else {
-      assert.equal(posts, 1, JSON.stringify({ observations, result, typed }));
-      assert.equal(typed, true);
+      assert.equal(posts, 1, JSON.stringify({ observations, result }));
       assert.deepEqual(result, {
         nativeExit: 0,
         messages: 1,
