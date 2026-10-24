@@ -838,6 +838,69 @@ test("a PROCESS_EXIT cause recorded today reads under a controller from before t
   }
 });
 
+test("every model-probe cause a runtime program publishes is recorded as published", async () => {
+  const text = (
+    await Promise.all(
+      runtimeSources.map((path) => readFile(new URL(path, import.meta.url), "utf8")),
+    )
+  ).join("\n");
+  const causes = [
+    ...[...text.matchAll(/probeFailure\(\s*"([A-Z_]+)",\s*"([^"]+)"\s*\)/gu)].map(
+      ([, kind, detail]) => ({ kind, detail }),
+    ),
+    // The Codex check's error and turn.failed events name their PROBE_STATUS detail.
+    ...[
+      ...text.matchAll(/codexProbeStatusFailure\([^,()]+(?:\([^()]*\))?[^,()]*,\s*"([^"]+)"\)/gu),
+    ].map(([, detail]) => ({ kind: "PROBE_STATUS", detail })),
+    // The OpenClaw check's provider statuses, and "other" for the rest.
+    ...[
+      ...text.matchAll(
+        /probeFailure\(\s*"PROBE_STATUS",\s*\[([^\]]+)\]\.includes\(status\) \? status : "([^"]+)"/gu,
+      ),
+    ].flatMap(([, list, other]) =>
+      [...JSON.parse(`[${list}]`), other].map((detail) => ({ kind: "PROBE_STATUS", detail })),
+    ),
+    ...[...text.matchAll(/probeFailure\(\s*"([A-Z_]+)"\s*\)/gu)].map(([, kind]) => ({ kind })),
+  ];
+  // Guards the extraction itself: an empty or partial match would prove nothing.
+  const found = new Set(causes.map(({ kind, detail }) => `${kind}/${detail}`));
+  for (const expected of [
+    "INVALID_OUTPUT/json",
+    "INVALID_OUTPUT/shape",
+    "PROBE_STATUS/no-reply",
+    "PROBE_STATUS/turn-failed",
+    "PROBE_STATUS/error-event",
+    "PROBE_STATUS/rate_limit",
+    "PROBE_STATUS/other",
+    "WRAPPER_ERROR/undefined",
+  ]) {
+    assert.ok(found.has(expected), `${expected} not found in ${JSON.stringify([...found])}`);
+  }
+  for (const cause of causes) {
+    // The retried check holds its second failure with the "-attempt2" suffix.
+    for (const held of cause.detail === undefined
+      ? [cause]
+      : [cause, { ...cause, detail: `${cause.detail}-attempt2` }]) {
+      const failure = {
+        runtimeFailure: {
+          component: "agent",
+          check: "model-probe",
+          checkedAt: runtimeCheckedAt,
+          code: "MODEL_PROBE_FAILED",
+          cause: held,
+        },
+      };
+      const stored = validateFailureData("RUNTIME_MODEL_PROBE_FAILED", failure);
+      assert.deepEqual(stored, failure, JSON.stringify(held));
+      assert.deepEqual(
+        validateFailureData("RUNTIME_MODEL_PROBE_FAILED", stored),
+        stored,
+        JSON.stringify(held),
+      );
+    }
+  }
+});
+
 test("every signal and system error code Node names on Linux is in the PROCESS_EXIT vocabulary", (t) => {
   if (process.platform !== "linux") {
     t.skip("the runtime runs on Linux; other platforms name other codes");
