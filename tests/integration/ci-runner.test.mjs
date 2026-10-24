@@ -167,11 +167,11 @@ async function writePrepare(root) {
       "export async function prepareFile({ file, statePath }) {",
       "  if (file.path.endsWith('first.test.mjs')) {",
       "    return {",
-      "      env: { CI_RUNNER_SCOPED_VALUE: 'one', OCC_TEST_PRODUCTION_CONTROLLER_IMAGE: 'private.example/controller@sha256:' + 'a'.repeat(64), OCC_TEST_KUBERNETES_RUNTIME_IMAGE: 'private.example/runtime@sha256:' + 'b'.repeat(64), OCC_TEST_PRODUCTION_UPGRADE_CONTROLLER_IMAGE: 'private.example/controller@sha256:' + 'd'.repeat(64), OCC_TEST_PRODUCTION_UPGRADE_RUNTIME_IMAGE: 'private.example/runtime@sha256:' + 'e'.repeat(64), OCC_TEST_REPOSITORY_CREDENTIALS_IMAGE: 'private.example/broker@sha256:' + 'c'.repeat(64), OCC_TEST_PRODUCTION_NODE_IMAGE: 'untrusted-image-value' },",
+      "      env: { CI_RUNNER_SCOPED_VALUE: 'one', OCC_TEST_PRODUCTION_CONTROLLER_IMAGE: 'private.example/controller@sha256:' + 'a'.repeat(64), OCC_TEST_KUBERNETES_RUNTIME_IMAGE: 'private.example/runtime@sha256:' + 'b'.repeat(64), OCC_TEST_PRODUCTION_UPGRADE_CONTROLLER_IMAGE: 'private.example/controller@sha256:' + 'd'.repeat(64), OCC_TEST_PRODUCTION_UPGRADE_RUNTIME_IMAGE: 'private.example/runtime@sha256:' + 'e'.repeat(64), OCC_TEST_REPOSITORY_CREDENTIALS_IMAGE: 'private.example/broker@sha256:' + 'c'.repeat(64), OCC_TEST_REPOSITORY_CREDENTIALS_PLATFORM_IMAGE: 'private.example/platform@sha256:' + 'f'.repeat(64), OCC_TEST_PRODUCTION_NODE_IMAGE: 'untrusted-image-value' },",
       "      cleanup: async () => appendFile(statePath, `${file.path}\\n`),",
       "    };",
       "  }",
-      "  return { cleanup: async () => appendFile(statePath, `${file.path}\\n`) };",
+      "  return { env: { OCC_TEST_REPOSITORY_CREDENTIALS_PLATFORM_IMAGE: 'private.example/platform:latest' }, cleanup: async () => appendFile(statePath, `${file.path}\\n`) };",
       "}",
       "",
     ].join("\n"),
@@ -286,10 +286,15 @@ test("run resolves lane documents relative to the manifest and preserves ordered
     controllerUpgrade: `sha256:${"d".repeat(64)}`,
     runtimeUpgrade: `sha256:${"e".repeat(64)}`,
     repositoryCredentials: `sha256:${"c".repeat(64)}`,
+    repositoryCredentialsPlatform: `sha256:${"f".repeat(64)}`,
     ...pairDigests,
   });
+  // The second file has only a mutable platform tag, which is not digest evidence.
   assert.deepEqual(summary.files[1].imageDigests, pairDigests);
-  assert.doesNotMatch(JSON.stringify(summary), /private\.example|untrusted-image-value/);
+  assert.doesNotMatch(
+    JSON.stringify(summary),
+    /private\.example|untrusted-image-value|secretauthvalue|CI_RUNNER_SCOPED_VALUE/,
+  );
   assert.match(await readFile(statePath, "utf8"), /first\.test\.mjs/);
 });
 
