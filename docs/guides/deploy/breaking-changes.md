@@ -36,6 +36,27 @@ configuration. Provisioning status reads still report earlier requests.
 **Steps.** Set `kubernetes.userNamespaces: false` in the OpenShell Sandbox
 Driver configuration and restart the controller, or switch the Agent to Codex.
 
+## 2026-10-24: OpenShell Sandbox policy settings are checked at startup
+
+**What breaks.** Controller startup refuses OpenShell Sandbox settings that the
+Gateway refuses when it creates a Sandbox: a `policy.process.runAsUser` or
+`runAsGroup` other than `sandbox` or a number from 1 to 4294967294, a
+`policy.filesystem` path that is relative, only slashes or has a `..` segment, a
+read-only `kubernetes.sandboxDataMount` listed in `policy.filesystem.readWrite`,
+an unknown key under `policy.filesystem`, and `kubernetes.agentResources`
+`requests` or `limits` that are not objects. Earlier builds started, then
+failed each dedicated deploy after its predecessors had stopped.
+
+**Who is affected.** Only Installations whose OpenShell Sandbox settings use
+one of these values. Apart from a slash-only path such as `//` in
+`policy.filesystem.readOnly` (earlier builds refused only `/` there), none of
+them could deploy an Agent.
+
+**How to tell.** Startup fails with `STARTUP_FAILED`, and the Installation
+loader names the setting, for example `/policy/process/runAsUser`.
+
+**Steps.** Correct the named setting, then start the controller again.
+
 ## 2026-10-24: OpenShell readiness poll interval is capped at 2147483647 ms
 
 **What breaks.** Controller startup refuses an OpenShell Sandbox
