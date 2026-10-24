@@ -107,15 +107,15 @@ function serveSession(socket, sessions, onQuery) {
           continue;
         }
         const fields = body.toString("utf8").split("\0");
-        const parameters = {};
+        const parameters = new Map();
         for (let index = 0; index + 1 < fields.length; index += 2) {
           if (fields[index]) {
-            parameters[fields[index]] = fields[index + 1];
+            parameters.set(fields[index], fields[index + 1]);
           }
         }
         session = {
-          user: parameters.user,
-          database: parameters.database ?? parameters.user,
+          user: parameters.get("user"),
+          database: parameters.get("database") ?? parameters.get("user"),
           password: undefined,
           queries: [],
         };
