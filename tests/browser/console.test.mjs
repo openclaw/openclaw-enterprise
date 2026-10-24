@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { cp, mkdtemp, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { cp, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -29,6 +28,7 @@ import {
   waitForIdleFetches,
   waitForSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const defaultCodexPreset = JSON.parse(
   await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
@@ -40,8 +40,7 @@ const createConsoleAppFixture = (t, options = {}) =>
 const signInApp = fileConsoleApp({ defaultPresets: [defaultCodexPreset] });
 
 test("mounted theme brands sign-in, Agent navigation and mobile without losing session behavior", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "occ-browser-theme-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "occ-browser-theme-");
   await cp(new URL("../../deploy/examples/console-theme/", import.meta.url), directory, {
     recursive: true,
   });

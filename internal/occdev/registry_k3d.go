@@ -2,12 +2,16 @@ package occdev
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"net/netip"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,6 +33,8 @@ type developmentImageRegistry struct {
 	// network is set from the attach attempt until the container is detached
 	// from the cluster network; address is the registry's IPv4 address there.
 	network, address string
+	// state records the attachment in state.json while network is set.
+	state *developmentState
 	// pending counts the selected images still to pull. The last pull
 	// detaches the registry, so it is reachable from the cluster only while
 	// images are pulled.
@@ -122,10 +128,128 @@ func (g *developmentImageRegistry) source(image string) (port, path string, ok b
 	return port, path, true
 }
 
+// developmentRegistryImage is what a registry-selected image's config says,
+// read from the registry and verified against the selected digest.
+type developmentRegistryImage struct {
+	Platform string
+	Labels   map[string]string
+}
+
+// developmentRegistryReadLimit bounds each manifest and config read.
+const developmentRegistryReadLimit = 4 << 20
+
+// developmentRegistryReadTimeout bounds each registry request.
+const developmentRegistryReadTimeout = 30 * time.Second
+
+var developmentRegistryClient = &http.Client{
+	Timeout:   developmentRegistryReadTimeout,
+	Transport: &http.Transport{Proxy: nil},
+	// The registry serves its content itself; a redirect points elsewhere.
+	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+}
+
+// readRegistryImage reads a registry-selected image's manifest and config from
+// the registry's published loopback address, for an image the local engine
+// does not hold. The manifest must hash to the selected digest and the config
+// to the digest the manifest names, so the platform and labels returned belong
+// to the image the node pulls; containerd verifies the same chain when it does.
+// Image indexes are refused: the node pull would choose one entry itself.
+func (r *runner) readRegistryImage(ctx context.Context, image string) (developmentRegistryImage, error) {
+	if _, _, ok := r.imageRegistry.source(image); !ok {
+		return developmentRegistryImage{}, fmt.Errorf("image is not pinned to the development image registry: %s", image)
+	}
+	name, digest, _ := strings.Cut(image, "@")
+	host, path, _ := strings.Cut(name, "/")
+	base := "http://" + host + "/v2/" + path
+	data, err := readRegistryContent(ctx, base+"/manifests/"+digest, digest,
+		"application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json")
+	if err != nil {
+		return developmentRegistryImage{}, fmt.Errorf("read %s from the development image registry: %w", image, err)
+	}
+	var manifest struct {
+		MediaType string `json:"mediaType"`
+		Config    struct {
+			Digest string `json:"digest"`
+		} `json:"config"`
+		Manifests []any `json:"manifests"`
+	}
+	if err := json.Unmarshal(data, &manifest); err != nil || manifest.Manifests != nil || !imageDigest.MatchString(manifest.Config.Digest) ||
+		(manifest.MediaType != "" && manifest.MediaType != "application/vnd.oci.image.manifest.v1+json" && manifest.MediaType != "application/vnd.docker.distribution.manifest.v2+json") {
+		return developmentRegistryImage{}, fmt.Errorf("the development image registry holds no single image manifest for %s", image)
+	}
+	data, err = readRegistryContent(ctx, base+"/blobs/"+manifest.Config.Digest, manifest.Config.Digest, "")
+	if err != nil {
+		return developmentRegistryImage{}, fmt.Errorf("read the config of %s from the development image registry: %w", image, err)
+	}
+	var config struct {
+		OS           string `json:"os"`
+		Architecture string `json:"architecture"`
+		Config       struct {
+			Labels map[string]string `json:"Labels"`
+		} `json:"config"`
+	}
+	if err := json.Unmarshal(data, &config); err != nil || config.OS == "" || config.Architecture == "" ||
+		strings.ContainsAny(config.OS+config.Architecture, "/ \t\n\r") {
+		return developmentRegistryImage{}, fmt.Errorf("invalid image config for %s in the development image registry", image)
+	}
+	return developmentRegistryImage{Platform: config.OS + "/" + config.Architecture, Labels: config.Config.Labels}, nil
+}
+
+// readRegistryContent fetches one manifest or blob and checks it against the
+// digest that names it.
+func readRegistryContent(ctx context.Context, url, digest, accept string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, developmentRegistryReadTimeout)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	if accept != "" {
+		request.Header.Set("Accept", accept)
+	}
+	response, err := developmentRegistryClient.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP %d", response.StatusCode)
+	}
+	data, err := io.ReadAll(io.LimitReader(response.Body, developmentRegistryReadLimit+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > developmentRegistryReadLimit {
+		return nil, fmt.Errorf("content larger than %d bytes", developmentRegistryReadLimit)
+	}
+	sum := sha256.Sum256(data)
+	if "sha256:"+hex.EncodeToString(sum[:]) != digest {
+		return nil, errors.New("content does not match its digest " + digest)
+	}
+	return data, nil
+}
+
+// developmentImagePlatform reports a selected image's platform from the local
+// engine, or else from the development image registry that serves it.
+func (r *runner) developmentImagePlatform(ctx context.Context, image string) (string, error) {
+	platform, err := r.output(ctx, r.engine, "image", "inspect", "--format", "{{.Os}}/{{.Architecture}}", image)
+	if err == nil {
+		return string(platform), nil
+	}
+	if _, _, ok := r.imageRegistry.source(image); !ok {
+		return "", err
+	}
+	selected, registryErr := r.readRegistryImage(ctx, image)
+	if registryErr != nil {
+		return "", errors.Join(err, registryErr)
+	}
+	return selected.Platform, nil
+}
+
 // registryNetworkAddress reports the registry container's address on a
 // network, or "" when it is not connected to it.
-func (r *runner) registryNetworkAddress(ctx context.Context, g *developmentImageRegistry, network string) (string, error) {
-	data, err := r.output(ctx, r.engine, "container", "inspect", "--format", `{{with index .NetworkSettings.Networks "`+network+`"}}{{.IPAddress}}{{end}}`, g.container)
+func (r *runner) registryNetworkAddress(ctx context.Context, container, network string) (string, error) {
+	data, err := r.output(ctx, r.engine, "container", "inspect", "--format", `{{with index .NetworkSettings.Networks "`+network+`"}}{{.IPAddress}}{{end}}`, container)
 	if err != nil {
 		return "", fmt.Errorf("read the development image registry address on %s: %w", network, err)
 	}
@@ -149,9 +273,14 @@ func (r *runner) attachDevelopmentImageRegistry(ctx context.Context, state *deve
 	}
 	// Recorded before connecting: a connect cut short by cancellation may
 	// still have attached the container, and detach checks before it acts.
-	g.network = network
+	// state.json records it too, for occ dev down after a killed start.
+	g.network, g.state = network, state
+	state.ImageRegistryContainer, state.ImageRegistryNetwork = g.container, network
+	if err := rewriteState(state); err != nil {
+		return fmt.Errorf("record the development image registry attachment: %w", err)
+	}
 	fmt.Fprintf(r.opts.Out, "Attaching the loopback image registry %s to the cluster network...\n", g.container)
-	value, err := r.registryNetworkAddress(ctx, g, network)
+	value, err := r.registryNetworkAddress(ctx, g.container, network)
 	if err != nil {
 		return err
 	}
@@ -159,7 +288,7 @@ func (r *runner) attachDevelopmentImageRegistry(ctx context.Context, state *deve
 		if err := r.run(ctx, r.engine, "network", "connect", network, g.container); err != nil {
 			return fmt.Errorf("attach the development image registry to %s: %w", network, err)
 		}
-		if value, err = r.registryNetworkAddress(ctx, g, network); err != nil {
+		if value, err = r.registryNetworkAddress(ctx, g.container, network); err != nil {
 			return err
 		}
 	}
@@ -190,16 +319,47 @@ func (r *runner) detachDevelopmentImageRegistryLocked(ctx context.Context, g *de
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), developmentImageRegistryDetachTimeout)
 	defer cancel()
-	value, err := r.registryNetworkAddress(ctx, g, g.network)
-	if err != nil {
-		return fmt.Errorf("detach the development image registry from %s: %w", g.network, err)
-	}
-	if value != "" {
-		if err := r.run(ctx, r.engine, "network", "disconnect", g.network, g.container); err != nil {
-			return fmt.Errorf("detach the development image registry from %s: %w", g.network, err)
-		}
+	if err := r.disconnectDevelopmentImageRegistry(ctx, g.container, g.network); err != nil {
+		return err
 	}
 	g.network, g.address = "", ""
+	if s := g.state; s != nil && s.ImageRegistryNetwork != "" {
+		s.ImageRegistryContainer, s.ImageRegistryNetwork = "", ""
+		// A stale record only makes occ dev down find nothing to detach.
+		if err := rewriteState(s); err != nil {
+			fmt.Fprintf(r.opts.Err, "warning: clear the development image registry attachment in state.json: %v\n", err)
+		}
+	}
+	return nil
+}
+
+// detachRecordedDevelopmentImageRegistry disconnects the registry attachment
+// state.json still records, which a start killed before its own detach leaves
+// behind: k3d cluster delete keeps a network another container still uses, and
+// the next start of the same cluster would reuse it.
+func (r *runner) detachRecordedDevelopmentImageRegistry(ctx context.Context, s *developmentState) error {
+	if s.ImageRegistryNetwork == "" {
+		return nil
+	}
+	return r.disconnectDevelopmentImageRegistry(ctx, s.ImageRegistryContainer, s.ImageRegistryNetwork)
+}
+
+// disconnectDevelopmentImageRegistry removes the registry container from a
+// network. A container already detached, or since removed, needs nothing.
+func (r *runner) disconnectDevelopmentImageRegistry(ctx context.Context, container, network string) error {
+	value, err := r.registryNetworkAddress(ctx, container, network)
+	if err != nil {
+		listed, listErr := r.output(ctx, r.engine, "container", "ls", "--all", "--no-trunc", "--format", "{{.ID}} {{.Names}}")
+		if listErr != nil || containerListed(string(listed), container) {
+			return fmt.Errorf("detach the development image registry from %s: %w", network, err)
+		}
+		value = ""
+	}
+	if value != "" {
+		if err := r.run(ctx, r.engine, "network", "disconnect", network, container); err != nil {
+			return fmt.Errorf("detach the development image registry from %s: %w", network, err)
+		}
+	}
 	return nil
 }
 
@@ -216,13 +376,13 @@ func (r *runner) pullDevelopmentImage(ctx context.Context, s *developmentState, 
 	if address == "" {
 		return "", fmt.Errorf("the development image registry is not attached to the cluster network")
 	}
-	// The local engine holds the same digest (its labels were checked); keep
-	// the Linux platform requirement of the archive path.
-	platform, err := r.output(ctx, r.engine, "image", "inspect", "--format", "{{.Os}}/{{.Architecture}}", image)
+	// The local engine or the registry holds the same digest (its labels were
+	// checked); keep the Linux platform requirement of the archive path.
+	platform, err := r.developmentImagePlatform(ctx, image)
 	if err != nil {
 		return "", err
 	}
-	if !strings.HasPrefix(string(platform), "linux/") {
+	if !strings.HasPrefix(platform, "linux/") {
 		return "", fmt.Errorf("development image must contain a Linux platform: %s", image)
 	}
 	_, digest, _ := strings.Cut(image, "@")
@@ -230,7 +390,7 @@ func (r *runner) pullDevelopmentImage(ctx context.Context, s *developmentState, 
 	server := "k3d-" + s.Cluster + "-server-0"
 	fmt.Fprintf(r.opts.Out, "Pulling %s into the cluster from the loopback image registry...\n", image)
 	// ctr reports progress on stdout and failures on stderr.
-	pull := r.command(ctx, r.engine, "exec", server, "ctr", "-n", "k8s.io", "images", "pull", "--plain-http", "--platform", string(platform), source)
+	pull := r.command(ctx, r.engine, "exec", server, "ctr", "-n", "k8s.io", "images", "pull", "--plain-http", "--platform", platform, source)
 	pull.Stdout = io.Discard
 	pull.Stderr = r.opts.Err
 	if err := pull.Run(); err != nil {
@@ -261,4 +421,20 @@ func (r *runner) pullDevelopmentImage(ctx context.Context, s *developmentState, 
 		}
 	}
 	return image, nil
+}
+
+// containerListed reports whether a "<ID> <names>" container listing has a
+// container named container, or one whose ID starts with it (the setting
+// accepts an ID or a prefix of one). Names may be comma-separated.
+func containerListed(listing, container string) bool {
+	for _, line := range strings.Split(listing, "\n") {
+		fields := strings.FieldsFunc(line, func(c rune) bool { return c == ' ' || c == '\t' || c == ',' })
+		if len(fields) == 0 {
+			continue
+		}
+		if strings.HasPrefix(fields[0], container) || slices.Contains(fields[1:], container) {
+			return true
+		}
+	}
+	return false
 }

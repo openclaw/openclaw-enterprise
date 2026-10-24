@@ -49,8 +49,14 @@ type developmentState struct {
 	OpenShellHostGatewayIP      string `json:"openShellHostGatewayIP,omitempty"`
 	SandboxNetworkPolicies      []any  `json:"sandboxNetworkPolicies,omitempty"`
 	SandboxNetworkPolicyCeiling []any  `json:"sandboxNetworkPolicyCeiling,omitempty"`
-	egressKeyID                 string
-	directory                   string
+	// ImageRegistryContainer and ImageRegistryNetwork record a development
+	// image registry attached to the cluster network, from just before the
+	// connect until the disconnect, so occ dev down can detach it after a start
+	// killed before its own detach ran.
+	ImageRegistryContainer string `json:"imageRegistryContainer,omitempty"`
+	ImageRegistryNetwork   string `json:"imageRegistryNetwork,omitempty"`
+	egressKeyID            string
+	directory              string
 }
 
 func (s *developmentState) composeCommand() []string {
@@ -133,6 +139,30 @@ func validateKeyOutput(path string) error {
 	}
 	return privateOwned(parent, true)
 }
+
+// rewriteState replaces state.json with the current state. The new file is
+// renamed over the old one, so an interrupted write keeps the previous record.
+func rewriteState(s *developmentState) (result error) {
+	data, err := json.Marshal(s)
+	if err != nil {
+		return err
+	}
+	file, err := os.CreateTemp(s.directory, ".state-*.json")
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if result != nil {
+			os.Remove(file.Name())
+		}
+	}()
+	_, writeErr := file.Write(data)
+	closeErr := file.Close()
+	if err := errors.Join(writeErr, closeErr); err != nil {
+		return err
+	}
+	return os.Rename(file.Name(), filepath.Join(s.directory, "state.json"))
+}
 func readState(directory string) (*developmentState, error) {
 	for _, name := range []string{".openclaw-development", "state.json"} {
 		if err := privateOwned(filepath.Join(directory, name), false); err != nil {
@@ -177,6 +207,10 @@ func readState(directory string) (*developmentState, error) {
 			return nil, fmt.Errorf("unsupported development state")
 		}
 	default:
+		return nil, fmt.Errorf("unsupported development state")
+	}
+	if (state.ImageRegistryContainer != "" || state.ImageRegistryNetwork != "") &&
+		(state.DeploymentMode != "k3d" || !registryContainerName.MatchString(state.ImageRegistryContainer) || state.ImageRegistryNetwork != "k3d-"+state.Cluster) {
 		return nil, fmt.Errorf("unsupported development state")
 	}
 	if state.KeyOwned && state.KeyPath != filepath.Join(directory, "initial-admin-service-key.json") {

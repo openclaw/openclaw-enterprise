@@ -5,7 +5,6 @@ import { randomUUID } from "node:crypto";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import pg from "pg";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
@@ -26,6 +25,7 @@ import {
   validateExplicitK3dLoopbackContext,
 } from "../helpers/kubernetes-real.mjs";
 import { kubectlGetJson } from "../helpers/kubernetes-api-read.mjs";
+import { waitForResult } from "../helpers/wait-for.mjs";
 
 export const execute = promisify(execFile);
 export const kubeconfigPath = process.env.OCC_TEST_KUBERNETES_KUBECONFIG;
@@ -106,16 +106,8 @@ export async function missing(kind, name, namespace) {
   }
 }
 
-export async function waitFor(description, operation, timeoutMs = 120_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const result = await operation();
-    if (result !== undefined && result !== false) {
-      return result;
-    }
-    await delay(500);
-  }
-  assert.fail(`Timed out waiting for ${description}.`);
+export function waitFor(description, operation, timeoutMs = 120_000) {
+  return waitForResult(description, operation, { timeoutMs, intervalMs: 500 });
 }
 
 // Test cleanup deletes its randomly named namespaces without waiting: no later step reads

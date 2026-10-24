@@ -1083,6 +1083,71 @@ func TestCredentialSourceListTableOmitsTheLiveGatewayStatusOnlyGetCarries(t *tes
 	}
 }
 
+func TestCredentialSourceDetailTableShowsTheRefreshStateWhenReported(t *testing.T) {
+	source := `{"id":"cs_1","name":"openai","type":"oauth2-refresh-token","state":"ready","status":{"state":"ready","refresh":{"state":"failed","failureCode":"token_rejected"}}}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/namespaces/ns_1/credential-sources":
+			_, _ = io.WriteString(w, `{"data":[{"id":"cs_1","name":"openai","type":"oauth2-refresh-token","state":"ready"}],"meta":{"requestId":"req_1"}}`)
+		case "/namespaces/ns_1/credential-sources/cs_1":
+			_, _ = io.WriteString(w, `{"data":`+source+`,"meta":{"requestId":"req_2"}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+	keyFile := writeKeyFile(t, `{"data":{"key":"test-key"}}`)
+	args := []string{"credential-source", "get", "cs_1", "--url", server.URL, "--service-key-file", keyFile, "--namespace", "ns_1"}
+
+	var table strings.Builder
+	command := New(&table, io.Discard)
+	command.SetArgs(args)
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	var got [][]string
+	for _, line := range strings.Split(strings.TrimSpace(table.String()), "\n") {
+		got = append(got, strings.Fields(line))
+	}
+	want := [][]string{
+		{"ID", "NAME", "TYPE", "STATE", "GATEWAY", "STATUS", "REFRESH"},
+		{"cs_1", "openai", "oauth2-refresh-token", "ready", "ready", "failed"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("table = %#v, want %#v", got, want)
+	}
+
+	var structured strings.Builder
+	command = New(&structured, io.Discard)
+	command.SetArgs(append([]string{"-o", "json"}, args...))
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(structured.String()), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := decoded["refreshStatus"]; ok {
+		t.Fatalf("json gained a table-only key: %s", structured.String())
+	}
+	status, _ := decoded["status"].(map[string]any)
+	refresh, _ := status["refresh"].(map[string]any)
+	if refresh["state"] != "failed" || refresh["failureCode"] != "token_rejected" {
+		t.Fatalf("json status = %#v", decoded["status"])
+	}
+
+	var list strings.Builder
+	command = New(&list, io.Discard)
+	command.SetArgs([]string{"credential-source", "list", "--url", server.URL, "--service-key-file", keyFile, "--namespace", "ns_1"})
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(list.String(), "REFRESH") || strings.Contains(list.String(), "failed") {
+		t.Fatalf("list table = %q", list.String())
+	}
+}
+
 func TestRedirectIsReportedWithItsTargetAndNotFollowed(t *testing.T) {
 	var followed bool
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -1140,6 +1205,25 @@ func TestRedirectIsReportedWithItsTargetAndNotFollowed(t *testing.T) {
 				t.Fatalf("origin key = %q, redirect followed = %v", sawKey, followed)
 			}
 		})
+	}
+}
+
+// A missing endpoint or service key names the setting to fix instead of a
+// file or connection error.
+func TestMissingConnectionSettingsNameTheSetting(t *testing.T) {
+	t.Setenv("OCC_URL", "")
+	t.Setenv("OCC_SERVICE_KEY_FILE", "")
+	t.Setenv("OCC_TIMEOUT_SECONDS", "")
+	for _, testCase := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"installation", "get", "--service-key-file", "unused"}, "set OCC_URL or pass --url"},
+		{[]string{"installation", "get", "--url", "http://127.0.0.1:9"}, "set OCC_SERVICE_KEY_FILE or pass --service-key-file"},
+	} {
+		if _, _, err := runHelp(t, testCase.args...); err == nil || err.Error() != testCase.want {
+			t.Fatalf("occ %v error = %v, want %q", testCase.args, err, testCase.want)
+		}
 	}
 }
 
@@ -1215,6 +1299,8 @@ func TestExplicitEmptyFlagValuesAreRefusedBeforeAnyWork(t *testing.T) {
 		{[]string{"iam", "access-binding", "create", "--file="}, "--file must name a JSON document"},
 		{append(slices.Clone(serviceKeyCreate), "--out="), "--out must name a key file path"},
 		{append(slices.Clone(serviceKeyCreate), "--service-principal="), "--service-principal must name a ServicePrincipal ID"},
+		// --facet is inherited from "agent policy"; update would otherwise read its file first.
+		{[]string{"agent", "policy", "update", "agt_1", "--file", outFile, "--facet="}, "--facet must name a sandbox policy facet such as networking"},
 		{[]string{"agent", "runtime", "agt_1", "--url="}, "--url must name the OCC endpoint URL"},
 		{[]string{"agent", "runtime", "agt_1", "--service-key-file="}, "--service-key-file must name a bootstrap or service-key response file"},
 	} {
@@ -1240,6 +1326,51 @@ func TestExplicitEmptyFlagValuesAreRefusedBeforeAnyWork(t *testing.T) {
 	command.SetArgs(append(slices.Clone(connection), "agent", "runtime", "agt_1", "--revision", "rev_1", "--ca-bundle="))
 	if err := command.Execute(); err == nil || requests != 1 {
 		t.Fatalf("--ca-bundle=: error = %v after %d requests, want the server's error after 1", err, requests)
+	}
+}
+
+func TestAgentPolicyFacetMustBeNetworkingBeforeAnyRequest(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		requests++
+		writer.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	keyFile := writeKeyFile(t, `{"data":{"key":"test-key"}}`)
+	file := filepath.Join(t.TempDir(), "policy.json")
+	if err := os.WriteFile(file, []byte(`{"expectedVersion":1,"additions":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	connection := []string{"--url", server.URL, "--service-key-file", keyFile, "--namespace", "ns_1"}
+	for _, args := range [][]string{
+		{"agent", "policy", "get", "agt_1", "--facet="},
+		{"agent", "policy", "get", "agt_1", "--facet", "filesystem"},
+		{"agent", "policy", "get", "agt_1", "--facet", "process"},
+		{"agent", "policy", "update", "agt_1", "--facet", "filesystem", "--file", file},
+		{"agent", "policy", "apply", "agt_1", "--facet=", "--revision", "rev_1", "--expected-version", "1"},
+		{"agent", "policy", "editing", "agt_1", "--facet", "filesystem", "--enabled=false"},
+		{"agent", "policy", "recommendations", "agt_1", "--facet", "process", "--revision", "rev_1"},
+	} {
+		requests = 0
+		command := New(io.Discard, io.Discard)
+		command.SetArgs(append(slices.Clone(connection), args...))
+		err := command.Execute()
+		want := "--facet must be networking"
+		if slices.Contains(args, "--facet=") {
+			want = "--facet must name a sandbox policy facet such as networking"
+		}
+		if err == nil || err.Error() != want {
+			t.Errorf("%v: error = %v, want %q", args, err, want)
+		}
+		if requests != 0 {
+			t.Errorf("%v: sent %d requests", args, requests)
+		}
+	}
+	requests = 0
+	command := New(io.Discard, io.Discard)
+	command.SetArgs(append(slices.Clone(connection), "agent", "policy", "get", "agt_1", "--facet", "networking"))
+	if err := command.Execute(); err == nil || requests != 1 {
+		t.Fatalf("--facet=networking: error = %v after %d requests, want the server error after 1", err, requests)
 	}
 }
 

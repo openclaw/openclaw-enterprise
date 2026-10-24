@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
 updated: 2026-10-24
-last_updated_session: authoring-run/3954aa04-12f8-4a8e-bb62-a4d9a8603edd
+last_updated_session: authoring-run/b7994562-b460-4667-9017-4c62c3f56eb0
 ---
 
 # Agent sandbox policy flow
@@ -147,6 +147,9 @@ native draft approval cannot bypass OCC admission.
 `console/driver-configurations.mts:renderAgentDriverConfigurations` discovers
 sections and selects resource-owner controls. `console/configuration-fields.mts`
 renders schema fields and JSON fallback, with safe field/root diagnostics.
+String controls retain the complete draft. Length validation stays with the
+policy owner: JSON Schema counts Unicode code points, while HTML length
+attributes count UTF-16 code units and can truncate a valid executable path.
 `console/agents/sandbox-policy.mts:renderPolicy` keeps proposed rules local until
 preview. Review shows the rules the controller validated, and Save sends those
 rules with the reviewed policy version. Superseded preview and read responses
@@ -194,6 +197,8 @@ waiting for a policy request that never starts.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-10-24 18:15: Preserve complete Unicode string drafts for owner validation and add a simulated policy Review/Save walkthrough. (authoring-run/b7994562-b460-4667-9017-4c62c3f56eb0 - 6857956afcfee0b88563ea882c95034b5780cbec)
 
 - 2026-10-24 13:19: Refuse explicit unsupported CLI formats before policy requests. (authoring-run/3954aa04-12f8-4a8e-bb62-a4d9a8603edd - 1b59554add06e9f7be0b0a730202f558c939a661)
 

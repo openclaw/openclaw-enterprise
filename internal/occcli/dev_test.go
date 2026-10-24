@@ -12,6 +12,30 @@ import (
 	"time"
 )
 
+func TestDevUpRejectsSandboxPolicyFlagsBeforeDockerStartup(t *testing.T) {
+	repository, err := developmentRepository()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"--sandbox-network-policy-file", "/tmp/policy.yaml"},
+		{"--sandbox-network-policy-ceiling-file=/tmp/ceiling.yaml"},
+	} {
+		command := exec.Command("bash", append([]string{"scripts/dev-up"}, args...)...)
+		command.Dir = repository
+		command.Env = append(os.Environ(), "OCC_DEVELOPMENT_COMPUTE_DRIVER=docker")
+		output, err := command.CombinedOutput()
+		var exited *exec.ExitError
+		if !errors.As(err, &exited) || exited.ExitCode() != 2 {
+			t.Fatalf("%v: err = %v\n%s", args, err, output)
+		}
+		text := string(output)
+		if !strings.Contains(text, "Sandbox policy input requires Kubernetes Compute and a Sandbox Driver") || strings.Contains(text, "unknown option") {
+			t.Fatalf("%v:\n%s", args, text)
+		}
+	}
+}
+
 func TestDevUpProtectedProfileEntrypoints(t *testing.T) {
 	repository, err := developmentRepository()
 	if err != nil {
@@ -144,6 +168,16 @@ func TestDevUpRejectsUnsupportedOrEmptySandboxPolicyFlag(t *testing.T) {
 		if err := command.Execute(); err == nil || !strings.Contains(err.Error(), test.message) {
 			t.Fatalf("expected %q, got %v", test.message, err)
 		}
+	}
+}
+
+func TestDevUpRejectsEmptySandboxPolicyCeilingFlag(t *testing.T) {
+	t.Setenv("OCC_DEVELOPMENT_COMPUTE_DRIVER", "docker")
+	command := New(&bytes.Buffer{}, &bytes.Buffer{})
+	command.SetArgs([]string{"dev", "up", "--sandbox-network-policy-ceiling-file="})
+	err := command.Execute()
+	if err == nil || !strings.Contains(err.Error(), "--sandbox-network-policy-ceiling-file must name a Sandbox network policy ceiling file") {
+		t.Fatalf("empty ceiling file = %v", err)
 	}
 }
 

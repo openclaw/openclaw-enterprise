@@ -4,6 +4,7 @@ import test from "node:test";
 
 import { FIRST_ACTIVITY_WAIT_MS } from "../../apps/controller/src/console/agents/detail.mts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { listen } from "../helpers/listen.mjs";
 import {
   detailUrl,
   hasFocus,
@@ -1539,9 +1540,7 @@ test("holdRequests sends a held write once, and fails it when its answer is lost
     }
     response.writeHead(202).end("applied");
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
-  const origin = `http://127.0.0.1:${server.address().port}`;
+  const origin = `http://127.0.0.1:${await listen(t, server)}`;
   const fixture = await createConsoleAppFixture(t);
   const { page } = await newPage(t, fixture);
   await page.goto(`${origin}/`);
