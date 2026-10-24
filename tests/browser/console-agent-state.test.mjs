@@ -1471,11 +1471,14 @@ test("Agents list row actions stop and delete an Agent through the real API", as
   await remove.click();
   dialog = page.getByRole("dialog", { name: "Delete Running Agent?" });
   await dialog
-    .getByText(
-      `occ configuration delete ${running.configurationId} and occ secret delete ${running.harnessAuth.source.id}`,
-      { exact: false },
-    )
+    .getByText("The Configuration and model credential Secret stay in this Namespace.")
     .waitFor();
+  const cli = `occ --namespace ${namespace.id}`;
+  const configuration = dialog.getByText(`${cli} configuration delete ${running.configurationId}`);
+  assert.equal(await configuration.isVisible(), false);
+  await dialog.getByText("View separate cleanup commands").click();
+  await configuration.waitFor();
+  await dialog.getByText(`${cli} secret delete ${running.harnessAuth.source.id}`).waitFor();
   const deleteResponse = page.waitForResponse(
     (response) =>
       response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/${running.id}` &&

@@ -83,15 +83,33 @@ test("Agent delete confirmation can be canceled without sending a write request"
   const dialog = page.getByRole("dialog", { name: "Delete Cancel Candidate?" });
   await dialog.getByText(/Agent, its version history, and its workspace data/i).waitFor();
   // Deletion keeps the Agent's Configuration and model credential Secret, which the console
-  // cannot list or delete, so the dialog gives the commands that remove them by ID.
+  // names up front. Exact commands are available separately, without confirming the deletion.
   assert.equal(agent.harnessAuth.method, "api_key");
-  await dialog
-    .getByText(
-      `Its Configuration and model credential Secret are kept, even if they were created with this Agent. Once nothing else uses them, delete them with occ configuration delete ${agent.configurationId} and occ secret delete ${agent.harnessAuth.source.id}.`,
-    )
-    .waitFor();
   const cancel = dialog.getByRole("button", { name: "Cancel" });
   assert.equal(await cancel.evaluate((node) => node.ownerDocument.activeElement === node), true);
+  await dialog
+    .getByText("The Configuration and model credential Secret stay in this Namespace.")
+    .waitFor();
+  const cli = `occ --namespace ${namespace.id}`;
+  const configuration = `${cli} configuration delete ${agent.configurationId}`;
+  const secret = `${cli} secret delete ${agent.harnessAuth.source.id}`;
+  assert.equal(await dialog.getByText(configuration, { exact: true }).isVisible(), false);
+  assert.equal(await dialog.getByText(secret, { exact: true }).isVisible(), false);
+  await dialog.getByText("View separate cleanup commands").press("Enter");
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+  for (const [kind, command] of [
+    ["Configuration", configuration],
+    ["Secret", secret],
+  ]) {
+    const row = dialog.locator(".agent-kept-command").filter({ hasText: command });
+    await row.getByText(command, { exact: true }).waitFor();
+    await row.getByRole("button", { name: `Copy ${kind} command` }).press("Enter");
+    await row
+      .getByRole("status")
+      .filter({ hasText: /^Command copied\.$/ })
+      .waitFor();
+    assert.equal(await page.evaluate(() => globalThis.navigator.clipboard.readText()), command);
+  }
   // Attach the rejection check when the timed wait starts: on a loaded runner the click can
   // outlast the 300 ms window, and a wait that times out with no handler fails the test as an
   // unhandled rejection (finding 1986). This only catches a DELETE sent soon after Cancel; the

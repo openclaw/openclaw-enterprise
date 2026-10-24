@@ -12,7 +12,7 @@ import {
   type AgentLifecycleContext,
   DELETE_CONFIRMATION,
   type LifecycleError,
-  keptResourcesText,
+  keptResources,
 } from "./lifecycle-confirmation.mjs";
 import { message } from "./list.mjs";
 
@@ -407,6 +407,7 @@ export function createAgentDeletion(
       cancel.focus();
     };
     restrictConfirmation = showRestriction;
+    const kept = keptResources(agent);
     dialog.append(
       element(
         "h2",
@@ -414,7 +415,8 @@ export function createAgentDeletion(
         retry ? `Request deletion again for ${agent.name}?` : `Delete ${agent.name}?`,
       ),
       description,
-      element("p", { id: "agent-delete-confirm-kept" }, keptResourcesText(agent)),
+      kept.summary,
+      kept.commands,
       element("div", { className: "dialog-actions" }, cancel, confirm),
     );
     dialog.addEventListener("cancel", (event) => {

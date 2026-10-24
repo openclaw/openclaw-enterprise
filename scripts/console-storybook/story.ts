@@ -34,6 +34,7 @@ type PreviewOptions = {
   frameHeight?: `${number}px`;
   name?: string;
   instructions?: string;
+  openInNewTab?: boolean;
 };
 
 export function story(id: string, options: PreviewOptions = {}) {
@@ -100,6 +101,14 @@ export function story(id: string, options: PreviewOptions = {}) {
         const instructions = document.createElement("p");
         instructions.textContent = options.instructions;
         root.append(instructions);
+      }
+      if (options.openInNewTab) {
+        const preview = document.createElement("a");
+        preview.href = src;
+        preview.target = "_blank";
+        preview.rel = "noopener";
+        preview.textContent = "Open preview in its own tab";
+        root.append(preview);
       }
       root.append(frame);
       return root;

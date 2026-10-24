@@ -237,6 +237,25 @@ test("Stop, Delete, Plugins, Slack and Secret dialogs share one chrome, become b
   await page.emulateMedia({ reducedMotion: "reduce" });
   await cases[0].open();
   assert.match((await openDialog(page)).animation, /^none /);
+
+  // A short desktop page has an empty, stable scrollbar gutter outside the native backdrop.
+  // Compare its actual paint to the adjacent canvas, without assuming a scrollbar width or colour.
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(`${fixture.origin}/console/secrets?namespace=${namespace.id}`);
+  const create = page.getByRole("button", { name: "Create Secret", exact: true });
+  await create.click();
+  const { viewport, clientWidth } = await openDialog(page);
+  const pageHeight = await page.locator("html").evaluate((html) => html.scrollHeight);
+  assert.equal(pageHeight, viewport.height, "the page has no vertical scrollbar");
+  if (viewport.width < clientWidth) {
+    const column = (x: number) =>
+      page.screenshot({ clip: { x, y: 10, width: 1, height: 10 }, scale: "css" });
+    const canvas = await column(viewport.width - 1);
+    const gutter = await column(clientWidth - 1);
+    assert.ok(gutter.equals(canvas), "the backdrop reaches across the empty scrollbar gutter");
+  }
+  await page.keyboard.press("Escape");
+  assert.equal(await hasFocus(create), true);
 });
 
 // Where the open sheet and its actions sit against the visible area, once the visual viewport's

@@ -462,6 +462,8 @@ controls:
   behavior; do not invent additional acceptance criteria. Use
   [pr-walkthrough](.agents/skills/pr-walkthrough/SKILL.md) to record the interaction
   at a pace reviewers can follow.
+- Lead visual review with the desktop Console. For responsive changes, also show
+  the relevant phone state; a second recording is useful only when the interaction differs.
 - Do not commit PR evidence, including screenshots, recordings, or generated
   evidence reports, to the repository. Keep local captures outside the checkout.
   Upload screenshots and a short video to GitHub, as native attachments or as

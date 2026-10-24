@@ -37,7 +37,9 @@
   --color-danger-subtle: rgba(185, 28, 28, 0.08);
   --color-info: #193e61;
   --color-info-subtle: #e8f1f9;
-  --color-overlay: rgba(15, 23, 42, 0.4);
+  /* One tint and opacity for the translucent backdrop and its colour over the page canvas. */
+  --color-overlay-mix: #0f172a 40%;
+  --color-overlay: color-mix(in srgb, var(--color-overlay-mix), transparent);
   --color-focus: var(--color-link);
   /* Inverse surfaces use the same palette with light text, selection and focus. */
   --color-surface-inverse: var(--color-text-strong);
@@ -2673,6 +2675,23 @@ select:not([multiple])[size="1"] {
   background: var(--color-danger);
   color: var(--color-on-accent);
 }
+.agent-kept-resources {
+  margin-top: var(--space-3);
+}
+.agent-kept-command {
+  display: grid;
+  justify-items: start;
+  gap: var(--space-1);
+  margin-top: var(--space-2);
+  padding: var(--space-3);
+  background: var(--color-surface-2);
+  border-radius: var(--radius-sm);
+}
+.agent-kept-command code {
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+  user-select: all;
+}
 /* Dialog pattern (UX plan C6): every modal shares this chrome, backdrop, shadow and open motion.
    `--wide` holds a workspace (plugins), `--drawer` sits at the right edge (channels), and at
    760px and below each one is a bottom sheet. Sizes use % of the viewport box a modal dialog
@@ -2822,6 +2841,18 @@ select:not([multiple])[size="1"] {
 }
 .dialog::backdrop {
   background: var(--color-overlay);
+}
+/* The native backdrop stops before a classic scrollbar gutter. Paint the same tint over the
+   root canvas there; body keeps its own background so the page is dimmed only once. */
+@media (forced-colors: none) {
+  :root:has(.dialog:modal) {
+    background-color: color-mix(in srgb, var(--color-overlay-mix), var(--color-bg));
+    transition: background-color var(--duration-base) var(--ease);
+    scrollbar-color: var(--color-text-muted) transparent;
+  }
+  body {
+    scrollbar-color: auto;
+  }
 }
 /* A framed dialog keeps its destination in the header and its actions together in the footer. */
 .dialog--framed {

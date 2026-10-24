@@ -135,6 +135,11 @@ export async function loadConsoleTheme(
           "colors must use supported roles and six- or eight-digit hex colors.",
         );
       }
+      if (role === "overlay") {
+        // The backdrop and the scrollbar gutter mix this same colour over different backgrounds.
+        const alpha = Number.parseInt(color.slice(7) || "ff", 16) / 255;
+        return `  --color-overlay-mix: ${color.slice(0, 7)} ${alpha * 100}%;`;
+      }
       return `  --color-${consoleThemeColorRoles[role as keyof typeof consoleThemeColorRoles]}: ${color};`;
     });
     const assets = new Map<string, ConsoleThemeAsset>();
