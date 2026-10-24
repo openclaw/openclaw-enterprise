@@ -9,7 +9,12 @@ Replace `github-login` with the original RFC PR author's GitHub login (without `
 The author is required and is treated as the RFC owner. The index uses this
 frontmatter value; do not repeat it in the body or add a separate owner field.
 Describe team responsibilities in the proposal where relevant.
-Adapt the headings to the change and remove sections that do not apply. See the
+Preserve the section headings, order, and hierarchy shown below, including
+Architecture and Request lifecycle under Proposal. Do not rename, merge, reorder,
+or omit these sections. Adapt the content to the change and add topic-specific
+subsections under Proposal where needed. If a section does not apply, retain its
+heading and briefly explain why; if there are no unresolved questions, state that.
+Preserve existing Manual Notes and Changelog sections after References. See the
 [RFC process](rfcs.md) for review, length, and diagram guidance.
 
 Adapted from the [OpenClaw RFC template](https://github.com/openclaw/rfcs/blob/main/rfcs/0000-template.md).
@@ -56,8 +61,8 @@ success. Identify material dependencies and assumptions.]
 
 ## Non-goals
 
-[Name adjacent work intentionally excluded from this decision. Omit this
-section if there are no meaningful scope boundaries to clarify.]
+[Name adjacent work intentionally excluded from this decision. If there are no
+additional exclusions, state that explicitly.]
 
 <a id="design"></a>
 
@@ -153,7 +158,7 @@ including retaining current behavior when relevant, and their tradeoffs.]
 ## Unresolved questions
 
 [For each open decision, name the deciding owner, consequence, and any invariant
-that remains binding. Omit this section when no material questions remain.]
+that remains binding. State explicitly when no material questions remain.]
 
 ## References
 
