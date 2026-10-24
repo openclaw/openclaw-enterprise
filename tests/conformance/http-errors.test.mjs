@@ -43,6 +43,7 @@ import {
   NamespaceNotReadyError,
   NativeWorkerSupportError,
   NotImplementedError,
+  PersistedStateInvalidError,
   PluginDiscoveryError,
   PluginPolicyValidationError,
   PostgresCommitOutcomeUnknownError,
@@ -845,6 +846,16 @@ const cases = [
     },
   ],
   [
+    // #3313: an undecodable row fails closed like any unavailable dependency.
+    "a persisted row its reader cannot decode is an unavailable dependency, without its text",
+    new PersistedStateInvalidError(INTERNAL),
+    {
+      status: 503,
+      code: "DEPENDENCY_UNAVAILABLE",
+      message: "A required platform dependency is unavailable.",
+    },
+  ],
+  [
     "a Configuration Secret binding the selected Secret Driver cannot serve names the fix",
     new SecretBindingDriverError(),
     {
@@ -1054,6 +1065,7 @@ test("every API error code that may answer 503 is classified for Create Agent's 
 const UNNAMED_503_CASES = [
   "an unknown commit outcome says not to retry automatically",
   "an unavailable dependency is not a denial",
+  "a persisted row its reader cannot decode is an unavailable dependency, without its text",
   "a Configuration ConfigMap OCC does not own",
   "an unavailable dependency from another module copy, matched by name",
   "a Kubernetes API 404",
