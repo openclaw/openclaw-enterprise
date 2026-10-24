@@ -387,6 +387,7 @@ func TestAgentLogsRejectsInvalidFlagsBeforeAnyRequest(t *testing.T) {
 		{"agent", "logs", "agt_1", "--source", "gateway", "--since", "25h"},
 		{"agent", "logs", "agt_1", "--source", "gateway", "--follow", "--previous"},
 		{"agent", "logs", "agt_1", "--source", "gateway", "--level", "unknown"},
+		{"agent", "logs", "agt_1", "--source", "gateway", "-o", "table"},
 		{"agent", "logs", "agt_1", "--source", "gateway", "-o", "yaml"},
 		{"agent", "runtime", "agt_1", "-o", "text"},
 		{"agent", "logs", "agt_1", "--source", "gateway", "--revision", "3"},

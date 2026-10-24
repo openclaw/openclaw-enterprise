@@ -1170,7 +1170,7 @@ func (app *application) validateOptions(command *cobra.Command) error {
 	formats := []string{"table", "json", "yaml"}
 	if annotated, ok := command.Annotations[outputFormatsAnnotation]; ok {
 		formats = strings.Split(annotated, ",")
-		if app.output == "table" {
+		if !command.Flags().Changed("output") {
 			app.output = formats[0]
 		}
 	}

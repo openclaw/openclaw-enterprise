@@ -1,14 +1,14 @@
 ---
 created: 2026-09-30
-updated: 2026-10-19
-last_updated_session: authoring-run/545665b0-3aef-44dc-beb8-492b753b1a13
+updated: 2026-10-24
+last_updated_session: authoring-run/3954aa04-12f8-4a8e-bb62-a4d9a8603edd
 ---
 
 # Agent runtime logs flow
 
 ## Overview
 
-Authorized version reads return redacted Compute records within size limits; downloads stay local.
+Authorized reads return size-limited, redacted Compute records; downloads stay local.
 
 ## Entry Points
 
@@ -66,10 +66,12 @@ graph TD
 
 ### 1. Admit and authorize
 
+`internal/occcli/cli.go:validateOptions` checks explicit `--output` before
+requests; default: `text`.
+
 `internal/occcli/agent_runtime.go:agentRevision` honors `--revision`. Otherwise,
-`newerRevisionWithRuntime` reads Pod candidates unless exact active metadata
-(`Client.GetAgentRevision`) proves them older. Harness-only candidates must be
-proven newer. Status is reused.
+`newerRevisionWithRuntime` reuses status, excludes Pod candidates proven older by
+`Client.GetAgentRevision`, and requires Harness-only candidates to be proven newer.
 
 `packages/contracts/src/api/routes.ts:occApiRoutes` declares both GET routes with
 a closed query schema. `apps/controller/src/index.ts:perform` answers `501` when
@@ -81,8 +83,8 @@ audited denials spend no token; time buckets ignore clock changes.
 
 ### 2. Describe the runtime
 
-`KubernetesComputeDriver.describeAgentRuntime` resolves the owned Namespace and
-lists Pods with matching Agent, Agent revision ID, and role labels. Single-cluster profiles read
+`KubernetesComputeDriver.describeAgentRuntime` lists owned-Namespace Pods by
+Agent, Agent revision ID, and role labels. Single-cluster profiles read
 Gateways and Harnesses in the tenant namespace; two-cluster profiles read
 Gateways from control and Harnesses from execution. It reports a terminated
 container's current termination, otherwise the prior one. Event
@@ -229,6 +231,8 @@ Driver failures use fixed `RUNTIME_LOGS_*` codes; requests have ten-second deadl
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-24 13:19: Validate output. (authoring-run/3954aa04-12f8-4a8e-bb62-a4d9a8603edd - 1b59554add06e9f7be0b0a730202f558c939a661)
 
 - 2026-10-19 09:48: Preserve main and policy traces; condense prose. (authoring-run/545665b0-3aef-44dc-beb8-492b753b1a13 - bc3ba215dd9927692bc2882ffaf06a35c27fed4a)
 

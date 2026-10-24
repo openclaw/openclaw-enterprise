@@ -282,7 +282,9 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	// Nothing below needs the controller, PostgreSQL or repository images until
 	// the network check, so import them while the Codex sandbox check and the
 	// routing controller rollouts wait on the cluster. The runtime image is
-	// imported outside this overlap, so no two image builds run at once.
+	// imported outside this overlap, so no two image builds run at once. The
+	// network check needs only the controller image and runs in this overlap
+	// too; the platform install below still waits for it.
 	var codexSeccompProfile, routingPodCIDR string
 	var controllerImage, postgresImage, repositoryImage string
 	err = r.concurrently(ctx, func(ctx context.Context, r *runner) error {
@@ -308,17 +310,27 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 		if err != nil {
 			return fmt.Errorf("import the development controller image: %w", err)
 		}
-		postgresImage, err = r.importDevelopmentPostgres(ctx, state)
-		if err != nil {
-			return fmt.Errorf("import the development PostgreSQL image: %w", err)
-		}
-		if repositoryInputs != nil {
-			repositoryImage, err = r.importDevelopmentRepositoryService(ctx, state)
+		// The probe Pods run the controller image. The check creates its own
+		// Namespaces and policy and no routing resources, and its probes wait on
+		// timeouts, so it runs while the remaining images import. When a sibling
+		// fails, the check still removes its probe resources before the rollback.
+		return r.concurrently(ctx, func(ctx context.Context, r *runner) error {
+			fmt.Fprintln(r.opts.Out, "Verifying Kubernetes network isolation before configuring gateway trust...")
+			return r.verifyDevelopmentNetworkPolicy(ctx, state, controllerImage, "", "", false, timeout)
+		}, func(ctx context.Context, r *runner) error {
+			var err error
+			postgresImage, err = r.importDevelopmentPostgres(ctx, state)
 			if err != nil {
-				return fmt.Errorf("import the development repository service image: %w", err)
+				return fmt.Errorf("import the development PostgreSQL image: %w", err)
 			}
-		}
-		return nil
+			if repositoryInputs != nil {
+				repositoryImage, err = r.importDevelopmentRepositoryService(ctx, state)
+				if err != nil {
+					return fmt.Errorf("import the development repository service image: %w", err)
+				}
+			}
+			return nil
+		})
 	})
 	if err != nil {
 		return err
@@ -326,12 +338,6 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	if sandboxDriver == "openshell" {
 		runtimeImage, err = r.importRuntime(ctx, state)
 		if err != nil {
-			return err
-		}
-	}
-	if routingPodCIDR != "" {
-		fmt.Fprintln(r.opts.Out, "Verifying Kubernetes network isolation before configuring gateway trust...")
-		if err := r.verifyDevelopmentNetworkPolicy(ctx, state, controllerImage, "", "", false, timeout); err != nil {
 			return err
 		}
 	}

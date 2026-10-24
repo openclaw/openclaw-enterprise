@@ -114,7 +114,7 @@ func (transport *k3dOrderingTransport) RoundTrip(*http.Request) (*http.Response,
 }
 
 func TestK3dCodexPreflightOrdering(t *testing.T) {
-	for _, scenario := range []string{"refused", "invalid result", "cleanup failure", "cancelled", "accepted", "API failure", "OpenShell routing", "controller import failure"} {
+	for _, scenario := range []string{"refused", "invalid result", "cleanup failure", "cancelled", "accepted", "API failure", "OpenShell routing", "controller import failure", "network check failure"} {
 		t.Run(scenario, func(t *testing.T) {
 			root := t.TempDir()
 			state := filepath.Join(root, "state")
@@ -141,6 +141,10 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 			}
 			probePID := filepath.Join(root, "probe.pid")
 			controllerPresent := ":"
+			// The network check starts once the controller image is imported and
+			// runs alongside the Codex check and the routing install. Its first
+			// probe resource waits here until a sibling's outcome cancels it.
+			networkProbe := "while :; do :; done"
 			// Clear optional lifecycle inputs without reading or recording credentials.
 			for _, key := range []string{"DOCKER_CONTEXT", "OCC_DEVELOPMENT_REPOSITORY_INPUT_DIRECTORY", "OCC_DEVELOPMENT_REPOSITORY_IMAGE", "OCC_DEVELOPMENT_OPENSHELL_HELM_CHART", "OCC_DEVELOPMENT_OPENSHELL_WORKSPACE_HELM_CHART", "OCC_DEVELOPMENT_OPENSHELL_AGENT_SANDBOX_MANIFEST"} {
 				t.Setenv(key, "")
@@ -184,6 +188,11 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 				// PATH holds only fixtures, so both wait with shell builtins.
 				probe = "echo $$ > " + shellQuote(probePID) + "; while :; do :; done"
 				controllerPresent = "while [ ! -s " + shellQuote(probePID) + " ]; do :; done; exit 1"
+			case "network check failure":
+				// The first probe resource fails only once the Codex check is
+				// running, so the check failure must stop the Codex check.
+				probe = "echo $$ > " + shellQuote(probePID) + "; while :; do :; done"
+				networkProbe = "while [ ! -s " + shellQuote(probePID) + " ]; do :; done; exit 1"
 			}
 			deleteResult := ":"
 			if scenario == "cleanup failure" {
@@ -212,8 +221,9 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 "kubeconfig get occ-dev-order") printf '%s\n' 'contexts:' '- name: k3d-occ-dev-order' '  context:' '    cluster: owned' 'clusters:' '- name: owned' '  cluster:' '    server: https://127.0.0.1:6443' ;;
 "image import --mode direct "*) [ "$KUBECONFIG" = ` + shellQuote(filepath.Join(state, "kubeconfig")) + ` ] && [ -f "$KUBECONFIG" ] && [ -f ` + shellQuote(filepath.Join(state, "container-kubeconfig")) + ` ] ;;
 "cluster delete occ-dev-order") ` + deleteResult + ` ;;`,
-				"kubectl": `"--kubeconfig "*" --context k3d-occ-dev-order get --raw=/version") ` + apiResult + ` ;;`,
-				"helm":    `"show chart "*) exit 45 ;;`,
+				"kubectl": `"--kubeconfig "*" --context k3d-occ-dev-order get --raw=/version") ` + apiResult + ` ;;
+"create -f ` + filepath.Join(state, "network-probe-") + `"*"-occ-netcheck-other-"*".json -o json") ` + networkProbe + ` ;;`,
+				"helm": `"show chart "*) exit 45 ;;`,
 				"node": `"scripts/prepare-development-codex-seccomp.mjs ` + state + ` ` + imported + ` 41") [ -f ` + shellQuote(filepath.Join(state, "state.json")) + ` ] && [ ! -e ` + shellQuote(filepath.Join(state, "installation.yaml")) + ` ] || exit 96
 ` + probe + ` ;;`,
 			})
@@ -257,6 +267,8 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 				wantError = "fixture routing download refused"
 			case "controller import failure":
 				wantError = "import the development controller image: explicitly selected controller image must already exist locally"
+			case "network check failure":
+				wantError = "kubectl create -f " + filepath.Join(state, "network-probe-")
 			}
 			if err == nil || !strings.Contains(err.Error(), wantError) {
 				t.Fatalf("want %q, got %v; commands: %v", wantError, err, calls)
@@ -270,9 +282,12 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 			if scenario == "cancelled" && ctx.Err() != context.Canceled {
 				t.Fatalf("expected cancellation, got %v", ctx.Err())
 			}
-			if scenario == "controller import failure" {
-				// The import failure, not the test deadline, stopped the check, and
-				// the check's process exited before setup returned.
+			if scenario == "network check failure" && !strings.Contains(output.String(), "Verifying Kubernetes network isolation before configuring gateway trust...") {
+				t.Fatalf("the network check did not start: %s", &output)
+			}
+			if scenario == "controller import failure" || scenario == "network check failure" {
+				// The import or network check failure, not the test deadline,
+				// stopped the Codex check, and its process exited before setup returned.
 				if ctx.Err() != nil {
 					t.Fatalf("the Codex check outlived the failed import: %v", ctx.Err())
 				}

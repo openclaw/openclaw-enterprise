@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
-updated: "2026-10-22"
-last_updated_session: "authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d"
+updated: 2026-10-24
+last_updated_session: authoring-run/3954aa04-12f8-4a8e-bb62-a4d9a8603edd
 ---
 
 # Agent sandbox policy flow
@@ -47,8 +47,9 @@ The solid arrows trace source paths, not a claim that all providers are verified
 ### 1. Admit and persist desired additions
 
 `internal/occcli/agent_policy.go:agentPolicyCommand` declares JSON and YAML
-output for each policy subcommand. The CLI selects JSON by default before
-sending the request, then prints its acknowledged result through
+output for each policy subcommand. `internal/occcli/cli.go:validateOptions` selects JSON only when `--output` is
+omitted and refuses unsupported explicit formats before any request. It then
+prints the acknowledged result through
 `internal/occcli/output.go:printStructured`. A successful mutation therefore
 returns its result without a later table-format error.
 
@@ -193,6 +194,8 @@ waiting for a policy request that never starts.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-10-24 13:19: Refuse explicit unsupported CLI formats before policy requests. (authoring-run/3954aa04-12f8-4a8e-bb62-a4d9a8603edd - 1b59554add06e9f7be0b0a730202f558c939a661)
 
 - 2026-10-22 23:45: Preserve CLI output guidance alongside upstream grant admission rules after conflict resolution. (authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d - c574fc743b21599c51d3809365039010a7e077d2)
 
