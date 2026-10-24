@@ -269,30 +269,6 @@ test(
   },
 );
 
-test(
-  "gateway routing service type is limited to the EnvoyProxy service types",
-  tooling,
-  async () => {
-    // EnvoyProxy envoyService.type accepts only these three. Any other value rendered, and the
-    // apply failed after the pre-install hooks had migrated and bootstrapped the Installation.
-    for (const serviceType of ["clusterIP", "ExternalName"]) {
-      await assert.rejects(
-        render({ ...gatewayRoutingValues, "gatewayRouting.serviceType": serviceType }),
-        /gatewayRouting\.serviceType must be ClusterIP, LoadBalancer or NodePort/,
-        serviceType,
-      );
-    }
-    for (const serviceType of ["LoadBalancer", "NodePort"]) {
-      const objects = await resources(
-        (await render({ ...gatewayRoutingValues, "gatewayRouting.serviceType": serviceType }))
-          .stdout,
-      );
-      const envoy = objects.find(({ kind }) => kind === "EnvoyProxy");
-      assert.equal(envoy.spec.provider.kubernetes.envoyService.type, serviceType);
-    }
-  },
-);
-
 test("execution peer label maps reject non-string values before rendering", tooling, async () => {
   const renderExecution = (field, value, option = "--set-json") =>
     execute(
@@ -6424,6 +6400,30 @@ test(
       ],
     ]) {
       await assert.rejects(render({ ...selected, ...override }), diagnostic);
+    }
+  },
+);
+
+test(
+  "gateway routing service type is limited to the EnvoyProxy service types",
+  tooling,
+  async () => {
+    // EnvoyProxy envoyService.type accepts only these three. Any other value rendered, and the
+    // apply failed after the pre-install hooks had migrated and bootstrapped the Installation.
+    for (const serviceType of ["clusterIP", "ExternalName"]) {
+      await assert.rejects(
+        render({ ...gatewayRoutingValues, "gatewayRouting.serviceType": serviceType }),
+        /gatewayRouting\.serviceType must be ClusterIP, LoadBalancer or NodePort/,
+        serviceType,
+      );
+    }
+    for (const serviceType of ["LoadBalancer", "NodePort"]) {
+      const objects = await resources(
+        (await render({ ...gatewayRoutingValues, "gatewayRouting.serviceType": serviceType }))
+          .stdout,
+      );
+      const envoy = objects.find(({ kind }) => kind === "EnvoyProxy");
+      assert.equal(envoy.spec.provider.kubernetes.envoyService.type, serviceType);
     }
   },
 );
