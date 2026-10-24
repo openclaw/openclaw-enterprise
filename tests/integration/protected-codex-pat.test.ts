@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -33,6 +33,8 @@ type Handler = (request: IncomingMessage, response: ServerResponse) => Promise<v
 
 function startup(t: TestContext, token: string, loginAccepted = true) {
   const root = mkdtempSync(join(tmpdir(), "protected-codex-pat-"));
+  const readyMarker = join(root, "ready");
+  writeFileSync(readyMarker, "stale");
   const timers = new Set<NodeJS.Timeout>();
   t.after(() => {
     for (const timer of timers) {
@@ -49,6 +51,7 @@ function startup(t: TestContext, token: string, loginAccepted = true) {
     egressEnrollment: enrollment,
   });
   const environment = {
+    OPENCLAW_PLUGIN_READY_MARKER: readyMarker,
     CODEX_HOME: join(root, "codex"),
     OPENCLAW_WORKSPACE_DIR: join(root, "workspace"),
     TMPDIR: root,
@@ -165,6 +168,7 @@ test("protected native Codex rejects a non-marker before filesystem writes or lo
   const fixture = startup(t, "invented-unapproved-value");
   assert.throws(() => fixture.run(), /protected native PAT/i);
   assert.equal(existsSync(fixture.environment.CODEX_HOME), false);
+  assert.equal(existsSync(fixture.environment.OPENCLAW_PLUGIN_READY_MARKER), false);
   assert.deepEqual(fixture.calls, []);
 });
 
@@ -172,6 +176,7 @@ async function release(fixture: ReturnType<typeof startup>) {
   const handler = fixture.run();
   assert.ok(handler);
   assert.deepEqual(fixture.calls, [], "native login waits for signed enrollment");
+  assert.equal(existsSync(fixture.environment.OPENCLAW_PLUGIN_READY_MARKER), false);
   const exchange = async (method: string, body?: unknown) => {
     let result: { startupId: string } | undefined;
     let finished: (() => void) | undefined;

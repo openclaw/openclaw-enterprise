@@ -734,12 +734,23 @@ export class CredentialProxy implements CredentialProxyExchange {
       !(
         use.operation.kind === "workspace_bootstrap" &&
         route.binding.grant.kind === "workspace_inference" &&
-        use.operation.workspaceId === route.binding.grant.workspaceId
+        use.operation.workspaceId === route.binding.grant.workspaceId &&
+        ["identity", "accounts", "models", "policy"].includes(use.operation.action) &&
+        (use.operation.action !== "models" ||
+          (route.binding.grant.models.length === 1 &&
+            use.operation.model === route.binding.grant.models[0]))
       )
     ) {
       return { kind: "denied", code: "scope_mismatch" };
     }
     const material = await this.ports.read(source, lifetime);
+    if (
+      source.verifiedIdentity &&
+      (material.materialId !== source.verifiedIdentity.materialId ||
+        material.version !== source.verifiedIdentity.materialVersion)
+    ) {
+      return { kind: "denied", code: "stale_configuration" };
+    }
     const observed = Date.parse(material.authoritativeObservedAt);
     const usableUntil = Math.min(
       deadline,

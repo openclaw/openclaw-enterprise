@@ -1,3 +1,4 @@
+import { Equal } from "typebox/value";
 import type {
   CredentialProxyBinding,
   CredentialProxyExchange,
@@ -60,6 +61,42 @@ export interface StaticEgressSource {
   readonly resolver: EgressRef;
   /** Zero retention: every operation reads the authoritative selected store. */
   readonly retention: "none";
+  /** Issuer evidence obtained before source admission, fenced to this exact input. */
+  readonly verifiedIdentity?: VerifiedSourceIdentity;
+}
+
+export interface VerifiedSourceIdentity {
+  readonly source: EgressSourceKey;
+  readonly materialRefId: string;
+  readonly secret: SecretReference;
+  readonly secretDriver: EgressRef;
+  readonly materialId: string;
+  readonly materialVersion: string;
+  readonly issuer: string;
+  readonly subject: string;
+  readonly origin: string;
+}
+
+/** Nonsecret evidence is valid only in the source envelope that was verified. */
+export function verifiedSourceIdentityMatches(source: StaticEgressSource): boolean {
+  const proof = source.verifiedIdentity;
+  return (
+    !!proof &&
+    Object.keys(proof).length === 9 &&
+    Equal(proof.source, source.key) &&
+    proof.materialRefId === source.materialRefId &&
+    Equal(proof.secret, source.secret) &&
+    Equal(proof.secretDriver, source.secretDriver) &&
+    [proof.materialId, proof.materialVersion].every(
+      (value) => typeof value === "string" && /^[!-~]{1,200}$/.test(value),
+    ) &&
+    typeof proof.subject === "string" &&
+    /^[a-zA-Z0-9_-]{1,128}$/.test(proof.subject) &&
+    typeof proof.issuer === "string" &&
+    /^https:\/\/[a-z0-9.-]+\/[a-zA-Z0-9/_-]{1,400}$/.test(proof.issuer) &&
+    typeof proof.origin === "string" &&
+    /^https:\/\/[a-z0-9.-]+$/.test(proof.origin)
+  );
 }
 
 export type ProtectedEgressSource =
@@ -143,11 +180,11 @@ export interface ProxyPlan {
   readonly driver?: DriverRegistrationRef;
   /** Capability required by this admission, including after process restart. */
   readonly policyReductionVersion?: 1 | 2;
-  /** v4–v7: the repository or installation grant, independent of sender and grant duration. */
+  /** v4–v8: the repository or installation grant, independent of sender and grant duration. */
   readonly repositoryGit?: RepositoryRevisionState;
-  /** v4/v7 are exact dispatch; v5 requires online authorization; v6 records an observed request hook. */
+  /** v4/v7 are exact dispatch; v5/v8 require online authorization; v6 records an observed request hook. */
   readonly repositoryGitAuthorization?: "online-request" | "request-hook-observed";
-  /** v4–v7: the Harness model attachment independently admitted by the Credential Gateway. */
+  /** v4–v8: the Harness model attachment independently admitted by the Credential Gateway. */
   readonly harnessCredentialSource?: Extract<HarnessAuthSnapshot, { method: "credential_source" }>;
   readonly routes: readonly EgressRoute[];
 }
@@ -215,7 +252,8 @@ export interface EgressInstallation {
     readonly configurationId: string;
     readonly policyHash: string;
     readonly authorityScope: "execution";
-    /** Public key bound by the adapter to this installation, never selected by a request. */
+    /** Public key bound by the adapter to this installation, never selected by a request.
+     * In v8 this authenticates the independent model exchange, not online Git dispatch. */
     readonly peerKeyId?: string;
     /** Required for protected repository Git. Never infer this association from a matching policy. */
     readonly repositoryGitRecipient?: RepositoryGitRecipient;
@@ -245,8 +283,15 @@ export type EgressOperation =
   | InferenceOperation
   | {
       readonly kind: "workspace_bootstrap";
-      readonly action: "identity" | "accounts" | "models";
+      readonly action: "identity" | "accounts" | "policy";
       readonly workspaceId: string;
+    }
+  | {
+      readonly kind: "workspace_bootstrap";
+      readonly action: "models";
+      readonly workspaceId: string;
+      /** Copied only from the immutable route's single admitted model. */
+      readonly model: string;
     }
   | { readonly kind: "prepared_scope"; readonly action: string }
   | {
@@ -311,6 +356,11 @@ export interface CredentialProviderDefinition {
   readonly sourceType: CredentialSourceType;
   /** The selected proxy owns registration and authoritative material reads for this profile. */
   readonly sourceOwnership?: "proxy";
+  /** Runs only at authorized source admission; never on an Agent's request. */
+  verifySource?(
+    material: VersionedSecretValue,
+    lifetime: CredentialReadLifetime,
+  ): Promise<Pick<VerifiedSourceIdentity, "issuer" | "subject" | "origin">>;
   normalizeConfig(config: Readonly<Record<string, string>>): Readonly<Record<string, string>>;
   normalizeGrant(
     models: readonly string[],
@@ -475,10 +525,10 @@ export interface CredentialProxyDriver extends Driver {
   removeRevision(context: ProxyRevisionContext): Promise<boolean>;
 }
 
-/** Durable admission semantics. v7 adds verified Git policy reduction to exact dispatch. */
+/** Durable admission semantics. v7 adds verified Git policy reduction to exact dispatch; v8 adds it to online authorization. */
 export type ExecutionAdmission =
   | { readonly version: 2; readonly mode: "unprotected" }
-  | { readonly version: 3 | 4 | 5 | 6 | 7; readonly mode: "protected" };
+  | { readonly version: 3 | 4 | 5 | 6 | 7 | 8; readonly mode: "protected" };
 
 export function protectedRepositoryGitAdmission(
   admission: ExecutionAdmission | undefined,
@@ -487,7 +537,8 @@ export function protectedRepositoryGitAdmission(
     admission?.version === 4 ||
     admission?.version === 5 ||
     admission?.version === 6 ||
-    admission?.version === 7
+    admission?.version === 7 ||
+    admission?.version === 8
   );
 }
 
@@ -519,7 +570,7 @@ export function assertExecutionAdmission(
     (plan?.policyReductionVersion !== undefined &&
       !(
         (plan.policyReductionVersion === 1 && admission.version === 3) ||
-        (plan.policyReductionVersion === 2 && admission.version === 7)
+        (plan.policyReductionVersion === 2 && (admission.version === 7 || admission.version === 8))
       )) ||
     (plan &&
       new Set(plan.routes.map((route) => route.binding.source.source.id)).size > 1 &&
@@ -527,7 +578,7 @@ export function assertExecutionAdmission(
   ) {
     throw new Error("Protected execution requires its admitted policy reduction capability.");
   }
-  if (admission.version === 7 && plan?.policyReductionVersion !== 2) {
+  if ((admission.version === 7 || admission.version === 8) && plan?.policyReductionVersion !== 2) {
     throw new Error("Reducible repository Git requires reduction version 2.");
   }
   const repository = revision.egressPlan?.repositoryGit;
@@ -538,7 +589,7 @@ export function assertExecutionAdmission(
     (admission.version === 6
       ? revision.egressPlan?.repositoryGitAuthorization !== "request-hook-observed" ||
         repositoryGitDeliveryProfile(repository) !== "github_installation"
-      : admission.version === 5
+      : admission.version === 5 || admission.version === 8
         ? revision.egressPlan?.repositoryGitAuthorization !== "online-request"
         : revision.egressPlan?.repositoryGitAuthorization !== undefined)
   ) {
@@ -552,7 +603,9 @@ export function assertExecutionAdmission(
       !source.sourceId ||
       !source.credentialGatewayId ||
       !source.sourceType ||
-      (admission.version !== 7 && revision.egressPlan!.routes.length !== 0))
+      (admission.version !== 7 &&
+        admission.version !== 8 &&
+        revision.egressPlan!.routes.length !== 0))
   ) {
     throw new Error(
       "Invalid independent Harness credential source in repository execution admission.",

@@ -20,7 +20,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import vm from "node:vm";
-import { AGENT_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { CURRENT_AGENT_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { CODEX_FAILURE_OUTPUT_CLASSES } from "../../packages/contracts/src/runtime-failure.mjs";
 
 const nodeRequire = createRequire(import.meta.url);
@@ -74,6 +74,9 @@ export function createCodexStartup(
   t,
   {
     native,
+    nativeRunner,
+    workspacePat = false,
+    model = "gpt-4.1",
     providerPat = false,
     loginMode = providerPat ? "codex_pat" : "api_key",
     protectedInference,
@@ -84,6 +87,7 @@ export function createCodexStartup(
     lateWakeMs = 0,
   },
 ) {
+  const selectedPlaceholder = workspacePat ? "oce-protected-egress" : providerPlaceholder;
   const directory = mkdtempSync(join(tmpdir(), "openclaw-plugin-ready-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const marker = join(directory, "ready");
@@ -165,9 +169,9 @@ export function createCodexStartup(
         CODEX_LOGIN_MODE: loginMode,
         ...(providerPat ? { OCE_CODEX_CREDENTIAL_SOURCE: "1" } : {}),
         ...(loginMode === "codex_pat"
-          ? { CODEX_ACCESS_TOKEN: providerPat ? providerPlaceholder : "at-fixture-token" }
+          ? { CODEX_ACCESS_TOKEN: providerPat ? selectedPlaceholder : "at-fixture-token" }
           : { OPENAI_API_KEY: "fixture-api-key" }),
-        OPENCLAW_HARNESS_MODEL: "codex/gpt-4.1",
+        OPENCLAW_HARNESS_MODEL: `codex/${model}`,
         OPENCLAW_AGENT_REVISION_ID: revisionId,
         ...(protectedInference
           ? {
@@ -179,10 +183,14 @@ export function createCodexStartup(
                 providerTools: "none",
                 egressEnrollment:
                   protectedInference === "missing" ? undefined : harnessEgressEnrollment(plan),
-                modelEndpoint: {
-                  modelProvider: "openai-compatible",
-                  baseUrl: "https://provider.example.test/v1",
-                },
+                ...(workspacePat
+                  ? { nativePat: true }
+                  : {
+                      modelEndpoint: {
+                        modelProvider: "openai-compatible",
+                        baseUrl: "https://provider.example.test/v1",
+                      },
+                    }),
               }),
             }
           : {}),
@@ -270,7 +278,7 @@ export function createCodexStartup(
                   assert.equal(childEnvironment.CODEX_HOME, codexHome);
                   const authFile = join(codexHome, "auth.json");
                   assert.deepEqual(JSON.parse(readFileSync(authFile, "utf8")), {
-                    personal_access_token: providerPlaceholder,
+                    personal_access_token: selectedPlaceholder,
                   });
                   assert.equal(statSync(authFile).mode & 0o777, 0o600);
                 } else {
@@ -289,7 +297,7 @@ export function createCodexStartup(
                 clock += step.elapsed ?? 0;
               } else {
                 assert.ok(args.includes("exec"));
-                if (protectedInference) {
+                if (protectedInference && !workspacePat) {
                   for (const argument of [
                     "--ignore-user-config",
                     "model_providers.openai-compatible.request_max_retries=0",
@@ -321,7 +329,7 @@ export function createCodexStartup(
                 }
                 clock += step.elapsed ?? 0;
               }
-              return step.result;
+              return nativeRunner ? nativeRunner(command, Array.from(args), options) : step.result;
             } catch (error) {
               // The production probe catches process errors. Preserve fixture violations
               // so a caught assertion can never masquerade as an expected failed probe.
@@ -333,7 +341,7 @@ export function createCodexStartup(
             assert.equal(command, "codex");
             assert.ok(args.includes("app-server"));
             // Plugin reviewer validation must observe the admitted model, not a native default.
-            assert.ok(args.includes('model="gpt-4.1"'));
+            assert.ok(args.includes(`model="${model}"`));
             assert.equal(args[args.indexOf("--ws-token-sha256") + 1], tokenDigest);
             absent(options.env, [...transportCredentials, ...modelCredentials]);
             if (providerPat) {
@@ -357,7 +365,7 @@ export function createCodexStartup(
       return appServerStarts;
     },
     start() {
-      vm.runInNewContext(AGENT_RUNTIME_ENTRYPOINT, sandbox);
+      vm.runInNewContext(CURRENT_AGENT_RUNTIME_ENTRYPOINT, sandbox);
     },
     async releaseProtectedExecution() {
       // Exercise the generated Harness. Even an authenticated peer cannot release it by

@@ -63,19 +63,15 @@ graph TD
 `packages/occ/src/index.ts:OpenClawController.startAgentDeviceAuthorization`,
 `pollAgentDeviceAuthorization`, `cancelAgentDeviceAuthorization`
 
-Device login creates a credential source and asks its Credential Refresh Driver
-to start and poll authorization. The Secret-backed session records actor, exact Namespace
-and optional Agent scope, source identity, and an opaque Refresh Driver handle.
-The Refresh Driver hands the provider grant to the external service. Ready responses return a credential-source
-reference; Console saves a `credential_source` binding and grants the Agent
-principal exact source `operate`.
+Device login creates a source; its Credential Refresh Driver starts/polls authorization
+and hands the grant to the external service. The Secret-backed session stores actor,
+Namespace, optional Agent scope, source and opaque Driver handle. Console saves the
+ready source as `credential_source` and grants the Agent exact source `operate`.
 
-Secret compare-and-swap permits one in-flight poll and fences cancellation. An
-uncertain exchange requires reconnect. Closing or expiring a session removes its
-handle without revoking the source. Plugin discovery uses the Gateway's
-`withSourceToken` callback with current source authorization; the service may
-refresh before returning a usable access token. It continues through
-the saved source after the login session closes.
+Secret compare-and-swap permits one poll and fences cancellation; uncertain exchanges
+require reconnect. Session closure/expiry removes handles without revoking sources.
+Gateway `withSourceToken` authorizes discovery against the saved source, refreshing
+when needed even after the session closes.
 
 Console calls
 `apps/controller/src/drivers/compute/model-discovery.ts:discoverHarnessModels`
@@ -164,22 +160,16 @@ indefinitely; drafts, selected versions, and pending deployments block source de
 `apps/controller/src/drivers/compute/kubernetes/index.ts:prepareHarnessAuth`,
 `KubernetesComputeDriver.prepareRevision`
 
-One workload-rendering step converts validated references to supported
-Secret projections and a closed login mode. Embedded OpenClaw receives the key
-in its combined workload as `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`, derived
-from the immutable native model Configuration; admission requires every model
-selection, including fallbacks, to use the same supported provider. Dedicated
-Codex receives the key or account token through a DP projection for the Agent revision.
-Managed and directly supplied service account tokens deliver only
-`CODEX_ACCESS_TOKEN` as the model credential; the separate Gateway receives none.
-Neither gateway-only Configuration secret bindings nor initial runtime
-provisioning, which creates only transport/channel groups, can supply model auth.
+Rendering converts validated references into Secret projections and a closed login mode.
+Embedded OpenClaw receives `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`; all configured
+models, including fallbacks, must share that provider. Dedicated Codex receives the
+Agent revision's DP projection. Managed/imported service accounts deliver only
+`CODEX_ACCESS_TOKEN`; the separate Gateway receives none. Gateway-only bindings and
+initial transport/channel provisioning cannot supply model auth.
 
-The selected Sandbox consumes these already-rendered
-`HarnessWorkloadRequirements` and selects or looks up no other credential. An
-upstream runtime unable to honor genuine Secret projection fails explicitly. Network policies keep the
-provider-login egress the admitted auth method requires. Gateway transport
-and Kubernetes workload identity credentials stay separate.
+Sandbox consumes rendered `HarnessWorkloadRequirements` without selecting credentials.
+Unsupported Secret projection fails explicitly. Network policies retain admitted
+provider-login egress; Gateway transport and workload identity credentials stay separate.
 
 ### 5. Authenticate during runtime startup
 

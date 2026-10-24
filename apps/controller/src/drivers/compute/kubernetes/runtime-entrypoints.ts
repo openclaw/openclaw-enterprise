@@ -215,7 +215,8 @@ function serveHeldRuntimeFailureToTransportPeer(check, code, cause) {
 }
 `;
 
-export const PLUGIN_RUNTIME_HELPERS = String.raw`
+function pluginRuntimeHelpers(currentLaunch: boolean): string {
+  return String.raw`
 const pluginRuntimeTranslator = (${PLUGIN_RUNTIME_TRANSLATOR_SOURCE})();
 const {
   dirname: pluginDirname,
@@ -1254,7 +1255,9 @@ function assertCodexPluginRuntime(runtime) {
   if (!isPlainObject(runtime.manifest.selections ?? {})) {
     throw new Error("Codex plugin selections are invalid.");
   }
-  const nativePat = runtime.manifest.nativePat === true;
+${
+  currentLaunch
+    ? String.raw`  const nativePat = runtime.manifest.nativePat === true;
   if (runtime.manifest.nativePat !== undefined &&
       (!nativePat || runtime.manifest.modelEndpoint !== undefined ||
        runtime.manifest.providerTools !== "none" ||
@@ -1263,10 +1266,12 @@ function assertCodexPluginRuntime(runtime) {
        process.env.OCE_CODEX_CREDENTIAL_SOURCE !== "1")) {
     throw new Error("Codex protected native PAT profile is invalid.");
   }
-  if ((runtime.manifest.providerTools !== undefined || runtime.manifest.egressEnrollment !== undefined) &&
+`
+    : ""
+}  if ((runtime.manifest.providerTools !== undefined || runtime.manifest.egressEnrollment !== undefined) &&
       (runtime.manifest.providerTools !== "none" ||
        !isPlainObject(runtime.manifest.egressEnrollment) ||
-       (runtime.manifest.egressEnrollment.inference === true && !nativePat &&
+       (runtime.manifest.egressEnrollment.inference === true &&${currentLaunch ? " !nativePat &&" : ""}
         (runtime.manifest.modelEndpoint?.modelProvider !== "openai-compatible" ||
          typeof runtime.manifest.modelEndpoint.baseUrl !== "string")))) {
     throw new Error("Codex protected inference profile is invalid.");
@@ -2024,7 +2029,9 @@ function codexPluginStartupFailureCode(error) {
   }
 }
 `;
+}
 
+export const PLUGIN_RUNTIME_HELPERS = pluginRuntimeHelpers(false);
 // Holds unready until an explicit restart; readiness polls never submit model calls.
 // A failed probe's cause is a closed kind and a fixed token, never native output,
 // provider text or a credential; the controller drops a cause outside that vocabulary.
@@ -3439,14 +3446,17 @@ function codexRetryDelay(retry) {
 // Preserve the legacy command bytes: running Sandboxes compare their immutable command.
 // Zero provider retry budgets do not disable native connection waiting. Protected
 // launches turn that feature off explicitly in both native CLI invocations.
-function agentRuntimeEntrypoint(disableUnboundedConnectionRetries: boolean): string {
+function agentRuntimeEntrypoint(
+  disableUnboundedConnectionRetries: boolean,
+  currentLaunch = false,
+): string {
   return String.raw`
 const { createHash } = require("node:crypto");
 const { mkdirSync, mkdtempSync, rmSync } = require("node:fs");
 const { spawn, spawnSync } = require("node:child_process");
 const { performance } = require("node:perf_hooks");
 
-${PLUGIN_RUNTIME_HELPERS}
+${pluginRuntimeHelpers(currentLaunch)}
 ${AUTH_PROBE_FAILURE_HELPER}
 ${CODEX_FAILURE_OUTPUT_CLASS_HELPER}
 ${CODEX_STDERR_FILTER_HELPER}
@@ -3503,7 +3513,15 @@ function agentRuntimeReady() {
   });
 }
 
-startPluginRuntimeStatusServer(agentRuntimeReady);
+${
+  currentLaunch
+    ? String.raw`// A rejected restart must not leave readiness from an earlier process behind.
+if (process.env.OPENCLAW_PLUGIN_READY_MARKER !== undefined) {
+  rmSync(process.env.OPENCLAW_PLUGIN_READY_MARKER, { force: true });
+}
+`
+    : ""
+}startPluginRuntimeStatusServer(agentRuntimeReady);
 const loginMode = process.env.CODEX_LOGIN_MODE;
 const apiKey = process.env.OPENAI_API_KEY;
 const accessToken = process.env.CODEX_ACCESS_TOKEN;
@@ -3533,7 +3551,9 @@ const workspaceDirectory = process.env.OPENCLAW_WORKSPACE_DIR ||
 if (!workspaceDirectory.startsWith("/")) {
   throw new Error("The Codex workspace directory must be an absolute path.");
 }
-const pluginRuntime = readPluginRuntime("codex");
+${
+  currentLaunch
+    ? String.raw`const pluginRuntime = readPluginRuntime("codex");
 if (pluginRuntime !== undefined) assertCodexPluginRuntime(pluginRuntime);
 if (loginMode === "codex_pat" &&
     (${disableUnboundedConnectionRetries} || pluginRuntime?.manifest.egressEnrollment !== undefined ||
@@ -3545,13 +3565,24 @@ if (loginMode === "codex_pat" &&
 }
 mkdirSync(process.env.CODEX_HOME, { recursive: true });
 mkdirSync(workspaceDirectory, { recursive: true });
-if (process.env.OPENCLAW_PLUGIN_READY_MARKER !== undefined) {
-  rmSync(process.env.OPENCLAW_PLUGIN_READY_MARKER, { force: true });
-}
 if (pluginRuntime !== undefined) writeCodexConfigToml(pluginRuntime);
 // Credential sources can supply opaque markers, so native CLI prefix detection cannot
 // classify them. The native PAT auth-file contract still hydrates and validates account metadata.
-const providerManagedPat = loginMode === "codex_pat" && process.env.OCE_CODEX_CREDENTIAL_SOURCE === "1";
+`
+    : String.raw`mkdirSync(process.env.CODEX_HOME, { recursive: true });
+mkdirSync(workspaceDirectory, { recursive: true });
+if (process.env.OPENCLAW_PLUGIN_READY_MARKER !== undefined) {
+  rmSync(process.env.OPENCLAW_PLUGIN_READY_MARKER, { force: true });
+}
+const pluginRuntime = readPluginRuntime("codex");
+if (pluginRuntime !== undefined) {
+  assertCodexPluginRuntime(pluginRuntime);
+  writeCodexConfigToml(pluginRuntime);
+}
+// A Credential Gateway supplies an opaque token, so native CLI prefix detection cannot
+// classify it. The native PAT auth-file contract still hydrates and validates account metadata.
+`
+}const providerManagedPat = loginMode === "codex_pat" && process.env.OCE_CODEX_CREDENTIAL_SOURCE === "1";
 if (providerManagedPat) {
   require("node:fs").writeFileSync(process.env.CODEX_HOME + "/auth.json",
     JSON.stringify({ personal_access_token: accessToken }), { mode: 0o600 });
@@ -3655,7 +3686,7 @@ if (noInference) {
       stdio: ["pipe", "ignore", "pipe"],
       timeout: Math.min(30000, Math.floor(loginDeadline - attemptStartedAt)), killSignal: "SIGKILL", maxBuffer: 262144,
     });
-    if (pluginRuntime?.manifest.nativePat === true || loginMode === "api_key" || (login.status === 0 && !login.error)) break;
+    if (${currentLaunch ? "pluginRuntime?.manifest.nativePat === true || " : ""}loginMode === "api_key" || (login.status === 0 && !login.error)) break;
     const timedOut = login.error?.code === "ETIMEDOUT";
     const failureClass = codexFailureOutputClass(login.stderr, login.error);
     console.error(JSON.stringify({
@@ -3786,9 +3817,13 @@ ${disableUnboundedConnectionRetries ? '      "--disable", "unbounded_connection_
       "-c", 'web_search="disabled"',
       "-c", "project_doc_max_bytes=0",
       "-c", "check_for_update_on_startup=false",
-      // This probe ignores config.toml, so pass the protected app-server profile explicitly.
+${
+  currentLaunch
+    ? String.raw`      // This probe ignores config.toml, so pass the protected app-server profile explicitly.
       ...(pluginRuntime?.manifest.nativePat !== true ? [] : ${JSON.stringify(["--disable", "enable_request_compression", ...codexWorkspaceProviderArguments()])}),
-      // The authentication probe ignores user config, so carry the admitted
+`
+    : ""
+}      // The authentication probe ignores user config, so carry the admitted
       // compatible endpoint explicitly and use its HTTPS Responses transport.
       ...(pluginRuntime?.manifest.modelEndpoint === undefined ? [] : [
         "-c", "model_provider=" + JSON.stringify(pluginRuntime.manifest.modelEndpoint.modelProvider),
@@ -4072,7 +4107,9 @@ if (!protectedStartup) {
 }
 
 export const AGENT_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint(false);
-export const PROTECTED_CODEX_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint(true);
+export const LEGACY_PROTECTED_CODEX_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint(true);
+export const CURRENT_AGENT_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint(false, true);
+export const PROTECTED_CODEX_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint(true, true);
 
 // Kubernetes Codex implementation: this file-only node is not an OpenClaw
 // execution worker; its explicit command allowlist disables worker hosting.
@@ -4366,6 +4403,12 @@ for (const slot of [...processes].reverse()) start(slot);
 }
 
 export const AGENT_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(AGENT_RUNTIME_ENTRYPOINT);
+export const LEGACY_PROTECTED_CODEX_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
+  LEGACY_PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
+);
+export const CURRENT_AGENT_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
+  CURRENT_AGENT_RUNTIME_ENTRYPOINT,
+);
 export const PROTECTED_CODEX_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
   PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
 );

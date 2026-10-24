@@ -17,7 +17,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import {
-  AGENT_WITH_NODE_ENTRYPOINT,
+  CURRENT_AGENT_WITH_NODE_ENTRYPOINT,
   NATIVE_WORKER_ENTRYPOINT,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { availablePort } from "../helpers/available-port.mjs";
@@ -87,7 +87,7 @@ const pendingIdentityProbe = [
 async function startSupervisor(
   t,
   directory,
-  { child, stubs = [], env, entrypoint = AGENT_WITH_NODE_ENTRYPOINT },
+  { child, stubs = [], env, entrypoint = CURRENT_AGENT_WITH_NODE_ENTRYPOINT },
 ) {
   const eventsPath = join(directory, "events.jsonl");
   const childPath = join(directory, "child.cjs");

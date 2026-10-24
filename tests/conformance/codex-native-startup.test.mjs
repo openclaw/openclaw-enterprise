@@ -53,6 +53,43 @@ test("Codex runtime gates startup and readiness on a successful native authentic
   const completedTurn = (...events) => [started, ...events, assistant, completed];
   const scenarios = [
     {
+      name: "workspace PAT native runner consumes generated startup and preserves the gate",
+      protectedInference: "signed",
+      providerPat: true,
+      workspacePat: true,
+      events: completedTurn(),
+      nativeRunner(command, args) {
+        assert.equal(command, "codex");
+        if (args.includes("login")) {
+          return { status: 0 };
+        }
+        assert.ok(args.includes("exec"));
+        assert.ok(args.some((arg) => arg.includes("https://chatgpt.com/backend-api/codex")));
+        return { status: 0, stdout: completedTurn().map(JSON.stringify).join("\n") };
+      },
+      expect: ready,
+    },
+    {
+      name: "workspace PAT native refusal consumes startup without restoring stale readiness",
+      protectedInference: "signed",
+      providerPat: true,
+      workspacePat: true,
+      events: completedTurn(),
+      nativeRunner(_command, args) {
+        return args.includes("login")
+          ? { status: 0 }
+          : {
+              status: 1,
+              stdout: JSON.stringify({
+                type: "turn.failed",
+                error: { message: "incompatible policy" },
+              }),
+              stderr: "incompatible policy",
+            };
+      },
+      expect: probeFailure({ kind: "PROBE_STATUS", detail: "turn-failed" }),
+    },
+    {
       name: "protected profile without enrollment refuses before any native process",
       protectedInference: "missing",
       native: [],

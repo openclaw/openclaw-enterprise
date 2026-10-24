@@ -34,6 +34,25 @@ import type { PlatformUnitOfWork } from "../../packages/occ/src/index.ts";
 import { InstalledDriver } from "../../packages/occ/src/index.ts";
 import type { AuditEvent, CredentialSource } from "../../packages/contracts/src/index.ts";
 
+function nativeModel(slug = "fixture-model") {
+  return {
+    slug,
+    base_instructions: "",
+    display_name: "Synthetic native model",
+    description: "Controlled model",
+    supported_reasoning_levels: [{ effort: "medium", description: "Medium" }],
+    default_reasoning_level: "medium",
+    shell_type: "unified_exec",
+    visibility: "list",
+    supported_in_api: true,
+    priority: 1,
+    support_verbosity: true,
+    truncation_policy: { mode: "tokens", limit: 10000 },
+    experimental_supported_tools: [],
+    context_window: 128000,
+  };
+}
+
 // This journey uses the real API, IAM, source store and Kubernetes Secret Driver.
 // The registered Driver is a controlled admission peer; it does not qualify a native sender.
 async function workspaceJourney(t: TestContext, persistence: "memory" | "postgres") {
@@ -100,13 +119,27 @@ async function workspaceJourney(t: TestContext, persistence: "memory" | "postgre
   });
   await workerRefusal(gatewayDeployment.id, "CREDENTIAL_GATEWAY_MISMATCH");
   let admittedSource: CredentialSource | undefined;
-  const provider = createCodexWorkspacePatProvider({
+  const nativeProvider = createCodexWorkspacePatProvider({
     workspaceForSource(source) {
       return source.id === admittedSource?.id && source.namespaceId === admittedSource.namespaceId
         ? "11111111-1111-4111-8111-111111111111"
         : undefined;
     },
   });
+  let substitutedCatalogModel: string | undefined;
+  const provider: CredentialProviderDefinition = {
+    ...nativeProvider,
+    classify(route, request) {
+      const operation = nativeProvider.classify(route, request);
+      // A faulty selected provider cannot substitute the immutable route's model.
+      return operation?.kind === "workspace_bootstrap" &&
+        operation.action === "models" &&
+        substitutedCatalogModel
+        ? { ...operation, model: substitutedCatalogModel }
+        : operation;
+    },
+  };
+  let catalogUse: CapturedEgressUse | undefined;
   const providers: CredentialProviderDefinition[] = [provider];
   const implementation = "controlled-workspace-admission";
   const sandbox = Object.create(f.sandboxDriver);
@@ -134,6 +167,9 @@ async function workspaceJourney(t: TestContext, persistence: "memory" | "postgre
         : undefined;
     },
     capture(use: CapturedEgressUse) {
+      if (use.operation.kind === "workspace_bootstrap" && use.operation.action === "models") {
+        catalogUse = use;
+      }
       const association = {
         execution: use.route.binding.execution,
         installation: egressAssociationInstallation(use.installation),
@@ -393,6 +429,8 @@ async function workspaceJourney(t: TestContext, persistence: "memory" | "postgre
   });
   let arrivals = 0;
   const identity = {
+    chatgpt_user_id: "synthetic-user",
+    chatgpt_plan_type: "team",
     chatgpt_account_id: "11111111-1111-4111-8111-111111111111",
     chatgpt_account_is_fedramp: false,
   };
@@ -401,8 +439,12 @@ async function workspaceJourney(t: TestContext, persistence: "memory" | "postgre
   const origin = createServer(tls, async (request, response) => {
     arrivals++;
     assert.equal(request.headers.authorization, "Bearer synthetic-key-initial");
-    assert.equal(request.headers.host, "auth.openai.com");
-    assert.equal(request.url, "/api/accounts/v1/user-auth-credential/whoami");
+    const catalog = request.url === "/backend-api/codex/models?client_version=0.163.0";
+    const policy = request.url === "/backend-api/wham/config/bundle";
+    assert.equal(request.headers.host, catalog || policy ? "chatgpt.com" : "auth.openai.com");
+    if (!catalog && !policy) {
+      assert.equal(request.url, "/api/accounts/v1/user-auth-credential/whoami");
+    }
     response.statusCode = originStatus;
     response.setHeader("content-type", "application/json");
     response.end(JSON.stringify(originBody));
@@ -468,14 +510,19 @@ async function workspaceJourney(t: TestContext, persistence: "memory" | "postgre
   assert.equal(permission.kind, "allow", JSON.stringify(permission));
   const receive = async (
     headers: readonly (readonly [string, string])[],
+    target = first,
   ): Promise<import("../../packages/contracts/src/index.ts").EgressResponse> => {
     const outgoing = httpsRequest({
       hostname: "127.0.0.1",
       port,
-      servername: "auth.openai.com",
+      servername: new URL(target.url).hostname,
       ca: tls.cert,
-      path: new URL(first.url).pathname,
-      headers: { host: "auth.openai.com", ...Object.fromEntries(headers) },
+      path: new URL(target.url).pathname + new URL(target.url).search,
+      headers: {
+        ...Object.fromEntries(target.headers),
+        host: new URL(target.url).hostname,
+        ...Object.fromEntries(headers),
+      },
     });
     const received = once(outgoing, "response");
     outgoing.end();
@@ -491,6 +538,132 @@ async function workspaceJourney(t: TestContext, persistence: "memory" | "postgre
   assert.equal(await exchange.beginResponse(peerToken, sandboxId, first.id), resolved.handle);
   assert.equal((await exchange.protectResponse(resolved.handle, response, signal))?.status, 200);
   assert.equal(arrivals, 1);
+  const catalogRequest = () => ({
+    ...request(),
+    url: "https://chatgpt.com/backend-api/codex/models?client_version=0.163.0",
+    headers: [["chatgpt-account-id", identity.chatgpt_account_id]] as [string, string][],
+  });
+  const catalog = catalogRequest();
+  const catalogReady = await exchange.resolve(peerToken, sandboxId, catalog, signal);
+  assert.equal(catalogReady.kind, "ready");
+  assert.deepEqual(catalogUse?.operation, {
+    kind: "workspace_bootstrap",
+    action: "models",
+    workspaceId: identity.chatgpt_account_id,
+    model: "fixture-model",
+  });
+  assert.equal(catalogUse?.route.binding.grant.kind, "workspace_inference");
+  if (catalogReady.kind !== "ready") {
+    return;
+  }
+  assert.equal(
+    (
+      await exchange.authorizeSend(
+        peerToken,
+        sandboxId,
+        catalog.id,
+        catalogReady.handle,
+        catalogReady.evidence,
+        catalogReady.injectionDigest,
+        catalog.deadlineAt,
+        signal,
+      )
+    ).kind,
+    "allow",
+  );
+  originBody = { models: [nativeModel("other-model"), nativeModel()] };
+  const catalogResponse = await receive(catalogReady.headers, catalog);
+  assert.equal(await exchange.beginResponse(peerToken, sandboxId, catalog.id), catalogReady.handle);
+  const projected = await exchange.protectResponse(catalogReady.handle, catalogResponse, signal);
+  assert.ok(projected);
+  assert.deepEqual(JSON.parse(Buffer.from(projected.body).toString()), { models: [nativeModel()] });
+  originBody = identity;
+
+  const policyRequest = () => ({
+    ...catalogRequest(),
+    url: "https://chatgpt.com/backend-api/wham/config/bundle",
+  });
+  assert.ok(
+    installed.plan.routes.some(
+      (route) =>
+        route.origin === "https://chatgpt.com" &&
+        route.path === "/backend-api/wham/config/bundle" &&
+        route.method === "GET",
+    ),
+  );
+  const policyReads = f.secretReads;
+  const invalidPolicyRequests: Partial<
+    import("../../packages/contracts/src/index.ts").EgressRequest
+  >[] = [
+    { method: "POST" },
+    { body: Buffer.from("{}") },
+    ...["?", "?a=1", "/", "/../bundle"].map((suffix) => ({ url: policyRequest().url + suffix })),
+    { url: "http://chatgpt.com/backend-api/wham/config/bundle" },
+    { url: "https://auth.openai.com/backend-api/wham/config/bundle" },
+    { url: "https://chatgpt.com:444/backend-api/wham/config/bundle" },
+    { headers: [["chatgpt-account-id", "wrong"]] },
+    { headers: [...policyRequest().headers, ["host", "wrong"]] },
+    { headers: [...policyRequest().headers, ["x-original-url", "/another"]] },
+  ];
+  for (const changed of invalidPolicyRequests) {
+    const invalid = { ...policyRequest(), ...changed };
+    assert.equal((await exchange.resolve(peerToken, sandboxId, invalid, signal)).kind, "refused");
+  }
+  assert.equal(f.secretReads, policyReads);
+  const policy = policyRequest();
+  const policyReady = await exchange.resolve(peerToken, sandboxId, policy, signal);
+  assert.ok(policyReady.kind === "ready");
+  assert.equal((await authorize(policy, policyReady)).kind, "allow");
+  originBody = {
+    config_toml: { enterprise_managed: [] },
+    requirements_toml: {
+      enterprise_managed: [
+        { id: "restriction", name: "Read only", contents: 'allowed_sandbox_modes = ["read-only"]' },
+      ],
+    },
+  };
+  const policyResponse = await receive(policyReady.headers, policy);
+  assert.equal(await exchange.beginResponse(peerToken, sandboxId, policy.id), policyReady.handle);
+  const deliveredPolicy = await exchange.protectResponse(
+    policyReady.handle,
+    policyResponse,
+    signal,
+  );
+  assert.ok(deliveredPolicy);
+  assert.deepEqual(JSON.parse(Buffer.from(deliveredPolicy.body).toString()), originBody);
+  originBody = identity;
+
+  const staleCatalog = catalogRequest();
+  const staleReady = await exchange.resolve(peerToken, sandboxId, staleCatalog, signal);
+  assert.equal(staleReady.kind, "ready");
+  if (staleReady.kind !== "ready") {
+    return;
+  }
+  const beforeSubstitution = f.secretReads;
+  const beforeCatalogDenials = arrivals;
+  substitutedCatalogModel = "other-model";
+  assert.equal(
+    (
+      await exchange.authorizeSend(
+        peerToken,
+        sandboxId,
+        staleCatalog.id,
+        staleReady.handle,
+        staleReady.evidence,
+        staleReady.injectionDigest,
+        staleCatalog.deadlineAt,
+        signal,
+      )
+    ).kind,
+    "refused",
+  );
+  assert.equal(
+    (await exchange.resolve(peerToken, sandboxId, catalogRequest(), signal)).kind,
+    "refused",
+  );
+  assert.equal(f.secretReads, beforeSubstitution);
+  assert.equal(arrivals, beforeCatalogDenials);
+  substitutedCatalogModel = undefined;
   // Complete origin replies cannot substitute workspace identity or reflect usable material.
   for (const unsafe of [
     { body: { ...identity, chatgpt_account_id: "another-workspace" }, status: 200 },
@@ -518,7 +691,7 @@ async function workspaceJourney(t: TestContext, persistence: "memory" | "postgre
   admittedSource = undefined;
   assert.equal((await authorize(mappingHeld, mappingReady)).kind, "refused");
   admittedSource = source;
-  const held = request();
+  const held = policyRequest();
   const ready = await exchange.resolve(peerToken, sandboxId, held, signal);
   assert.ok(ready.kind === "ready", JSON.stringify(ready));
   const withdrawn = await f.request(
@@ -528,6 +701,14 @@ async function workspaceJourney(t: TestContext, persistence: "memory" | "postgre
   assert.equal(withdrawn.status, 204);
   assert.equal((await authorize(held, ready)).kind, "refused");
   assert.equal((await exchange.resolve(peerToken, sandboxId, request(), signal)).kind, "refused");
+  assert.equal(
+    (await exchange.resolve(peerToken, sandboxId, catalogRequest(), signal)).kind,
+    "refused",
+  );
+  assert.equal(
+    (await exchange.resolve(peerToken, sandboxId, policyRequest(), signal)).kind,
+    "refused",
+  );
   // This controlled caller made no further request after authority refused it.
   // Native sender enforcement is outside this fixture's evidence.
   assert.equal(arrivals, beforeWithdrawal);
@@ -548,14 +729,13 @@ async function workspaceJourney(t: TestContext, persistence: "memory" | "postgre
 if (databaseUrl) {
   test("registered workspace PAT exchange persists exact Harness ownership in PostgreSQL", (t) =>
     workspaceJourney(t, "postgres"));
-} else {
-  test("registered workspace PAT exchange enforces source ownership, response custody and withdrawal", (t) =>
-    workspaceJourney(t, "memory"));
-  test(
-    "workspace PAT classifies two-turn message metadata without widening Platform policy",
-    classifyTwoTurns,
-  );
 }
+test("registered workspace PAT exchange enforces source ownership, response custody and withdrawal", (t) =>
+  workspaceJourney(t, "memory"));
+test(
+  "workspace PAT classifies two-turn message metadata without widening Platform policy",
+  classifyTwoTurns,
+);
 
 // Abstracted synthetic wire shapes, not captured native-client runtime evidence.
 async function classifyTwoTurns(t: TestContext) {
@@ -596,6 +776,260 @@ async function classifyTwoTurns(t: TestContext) {
     responsePolicy: ref,
     deadlineMs: 30_000,
   };
+  await t.test("native bootstrap preserves required metadata and binds account routing", () => {
+    const workspace = "synthetic-workspace";
+    const token = `local-${randomUUID()}`;
+    const identity = {
+      chatgpt_account_id: workspace,
+      chatgpt_account_is_fedramp: false,
+      chatgpt_user_id: "synthetic-user",
+      chatgpt_plan_type: "team",
+      email: "synthetic@example.invalid",
+    };
+    const account = {
+      id: workspace,
+      name: "Synthetic workspace",
+      plan_type: "team",
+      structure: "workspace",
+      workspace_backend_origin: "https://chatgpt.com",
+      account_routing_override: "NO_CONSTRAINT",
+    };
+    const accounts = {
+      accounts: [account],
+      account_ordering: [workspace],
+      default_account_id: workspace,
+    };
+    const protect = (
+      action: "identity" | "accounts" | "models" | "policy",
+      body: unknown,
+      status = 200,
+      headers: [string, string][] = [["content-type", "application/json"]],
+    ) => {
+      const origin = action === "identity" ? "https://auth.openai.com" : route.origin;
+      const path =
+        action === "identity"
+          ? "/api/accounts/v1/user-auth-credential/whoami"
+          : action === "accounts"
+            ? "/backend-api/wham/accounts/check"
+            : action === "policy"
+              ? "/backend-api/wham/config/bundle"
+              : "/backend-api/codex/models";
+      const request = {
+        id: "synthetic-bootstrap",
+        method: "GET",
+        url: origin + path + (action === "models" ? "?client_version=0.163.0" : ""),
+        headers: [["chatgpt-account-id", workspace]] as [string, string][],
+        body: Buffer.alloc(0),
+        deadlineAt: "2026-10-23T23:59:59.000Z",
+      };
+      const operation = provider.classify({ ...route, origin, path, method: "GET" }, request);
+      assert.ok(operation);
+      return provider.protectResponse(
+        {
+          status,
+          headers,
+          body: Buffer.from(typeof body === "string" ? body : JSON.stringify(body)),
+          trailers: [],
+        },
+        token,
+        request,
+        operation,
+      );
+    };
+    for (const [action, body] of [
+      ["identity", identity],
+      ["accounts", accounts],
+    ] as const) {
+      const response = protect(action, body);
+      assert.ok(response);
+      assert.deepEqual(JSON.parse(Buffer.from(response.body).toString()), body);
+      assert.equal(protect(action, body, 302), undefined);
+      assert.equal(
+        protect(action, body, 200, [
+          ["content-type", "application/json"],
+          ["location", "https://chatgpt.com"],
+        ]),
+        undefined,
+      );
+      assert.equal(
+        protect(action, body, 200, [
+          ["content-type", "application/json"],
+          ["upgrade", "websocket"],
+        ]),
+        undefined,
+      );
+      assert.equal(protect(action, { ...body, unknown: true }), undefined);
+    }
+    for (const body of [
+      { ...identity, chatgpt_user_id: undefined },
+      { ...identity, chatgpt_plan_type: undefined },
+      { ...identity, chatgpt_plan_type: ["team"] },
+      { ...identity, chatgpt_account_id: "another-workspace" },
+      { ...identity, chatgpt_account_is_fedramp: true },
+      { ...identity, chatgpt_user_id: token },
+      { ...identity, email: token + "@example.invalid" },
+    ]) {
+      assert.equal(protect("identity", body), undefined);
+    }
+    for (const changed of [
+      { ...account, id: "another-workspace" },
+      { ...account, workspace_backend_origin: "https://another.example" },
+      { ...account, account_routing_override: "us" },
+      { ...account, name: token },
+      { ...account, upgrade: "another-model" },
+      { ...account, plan_type: ["team"] },
+    ]) {
+      assert.equal(protect("accounts", { ...accounts, accounts: [changed] }), undefined);
+    }
+    assert.equal(protect("accounts", { ...accounts, accounts: [account, account] }), undefined);
+    assert.equal(
+      protect("accounts", { ...accounts, default_account_id: "another-workspace" }),
+      undefined,
+    );
+    assert.equal(
+      protect("accounts", { ...accounts, account_ordering: ["another-workspace"] }),
+      undefined,
+    );
+    const emptyPolicy = {
+      config_toml: { enterprise_managed: [] },
+      requirements_toml: { enterprise_managed: [] },
+    };
+    const fragments = [
+      { id: "first", name: "Policy", contents: 'allowed_sandbox_modes = ["read-only"]' },
+      { id: "second", name: "Policy", contents: "# https://example.invalid/policy" },
+    ];
+    const policy = { ...emptyPolicy, requirements_toml: { enterprise_managed: fragments } };
+    for (const body of [emptyPolicy, policy]) {
+      const response = protect("policy", body);
+      assert.ok(response);
+      assert.deepEqual(JSON.parse(Buffer.from(response.body).toString()), body);
+      assert.equal(protect("policy", body, 403), undefined);
+    }
+    assert.equal(
+      protect(
+        "policy",
+        '{"config_toml":{"enterprise_managed":[]},"requirements_toml":{"enterprise_managed":[],"enterprise_managed":[]}}',
+      ),
+      undefined,
+    );
+    assert.equal(protect("policy", policy, 302), undefined);
+    assert.equal(
+      protect("policy", policy, 200, [
+        ["content-type", "application/json"],
+        ["content-encoding", "gzip"],
+      ]),
+      undefined,
+    );
+    const escaped = (value: string) =>
+      value.slice(0, 3) +
+      "\\u" +
+      value.charCodeAt(3).toString(16).padStart(4, "0") +
+      value.slice(4);
+    const tomlForms = [
+      (value: string) => `value = "${escaped(value)}"`,
+      (value: string) =>
+        `value = "${value.slice(0, 3)}\\U${value.charCodeAt(3).toString(16).padStart(8, "0")}${value.slice(4)}"`,
+      (value: string) => 'value = """' + value.slice(0, 3) + "\\\r\n  \t" + value.slice(3) + '"""',
+      (value: string) => `value = """${value.slice(0, 3)}\\
+${value.slice(3)}"""`,
+      (value: string) => `"${escaped(value)}" = "safe"`,
+      (value: string) => `values = [{ nested = ["${escaped(value)}"] }]`,
+      (value: string) => `["__proto__"]
+constructor = "${escaped(value)}"`,
+    ];
+    const policyWith = (key: string, contents: string) => ({
+      ...emptyPolicy,
+      [key]: { enterprise_managed: [{ id: "local", name: "Local", contents }] },
+    });
+    for (const key of ["config_toml", "requirements_toml"]) {
+      for (const form of tomlForms) {
+        for (const secret of [
+          token,
+          encodeURIComponent(token),
+          Buffer.from(token).toString("base64"),
+          Buffer.from(token).toString("base64url"),
+        ]) {
+          assert.equal(protect("policy", policyWith(key, form(secret))), undefined);
+        }
+        const original =
+          " \n" + JSON.stringify(policyWith(key, form("harmless-local-value")), null, 2) + "\n";
+        const clean = protect("policy", original);
+        assert.ok(clean);
+        assert.equal(
+          Buffer.from(clean.body).toString(),
+          original,
+          "retain original JSON and TOML bytes",
+        );
+      }
+      for (const invalid of [
+        "a = 1\na = 2",
+        "a = 1\n[a]\nb = 2",
+        'value = "\\uZZZZ"',
+        "a = " + "[".repeat(40) + "0" + "]".repeat(40),
+        "a = [" + Array(4097).fill("0").join(",") + "]",
+        "[" + Array(40).fill("a").join(".") + "]\nb = 1",
+      ])
+        assert.equal(protect("policy", policyWith(key, invalid)), undefined);
+      const scalars = policyWith(
+        key,
+        'date = 1979-05-27T07:32:00Z\ntime = 07:32:00\ninteger = 9223372036854775807\nfloat = inf\n"__proto__" = "safe"\n"constructor" = "safe"',
+      );
+      assert.ok(protect("policy", scalars));
+    }
+    const wideContents = "values = [" + Array(2100).fill("0").join(",") + "]";
+    const wideConfig = policyWith("config_toml", wideContents);
+    const wideRequirements = policyWith("requirements_toml", wideContents);
+    assert.ok(protect("policy", wideConfig));
+    assert.ok(protect("policy", wideRequirements));
+    assert.equal(
+      protect("policy", { ...wideConfig, requirements_toml: wideRequirements.requirements_toml }),
+      undefined,
+    );
+    for (const key of ["config_toml", "requirements_toml"]) {
+      for (const layer of [
+        undefined,
+        null,
+        {},
+        { enterprise_managed: null },
+        { enterprise_managed: {} },
+        { enterprise_managed: [{ id: "a", name: "missing content" }] },
+        { enterprise_managed: [fragments[0], fragments[0]] },
+        { enterprise_managed: [{ id: "a", name: "policy", contents: token }] },
+        { enterprise_managed: [{ id: "a", name: "policy", contents: "x".repeat(65536) }] },
+        { enterprise_managed: fragments, unknown: true },
+      ])
+        assert.equal(protect("policy", { ...policy, [key]: layer }), undefined);
+    }
+    const catalog = protect("models", { models: [nativeModel("other-model"), nativeModel()] });
+    assert.ok(catalog);
+    assert.deepEqual(JSON.parse(Buffer.from(catalog.body).toString()), { models: [nativeModel()] });
+    assert.equal(protect("models", { models: [nativeModel("other-model")] }), undefined);
+    assert.equal(protect("models", { models: [nativeModel(), nativeModel()] }), undefined);
+    assert.equal(protect("models", { models: [nativeModel()], workspace_id: "other" }), undefined);
+    assert.equal(
+      protect("models", { models: [nativeModel()] }, 200, [
+        ["content-type", "application/json"],
+        ["chatgpt-account-id", "other"],
+      ]),
+      undefined,
+    );
+    for (const change of [
+      { upgrade: { model: "other-model" } },
+      { experimental_supported_tools: ["web_search"] },
+      { base_instructions: "Use an alternate endpoint" },
+      { context_window: -1 },
+      { display_name: "https://another.example" },
+      { description: "See https://another.example" },
+      { description: "file:///synthetic" },
+      { description: token },
+      { description: Buffer.from(token).toString("base64") },
+      { unknown: true },
+      { supported_reasoning_levels: [{ effort: "medium", description: "Medium", extra: true }] },
+      { truncation_policy: { mode: "tokens", limit: 10000, extra: true } },
+    ]) {
+      assert.equal(protect("models", { models: [{ ...nativeModel(), ...change }] }), undefined);
+    }
+  });
   const stamp = { turn_id: "01234567-89ab-7000-8000-0123456789ab", create_time: 1792782919.916 };
   const message = (role: string, kind: string, metadata = {}, type = "input_text") => ({
     type: "message",
@@ -605,6 +1039,7 @@ async function classifyTwoTurns(t: TestContext) {
     internal_chat_message_metadata_passthrough: { content_item_kinds: [kind], ...metadata },
   });
   const developer = message("developer", "model.base_instructions");
+  const managedDeveloper = message("developer", "generic.developer_instructions");
   const user = message("user", "user.text", stamp);
   const assistant = message("assistant", "unknown", { turn_id: stamp.turn_id }, "output_text");
   const request = (input: unknown) => ({
@@ -643,6 +1078,56 @@ async function classifyTwoTurns(t: TestContext) {
     "inference",
   );
   assert.deepEqual(provider.classify(route, request("Synthetic")), expected);
+  // The native annotation describes text already allowed by the same model grant.
+  const plainDeveloper = { role: "developer", content: managedDeveloper.content };
+  assert.deepEqual(provider.classify(route, request([plainDeveloper, user])), expected);
+  assert.deepEqual(provider.classify(route, request([managedDeveloper, user])), expected);
+  assert.equal(
+    openAiStaticProvider.classify(platformRoute, request([managedDeveloper, user])),
+    undefined,
+  );
+  const nativeMetadata = {
+    mcp_attribution: JSON.stringify({ status: "none" }),
+    "x-codex-turn-metadata": JSON.stringify({ reasoning_effort: "medium" }),
+  };
+  const metadataRequest = (metadata: unknown) => ({
+    ...request("Synthetic"),
+    body: Buffer.from(
+      JSON.stringify({
+        model: "fixture-model",
+        store: false,
+        input: "Synthetic",
+        client_metadata: metadata,
+      }),
+    ),
+  });
+  assert.deepEqual(provider.classify(route, metadataRequest(nativeMetadata)), expected);
+  assert.equal(
+    openAiStaticProvider.classify(platformRoute, metadataRequest(nativeMetadata)),
+    undefined,
+  );
+  for (const mcp of [
+    "not json",
+    '{"status":"none","status":"none"}',
+    JSON.stringify({ status: "complete" }),
+    JSON.stringify({ status: "none", sources: [] }),
+    JSON.stringify({ status: "none", origin: "https://another.example" }),
+  ]) {
+    assert.equal(
+      provider.classify(route, metadataRequest({ ...nativeMetadata, mcp_attribution: mcp })),
+      undefined,
+    );
+  }
+  assert.equal(
+    provider.classify(
+      route,
+      metadataRequest({
+        ...nativeMetadata,
+        "x-codex-turn-metadata": JSON.stringify({ reasoning_effort: "arbitrary" }),
+      }),
+    ),
+    undefined,
+  );
   const localTools = {
     ...request("Synthetic"),
     body: Buffer.from(
@@ -661,6 +1146,19 @@ async function classifyTwoTurns(t: TestContext) {
 
   for (const invalid of [
     message("system", "model.base_instructions"),
+    message("system", "generic.developer_instructions"),
+    message("user", "generic.developer_instructions"),
+    message(
+      "assistant",
+      "generic.developer_instructions",
+      { turn_id: stamp.turn_id },
+      "output_text",
+    ),
+    message("developer", "generic.developer_instructions", {}, "output_text"),
+    message("developer", "generic.developer_instructions", { authority: "workspace" }),
+    message("developer", "managed_config.developer_instructions"),
+    { ...managedDeveloper, id: undefined },
+    { ...managedDeveloper, content: [...managedDeveloper.content, ...managedDeveloper.content] },
     message("developer", "user.text"),
     message("user", "unknown"),
     message("assistant", "user.text", { turn_id: stamp.turn_id }, "output_text"),
@@ -703,62 +1201,65 @@ async function classifyTwoTurns(t: TestContext) {
   ]) {
     assert.equal(provider.classify(route, request([developer, invalid, user])), undefined);
   }
-  const valid = request([developer, user, assistant, user]);
-  for (const invalid of [
-    { ...valid, url: "https://auth.openai.com" + route.path },
-    { ...valid, url: valid.url + "?extra=1" },
-    { ...valid, method: "GET" },
-    ...["host", "chatgpt-account-id"].map((name) => ({
-      ...valid,
-      headers: valid.headers.map(([key, value]): [string, string] => [
-        key,
-        key === name ? "wrong" : value,
-      ]),
-    })),
-    ...[
-      ["transfer-encoding", "chunked"],
-      ["content-encoding", "gzip"],
-      ["content-length", "1"],
-      ["content-type", "application/json"],
-    ].map(([name, value]) => ({
-      ...valid,
-      headers: [...valid.headers, [name!, value!] as [string, string]],
-    })),
-    {
-      ...valid,
-      body: Buffer.from(JSON.stringify({ model: "other", store: false, input: [user] })),
-    },
-    {
-      ...valid,
-      body: Buffer.from(
-        JSON.stringify({
-          model: "fixture-model",
-          store: false,
-          input: [user],
-          tools: [{ type: "web_search" }],
-        }),
-      ),
-    },
-    {
-      ...valid,
-      body: Buffer.from(
-        '{"model":"fixture-model","model":"fixture-model","store":false,"input":[]}',
-      ),
-    },
-  ]) {
-    assert.equal(provider.classify(route, invalid), undefined);
-  }
-  for (const path of [
-    "/backend-api/wham/settings/user",
-    "/backend-api/codex/responses",
-    "/v1/models",
-  ]) {
-    assert.equal(
-      provider.classify(
-        { ...route, path, method: "GET" },
-        { ...valid, method: "GET", url: route.origin + path, body: Buffer.alloc(0) },
-      ),
-      undefined,
-    );
+  for (const developerMessage of [developer, managedDeveloper]) {
+    const valid = request([developerMessage, user, assistant, user]);
+    for (const invalid of [
+      { ...valid, url: "https://auth.openai.com" + route.path },
+      { ...valid, url: valid.url + "?extra=1" },
+      { ...valid, method: "GET" },
+      ...["host", "chatgpt-account-id"].map((name) => ({
+        ...valid,
+        headers: valid.headers.map(([key, value]): [string, string] => [
+          key,
+          key === name ? "wrong" : value,
+        ]),
+      })),
+      ...[
+        ["transfer-encoding", "chunked"],
+        ["content-encoding", "gzip"],
+        ["x-openai-account-routing-override", "us"],
+        ["content-length", "1"],
+        ["content-type", "application/json"],
+      ].map(([name, value]) => ({
+        ...valid,
+        headers: [...valid.headers, [name!, value!] as [string, string]],
+      })),
+      {
+        ...valid,
+        body: Buffer.from(JSON.stringify({ model: "other", store: false, input: [user] })),
+      },
+      {
+        ...valid,
+        body: Buffer.from(
+          JSON.stringify({
+            model: "fixture-model",
+            store: false,
+            input: [user],
+            tools: [{ type: "web_search" }],
+          }),
+        ),
+      },
+      {
+        ...valid,
+        body: Buffer.from(
+          '{"model":"fixture-model","model":"fixture-model","store":false,"input":[]}',
+        ),
+      },
+    ]) {
+      assert.equal(provider.classify(route, invalid), undefined);
+    }
+    for (const path of [
+      "/backend-api/wham/settings/user",
+      "/backend-api/codex/responses",
+      "/v1/models",
+    ]) {
+      assert.equal(
+        provider.classify(
+          { ...route, path, method: "GET" },
+          { ...valid, method: "GET", url: route.origin + path, body: Buffer.alloc(0) },
+        ),
+        undefined,
+      );
+    }
   }
 }

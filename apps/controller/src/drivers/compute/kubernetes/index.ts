@@ -239,6 +239,10 @@ import {
 import {
   AGENT_RUNTIME_ENTRYPOINT,
   AGENT_WITH_NODE_ENTRYPOINT,
+  CURRENT_AGENT_RUNTIME_ENTRYPOINT,
+  CURRENT_AGENT_WITH_NODE_ENTRYPOINT,
+  LEGACY_PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
+  LEGACY_PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
   PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
   PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
   GATEWAY_RUNTIME_ENTRYPOINT,
@@ -561,6 +565,7 @@ interface GatewayConfigurationSnapshot {
   readonly nativeWorkerNodeId?: string;
 }
 
+const CODEX_LAUNCH_V2 = "codex-launch:v2:";
 const PROTECTED_CODEX_NO_CONNECTION_RETRY = "protected-codex-no-connection-retry:v1";
 
 interface PluginRuntimeSnapshot {
@@ -13750,8 +13755,28 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     );
   }
 
+  private codexLaunchCandidate(revision: Readonly<AgentRevision>): boolean {
+    return (
+      this.options.runtime !== undefined &&
+      revision.harness.id === "codex" &&
+      revision.harness.mode === "dedicated"
+    );
+  }
+
+  // The wrapper versions launch bytes only. Its payload keeps the original grant binding.
+  private computeAdmission(revision: Readonly<AgentRevision>): string | undefined {
+    const admission = revision.compute.admission;
+    if (!admission?.startsWith(CODEX_LAUNCH_V2)) {
+      return admission;
+    }
+    if (!this.codexLaunchCandidate(revision)) {
+      throw new ConfigurationFailure("AgentRevision Compute launch binding is invalid.");
+    }
+    return admission.slice(CODEX_LAUNCH_V2.length) || undefined;
+  }
+
   private hasProtectedCodexAdmission(revision: AgentRevision): boolean {
-    if (revision.compute.admission !== PROTECTED_CODEX_NO_CONNECTION_RETRY) {
+    if (this.computeAdmission(revision) !== PROTECTED_CODEX_NO_CONNECTION_RETRY) {
       return false;
     }
     if (!this.protectedCodexInference(revision)) {
@@ -13763,30 +13788,30 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
   admitRevision(revision: Readonly<AgentRevision>): string | undefined {
     // A launch fact, not an authorization grant. Never infer it for stored revisions:
     // older workers must refuse the new command and older Sandboxes keep their exact command.
-    if (this.protectedCodexInference(revision)) {
-      return PROTECTED_CODEX_NO_CONNECTION_RETRY;
-    }
-    return this.publicGithubReadCandidate(revision) === undefined
-      ? undefined
-      : this.publicGithubReadAdmission();
+    const admission = this.protectedCodexInference(revision)
+      ? PROTECTED_CODEX_NO_CONNECTION_RETRY
+      : this.publicGithubReadCandidate(revision) === undefined
+        ? undefined
+        : this.publicGithubReadAdmission();
+    return this.codexLaunchCandidate(revision) ? CODEX_LAUNCH_V2 + (admission ?? "") : admission;
   }
 
   private publicGithubReadForRevision(revision: AgentRevision) {
     if (
-      revision.compute.admission !== undefined &&
+      this.computeAdmission(revision) !== undefined &&
       !this.hasProtectedCodexAdmission(revision) &&
       !this.hasPublicGithubReadAdmission(revision)
     ) {
       throw new ConfigurationFailure("AgentRevision Compute admission is invalid.");
     }
     const admission = this.publicGithubReadAdmission();
-    return admission !== undefined && revision.compute.admission === admission
+    return admission !== undefined && this.computeAdmission(revision) === admission
       ? this.publicGithubReadCandidate(revision)
       : undefined;
   }
 
   private hasPublicGithubReadAdmission(revision: AgentRevision): boolean {
-    return /^public-github-read:v1:[a-f0-9]{64}$/.test(revision.compute.admission ?? "");
+    return /^public-github-read:v1:[a-f0-9]{64}$/.test(this.computeAdmission(revision) ?? "");
   }
 
   private async revokeUnavailablePublicGithubRead(
@@ -13934,13 +13959,29 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       return undefined;
     }
     const protectedCodex = this.hasProtectedCodexAdmission(revision);
+    const currentLaunch = revision.compute.admission?.startsWith(CODEX_LAUNCH_V2) === true;
+    if (runtime.kind === "codex" && runtime.nativePat && !currentLaunch) {
+      throw new ConfigurationFailure(
+        "Native workspace authentication requires its Compute launch binding.",
+      );
+    }
     return {
       name: `plugin-runtime-${sha256Hex(revision.agentId, 12)}-rev-${sha256Hex(revision.id, 12)}`,
       runtime,
-      entrypoint: protectedCodex ? PROTECTED_CODEX_RUNTIME_ENTRYPOINT : AGENT_RUNTIME_ENTRYPOINT,
-      workspaceEntrypoint: protectedCodex
-        ? PROTECTED_CODEX_WITH_NODE_ENTRYPOINT
-        : AGENT_WITH_NODE_ENTRYPOINT,
+      entrypoint: currentLaunch
+        ? protectedCodex
+          ? PROTECTED_CODEX_RUNTIME_ENTRYPOINT
+          : CURRENT_AGENT_RUNTIME_ENTRYPOINT
+        : protectedCodex
+          ? LEGACY_PROTECTED_CODEX_RUNTIME_ENTRYPOINT
+          : AGENT_RUNTIME_ENTRYPOINT,
+      workspaceEntrypoint: currentLaunch
+        ? protectedCodex
+          ? PROTECTED_CODEX_WITH_NODE_ENTRYPOINT
+          : CURRENT_AGENT_WITH_NODE_ENTRYPOINT
+        : protectedCodex
+          ? LEGACY_PROTECTED_CODEX_WITH_NODE_ENTRYPOINT
+          : AGENT_WITH_NODE_ENTRYPOINT,
     };
   }
 

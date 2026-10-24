@@ -182,6 +182,7 @@ const inputItem: Validator = (item) =>
 const inputItems = array(inputItem);
 
 const developerTextKind = oneOf(
+  "generic.developer_instructions",
   "model.base_instructions",
   "host_skills.instructions",
   "permissions.instructions",
@@ -243,7 +244,7 @@ const reasoning = optionalFields({
 
 const metadataText: Validator = (value) => typeof value === "string" && value.length <= 8192;
 // These are telemetry fields emitted by the selected client, never OCC identities or grants.
-const clientMetadata = optionalFields({
+const clientMetadataFields = (native: boolean): Fields => ({
   session_id: metadataText,
   thread_id: metadataText,
   turn_id: metadataText,
@@ -286,7 +287,26 @@ const clientMetadata = optionalFields({
         analytics_enabled: bool,
         history_ingest_requested: bool,
         model: metadataText,
+        ...(native
+          ? { reasoning_effort: oneOf("none", "minimal", "low", "medium", "high", "xhigh") }
+          : {}),
       })(parseUnambiguousJson(String(value)));
+    } catch {
+      return false;
+    }
+  },
+});
+const clientMetadata = optionalFields(clientMetadataFields(false));
+const nativeClientMetadata = optionalFields({
+  ...clientMetadataFields(true),
+  // The qualified native client emits this empty attribution even without MCP.
+  // This telemetry never grants permission to execute a tool or use an origin.
+  mcp_attribution: (value) => {
+    if (typeof value !== "string" || value.length > 128) {
+      return false;
+    }
+    try {
+      return object({ status: oneOf("none") })(parseUnambiguousJson(value));
     } catch {
       return false;
     }
@@ -301,7 +321,7 @@ const textSettings = optionalFields({
   format: (value) => plainTextFormat(value) || jsonFormat(value),
 });
 
-const responsesRequest = (items: Validator) =>
+const responsesRequest = (items: Validator, metadata = clientMetadata) =>
   object(
     { model: text, input: (value) => text(value) || items(value), store: oneOf(false) },
     {
@@ -319,7 +339,7 @@ const responsesRequest = (items: Validator) =>
       include: array(oneOf("reasoning.encrypted_content"), 1),
       service_tier: oneOf("auto", "default", "flex", "priority"),
       prompt_cache_key: text,
-      client_metadata: clientMetadata,
+      client_metadata: metadata,
       text: textSettings,
       temperature: (value) => number(value) && Number(value) >= 0 && Number(value) <= 2,
       top_p: (value) => number(value) && Number(value) >= 0 && Number(value) <= 1,
@@ -328,7 +348,10 @@ const responsesRequest = (items: Validator) =>
   );
 
 export const validResponsesRequest = responsesRequest(inputItems);
-export const validNativePatResponsesRequest = responsesRequest(nativePatItems);
+export const validNativePatResponsesRequest = responsesRequest(
+  nativePatItems,
+  nativeClientMetadata,
+);
 
 // The legacy Chat surface accepts plain message strings and no tools.
 const chatNumber: Validator = (value) => number(value) && Number(value) >= 0;

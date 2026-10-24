@@ -1,3 +1,4 @@
+import { verifiedSourceIdentityMatches } from "@openclaw-enterprise/contracts";
 import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
 import { assertExecutionAdmission } from "@openclaw-enterprise/contracts";
 import { memoryEgressSendReceipts } from "./egress-send-receipts.ts";
@@ -1421,7 +1422,11 @@ function assertProtectedEgressSource(
   const secret = value?.secret;
   if (
     !common ||
-    Object.keys(value).length !== 9 ||
+    Object.keys(value).length !== (value.verifiedIdentity === undefined ? 9 : 10) ||
+    (value.verifiedIdentity !== undefined &&
+      !verifiedSourceIdentityMatches(
+        value as unknown as import("@openclaw-enterprise/contracts").StaticEgressSource,
+      )) ||
     value.schemaVersion !== 1 ||
     value.adoption !== "live" ||
     value.retention !== "none" ||

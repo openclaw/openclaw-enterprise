@@ -1,5 +1,3 @@
-export { createCodexWorkspacePatProvider } from "./drivers/egress-proxy/codex-workspace-provider.ts";
-export type { CodexWorkspaceAuthority } from "./drivers/egress-proxy/codex-workspace-provider.ts";
 import { sandboxPolicyHandlers } from "./http/sandbox-policy.ts";
 import swagger from "@fastify/swagger";
 import type { TypeBoxTypeProvider } from "@fastify/type-provider-typebox";

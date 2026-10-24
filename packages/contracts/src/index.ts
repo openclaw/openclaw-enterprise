@@ -1,3 +1,4 @@
+export { verifiedSourceIdentityMatches } from "./credential-proxy.ts";
 import { Equal } from "typebox/value";
 import type {
   CredentialPolicyWithdrawalOptions,
@@ -20,6 +21,7 @@ export type {
   EgressSourceKey,
   ExecutionAdmission,
   StaticEgressSource,
+  VerifiedSourceIdentity,
   CredentialReadLifetime,
   CredentialInputRead,
   VersionedSecretValue,
