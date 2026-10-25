@@ -507,10 +507,57 @@ test("a member without Secret create sees the inline Create Secret action disabl
   });
   await drawerAction.waitFor();
   assert.equal(await drawerAction.getAttribute("aria-disabled"), "true");
+  // Its hints offer no Secret create either (finding 2483).
+  await drawer
+    .getByText("Choose existing Slack token Secrets before creating the Agent.", { exact: true })
+    .waitFor();
+  assert.equal(await drawer.getByText(/or create/).count(), 0);
   assert.deepEqual(
     answers.filter((answer) => answer.startsWith("POST ") && answer.includes("/secrets")),
     [],
   );
+});
+
+// A Preset's Harness authentication Secret offered "Create new Secret" as its source, and said
+// "Create a new Secret instead", to a member the API would refuse Secret create (finding 2483).
+// The source is listed disabled with the reason, and the field binds an existing Secret.
+test("a Preset's Secret source follows the member's Secret create answer", async (t) => {
+  const { fixture, namespace, secret } = await setup(t);
+  const noSecretCreate = await fixture.createNamespaceMember(
+    "member-preset-no-secret-create",
+    namespace.id,
+    MEMBER_WRITE.filter(([action, kind]) => !(action === "create" && kind === "secret")),
+  );
+  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: JSON.parse(
+      await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
+    ),
+  });
+  assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  const { page } = await newPage(t, fixture);
+  await login(
+    page,
+    fixture,
+    `/console/agents/new?namespace=${namespace.id}`,
+    noSecretCreate.credentials,
+  );
+  await page.getByLabel("Preset template").selectOption(preset.data.id);
+  const denial = "Your access does not include creating Secrets in this Namespace.";
+  await page.getByText(`Choose an existing Secret. ${denial}`, { exact: true }).waitFor();
+  const source = page.getByLabel("Secret source for Model Secret", { exact: true });
+  assert.equal(await source.inputValue(), "existing");
+  const create = source.locator('option[value="new"]');
+  assert.equal(await create.isDisabled(), true);
+  assert.equal(await create.textContent(), `Create new Secret (${denial})`);
+  const existing = page.getByLabel("Existing Secret for Model Secret", { exact: true });
+  await waitForEnabled(existing);
+  await existing.selectOption(secret.id);
+  await page.getByLabel("Name", { exact: true }).fill("Preset choose-only Agent");
+  await page.getByLabel("Model", { exact: true }).fill("gpt-5.1");
+  await page.getByRole("button", { name: "Use Preset" }).click();
+  await page
+    .getByText("Preset authentication: API key · Secret configured", { exact: true })
+    .waitFor();
 });
 
 // Agent create needs Secret operate on its Harness authentication Secret and on each Secret its
