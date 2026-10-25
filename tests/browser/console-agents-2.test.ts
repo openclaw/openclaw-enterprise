@@ -60,6 +60,7 @@ import {
   assertAgentNameTaken,
   optionValues,
   raceAgentName,
+  runProvisioningPolls,
   waitForProvisioningFailure,
 } from "./console-agents-test-support.mjs";
 import {
@@ -179,6 +180,7 @@ test("Create keeps provisioning reads and retries on the admitted job", async (t
     }),
   );
 
+  await trackSettledFetches(page);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
   await page.getByLabel("Agent name").fill("Provision response identity");
@@ -195,7 +197,8 @@ test("Create keeps provisioning reads and retries on the admitted job", async (t
     assert.equal(pathRequests(requests, "GET", other).length, 0);
     assert.equal(pathRequests(requests, "GET", url).length, 0);
     assert.equal(admissions.length, attempt);
-    await retry.click();
+    // The fourth admission is the honest one: the page polls its job once.
+    await (attempt < 3 ? retry.click() : runProvisioningPolls(page, () => retry.click(), url, 1));
   }
   await alert.filter({ hasText: "Outcome unknown after provisioning admission" }).waitFor();
   assert.equal(admissions.length, 4);
@@ -394,6 +397,7 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
     );
   });
 
+  await trackSettledFetches(page);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
   await page.getByRole("button", { name: "Start without Preset" }).click();
@@ -402,8 +406,17 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
   await createModelCredentialSecret(page, "model-secret-value");
   await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
   const retry = page.getByRole("button", { name: "Retry provisioning request" });
+  const create = page.getByRole("button", { name: "Create Agent" });
+  // Each accepted job is polled once before its answer shows; the fourth twice.
+  const submitPolled = (work: number, reads = 1) =>
+    runProvisioningPolls(
+      page,
+      () => create.click(),
+      `/namespaces/${namespace.id}/agents/provision/work_${work}`,
+      reads,
+    );
   // The stub refuses the resend at admission.
-  await page.getByRole("button", { name: "Create Agent" }).click();
+  await create.click();
   await page
     .getByText(/^Outcome unknown\. Retry resubmits the same request ID and saved references\./)
     .waitFor();
@@ -414,7 +427,7 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
   assert.equal(await retry.isVisible(), false);
   await waitForEnabled(page.getByLabel("Agent name"));
   await page.getByLabel("Agent name").fill("Taken name");
-  await page.getByRole("button", { name: "Create Agent" }).click();
+  await submitPolled(1);
   await page
     .getByText(`${AGENT_NAME_CONFLICT} Select Create Agent to submit a new request.`)
     .waitFor();
@@ -424,7 +437,7 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
   await assertAgentNameTaken(page);
 
   await page.getByLabel("Agent name").fill("Free name");
-  await page.getByRole("button", { name: "Create Agent" }).click();
+  await submitPolled(2);
   await page
     .getByText("Agent provisioning could not complete. Retry uses the accepted provisioning job.")
     .waitFor();
@@ -458,7 +471,7 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
   assert.equal(retries, 2);
   assert.equal(await retry.isVisible(), false);
   await waitForEnabled(page.getByLabel("Agent name"));
-  await page.getByRole("button", { name: "Create Agent" }).click();
+  await submitPolled(3);
   await page
     .getByText(
       "Provisioning was cancelled because the Agent was deleted. Select Create Agent to submit a new request.",
@@ -470,7 +483,7 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
   // A cancelled job cannot be retried either; the next submit uses a new request ID.
   assert.equal(await retry.isVisible(), false);
   await waitForEnabled(page.getByLabel("Agent name"));
-  await page.getByRole("button", { name: "Create Agent" }).click();
+  await submitPolled(4);
   // Retry calls the job's retry endpoint, which cannot recover a finished job; the text
   // must point at Create Agent for that case.
   await page
@@ -496,7 +509,7 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
   assert.equal(await page.getByLabel("Service account token Secret").isDisabled(), true);
   await waitForEnabled(page.getByRole("button", { name: "Create Agent" }));
   await waitForEnabled(page.getByRole("button", { name: "Start over" }));
-  await page.getByRole("button", { name: "Create Agent" }).click();
+  await submitPolled(4, 2);
   await page.waitForURL(new RegExp(`/agents/${agentIds[2]}\\?`));
   assert.equal(bodies.length, 5);
   assert.equal(admission(bodies, 5).requestId, finished.requestId);
@@ -578,6 +591,7 @@ test("Dedicated Agent creation shows the API's named reason when a provisioning 
   await page.route(`**/namespaces/${namespace.id}/agents/provision/work_*`, routeJob);
   await page.route(`**/namespaces/${namespace.id}/agents/provision/work_*/retry`, routeJob);
 
+  await trackSettledFetches(page);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
   await page.getByRole("button", { name: "Start without Preset" }).click();
@@ -586,8 +600,13 @@ test("Dedicated Agent creation shows the API's named reason when a provisioning 
   await createModelCredentialSecret(page, "model-secret-value");
   await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
   const retry = page.getByRole("button", { name: "Retry provisioning request" });
-  for (const expected of ["The provisioning job can no longer be retried.", refusals[1]]) {
-    await page.getByRole("button", { name: "Create Agent" }).click();
+  const create = page.getByRole("button", { name: "Create Agent" });
+  for (const [index, expected] of [
+    "The provisioning job can no longer be retried.",
+    refusals[1],
+  ].entries()) {
+    // Each submit is a new job, polled once.
+    await runProvisioningPolls(page, () => create.click(), jobUrl(index + 1), 1);
     await page
       .getByText("Agent provisioning could not complete. Retry uses the accepted provisioning job.")
       .waitFor();
@@ -779,6 +798,7 @@ test("Dedicated Agent creation reports a stop during or before the first deploym
       : route.fallback(),
   );
 
+  await trackSettledFetches(page);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
   await page.getByRole("button", { name: "Start without Preset" }).click();
@@ -786,9 +806,11 @@ test("Dedicated Agent creation reports a stop during or before the first deploym
   await page.getByLabel("Authentication method").selectOption("codex_pat");
   await createModelCredentialSecret(page, "model-secret-value");
   await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
-  for (const c of cases) {
+  const create = page.getByRole("button", { name: "Create Agent" });
+  for (const [index, c] of cases.entries()) {
     current = c;
-    await page.getByRole("button", { name: "Create Agent" }).click();
+    // Each submit polls the job once.
+    await runProvisioningPolls(page, () => create.click(), url, index + 1);
     await page.getByText(c.text).waitFor();
     if (c.stopped) {
       await page.getByText("Provisioning stopped.", { exact: true }).waitFor();
@@ -892,16 +914,12 @@ test("Dedicated Agent creation keeps one provisioning label while the job retrie
   await createModelCredentialSecret(page, "model-secret-value");
   await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
   await page.evaluate(recordProvisioningWrites, ["Provisioning"]);
-  const start = Date.now();
-  await page.clock.install({ time: start });
-  await page.clock.pauseAt(start + 1_000);
-  await page.getByRole("button", { name: "Create Agent" }).click();
-  // Advance each poll only after the page has consumed the preceding response.
-  for (let poll = 0; poll < reads.length; poll += 1) {
-    await waitForCondition(() => clientRequestId && read === poll, `job read ${poll}`);
-    await waitForIdleFetches(page);
-    await page.clock.runFor(1_000);
-  }
+  await runProvisioningPolls(
+    page,
+    () => page.getByRole("button", { name: "Create Agent" }).click(),
+    url,
+    reads.length,
+  );
   await waitForProvisioningFailure(page);
   assert.equal(read, reads.length);
   assert.deepEqual(await page.evaluate(() => globalThis.provisioningWrites), [

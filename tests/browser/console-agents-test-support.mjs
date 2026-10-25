@@ -7,7 +7,12 @@ import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/driv
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
-import { nativeValues, pathRequests } from "./console-agents-browser-helpers.mjs";
+import {
+  nativeValues,
+  pathRequests,
+  settledFetches,
+  waitForIdleFetches,
+} from "./console-agents-browser-helpers.mjs";
 
 /** @import { GitHubRepositoryRegistration } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts" */
 
@@ -124,6 +129,33 @@ export async function waitForProvisioningFailure(page) {
     ),
   );
   assert.ok(error <= form + 0.5, `error line ${error}px, form ${form}px`);
+}
+
+// Create Agent rereads an accepted provisioning job once a second (waitForProvisioning in
+// create.mts). This runs `submit` (the click that sends or retries the job) with the page clock
+// paused, then runs that clock one second at a time, each step only once no fetch is in flight,
+// until the page has read `jobPath` `reads` times in all. The clock then runs in real time again.
+// So the test skips each one-second wait, and the page still handles each answer, and the
+// optional deployment read between polls, before the next poll. Call trackSettledFetches before
+// the page loads.
+const pollClocks = new WeakSet();
+
+export async function runProvisioningPolls(page, submit, jobPath, reads) {
+  if (!pollClocks.has(page)) {
+    await page.clock.install();
+    pollClocks.add(page);
+  }
+  await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1);
+  await submit();
+  for (let polls = 0; ; polls += 1) {
+    await waitForIdleFetches(page);
+    if ((await settledFetches(page, jobPath)) >= reads) {
+      break;
+    }
+    assert.ok(polls < 10, `the page read ${jobPath} ${reads} times`);
+    await page.clock.runFor(1_000);
+  }
+  await page.clock.resume();
 }
 
 export function configurationPostRequests(requests, namespaceId) {
