@@ -1737,7 +1737,13 @@ async function loadPage({
       // Diagnostics attach to the Agent's own shell when it reveals.
       shell = { ...standIn, view: detailView, diagnostics: null };
     } else {
-      shell = renderShell(current.feature, false);
+      // A Namespace the reader cannot read hides its Agent too: the panel takes the Agents list's
+      // header, not the Agent page's ID, copy button and ← Agents link (finding 2400).
+      shell = renderShell(
+        current.feature,
+        false,
+        scopedNamespaceUnavailable ? { page: null } : undefined,
+      );
     }
     const viewState = {
       active,
@@ -2380,7 +2386,7 @@ async function revalidateMountedAgent(current) {
     if (!namespaces.some((item) => item.id === selectedNamespace)) {
       clearRetainedViewsForNamespace(selectedNamespace);
       resetReads();
-      namespaceUnavailablePanel(renderShell(current.feature).view);
+      namespaceUnavailablePanel(renderShell(current.feature, false, { page: null }).view);
       return;
     }
     checking = "detail";

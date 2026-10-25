@@ -21,6 +21,10 @@ export const NamespaceMissingNoneReadable = {
   ...story("namespaceMissingNoneReadable"),
   name: "Namespace unavailable, none readable",
 };
+export const NamespaceMissingAgentBookmark = {
+  ...story("namespaceMissingAgentBookmark"),
+  name: "Namespace unavailable, Agent bookmark",
+};
 export const CreateRestricted = story("agentsCreateRestricted");
 export const CreateRestrictedEmpty = {
   ...story("agentsCreateRestrictedEmpty"),

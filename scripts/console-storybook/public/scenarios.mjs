@@ -1223,6 +1223,15 @@ export const scenarios = {
     description:
       "A stale Namespace link for a reader with no readable Namespace points at the header's Refresh, with no Switch Namespace button.",
   },
+  namespaceMissingAgentBookmark: {
+    group: "Pages/Agents",
+    name: "Namespace unavailable, Agent bookmark",
+    emptyNamespaces: true,
+    path: "/console/agents/agt_bookmarked?namespace=ns_missing",
+    description:
+      "An Agent bookmark in a Namespace the reader can no longer read shows the Agents header and the panel, without the Agent's ID, copy button or back link.",
+    gap: "Simulated UI proof only; this preview does not revoke a grant.",
+  },
   agentsCreateRestricted: {
     group: "Pages/Agents",
     name: "Create Agent unavailable for this caller",

@@ -656,6 +656,7 @@ test("Agents with no readable Namespace names it once and keeps one Refresh", as
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const granted = await fixture.createNamespace("Granted later", { ready: true });
+  const agent = await fixture.createAgent(granted.id, "Bookmarked Agent");
   const denyAll = {
     id: "deny-all-namespace-read",
     resourceKind: "namespace",
@@ -671,6 +672,15 @@ test("Agents with no readable Namespace names it once and keeps one Refresh", as
     ],
     [
       `/console/agents?namespace=${granted.id}`,
+      "Namespace unavailable",
+      "This Namespace is missing or you no longer have access, and you cannot read any other Namespace. Ask an administrator to grant you access to one, then Refresh.",
+      "Namespace unavailable",
+    ],
+    // An Agent bookmark in that Namespace kept the Agent page's header above the panel: the
+    // unreadable Agent's ID and copy button, a "← Agents" link to the same page and a cut-off
+    // selector (finding 2400). It takes the Agents list's header instead.
+    [
+      `/console/agents/${agent.id}?namespace=${granted.id}`,
       "Namespace unavailable",
       "This Namespace is missing or you no longer have access, and you cannot read any other Namespace. Ask an administrator to grant you access to one, then Refresh.",
       "Namespace unavailable",
@@ -692,6 +702,10 @@ test("Agents with no readable Namespace names it once and keeps one Refresh", as
     const selector = page.getByRole("combobox", { name: "Namespace", exact: true });
     assert.equal(await selector.isDisabled(), true);
     assert.equal(await selector.locator("option:checked").textContent(), selected);
+    await page.getByRole("heading", { level: 1, name: "Agents", exact: true }).waitFor();
+    assert.equal(await page.locator(".page-header--subpage").count(), 0, path);
+    assert.equal(await page.getByRole("button", { name: "Copy Agent ID" }).count(), 0, path);
+    assert.equal(await page.getByText(agent.id).count(), 0, path);
 
     // Granted access shows once the reader presses the header's Refresh.
     fixture.policy.restrictions.splice(fixture.policy.restrictions.indexOf(denyAll), 1);
