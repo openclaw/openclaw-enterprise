@@ -456,11 +456,13 @@ test("the Agent sources answer matches what a real Agent update checks", async (
   });
   const session = await fixture.signIn(member.credentials);
   const grant = (id, action, resourceKind, resourceId) => {
-    fixture.policy.roles.push({
-      id: `role-${id}`,
-      namespaceId: namespace.id,
-      permissions: [{ action, resourceKind }],
-    });
+    if (!fixture.policy.roles.some((role) => role.id === `role-${id}`)) {
+      fixture.policy.roles.push({
+        id: `role-${id}`,
+        namespaceId: namespace.id,
+        permissions: [{ action, resourceKind }],
+      });
+    }
     fixture.policy.bindings.push({
       id: `binding-${id}`,
       namespaceId: namespace.id,
@@ -485,27 +487,37 @@ test("the Agent sources answer matches what a real Agent update checks", async (
     });
   const denials = () => auditSink.list().filter((event) => event.kind === "authorization_denial");
 
-  // Agent update without Configuration read: the bindings are not visible, so no answer.
-  assert.equal(await answer(), false);
-  assertApiError(await save(), 403, "FORBIDDEN");
-  grant("agent-sources-configuration", "read", "configuration", agent.configurationId);
-  // Configuration read, but no operate on any bound source.
-  assert.equal(await answer(), false);
-  assertApiError(await save(), 403, "FORBIDDEN");
-  // Operate on one of the two Configuration Secrets: the answer covers every bound Secret.
+  const revoke = (id) => {
+    const index = fixture.policy.bindings.findIndex((binding) => binding.id === `binding-${id}`);
+    assert.notEqual(index, -1);
+    fixture.policy.bindings.splice(index, 1);
+  };
+
+  // Operate on every bound source, but no Configuration read: an update needs that read and the
+  // bindings are not visible without it, so there is no answer.
   grant("agent-sources-bound", "operate", "secret", bound.id);
-  assert.equal(await answer(), false);
-  // Operate on both Configuration Secrets, but not the Harness authentication Secret.
   grant("agent-sources-second", "operate", "secret", second.id);
-  assert.equal(await answer(), false);
-  const refusals = denials().length;
-  assertApiError(await save(), 403, "FORBIDDEN");
-  // The answers are not attempted operations; only the refused saves are audited.
-  assert.equal(denials().length, refusals + 1);
-  // Operate on the Harness authentication Secret completes the set, and the same save succeeds.
   grant("agent-sources-harness", "operate", "secret", agent.harnessAuth.source.id);
+  assert.equal(await answer(), false);
+  assertApiError(await save(), 403, "FORBIDDEN");
+  // With Configuration read the set is complete, and the same save succeeds.
+  grant("agent-sources-configuration", "read", "configuration", agent.configurationId);
   assert.equal(await answer(), true);
   assert.equal((await save()).status, 200);
+  // Operate on one of the two Configuration Secrets is not enough: the answer covers every
+  // bound Secret, not any of them.
+  revoke("agent-sources-second");
+  assert.equal(await answer(), false);
+  assertApiError(await save(), 403, "FORBIDDEN");
+  // Every Configuration Secret but not the Harness authentication Secret: still refused.
+  grant("agent-sources-second", "operate", "secret", second.id);
+  revoke("agent-sources-harness");
+  const refusals = denials().length;
+  assert.equal(await answer(), false);
+  // The answers are not attempted operations; only the refused save is audited.
+  assert.equal(denials().length, refusals);
+  assertApiError(await save(), 403, "FORBIDDEN");
+  assert.equal(denials().length, refusals + 1);
 });
 
 test("console static routes expose only public assets and preserve API JSON failures", async (t) => {
