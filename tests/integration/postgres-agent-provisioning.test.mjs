@@ -46,6 +46,7 @@ import { waitFor } from "../helpers/wait-for.mjs";
 import { withNamespaceLockHeld } from "../helpers/postgres-namespace-lock.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 import { expireWorkLease, makeWorkDue } from "../helpers/postgres-worker-revision-support.mjs";
+import { DEPENDENCY_UNAVAILABLE } from "../helpers/refusal-text.mjs";
 
 const adminEmail = "postgres-agent-provisioning-v2@example.test";
 const adminPassword = "postgres-agent-provisioning-password";
@@ -1425,6 +1426,19 @@ test(
       const first = await fixture.request("GET", `${agentPath}/deployments/${handoff.revisionId}`);
       assert.equal(first.status, 200, JSON.stringify(first.body));
       assert.equal(first.data.error?.code, "REVISION_STOPPED");
+      assert.equal(first.data.status, "failed");
+      // The Versions list carries that outcome with the record's code. A Stop ended the version;
+      // it did not fail, so the console shows no Failed mark on it after a reload (finding 2422).
+      const listed = await fixture.request("GET", `${agentPath}/revisions`);
+      assert.equal(listed.status, 200, JSON.stringify(listed.body));
+      assert.deepEqual(
+        listed.data.map(({ id, deploymentStatus, deploymentErrorCode }) => [
+          id,
+          deploymentStatus,
+          deploymentErrorCode,
+        ]),
+        [[handoff.revisionId, "failed", "REVISION_STOPPED"]],
+      );
       assert.equal(settled.status, "failed", JSON.stringify(settled));
       assert.equal(settled.agentId, handoff.agentId);
       assert.equal(settled.revisionId, handoff.revisionId);
@@ -3345,7 +3359,7 @@ test(
 
     // Status and retry both require the current Sandbox contract. Restoring the complete
     // Driver makes the queued status readable and the existing attempt eligible again.
-    const message = "A required platform dependency is unavailable.";
+    const message = DEPENDENCY_UNAVAILABLE;
     const status = await switched.request("GET", admitted.data.provisioning.url);
     assert.equal(status.status, 503, JSON.stringify(status.body));
     assert.equal(status.body.error.message, message);

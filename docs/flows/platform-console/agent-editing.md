@@ -71,12 +71,13 @@ The UI preserves navigation and exact-resource permissions, refusing unreadable-
 editing/deployment without defaults.
 **Selected version** uses `activeRevisionId`; **View version vN** opens read-only
 details without activating it. **Deployment activity** in `agents/deployment-evidence.mts`
-shows the newest readable version's recorded status. It does not measure live health.
-Routine completion folds. Pending work, read errors, warnings, and cleanup stay visible.
-If the first read finishes after the `FIRST_ACTIVITY_WAIT_MS` reveal, the summary shows its
-outcome and the details stay folded so the version tabs do not move. Cleanup, warnings, or an
-overview error still open the details. If an overview refresh cannot identify this Agent,
-the page keeps the recorded deployment outcome and says the overview could not be refreshed.
+shows the newest readable version's recorded status, not live health. The Versions list
+marks failed versions from listed `deploymentStatus` and `deploymentErrorCode`, surviving
+reloads; superseded or stopped endings stay unmarked.
+Routine completion folds; pending work, read errors, warnings, and cleanup stay visible.
+A first read landing after the `FIRST_ACTIVITY_WAIT_MS` reveal shows its outcome with
+the details folded, unless cleanup, warnings, or an overview error open them. If an
+overview refresh cannot identify this Agent, the page keeps the outcome and says so.
 
 On failure, `agents/deployment-recovery.mts` shows the API's message or suggests checking
 Logs if the message gives no next step. It hides the Logs link if the caller was denied the
@@ -85,10 +86,10 @@ known Configuration read error or denial. **Open version draft** (`deploy` only)
 message) need `deploy` and a successful Configuration read; Deploy again focuses **Deploy new
 version**. Credentials recovery needs `update`. Hidden or unlisted
 current versions suppress recovery; viewed versions show results. Activity polls every
-`DEPLOYMENT_POLL_MS`, through transient read errors, until a result, denial, or missing record; a new result also rereads selection. **Refresh deployment** rereads
-activity and selection, after any poll in flight. Polls patch in place (`patchChildren`), so
-an unchanged poll writes nothing. A pending deploy lists its result rows before the first attempt;
-the details keep their tallest height until Refresh after it settles.
+`DEPLOYMENT_POLL_MS` through transient read errors until a result, denial, or missing
+record, patching in place (`patchChildren`); a new result rereads selection.
+**Refresh deployment** rereads both after any poll in flight. A pending deploy lists its
+result rows before the first attempt; the details keep their tallest height until Refresh.
 **Current observations** in `agents/deployment-diagnostics.mts` requests timestamped
 `succeeded`, `failed`, or `unknown` diagnostics without changing deployment status.
 Its bodyless POST requires Agent `read`/`operate` and exact Agent revision `read`.
@@ -351,6 +352,7 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 
 ## Changelog
 
+- 2026-10-25: Mark failed versions from the revision list. (finding 2422)
 - 2026-10-24: Restoring parked Workspace files applies the latest observed Agent operate answer. (pr-3474)
 - 2026-10-24 17:30: Stop and Run diagnostics follow the latest observed operate answer. (fix-2328)
 

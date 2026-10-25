@@ -18,6 +18,7 @@ import {
   openAdvancedSettings,
   waitForLiveControls,
 } from "./console-agents-test-support.mjs";
+import { SAVED_CONFIGURATION_CHANGED } from "../helpers/refusal-text.mjs";
 
 const defaultCodexPreset = JSON.parse(
   await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
@@ -105,7 +106,7 @@ test("a refused or stale Configuration save is an error; editing again is a hint
 
   patchAnswer = "stale";
   await page.getByRole("button", { name: "Save Configuration", exact: true }).click();
-  await page.getByText("The saved Configuration changed while you were editing.").waitFor();
+  await page.getByText(SAVED_CONFIGURATION_CHANGED).waitFor();
   assert.equal(await feedbackClass(page), "danger");
 
   // The rebuilt editor still needs a reload, and says so as an error.

@@ -325,13 +325,42 @@ kube=(kubectl --kubeconfig "$kubeconfig" --context "$context")
 helm_args=(--kubeconfig "$kubeconfig" --kube-context "$context" --namespace "$namespace")
 occ_json=("$occ" --output json)
 
-# Best-effort cleanup of the startup preflight's temporary Secret, NetworkPolicy and Pods.
+# Only a successful create acknowledgement establishes cleanup ownership.
 preflight_resources=()
+unconfirmed_preflight() {
+  die "ownership unconfirmed for ${1:0:300}; no cleanup was attempted for this name. Check whether this object remains in the selected namespace. Correct the failure and use a fresh evidence directory. This run stopped no OCC writer."
+}
+create_preflight() {
+  # Validate the opaque UID before Bash can strip newlines or NULs, and build
+  # the complete guarded request before cleanup can start a DELETE.
+  "${kube[@]}" --request-timeout=30s --namespace "$namespace" create \
+    --filename "$1" -o 'jsonpath={.metadata.uid}' 2>/dev/null |
+    python3 -c '
+import json, sys
+uid = sys.stdin.buffer.read().decode("utf-8")
+if not uid or not uid.isprintable() or any(c.isspace() for c in uid):
+    sys.exit(1)
+print(json.dumps({"apiVersion": "v1", "kind": "DeleteOptions", "propagationPolicy": "Background", "preconditions": {"uid": uid}}, separators=(",", ":")))
+' 2>/dev/null
+}
 cleanup_preflight() {
-  local resource
-  for resource in ${preflight_resources[@]+"${preflight_resources[@]}"}; do
-    "${kube[@]}" --request-timeout=15s --namespace "$namespace" delete "$resource" \
-      --ignore-not-found --wait=false >/dev/null 2>&1 || true
+  local entry resource name uri delete_options
+  for entry in ${preflight_resources[@]+"${preflight_resources[@]}"}; do
+    resource=${entry%% *}
+    delete_options=${entry#* }
+    name=${resource#*/}
+    case "$resource" in
+      pod/*) uri="/api/v1/namespaces/$namespace/pods/$name" ;;
+      secret/*) uri="/api/v1/namespaces/$namespace/secrets/$name" ;;
+      networkpolicy.networking.k8s.io/*)
+        uri="/apis/networking.k8s.io/v1/namespaces/$namespace/networkpolicies/$name" ;;
+    esac
+    # The server must compare the UID atomically with deletion, including if a
+    # different object has taken this name since the create acknowledgement.
+    if ! "${kube[@]}" --request-timeout=15s delete --raw="$uri" -f - \
+      <<<"$delete_options" >/dev/null 2>&1; then
+      warn "could not confirm cleanup of ${resource:0:300}."
+    fi
   done
   preflight_resources=()
 }
@@ -345,7 +374,7 @@ trap 'cleanup_preflight; rmdir "$evidence_dir/.upgrade-lock" 2>/dev/null || true
 # such as split-layout Gateway storage, would otherwise crash-loop both after the
 # migration.
 preflight_startup() {
-  local suffix secret component pod phase waiting deadline remaining_seconds message failures refusal name_refusal
+  local suffix secret component pod phase waiting deadline remaining_seconds message failures refusal name_refusal delete_options
   suffix=$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')
   secret="$release-upgrade-preflight-$suffix"
   yq -p=yaml -o=json -I=0 '.' "$rendered" >"$evidence_dir/preflight-rendered.jsonl" ||
@@ -354,16 +383,14 @@ preflight_startup() {
     "$secret" "$namespace" "$release" >"$evidence_dir/preflight-networkpolicy.json" ||
     die "cannot build the startup preflight NetworkPolicy from the rendered chart; no OCC writer was stopped."
   if [[ "$(cat "$evidence_dir/preflight-networkpolicy.json")" != null ]]; then
-    preflight_resources+=("networkpolicy.networking.k8s.io/$secret")
-    "${kube[@]}" --request-timeout=30s --namespace "$namespace" create \
-      --filename "$evidence_dir/preflight-networkpolicy.json" >/dev/null ||
-      die "cannot create the startup preflight NetworkPolicy $secret; no OCC writer was stopped."
+    delete_options=$(create_preflight "$evidence_dir/preflight-networkpolicy.json") ||
+      unconfirmed_preflight "networkpolicy.networking.k8s.io/$secret"
+    preflight_resources+=("networkpolicy.networking.k8s.io/$secret $delete_options")
   fi
-  preflight_resources+=("secret/$secret")
-  node scripts/upgrade-startup-preflight.mjs secret "$candidate_installation" \
-    "$installation_key" "$secret" "$namespace" "$release" |
-    "${kube[@]}" --request-timeout=30s --namespace "$namespace" create --filename - >/dev/null ||
-    die "cannot create the startup preflight Secret $secret; no OCC writer was stopped."
+  delete_options=$(node scripts/upgrade-startup-preflight.mjs secret "$candidate_installation" \
+    "$installation_key" "$secret" "$namespace" "$release" | create_preflight -) ||
+    unconfirmed_preflight "secret/$secret"
+  preflight_resources+=("secret/$secret $delete_options")
   for component in api worker; do
     pod="$release-upgrade-preflight-$component-$suffix"
     node scripts/upgrade-startup-preflight.mjs pod "$evidence_dir/preflight-rendered.jsonl" \
@@ -371,10 +398,9 @@ preflight_startup() {
       "$selected_controller" "$timeout_seconds" "$evidence_dir/installation.json" \
       >"$evidence_dir/preflight-$component-pod.json" ||
       die "cannot build the $component startup preflight Pod from the rendered chart; no OCC writer was stopped."
-    preflight_resources+=("pod/$pod")
-    "${kube[@]}" --request-timeout=30s --namespace "$namespace" create \
-      --filename "$evidence_dir/preflight-$component-pod.json" >/dev/null ||
-      die "cannot create the $component startup preflight Pod; no OCC writer was stopped."
+    delete_options=$(create_preflight "$evidence_dir/preflight-$component-pod.json") ||
+      unconfirmed_preflight "pod/$pod"
+    preflight_resources+=("pod/$pod $delete_options")
   done
   # Wait for every Pod and save each one's status and log before reporting, so a
   # refusal shows every component that failed, not only the first.

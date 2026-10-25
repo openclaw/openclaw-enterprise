@@ -983,6 +983,25 @@ test(
         reason_code: "REVISION_SUPERSEDED",
       },
     ]);
+    // The Versions list names each version's outcome with the code its record reports. The
+    // superseded version is listed as failed, the record's own status, beside the code that tells
+    // the console it did not fail, so a reloaded console shows no Failed mark on it (finding 2422).
+    const listed = await fixture.controller.listRevisions(
+      fixture.actor.id,
+      fixture.namespace.id,
+      owner.id,
+    );
+    assert.deepEqual(
+      listed.revisions.map(({ id, deploymentStatus, deploymentErrorCode }) => [
+        id,
+        deploymentStatus,
+        deploymentErrorCode,
+      ]),
+      [
+        [newer.id, "succeeded", null],
+        [older.id, "failed", "REVISION_SUPERSEDED"],
+      ],
+    );
   },
 );
 

@@ -10,6 +10,7 @@ import { assertApiError } from "../helpers/api-error.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { CODEX_PLACEMENT_REFUSAL } from "../helpers/refusal-text.mjs";
 
 async function setup(t, options = {}) {
   const audit = new InMemoryAuditSink();
@@ -549,8 +550,7 @@ test("Agent create refuses dedicated OpenClaw on OpenShell settings its workspac
 // does Agent provisioning, which Kubernetes Compute offers for every dedicated Agent (finding 2395).
 test("Agent save refuses a dedicated Harness the Kubernetes Compute settings cannot place", async (t) => {
   // The fixture's unrouted Driver has no node enrollment either (composition always supplies it).
-  const message =
-    "Dedicated Agents need gateway routing and node enrollment in this Installation's Kubernetes Compute configuration. Codex runs only as a Dedicated Agent: select Embedded OpenClaw, or ask an operator to configure it.";
+  const message = CODEX_PLACEMENT_REFUSAL;
   for (const routed of [false, true]) {
     const f = await setup(t, {
       channelRuntime: true,

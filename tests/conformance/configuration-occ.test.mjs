@@ -1868,6 +1868,9 @@ test("Harness admission rejects conflicting selections, mode mismatches, and una
         configurationGeneration: embedded.configurationGeneration,
         harness: embedded.harness,
         createdAt: embedded.createdAt,
+        // The deployment the listing names: the one admitted above, still queued.
+        deploymentStatus: "queued",
+        deploymentErrorCode: null,
       },
     ],
   );

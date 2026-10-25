@@ -1268,19 +1268,38 @@ export const AgentRevisionReadResponse = Type.Object(
 // A list item names a revision without its saved settings, so a page stays a few hundred bytes
 // per item whatever the admitted snapshots weigh (finding 1323). The fields beyond metadata are
 // the ones clients use to tell revisions apart; the database checks their shape on insert.
-export const AgentRevisionSummarySchema = Type.Pick(
-  AgentRevisionSchema,
-  [
-    "id",
-    "namespaceId",
-    "agentId",
-    "revision",
-    "backendId",
-    "configurationId",
-    "configurationGeneration",
-    "harness",
-    "createdAt",
-  ],
+export const AgentRevisionSummarySchema = Type.Object(
+  {
+    ...Type.Pick(AgentRevisionSchema, [
+      "id",
+      "namespaceId",
+      "agentId",
+      "revision",
+      "backendId",
+      "configurationId",
+      "configurationGeneration",
+      "harness",
+      "createdAt",
+    ]).properties,
+    // The outcome a Versions list marks beside each version (finding 2422).
+    deploymentStatus: Type.Union(
+      [
+        Type.Literal("queued"),
+        Type.Literal("running"),
+        Type.Literal("succeeded"),
+        Type.Literal("failed"),
+        Type.Null(),
+      ],
+      {
+        description:
+          "The status that reading this revision's deployment would report, or `null` when OCC has no deployment record for it.",
+      },
+    ),
+    deploymentErrorCode: Type.Union([Type.String({ minLength: 1 }), Type.Null()], {
+      description:
+        "The `error.code` that reading this revision's deployment would report, or `null` when it reports no error. It tells a failure from a deployment that a newer version or a Stop ended.",
+    }),
+  },
   {
     description:
       "Agent revision summary without saved settings. Read this Agent revision for its configuration. If OCC cannot read the saved settings, the response contains `configurationReadError`.",

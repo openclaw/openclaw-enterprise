@@ -44,6 +44,7 @@ import {
 } from "./console-deployment-activity-helpers.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import { fileReadyNamespace } from "./console-ready-namespace.mjs";
+import { CONFIGURATION_EDITS_PENDING } from "../helpers/refusal-text.mjs";
 
 // The Agent page's first screen while its reads settle and its polls run: loading cues, quiet
 // polls, a steady layout, and failed-version recovery scoped to the caller.
@@ -86,6 +87,35 @@ function routeFailedRecord(
     deploymentId: revision.id,
     code,
   });
+}
+
+// The in-memory fixture never runs deployment work, so its Versions list reports a deployment as
+// queued at most. This lists `revision` as failed with `code`, as the API does once its record
+// ended that way (finding 2422; postgres-agent-provisioning.test.mjs and
+// postgres-worker-agent-revision.test.mjs list real stopped and superseded work).
+async function routeFailedListing(
+  page,
+  fixture,
+  namespace,
+  agent,
+  revision,
+  code = "RUNTIME_MODEL_PROBE_FAILED",
+) {
+  const listPath = `/namespaces/${namespace.id}/agents/${agent.id}/revisions`;
+  await page.route(
+    (url) => url.origin === fixture.origin && url.pathname === listPath,
+    async (route) => {
+      const response = await route.fetch();
+      const body = await response.json();
+      for (const item of body.data ?? []) {
+        if (item.id === revision.id) {
+          item.deploymentStatus = "failed";
+          item.deploymentErrorCode = code;
+        }
+      }
+      await route.fulfill({ response, json: body });
+    },
+  );
 }
 
 // The Agent summary showed "vN · Loading…" for a frame or more on every load while the newest
@@ -292,10 +322,13 @@ test("A failed older version raises no recovery while the current version is hid
 // like an ordinary version (finding 2383). A failed record is final, so the mark stays. After a
 // reload only the latest record is read again, so the earlier failed version read "Historical"
 // with no mark beside its own record's "Failed" (finding 2407); opening it reads that record.
+// The list now carries each version's outcome, so the mark shows before v1 is opened (finding
+// 2422).
 test("The Versions list keeps an earlier failed version's mark after a newer deploy", async (t) => {
   const { fixture, namespace, agent, page } = await agentPage(t, "Failed then", "Failed then");
   const first = await fixture.deployAgent(namespace.id, agent.id);
   await routeFailedRecord(page, fixture, namespace, agent, first);
+  await routeFailedListing(page, fixture, namespace, agent, first);
 
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
   const rail = page.getByRole("toolbar", { name: "Versions" });
@@ -315,6 +348,15 @@ test("The Versions list keeps an earlier failed version's mark after a newer dep
 
   await page.reload();
   await rail.getByRole("button", { name: /^View version v2/ }).waitFor();
+  // The reloaded list marks v1 from its own outcome, before v1 or its record is opened.
+  const v1RecordReads = [];
+  page.on("request", (request) => {
+    if (request.url() === deploymentRecordUrl(fixture, namespace.id, agent.id, first.id)) {
+      v1RecordReads.push(request.url());
+    }
+  });
+  await rail.getByRole("button", { name: "View version v1, deployment failed" }).waitFor();
+  assert.deepEqual(v1RecordReads, []);
   // Hold v1's record until v1's page and its notice show. The record that lands then must
   // relabel the notice at once: no later poll rerenders it (finding 2407).
   const record = await holdRequests(
@@ -341,6 +383,43 @@ test("The Versions list keeps an earlier failed version's mark after a newer dep
   );
   await rail.getByRole("button", { name: "View version v1, deployment failed" }).waitFor();
 });
+
+// A deployment that a newer version or a Stop ended is listed as failed, the status its record
+// reports, with the code that says it did not fail. A new page load marks earlier failed
+// versions from the list, so it must not mark these (finding 2422): the version reads as a
+// plain historical version, and its own record says Superseded or Stopped.
+for (const [code, outcome] of [
+  ["REVISION_SUPERSEDED", "Superseded"],
+  ["REVISION_STOPPED", "Stopped"],
+]) {
+  test(`The Versions list leaves a version that ended with ${code} unmarked after a load`, async (t) => {
+    const { fixture, namespace, agent, page } = await agentPage(t, `Neutral ${outcome}`, "Neutral");
+    const first = await fixture.deployAgent(namespace.id, agent.id);
+    await routeFailedRecord(page, fixture, namespace, agent, first, code);
+    await routeFailedListing(page, fixture, namespace, agent, first, code);
+    await fixture.deployAgent(namespace.id, agent.id);
+
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
+    );
+    const rail = page.getByRole("toolbar", { name: "Versions" });
+    await rail.getByRole("button", { name: /^View version v2/ }).waitFor();
+    const v1 = rail.getByRole("button", { name: /^View version v1/ });
+    assert.equal(await v1.getAttribute("aria-label"), "View version v1");
+    assert.equal(await v1.locator(".version-outcome").count(), 0);
+
+    await v1.click();
+    await page.getByRole("heading", { name: "Version v1" }).waitFor();
+    await page.getByText(`Recorded outcome: ${outcome}`, { exact: true }).waitFor();
+    assert.equal(
+      await page.locator(".version-selection-notice").textContent(),
+      "Historical version · read-only admitted snapshot. Browsing it does not change the current version.",
+    );
+    assert.equal(await v1.getAttribute("aria-label"), "View version v1");
+  });
+}
 
 // A first deployment that failed leaves the Agent requested to run with no version selected
 // (finding 2385). Stop would change nothing, so the danger zone disables it and says why,
@@ -3013,7 +3092,7 @@ for (const viewport of [
     await page.getByRole("button", { name: "Edit Configuration" }).click();
     const editor = page.locator("#configuration-json");
     await editor.fill(`${await editor.inputValue()}\n`);
-    await card.getByText("Save or cancel Configuration edits before deploying.").waitFor();
+    await card.getByText(CONFIGURATION_EDITS_PENDING).waitFor();
     const first = card.getByRole("listitem").first();
     assert.equal(await first.getAttribute("data-state"), "pending");
     assert.equal(

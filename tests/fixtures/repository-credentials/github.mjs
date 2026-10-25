@@ -31,6 +31,25 @@ export async function startGitHubFixture(
 ) {
   tls ??= await createTlsMaterial(t);
   const { handleRequest, ...fixture } = createGitHubProtocol({ clock, ...options });
-  const origin = await listenOnNewOrigin(t, () => createServer(tls, handleRequest));
-  return { origin, tls, ...fixture };
+  let refusals = 0;
+  const origin = await listenOnNewOrigin(t, () => {
+    const server = createServer(tls, handleRequest);
+    // A dropped TCP connection before TLS: the client cannot have sent a request.
+    server.prependListener("connection", (socket) => {
+      if (refusals > 0) {
+        refusals--;
+        socket.destroy();
+      }
+    });
+    return server;
+  });
+  return {
+    origin,
+    tls,
+    ...fixture,
+    /** Drop the next incoming connection before its TLS handshake, as a failed connection. */
+    refuseNextConnection() {
+      refusals++;
+    },
+  };
 }

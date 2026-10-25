@@ -36,6 +36,17 @@ import {
 } from "./console-agents-test-support.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import { createPolicyConsole } from "./console-sandbox-policy-fixture.ts";
+import {
+  AGENT_SAVE_DENIED,
+  CHANNEL_SECRETS_CONFIGURATION_CHANGED,
+  CONFIGURATION_SAVE_DENIED,
+  DEPENDENCY_UNAVAILABLE,
+  GENERIC_DENIAL,
+  NAMESPACE_NOT_READY,
+  READ_UNAVAILABLE,
+  REPOSITORY_EDITS_PENDING,
+  RESOURCE_CONFLICT,
+} from "../helpers/refusal-text.mjs";
 
 test("Agent policy ceiling rejection is announced in view and preserves unsaved additions", async (t) => {
   const { fixture, namespace, agent, base } = await createPolicyConsole(t);
@@ -756,9 +767,7 @@ test("Agent deployment reports preflight errors and requires reload for changed 
     }),
   );
   await deploy.click();
-  await page
-    .getByText("Service unavailable. The read could not be completed. Try again.")
-    .waitFor();
+  await page.getByText(READ_UNAVAILABLE).waitFor();
   await waitForEnabled(deploy);
   assert.equal(pathRequests(requests, "POST", `${path}/deploy`).length, 0);
   await page.unroute(`${fixture.origin}${path}`);
@@ -817,7 +826,7 @@ test("Deploy new version keeps keyboard focus and shows one delayed status", asy
   };
 
   // A failed read re-enables Deploy: focus returns to it, described by the failure.
-  const unavailable = "Service unavailable. The read could not be completed. Try again.";
+  const unavailable = READ_UNAVAILABLE;
   const failedRead = await holdRequests(t, page, `${fixture.origin}${path}`, {
     once: true,
     fulfill: {
@@ -876,7 +885,7 @@ test("Deploy new version keeps keyboard focus and shows one delayed status", asy
       body: JSON.stringify({
         error: {
           code: "DEPENDENCY_UNAVAILABLE",
-          message: "A required platform dependency is unavailable.",
+          message: DEPENDENCY_UNAVAILABLE,
         },
       }),
     },
@@ -1149,7 +1158,7 @@ test("A recovery link refused by unsaved repository changes preserves Back and F
     .getByRole("region", { name: "Deployment needs attention" })
     .getByRole("link", { name: "Open Configuration" })
     .click();
-  await page.getByText("Save or cancel repository changes before leaving this tab.").waitFor();
+  await page.getByText(REPOSITORY_EDITS_PENDING).waitFor();
   assert.equal(page.url(), repositoriesUrl);
   assert.equal(await hasFocus(repositories), true);
   assert.equal(await choice.isChecked(), true);
@@ -1299,7 +1308,7 @@ test("Agent deployment shows the API's typed 403 and 409 refusals", async (t) =>
     action: "deploy",
     effect: "deny",
   });
-  assert.equal(await refusal(403), "The exact platform operation was not authorized.");
+  assert.equal(await refusal(403), GENERIC_DENIAL);
   // Granting these writes IAM policy, which only an Installation administrator can do (finding
   // 2260).
   await page
@@ -1327,7 +1336,7 @@ test("Agent deployment shows the API's typed 403 and 409 refusals", async (t) =>
     JSON.stringify({
       error: {
         code: "RESOURCE_CONFLICT",
-        message: "The requested platform resource already exists.",
+        message: RESOURCE_CONFLICT,
       },
     }),
     "",
@@ -1339,7 +1348,7 @@ test("Agent deployment shows the API's typed 403 and 409 refusals", async (t) =>
   // API's bare sentence.
   await routedConflict(
     JSON.stringify({
-      error: { code: "NAMESPACE_NOT_READY", message: "The requested Namespace is not ready." },
+      error: { code: "NAMESPACE_NOT_READY", message: NAMESPACE_NOT_READY },
     }),
     NAMESPACE_NOT_READY_MESSAGE,
     true,
@@ -1431,11 +1440,7 @@ for (const mutation of ["authentication", "channel Secrets"]) {
       });
       await page.getByRole("button", { name: "Save authentication source" }).click();
       // A refused Agent save names the grants it needs (finding 1530).
-      await page
-        .getByText(
-          "You do not have permission to save this Agent. Ask an administrator for Agent update and Configuration read access, plus access to the Secrets, credential sources and Service Account it binds.",
-        )
-        .waitFor();
+      await page.getByText(AGENT_SAVE_DENIED).waitFor();
       await waitForEnabled(deploy);
       fixture.policy.restrictions.pop();
     }
@@ -1573,8 +1578,7 @@ for (const mutation of ["authentication", "channel Secrets"]) {
     assert.equal(pathRequests(requests, "POST", `${path}/deploy`).length, 0);
     if (mutation === "channel Secrets") {
       const configurationPath = `/namespaces/${namespace.id}/configurations/${configuration.id}`;
-      const refusalText =
-        "You do not have permission to save this Configuration. Ask an administrator for Configuration update access, plus Secret operate on each Secret it binds.";
+      const refusalText = CONFIGURATION_SAVE_DENIED;
       // A refused check before the save keeps its own text: nothing was written (finding 1839).
       const refusedCheck = (route) =>
         route.request().method() === "GET"
@@ -1730,7 +1734,7 @@ for (const changed of ["generation", "identity"]) {
     // A danger block, so an alert (finding 2005).
     await page
       .getByRole("alert")
-      .getByText("Configuration changed. Reload this draft before saving channel Secrets.", {
+      .getByText(CHANNEL_SECRETS_CONFIGURATION_CHANGED, {
         exact: true,
       })
       .waitFor();

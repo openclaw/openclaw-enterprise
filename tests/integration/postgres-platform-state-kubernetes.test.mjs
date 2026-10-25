@@ -23,8 +23,9 @@ import {
 } from "../helpers/postgres-platform-state.mjs";
 import { stopProcess } from "../helpers/stop-process.mjs";
 
-// Revision lists return summaries, newest first (finding 1323).
-const revisionSummary = (revision) => ({
+// Revision lists return summaries, newest first (finding 1323), each with its deployment's
+// status. An activated revision's deployment is finishing or has finished, with no error.
+const revisionSummary = (revision, deploymentStatus) => ({
   id: revision.id,
   namespaceId: revision.namespaceId,
   agentId: revision.agentId,
@@ -34,7 +35,16 @@ const revisionSummary = (revision) => ({
   configurationGeneration: revision.configurationGeneration,
   harness: revision.harness,
   createdAt: revision.createdAt,
+  deploymentStatus,
+  deploymentErrorCode: null,
 });
+const activatedStatuses = (listed) => {
+  const statuses = listed.map((item) => item.deploymentStatus);
+  for (const status of statuses) {
+    assert.ok(status === "running" || status === "succeeded", `deployment status ${status}`);
+  }
+  return statuses;
+};
 
 // Each case owns a database (prepareCaseDatabase), so its own Installation, and its own scoped
 // controller identity, platform namespace, ClusterRoles and binding (named from a random hash).
@@ -309,7 +319,8 @@ stateCase(
     ]);
     assert.equal(firstHistory.status, 200);
     assert.equal(secondHistory.status, 200);
-    assert.deepEqual(firstHistory.data, [revisionSummary(revision)]);
+    const [firstStatus] = activatedStatuses(firstHistory.data);
+    assert.deepEqual(firstHistory.data, [revisionSummary(revision, firstStatus)]);
     assert.deepEqual(secondHistory.data, []);
 
     const actor = await pool.query(
@@ -783,9 +794,10 @@ stateCase(
       `/namespaces/${namespaceA}/agents/${primary.id}/revisions`,
     );
     assert.equal(history.status, 200);
+    const [secondStatus, earlierStatus] = activatedStatuses(history.data);
     assert.deepEqual(history.data, [
-      revisionSummary(secondRevision),
-      revisionSummary(firstRevision),
+      revisionSummary(secondRevision, secondStatus),
+      revisionSummary(firstRevision, earlierStatus),
     ]);
     const firstRevisionRead = await request(
       api,

@@ -20,6 +20,7 @@ import {
   waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
 import { waitForCreateFormReads } from "./console-agents-test-support.mjs";
+import { GENERIC_DENIAL } from "../helpers/refusal-text.mjs";
 
 // Create Agent for a Namespace member (UX plan A2, spec 3.11; findings 1901, 493). The real
 // Native IAM Driver answers every read and write: the member's GET /installation is refused, and
@@ -374,7 +375,7 @@ test("an administrator's refused credential grant keeps the retry and the API's 
     route.fulfill({
       status: 403,
       json: {
-        error: { code: "FORBIDDEN", message: "The exact platform operation was not authorized." },
+        error: { code: "FORBIDDEN", message: GENERIC_DENIAL },
       },
     }),
   );

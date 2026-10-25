@@ -64,6 +64,13 @@ import {
   ServiceAccountCredentialSecretExistsError,
   ServiceAccountDriverNotConfiguredError,
 } from "../../packages/occ/src/index.ts";
+import {
+  DEPENDENCY_UNAVAILABLE,
+  GENERIC_DENIAL,
+  NAMESPACE_NOT_READY,
+  RESOURCE_CONFLICT,
+  RESOURCE_NOT_FOUND,
+} from "../helpers/refusal-text.mjs";
 
 // Text that must never reach a client: the mappings below that answer with fixed text are
 // checked with an error carrying this message.
@@ -104,7 +111,7 @@ const cases = [
     {
       status: 409,
       code: "RESOURCE_CONFLICT",
-      message: "The requested platform resource already exists.",
+      message: RESOURCE_CONFLICT,
     },
   ],
   [
@@ -138,7 +145,7 @@ const cases = [
     {
       status: 409,
       code: "NAMESPACE_NOT_READY",
-      message: "The requested Namespace is not ready.",
+      message: NAMESPACE_NOT_READY,
     },
   ],
   [
@@ -305,7 +312,7 @@ const cases = [
     {
       status: 409,
       code: "RESOURCE_CONFLICT",
-      message: "The requested platform resource already exists.",
+      message: RESOURCE_CONFLICT,
     },
   ],
 
@@ -767,7 +774,7 @@ const cases = [
     {
       status: 404,
       code: "NOT_FOUND",
-      message: "The requested platform resource was not found.",
+      message: RESOURCE_NOT_FOUND,
     },
   ],
 
@@ -778,7 +785,7 @@ const cases = [
     {
       status: 403,
       code: "FORBIDDEN",
-      message: "The exact platform operation was not authorized.",
+      message: GENERIC_DENIAL,
     },
   ],
   [
@@ -810,7 +817,7 @@ const cases = [
     {
       status: 403,
       code: "FORBIDDEN",
-      message: "The exact platform operation was not authorized.",
+      message: GENERIC_DENIAL,
     },
   ],
   [
@@ -828,7 +835,7 @@ const cases = [
     {
       status: 403,
       code: "FORBIDDEN",
-      message: "The exact platform operation was not authorized.",
+      message: GENERIC_DENIAL,
     },
   ],
   [
@@ -887,7 +894,7 @@ const cases = [
     {
       status: 503,
       code: "DEPENDENCY_UNAVAILABLE",
-      message: "A required platform dependency is unavailable.",
+      message: DEPENDENCY_UNAVAILABLE,
     },
   ],
   [
@@ -897,7 +904,7 @@ const cases = [
     {
       status: 503,
       code: "DEPENDENCY_UNAVAILABLE",
-      message: "A required platform dependency is unavailable.",
+      message: DEPENDENCY_UNAVAILABLE,
     },
   ],
   [
@@ -972,7 +979,7 @@ const cases = [
     {
       status: 503,
       code: "DEPENDENCY_UNAVAILABLE",
-      message: "A required platform dependency is unavailable.",
+      message: DEPENDENCY_UNAVAILABLE,
     },
   ],
   [
@@ -981,7 +988,7 @@ const cases = [
     {
       status: 503,
       code: "DEPENDENCY_UNAVAILABLE",
-      message: "A required platform dependency is unavailable.",
+      message: DEPENDENCY_UNAVAILABLE,
     },
   ],
   [
@@ -1009,7 +1016,7 @@ const cases = [
     {
       status: 503,
       code: "DEPENDENCY_UNAVAILABLE",
-      message: "A required platform dependency is unavailable.",
+      message: DEPENDENCY_UNAVAILABLE,
     },
   ],
   [

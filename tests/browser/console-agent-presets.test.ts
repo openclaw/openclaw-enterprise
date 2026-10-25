@@ -70,6 +70,7 @@ import {
   raceAgentName,
   waitForCreateFormReads,
 } from "./console-agents-test-support.mjs";
+import { READ_UNAVAILABLE } from "../helpers/refusal-text.mjs";
 
 type ConsoleFixture = Awaited<ReturnType<typeof createBaseConsoleAppFixture>>;
 type FixtureResponse<Data> = Omit<Awaited<ReturnType<ConsoleFixture["request"]>>, "data"> & {
@@ -3927,9 +3928,7 @@ test("the Preset chooser names its default and fills Use Preset once a Preset is
     }),
   );
   await page.getByLabel("Preset template").selectOption(other.data.id);
-  await page
-    .getByText("Service unavailable. The read could not be completed. Try again.")
-    .waitFor();
+  await page.getByText(READ_UNAVAILABLE).waitFor();
   assert.equal(await use.isDisabled(), true);
   assert.deepEqual([await filled(shortcut), await filled(use)], [true, false]);
 });

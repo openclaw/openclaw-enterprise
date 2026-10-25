@@ -13,6 +13,7 @@ import {
   newPage,
 } from "./console-agents-browser-helpers.mjs";
 import { openAdvancedSettings } from "./console-agents-test-support.mjs";
+import { CODEX_PLACEMENT_REFUSAL } from "../helpers/refusal-text.mjs";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
@@ -289,11 +290,7 @@ test("Create Agent refuses a Dedicated Agent the Installation cannot place befor
   assert.deepEqual(response.request().postDataJSON().harnessAuth, { method: "api_key" });
   const alert = page.getByRole("alert").filter({ hasText: "Dedicated Agents need" });
   await alert.waitFor();
-  assert.ok(
-    (await alert.textContent()).startsWith(
-      "Dedicated Agents need gateway routing and node enrollment in this Installation's Kubernetes Compute configuration. Codex runs only as a Dedicated Agent: select Embedded OpenClaw, or ask an operator to configure it.",
-    ),
-  );
+  assert.ok((await alert.textContent()).startsWith(CODEX_PLACEMENT_REFUSAL));
   await page.getByRole("button", { name: "Create Agent", disabled: false }).waitFor();
   await assertNothingSaved(form);
   // Nothing is saved, so the form can still follow that advice.

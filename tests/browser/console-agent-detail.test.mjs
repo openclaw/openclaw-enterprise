@@ -57,6 +57,13 @@ import {
   nativeAdminValues,
   waitForLiveControls,
 } from "./console-agents-test-support.mjs";
+import {
+  AGENT_SAVE_DENIED,
+  CONFIGURATION_EDITS_PENDING,
+  READ_UNAVAILABLE,
+  SAVED_CONFIGURATION_CHANGED,
+  WORKSPACE_FILES_UNAVAILABLE,
+} from "../helpers/refusal-text.mjs";
 
 test("Agent detail separates the current version, viewed version, and latest deployment", async (t) => {
   const fixture = await createConsoleAppFixture(t);
@@ -537,12 +544,9 @@ test("Configuration save stops when fresh Agent settings become unreadable", asy
   await page.unroute(agentUrl);
   await page.route(agentUrl, (route) => replyWithDifferentAgentId(route, agent.id, 200));
   await page.getByRole("button", { name: "Save Configuration", exact: true }).click();
-  const refused = page.getByText(
-    "Service unavailable. The read could not be completed. Try again.",
-    {
-      exact: true,
-    },
-  );
+  const refused = page.getByText(READ_UNAVAILABLE, {
+    exact: true,
+  });
   const incorrectlySaved = page.getByText("Configuration saved.", { exact: true });
   await refused.or(incorrectlySaved).first().waitFor();
   assert.deepEqual(nonAuthWriteRequests(requests), []);
@@ -1099,7 +1103,7 @@ test("Agent detail preserves admitted revision history while draft edits change 
   await waitForLiveControls(page, ["configuration-json"]);
   assert.match(await editor.inputValue(), /stale-client/);
   await page.getByRole("button", { name: "Save Configuration" }).click();
-  await page.getByText("The saved Configuration changed while you were editing.").waitFor();
+  await page.getByText(SAVED_CONFIGURATION_CHANGED).waitFor();
   // A conflict is an error, not a hint (finding 1903).
   const feedback = page.locator("#configuration-editor-feedback");
   assert.equal(await feedback.getAttribute("class"), "status");
@@ -1113,7 +1117,7 @@ test("Agent detail preserves admitted revision history while draft edits change 
   await openAdvancedSettings(page);
   await page.getByLabel("Configuration JSON").fill(JSON.stringify(editedValues, null, 2));
   await page.getByText("Save or cancel these Configuration edits before deploying.").waitFor();
-  await page.getByText("Save or cancel Configuration edits before deploying.").waitFor();
+  await page.getByText(CONFIGURATION_EDITS_PENDING).waitFor();
   // Tabs, admitted revision browsing, and global routes preserve this exact unsaved draft.
   await page.getByRole("tab", { name: "Channels", exact: true }).click();
   await page.getByRole("heading", { name: "Channels", exact: true }).waitFor();
@@ -1526,11 +1530,7 @@ test("Agent detail saves plugin changes for the next revision without changing a
   );
   await page.getByRole("button", { name: "Save plugin selections", exact: true }).click();
   assert.equal((await deniedResponse).status(), 403);
-  await page
-    .getByText(
-      "You do not have permission to save this Agent. Ask an administrator for Agent update and Configuration read access, plus access to the Secrets, credential sources and Service Account it binds.",
-    )
-    .waitFor();
+  await page.getByText(AGENT_SAVE_DENIED).waitFor();
   assert.deepEqual(JSON.parse(await json.inputValue()), editedPlugins);
   assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
   const beforeRetry = await fixture.request(
@@ -2869,7 +2869,7 @@ test("Agent detail blocks repeat Configuration saves after an uncertain draft up
   await page.getByRole("button", { name: "Edit Configuration" }).click();
   await openAdvancedSettings(page);
   await page.getByLabel("Configuration JSON").fill(JSON.stringify(nextValues, null, 2));
-  await page.getByText("Save or cancel Configuration edits before deploying.").waitFor();
+  await page.getByText(CONFIGURATION_EDITS_PENDING).waitFor();
   assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
   await page.getByRole("button", { name: "Save Configuration" }).click();
 
@@ -3166,10 +3166,7 @@ test("Agent stop and Refresh stop status update the page in place and keep focus
   assert.deepEqual(await keptInPlace(), { marker: "kept", reloadedText: [] });
   assert.equal(await focusedText(), "Refresh stop status");
   // The viewed version is no longer current, and tabs built from the old state are rebuilt.
-  const unavailable = page.getByText(
-    "Workspace files require a deployed Agent with a current version and a reachable gateway.",
-    { exact: true },
-  );
+  const unavailable = page.getByText(WORKSPACE_FILES_UNAVAILABLE, { exact: true });
   assert.equal(await file.count(), 0, "the mounted Workspace must release the old live editor");
   await unavailable.waitFor();
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();

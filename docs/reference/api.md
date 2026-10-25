@@ -5159,6 +5159,8 @@ List Agent revision summaries that you can read for the requested Agent, newest 
 | `data[].configurationGeneration` | `integer` | Yes | minimum: 1; maximum: 9007199254740991 |
 | `data[].configurationId` | `string` | Yes | pattern: `^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].createdAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
+| `data[].deploymentErrorCode` | `string or null` | Yes | The `error.code` that reading this revision's deployment would report, or `null` when it reports no error. It tells a failure from a deployment that a newer version or a Stop ended. |
+| `data[].deploymentStatus` | `"queued" or "running" or "succeeded" or "failed" or null` | Yes | The status that reading this revision's deployment would report, or `null` when OCC has no deployment record for it. |
 | `data[].harness` | `object` | Yes | — |
 | `data[].harness.id` | `string` | Yes | min length: 1 |
 | `data[].harness.mode` | `"embedded" or "dedicated"` | Yes | — |
