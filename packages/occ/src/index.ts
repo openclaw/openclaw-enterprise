@@ -347,6 +347,7 @@ import {
   controllerWorkDeploymentStatus,
   deploymentErrorForWork,
   deploymentProgressForWork,
+  deploymentStatusForWork,
   deploymentWarningsForWork,
   type DeploymentStatusResult,
 } from "./state/controller-work.ts";
@@ -4079,20 +4080,29 @@ export class OpenClawController {
     return this.read(async (state) => {
       const readable: Readonly<AgentRevisionSummary>[] = [];
       // Each revision's deployment outcome, read as getDeploymentStatus reads it: one record
-      // lookup per listed revision, in this read, instead of one request per version.
+      // lookup per listed revision (plus its evidence while queued), in this read, instead of
+      // one request per version.
       const listing = async (nextBefore?: number) => {
         const revisions: Readonly<AgentRevisionListing>[] = [];
         for (const revision of readable) {
-          const work = await state.operations.findWork(`agent_revision:${revision.id}:reconcile`);
+          const key = `agent_revision:${revision.id}:reconcile`;
+          const work = await state.operations.findWork(key);
           const matches =
             work !== undefined &&
             work.namespaceId === revision.namespaceId &&
             work.agentId === revision.agentId &&
             work.revisionId === revision.id;
+          // Only queued work needs its evidence to tell a waiting deploy from a started one.
+          const attempt =
+            matches && work.state === "queued"
+              ? await state.operations.findWorkAttempt(key)
+              : undefined;
           revisions.push(
             Object.freeze({
               ...revision,
-              deploymentStatus: matches ? controllerWorkDeploymentStatus(work, this.clock()) : null,
+              deploymentStatus: matches
+                ? deploymentStatusForWork(work, attempt, this.clock())
+                : null,
               deploymentErrorCode: matches ? (deploymentErrorForWork(work)?.code ?? null) : null,
             }),
           );
@@ -4308,20 +4318,19 @@ export class OpenClawController {
           "The deployment reconciliation record is unavailable.",
         );
       }
+      const attempt =
+        work.state === "queued" || work.state === "claimed"
+          ? await state.operations.findWorkAttempt(idempotencyKey)
+          : undefined;
       return Object.freeze({
         deploymentId: revision.id,
         namespaceId: revision.namespaceId,
         agentId: revision.agentId,
-        status: controllerWorkDeploymentStatus(work, this.clock()),
+        status: deploymentStatusForWork(work, attempt, this.clock()),
         cleanup: await this.deploymentCleanupStatus(state, revision),
         error: deploymentErrorForWork(work),
         warnings: deploymentWarningsForWork(work),
-        progress: deploymentProgressForWork(
-          work,
-          work.state === "queued" || work.state === "claimed"
-            ? await state.operations.findWorkAttempt(idempotencyKey)
-            : undefined,
-        ),
+        progress: deploymentProgressForWork(work, attempt),
       });
     });
   }

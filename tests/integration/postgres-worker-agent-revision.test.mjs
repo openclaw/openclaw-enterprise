@@ -1055,6 +1055,9 @@ revisionTest(
     await queue.defer(first, { code: "REVISION_INCOMPLETE" }, { delayMs: 60_000 });
     const firstDeferred = await readStatus();
     assert.deepEqual(await evidenceCodes(), ["REVISION_INCOMPLETE"]);
+    // The work is queued again between attempts, but a deploy a worker has started never reports
+    // queued again: the console showed In progress -> Queued for ~16 s (finding 2456).
+    assert.equal(firstDeferred.status, "running");
 
     // Repeating the same pending result is not a state transition: it adds no audit row,
     // and progress keeps reporting when that result was first recorded.
@@ -1065,7 +1068,17 @@ revisionTest(
     const deferred = await readStatus();
     assert.deepEqual(await evidenceCodes(), ["REVISION_INCOMPLETE"]);
     assert.deepEqual(deferred.progress.lastAttempt, firstDeferred.progress.lastAttempt);
-    assert.equal(deferred.status, "queued");
+    assert.equal(deferred.status, "running");
+    // The Versions list reads the same status from the same work and evidence.
+    const listed = await fixture.controller.listRevisions(
+      fixture.actor.id,
+      fixture.namespace.id,
+      owner.id,
+    );
+    assert.deepEqual(
+      listed.revisions.map(({ id, deploymentStatus }) => [id, deploymentStatus]),
+      [[candidate.id, "running"]],
+    );
     assert.equal((await queue.findWork(candidate.idempotencyKey)).attemptCount, 0);
     assert.equal(deferred.progress.lastAttempt.code, "REVISION_INCOMPLETE");
     assert.equal(deferred.progress.lastAttempt.message, "Waiting for the runtime to become ready.");
@@ -1100,6 +1113,7 @@ revisionTest(
     assert.deepEqual(running.progress.lastAttempt, deferred.progress.lastAttempt);
     await queue.retry(retry, { code: "PRIVATE_PROVIDER_DETAIL_DO_NOT_EXPOSE" });
     const retrying = await readStatus();
+    assert.equal(retrying.status, "running");
     assert.equal(retrying.progress.lastAttempt.code, "RECONCILIATION_PENDING");
     assert.doesNotMatch(JSON.stringify(retrying), /PRIVATE_PROVIDER/);
 
@@ -1126,7 +1140,7 @@ revisionTest(
 );
 
 revisionTest(
-  "deployment status judges claim liveness by the database clock, not the controller clock",
+  "an expired claim keeps a started deployment running under any controller clock",
   async (fixture) => {
     const { owner, candidate } = await fixture.admitInitialRevision("deployment-clock");
     const queue = new fixture.PostgresWorkQueue(fixture.observerPool, { leaseDurationMs: 60_000 });
@@ -1155,8 +1169,10 @@ revisionTest(
     assert.equal(await statusAhead(), "running");
 
     await fixture.expireClaim(candidate, claim.claimToken);
-    // A controller clock behind the lease still reports the expired claim as waiting.
-    assert.equal(await statusBehind(), "queued");
+    // An expired claim does not take a started deploy back to queued under either clock
+    // (finding 2456): the next claim resumes it.
+    assert.equal(await statusBehind(), "running");
+    assert.equal(await statusAhead(), "running");
   },
 );
 
@@ -2770,12 +2786,14 @@ revisionTest(
       30_000,
     );
     assert.equal(waited.attempt_count, 0);
-    // A pass's live lease reads as `running`; read the status between passes.
+    // Read the status between passes, when the work waits for its next attempt. A started
+    // deploy still reads as `running` there (finding 2456).
     const during = await waitFor("the deployment status between outage passes", async () => {
       const status = await fixture.deploymentStatus(owner, candidate);
-      return status.status === "queued" ? status : undefined;
+      return status.progress?.nextAttemptAt ? status : undefined;
     });
     held = false;
+    assert.equal(during.status, "running");
     assert.deepEqual(
       {
         code: during.progress?.lastAttempt?.code,

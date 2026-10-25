@@ -40,11 +40,11 @@ folded and **Latest visible deployment** shows its outcome. Open **Deployment de
 to read it.
 Milestones show the saved record:
 
-| Milestone               | Evidence                                                                          |
-| ----------------------- | --------------------------------------------------------------------------------- |
-| **Admitted**            | OCC saved an immutable AgentRevision and queued its work.                         |
-| **Deployment work**     | `queued` awaits an initial or subsequent claim; `running` records a worker claim. |
-| **Completion recorded** | `succeeded` means the original work completed activation or was already active.   |
+| Milestone               | Evidence                                                                                         |
+| ----------------------- | ------------------------------------------------------------------------------------------------ |
+| **Admitted**            | OCC saved an immutable AgentRevision and queued its work.                                        |
+| **Deployment work**     | `queued` awaits the first claim; `running` means work started, including waits between attempts. |
+| **Completion recorded** | `succeeded` means the original work completed activation or was already active.                  |
 
 Work ended by a newer version (`REVISION_SUPERSEDED` or
 `REPOSITORY_REVISION_SUPERSEDED`) or a Stop (`REVISION_STOPPED`) shows as a

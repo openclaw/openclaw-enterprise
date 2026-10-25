@@ -6950,7 +6950,8 @@ async function assertOpenShellGatewayOutage(topology) {
   assert.deepEqual(observed.sourceRead, { httpStatus: 200, state: "failed" });
   assert.deepEqual(observed.registration, { httpStatus: 503, code: "DEPENDENCY_UNAVAILABLE" });
   assert.equal(observed.redeployDuringOutage.gatewayStopped, true);
-  assert.equal(observed.redeployDuringOutage.status, "queued");
+  // A started deploy reads as running between passes (finding 2456).
+  assert.equal(observed.redeployDuringOutage.status, "running");
   // The outage spends no attempt: the pass waits on the gateway (finding 2040).
   assert.equal(
     observed.redeployDuringOutage.work.last_attempt_code,

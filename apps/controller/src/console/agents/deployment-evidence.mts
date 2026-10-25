@@ -186,10 +186,11 @@ function deploymentProgress(record: Deployment) {
   const status = deploymentOutcome(record);
   const progress = record.progress;
   const workDescriptions = {
-    queued: progress?.lastAttempt
-      ? "Waiting to continue deployment."
-      : "Waiting for a worker claim.",
-    running: "A worker claim is active.",
+    queued: "Waiting for a worker claim.",
+    // A started deploy stays running between its attempts (finding 2456).
+    running: progress?.nextAttemptAt
+      ? "Deployment work started; waiting for the next attempt."
+      : "A worker claim is active.",
     failed: "Deployment work failed; check the recorded error and current version.",
     superseded: "Deployment work stopped because a newer version superseded this one.",
     stopped: "Deployment work ended because the Agent was stopped.",
@@ -428,6 +429,8 @@ export function createDeploymentStatusPanel(
           transientFailure: error !== null && transientReadError(error),
           overviewUnavailable,
         });
+        // The first load renders this panel before the page places it; measure it once shown.
+        reserveHeight(false);
         if (
           refreshQueued ||
           (poll &&
@@ -558,6 +561,9 @@ export function createDeploymentStatusPanel(
   // cards below, Share Agent then among them (finding 1598). While a deploy is seen pending, the
   // details keep the tallest height they have shown. Once it settles the space is given back in
   // the same render as the outcome, so a finished deploy leaves no empty card (finding 2369).
+  // A panel not yet placed or with its details folded measures 0, so an unchanged render measures
+  // again until it has a height: measured only on a change, the first Queued height was lost and
+  // the details shrank for In progress (finding 2456).
   function reserveHeight(changed: boolean) {
     const pending = deploymentPending(record?.status) || deploymentPending(record?.cleanup?.status);
     if (pending) {
@@ -567,12 +573,14 @@ export function createDeploymentStatusPanel(
       content.style.removeProperty("min-height");
       return;
     }
-    if (reservedHeight === null || !changed) {
+    if (reservedHeight === null || (!changed && reservedHeight > 0)) {
       return;
     }
     content.style.removeProperty("min-height");
     reservedHeight = Math.max(reservedHeight, content.getBoundingClientRect().height);
-    content.style.minHeight = `${reservedHeight}px`;
+    if (reservedHeight > 0) {
+      content.style.minHeight = `${reservedHeight}px`;
+    }
   }
 
   void loadStatus();

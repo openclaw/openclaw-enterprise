@@ -2046,10 +2046,10 @@ async function pendingDeploy(t, viewport, name) {
   const { page } = await newPage(t, fixture, { browser, context: { viewport } });
   await trackSettledFetches(page);
   const recordUrl = deploymentRecordUrl(fixture, namespace.id, agent.id, pending.id);
-  const open = async () => {
+  const open = async (outcome = "In progress") => {
     await page.clock.install({ time: new Date("2026-10-16T12:00:00Z") });
     await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, pending.id, "access"));
-    await expectDeploymentOutcome(page, "In progress");
+    await expectDeploymentOutcome(page, outcome);
     await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
     await page.getByRole("heading", { name: "Share Agent" }).waitFor();
     await waitForIdleFetches(page);
@@ -2181,6 +2181,54 @@ for (const viewport of [
     assert.ok(band.below < 40, `${band.below} px under the outcome`);
   });
 }
+
+// A queued deploy's details list when its next attempt is eligible; the first claim drops that
+// line. The first load measured the details before the page placed them, so no height was kept
+// and the open details shrank by a line, moving Share Agent up, when the deploy moved from Queued
+// to In progress (finding 2456).
+test("a deploy's details keep their queued height when its first claim starts", async (t) => {
+  const { page, recordUrl, pending, open } = await pendingDeploy(
+    t,
+    { width: 1440, height: 900 },
+    "Claimed",
+  );
+  let record = { status: "queued" };
+  await page.route(recordUrl, (route) => route.fulfill(deploymentStatusResponse(pending, record)));
+  await open("Queued");
+  const now = await page.evaluate(() => Date.now());
+  await page.clock.pauseAt(new Date(now + 1000));
+  await page.evaluate(() => globalThis.document.fonts.ready);
+  const measure = () =>
+    page.evaluate(() => ({
+      details: globalThis.document
+        .querySelector(".deployment-evidence-content")
+        .getBoundingClientRect().height,
+      share:
+        globalThis.document.querySelector(".agent-access").getBoundingClientRect().top +
+        globalThis.scrollY,
+    }));
+  const queued = await measure();
+  await page.getByText(/^Eligible for next attempt:/).waitFor();
+
+  record = { status: "running" };
+  const read = page.waitForResponse(recordUrl);
+  await page.clock.runFor(DEPLOYMENT_POLL_MS);
+  await read;
+  await waitForIdleFetches(page);
+  await expectDeploymentOutcome(page, "In progress");
+  assert.equal(await page.getByText(/^Eligible for next attempt:/).count(), 0);
+  const claimed = await measure();
+  t.diagnostic(`details ${queued.details} -> ${claimed.details} px`);
+  assert.ok(queued.details > 0);
+  assert.ok(
+    Math.abs(claimed.details - queued.details) <= 1,
+    `details ${queued.details} -> ${claimed.details} px`,
+  );
+  assert.ok(
+    Math.abs(claimed.share - queued.share) <= 1,
+    `moved ${claimed.share - queued.share} px`,
+  );
+});
 
 // Watching a deploy that failed, the "Deployment needs attention" card appeared above the
 // overview and pushed it down (finding 1655), so it moved below the deployment activity. There it

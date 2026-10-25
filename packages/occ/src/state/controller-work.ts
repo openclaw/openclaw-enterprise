@@ -642,6 +642,28 @@ export function controllerWorkDeploymentStatus(
 }
 
 /**
+ * The status a deployment's record reports. Once a worker has claimed its work, the deployment
+ * stays `running` until it records a result: a deferral between attempts, a retry or an expired
+ * claim queues the work again, but reporting `queued` then read as the deploy stepping back
+ * (finding 2456). `attempt` is the latest evidence bound to this work; a deferral that refunds
+ * its attempt still records evidence, so a claimed deployment always has one or the other.
+ */
+export function deploymentStatusForWork(
+  work: Readonly<ControllerWork>,
+  attempt: ControllerWorkAttempt | undefined,
+  now: Date = new Date(),
+): DeploymentStatus {
+  const status = controllerWorkDeploymentStatus(work, now);
+  if (
+    status === "queued" &&
+    (work.state === "claimed" || work.attemptCount > 0 || attempt !== undefined)
+  ) {
+    return "running";
+  }
+  return status;
+}
+
+/**
  * Whether claimed work still holds a live lease. Leases are granted and expired on the
  * database clock; the controller's clock can disagree with it, so the store's own judgement
  * wins when it read one, and `now` is only a fallback for stores without a clock.

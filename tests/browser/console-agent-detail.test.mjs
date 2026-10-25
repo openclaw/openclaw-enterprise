@@ -83,13 +83,15 @@ test("Agent detail separates the current version, viewed version, and latest dep
   // The in-memory API fixture has no worker records. Supply contract-shaped status
   // reads to prove the UI keeps each version's outcome tied to its exact ID.
   let pendingProgress = { lastAttempt: null, nextAttemptAt: "2026-09-27T12:00:00.000Z" };
-  for (const [revisionId, status] of [
-    [current.revision.id, "succeeded"],
-    [pending.id, "queued"],
+  let pendingStatus = "queued";
+  for (const [revisionId, recorded] of [
+    [current.revision.id, () => "succeeded"],
+    [pending.id, () => pendingStatus],
   ]) {
     await page.route(
       deploymentRecordUrl(fixture, namespace.id, agent.id, revisionId),
       async (route) => {
+        const status = recorded();
         await route.fulfill({
           status: 200,
           contentType: "application/json",
@@ -104,7 +106,7 @@ test("Agent detail separates the current version, viewed version, and latest dep
                 status === "succeeded"
                   ? [{ code: "PLUGIN_AUTH_REQUIRED", pluginId: "linear@openai-curated-remote" }]
                   : [],
-              progress: status === "queued" ? pendingProgress : null,
+              progress: status === "succeeded" ? null : pendingProgress,
             },
             meta: { requestId: "req_test_deployment_activity" },
           }),
@@ -148,8 +150,10 @@ test("Agent detail separates the current version, viewed version, and latest dep
   await activity.getByText("Most recent visible deployment · v2").waitFor();
   await activity.getByText("Waiting for a worker claim.").waitFor();
   await activity.getByText("No reconciliation result is available yet.").waitFor();
-  // Simulate a subsequent status read. Persistence and attribution are proved
-  // separately by the PostgreSQL queue/worker test, not by this browser fixture.
+  // Simulate a subsequent status read: the first attempt deferred, so the work waits for its next
+  // attempt and the deploy reads as running (finding 2456). Persistence and attribution are
+  // proved separately by the PostgreSQL queue/worker test, not by this browser fixture.
+  pendingStatus = "running";
   pendingProgress = {
     lastAttempt: {
       at: "2026-09-27T12:01:00.000Z",
@@ -159,7 +163,8 @@ test("Agent detail separates the current version, viewed version, and latest dep
     nextAttemptAt: "2026-09-27T12:01:01.000Z",
   };
   await activity.getByRole("button", { name: "Refresh deployment" }).click();
-  await activity.getByText("Waiting to continue deployment.").waitFor();
+  await expectDeploymentOutcome(page, "In progress");
+  await activity.getByText("Deployment work started; waiting for the next attempt.").waitFor();
   await activity.getByText("Waiting for the runtime to become ready.").waitFor();
   await activity.getByText("Since", { exact: true }).waitFor();
   assert.equal(await activity.getByText("Waiting for a worker claim.").count(), 0);
