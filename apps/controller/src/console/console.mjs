@@ -1849,6 +1849,19 @@ async function loadPage({
       }
       return;
     }
+    // Inline Create Secret dialogs follow the Namespace's secrets.create answer (finding 2442).
+    // A page that read the answer up front reuses it; the Agent page reads it once, when a Secret
+    // field first needs it, and only for a Namespace this session can read. A failed read is
+    // unknown and keeps the action.
+    let secretsCreateRead = null;
+    const secretsCreateAllowed = () =>
+      (secretsCreateRead ??= (
+        firstPermissions !== null
+          ? Promise.resolve(firstPermissions)
+          : namespaces.some((item) => item.id === namespaceId)
+            ? request(permissionsPath).catch(() => null)
+            : Promise.resolve(null)
+      ).then((permissions) => permissions?.secrets?.create));
     const agentContext = {
       operatorId: session.user.id,
       installationAdmin,
@@ -1860,6 +1873,7 @@ async function loadPage({
       // The selected Namespace: the Agents list and Create Agent name its status when it is not
       // ready (finding 1895).
       namespace: namespaces.find((item) => item.id === namespaceId),
+      secretsCreateAllowed,
       request: viewRequest,
       mutationVersion: () => viewState.mutations,
       navigate,
@@ -1962,23 +1976,23 @@ async function loadPage({
       });
     }
     if (current.creating) {
-      renderCreateAgent(
-        {
-          ...agentContext,
-          permissions: firstPermissions,
-          setDiscardOnExit(discard) {
-            discardCreationOnExit = discard ? { namespaceId } : null;
-          },
-          setDraftCapture(capture, unsaved) {
-            agentContext.drafts.forget("create");
-            if (capture) {
-              agentContext.drafts.track("create", capture);
-              agentContext.drafts.unsavedWhen("create", unsaved);
-            }
-          },
+      const createContext = {
+        ...agentContext,
+        permissions: firstPermissions,
+        // Create Agent rereads the answer in place, so its Secret fields follow the latest one.
+        secretsCreateAllowed: async () => createContext.permissions?.secrets?.create,
+        setDiscardOnExit(discard) {
+          discardCreationOnExit = discard ? { namespaceId } : null;
         },
-        agentContext.drafts.get("create"),
-      );
+        setDraftCapture(capture, unsaved) {
+          agentContext.drafts.forget("create");
+          if (capture) {
+            agentContext.drafts.track("create", capture);
+            agentContext.drafts.unsavedWhen("create", unsaved);
+          }
+        },
+      };
+      renderCreateAgent(createContext, agentContext.drafts.get("create"));
       markMountedRoute(current);
       return;
     }
