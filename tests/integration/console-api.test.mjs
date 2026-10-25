@@ -242,6 +242,7 @@ test("caller permission summaries report primary IAM decisions without authorizi
     configurationUpdate: true,
     configurationRead: true,
     configurationSecretsOperate: true,
+    configurationSecretsOperateDeniedBindings: [],
     agentSourcesOperate: true,
   });
   const adminNamespace = await fixture.request("GET", namespacePath);
@@ -296,6 +297,7 @@ test("caller permission summaries report primary IAM decisions without authorizi
     configurationUpdate: false,
     configurationRead: false,
     configurationSecretsOperate: false,
+    configurationSecretsOperateDeniedBindings: [],
     agentSourcesOperate: false,
   });
   // Configuration update on the Agent's Configuration is its own grant (finding 2421).
@@ -455,6 +457,146 @@ test("caller permission summaries report primary IAM decisions without authorizi
   const withOperate = await fixture.request("GET", boundPermissions, { session });
   assert.equal(withOperate.data.configurationSecretsOperate, true);
   assert.equal((await resave()).status, 200);
+});
+
+// A Configuration save that submits Secret bindings is authorized on those bindings only, so the
+// console's channel Secrets panel can save while a bound Secret the caller may not operate is
+// replaced in the same save (finding 2444). The per-binding answer names each binding whose
+// Secret the caller lacks operate on, and each step proves it against the same real PATCH.
+test("the per-binding Secret answer names the bindings a Configuration save must replace", async (t) => {
+  const auditSink = new InMemoryAuditSink();
+  const fixture = await createConsoleAppFixture(t, { auditSink });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Per-binding answer", { ready: true });
+  // An administrator's bot token Secret, bound under two names, and an app token Secret.
+  const adminBot = await fixture.createSecret(namespace.id, "Admin bot token", "admin-bot-value");
+  const app = await fixture.createSecret(namespace.id, "App token", "app-value");
+  const own = await fixture.createSecret(namespace.id, "Member bot token", "member-bot-value");
+  const binding = (secret) => ({ source: secret.ref, delivery: { type: "env" } });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Per-binding agent",
+    {},
+    {
+      secretBindings: {
+        SLACK_BOT_TOKEN: binding(adminBot),
+        SLACK_BOT_TOKEN_ALIAS: binding(adminBot),
+        SLACK_APP_TOKEN: binding(app),
+      },
+    },
+  );
+  const permissionsPath = `/namespaces/${namespace.id}/agents/${agent.id}/permissions`;
+  const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
+  const member = await fixture.createNamespaceMember("per-binding-answer", namespace.id, [
+    ["read", "namespace"],
+    ["read", "agent"],
+    ["read", "configuration"],
+  ]);
+  const session = await fixture.signIn(member.credentials);
+  const grant = (id, permissions, resourceKind, resourceId) => {
+    fixture.policy.roles.push({ id: `role-${id}`, namespaceId: namespace.id, permissions });
+    fixture.policy.bindings.push({
+      id: `binding-${id}`,
+      namespaceId: namespace.id,
+      subjectKind: "identity",
+      subjectId: member.principal.id,
+      roleId: `role-${id}`,
+      resourceKind,
+      resourceId,
+    });
+  };
+  const answer = async () => {
+    const summary = await fixture.request("GET", permissionsPath, { session });
+    assert.equal(summary.status, 200);
+    return summary.data;
+  };
+  const denials = () => auditSink.list().filter((event) => event.kind === "authorization_denial");
+
+  // Without Configuration update the answer is not reported: no names, as with the boolean. Agent
+  // update reads the bindings for its own answer, which does not report them either.
+  grant("per-binding-agent", [{ action: "update", resourceKind: "agent" }], "agent", agent.id);
+  const unreported = await answer();
+  assert.equal(unreported.update, true);
+  assert.equal(unreported.agentSourcesOperate, false);
+  assert.equal(unreported.configurationSecretsOperate, false);
+  assert.deepEqual(unreported.configurationSecretsOperateDeniedBindings, []);
+
+  // Configuration update, operate on the app token and on the member's own Secret only. Both
+  // names that bind the administrator's Secret are listed, sorted; the operable one is not.
+  grant(
+    "per-binding-configuration",
+    [{ action: "update", resourceKind: "configuration" }],
+    "configuration",
+    agent.configurationId,
+  );
+  const operate = [{ action: "operate", resourceKind: "secret" }];
+  grant("per-binding-app", operate, "secret", app.id);
+  grant("per-binding-own", operate, "secret", own.id);
+  const partial = await answer();
+  assert.equal(partial.configurationUpdate, true);
+  assert.equal(partial.configurationSecretsOperate, false);
+  assert.deepEqual(partial.configurationSecretsOperateDeniedBindings, [
+    "SLACK_BOT_TOKEN",
+    "SLACK_BOT_TOKEN_ALIAS",
+  ]);
+  // The probes are answers, not attempted operations.
+  assert.equal(denials().length, 0);
+
+  const saved = await fixture.request("GET", configurationPath);
+  assert.equal(saved.status, 200);
+  const save = (secretBindings, expectedGeneration) =>
+    fixture.request("PATCH", configurationPath, {
+      session,
+      body: { values: saved.data.values, secretBindings, expectedGeneration },
+    });
+  // A save that keeps a listed name on the administrator's Secret is refused, even when it
+  // replaces another binding.
+  assertApiError(
+    await save(
+      {
+        SLACK_BOT_TOKEN: binding(own),
+        SLACK_BOT_TOKEN_ALIAS: binding(adminBot),
+        SLACK_APP_TOKEN: binding(app),
+      },
+      saved.data.generation,
+    ),
+    403,
+    "FORBIDDEN",
+  );
+  assert.equal(denials().at(-1).action, "openclaw.configurations.update");
+  // A save that rebinds every listed name to the member's own Secret succeeds: the Secret they
+  // bound before is not checked.
+  const replaced = await save(
+    {
+      SLACK_BOT_TOKEN: binding(own),
+      SLACK_BOT_TOKEN_ALIAS: binding(own),
+      SLACK_APP_TOKEN: binding(app),
+    },
+    saved.data.generation,
+  );
+  assert.equal(replaced.status, 200);
+  assert.equal(replaced.data.secretBindings.SLACK_BOT_TOKEN.source.id, own.id);
+  // Every bound Secret is operable now, so nothing is listed.
+  const operable = await answer();
+  assert.equal(operable.configurationSecretsOperate, true);
+  assert.deepEqual(operable.configurationSecretsOperateDeniedBindings, []);
+
+  // An IAM failure on a bound Secret's operate decision is not a denial: the whole answer is
+  // unavailable, so the console keeps its usual rule instead of listing or omitting a name.
+  const authorize = fixture.iamDriver.authorize;
+  fixture.iamDriver.authorize = async (request) => {
+    if (request.action === "operate" && request.resource.kind === "secret") {
+      throw new Error("IAM outage");
+    }
+    return authorize.call(fixture.iamDriver, request);
+  };
+  let outage;
+  try {
+    outage = await fixture.request("GET", permissionsPath, { session });
+  } finally {
+    fixture.iamDriver.authorize = authorize;
+  }
+  assertApiError(outage, 503, "DEPENDENCY_UNAVAILABLE");
 });
 
 // Each Agent update also checks the caller's grant on every source the Agent and its

@@ -74,7 +74,10 @@ import {
   harnessGrantSubject,
   createChannelSecretsPanel,
   CHANNEL_SECRETS_CONFIGURATION_READ_ONLY,
-  CHANNEL_SECRETS_OPERATE_READ_ONLY,
+  channelBindingsToReplace,
+  channelReplaceHint,
+  channelReplaceRefusal,
+  channelSecretsOperateReadOnly,
   hasRequiredChannelCredentials,
   channelCredentialBlockReason,
 } from "./credentials.mjs";
@@ -600,10 +603,24 @@ export async function renderAgentDetail(
     callerPermissions?.configurationUpdate === false
       ? CONFIGURATION_READ_ONLY
       : CONFIGURATION_SECRETS_READ_ONLY;
+  // Channel saves submit the Secret bindings, and a save is checked only on the Secrets it
+  // submits. Lacking operate only on Secrets bound to the Slack token names, which channel saves
+  // replace, leaves Channels and channel Secrets editable: a save must replace each of them
+  // (finding 2444). The Configuration editor submits no bindings, so it keeps the rule above.
+  const channelBindingsReplace = () => channelBindingsToReplace(callerPermissions);
+  const channelsReadOnly = () => configurationReadOnly() && channelBindingsReplace() === null;
+  const channelsReadOnlyReason = () =>
+    callerPermissions?.configurationUpdate === false
+      ? CONFIGURATION_READ_ONLY
+      : channelSecretsOperateReadOnly(
+          callerPermissions?.configurationSecretsOperateDeniedBindings,
+          CONFIGURATION_SECRETS_READ_ONLY,
+        );
   // Agent-side saves (plugins, authentication source, repository access) would be refused: the
   // answer denies Agent update or a grant each Agent update also checks (finding 2441).
   const agentReadOnly = () => agentSaveDenial(callerPermissions) !== undefined;
-  const draftReadOnly = () => agentReadOnly() && configurationReadOnly();
+  // Channel saves that replace a bound Secret keep the draft changeable (finding 2444).
+  const draftReadOnly = () => agentReadOnly() && channelsReadOnly();
   // Draft views that follow Configuration update. Nothing waits for an answer: a view drawn
   // before the first answer, or before a reread that changes the bit, is redrawn when it lands.
   // Each view redraws only while shown and only when its access differs from the answer's.
@@ -2594,11 +2611,14 @@ export async function renderAgentDetail(
           checkGrants: context.installationAdmin === true,
           canGrant: context.installationAdmin !== false,
           // Binding Secrets saves the Configuration (finding 2432).
-          readOnly: configurationReadOnly,
+          readOnly: channelsReadOnly,
           readOnlyReason: () =>
             callerPermissions?.configurationUpdate === false
               ? CHANNEL_SECRETS_CONFIGURATION_READ_ONLY
-              : CHANNEL_SECRETS_OPERATE_READ_ONLY,
+              : channelSecretsOperateReadOnly(
+                  callerPermissions?.configurationSecretsOperateDeniedBindings,
+                ),
+          bindingsToReplace: channelBindingsReplace,
           isCurrent: () => panelNumber === channelPanelCount,
           onChange() {
             updateNavigationControls();
@@ -2610,6 +2630,10 @@ export async function renderAgentDetail(
             viewedSnapshot = configuration;
             renderDetailHeading();
             updateDeployControls();
+            // The answer's denied binding names describe the bindings before this save. Read it
+            // again, so the panel and the Channels drawer stop asking to replace a binding the
+            // save rebound (findings 2444, 2457).
+            void rereadPermissions();
           },
           onReload: (carried = null) => {
             carriedChannelSecrets = carried;
@@ -3608,19 +3632,21 @@ export async function renderAgentDetail(
       content.append(plugins);
     } else if (selectedTab === "channels") {
       const { servicePrincipalId } = agent;
+      // Bound Slack token Secrets this caller may not operate, which a save must replace.
+      const channelReplace = draft ? channelBindingsReplace() : null;
       // Whether the last save left a Secret grant outstanding, for its saved notice.
       let channelGrantOutstanding = false;
       const channels = renderChannels({
         values,
         executionMode,
-        readOnly: !draft || configurationReadOnly(),
+        readOnly: !draft || channelsReadOnly(),
         // Every deployment needs a model authentication source, so the drawer asks for one only
         // while the Agent has none; a deployed Agent with its key bound was told to set
         // credentials "before first deploy" (finding 2063).
         copy: {
-          ...(draft && configurationReadOnly()
+          ...(draft && channelsReadOnly()
             ? {
-                readOnlyDescription: `These are the version draft’s channel settings. ${configurationReadOnlyReason()}`,
+                readOnlyDescription: `These are the version draft’s channel settings. ${channelsReadOnlyReason()}`,
                 readOnlyCardMessage: "Read-only with your access.",
               }
             : {}),
@@ -3628,7 +3654,7 @@ export async function renderAgentDetail(
             agent.harnessAuth
               ? ""
               : " Configure model credentials in the Credentials tab before deploying."
-          }`,
+          }${channelReplace ? ` ${channelReplaceHint(channelReplace)}` : ""}`,
         },
         drawerContext: {
           drafts: context.drafts,
@@ -3654,6 +3680,15 @@ export async function renderAgentDetail(
         onSave: async (updatedValues, options = {}) => {
           if (!draft) {
             throw new Error("This version is read-only. Open the draft to edit its channels.");
+          }
+          // A save that keeps a bound Secret this caller may not operate would answer 403.
+          const refusal = channelReplaceRefusal(
+            channelBindingsReplace(),
+            snapshot.secretBindings,
+            options.secretBindings,
+          );
+          if (refusal) {
+            throw new Error(refusal);
           }
           channelGrantOutstanding = false;
           let mutationStarted = false;
@@ -3836,9 +3871,15 @@ export async function renderAgentDetail(
       );
       // An answer that lands after this view changes whether it is read-only (finding 2421).
       if (draft) {
-        const shownReadOnly = configurationReadOnly();
+        const shownReadOnly = channelsReadOnly();
+        const shownReplace = JSON.stringify(channelReplace);
         followConfigurationAccess(() => {
-          if (context.isCurrent() && mountedTab && configurationReadOnly() !== shownReadOnly) {
+          if (
+            context.isCurrent() &&
+            mountedTab &&
+            (channelsReadOnly() !== shownReadOnly ||
+              JSON.stringify(channelBindingsReplace()) !== shownReplace)
+          ) {
             // Rebuild, not restore: a reusable tab would be parked and shown again as it was.
             mountedTab.reusable = false;
             void renderTab();

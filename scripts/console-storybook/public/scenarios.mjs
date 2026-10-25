@@ -4395,6 +4395,7 @@ export const scenarios = {
       configurationUpdate: true,
       configurationRead: true,
       configurationSecretsOperate: false,
+      configurationSecretsOperateDeniedBindings: [],
       agentSourcesOperate: false,
     },
     description:
@@ -5377,6 +5378,7 @@ export const scenarios = {
       configurationUpdate: false,
       configurationRead: true,
       configurationSecretsOperate: false,
+      configurationSecretsOperateDeniedBindings: [],
       agentSourcesOperate: false,
     },
     description:
@@ -5402,6 +5404,7 @@ export const scenarios = {
       configurationUpdate: true,
       configurationRead: true,
       configurationSecretsOperate: true,
+      configurationSecretsOperateDeniedBindings: [],
       agentSourcesOperate: false,
     },
     description:
@@ -5466,6 +5469,7 @@ export const scenarios = {
       configurationUpdate: false,
       configurationRead: false,
       configurationSecretsOperate: false,
+      configurationSecretsOperateDeniedBindings: [],
       agentSourcesOperate: false,
     },
     rules: [
@@ -6868,6 +6872,7 @@ export const scenarios = {
       configurationUpdate: true,
       configurationRead: true,
       configurationSecretsOperate: true,
+      configurationSecretsOperateDeniedBindings: [],
       agentSourcesOperate: false,
     },
     description:
@@ -6908,11 +6913,37 @@ export const scenarios = {
       configurationUpdate: true,
       configurationRead: true,
       configurationSecretsOperate: false,
+      configurationSecretsOperateDeniedBindings: [],
       agentSourcesOperate: false,
     },
     description:
       "The permission answer allows Configuration update but not Secret operate on every Secret the Configuration binds, which each Configuration save needs. The Slack token pickers are disabled, Save channel Secrets is not offered, and a note names the missing grant. Each Agent update checks the same Secrets, so Save authentication source is disabled too.",
     gap: "The permission answer is simulated; the API still authorizes every save.",
+  },
+  credentialsSlackReplaceDenied: {
+    group: "Components/Credentials",
+    name: "Slack tokens, editor must replace the bot token Secret",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    agentPermissionSummary: {
+      update: true,
+      deploy: true,
+      operate: true,
+      delete: true,
+      administer: true,
+      configurationUpdate: true,
+      configurationRead: true,
+      configurationSecretsOperate: false,
+      configurationSecretsOperateDeniedBindings: ["SLACK_BOT_TOKEN"],
+      agentSourcesOperate: false,
+    },
+    description:
+      "The permission answer lists the bot token binding as the only one whose Secret the editor cannot operate. A save is checked on the Secrets it submits, so the Slack token pickers stay editable and a note says to choose another Secret for the bot token. A save that keeps it is refused before any request.",
+    steps: [
+      "Choose the Slack backup token for the app token and select Save channel Secrets. The panel says the save keeps Slack bot token and sends nothing.",
+      "Choose the Slack backup token for the bot token too, then Save channel Secrets. The save goes through; do not deploy.",
+    ],
+    gap: "The permission answer is simulated; the API still authorizes every save and the Secrets it binds.",
   },
   credentialsSlackStored: {
     group: "Components/Credentials",
