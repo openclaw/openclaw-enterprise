@@ -8321,11 +8321,16 @@ test("SSH Compute refuses at Agent save and deploy a roster or workspace whose m
   });
   assert.equal(switched.status, 400, JSON.stringify(switched.body));
   assert.equal(switched.body.error.message, roster);
-  const kept = await controller.request("PATCH", path, {
-    body: { configurationId: configuration.id },
-  });
-  assert.equal(kept.status, 200, JSON.stringify(kept.body));
-  assert.equal(kept.body.data.configurationId, configuration.id);
+  // Restating the stored execution mode is no change either.
+  for (const body of [
+    { configurationId: configuration.id },
+    { configurationId: configuration.id, executionMode: created.data.executionMode },
+  ]) {
+    const kept = await controller.request("PATCH", path, { body });
+    assert.equal(kept.status, 200, JSON.stringify(kept.body));
+    assert.equal(kept.body.data.configurationId, configuration.id);
+    assert.equal(kept.body.data.executionMode, created.data.executionMode);
+  }
 });
 
 test("Slack validation rejects swapped credentials and preserves authorization", async () => {
