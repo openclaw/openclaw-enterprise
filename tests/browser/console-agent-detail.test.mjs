@@ -4829,126 +4829,6 @@ test("the Channels drawer save must replace a bound Secret the member cannot ope
   assert.equal(saved.data.secretBindings.SLACK_APP_TOKEN.source.id, app.id);
 });
 
-// Agent-side saves check operate on every Secret the Configuration binds, so the administrator's
-// bot token Secret also makes Plugins, Repositories and the authentication source read-only for
-// this member. Rebinding the bot token on the member's own Secret lifts that: the page reads the
-// answer again and those tabs become editable without a reload (finding 2470).
-test("a channel save that rebinds a denied Secret makes the Agent-side tabs editable", async (t) => {
-  const { fixture, namespace, agent, member, app, own, path, configurationPath } =
-    await replaceSecretFixture(t, "Rebound sources editor", { agentUpdate: true });
-  const { page } = await newPage(t, fixture);
-  const permissions = page.waitForResponse((r) => r.url().endsWith(path + "/permissions"));
-  await login(
-    page,
-    fixture,
-    detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"),
-    member.credentials,
-  );
-  assert.equal((await (await permissions).json()).data.agentSourcesOperate, false);
-  await page.getByText(PLUGINS_READ_ONLY, { exact: true }).waitFor();
-  await page.getByText(AGENT_SOURCES_DENIED, { exact: true }).waitFor();
-  // Repositories is drawn now and parked, so its rebuild is proved too, not only a first draw.
-  await page.getByRole("tab", { name: "Repositories", exact: true }).click();
-  await page.getByText(AGENT_SOURCES_DENIED, { exact: true }).waitFor();
-  assert.equal(await page.locator("#repository-selection-title").count(), 0);
-  await page.getByRole("tab", { name: "Credentials", exact: true }).click();
-  const saveSource = page.getByRole("button", { name: "Save authentication source" });
-  await page.getByText(AGENT_SOURCES_DENIED, { exact: true }).waitFor();
-  assert.equal(await saveSource.isDisabled(), true);
-
-  await selectSecret(page, "Slack bot token", own);
-  const saving = page.waitForResponse(
-    (r) => r.request().method() === "PATCH" && r.url().endsWith(configurationPath),
-  );
-  const reread = page.waitForResponse((r) => r.url().endsWith(path + "/permissions"));
-  await page.getByRole("button", { name: "Save channel Secrets" }).click();
-  assert.equal((await saving).status(), 200);
-  assert.equal((await (await reread).json()).data.agentSourcesOperate, true);
-  // The authentication source form is updated in place; the panel keeps its saved state.
-  await waitForEnabled(saveSource);
-  await expectNoText(page, AGENT_SOURCES_DENIED);
-  await waitForInputValue(page.getByLabel("Slack app token"), secretOptionLabel(app));
-  await page.getByRole("tab", { name: "Plugins", exact: true }).click();
-  await page.getByRole("button", { name: "Save plugin selections" }).waitFor();
-  assert.equal(await page.getByText(PLUGINS_READ_ONLY, { exact: true }).count(), 0);
-  await page.getByRole("tab", { name: "Repositories", exact: true }).click();
-  // The editor's selection, not the read-only summary with the sources note.
-  await page.locator("#repository-selection-title").waitFor();
-  await expectNoText(page, AGENT_SOURCES_DENIED);
-});
-
-// A tab drawn after the save but before the page's reread answers shows the old denial; the
-// answer rebuilds it while it is shown (finding 2470).
-test("a Plugins tab shown before the reread answers becomes editable when it lands", async (t) => {
-  const { fixture, namespace, agent, member, own, path, configurationPath } =
-    await replaceSecretFixture(t, "Held reread editor", { agentUpdate: true });
-  const { page } = await newPage(t, fixture);
-  const permissions = page.waitForResponse((r) => r.url().endsWith(path + "/permissions"));
-  await login(
-    page,
-    fixture,
-    detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"),
-    member.credentials,
-  );
-  await permissions;
-  await selectSecret(page, "Slack bot token", own);
-  const reread = await holdRequests(t, page, `${fixture.origin}${path}/permissions`, {
-    afterServer: true,
-    once: true,
-  });
-  const saving = page.waitForResponse(
-    (r) => r.request().method() === "PATCH" && r.url().endsWith(configurationPath),
-  );
-  await page.getByRole("button", { name: "Save channel Secrets" }).click();
-  assert.equal((await saving).status(), 200);
-  await reread.requested;
-  await page.getByRole("tab", { name: "Plugins", exact: true }).click();
-  await page.getByText(PLUGINS_READ_ONLY, { exact: true }).waitFor();
-  reread.release();
-  await page.getByRole("button", { name: "Save plugin selections" }).waitFor();
-  await expectNoText(page, AGENT_SOURCES_DENIED);
-});
-
-// Disable Slack saves no bindings, so it keeps the administrator's bot token Secret bound and the
-// API would refuse it. The card offers it disabled, naming the binding to rebind first; after Edit
-// Slack rebinds it, Disable saves (finding 2471).
-test("Disable Slack waits until the replace persona rebinds the denied Secret", async (t) => {
-  const { fixture, namespace, agent, member, own, configurationPath } = await replaceSecretFixture(
-    t,
-    "Replaced disable editor",
-  );
-  const { page } = await newPage(t, fixture);
-  const requests = apiRequests(page, fixture.origin);
-  await login(
-    page,
-    fixture,
-    detailUrl(fixture, namespace.id, agent.id, "draft", "channels"),
-    member.credentials,
-  );
-  const disable = page.getByRole("button", { name: "Disable Slack" });
-  await page.getByText(DISABLE_KEEPS_BOT_TOKEN, { exact: true }).waitFor();
-  assert.equal(await disable.isDisabled(), true);
-  assert.deepEqual(nonAuthWriteRequests(requests), []);
-
-  await page.getByRole("button", { name: "Edit Slack" }).click();
-  const dialog = page.getByRole("dialog", { name: "Edit Slack" });
-  await selectSecret(dialog, "Slack bot token", own);
-  const rebinding = page.waitForResponse(
-    (r) => r.request().method() === "PATCH" && r.url().endsWith(configurationPath),
-  );
-  await dialog.getByRole("button", { name: "Save configuration" }).click();
-  assert.equal((await rebinding).status(), 200);
-  await waitForEnabled(disable);
-  await expectNoText(page, DISABLE_KEEPS_BOT_TOKEN);
-  const disabling = page.waitForResponse(
-    (r) => r.request().method() === "PATCH" && r.url().endsWith(configurationPath),
-  );
-  await disable.click();
-  assert.equal((await disabling).status(), 200);
-  const saved = await fixture.request("GET", configurationPath);
-  assert.equal(saved.data.values.channels.slack.enabled, false);
-});
-
 // A tab parked before the answer landed is shown again with the answer applied (finding 2421).
 test("a Channels tab parked before a reader's permission answer returns read-only", async (t) => {
   const { fixture, namespace } = await createRuntimeAuthFixture(t, "Parked reader tab");
@@ -5190,4 +5070,124 @@ test("the draft Configuration card paints no stray text beside its controls", as
   await page.getByRole("button", { name: "Cancel", exact: true }).click();
   await card.getByText("View native Configuration").waitFor();
   assert.deepEqual(await strayText(), []);
+});
+
+// Agent-side saves check operate on every Secret the Configuration binds, so the administrator's
+// bot token Secret also makes Plugins, Repositories and the authentication source read-only for
+// this member. Rebinding the bot token on the member's own Secret lifts that: the page reads the
+// answer again and those tabs become editable without a reload (finding 2470).
+test("a channel save that rebinds a denied Secret makes the Agent-side tabs editable", async (t) => {
+  const { fixture, namespace, agent, member, app, own, path, configurationPath } =
+    await replaceSecretFixture(t, "Rebound sources editor", { agentUpdate: true });
+  const { page } = await newPage(t, fixture);
+  const permissions = page.waitForResponse((r) => r.url().endsWith(path + "/permissions"));
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"),
+    member.credentials,
+  );
+  assert.equal((await (await permissions).json()).data.agentSourcesOperate, false);
+  await page.getByText(PLUGINS_READ_ONLY, { exact: true }).waitFor();
+  await page.getByText(AGENT_SOURCES_DENIED, { exact: true }).waitFor();
+  // Repositories is drawn now and parked, so its rebuild is proved too, not only a first draw.
+  await page.getByRole("tab", { name: "Repositories", exact: true }).click();
+  await page.getByText(AGENT_SOURCES_DENIED, { exact: true }).waitFor();
+  assert.equal(await page.locator("#repository-selection-title").count(), 0);
+  await page.getByRole("tab", { name: "Credentials", exact: true }).click();
+  const saveSource = page.getByRole("button", { name: "Save authentication source" });
+  await page.getByText(AGENT_SOURCES_DENIED, { exact: true }).waitFor();
+  assert.equal(await saveSource.isDisabled(), true);
+
+  await selectSecret(page, "Slack bot token", own);
+  const saving = page.waitForResponse(
+    (r) => r.request().method() === "PATCH" && r.url().endsWith(configurationPath),
+  );
+  const reread = page.waitForResponse((r) => r.url().endsWith(path + "/permissions"));
+  await page.getByRole("button", { name: "Save channel Secrets" }).click();
+  assert.equal((await saving).status(), 200);
+  assert.equal((await (await reread).json()).data.agentSourcesOperate, true);
+  // The authentication source form is updated in place; the panel keeps its saved state.
+  await waitForEnabled(saveSource);
+  await expectNoText(page, AGENT_SOURCES_DENIED);
+  await waitForInputValue(page.getByLabel("Slack app token"), secretOptionLabel(app));
+  await page.getByRole("tab", { name: "Plugins", exact: true }).click();
+  await page.getByRole("button", { name: "Save plugin selections" }).waitFor();
+  assert.equal(await page.getByText(PLUGINS_READ_ONLY, { exact: true }).count(), 0);
+  await page.getByRole("tab", { name: "Repositories", exact: true }).click();
+  // The editor's selection, not the read-only summary with the sources note.
+  await page.locator("#repository-selection-title").waitFor();
+  await expectNoText(page, AGENT_SOURCES_DENIED);
+});
+
+// A tab drawn after the save but before the page's reread answers shows the old denial; the
+// answer rebuilds it while it is shown (finding 2470).
+test("a Plugins tab shown before the reread answers becomes editable when it lands", async (t) => {
+  const { fixture, namespace, agent, member, own, path, configurationPath } =
+    await replaceSecretFixture(t, "Held reread editor", { agentUpdate: true });
+  const { page } = await newPage(t, fixture);
+  const permissions = page.waitForResponse((r) => r.url().endsWith(path + "/permissions"));
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"),
+    member.credentials,
+  );
+  await permissions;
+  await selectSecret(page, "Slack bot token", own);
+  const reread = await holdRequests(t, page, `${fixture.origin}${path}/permissions`, {
+    afterServer: true,
+    once: true,
+  });
+  const saving = page.waitForResponse(
+    (r) => r.request().method() === "PATCH" && r.url().endsWith(configurationPath),
+  );
+  await page.getByRole("button", { name: "Save channel Secrets" }).click();
+  assert.equal((await saving).status(), 200);
+  await reread.requested;
+  await page.getByRole("tab", { name: "Plugins", exact: true }).click();
+  await page.getByText(PLUGINS_READ_ONLY, { exact: true }).waitFor();
+  reread.release();
+  await page.getByRole("button", { name: "Save plugin selections" }).waitFor();
+  await expectNoText(page, AGENT_SOURCES_DENIED);
+});
+
+// Disable Slack saves no bindings, so it keeps the administrator's bot token Secret bound and the
+// API would refuse it. The card offers it disabled, naming the binding to rebind first; after Edit
+// Slack rebinds it, Disable saves (finding 2471).
+test("Disable Slack waits until the replace persona rebinds the denied Secret", async (t) => {
+  const { fixture, namespace, agent, member, own, configurationPath } = await replaceSecretFixture(
+    t,
+    "Replaced disable editor",
+  );
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "channels"),
+    member.credentials,
+  );
+  const disable = page.getByRole("button", { name: "Disable Slack" });
+  await page.getByText(DISABLE_KEEPS_BOT_TOKEN, { exact: true }).waitFor();
+  assert.equal(await disable.isDisabled(), true);
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+
+  await page.getByRole("button", { name: "Edit Slack" }).click();
+  const dialog = page.getByRole("dialog", { name: "Edit Slack" });
+  await selectSecret(dialog, "Slack bot token", own);
+  const rebinding = page.waitForResponse(
+    (r) => r.request().method() === "PATCH" && r.url().endsWith(configurationPath),
+  );
+  await dialog.getByRole("button", { name: "Save configuration" }).click();
+  assert.equal((await rebinding).status(), 200);
+  await waitForEnabled(disable);
+  await expectNoText(page, DISABLE_KEEPS_BOT_TOKEN);
+  const disabling = page.waitForResponse(
+    (r) => r.request().method() === "PATCH" && r.url().endsWith(configurationPath),
+  );
+  await disable.click();
+  assert.equal((await disabling).status(), 200);
+  const saved = await fixture.request("GET", configurationPath);
+  assert.equal(saved.data.values.channels.slack.enabled, false);
 });
