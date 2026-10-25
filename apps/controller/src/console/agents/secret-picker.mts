@@ -15,7 +15,7 @@ import {
   statusBlock,
   validateFields,
 } from "../dom.mjs";
-import { message, namespacePath } from "./list.mjs";
+import { message, namespaceListNeed, namespacePath } from "./list.mjs";
 import { NAME_MAX_CHARACTERS, namespaceNameProblem } from "../namespaces.mjs";
 import { secretValueControl } from "../secrets.mjs";
 
@@ -918,7 +918,7 @@ export function createSecretReferenceField({
         setStatusTone(status, "danger");
         status.textContent = expired
           ? "Your session has expired."
-          : `Secrets unavailable. ${message(error)}`;
+          : `Secrets unavailable. ${message(error, false, namespaceListNeed("Secrets"))}`;
         if (expired) {
           context.onExpired?.();
         }

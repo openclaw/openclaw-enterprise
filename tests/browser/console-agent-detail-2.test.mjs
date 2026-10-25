@@ -63,6 +63,7 @@ import {
   GENERIC_DENIAL,
   RESOURCE_NOT_FOUND,
   WORKSPACE_FILES_UNAVAILABLE,
+  accessDeniedNeeding,
 } from "../helpers/refusal-text.mjs";
 
 // The Console Browser lane runs the two Agent detail test files in parallel.
@@ -2344,6 +2345,12 @@ test("a read-only viewer is denied saved settings and native admin once per tab,
   await login(page, fixture, detail, viewer.credentials);
   const unavailable = page.getByRole("heading", { name: "Configuration unavailable" });
   await unavailable.waitFor();
+  // The viewer holds Agent read but not Configuration read: the panel names that grant.
+  const draftDenied = page.getByText(
+    accessDeniedNeeding("Reading this Agent's draft Configuration", "Configuration read"),
+    { exact: true },
+  );
+  await draftDenied.waitFor();
   const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
   const nativeAdminPath = `/namespaces/${namespace.id}/agents/${agent.id}/native-admin`;
   const reads = (path) => requests.filter((request) => request.path === path).length;
@@ -2362,6 +2369,8 @@ test("a read-only viewer is denied saved settings and native admin once per tab,
   for (let view = 0; view < 2; view += 1) {
     await page.reload();
     await unavailable.waitFor();
+    // The remembered denial names the same grant without asking again.
+    await draftDenied.waitFor();
   }
   // The native admin card asks for status as it renders, before the denial panel shows.
   await settlePageRequests(page);
