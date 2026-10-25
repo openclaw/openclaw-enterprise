@@ -51,7 +51,8 @@
     "tests/integration/postgres-standing-execution.test.ts",
     "tests/integration/postgres-standing-session-worker.test.ts",
     "tests/integration/postgres-standing-expiry-authority.test.ts",
-    "tests/integration/credential-proxy-withdrawal.test.ts"
+    "tests/integration/credential-proxy-withdrawal.test.ts",
+    "tests/integration/postgres-preset-upgrade.test.mjs"
   ],
   "files": [
     {
@@ -468,6 +469,12 @@
         "ordinary revision authorization distinguishes State unavailable",
         "ordinary revision authorization distinguishes IAM unavailable",
         "ordinary revision authorization distinguishes backend unavailable"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-preset-upgrade.test.mjs",
+      "expectedTests": [
+        "production controller upgrades preserve operator Presets and Configuration with default seeding disabled"
       ]
     }
   ]

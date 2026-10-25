@@ -134,8 +134,8 @@ export function createPresetFields(
   const status = element("p", { className: "hint", role: "status" }, "Loading Presets…");
   const feedback = statusBlock("danger", null, null);
   const inputs = element("div");
-  let defaultId: string | undefined;
-  // How the next selection change started: "shortcut" applies the default Preset at once.
+  let starter: Pick<PresetSummary, "id" | "name"> | undefined;
+  // How the next selection change started: "shortcut" applies the starter Preset at once.
   let origin: "shortcut" | undefined;
   // Whether the reader changed a variable. The form a Preset opens keeps it, so its Cancel asks
   // first; a reload or tab close warns either way (finding 1902).
@@ -145,14 +145,18 @@ export function createPresetFields(
   };
   inputs.addEventListener("input", markTouched);
   inputs.addEventListener("change", markTouched);
-  const chooseHint = () =>
-    defaultId
+  const chooseHint = () => {
+    if (!starter) {
+      return "Choose a Preset to start.";
+    }
+    return starter.name === "default-codex"
       ? "Choose a Preset or start with the default Preset."
-      : "Choose a Preset. default-codex is not available to you in this Namespace.";
+      : `Choose a Preset or start with ${starter.name}.`;
+  };
   const startDefault = button(
     "Start with default Preset",
     () => {
-      selector.value = defaultId ?? "";
+      selector.value = starter?.id ?? "";
       origin = "shortcut";
       selector.dispatchEvent(new Event("change"));
     },
@@ -544,18 +548,28 @@ export function createPresetFields(
         }
         return { id, name };
       });
+      const readablePresets = presets.sort((left, right) => {
+        const byName = left.name.localeCompare(right.name, undefined, { sensitivity: "base" });
+        if (byName !== 0) {
+          return byName;
+        }
+        return left.name < right.name ? -1 : 1;
+      });
       selector.append(
-        ...presets
-          .sort((left, right) =>
-            left.name.localeCompare(right.name, undefined, { sensitivity: "base" }),
-          )
-          .map((preset) => element("option", { value: preset.id }, preset.name)),
+        ...readablePresets.map((preset) => element("option", { value: preset.id }, preset.name)),
       );
       selector.disabled = false;
-      defaultId = presets.find((preset) => preset.name === "default-codex")?.id;
-      startDefault.disabled = !defaultId;
-      if (defaultId) {
-        defaultHint.textContent = "The default Preset is default-codex.";
+      starter =
+        readablePresets.find((preset) => preset.name === "default-codex") ?? readablePresets[0];
+      startDefault.disabled = !starter;
+      if (starter) {
+        if (starter.name !== "default-codex") {
+          startDefault.textContent = `Start with ${starter.name}`;
+        }
+        defaultHint.textContent =
+          starter.name === "default-codex"
+            ? "The default Preset is default-codex."
+            : `The starter Preset is ${starter.name}.`;
         defaultHint.hidden = false;
         startDefault.setAttribute("aria-describedby", defaultHint.id);
       }
@@ -565,7 +579,7 @@ export function createPresetFields(
       }
       if (presets.length === 0) {
         status.textContent =
-          "No Presets available to you in this Namespace. Ask an administrator to install default-codex or another Preset, or to give you read access to a Preset.";
+          "No Presets available to you in this Namespace. Ask an administrator to install a Preset or give you read access to one.";
       } else {
         status.textContent = chooseHint();
       }

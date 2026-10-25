@@ -27,12 +27,12 @@ block direct Secret-backed model and environment projection. An Installation tha
 lists only Embedded OpenClaw selects no Sandbox Driver, so Create Agent names that
 as the reason Dedicated OpenClaw is disabled.
 
-1. Sign in, select the intended Namespace, open **Agents**, and select
+1. Sign in, select a Namespace, open **Agents**, and select
    **Create Agent**.
 2. Choose a [Preset](../presets.md), fill its variables, and select **Use Preset**.
    Review defaults and choose an existing or new model Secret.
-   **Start with default Preset** loads `default-codex`; **Start without Preset**
-   skips Presets.
+   **Start with default Preset** uses the [readable default selection](../presets.md#plain-console-default);
+   **Start without Preset** skips Presets.
 3. Enter a unique name within the Namespace. Choose **Provider**, then
    **Harness**. OpenAI offers **Codex** by default and **OpenClaw**;
    Anthropic offers only **OpenClaw**. Codex uses Dedicated **Execution mode**. OpenClaw
