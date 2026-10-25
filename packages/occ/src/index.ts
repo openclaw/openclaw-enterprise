@@ -823,6 +823,8 @@ export interface AgentRevisionListPage {
 /** Create Agent's preflight input: an Agent create body with its Configuration inline, unsaved. */
 export interface ValidateAgentCreateInput {
   readonly namespaceId: string;
+  /** The name Agent create will use; absent skips the duplicate-name check. */
+  readonly name?: string;
   readonly configuration: {
     readonly kind: "agent";
     readonly values: Readonly<OpenClawConfigurationDocument>;
@@ -3006,6 +3008,12 @@ export class OpenClawController {
           mode: executionMode,
         });
       }
+      // The worker's Agent create refuses a taken name; refuse it here instead of accepting work
+      // that can only fail (finding 2420). Under the Namespace lock that Agent create also takes.
+      // Like the preflight and Agent create, the 409 comes after the plan's other checks, so a
+      // rename never uncovers a different refusal. A request admitted alongside with the same
+      // name still fails in its job.
+      await this.refuseTakenAgentName(state, namespace.id, input.name);
       const record = await state.provisioning.create({
         workId,
         namespaceId: namespace.id,
@@ -8913,6 +8921,9 @@ export class OpenClawController {
    * too, so a refusal that depends only on the Agent's topology (finding 2391) is reported here.
    * Checks that need saved resources (Secret bindings, the Harness authentication source and
    * credential sources) or live repository policy stay with those writes.
+   * With `name`, a name another Agent in the Namespace has is refused last, with create's 409
+   * (finding 2420), so the form saves no Secret or Configuration for it. The check is advisory:
+   * the store's unique name still refuses a create that races it.
    * `resolveHarness` as in createAgent.
    */
   async validateAgentCreate(
@@ -8920,6 +8931,9 @@ export class OpenClawController {
     input: ValidateAgentCreateInput,
     resolveHarness?: HarnessResolver,
   ): Promise<void> {
+    if (input.name !== undefined && !isName(input.name)) {
+      throw new ScopeViolationError("The Agent name is invalid.");
+    }
     let initialWorkspaceFiles: InitialWorkspaceFiles | undefined;
     try {
       initialWorkspaceFiles = normalizeInitialWorkspaceFiles(input.initialWorkspaceFiles);
@@ -8981,7 +8995,22 @@ export class OpenClawController {
         },
         configuration,
       );
+      // After `agent:create` in this Namespace, as create's 409 reveals the name (errors.ts).
+      if (input.name !== undefined) {
+        await this.refuseTakenAgentName(state, namespace.id, input.name);
+      }
     });
+  }
+
+  /** Agent create's duplicate-name refusal, for callers authorized to create an Agent there. */
+  private async refuseTakenAgentName(
+    state: Pick<PlatformReadView, "agents">,
+    namespaceId: string,
+    name: string,
+  ): Promise<void> {
+    if (await state.agents.hasAgentNamed(namespaceId, name)) {
+      throw new ResourceStateConflictError(AGENT_NAME_CONFLICT);
+    }
   }
 
   async listAgentStandingApprovals(principalId: string, namespaceId: string, agentId: string) {

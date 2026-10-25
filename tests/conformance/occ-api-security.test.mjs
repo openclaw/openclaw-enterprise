@@ -23,6 +23,7 @@ import {
   tenantANamespaceId,
   tenantRequest as request,
 } from "../helpers/tenant-reader-app.mjs";
+import { RESOURCE_NOT_FOUND } from "../helpers/refusal-text.mjs";
 
 const installationId = "ins_3033697e-6397-4cc6-9b04-8ec17af78cf1";
 const missingRevisionId = "rev_3dd29693-ce8b-4b4c-97c4-14b4c68c6e9c";
@@ -1115,18 +1116,8 @@ test("router failures answer the error envelope without echoing the path", async
       `${contract}: a path parameter is too long.`,
     ],
     // Role IDs may hold 200 characters, so a long one reaches the route.
-    [
-      `${roles}/${"r".repeat(200)}`,
-      404,
-      "NOT_FOUND",
-      "The requested platform resource was not found.",
-    ],
-    [
-      `${roles}/${"%F0%9F%98%80".repeat(200)}`,
-      404,
-      "NOT_FOUND",
-      "The requested platform resource was not found.",
-    ],
+    [`${roles}/${"r".repeat(200)}`, 404, "NOT_FOUND", RESOURCE_NOT_FOUND],
+    [`${roles}/${"%F0%9F%98%80".repeat(200)}`, 404, "NOT_FOUND", RESOURCE_NOT_FOUND],
   ]) {
     const { response, payload } = await request(fixture.app, pathname);
     assert.equal(response.status, status, pathname.slice(0, 80));

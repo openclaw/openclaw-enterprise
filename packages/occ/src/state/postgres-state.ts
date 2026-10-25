@@ -3433,6 +3433,17 @@ export class PostgresPlatformState implements PlatformStateStore {
       },
       listAgents: async (namespaceId) =>
         Object.freeze((await listAgentRows(namespaceId)).map((row) => agentFromRow(row))),
+      // One probe of the (namespace_id, name) unique index.
+      hasAgentNamed: async (namespaceId, name) =>
+        (
+          await client.query(
+            `SELECT 1
+             FROM occ.agents AS a
+             JOIN occ.namespaces AS n ON n.id = a.namespace_id AND n.deleted_at IS NULL
+             WHERE a.namespace_id = $1 AND a.name = $2`,
+            [namespaceId, name],
+          )
+        ).rows.length > 0,
       listAgentsForBrowsing: async (namespaceId) =>
         Object.freeze((await listAgentRows(namespaceId)).map(agentForBrowsingFromRow)),
       listAgentReferences: async () =>

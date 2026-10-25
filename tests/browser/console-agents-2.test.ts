@@ -56,9 +56,16 @@ import {
   routeInstallationProvisioning,
   routeInstallationWithoutProvisioning,
   agentPostRequests,
+  assertAgentNameTaken,
   optionValues,
+  raceAgentName,
   waitForProvisioningFailure,
 } from "./console-agents-test-support.mjs";
+import {
+  GENERIC_DENIAL,
+  NAMESPACE_NOT_READY,
+  RESOURCE_CONFLICT,
+} from "../helpers/refusal-text.mjs";
 
 const defaultCodexPreset = JSON.parse(
   await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
@@ -294,7 +301,7 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
         body: JSON.stringify({
           error: {
             code: "RESOURCE_CONFLICT",
-            message: "The requested platform resource already exists.",
+            message: RESOURCE_CONFLICT,
           },
           meta: { requestId: "req_00000000-0000-4000-8000-000000000409" },
         }),
@@ -413,6 +420,8 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
     .waitFor();
   assert.equal(await retry.isVisible(), false);
   await waitForEnabled(page.getByLabel("Agent name"));
+  // A job that lost the name to another request marks the field, as admission's 409 does.
+  await assertAgentNameTaken(page);
 
   await page.getByLabel("Agent name").fill("Free name");
   await page.getByRole("button", { name: "Create Agent" }).click();
@@ -506,7 +515,7 @@ test("Dedicated Agent creation shows the API's named reason when a provisioning 
   // conflict text (a store race; controller refusals name a reason), then naming the
   // Secret that was deleted.
   const refusals = [
-    "The requested platform resource already exists.",
+    RESOURCE_CONFLICT,
     "Secret sec_00000000-0000-4000-8000-00000000dead, which this provisioning request uses, was deleted. Submit a new Agent provisioning request.",
   ];
   const requestIds: string[] = [];
@@ -722,7 +731,7 @@ test("Dedicated Agent creation reports a stop during or before the first deploym
       // Only a 404 means the Agent is gone. A caller who may not read it (403) cannot tell a
       // Stop from a deletion either.
       job: cancelled(kept.id, "stopped"),
-      read: unreadable(403, "FORBIDDEN", "The exact platform operation was not authorized."),
+      read: unreadable(403, "FORBIDDEN", GENERIC_DENIAL),
       text: unknown,
       href: keptHref,
     },
@@ -2054,6 +2063,24 @@ test("Agent creation shows the API's duplicate-name conflict, a not-ready Namesp
   const agentsUrl = `${fixture.origin}/namespaces/${namespace.id}/agents`;
   const agentPost = (response: Response) =>
     response.url() === agentsUrl && response.request().method() === "POST";
+  const sentence =
+    "An Agent with this name already exists in this Namespace. Choose a different name.";
+
+  // The preflight refuses a name another Agent has with create's 409, before the form saves a
+  // Configuration it could no longer change, and marks the name field (finding 2420).
+  const preflight = page.waitForResponse(
+    (response) =>
+      response.url() === `${agentsUrl}/validate` && response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Create Agent" }).click();
+  assert.equal((await preflight).status(), 409);
+  await page.getByRole("alert").filter({ hasText: sentence }).waitFor();
+  await assertAgentNameTaken(page);
+  assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
+  assert.equal(agentPostRequests(requests, namespace.id).length, 0);
+  // Another name clears the mark; the conflicts below come after the Configuration is saved.
+  await page.getByLabel("Agent name").fill("Racing Agent");
+  assert.equal(await page.getByLabel("Agent name").getAttribute("aria-invalid"), null);
 
   // Any other conflict keeps the generic text: plain conflicts reach the client as "The
   // requested platform resource already exists.", which would mislead on this form.
@@ -2068,7 +2095,7 @@ test("Agent creation shows the API's duplicate-name conflict, a not-ready Namesp
       body: JSON.stringify({
         error: {
           code: "RESOURCE_CONFLICT",
-          message: "The requested platform resource already exists.",
+          message: RESOURCE_CONFLICT,
         },
         meta: { requestId: "req_00000000-0000-4000-8000-000000000409" },
       }),
@@ -2085,7 +2112,7 @@ test("Agent creation shows the API's duplicate-name conflict, a not-ready Namesp
         "Agent creation conflicts with the saved state. Check the Agent name and selections, then try again. Request ID: req_00000000-0000-4000-8000-000000000409",
     })
     .waitFor();
-  assert.equal(await page.getByText("The requested platform resource already exists.").count(), 0);
+  assert.equal(await page.getByText(RESOURCE_CONFLICT).count(), 0);
   await page.unroute(agentsUrl, otherConflict);
   await page.getByRole("button", { name: "Create Agent", disabled: false }).waitFor();
 
@@ -2099,7 +2126,7 @@ test("Agent creation shows the API's duplicate-name conflict, a not-ready Namesp
       status: 409,
       contentType: "application/json",
       body: JSON.stringify({
-        error: { code: "NAMESPACE_NOT_READY", message: "The requested Namespace is not ready." },
+        error: { code: "NAMESPACE_NOT_READY", message: NAMESPACE_NOT_READY },
         meta: { requestId: "req_00000000-0000-4000-8000-000000000410" },
       }),
     });
@@ -2119,11 +2146,11 @@ test("Agent creation shows the API's duplicate-name conflict, a not-ready Namesp
   await page.unroute(agentsUrl, notReady);
   await page.getByRole("button", { name: "Create Agent", disabled: false }).waitFor();
 
+  // Another create takes the name after the preflight: the API's own 409 names it too.
+  await raceAgentName(page, fixture, namespace.id, "Racing Agent");
   const rejected = page.waitForResponse(agentPost);
   await page.getByRole("button", { name: "Create Agent" }).click();
   assert.equal((await rejected).status(), 409);
-  const sentence =
-    "An Agent with this name already exists in this Namespace. Choose a different name.";
   const feedback = page.getByRole("alert").filter({ hasText: sentence });
   await feedback.waitFor();
   assert.match(
@@ -2135,6 +2162,7 @@ test("Agent creation shows the API's duplicate-name conflict, a not-ready Namesp
   await page.getByRole("button", { name: "Create Agent", disabled: false }).waitFor();
   await waitForEnabled(name);
   await waitForEnabled(create);
+  await assertAgentNameTaken(page);
 
   // A new name saves through the same Configuration.
   await name.fill("Free Agent");
@@ -2155,7 +2183,6 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
   fixture.controller.registerDriver(pluginDriver);
   fixture.controller.selectDriver("plugin", pluginDriver.id);
   const namespace = await fixture.createNamespace("Partial save retry", { ready: true });
-  await fixture.createAgent(namespace.id, "Retry Agent");
   const discardedPatSecret = await fixture.createSecret(
     namespace.id,
     "Discarded service account token",
@@ -2254,6 +2281,9 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
       response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents` &&
       response.request().method() === "POST",
   );
+  // Another create takes the name after the preflight, so the Secret and Configuration are saved
+  // before the API refuses the Agent.
+  await raceAgentName(page, fixture, namespace.id, "Retry Agent");
   await page.getByRole("button", { name: "Create Agent" }).click();
   const savedConfiguration = await (await configurationResponse).json();
   assert.equal((await deniedAgentResponse).status(), 409);

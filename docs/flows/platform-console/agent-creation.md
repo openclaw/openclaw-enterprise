@@ -97,10 +97,11 @@ names what an administrator changes, because the form can change neither the bin
 Before any write, `create.mts:renderAgentForm` checks the Agent name with the API's Name rule
 (`namespaces.mts:namespaceNameProblem`) and each initial workspace file with the Workspace tab's
 `agents/workspace.mts:workspaceFileProblem`, which names the file; the check opens Advanced
-settings to it. It then checks draft values, plugins and the planned `harnessAuth`
+settings to it. It then checks the Agent name, draft values, plugins and the planned `harnessAuth`
 (only the method for a Secret it saves next or registers with a Credential Gateway; none for
 ChatGPT sign-in) with
-`POST /namespaces/:namespaceId/agents/validate`, then posts
+`POST /namespaces/:namespaceId/agents/validate`, which refuses a name another Agent has with
+Agent create's `409`, then posts
 `{kind: "agent", values, secretBindings}` to `.../configurations` and submits its ID,
 plugins, `initialWorkspaceFiles`, and `workspaceDefaultsId` to `.../agents`.
 Console checks the returned Secret name and Namespace, the Configuration values and bindings
@@ -152,6 +153,7 @@ Switching methods hides that feedback without changing the lookup or saved choic
 
 ## Changelog
 
+- 2026-10-25: Send the Agent name to the preflight; mark and focus the name field when the preflight, provisioning or Agent create refuses it as taken. (fix-dogfood-r36, finding 2420)
 - 2026-10-25 08:00: Refuse an operator-managed Preset when it opens where the Compute Driver refuses its binding (finding 2427). (fix-mutant-1025c)
 - 2026-10-25 04:30: Run the preflight before a Credential Gateway registration too (finding 2406). (fix-postland-1025c - 44eebaad38)
 - 2026-10-25 03:30: Run the preflight before provisioning saves the model Secret; trim placement advice the form cannot follow. (fix-postland-1025b - 2b1f510594)

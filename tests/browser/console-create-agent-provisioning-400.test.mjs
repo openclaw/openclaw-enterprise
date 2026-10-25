@@ -8,6 +8,7 @@ import { ConfigurationHarnessError } from "../../packages/occ/src/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import {
   apiRequests,
   fileBrowser,
@@ -21,6 +22,7 @@ import {
 import {
   agentPostRequests,
   agentProvisionPostRequests,
+  assertAgentNameTaken,
   configurationPostRequests,
   createModelCredentialSecret,
   enterManualModel,
@@ -32,6 +34,14 @@ import {
 } from "./console-agents-test-support.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
+import {
+  CODEX_PLACEMENT_REFUSAL,
+  DEDICATED_PLACEMENT_REQUIREMENT,
+  DEPENDENCY_UNAVAILABLE,
+  GENERIC_DENIAL,
+  NAMESPACE_NOT_READY,
+  RESOURCE_CONFLICT,
+} from "../helpers/refusal-text.mjs";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
@@ -205,6 +215,108 @@ test("Dedicated Agent provisioning shows the API's 400 message for an inline mod
   );
   // A 400 means the request was never admitted, so the form unlocks for a fix.
   await waitForEnabled(configuration);
+});
+
+test("Dedicated Agent provisioning refuses a taken Agent name at admission and marks the field", async (t) => {
+  // Exact Configuration create and inspect, as provisioning admission requires, in storage that
+  // can also hold the Configuration of the Agent that already has the name.
+  const { computeDriver } = provisioningDrivers();
+  const configurationDriver = createTestConfigurationDriver({
+    id: "console-provisioning-configuration",
+    exact: true,
+  });
+  const fixture = await createConsoleAppFixture(t, { computeDriver, configurationDriver });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Provision taken name", { ready: true });
+  await fixture.createAgent(namespace.id, "Taken provisioned");
+  const { page } = await newPage(t, fixture, { browser });
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Agent name").fill("Taken provisioned");
+  await pickCodexCredential(page);
+  const refused = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/provision` &&
+      response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Create Agent" }).click();
+  const response = await refused;
+  // Admission answers Agent create's 409 instead of accepting a job that can only fail
+  // (finding 2420); the console shows it and marks the name field.
+  assert.equal(response.status(), 409);
+  const { error, meta } = await response.json();
+  assert.equal(error.code, "RESOURCE_CONFLICT");
+  assert.equal(
+    error.message,
+    "An Agent with this name already exists in this Namespace. Choose a different name.",
+  );
+  const feedback = page.getByRole("alert").filter({ hasText: meta.requestId });
+  await feedback.waitFor();
+  assert.equal(await feedback.textContent(), `${error.message} Request ID: ${meta.requestId}`);
+  await assertAgentNameTaken(page);
+  assert.equal(agentProvisionPostRequests(requests, namespace.id).length, 1);
+  assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
+  // Editing the name clears the mark.
+  await page.getByLabel("Agent name").fill("Free provisioned");
+  assert.equal(await page.getByLabel("Agent name").getAttribute("aria-invalid"), null);
+});
+
+// A request lost in transit leaves its outcome unknown, so the form locks the plan: the API may
+// have admitted it. A resend of an admitted request returns its job before the name check, so a
+// name 409 to the resend proves nothing was admitted, and the name field unlocks for a new name
+// as it does after a 400 (finding 2420).
+test("A taken-name refusal after an unknown provisioning outcome unlocks the name field", async (t) => {
+  const { computeDriver } = provisioningDrivers();
+  const configurationDriver = createTestConfigurationDriver({
+    id: "console-provisioning-configuration",
+    exact: true,
+  });
+  const fixture = await createConsoleAppFixture(t, { computeDriver, configurationDriver });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Provision lost then taken", { ready: true });
+  await fixture.createAgent(namespace.id, "Taken after loss");
+  const { page } = await newPage(t, fixture, { browser });
+  const provisionUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/provision`;
+  // Only the first admission request is lost before it reaches the API.
+  let lost = false;
+  await page.route(provisionUrl, async (route) => {
+    if (!lost && route.request().method() === "POST") {
+      lost = true;
+      await route.abort("failed");
+      return;
+    }
+    await route.fallback();
+  });
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  const name = page.getByLabel("Agent name");
+  await name.fill("Taken after loss");
+  await pickCodexCredential(page);
+  await page.getByRole("button", { name: "Create Agent" }).click();
+  await page
+    .getByText(/^Outcome unknown\. Retry resubmits the same request ID and saved references\./)
+    .waitFor();
+  assert.equal(await name.isDisabled(), true);
+
+  const refused = page.waitForResponse(
+    (response) => response.url() === provisionUrl && response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Retry provisioning request" }).click();
+  assert.equal((await refused).status(), 409);
+  await waitForEnabled(name);
+  await assertAgentNameTaken(page);
+  // The API admitted nothing under this request ID, so a new name is a plan it accepts. This
+  // fixture has no transactional provisioning queue, so an accepted plan ends at its 503 (as in
+  // the pinned-runtime test below), not at a taken-name or different-plan 409.
+  await name.fill("Free after loss");
+  const resent = page.waitForResponse(
+    (response) => response.url() === provisionUrl && response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Create Agent" }).click();
+  const accepted = await resent;
+  assert.equal(accepted.status(), 503);
+  assert.equal((await accepted.json()).error.code, "DEPENDENCY_UNAVAILABLE");
 });
 
 test("The pinned runtime lets the Console request dedicated OpenClaw provisioning", async (t) => {
@@ -688,7 +800,7 @@ test("Dedicated Agent provisioning names a Namespace that is not ready", async (
           body: JSON.stringify({
             error: {
               code: "NAMESPACE_NOT_READY",
-              message: "The requested Namespace is not ready.",
+              message: NAMESPACE_NOT_READY,
             },
             meta: { requestId: "req_00000000-0000-4000-8000-000000000409" },
           }),
@@ -1065,9 +1177,6 @@ test("When the Sandbox Driver's settings refuse Dedicated OpenClaw, Create Agent
 // Compute plan check answered a fixed 409 that names no setting (finding 2395). Provisioning now
 // answers Agent save's 400. The token fixes the harness to Codex, so the form quotes only the
 // requirement, not the advice to select Embedded OpenClaw (finding 2396).
-const PLACEMENT_REQUIREMENT =
-  "Dedicated Agents need gateway routing and node enrollment in this Installation's Kubernetes Compute configuration.";
-
 // Opens Create Agent on a standard Codex Preset bound to a saved service account token, on a
 // fixture built with `options` whose Kubernetes Compute cannot place a Dedicated Agent, and
 // submits it. The binding fixes the harness to Codex, so the refusal's "select Embedded
@@ -1114,15 +1223,12 @@ async function submitBoundCodexPreset(t, options, name) {
 async function assertPlacementRequirement(page, response) {
   assert.equal(response.status(), 400);
   const { error, meta } = await response.json();
-  assert.equal(
-    error.message,
-    `${PLACEMENT_REQUIREMENT} Codex runs only as a Dedicated Agent: select Embedded OpenClaw, or ask an operator to configure it.`,
-  );
+  assert.equal(error.message, CODEX_PLACEMENT_REFUSAL);
   const alert = page.getByRole("alert").filter({ hasText: meta.requestId });
   await alert.waitFor();
   assert.equal(
     await alert.textContent(),
-    `${PLACEMENT_REQUIREMENT} Ask an operator to configure it. Request ID: ${meta.requestId}`,
+    `${DEDICATED_PLACEMENT_REQUIREMENT} Ask an operator to configure it. Request ID: ${meta.requestId}`,
   );
 }
 
@@ -1766,7 +1872,7 @@ test("Create Agent shows a provisioning refusal's own reason and keeps catch-all
       status: 503,
       error: {
         code: "DEPENDENCY_UNAVAILABLE",
-        message: "A required platform dependency is unavailable.",
+        message: DEPENDENCY_UNAVAILABLE,
       },
       text: "Outcome unknown. Retry resubmits the same request ID and saved references.",
       retry: true,
@@ -1812,7 +1918,7 @@ test("Create Agent shows a provisioning refusal's own reason and keeps catch-all
       status: 409,
       error: {
         code: "RESOURCE_CONFLICT",
-        message: "The requested platform resource already exists.",
+        message: RESOURCE_CONFLICT,
       },
       text: "The request conflicts with the saved state. Check for an existing Agent name or changed Configuration, then refresh.",
       retry: false,
@@ -1957,7 +2063,7 @@ test("Create Agent drops the Pod quota line when the deployment read is denied",
               body: JSON.stringify({
                 error: {
                   code: "FORBIDDEN",
-                  message: "The exact platform operation was not authorized.",
+                  message: GENERIC_DENIAL,
                 },
                 meta,
               }),

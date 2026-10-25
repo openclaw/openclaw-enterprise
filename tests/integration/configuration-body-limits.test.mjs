@@ -11,6 +11,7 @@ import {
   assertWriteAuthorizationDenial,
   partialWrite,
 } from "../helpers/partial-write-authorization.mjs";
+import { GENERIC_DENIAL } from "../helpers/refusal-text.mjs";
 
 // The Configuration write limit: the Kubernetes Driver's 1 MiB of values and a 32 KiB envelope,
 // all written with six-byte JSON escapes.
@@ -138,7 +139,7 @@ test("Configuration writes refuse a caller without the grant before reading the 
   const declaredBytes = 6 * 1024 * 1024;
   const forbidden = {
     code: "FORBIDDEN",
-    message: "The exact platform operation was not authorized.",
+    message: GENERIC_DENIAL,
   };
   for (const [method, path, action, grant, targetId] of [
     ["POST", collection(namespace.id), "openclaw.configurations.create", "create", namespace.id],

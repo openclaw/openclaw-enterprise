@@ -14,12 +14,18 @@ import {
   nativeValues,
   newPage,
   nonAuthWriteRequests,
+  pathRequests,
   secretOptionLabel,
   selectSecret,
   waitForEnabled,
   waitForInputValue,
 } from "./console-agents-browser-helpers.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
+import {
+  CONFIGURATION_EDITS_PENDING,
+  DEPENDENCY_UNAVAILABLE,
+  READ_UNAVAILABLE,
+} from "../helpers/refusal-text.mjs";
 
 const slack = {
   enabled: true,
@@ -200,10 +206,7 @@ test("Deploy names a 503 refused before admission and keeps Deploy available", a
     { times: 1 },
   );
   await deploy.click();
-  await page
-    .getByRole("alert")
-    .filter({ hasText: "Service unavailable. The read could not be completed. Try again." })
-    .waitFor();
+  await page.getByRole("alert").filter({ hasText: READ_UNAVAILABLE }).waitFor();
   assert.equal(await page.getByText("The Agent store is unavailable.").count(), 0);
   assert.equal(deployRequests, 0);
   for (const { status = 503, error, text, available } of [
@@ -233,7 +236,7 @@ test("Deploy names a 503 refused before admission and keeps Deploy available", a
       // The catch-all outage names no reason.
       error: {
         code: "DEPENDENCY_UNAVAILABLE",
-        message: "A required platform dependency is unavailable.",
+        message: DEPENDENCY_UNAVAILABLE,
       },
       text: "Outcome unknown.",
       available: false,
@@ -304,15 +307,9 @@ test("active Agent can deploy the current saved draft as a new version", async (
     nativeValues("current-draft", { harnessId: "codex", channels: { slack } }),
   );
   const { page, artifacts } = await newPage(t, fixture);
-  const deploymentRequests = [];
-  page.on("request", (request) => {
-    if (
-      request.method() === "POST" &&
-      request.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deploy`
-    ) {
-      deploymentRequests.push(request.url());
-    }
-  });
+  const requests = apiRequests(page, fixture.origin);
+  const deploymentRequests = () =>
+    pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/${agent.id}/deploy`);
 
   await login(
     page,
@@ -328,7 +325,7 @@ test("active Agent can deploy the current saved draft as a new version", async (
   await page
     .getByText(/Complete these in Credentials before deploying: Slack Secret bindings/)
     .waitFor();
-  assert.deepEqual(deploymentRequests, []);
+  assert.deepEqual(deploymentRequests(), []);
 
   const secretBindings = {};
   for (const key of ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"]) {
@@ -351,7 +348,7 @@ test("active Agent can deploy the current saved draft as a new version", async (
   await page.getByRole("button", { name: "Deploy new version" }).click();
   const response = await deployResponse;
   assert.equal(response.status(), 202);
-  assert.equal(deploymentRequests.length, 1);
+  assert.equal(deploymentRequests().length, 1);
   const deployed = (await response.json()).data;
   await page.waitForURL(
     (url) =>
@@ -402,12 +399,8 @@ test("unsaved Configuration blocks deployment from an admitted revision", async 
   );
   await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const { page } = await newPage(t, fixture);
-  let deploymentRequests = 0;
-  page.on("request", (request) => {
-    if (request.method() === "POST" && request.url().endsWith(`/agents/${agent.id}/deploy`)) {
-      deploymentRequests += 1;
-    }
-  });
+  const requests = apiRequests(page, fixture.origin);
+  const deployPath = `/namespaces/${namespace.id}/agents/${agent.id}/deploy`;
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
   await page.getByRole("button", { name: "Edit Configuration" }).click();
   const advanced = page.locator(".launch-advanced:not([open]) > summary");
@@ -417,9 +410,9 @@ test("unsaved Configuration blocks deployment from an admitted revision", async 
   await page
     .getByLabel("Configuration JSON")
     .fill(JSON.stringify(nativeValues("unsaved", { harnessId: "codex" }), null, 2));
-  await page.getByText("Save or cancel Configuration edits before deploying.").waitFor();
+  await page.getByText(CONFIGURATION_EDITS_PENDING).waitFor();
   assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
-  assert.equal(deploymentRequests, 0);
+  assert.equal(pathRequests(requests, "POST", deployPath).length, 0);
 });
 
 test("revision deployment blocks unavailable reads and does not replay a lost response", async (t) => {
@@ -466,11 +459,7 @@ test("revision deployment blocks unavailable reads and does not replay a lost re
   await login(page, fixture, `/console/agents/${agent.id}?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Create new version" }).first().click();
   const deploy = page.getByRole("button", { name: "Deploy new version" });
-  await page
-    .getByRole("alert")
-    .filter({ hasText: "Service unavailable. The read could not be completed. Try again." })
-    .first()
-    .waitFor();
+  await page.getByRole("alert").filter({ hasText: READ_UNAVAILABLE }).first().waitFor();
   assert.equal(deploymentRequests, 0);
   assert.equal(await deploy.count(), 0);
   configurationUnavailable = false;
@@ -894,12 +883,7 @@ test("operator-managed console binding saves and deploys without a managed crede
   await page.unroute(revisionsPath);
   await page.reload();
   await page.getByText(/Gateway readiness does not confirm model access/).waitFor();
-  const credentialRequests = [];
-  page.on("request", (request) => {
-    if (request.url().includes("/runtime-credentials")) {
-      credentialRequests.push(request.method());
-    }
-  });
+  const afterReload = apiRequests(page, fixture.origin);
   const deployed = page.waitForResponse(
     (r) => r.url().endsWith(`/agents/${agent.id}/deploy`) && r.request().method() === "POST",
   );
@@ -908,7 +892,7 @@ test("operator-managed console binding saves and deploys without a managed crede
   assert.equal(response.status(), 202);
   assert.deepEqual((await response.json()).data.harnessAuth, { method: "runtime" });
   assert.deepEqual(
-    credentialRequests,
+    afterReload.filter(({ path }) => path.includes("/runtime-credentials")),
     [],
     "operator auth must not wait on a managed-credential endpoint",
   );

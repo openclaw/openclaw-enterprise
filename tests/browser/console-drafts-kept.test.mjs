@@ -18,6 +18,7 @@ import {
   settlePageRequests,
   waitForCondition,
   waitForInputValue,
+  writeRequests,
 } from "./console-agents-browser-helpers.mjs";
 import {
   configurationPostRequests,
@@ -25,8 +26,14 @@ import {
   createRepositoryLaunchFixture,
   enterManualModel,
   routeInstallationProvisioning,
+  raceAgentName,
   routeInstallationWithoutProvisioning,
 } from "./console-agents-test-support.mjs";
+import {
+  CHANNEL_SECRETS_CONFIGURATION_CHANGED,
+  REPOSITORY_EDITS_PENDING,
+  RESOURCE_NOT_FOUND,
+} from "../helpers/refusal-text.mjs";
 
 // Unsaved drafts survive a refused Create and a failed Namespace read, and a pending save holds
 // every way off the page (findings 1934, 1935, 1937). The rules that keep untouched forms and
@@ -118,7 +125,6 @@ test("a refused Create stays a draft for a reload and a return, and the retry re
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Refused create", { ready: true });
-  await fixture.createAgent(namespace.id, "Existing Agent");
   const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
     body: standardCodexPreset,
   });
@@ -136,6 +142,9 @@ test("a refused Create stays a draft for a reload and a return, and the retry re
   await name.waitFor();
   assert.equal(await asksBeforeUnload(page), true);
 
+  // Another create takes the name after the preflight, so the Secret and Configuration are saved
+  // before the API refuses the Agent.
+  await raceAgentName(page, fixture, namespace.id, "Existing Agent");
   const conflict = page.waitForResponse(
     (response) =>
       response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
@@ -685,7 +694,7 @@ test("Back refused by unsaved repository changes preserves the previous Agent ta
   const repositoriesUrl = page.url();
 
   await page.goBack();
-  await page.getByText("Save or cancel repository changes before leaving this tab.").waitFor();
+  await page.getByText(REPOSITORY_EDITS_PENDING).waitFor();
   await page.waitForURL(repositoriesUrl);
   assert.equal(await choice.isChecked(), true, "Back kept the unsaved selection");
 
@@ -700,11 +709,7 @@ test("Back refused by unsaved repository changes preserves the previous Agent ta
   await page.getByRole("tab", { name: "Repositories", selected: true }).waitFor();
   assert.equal(page.url(), repositoriesUrl);
   await settlePageRequests(page);
-  assert.deepEqual(
-    requests.filter(({ method }) => method !== "GET"),
-    [],
-    "no repository write",
-  );
+  assert.deepEqual(writeRequests(requests), [], "no repository write");
 });
 
 test("an uncertain Configuration save holds ← Agents, but the sidebar may leave the kept draft", async (t) => {
@@ -836,9 +841,7 @@ test("Secret choices carried through Reload draft do not ask before a reload", a
   });
   assert.equal(changed.status, 200, JSON.stringify(changed.body));
   await page.getByRole("button", { name: "Save channel Secrets" }).click();
-  await page
-    .getByText("Configuration changed. Reload this draft before saving channel Secrets.")
-    .waitFor();
+  await page.getByText(CHANNEL_SECRETS_CONFIGURATION_CHANGED).waitFor();
 
   const reread = await holdRequests(t, page, `**/namespaces/${namespace.id}/agents/${agent.id}`, {
     once: true,
@@ -951,9 +954,7 @@ test("a refused read of an admitted provisioning job keeps no draft", async (t) 
   const { page } = await newPage(t, fixture);
   await routeInstallationProvisioning(page, fixture);
   // The job is admitted, then its status read is refused: the request ID stays the job's.
-  await routeProvisioningJob(page, namespace, () =>
-    apiError(404, "NOT_FOUND", "The requested platform resource was not found."),
-  );
+  await routeProvisioningJob(page, namespace, () => apiError(404, "NOT_FOUND", RESOURCE_NOT_FOUND));
   await fillProvisionedAgent(page, fixture, namespace, "Admitted Agent");
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   await page.getByText(/^Resource unavailable in this Namespace\./).waitFor();

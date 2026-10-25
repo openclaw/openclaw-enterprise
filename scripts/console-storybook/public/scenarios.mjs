@@ -3815,6 +3815,31 @@ export const scenarios = {
       "Select Create Agent again to check the same entries and continue creating the draft.",
     ],
   },
+  createNameTaken: {
+    group: "Pages/Create Agent",
+    name: "Agent name taken",
+    path: create,
+    unsupportedProvisioning: true,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/validate",
+        method: "POST",
+        status: 409,
+        code: "RESOURCE_CONFLICT",
+        message:
+          "An Agent with this name already exists in this Namespace. Choose a different name.",
+        once: true,
+      },
+    ],
+    actions: [...readyForm, { ...click("Create Agent"), focus: true }],
+    description:
+      "Another Agent in this Namespace has the name. The configuration check refuses it before anything is saved: the refusal line keeps the API's sentence, the Agent name field shows a short error under it and takes focus.",
+    steps: [
+      "Confirm focus is in Agent name, the field reads Another Agent in this Namespace has this name. under it, and no Secret or Configuration saved line shows.",
+      "Type another name: the field error clears. Select Create Agent again; the Agent is created.",
+    ],
+    gap: "The refusal is simulated; tests/integration/occ-api.test.mjs and tests/browser/console-agents-2.test.ts cover the API's preflight.",
+  },
   createPluginPreflightRefusal: {
     group: "Pages/Create Agent",
     name: "Plugin refusal before anything is saved",

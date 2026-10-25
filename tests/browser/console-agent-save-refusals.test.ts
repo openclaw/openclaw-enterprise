@@ -25,6 +25,7 @@ import {
   withholdPermissionSummary,
 } from "./console-agents-test-support.mjs";
 import { createPolicyConsole } from "./console-sandbox-policy-fixture.ts";
+import { CONFIGURATION_SAVE_DENIED } from "../helpers/refusal-text.mjs";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
@@ -36,8 +37,6 @@ const browser = fileBrowser();
 // grant they need; Agent-side saves are disabled up front when the permission answer denies
 // Agent update.
 
-const CONFIGURATION_REFUSAL =
-  "You do not have permission to save this Configuration. Ask an administrator for Configuration update access, plus Secret operate on each Secret it binds.";
 const AGENT_UPDATE_DENIED =
   "Your access does not include updating this Agent. Ask an administrator for Agent update access to save these settings.";
 const READ_REFUSAL =
@@ -124,7 +123,7 @@ const configurationSaves = [
       await page.getByLabel("Configuration JSON").fill(edited);
       await page.getByRole("button", { name: "Save Configuration" }).click();
       return async () => {
-        await page.getByText(CONFIGURATION_REFUSAL, { exact: true }).waitFor();
+        await page.getByText(CONFIGURATION_SAVE_DENIED, { exact: true }).waitFor();
         assert.equal(await page.getByLabel("Configuration JSON").inputValue(), edited);
       };
     },
@@ -138,7 +137,7 @@ const configurationSaves = [
       await dialog.getByLabel("Direct-message policy").selectOption("disabled");
       await dialog.getByRole("button", { name: "Save configuration" }).click();
       return async () => {
-        await dialog.getByText(CONFIGURATION_REFUSAL).waitFor();
+        await dialog.getByText(CONFIGURATION_SAVE_DENIED).waitFor();
         assert.equal(await dialog.getByLabel("Direct-message policy").inputValue(), "disabled");
       };
     },
@@ -201,12 +200,7 @@ test("a member without Agent update sees the Agent-side saves and fields disable
     // Repository fields need a repository Driver; the next test covers them.
     { tab: "repositories", save: "Save repository access" },
   ];
-  const patches: string[] = [];
-  page.on("request", (request) => {
-    if (request.method() === "PATCH") {
-      patches.push(request.url());
-    }
-  });
+  const requests = apiRequests(page, fixture.origin);
   for (const [index, { tab, save, field, scope }] of tabs.entries()) {
     const url = detailUrl(fixture, namespace.id, agent.id, "draft", tab).href;
     if (index === 0) {
@@ -231,7 +225,10 @@ test("a member without Agent update sees the Agent-side saves and fields disable
       assert.equal(await json.isEditable(), false);
     }
   }
-  assert.deepEqual(patches, []);
+  assert.deepEqual(
+    requests.filter(({ method }) => method === "PATCH"),
+    [],
+  );
 });
 
 test("a member without Agent update cannot edit repository access", async (t) => {
@@ -351,12 +348,7 @@ for (const c of readRefusals) {
     const namespace = await fixture.createNamespace(`Read ${c.tab}`, { ready: true });
     const agent = await fixture.createAgent(namespace.id, `Read ${c.tab}`, nativeValues("read"));
     const { page } = await newPage(t, fixture, { browser });
-    const patches: string[] = [];
-    page.on("request", (request) => {
-      if (request.method() === "PATCH") {
-        patches.push(request.url());
-      }
-    });
+    const requests = apiRequests(page, fixture.origin);
     await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", c.tab).href);
     await c.edit(page);
     fixture.policy.restrictions.push({
@@ -367,7 +359,10 @@ for (const c of readRefusals) {
     });
     await c.save(page);
     await page.getByText(READ_REFUSAL, { exact: true }).waitFor();
-    assert.deepEqual(patches, []);
+    assert.deepEqual(
+      requests.filter(({ method }) => method === "PATCH"),
+      [],
+    );
   });
 }
 

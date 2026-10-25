@@ -93,6 +93,8 @@ esac
     "python3",
     `if (($# == 3)); then
   printf '%s\\n' '${"e".repeat(64)}'
+elif [[ "$1" == "-c" && "$2" != *b64decode* ]]; then
+  command -p python3 "$@"
 else
   cat >/dev/null
   cat "$LIVE_INSTALLATION_FILE"
@@ -304,10 +306,10 @@ case "$*" in
     fi
     printf '%s\\n' '{"status":"ok"}'
     ;;
+  *' create --filename -'*) cat >/dev/null; printf '%s' 'fixture-preflight-uid' ;;
+  *' create --filename'*) printf '%s' 'fixture-preflight-uid' ;;
   *'jsonpath='*) printf '%s\\n' "$OBSERVED_CONTROLLER_IMAGE" ;;
   *'get pods'*) printf '%s\\n' '{"items":[]}' ;;
-  *' create --filename -'*) cat >/dev/null ;;
-  *' create --filename'*) ;;
   *' get pod/'*) printf '%s\\n' '{"status":{"phase":"Succeeded"}}' ;;
   *' logs pod/'*) printf 'installation-startup-ready\\n' ;;
 esac

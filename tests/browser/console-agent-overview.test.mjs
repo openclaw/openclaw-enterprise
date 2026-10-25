@@ -44,6 +44,7 @@ import {
 } from "./console-deployment-activity-helpers.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import { fileReadyNamespace } from "./console-ready-namespace.mjs";
+import { CONFIGURATION_EDITS_PENDING } from "../helpers/refusal-text.mjs";
 
 // The Agent page's first screen while its reads settle and its polls run: loading cues, quiet
 // polls, a steady layout, and failed-version recovery scoped to the caller.
@@ -3091,7 +3092,7 @@ for (const viewport of [
     await page.getByRole("button", { name: "Edit Configuration" }).click();
     const editor = page.locator("#configuration-json");
     await editor.fill(`${await editor.inputValue()}\n`);
-    await card.getByText("Save or cancel Configuration edits before deploying.").waitFor();
+    await card.getByText(CONFIGURATION_EDITS_PENDING).waitFor();
     const first = card.getByRole("listitem").first();
     assert.equal(await first.getAttribute("data-state"), "pending");
     assert.equal(

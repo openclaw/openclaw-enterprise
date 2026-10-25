@@ -27,8 +27,10 @@ import {
   waitForEnabled,
   waitForIdleFetches,
   waitForSettledFetches,
+  writeRequests,
 } from "./console-agents-browser-helpers.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { WORKSPACE_FILES_UNAVAILABLE } from "../helpers/refusal-text.mjs";
 
 const defaultCodexPreset = JSON.parse(
   await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
@@ -139,10 +141,10 @@ test("a collection body disconnected after headers shows interruption and Retry 
   await page.screenshot({ path: join(artifacts, "response-body-interrupted.png") });
   await page.getByRole("heading", { name: "Request interrupted", exact: true }).waitFor();
   assert.equal(await page.getByText("Research assistant", { exact: true }).count(), 0);
-  const writesBeforeRetry = requests.filter((request) => request.method !== "GET").length;
+  const writesBeforeRetry = writeRequests(requests).length;
   await page.getByRole("button", { name: "Retry", exact: true }).click();
   await page.getByText("Research assistant", { exact: true }).waitFor();
-  assert.equal(requests.filter((request) => request.method !== "GET").length, writesBeforeRetry);
+  assert.equal(writeRequests(requests).length, writesBeforeRetry);
   assert.equal(
     await page.getByRole("combobox", { name: "Namespace", exact: true }).inputValue(),
     namespace.id,
@@ -936,8 +938,7 @@ test("console keeps loaded route families visible while return reads refresh", a
   await page.getByRole("link", { name: "Retained route Agent", exact: true }).click();
   await page.getByRole("heading", { name: "Retained route Agent", exact: true }).waitFor();
   await page.getByRole("tab", { name: "Workspace files", exact: true }).click();
-  const workspaceNotice =
-    "Workspace files require a deployed Agent with a current version and a reachable gateway.";
+  const workspaceNotice = WORKSPACE_FILES_UNAVAILABLE;
   await page.getByText(workspaceNotice, { exact: true }).waitFor();
   await page.locator(".native-admin-access").waitFor({ state: "attached" });
   await waitForSettledView(page);
@@ -1159,10 +1160,7 @@ test("an Agent tab chosen while the detail is still loading is the one Back rest
   await page.getByRole("link", { name: "Early tab Agent", exact: true }).click();
   await configurationHold.waitForRelease();
   await page.getByRole("tab", { name: "Workspace files", exact: true }).click();
-  const workspaceNotice = page.getByText(
-    "Workspace files require a deployed Agent with a current version and a reachable gateway.",
-    { exact: true },
-  );
+  const workspaceNotice = page.getByText(WORKSPACE_FILES_UNAVAILABLE, { exact: true });
   await workspaceNotice.waitFor();
   await releaseHeldRoute(page, configurationPattern, configurationHold);
   await waitForSettledView(page);
@@ -2169,7 +2167,7 @@ for (const trigger of ["Refresh", "Back with a replacement session"]) {
         [],
       );
       assert.deepEqual(
-        requests.filter(({ method }) => method !== "GET").map(({ path }) => path),
+        writeRequests(requests).map(({ path }) => path),
         back ? [signIn] : [],
       );
     });
@@ -2781,7 +2779,7 @@ test("expiry on an active Agent page returns safely and rechecks denied access",
   assert.equal(new URL(page.url()).pathname + new URL(page.url()).search, target);
   await settlePageRequests(page);
   assert.deepEqual(
-    requests.filter(({ method }) => method !== "GET").map(({ method, path }) => ({ method, path })),
+    writeRequests(requests).map(({ method, path }) => ({ method, path })),
     [{ method: "POST", path: "/api/auth/sign-in/email" }],
   );
   assert.equal(await page.getByLabel("Password").count(), 0, "403 must not restart login");

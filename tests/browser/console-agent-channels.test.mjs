@@ -15,6 +15,7 @@ import {
   nativeValues,
   newPage,
   nonAuthWriteRequests,
+  pathRequests,
   revealNativeConfiguration,
   secretOptionLabel,
   selectSecret,
@@ -23,6 +24,7 @@ import {
   statusTone,
   waitForEnabled,
   waitForInputValue,
+  writeRequests,
 } from "./console-agents-browser-helpers.mjs";
 
 // The Agent's grant of a saved Slack Secret was refused, or the IAM policy shows none (finding 1920).
@@ -1072,7 +1074,7 @@ describe("Agent channels", { concurrency: 3 }, () => {
     assert.doesNotMatch(message, /Configuration saved/i);
     await waitForInputValue(page.getByLabel("Slack app token"), secretOptionLabel(secondAppSecret));
     assert.deepEqual(
-      requests.filter((request) => request.method !== "GET").map((request) => request.method),
+      writeRequests(requests).map((request) => request.method),
       ["PATCH"],
     );
     assert.equal(await page.getByRole("button", { name: "Reload draft" }).count(), 0);
@@ -1268,11 +1270,7 @@ describe("Agent channels", { concurrency: 3 }, () => {
           [replacementAppSecret.id, replacementAppSecret.id],
         );
         const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
-        assert.equal(
-          requests.filter(({ method, path }) => method === "PATCH" && path === configurationPath)
-            .length,
-          1,
-        );
+        assert.equal(pathRequests(requests, "PATCH", configurationPath).length, 1);
         assert.equal(
           await page.getByRole("button", { name: "Save channel Secrets" }).isDisabled(),
           true,

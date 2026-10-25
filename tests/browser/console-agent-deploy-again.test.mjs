@@ -15,6 +15,7 @@ import {
   nativeValues,
   newPage,
   nextFrames,
+  pathRequests,
   persistedDeploymentError,
   routeFailedDeployment,
 } from "./console-agents-browser-helpers.mjs";
@@ -24,6 +25,7 @@ import {
 } from "./console-deployment-activity-helpers.mjs";
 import { replyWithDifferentAgentId } from "./console-agents-test-support.mjs";
 import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
+import { GENERIC_DENIAL } from "../helpers/refusal-text.mjs";
 
 // Failed-version recovery's Deploy again: the API's DEPENDENCY_UNAVAILABLE message says to deploy
 // again, and the link opens the draft at its Deploy new version. That button is built only from a
@@ -192,11 +194,7 @@ test("A failed Configuration read leaves Deploy again hidden and is not repeated
   await nextFrames(page);
   await nextFrames(page);
   const configurationPath = new URL(configurationUrl).pathname;
-  assert.equal(
-    requests.filter((request) => request.method === "GET" && request.path === configurationPath)
-      .length,
-    1,
-  );
+  assert.equal(pathRequests(requests, "GET", configurationPath).length, 1);
   assert.equal(await logs.getAttribute("class"), "button button--primary");
   assert.equal(await page.evaluate(() => globalThis.deployAgainSeen), false);
 });
@@ -466,7 +464,7 @@ const failure = (status) => ({
   body: JSON.stringify({
     error:
       status === 403
-        ? { code: "FORBIDDEN", message: "The exact platform operation was not authorized." }
+        ? { code: "FORBIDDEN", message: GENERIC_DENIAL }
         : { code: "UNAVAILABLE", message: "Try again." },
     meta: { requestId: "req_test_failure" },
   }),

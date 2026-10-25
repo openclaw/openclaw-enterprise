@@ -23,6 +23,7 @@ import {
   verifyPlatformStateStoreContract,
 } from "../helpers/postgres-platform-state.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { GENERIC_DENIAL } from "../helpers/refusal-text.mjs";
 
 async function ensureInstallation(state, name) {
   const existing = await state.loadInstallation();
@@ -2134,7 +2135,7 @@ test(
       assert.equal(denied.status, 403);
       assert.deepEqual(denied.error, {
         code: "FORBIDDEN",
-        message: "The exact platform operation was not authorized.",
+        message: GENERIC_DENIAL,
       });
       assert.equal(denied.data, undefined);
     }

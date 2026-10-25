@@ -26,6 +26,7 @@ import {
   field as formField,
   fieldError,
   jsonObjectProblem,
+  setFieldError,
   setStatusTone,
   setText,
   statusBlock,
@@ -156,6 +157,7 @@ type ProvisioningJob = ReturnType<typeof provisioningJob>;
 // so only this one is shown as sent.
 const AGENT_NAME_CONFLICT =
   "An Agent with this name already exists in this Namespace. Choose a different name.";
+const AGENT_NAME_TAKEN_FIELD = "Another Agent in this Namespace has this name.";
 // The open Create Agent form rechecks its Namespace when the window regains focus. The page's own
 // recheck skips any open form, because a reload would discard it (finding 2012).
 let recheckOpenForm: (() => void) | null = null;
@@ -859,6 +861,17 @@ function renderAgentForm(
   // The API's Name rule: length and control characters, checked before any write, so a
   // refused name never leaves a saved Configuration behind (finding 2340).
   const checkName = () => name.setCustomValidity(namespaceNameProblem(name.value));
+  // A name the API refused as taken is marked under the field, which takes focus once the form
+  // enables it again; editing the name clears the mark (finding 2420). The refusal line keeps
+  // the API's sentence and request ID. The API decides on every submit, so a marked name is not
+  // refused locally.
+  let nameTakenMarked = false;
+  let focusTakenName = false;
+  const markNameTaken = () => {
+    nameTakenMarked = true;
+    focusTakenName = true;
+    setFieldError(name, AGENT_NAME_TAKEN_FIELD);
+  };
   const dedicatedOption = element("option", { value: "dedicated" }, "Dedicated");
   const embeddedOption = element("option", { value: "embedded" }, "Embedded");
   const mode = element("select", { id: "execution-mode" }, dedicatedOption, embeddedOption);
@@ -1961,6 +1974,10 @@ function renderAgentForm(
     }
     if (event.target === name) {
       checkName();
+      if (nameTakenMarked) {
+        nameTakenMarked = false;
+        setFieldError(name, "");
+      }
     }
   });
   form.addEventListener("change", () => {
@@ -2746,6 +2763,10 @@ function renderAgentForm(
     submit.textContent = savedAgent ? "Retry credential access" : "Create Agent";
     submit.setAttribute("aria-busy", createPending ? "true" : "false");
     waitForNamespace();
+    if (focusTakenName && !name.disabled) {
+      focusTakenName = false;
+      name.focus();
+    }
   };
   // Every way Create's request ends clears its busy state, a navigation away included: the view
   // it leaves may still show as an inert preview.
@@ -3037,10 +3058,21 @@ function renderAgentForm(
         feedback.append(link(" Open Agent", `agents/${terminal.job.agentId}`, context));
       }
       focusFeedbackLine(feedback);
-      // A 400 to an unacknowledged request means the API never admitted it: a resend of
-      // an admitted request returns that job before validation.
+      // Admission refuses a taken name; a job admitted alongside another with it fails with it.
+      const admissionNameTaken =
+        error.status === 409 && error.serverMessage === AGENT_NAME_CONFLICT;
+      if (
+        admissionNameTaken ||
+        (terminal?.failed && !terminal.job.agentId && error.message === AGENT_NAME_CONFLICT)
+      ) {
+        markNameTaken();
+      }
+      // A 400 or a taken-name 409 to an unacknowledged request means the API never admitted it:
+      // a resend of an admitted request returns that job before validation and the name check.
       requestAdmitted =
-        attempt.acknowledged || outcomeUnknown || (requestAdmitted && error.status !== 400);
+        attempt.acknowledged ||
+        outcomeUnknown ||
+        (requestAdmitted && error.status !== 400 && !admissionNameTaken);
       if (!outcomeUnknown && !terminal?.canRetry) {
         provisioningAttempt = null;
         if (terminal?.failed || retryRefused) {
@@ -3234,6 +3266,7 @@ function renderAgentForm(
           method: "POST",
           expectedStatus: 204,
           body: {
+            name: body.name,
             configuration: { kind: "agent", values },
             executionMode: body.executionMode,
             initialWorkspaceFiles: body.initialWorkspaceFiles,
@@ -3251,14 +3284,20 @@ function renderAgentForm(
         if (failure.status === 401) {
           context.onExpired();
         } else {
+          const nameTaken = failure.status === 409 && failure.serverMessage === AGENT_NAME_CONFLICT;
           const detail =
             error instanceof Error && error.name === "TimeoutError"
               ? "The configuration check timed out. Your entries are still here. Try Create Agent again."
-              : followableRefusal(rejectionMessage(error));
+              : nameTaken
+                ? AGENT_NAME_CONFLICT
+                : followableRefusal(rejectionMessage(error));
           feedback.textContent =
             detail + (failure.requestId ? ` Request ID: ${failure.requestId}` : "");
           // While the pressed control is still disabled, as after a save.
           focusFeedbackLine(feedback);
+          if (nameTaken) {
+            markNameTaken();
+          }
         }
         pending = false;
         updateControls();
@@ -3567,6 +3606,10 @@ function renderAgentForm(
         guidance +
         (error.requestId ? ` Request ID: ${error.requestId}` : "");
       focusFeedbackLine(feedback);
+      // A create that raced another Agent to the name (the preflight checked it).
+      if (!savedAgent && error.status === 409 && error.serverMessage === AGENT_NAME_CONFLICT) {
+        markNameTaken();
+      }
       keepDraftAfterRefusal();
     } finally {
       endCreate();

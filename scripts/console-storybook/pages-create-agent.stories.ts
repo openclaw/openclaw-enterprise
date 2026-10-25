@@ -247,6 +247,10 @@ export const CreatePreflightTimeout = {
   ...story("createPreflightTimeout"),
   name: "Configuration check timed out",
 };
+export const CreateNameTaken = {
+  ...story("createNameTaken"),
+  name: "Agent name taken",
+};
 export const CreatePluginPreflightRefusal = {
   ...story("createPluginPreflightRefusal"),
   name: "Plugin refusal before anything is saved",

@@ -73,9 +73,9 @@ For a draft, Console creates the Configuration and Agent, then grants access to 
 
 `apps/controller/src/http/agents.ts:createAgentHandlers` receives schema-validated inputs after shared admission. It supplies the Namespace from the route and creates the audit event inside the controller transaction.
 
-OCC first authorizes Agent `create`, Configuration `create` and Installation `administer` for the Namespace, as status and retry do, so a caller without them gets `403` whatever the body says. It then validates the accepted Configuration, references, workspace inputs, supported execution mode and current authority. Reserved Secret destinations, cross-Namespace Secret references, and missing or `runtime` Harness authentication give `400 INVALID_REQUEST` naming the rule; a Secret absent from the Namespace stays `404`. Before the Compute plan check, a Secret binding gets Agent save's Harness authentication check and its named `400`.
+OCC first authorizes Agent `create`, Configuration `create` and Installation `administer` for the Namespace, as status and retry do, so a caller without them gets `403` whatever the body says. It then validates the accepted Configuration, references, workspace inputs, supported execution mode and current authority, then refuses a taken Agent name with Agent create's `409`. Reserved Secret destinations, cross-Namespace Secret references, and missing or `runtime` Harness authentication give `400 INVALID_REQUEST` naming the rule; a Secret absent from the Namespace stays `404`. Before the Compute plan check, a Secret binding gets Agent save's Harness authentication check and its named `400`.
 
-A selected Credential Gateway requires a supported model Credential Source for dedicated provisioning. OCC checks its exact `operate` authority and readiness, and preserves its canonical binding. Unsupported authentication methods fail before a job or external resource is created.
+A selected Credential Gateway requires a supported, ready model Credential Source the caller can `operate`, and OCC preserves its canonical binding. Unsupported authentication methods fail before a job or external resource is created.
 
 After an Installation selects another Secret Driver, request, status and retry answer `503` for a Secret owned by the previous Driver, after authorization and lookup. The message asks the caller to save replacement Secrets and submit a new request. The worker fails that attempt with `PROVISIONING_REJECTED`; an unavailable Secret Driver still retries.
 
@@ -117,19 +117,18 @@ wait and waits one second between status reads, spending it on details such as a
 at the next poll. Admission, status and retry report the stored client `requestId`.
 If absent or different, Create keeps the original request and any confirmed job.
 `meta.requestId` identifies each HTTP request. Leaving stops polling, not provisioning.
-If the first deployment fails, open the existing Agent, correct the cause and deploy a new version.
-After an intentional Stop, deploy when ready. Reconciliation owns startup and activation;
-subsequent deployments use Deploy.
+If the first deployment fails, correct the cause and deploy again; after a Stop, deploy when ready.
+Reconciliation owns startup and activation; later versions use Deploy.
 
 Dedicated OpenClaw admission requires native worker support and a Sandbox Driver
 with all required containment facets. The pinned runtime declares native support;
 custom images still require an operator declaration in
 [Installation startup configuration](../reference/configuration.md#installation-startup-configuration).
 `packages/occ/src/index.ts:requireDedicatedNativeSupport` enforces both requirements.
-Admission does not prove workload delivery. Sandbox receives private setup
-identity and the exact Secret reference through `HarnessWorkloadRequirements.workspaceSetup`;
-OpenShell executes initialization through `ExecSandbox` before Harness startup.
-See [workspace initialization](workspace-files.md#2-deployment-initializes-storage-before-execution).
+Admission does not prove workload delivery. Sandbox receives the setup identity and Secret
+reference through `HarnessWorkloadRequirements.workspaceSetup`; OpenShell runs
+[workspace initialization](workspace-files.md#2-deployment-initializes-storage-before-execution)
+through `ExecSandbox` before Harness startup.
 Stock OpenShell rejects Secret-backed environment projection; the
 [OpenShell flow](openshell-sandbox-provisioning.md#3-validate-and-serialize-the-sandbox)
 covers remaining limits and verification-only support.
@@ -167,6 +166,7 @@ No API deletes a provisioning request. Agent deletion removes the Agent's reques
 
 ## Changelog
 
+- 2026-10-25: Refuse a taken Agent name at admission. (finding 2420)
 - 2026-10-25 03:30: Check a Secret binding's placement before the Compute plan check; Console runs the preflight first. (fix-postland-1025b - 2b1f510594)
 
 - 2026-10-17: Bound optional deployment details to the provisioning poll interval. (PR #2685)

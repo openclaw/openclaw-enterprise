@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
-updated: "2026-10-23"
-last_updated_session: "authoring-run/3c1a4d88-d619-47e3-9eba-dbaf0988d2e9"
+updated: "2026-10-25"
+last_updated_session: "authoring-run/d15969fb-1113-416f-9573-e045dd683b66"
 ---
 
 # Production image upgrade flow
@@ -62,80 +62,81 @@ graph TD
 
 `scripts/upgrade-production-images:prepare_upgrade`
 
-The script verifies the protected files, cluster, deployed Helm release, and
-matching OCC and Secret Installation IDs. It compares protected and live
-configuration in full, including selected image fields. It captures separate
-reviewed candidate files and accepts changes only to the Slack directory proxy
-and the curated Codex PluginDriver selection. All other Helm and Installation
-settings remain protected, including new fields. The guard compares broker
-resource references, not the contents of referenced ConfigMaps or Secrets.
-Image flags select images after this comparison.
-A runtime release also reads complete authorized inventory and records every running Agent's baseline
-version. Nonterminal deployment work, a missing selected version, or an unready
-Namespace stops preparation. Stopped and deleting Agents are excluded.
-Pending repository cleanup does not block preparation.
+The script verifies protected files, cluster, deployed Helm release, and matching
+OCC and Secret Installation IDs. It compares all protected and live configuration,
+including selected image fields, and captures separate reviewed candidate files. Only
+the Slack directory proxy and curated Codex PluginDriver selection may change;
+other Helm and Installation settings, including new fields, remain protected.
+The broker guard compares references, not ConfigMap or Secret contents. Image
+flags select images after comparison. Runtime releases record each running Agent's
+baseline version from complete authorized inventory. Nonterminal deployments,
+missing selected versions, or unready Namespaces stop preparation. Stopped and
+deleting Agents are excluded; pending repository cleanup does not block preparation.
 
-For repository-enabled releases, the helper requires explicit immutable
-controller and broker images. It inventories every node matching the control
-plane selector, including unready and cordoned nodes, and requires a single
-native architecture. `scripts/upgrade-image-identity.py:read_platform` first
-reads Docker's native OCI export and resolves the selected manifest's
-configuration. It retains JSON objects within the 2 MiB per-blob and 32 MiB
-total metadata limits, checks their hashes, and verifies the configuration's
-platform. Compressed filesystem layers are outside that metadata budget.
-Then `scripts/upgrade-repository-image-probe.mjs` runs both selected images
-with synthetic inputs and a private receipt listener. It checks recovery and
-refused reservation through the actual Driver and broker, and records the
-selected digest, platform manifest, configuration, requests, and responses.
-The check proves wire compatibility, not Kubernetes image availability, receipt
-durability, or disposal. The
-helper also preserves the live broker hostname; broker restart recovery remains
-an operator task in the [broker procedure](../guides/repository-credentials/installation.md#install-and-verify).
+Repository-enabled releases require explicit immutable controller and broker
+images. The helper inventories all nodes matching the control plane selector,
+including unready and cordoned nodes; they must have one native architecture.
+`scripts/upgrade-image-identity.py:read_platform` reads Docker's native OCI export,
+resolves the selected manifest's configuration, retains JSON objects within
+2 MiB per-blob and 32 MiB total metadata limits, checks their hashes, and verifies
+the configuration's platform. Compressed filesystem layers are outside that budget.
+`scripts/upgrade-repository-image-probe.mjs` runs both images with synthetic
+inputs and a private receipt listener. It checks recovery and refused reservation
+through the actual Driver and broker, recording the selected digest, platform
+manifest, configuration, requests, and responses. This proves wire compatibility,
+not Kubernetes image availability, receipt durability, or disposal. The helper
+preserves the live broker hostname; broker restart recovery remains an operator
+task in the [broker procedure](../guides/repository-credentials/installation.md#install-and-verify).
 
-The script renders the chart and performs a server-side Helm dry run. Then
+After rendering the chart and running a server-side Helm dry run,
 [`scripts/upgrade-startup-preflight.mjs`](../../scripts/upgrade-startup-preflight.mjs)
-copies each rendered API and worker Pod template (selected controller image, env,
-mounts, service account) into a one-shot Pod whose Installation volume reads a
-temporary Secret holding the candidate. The Pod runs `loadStartupConfigurationSnapshot`
-and `loadInstallationConfiguration`, which resolve Drivers and Preset files
-without the database. On a typed configuration refusal,
+copies rendered API and worker Pod templates (selected controller image, env,
+mounts, service account) into one-shot Pods whose Installation volume uses a
+temporary candidate Secret. Each runs `loadStartupConfigurationSnapshot` and
+`loadInstallationConfiguration`, resolving Drivers and Preset files without the
+database. On a typed configuration refusal,
 `apps/controller/src/startup-failure.ts:formatStartupConfigurationFailure` prints
-at most 32 filtered field diagnostics, using the API/worker log filter. The
-helper preserves these paths and messages in its component logs before stopping
-any writer. With the bundled Kubernetes Compute Driver it then runs
-`KubernetesComputeDriver.preflight` with the Pod's Kubernetes credentials (its
-service account in `inCluster` mode), as API and worker startup do; that check refuses, for example, single-cluster
-[split-layout Gateway storage](../reference/drivers/kubernetes-compute.md#existing-split-layout-installations).
-Each Pod then checks the stored Installation name from the helper's
-`occ installation get` with the image's `isName`, the check the controller
-applies after it reads the name from the database (`INSTALLATION_NAME_INVALID`);
-an image without the rule skips it.
-On the experimental two-cluster profile, each Pod also runs
-`KubernetesComputeDriver.verifyExecutionTenantGrants` for its component, which
-startup does not run. In each execution tenant Namespace where its identity holds
-the release-era tenant grant, SelfSubjectAccessReviews ask for the newer
-`openclaw-execution` rules (API: Pod and `pods/proxy` reads, plus `pods/log` and
-Event reads with runtime logs; worker: Pod `patch` and `batch` Job `get`, `create`,
-and `delete`). Worker Job grants are required even with runtime logs disabled.
+up to 32 field diagnostics through the API/worker log filter. The helper saves
+the paths and messages in component logs before stopping writers.
+
+With the bundled Kubernetes Compute Driver, each Pod runs
+`KubernetesComputeDriver.preflight` with its Kubernetes credentials (its service
+account in `inCluster` mode), as API and worker startup do. This refuses, for
+example, single-cluster [split-layout Gateway storage](../reference/drivers/kubernetes-compute.md#existing-split-layout-installations).
+Each Pod checks the stored Installation name from `occ installation get` with
+the image's `isName`, as the controller does after reading the database
+(`INSTALLATION_NAME_INVALID`); an image without the rule skips it.
+
+Experimental two-cluster Pods also run
+`KubernetesComputeDriver.verifyExecutionTenantGrants` for their component; startup
+does not. Where each Pod's identity holds the release-era grant in an execution
+tenant Namespace, SelfSubjectAccessReviews ask for newer `openclaw-execution`
+rules: API Pod and `pods/proxy` reads, plus `pods/log` and Event reads with runtime
+logs; worker Pod `patch` and `batch` Job `get`, `create`,
+and `delete`. Worker Job grants are required even with runtime logs disabled.
 A missing rule refuses the candidate and points to
 [upgrading the execution chart](../testing/kubernetes.md#upgrade-the-execution-chart).
-Because the chart's default-deny NetworkPolicy also selects these Pods, the
-helper first creates a temporary NetworkPolicy carrying the rendered
-`openclaw-enterprise-dependency-egress` (and execution-cluster API) egress rules.
-A failure, stuck pull, or timeout stops preparation before writers stop. The
-script saves both Pods' statuses and logs, reports each failure, and attempts
-to delete the Pods, Secret, and NetworkPolicy. Cleanup is best effort.
 
-With `--preflight-only`, the helper exits without marking preparation complete.
-It leaves serving writers running and retains private evidence. This evidence
-cannot be resumed; deployment repeats the checks with reviewed inputs in a fresh
-directory.
+When the chart renders `openclaw-enterprise-dependency-egress`, the helper first
+creates a temporary NetworkPolicy with its egress and execution-cluster API
+rules. The chart's default-deny NetworkPolicy also selects the Pods. Only after
+both Pod creates does the helper try to save their statuses and logs. A startup
+failure, stuck image pull, timeout, failed create, or missing usable UID stops
+preparation before writers stop. Best-effort cleanup of the temporary Secret,
+Pods, and conditional NetworkPolicy asks Kubernetes to delete each only with the
+unique ID (UID) returned on create, leaving same-name replacements alone. The
+helper never deletes by name alone; the operator must check whether an ambiguous
+create left an object behind.
+
+With `--preflight-only`, the helper leaves writers running, retains private
+evidence, and exits without marking preparation complete. The evidence cannot be
+resumed; deployment repeats checks with reviewed inputs in a fresh directory.
 
 For an upgrade, the script saves candidate inputs, inventory, target identity,
-and parameter hashes before marking preparation complete. A per-directory lock
-prevents two helpers from using that record at once. The operator must freeze
-other writers, autoscalers, Helm changes, and runtime draft edits as specified in
-the [production guide](../guides/deploy/production-upgrade.md).
+and parameter hashes, then marks preparation complete. A per-directory lock
+prevents concurrent record use. The operator must freeze other writers,
+autoscalers, Helm changes, and runtime draft edits as specified in the
+[production guide](../guides/deploy/production-upgrade.md).
 
 ### 2. Reconcile a prior attempt
 
@@ -294,6 +295,8 @@ checks the exported inventory before following the recovery procedure. Empty
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-25 06:51: Identify temporary preflight resources by UID before cleanup. (authoring-run/d15969fb-1113-416f-9573-e045dd683b66 - dd36945fec0ec3de38cd15b971537eb10a90d0e4)
 
 - 2026-10-23 09:50: Document preflight-only rehearsal and fresh checks at deployment. (authoring-run/3c1a4d88-d619-47e3-9eba-dbaf0988d2e9 - 4e9f5935d5fa4878a719e82db5e504ec6ae55d64)
 

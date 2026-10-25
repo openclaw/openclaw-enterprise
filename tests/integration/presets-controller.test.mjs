@@ -30,6 +30,7 @@ import {
   partialWrite,
 } from "../helpers/partial-write-authorization.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { GENERIC_DENIAL } from "../helpers/refusal-text.mjs";
 
 async function createFixture(t, options = {}) {
   const root = await temporaryDirectory(t, "occ-presets-");
@@ -475,7 +476,7 @@ describe("Presets", { concurrency: 2 }, () => {
     const declaredBytes = 6 * 1024 * 1024;
     const forbidden = {
       code: "FORBIDDEN",
-      message: "The exact platform operation was not authorized.",
+      message: GENERIC_DENIAL,
     };
     for (const [method, path, action, grant, targetId] of [
       ["POST", collection(namespace.id), "openclaw.presets.create", "create", namespace.id],

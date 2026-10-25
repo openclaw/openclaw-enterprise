@@ -776,6 +776,15 @@ export const ProvisionAgentBody = Type.Object(
 
 export const ValidateAgentCreateBody = Type.Object(
   {
+    name: Type.Optional(
+      Type.String({
+        minLength: 1,
+        maxLength: NAME_MAX_CHARACTERS,
+        pattern: PLAIN_TEXT_PATTERN,
+        description:
+          "The Agent name create will use. A name that another Agent in the Namespace has is refused with create's `409`.",
+      }),
+    ),
     initialWorkspaceFiles: Type.Optional(CreateAgentBody.properties.initialWorkspaceFiles),
     configuration: Type.Object(
       { kind: ConfigurationKindSchema, values: ConfigurationValues },

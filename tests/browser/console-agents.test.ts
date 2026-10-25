@@ -71,6 +71,7 @@ import {
   expectDeploymentOutcome,
   openFailureDetails,
 } from "./console-deployment-activity-helpers.mjs";
+import { DEPENDENCY_UNAVAILABLE, GENERIC_DENIAL } from "../helpers/refusal-text.mjs";
 
 const defaultCodexPreset = JSON.parse(
   await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
@@ -1985,7 +1986,7 @@ test("Dedicated Agent creation reuses separately saved Secret references after p
           error: {
             code: "DEPENDENCY_UNAVAILABLE",
             // The catch-all outage text names no reason, so the outcome stays unknown.
-            message: "A required platform dependency is unavailable.",
+            message: DEPENDENCY_UNAVAILABLE,
           },
           meta: { requestId: "req_00000000-0000-4000-8000-000000000503" },
         }),
@@ -2156,10 +2157,7 @@ test("Agent creation explains a denied capability check instead of offering a re
       body: JSON.stringify({
         error: {
           code: status === 403 ? "FORBIDDEN" : "DEPENDENCY_UNAVAILABLE",
-          message:
-            status === 403
-              ? "The exact platform operation was not authorized."
-              : "A required platform dependency is unavailable.",
+          message: status === 403 ? GENERIC_DENIAL : DEPENDENCY_UNAVAILABLE,
         },
         meta: { requestId: "req_00000000-0000-4000-8000-000000000002" },
       }),
