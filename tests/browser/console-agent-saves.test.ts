@@ -1069,8 +1069,10 @@ test("a Channels conflict offers Reload draft, which recovers in place", async (
   const dialog = page.getByRole("dialog", { name: "Edit Slack" });
   await changeElsewhere(context);
   await edit.click();
+  // Save waits for a change (finding 2482), which Reload draft then carries.
+  await dialog.getByLabel("Require a mention", { exact: true }).click();
   await dialog.getByRole("button", { name: "Save configuration" }).click();
-  const message = RELOAD_DRAFT_BEFORE_SAVING;
+  const message = `${RELOAD_DRAFT_BEFORE_SAVING} Reload draft reopens your Slack edits over the saved settings.`;
   await page.getByRole("alert").filter({ hasText: message }).waitFor();
   await dialog.waitFor({ state: "detached" });
   assert.equal(await focusedText(page), "Reload draft");
@@ -1081,7 +1083,7 @@ test("a Channels conflict offers Reload draft, which recovers in place", async (
 
   await page.getByRole("button", { name: "Reload draft" }).click();
   await page.getByRole("status").filter({ hasText: "Draft reloaded." }).waitFor();
-  await edit.click();
+  // The editor reopens over the reread settings with the carried edit.
   await dialog.getByRole("button", { name: "Save configuration" }).click();
   await page.getByRole("status").filter({ hasText: "Channels saved." }).waitFor();
   assert.equal((await fixture.request("GET", configurationPath(context))).data.generation, 3);
@@ -1303,7 +1305,7 @@ test("a carried DM policy keeps another browser's DM users and names its saved p
 // A DM user the reader added is ignored by the save once another browser opened DMs to anyone,
 // so the note says it was not applied instead of listing it as applied (finding 1509).
 test("a carried DM user is named as not applied when another browser opened DMs", async (t) => {
-  const { context, page, dialog } = await carrySlackEdit(
+  const { context, dialog } = await carrySlackEdit(
     t,
     "Carried Off",
     { dmPolicy: "allowlist", allowFrom: ["U0000AAA"] },
@@ -1321,8 +1323,9 @@ test("a carried DM user is named as not applied when another browser opened DMs"
         "Not applied, because the reloaded settings turn it off: Allowed people in direct messages. Review them, then save.",
     })
     .waitFor();
-  await dialog.getByRole("button", { name: "Save configuration" }).click();
-  await page.getByRole("status").filter({ hasText: "Channels saved." }).waitFor();
+  // Nothing is left to save, so Save waits for a change (finding 2482); the other browser's
+  // settings stay as saved.
+  assert.equal(await dialog.getByRole("button", { name: "Save configuration" }).isDisabled(), true);
   const saved = (await context.fixture.request("GET", configurationPath(context))).data;
   assert.equal(saved.values.channels.slack.dmPolicy, "open");
   assert.deepEqual(saved.values.channels.slack.allowFrom, ["*"]);

@@ -754,7 +754,13 @@ describe("Agent channels", { concurrency: 3 }, () => {
     await waitForEnabled(save);
     await mention.check();
     assert.equal(await save.isDisabled(), true);
-    assert.deepEqual(nonAuthWriteRequests(requests), []);
+    // Only directory lookups, which read Slack names, were sent.
+    assert.deepEqual(
+      nonAuthWriteRequests(requests).filter(
+        (request) => !request.path.endsWith("/channel-directory/lookup"),
+      ),
+      [],
+    );
     const configuration = await fixture.request(
       "GET",
       `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
