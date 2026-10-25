@@ -156,7 +156,11 @@ const onScreen = (locator: Locator) =>
     };
   });
 
-const FORBIDDEN = apiErrorResponse(403, "FORBIDDEN", "Forbidden");
+// The API's 403 carries a request ID, which the console shows with a refusal.
+const FORBIDDEN_REQUEST_ID = "req_00000000-0000-4000-8000-000000000403";
+const FORBIDDEN = apiErrorResponse(403, "FORBIDDEN", "Forbidden", {
+  requestId: FORBIDDEN_REQUEST_ID,
+});
 
 // The API's 403 for a policy write.
 const forbidden = async (route: Route) => {
@@ -268,7 +272,7 @@ test("Share Agent refusals", async (t) => {
         // Every existing word is kept.
         assert.equal(
           await alert.textContent(),
-          `${SHARE_REFUSAL} Refresh sharing to inspect current policy before another change.`,
+          `${SHARE_REFUSAL} Refresh sharing to inspect current policy before another change. Request ID: ${FORBIDDEN_REQUEST_ID}`,
         );
         assertPaint(await statusPaint(alert), "danger", "Share refusal");
       },
