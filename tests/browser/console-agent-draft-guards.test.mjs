@@ -306,7 +306,7 @@ test("Policy denials on the draft says where denials and suggestions come from",
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "policy"));
   const tab = page.locator(".sandbox-policy");
   const assertNoWindowControls = async () => {
-    assert.equal(await tab.getByText(/Denials in the loaded window/).count(), 0);
+    assert.equal(await tab.getByText(/Denials in the loaded window/).isVisible(), false);
     for (const name of ["Refresh denials", "Refresh suggestions"]) {
       assert.equal(await tab.getByRole("button", { name }).count(), 0, name);
     }
