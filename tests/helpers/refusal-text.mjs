@@ -14,6 +14,8 @@ export const NAMESPACE_NOT_READY = "The requested Namespace is not ready.";
 // (AGENT_NAME_CONFLICT in errors.ts); a provisioning job that loses the name race reports it too.
 export const AGENT_NAME_CONFLICT =
   "An Agent with this name already exists in this Namespace. Choose a different name.";
+export const SECRET_NAME_CONFLICT =
+  "A Secret with this name already exists in this Namespace. Choose a different name.";
 // Create Agent and the Agents list for a caller without Agent create, which Namespace Roles cannot
 // grant people (findings 2496, 2508).
 export const AGENT_CREATE_DENIED =
@@ -47,6 +49,13 @@ export const secretOperateRefused = (name) =>
 
 // The console's text for a read that failed with a 5xx.
 export const READ_UNAVAILABLE = "Service unavailable. The read could not be completed. Try again.";
+// The console's text for a 400 the API does not explain, where the reader entered nothing (Stop,
+// Delete): the console sent a request the API's schema refused.
+export const MALFORMED_REQUEST =
+  "The API refused this request as malformed. Refresh the page and try again. If it happens again, report it with the request ID.";
+// A 429 with Retry-After names the wait.
+export const tooManyRequestsIn = (seconds) =>
+  `Too many requests. Try again in ${seconds} ${seconds === 1 ? "second" : "seconds"}.`;
 
 // The Agent page's Workspace tab without a deployed, reachable gateway.
 export const WORKSPACE_FILES_UNAVAILABLE =

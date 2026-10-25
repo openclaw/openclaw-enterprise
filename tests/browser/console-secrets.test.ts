@@ -18,6 +18,7 @@ import type {
   SecretListResponse,
 } from "../../packages/contracts/src/api/resources.ts";
 import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
+import { tooManyRequestsIn } from "../helpers/refusal-text.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { consoleStorage } from "../helpers/console-storage.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
@@ -460,8 +461,11 @@ test("console Secret writes honor read-only access, revocation and a new Agent r
   await dialog(page, "Delete Secret")
     .getByRole("button", { name: "Permanently delete Secret", exact: true })
     .click();
+  // The API's 409 names the reference the recheck found (finding 2538).
   await dialog(page, "Delete Secret")
-    .getByText(/Deletion is blocked/)
+    .getByText(
+      /^Could not delete this Secret\. The Secret is still referenced by Agent agt_\S+\. Remove those references first\. Close and reopen the Secret to inspect its current consumers\.$/,
+    )
     .waitFor();
   assert.equal((await fixture.request("GET", `${secretPath(namespace)}/${secret.id}`)).status, 200);
 });
@@ -549,7 +553,7 @@ test("Secret refusals keep their meaning, and incomplete consumers or a not-read
   // The Secret API never answers 429: that refusal comes from a rate limit in front of it (an
   // ingress or proxy), so it is the proxy's page with no API envelope. The 404 is the API's own.
   const refusals = [
-    proxyErrorResponse(429),
+    { ...proxyErrorResponse(429), headers: { "retry-after": "30" } },
     apiErrorResponse(404, "NOT_FOUND", "The requested platform resource was not found."),
   ];
   await page.route(`${fixture.origin}${secretPath(namespace)}`, (route) => {
@@ -566,7 +570,8 @@ test("Secret refusals keep their meaning, and incomplete consumers or a not-read
   await submit.click();
   await create
     .getByRole("alert")
-    .filter({ hasText: "The value was not saved. Check the input and enter it again." })
+    // A rate limit is not an input problem: it says how long the proxy asked to wait.
+    .filter({ hasText: `The value was not saved. ${tooManyRequestsIn(30)} Enter the value again.` })
     .waitFor();
   assert.equal(await value.inputValue(), "");
   assert.equal(await value.isDisabled(), false, "a 429 allows another try");

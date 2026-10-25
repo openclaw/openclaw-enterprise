@@ -61,6 +61,7 @@ import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import {
   DEPENDENCY_UNAVAILABLE,
   GENERIC_DENIAL,
+  MALFORMED_REQUEST,
   RESOURCE_NOT_FOUND,
   WORKSPACE_FILES_UNAVAILABLE,
 } from "../helpers/refusal-text.mjs";
@@ -506,12 +507,16 @@ test("Repeat deletion preserves bounded retry ownership feedback and ordinary de
 });
 
 test("failed repeat deletion preserves feedback when a poll was rearmed during its request", async (t) => {
-  for (const [status, text, guarded] of [
-    [400, "Check the entered values and resource IDs, then try again.", false],
+  // The API's 400 and 409 answers for this route (contractMessage and occ's deleteAgent). Delete
+  // has no form, so a schema refusal does not ask to check entered values, and the API's typed
+  // 409 sentence shows with the step that recovers (finding 2538).
+  for (const [status, text, guarded, serverMessage] of [
+    [400, MALFORMED_REQUEST, false, "The request does not match the operation contract."],
     [
       409,
-      "This Agent could not be deleted in its current state. Refresh its status before trying again.",
+      "The Agent lifecycle changed during deletion. Refresh deletion status before trying again.",
       true,
+      "The Agent lifecycle changed during deletion.",
     ],
     [429, "Too many requests. Wait before trying again.", false],
   ]) {
@@ -555,7 +560,7 @@ test("failed repeat deletion preserves feedback when a poll was rearmed during i
             : apiErrorResponse(
                 status,
                 status === 409 ? "RESOURCE_CONFLICT" : "INVALID_REQUEST",
-                "Controlled repeat refusal",
+                serverMessage,
               ),
         );
       });

@@ -71,10 +71,13 @@ import {
   AGENT_SAVE_DENIED,
   CONFIGURATION_EDITS_PENDING,
   CONFIGURATION_SAVE_DENIED,
+  NAMESPACE_NOT_READY,
   NEW_SECRET_OPERATE_DENIED,
   NEW_SECRET_OPERATE_REMEDY,
   READ_UNAVAILABLE,
+  RESOURCE_CONFLICT,
   SAVED_CONFIGURATION_CHANGED,
+  SECRET_NAME_CONFLICT,
   SECRET_OPERATE_DENIED,
   WORKSPACE_FILES_UNAVAILABLE,
   secretOperateRefused,
@@ -2430,10 +2433,8 @@ test("Agent credential Secret picker searches, validates, and preserves duplicat
   );
   await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
   assert.equal((await duplicate).status(), 409);
-  await dialog
-    .getByRole("alert")
-    .filter({ hasText: "may already exist in this Namespace" })
-    .waitFor();
+  // The API's own sentence for a taken name (finding 2538).
+  await dialog.getByRole("alert").filter({ hasText: SECRET_NAME_CONFLICT }).waitFor();
   assert.equal(
     await dialog.getByLabel("Name", { exact: true }).inputValue(),
     duplicateNameSecret.name,
@@ -2455,7 +2456,11 @@ test("Agent credential Secret picker searches, validates, and preserves duplicat
       status: createStatus,
       contentType: "application/json",
       body: JSON.stringify({
-        error: { code: conflictCode, message: "masked Secret create conflict" },
+        // The API's own messages: a taken name is the generic conflict, so the dialog guesses.
+        error: {
+          code: conflictCode,
+          message: conflictCode === "NAMESPACE_NOT_READY" ? NAMESPACE_NOT_READY : RESOURCE_CONFLICT,
+        },
         meta: { requestId: "req_00000000-0000-4000-8000-000000000409" },
       }),
     });

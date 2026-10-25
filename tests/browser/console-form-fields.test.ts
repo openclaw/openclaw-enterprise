@@ -4,6 +4,7 @@ import test, { type TestContext } from "node:test";
 import type { Locator, Page } from "playwright";
 
 import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
+import { SECRET_NAME_CONFLICT } from "../helpers/refusal-text.mjs";
 import { createConsoleAppFixture as createBaseConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   apiRequests,
@@ -641,10 +642,10 @@ for (const viewport of consoleViewports) {
       assert.ok(focused.text.startsWith(text), `${status}: ${focused.text}`);
       assert.equal(focused.inView, true, `${status}: in view`);
     }
-    // A name conflict still puts focus on Name to change it.
-    refusal = apiErrorResponse(409, "RESOURCE_CONFLICT", "refused");
+    // A name conflict shows the API's sentence and still puts focus on Name to change it.
+    refusal = apiErrorResponse(409, "RESOURCE_CONFLICT", SECRET_NAME_CONFLICT);
     await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
-    await dialog.getByRole("alert").filter({ hasText: "may already exist" }).waitFor();
+    await dialog.getByRole("alert").filter({ hasText: SECRET_NAME_CONFLICT }).waitFor();
     assert.equal(
       await focusedId(page),
       await dialog.getByLabel("Name", { exact: true }).getAttribute("id"),
