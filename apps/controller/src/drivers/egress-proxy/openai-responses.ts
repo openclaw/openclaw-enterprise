@@ -235,7 +235,30 @@ function nativePatMessage(value: unknown): boolean {
   })(message);
 }
 
-const nativePatItems = array((item) => inputItem(item) || nativePatMessage(item));
+// A replayed model call has its turn ID; the local tool output also has its
+// creation time. Neither stamp attests execution or authorizes another tool.
+const nativeFunctionCall = object({
+  type: oneOf("function_call"),
+  id: text,
+  call_id: text,
+  name,
+  arguments: text,
+  internal_chat_message_metadata_passthrough: object({ turn_id: nativeTurnStamp.turn_id }),
+});
+const nativeFunctionOutput = object({
+  type: oneOf("function_call_output"),
+  id: text,
+  call_id: text,
+  output: text,
+  internal_chat_message_metadata_passthrough: object(nativeTurnStamp),
+});
+const nativePatItems = array(
+  (item) =>
+    inputItem(item) ||
+    nativePatMessage(item) ||
+    nativeFunctionCall(item) ||
+    nativeFunctionOutput(item),
+);
 
 const reasoning = optionalFields({
   effort: oneOf("none", "minimal", "low", "medium", "high", "xhigh"),
@@ -244,6 +267,56 @@ const reasoning = optionalFields({
 });
 
 const metadataText: Validator = (value) => typeof value === "string" && value.length <= 8192;
+// Codex enriches one resolved Linux repository root. The remote is a data
+// field, never a destination: qualify only credential-free GitHub HTTPS syntax.
+const workspaceGitFacts = optionalFields({
+  has_changes: bool,
+  latest_git_commit_hash: (value) => typeof value === "string" && /^[0-9a-f]{40}$/.test(value),
+  associated_remote_urls: (value) => {
+    const remotes = asRecord(value);
+    if (!remotes) {
+      return false;
+    }
+    const entries = Object.entries(remotes);
+    return (
+      entries.length > 0 &&
+      entries.length <= 16 &&
+      entries.every(
+        ([key, url]) =>
+          /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(key) &&
+          !Object.hasOwn(Object.prototype, key) &&
+          key !== "prototype" &&
+          typeof url === "string" &&
+          /^https:\/\/github\.com\/[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?\/[A-Za-z0-9_-][A-Za-z0-9._-]{0,99}$/.test(
+            url,
+          ),
+      )
+    );
+  },
+});
+
+const nativeWorkspaces: Validator = (value) => {
+  const roots = asRecord(value);
+  if (!roots || Object.keys(roots).length !== 1) {
+    return false;
+  }
+  return Object.entries(roots).every(
+    ([root, facts]) =>
+      Buffer.byteLength(root) <= 4096 &&
+      (root === "/" ||
+        (root.startsWith("/") &&
+          root
+            .slice(1)
+            .split("/")
+            .every(
+              (segment) =>
+                /^[\p{L}\p{M}\p{N} ._-]+$/u.test(segment) && segment !== "." && segment !== "..",
+            ))) &&
+      Object.keys(asRecord(facts) ?? {}).length > 0 &&
+      workspaceGitFacts(facts),
+  );
+};
+
 // These are telemetry fields emitted by the selected client, never OCC identities or grants.
 const clientMetadataFields = (native: boolean): Fields => ({
   session_id: metadataText,
@@ -256,7 +329,11 @@ const clientMetadataFields = (native: boolean): Fields => ({
   "x-codex-parent-thread-id": metadataText,
   "x-openai-subagent": metadataText,
   "x-codex-turn-metadata": (value) => {
-    if (!metadataText(value)) {
+    if (
+      typeof value !== "string" ||
+      !metadataText(value) ||
+      (native && Buffer.byteLength(value) > 8192)
+    ) {
       return false;
     }
     try {
@@ -289,9 +366,12 @@ const clientMetadataFields = (native: boolean): Fields => ({
         history_ingest_requested: bool,
         model: metadataText,
         ...(native
-          ? { reasoning_effort: oneOf("none", "minimal", "low", "medium", "high", "xhigh") }
+          ? {
+              reasoning_effort: oneOf("none", "minimal", "low", "medium", "high", "xhigh"),
+              workspaces: nativeWorkspaces,
+            }
           : {}),
-      })(parseUnambiguousJson(String(value)));
+      })(parseUnambiguousJson(value));
     } catch {
       return false;
     }

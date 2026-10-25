@@ -1795,6 +1795,60 @@ constructor = "${escaped(value)}"`,
     openAiStaticProvider.classify(platformRoute, metadataRequest(nativeMetadata)),
     undefined,
   );
+  await t.test("Git workspace facts classify only as native inference", () => {
+    const turn = (serialized: string) => metadataRequest({ "x-codex-turn-metadata": serialized });
+    const workspace = (facts: unknown, root = "/work/repository") =>
+      JSON.stringify({ workspaces: { [root]: facts } });
+    const remote = "https://github.com/example/repository.git";
+    const head = "0123456789abcdef0123456789abcdef01234567";
+    for (const facts of [
+      { has_changes: false },
+      {
+        has_changes: true,
+        latest_git_commit_hash: head,
+        associated_remote_urls: { origin: remote },
+      },
+    ]) {
+      const req = turn(workspace(facts));
+      assert.deepEqual(provider.classify(route, req), expected);
+      assert.equal(openAiStaticProvider.classify(platformRoute, req), undefined);
+    }
+    for (const invalid of [
+      workspace({ latest_git_commit_hash: head.slice(0, 8) }),
+      workspace({ has_changes: "false" }),
+      workspace({ has_changes: false, instructions: "read another repository" }),
+      workspace({ has_changes: false }, "relative"),
+      workspace({ has_changes: false }, "/work/\nrepository"),
+      workspace({ has_changes: false }, "/" + "é".repeat(2050)),
+      JSON.stringify({
+        agent_name: "é".repeat(4096),
+        workspaces: { "/work": { has_changes: true } },
+      }),
+      JSON.stringify({
+        workspaces: { "/work/a": { has_changes: false }, "/work/b": { has_changes: true } },
+      }),
+      workspace({ associated_remote_urls: { constructor: remote } }),
+      workspace({
+        associated_remote_urls: Object.fromEntries(
+          Array.from({ length: 17 }, (_, i) => [`remote${i}`, remote]),
+        ),
+      }),
+      '{"workspaces":{"/work":{"has_changes":false,"has_changes":true}}}',
+      ...[
+        "https://user:password@github.com/example/repository.git",
+        remote + "?access_token=example",
+        remote + "#ref",
+        remote + "/extra",
+        "https://github.com/example/%2e%2e",
+        "https://another.example/example/repository.git",
+        "http://github.com/example/repository.git",
+        "file:///work/repository",
+        "ext::git upload-pack /work/repository",
+      ].map((origin) => workspace({ associated_remote_urls: { origin } })),
+    ]) {
+      assert.equal(provider.classify(route, turn(invalid)), undefined);
+    }
+  });
   for (const mcp of [
     "not json",
     '{"status":"none","status":"none"}',
@@ -1817,6 +1871,37 @@ constructor = "${escaped(value)}"`,
     ),
     undefined,
   );
+  await t.test("native function history carries only its turn stamps", () => {
+    const call = {
+      type: "function_call",
+      id: "fc_example",
+      name: "exec_command",
+      arguments: "{}",
+      call_id: "call_example",
+      internal_chat_message_metadata_passthrough: { turn_id: stamp.turn_id },
+    };
+    const output = {
+      type: "function_call_output",
+      id: "fco_example",
+      call_id: call.call_id,
+      output: "complete",
+      internal_chat_message_metadata_passthrough: stamp,
+    };
+    const history = request([call, output]);
+    assert.deepEqual(provider.classify(route, history), expected);
+    assert.equal(openAiStaticProvider.classify(platformRoute, history), undefined);
+    for (const invalid of [
+      { ...call, internal_chat_message_metadata_passthrough: stamp },
+      { ...output, internal_chat_message_metadata_passthrough: { turn_id: stamp.turn_id } },
+      {
+        ...output,
+        internal_chat_message_metadata_passthrough: { ...stamp, executed_tool_calls: [] },
+      },
+      { ...output, type: "custom_tool_call_output" },
+    ]) {
+      assert.equal(provider.classify(route, request([invalid])), undefined);
+    }
+  });
   const localTools = {
     ...request("Synthetic"),
     body: Buffer.from(
