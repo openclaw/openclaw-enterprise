@@ -435,7 +435,8 @@ test("Agent repository tab offers no Save for an existing binding while reposito
   assert.equal(await save.count(), 0);
   await cancel.click();
   await remove.waitFor();
-  assert.equal(await cancel.count(), 0);
+  // The rebuilt editor offers Cancel only until its repository read settles.
+  await cancel.waitFor({ state: "hidden" });
   // The hidden Cancel cannot keep focus; the Repositories tab takes it.
   await page.waitForFunction(() => document.activeElement?.getAttribute("role") === "tab");
   assert.equal(
