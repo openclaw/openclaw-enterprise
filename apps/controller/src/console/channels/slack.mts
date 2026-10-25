@@ -36,6 +36,13 @@ const STANDARD_REFS = {
 const standardToken = (value: unknown, ref: { readonly id: string }) =>
   value === undefined || refsEqual(value, ref) || value === `\${${ref.id}}`;
 
+// A string with no `$` is the token itself, pasted as the value: it is named as Configuration
+// save names it, never shown (finding 2523). Anything else is a reference in another form.
+const tokenForm = (value: unknown) =>
+  typeof value === "string" && value.trim() !== "" && !value.includes("$")
+    ? "holds a credential value inline, where a reference is required"
+    : "uses a credential reference this editor does not write";
+
 const DM_POLICIES = ["pairing", "allowlist", "open", "disabled"];
 type SlackChannel = { users?: string[]; requireMention?: boolean };
 type SlackConfig = ChannelValues & {
@@ -95,14 +102,14 @@ function supportSlack(values: ChannelValues): ChannelSupport<SlackConfig> {
   if (!standardToken(config.appToken, STANDARD_REFS.slack.appToken)) {
     return {
       supported: false,
-      reason: `Slack app token uses a credential reference this editor does not write. To edit Slack here, set appToken to \${SLACK_APP_TOKEN} in the Configuration JSON.`,
+      reason: `Slack app token ${tokenForm(config.appToken)}. To edit Slack here, set appToken to \${SLACK_APP_TOKEN} in the Configuration JSON.`,
       config,
     };
   }
   if (!standardToken(config.botToken, STANDARD_REFS.slack.botToken)) {
     return {
       supported: false,
-      reason: `Slack bot token uses a credential reference this editor does not write. To edit Slack here, set botToken to \${SLACK_BOT_TOKEN} in the Configuration JSON.`,
+      reason: `Slack bot token ${tokenForm(config.botToken)}. To edit Slack here, set botToken to \${SLACK_BOT_TOKEN} in the Configuration JSON.`,
       config,
     };
   }

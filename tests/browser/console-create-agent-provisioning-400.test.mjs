@@ -474,6 +474,19 @@ test("Create Agent names a refused Slack token form once, under its Configuratio
   const configuration = page.getByLabel("Configuration JSON");
   const values = JSON.parse(await configuration.inputValue());
   const jsonError = page.locator("#configuration-json-error");
+  // The Slack card names a token pasted as the value the way Configuration save does, and does
+  // not show it (finding 2523).
+  values.channels.slack.botToken = "xoxb-pasted-card-token";
+  await configuration.fill(JSON.stringify(values, null, 2));
+  const card = page.locator(".channel-card", { hasText: "Slack bot token holds" });
+  await card
+    .getByText(
+      "Slack bot token holds a credential value inline, where a reference is required. To edit Slack here, set botToken to ${SLACK_BOT_TOKEN} in the Configuration JSON.",
+      { exact: true },
+    )
+    .waitFor();
+  // Its closed native configuration disclosure is the JSON the reader typed, not card text.
+  assert.doesNotMatch(await card.innerText(), /xoxb-pasted/);
   // The Slack editor's channel field looked names up; Create Agent must not call Slack again.
   const lookups = slackCalls;
   const submitWith = async (botToken) => {
