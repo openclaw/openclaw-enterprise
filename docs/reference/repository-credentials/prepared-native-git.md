@@ -59,8 +59,11 @@ policy. This changes the grant identity: deploy a new version to use it.
 
 The Agent uses `oce-github pr-create --draft` with the head, base, title, optional
 explicit `--body` text and a fresh operation ID. The helper refuses `--body-file`;
-the JSON request body must fit within 64 KiB. If the reply is lost, look for the draft at GitHub;
-do not submit another create. The receipt identifies the admitted Agent session,
+the JSON request body must fit within 64 KiB. A broker refusal, such as a spent allowance or
+another head or base (`unsupported-request`), prints `Draft not created:` with the reason and
+states that GitHub did not receive the request. The helper prints `Draft not confirmed` only
+when the create may have reached GitHub. If the reply is lost, look
+for the draft at GitHub; do not submit another create. The receipt identifies the admitted Agent session,
 not the person who assigned the task. Use a trusted team for the initial trial;
 do not treat that receipt as per-person task authorization.
 

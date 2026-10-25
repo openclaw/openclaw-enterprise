@@ -370,6 +370,7 @@ for (const mode of [
     };
     const send = (input = {}) =>
       b.http(path, { method: "POST", headers, body: JSON.stringify(packet), ...input });
+    let invoke;
     const observed = () => f.gh.trace.filter((q) => q.method === "POST" && q.target === path);
     if (!draftPull) {
       await prepare(f);
@@ -419,27 +420,33 @@ for (const mode of [
         "../../apps/controller/src/drivers/repo/github/credentials/client/draft-pr.ts",
         import.meta.url,
       ).href;
-      const args = [
+      const args = (operation = operationId, target = base) => [
         "pr-create",
         "--operation-id",
-        operationId,
+        operation,
         "--draft",
         "--head",
         head,
         "--base",
-        base,
+        target,
         "--title",
         title,
       ];
+      // The helper's own entry point, so its exit code and failure line are the Agent's view.
       const command =
-        "import {createDraftPull} from " +
+        "import {createDraftPull,draftPullFailureMessage} from " +
         JSON.stringify(client) +
-        "; await createDraftPull(process.argv.slice(2),process.argv[1]);";
-      const invoke = (extra) =>
-        run(process.execPath, ["--input-type=module", "-e", command, root, ...args, ...extra], {
-          env: { ...cleanEnvironment(), HTTPS_PROXY: proxyAddress },
-          allowFailure: true,
-        });
+        "; await createDraftPull(process.argv.slice(2),process.argv[1]).catch((e)=>" +
+        "{const f=draftPullFailureMessage(e);process.stderr.write(f.message+'\\n');process.exitCode=f.exitCode;});";
+      invoke = (extra, operation, target) =>
+        run(
+          process.execPath,
+          ["--input-type=module", "-e", command, root, ...args(operation, target), ...extra],
+          {
+            env: { ...cleanEnvironment(), HTTPS_PROXY: proxyAddress },
+            allowFailure: true,
+          },
+        );
       const bodyFile = join(await temporaryDirectory(t), "body.txt");
       await writeFile(bodyFile, "file contents must stay local");
       const refused = await invoke(["--body-file", bodyFile]);
@@ -461,6 +468,22 @@ for (const mode of [
         !output.stdout.includes("must-not-escape"),
         "upstream nested credentials must never be returned",
       );
+      // Finding 2410: a definite broker refusal names its code and says GitHub received
+      // nothing; only an unknown outcome prints "Draft not confirmed".
+      const refusal = (result) => {
+        assert.equal(result.code, 1, result.stderr);
+        assert.doesNotMatch(result.stderr, /Draft not confirmed/);
+        return result.stderr.trim().split("\n").at(-1);
+      };
+      assert.equal(
+        refusal(await invoke(["--body", body], randomUUID(), "other")),
+        "Draft not created: the repository broker refused it (unsupported-request); GitHub did not receive it. This repository binding does not allow this create; do not retry it. Ask an operator if the branch or base should change.",
+      );
+      assert.match(
+        refusal(await invoke(["--body", body], randomUUID())),
+        /^Draft not created: the grant's draft-create allowance was already used\. GitHub did not receive this request\./,
+      );
+      assert.equal(observed().length, 1, "neither refusal reached GitHub");
       const repeat = await send();
       assert.equal(repeat.status, 201);
       assert.deepEqual(
@@ -528,6 +551,14 @@ for (const mode of [
     );
     await f.withdraw();
     assert.equal((await send()).status, 503, "cannot replay even a receipt after withdrawal");
+    if (invoke) {
+      const withdrawn = await invoke(["--body", body], randomUUID());
+      assert.equal(withdrawn.code, 1, withdrawn.stderr);
+      assert.equal(
+        withdrawn.stderr.trim().split("\n").at(-1),
+        "Draft not created: the repository broker refused it (unavailable); GitHub did not receive it. Retry once; if it is refused again, ask an operator to check the worker log.",
+      );
+    }
     assert.equal(observed().length, 1);
     // A legitimate replacement with the identical grant and old client operation cannot obtain
     // the prior admission's receipt, a second permit, or a fresh token by trying this endpoint.

@@ -72,6 +72,65 @@ const ROUTE_REFUSALS: ReadonlyMap<string, string> = new Map([
   ],
 ]);
 
+// Both senders spend the grant allowance before any send to GitHub.
+const ALLOWANCE_USED =
+  "the grant's draft-create allowance was already used. GitHub did not receive this request. Check whether the earlier attempt created a draft; do not submit another create.";
+
+/**
+ * Native broker refusals (finding 2410). The broker answers each of these codes before it
+ * sends anything to GitHub, so the advice mirrors the OpenShell route's. A create that may
+ * have been sent comes back as `exchange-uncertain` or an `outcome_unknown` receipt instead.
+ */
+const BROKER_REFUSALS: ReadonlyMap<string, string | undefined> = new Map([
+  ["unsupported-request", ROUTE_REFUSALS.get("request_not_allowed")],
+  [
+    "session-unavailable",
+    "The repository session for this Agent version is not open; if a retry is refused too, ask an operator to check the repository binding.",
+  ],
+  ["unavailable", ROUTE_REFUSALS.get("online_authorization_denied")],
+  [
+    "exchange-capacity",
+    "Too many repository requests are running for this Agent; retry after they finish.",
+  ],
+  ["invalid-request", undefined],
+  ["limit-exceeded", undefined],
+  ["request-expired", undefined],
+  ["authentication-required", undefined],
+  ["invalid-credential", undefined],
+  ["invalid-binding", undefined],
+  ["route-denied", undefined],
+]);
+
+/** Classifies a native broker reply other than a created draft's receipt. */
+function brokerRefusal(status: number | undefined, result: unknown) {
+  if (status === undefined || status < 400 || result === null || typeof result !== "object") {
+    return undefined;
+  }
+  const error = (result as Record<string, unknown>).error;
+  // A recorded receipt for this operation, or the grant's spent allowance.
+  if (error === "operation_conflict") {
+    return new DraftPullFailure("not-created", ALLOWANCE_USED);
+  }
+  if (error === "not-submitted") {
+    return new DraftPullFailure(
+      "not-created",
+      "the repository broker recorded this operation as not sent (not-submitted); GitHub did not receive it.",
+    );
+  }
+  const code =
+    error !== null && typeof error === "object"
+      ? (error as Record<string, unknown>).code
+      : undefined;
+  if (typeof code !== "string" || !BROKER_REFUSALS.has(code)) {
+    return undefined;
+  }
+  const advice = BROKER_REFUSALS.get(code);
+  return new DraftPullFailure(
+    "not-created",
+    `the repository broker refused it (${code}); GitHub did not receive it.${advice ? ` ${advice}` : ""}`,
+  );
+}
+
 /**
  * Classifies a reply OpenShell or GitHub gave instead of a created draft. OpenShell marks a
  * refusal made before forwarding with `layer: "l7"` (request-phase middleware and L7 policy);
@@ -87,10 +146,7 @@ function openShellRefusal(status: number | undefined, result: Record<string, unk
       const reason = printable(result.reason_code);
       if (reason === "draft_already_opened") {
         // Authorization spends the grant allowance before any send to GitHub.
-        return new DraftPullFailure(
-          "not-created",
-          "the grant's draft-create allowance was already used. GitHub did not receive this request. Check whether the earlier attempt created a draft; do not submit another create.",
-        );
+        return new DraftPullFailure("not-created", ALLOWANCE_USED);
       }
       const advice = reason === undefined ? undefined : ROUTE_REFUSALS.get(reason);
       return new DraftPullFailure(
@@ -272,17 +328,13 @@ export async function createDraftPull(args: string[], manifestRoot?: string) {
             ) {
               resolve(JSON.stringify(result));
             } else {
-              if (
-                [
-                  "outcome_unknown",
-                  "operation_conflict",
-                  "not-submitted",
-                  "unsupported-request",
-                ].includes(result.error)
-              ) {
-                process.stderr.write("draft pull " + result.error + "\n");
+              if (result?.error === "outcome_unknown") {
+                process.stderr.write("draft pull outcome_unknown\n");
               }
-              reject(new Error("draft-pull-receipt-unavailable"));
+              reject(
+                brokerRefusal(res.statusCode, result) ??
+                  new Error("draft-pull-receipt-unavailable"),
+              );
             }
           } catch (error) {
             reject(
