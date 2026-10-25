@@ -255,15 +255,18 @@ test("an Agent editor without operate on the bound Secrets sees the Agent-side s
   const reader = member.fixture.policy.roles.find((role) => role.id === "role-save-refusal-reader");
   assert.ok(reader, "the read-only role exists");
   reader.permissions.push({ action: "update", resourceKind: "agent" });
-  const answer = member.page.waitForResponse((response) =>
-    response.url().endsWith(`/agents/${member.agent.id}/permissions`),
-  );
   // Without a repository Driver an Agent editor's repository tab offers no Save at all; the
   // note and the disabled fields still show.
   await assertAgentSavesDisabled(member, AGENT_SOURCES_DENIED, agentSaves());
-  const data = (await (await answer).json()).data;
-  assert.equal(data.update, true);
-  assert.equal(data.agentSourcesOperate, false);
+  // The answer the page showed: Agent update, but not the bound sources.
+  const session = await member.fixture.signIn(member.member.credentials);
+  const answer = await member.fixture.request(
+    "GET",
+    `/namespaces/${member.namespace.id}/agents/${member.agent.id}/permissions`,
+    { session },
+  );
+  assert.equal(answer.data.update, true);
+  assert.equal(answer.data.agentSourcesOperate, false);
 });
 
 test("a member without Agent update cannot edit repository access", async (t) => {
