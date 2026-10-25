@@ -4131,12 +4131,7 @@ test("a reader without update views the version draft read-only", async (t) => {
   await page.getByText("Your access does not include deploying this Agent.").waitFor();
   const entry = page.getByRole("button", { name: "View version draft", exact: true });
   await entry.getByText("Read-only Configuration", { exact: true }).waitFor();
-  assert.deepEqual(
-    requests
-      .filter(({ method, path }) => method !== "GET" && path.startsWith("/namespaces/"))
-      .map(({ path }) => path),
-    [],
-  );
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
 });
 
 // Agent update and Configuration update are separate grants. A member with only Agent update
@@ -4187,12 +4182,7 @@ test("an Agent editor without Configuration update sees the Configuration read-o
   );
   await page.getByRole("tab", { name: "Channels", exact: true }).click();
   await page.getByText(CHANNELS_READ_ONLY, { exact: true }).waitFor();
-  assert.deepEqual(
-    requests
-      .filter(({ method, path }) => method !== "GET" && path.startsWith("/namespaces/"))
-      .map(({ path }) => path),
-    [],
-  );
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
 });
 
 // The permission answer can land after the draft is drawn; nothing waits for it. When it denies
@@ -4266,12 +4256,7 @@ test("a late permission answer turns a reader's Channels and Channel Secrets rea
   assert.equal(await page.getByLabel("Slack app token").isDisabled(), true);
   assert.equal(await page.getByLabel("Slack bot token").isDisabled(), true);
   assert.equal(await page.getByRole("button", { name: "Save channel Secrets" }).count(), 0);
-  assert.deepEqual(
-    requests
-      .filter(({ method, path }) => method !== "GET" && path.startsWith("/namespaces/"))
-      .map(({ path }) => path),
-    [],
-  );
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
 });
 
 // A tab parked before the answer landed is shown again with the answer applied (finding 2421).
