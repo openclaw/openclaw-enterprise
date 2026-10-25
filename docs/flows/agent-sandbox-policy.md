@@ -181,6 +181,8 @@ reads and says so; an unknown answer keeps the reads. A tab opened after the ans
 settled rereads it first, so a later grant applies. A version snapshot without
 `sandboxDriverId` runs without a Sandbox, so the tab skips its log and suggestion reads
 and says no denials are recorded. A `RUNTIME_LOGS_SOURCE_UNAVAILABLE` answer shows the same.
+Then, and on the draft, which reads no log, the denial count, refresh, follow and filter
+controls are hidden.
 
 ## Debugging and Verification
 
@@ -203,6 +205,7 @@ and says no denials are recorded. A `RUNTIME_LOGS_SOURCE_UNAVAILABLE` answer sho
 
 ## Changelog
 
+- 2026-10-25: Hide the denial window's controls on the draft. (finding 2509)
 - 2026-10-25: Skip the policy and suggestion reads that the permission answer refuses. (finding 2454)
 
 - 2026-10-24 18:15: Preserve complete Unicode string drafts for owner validation and add a simulated policy Review/Save walkthrough. (authoring-run/b7994562-b460-4667-9017-4c62c3f56eb0 - 6857956afcfee0b88563ea882c95034b5780cbec)

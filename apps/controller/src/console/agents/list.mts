@@ -82,6 +82,10 @@ export const NAMESPACE_MISSING = Object.freeze({
 // The API's catch-all answers: a caller's own denial and an untyped conflict. They name nothing
 // the caller can act on, so views keep their own guidance instead of showing them.
 export const GENERIC_DENIAL = "The exact platform operation was not authorized.";
+// Why Create Agent is disabled for a caller without Agent create. Namespace Roles cannot grant
+// people Agent create, so it names who can create the Agent instead (findings 2496, 2508).
+export const AGENT_CREATE_DENIED =
+  "Your access does not include creating Agents in this Namespace. Only an Installation administrator can create Agents: ask one to create it and to give you access to edit and deploy it.";
 export const GENERIC_CONFLICT = "The requested platform resource already exists.";
 
 // The API records these deployment endings as failed, but nothing went wrong with the version,

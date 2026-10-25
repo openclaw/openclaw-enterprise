@@ -40,6 +40,10 @@ export const SECRET_OPERATE_DENIED =
 // after it was saved (finding 2492).
 export const NEW_SECRET_OPERATE_DENIED =
   "Your access includes Secret operate on only some Secrets in this Namespace, so an Agent cannot use a new Secret you create here.";
+// What works instead. Namespace Roles grant Secret operate on one exact Secret, never across the
+// Namespace, so the remedy names that grant (finding 2507).
+export const NEW_SECRET_OPERATE_REMEDY =
+  "To use a new Secret, create it on the Secrets page, then ask an administrator to grant you Secret operate on that Secret.";
 
 // The API's Name length for Secrets, in code points: the Name rule namespaces.mts mirrors.
 export const SECRET_NAME_MAX_CHARACTERS = NAME_MAX_CHARACTERS;
@@ -573,7 +577,7 @@ export function createSecretReferenceField({
         : `No Secrets you can read in this Namespace. ${SECRET_CREATE_DENIED} Ask an administrator for read access to an existing one.`;
     }
     if (operateDenied.size) {
-      return `Choose an existing Secret. ${NEW_SECRET_OPERATE_DENIED}`;
+      return `Choose an existing Secret. ${NEW_SECRET_OPERATE_DENIED} ${NEW_SECRET_OPERATE_REMEDY}`;
     }
     return secrets.length
       ? "Choose an existing Secret or create a new one."

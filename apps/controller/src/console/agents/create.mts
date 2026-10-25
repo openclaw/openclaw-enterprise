@@ -40,6 +40,7 @@ import { ensureCredentialOperateBinding, secretOperateAnswer } from "./credentia
 import {
   createSecretReferenceField,
   NEW_SECRET_OPERATE_DENIED,
+  NEW_SECRET_OPERATE_REMEDY,
   secretMetadata,
 } from "./secret-picker.mjs";
 import { workspaceFileProblem } from "./workspace.mjs";
@@ -50,6 +51,7 @@ import { createPluginDiscovery } from "./plugin-discovery.mjs";
 import { createSlackApproverField } from "./slack-approvers.mjs";
 import { renderChannels } from "../channels.mjs";
 import {
+  AGENT_CREATE_DENIED,
   type AgentNavigation,
   channelBindingRefusal,
   GENERIC_CONFLICT,
@@ -628,7 +630,7 @@ export function renderCreateAgent(context: CreateAgentContext, restored?: unknow
   const notReady = createNamespaceState(context);
   const unavailable =
     context.permissions?.agents?.create === false
-      ? "Your access does not include creating Agents in this Namespace. Only an Installation administrator can create Agents: ask one to create it and to give you access to edit and deploy it."
+      ? AGENT_CREATE_DENIED
       : notReady?.blocked
         ? notReady.note
         : null;
@@ -720,7 +722,7 @@ const PERMISSIONS_UNREAD =
 const CONFIGURATION_CREATE_REFUSAL =
   "You do not have permission to create this Agent's Configuration. Ask an administrator for Configuration create access in this Namespace, plus Secret operate on each Secret it binds.";
 // A typed model key is saved as a new Secret, which Agent create then binds (finding 2492).
-const NEW_SECRET_REFUSAL = `${NEW_SECRET_OPERATE_DENIED} Select Start over and use an existing Secret, or ask an administrator for Secret operate across this Namespace.`;
+const NEW_SECRET_REFUSAL = `${NEW_SECRET_OPERATE_DENIED} Select Start over and use an existing Secret. ${NEW_SECRET_OPERATE_REMEDY}`;
 
 // The readable Secrets this caller may not operate: each Create Agent Secret field, the Preset's
 // existing Secret included, lists them disabled and never stages one, since Agent create, or a

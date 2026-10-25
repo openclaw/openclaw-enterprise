@@ -19,6 +19,7 @@ import { message, namespacePath } from "./list.mjs";
 import type { SecretsOperateDenied } from "./credential-access.mjs";
 import {
   NEW_SECRET_OPERATE_DENIED,
+  NEW_SECRET_OPERATE_REMEDY,
   SECRET_CREATE_DENIED,
   SECRET_OPERATE_DENIED,
 } from "./secret-picker.mjs";
@@ -285,6 +286,11 @@ export function createPresetFields(
             ? `Create new Secret (${newSecretDenied})`
             : "Create new Secret";
         }
+        // Per-Secret operate also names the grant that would let an Agent use a new Secret.
+        const newSecretHint =
+          newSecretDenied === NEW_SECRET_OPERATE_DENIED
+            ? `${newSecretDenied} ${NEW_SECRET_OPERATE_REMEDY}`
+            : newSecretDenied;
         if (newSecretDenied && field.mode.value === NEW_SECRET) {
           field.mode.value = EXISTING_SECRET;
           field.input.dataset.supplied = "false";
@@ -293,7 +299,7 @@ export function createPresetFields(
           createDenied && !field.secrets.length
             ? `No Secrets you can read in this Namespace. ${SECRET_CREATE_DENIED} Ask an administrator for read access to an existing one.`
             : newSecretDenied
-              ? `Choose an existing Secret. ${newSecretDenied}`
+              ? `Choose an existing Secret. ${newSecretHint}`
               : field.secrets.length
                 ? "Existing Secrets in this Namespace are available. Secret values are never shown."
                 : "No existing Secrets are available in this Namespace. Create a new Secret instead.";

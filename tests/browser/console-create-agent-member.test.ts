@@ -29,8 +29,10 @@ import {
 } from "./console-agents-browser-helpers.mjs";
 import { waitForCreateFormReads } from "./console-agents-test-support.mjs";
 import {
+  AGENT_CREATE_DENIED,
   GENERIC_DENIAL,
   NEW_SECRET_OPERATE_DENIED,
+  NEW_SECRET_OPERATE_REMEDY,
   SECRET_OPERATE_DENIED,
 } from "../helpers/refusal-text.mjs";
 
@@ -201,7 +203,8 @@ test("a member without Agent create never sees the form, and Create Agent names 
   const open = page.getByRole("button", {
     name: "Create Agent",
     exact: true,
-    description: "Your access does not include creating Agents in this Namespace.",
+    // The list's reason gives the Create Agent page's next step (finding 2508).
+    description: AGENT_CREATE_DENIED,
   });
   await open.waitFor();
   assert.equal(await open.isDisabled(), true);
@@ -210,13 +213,7 @@ test("a member without Agent create never sees the form, and Create Agent names 
   await page.getByRole("heading", { name: "Creating Agents is not available" }).waitFor();
   // Namespace Roles cannot grant Agent create, so the note sends the member to whoever can
   // create the Agent rather than promising access (finding 2496).
-  await page
-    .getByRole("status")
-    .getByText(
-      "Your access does not include creating Agents in this Namespace. Only an Installation administrator can create Agents: ask one to create it and to give you access to edit and deploy it.",
-      { exact: true },
-    )
-    .waitFor();
+  await page.getByRole("status").getByText(AGENT_CREATE_DENIED, { exact: true }).waitFor();
   assert.equal(await page.locator("#create-agent-form").count(), 0);
   assert.equal(await page.locator("#create-agent-access").count(), 0);
   assert.equal(await page.getByRole("button", { name: "Start with default Preset" }).count(), 0);
@@ -817,9 +814,11 @@ test("a member whose Secret operate covers only some Secrets cannot save a typed
     "the Preset's Secret list loads",
     10_000,
   );
+  // Namespace Roles grant Secret operate per Secret, so the remedy names that grant, not one
+  // across the Namespace (finding 2507).
   assert.equal(
     await status.textContent(),
-    `Choose an existing Secret. ${NEW_SECRET_OPERATE_DENIED}`,
+    `Choose an existing Secret. ${NEW_SECRET_OPERATE_DENIED} ${NEW_SECRET_OPERATE_REMEDY}`,
   );
   const createNew = source.locator('option[value="new"]');
   assert.equal(await createNew.isDisabled(), true);
@@ -836,7 +835,7 @@ test("a member whose Secret operate covers only some Secrets cannot save a typed
   assert.equal(await page.getByLabel("API key", { exact: true }).inputValue(), "sk-typed-key");
   const submit = page.getByRole("button", { name: "Create Agent", exact: true });
   const refusal = page.getByText(
-    `${NEW_SECRET_OPERATE_DENIED} Select Start over and use an existing Secret, or ask an administrator for Secret operate across this Namespace.`,
+    `${NEW_SECRET_OPERATE_DENIED} Select Start over and use an existing Secret. ${NEW_SECRET_OPERATE_REMEDY}`,
     { exact: true },
   );
   await submit.click();

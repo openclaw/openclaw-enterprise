@@ -14,6 +14,10 @@ export const NAMESPACE_NOT_READY = "The requested Namespace is not ready.";
 // (AGENT_NAME_CONFLICT in errors.ts); a provisioning job that loses the name race reports it too.
 export const AGENT_NAME_CONFLICT =
   "An Agent with this name already exists in this Namespace. Choose a different name.";
+// Create Agent and the Agents list for a caller without Agent create, which Namespace Roles cannot
+// grant people (findings 2496, 2508).
+export const AGENT_CREATE_DENIED =
+  "Your access does not include creating Agents in this Namespace. Only an Installation administrator can create Agents: ask one to create it and to give you access to edit and deploy it.";
 
 // Kubernetes Compute refuses a Dedicated Agent the Installation cannot place (no gateway routing
 // or node enrollment) at Agent save, provisioning and Create Agent's preflight. A Codex Agent
@@ -35,6 +39,9 @@ export const SECRET_OPERATE_DENIED =
 // covers only some Secrets: a new Secret gets no operate grant of its own (finding 2492).
 export const NEW_SECRET_OPERATE_DENIED =
   "Your access includes Secret operate on only some Secrets in this Namespace, so an Agent cannot use a new Secret you create here.";
+// What an administrator can grant instead: Secret operate on one exact Secret (finding 2507).
+export const NEW_SECRET_OPERATE_REMEDY =
+  "To use a new Secret, create it on the Secrets page, then ask an administrator to grant you Secret operate on that Secret.";
 export const secretOperateRefused = (name) =>
   `You do not have permission to bind ${name}. Each save needs Secret operate on every Secret it binds, which your access does not include for it. Choose another Secret, or ask an administrator for Secret operate on it.`;
 

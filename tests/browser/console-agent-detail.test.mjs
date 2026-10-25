@@ -72,6 +72,7 @@ import {
   CONFIGURATION_EDITS_PENDING,
   CONFIGURATION_SAVE_DENIED,
   NEW_SECRET_OPERATE_DENIED,
+  NEW_SECRET_OPERATE_REMEDY,
   READ_UNAVAILABLE,
   SAVED_CONFIGURATION_CHANGED,
   SECRET_OPERATE_DENIED,
@@ -4942,7 +4943,13 @@ test("the picker's Create new Secret is disabled when operate covers only some S
   await create.click({ force: true });
   assert.equal(await page.getByRole("dialog").count(), 0);
   await picker.press("Escape");
-  await page.getByText(`Choose an existing Secret. ${NEW_SECRET_OPERATE_DENIED}`).waitFor();
+  // The hint names the grant an administrator can give: operate on one Secret (finding 2507).
+  await page
+    .getByText(
+      `Choose an existing Secret. ${NEW_SECRET_OPERATE_DENIED} ${NEW_SECRET_OPERATE_REMEDY}`,
+      { exact: true },
+    )
+    .waitFor();
   assert.equal(await picker.inputValue(), bound.name);
   assert.deepEqual(nonAuthWriteRequests(requests), []);
 });

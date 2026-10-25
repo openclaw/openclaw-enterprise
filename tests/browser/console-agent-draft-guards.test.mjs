@@ -298,12 +298,21 @@ test("A policy read grant after the page loaded shows the policy on the first vi
 
 // The draft has no deployment of its own. With a current version, its denials and suggestions
 // are on that version; without one (never deployed, stopped, or first deployment running) the
-// tab says so instead of telling every reader to deploy.
+// tab says so instead of telling every reader to deploy. It reads no Sandbox log, so the denial
+// window's count and controls, which could only show nothing, are hidden (finding 2509).
 test("Policy denials on the draft says where denials and suggestions come from", async (t) => {
   const { fixture, namespace, agent } = await createPolicyConsole(t);
   const { page } = await newPage(t, fixture);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "policy"));
   const tab = page.locator(".sandbox-policy");
+  const assertNoWindowControls = async () => {
+    assert.equal(await tab.getByText(/Denials in the loaded window/).count(), 0);
+    for (const name of ["Refresh denials", "Refresh suggestions"]) {
+      assert.equal(await tab.getByRole("button", { name }).count(), 0, name);
+    }
+    assert.equal(await tab.getByRole("checkbox", { name: "Follow policy denials" }).count(), 0);
+    assert.equal(await tab.getByRole("searchbox", { name: "Filter loaded denials" }).count(), 0);
+  };
   await tab
     .getByText("Policy denials come from deployed versions. This Agent has no current version.")
     .waitFor();
@@ -311,6 +320,7 @@ test("Policy denials on the draft says where denials and suggestions come from",
     .getByText("Suggestions come from deployed versions. This Agent has no current version.")
     .waitFor();
   assert.equal(await tab.getByText(/^Deploy an Agent/).count(), 0);
+  await assertNoWindowControls();
 
   await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   await page.reload();
@@ -320,6 +330,7 @@ test("Policy denials on the draft says where denials and suggestions come from",
   await tab
     .getByText("Suggestions come from deployed versions. Open the current version to see them.")
     .waitFor();
+  await assertNoWindowControls();
 });
 
 const delegatedPolicyGrant = {

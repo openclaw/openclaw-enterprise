@@ -17,6 +17,7 @@ import {
   keptResources,
 } from "./lifecycle-confirmation.mjs";
 import {
+  AGENT_CREATE_DENIED,
   type AgentNavigation,
   NAMESPACE_MISSING,
   NAMESPACE_RECHECK_MS,
@@ -247,7 +248,7 @@ export function renderAgentList(context: AgentListContext) {
           element(
             "p",
             { className: "muted", role: "status", id: "agents-create-denied" },
-            "Your access does not include creating Agents in this Namespace.",
+            AGENT_CREATE_DENIED,
           ),
         ]
       : []),

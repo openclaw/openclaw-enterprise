@@ -432,8 +432,9 @@ export function renderAgentSandboxPolicy(
           editable() ? button("Review suggestion", () => prefill(entry.grant)) : null,
         ),
       ),
-      // A refusal gets the same answer again, and a version without a Sandbox has none to read.
-      ...(suggestionsDenied || noSandboxLog
+      // A refusal gets the same answer again, and a version without a Sandbox has none to read,
+      // nor does the draft (finding 2509).
+      ...(suggestionsDenied || noSandboxLog || revisionId === "draft"
         ? []
         : [button("Refresh suggestions", () => void loadSuggestions())]),
     );
@@ -1084,6 +1085,11 @@ export function renderAgentSandboxPolicy(
     logStatus.textContent = agent.activeRevisionId
       ? "Policy denials come from deployed versions. Open the current version to see them."
       : NO_CURRENT_VERSION_DENIALS;
+    // It reads no Sandbox log, so the window's count and controls could only show nothing, as on
+    // a version without a Sandbox (finding 2509).
+    for (const node of [count, logActions, filterField]) {
+      node.hidden = true;
+    }
   } else {
     void readLogs(true);
   }
