@@ -52,6 +52,7 @@ import {
   waitForInputValue,
   statusTone,
   isMaskedSecretValue,
+  trackSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
 import {
   STARTER_CONTROL_UI,
@@ -67,6 +68,7 @@ import {
   agentPostRequests,
   optionValues,
   createRepositoryLaunchFixture,
+  runProvisioningPolls,
   waitForCreateFormReads,
 } from "./console-agents-test-support.mjs";
 import {
@@ -1539,6 +1541,7 @@ test("Dedicated Agent creation opens deployment details after provisioning with 
     },
   );
 
+  await trackSettledFetches(page);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
   await page.getByLabel("Preset template").selectOption(workspacePreset.data.id);
@@ -1600,10 +1603,17 @@ test("Dedicated Agent creation opens deployment details after provisioning with 
       response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/provision` &&
       response.request().method() === "POST",
   );
-  await page.getByRole("button", { name: "Create Agent" }).click();
-  assert.equal((await provisionResponse).status(), 202);
-  assert.equal(await page.getByLabel("Harness", { exact: true }).isDisabled(), true);
-  allowProvisioningSuccess = true;
+  await runProvisioningPolls(
+    page,
+    async () => {
+      await page.getByRole("button", { name: "Create Agent" }).click();
+      assert.equal((await provisionResponse).status(), 202);
+      assert.equal(await page.getByLabel("Harness", { exact: true }).isDisabled(), true);
+      allowProvisioningSuccess = true;
+    },
+    `/namespaces/${namespace.id}/agents/provision/work_create`,
+    1,
+  );
   await page.waitForURL((url) => {
     return (
       url.pathname === `/console/agents/${agentId}` &&

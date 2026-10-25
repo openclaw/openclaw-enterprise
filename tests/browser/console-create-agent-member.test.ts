@@ -19,6 +19,7 @@ import {
   holdRequests,
   login,
   MEMBER_WRITE,
+  memberWriteWithout,
   newPage,
   operateDeniedSecretOption,
   revokeMemberGrant,
@@ -60,6 +61,22 @@ function apiResponses(page: Page, origin: string) {
     }
   });
   return answers;
+}
+
+const standardCodexPreset = JSON.parse(
+  await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
+);
+
+// The shipped standard Preset, whose model Secret the member chooses or creates.
+async function createStandardPreset(
+  fixture: Awaited<ReturnType<typeof createConsoleAppFixture>>,
+  namespaceId: string,
+) {
+  const preset = await fixture.request("POST", `/namespaces/${namespaceId}/presets`, {
+    body: standardCodexPreset,
+  });
+  assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  return preset;
 }
 
 async function setup(t: TestContext) {
@@ -173,10 +190,11 @@ test("a member with Agent create completes the default Preset path without Insta
 
 test("a member without Agent create never sees the form, and Create Agent names why", async (t) => {
   const { fixture, namespace } = await setup(t);
-  const actions = MEMBER_WRITE.filter(
-    ([action, kind]) => !(action === "create" && kind === "agent"),
+  const limited = await fixture.createNamespaceMember(
+    "member-no-create",
+    namespace.id,
+    memberWriteWithout(["create", "agent"]),
   );
-  const limited = await fixture.createNamespaceMember("member-no-create", namespace.id, actions);
   const { page } = await newPage(t, fixture);
   const answers = apiResponses(page, fixture.origin);
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`, limited.credentials);
@@ -436,12 +454,12 @@ test("a member's refused Configuration create and empty Secret list name the acc
   const noConfiguration = await fixture.createNamespaceMember(
     "member-no-configuration",
     namespace.id,
-    MEMBER_WRITE.filter(([action, kind]) => !(action === "create" && kind === "configuration")),
+    memberWriteWithout(["create", "configuration"]),
   );
   const noSecretRead = await fixture.createNamespaceMember(
     "member-no-secret-read",
     namespace.id,
-    MEMBER_WRITE.filter(([action, kind]) => !(action === "read" && kind === "secret")),
+    memberWriteWithout(["read", "secret"]),
   );
 
   const { page } = await newPage(t, fixture);
@@ -495,7 +513,7 @@ test("a member without Secret create sees the inline Create Secret action disabl
   const noSecretCreate = await fixture.createNamespaceMember(
     "member-no-secret-create",
     namespace.id,
-    MEMBER_WRITE.filter(([action, kind]) => !(action === "create" && kind === "secret")),
+    memberWriteWithout(["create", "secret"]),
   );
   const { page } = await newPage(t, fixture);
   const answers = apiResponses(page, fixture.origin);
@@ -544,14 +562,9 @@ test("a Preset's Secret source follows the member's Secret create answer", async
   const noSecretCreate = await fixture.createNamespaceMember(
     "member-preset-no-secret-create",
     namespace.id,
-    MEMBER_WRITE.filter(([action, kind]) => !(action === "create" && kind === "secret")),
+    memberWriteWithout(["create", "secret"]),
   );
-  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
-    body: JSON.parse(
-      await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
-    ),
-  });
-  assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  const preset = await createStandardPreset(fixture, namespace.id);
   const { page } = await newPage(t, fixture);
   await login(
     page,
@@ -590,7 +603,7 @@ async function operateTeamKeySetup(t: TestContext) {
   const member = await fixture.createNamespaceMember(
     "member-operate-some",
     namespace.id,
-    MEMBER_WRITE.filter(([action, kind]) => !(action === "operate" && kind === "secret")),
+    memberWriteWithout(["operate", "secret"]),
   );
   const operate = grantSecretOperate(fixture, namespace.id, member.principal, [secret.id]);
   const answerPath = `/namespaces/${namespace.id}/permissions/secrets`;
@@ -681,12 +694,7 @@ test("Create Agent's Secret fields refuse a readable Secret the member cannot op
 // disabled with the reason, and Use Preset refuses it, naming why, instead of staging it.
 test("a Preset's existing Secret choice refuses a Secret the member cannot operate", async (t) => {
   const { fixture, namespace, secret, spare, member } = await operateSomeSetup(t);
-  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
-    body: JSON.parse(
-      await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
-    ),
-  });
-  assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  const preset = await createStandardPreset(fixture, namespace.id);
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`, member.credentials);
   await page.getByLabel("Preset template").selectOption(preset.data.id);
@@ -795,12 +803,7 @@ test("a Secret created inline that the member cannot operate is not staged", asy
 // listed disabled with the reason, and a typed key is refused before any write.
 test("a member whose Secret operate covers only some Secrets cannot save a typed model key", async (t) => {
   const { fixture, namespace, spare, member, answerPath } = await operateSomeSetup(t);
-  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
-    body: JSON.parse(
-      await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
-    ),
-  });
-  assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  const preset = await createStandardPreset(fixture, namespace.id);
   const { page } = await newPage(t, fixture);
   const answers = apiResponses(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`, member.credentials);

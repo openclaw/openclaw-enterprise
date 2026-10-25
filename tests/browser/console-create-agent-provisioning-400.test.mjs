@@ -18,6 +18,7 @@ import {
   nativeValues,
   newPage,
   pathRequests,
+  trackSettledFetches,
   waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
 import {
@@ -31,6 +32,7 @@ import {
   openAdvancedSettings,
   routeInstallationProvisioning,
   routeInstallationWithoutProvisioning,
+  runProvisioningPolls,
   waitForProvisioningFailure,
 } from "./console-agents-test-support.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
@@ -2090,6 +2092,7 @@ test("Create Agent drops the Pod quota line when the deployment read is denied",
     },
   );
 
+  await trackSettledFetches(page);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
   await page.getByRole("button", { name: "Start without Preset" }).click();
@@ -2108,9 +2111,14 @@ test("Create Agent drops the Pod quota line when the deployment read is denied",
       }
     }).observe(globalThis.document.body, { childList: true, subtree: true });
   });
-  await page.getByRole("button", { name: "Create Agent" }).click();
   // Wide enough that the page is wider than the form (finding 2423).
   await page.setViewportSize({ width: 1440, height: 900 });
+  await runProvisioningPolls(
+    page,
+    () => page.getByRole("button", { name: "Create Agent" }).click(),
+    url,
+    reads.length,
+  );
   await waitForProvisioningFailure(page);
   assert.equal(read, reads.length);
   assert.equal(deploymentReads, 3);

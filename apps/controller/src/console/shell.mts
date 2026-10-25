@@ -797,18 +797,24 @@ export function createShell({
     return { view, refresh, diagnostics, scopeSelector, actions };
   }
 
-  function sameControl(node: Element, root: HTMLElement) {
-    // Match a nav link by its feature: its href gains ?namespace= once the Namespaces load.
-    // Other links (Observability) keep the href comparison.
+  // Match a nav link by its feature: its href gains ?namespace= once the Namespaces load.
+  // Other links (Observability) keep the href comparison.
+  function isSameControl(candidate: Element, node: Element) {
     const nav = node.getAttribute("data-nav");
     return (
-      [...root.querySelectorAll<HTMLElement>(node.localName)].find(
-        (candidate) =>
-          candidate.className === node.className &&
-          (nav
-            ? candidate.getAttribute("data-nav") === nav
-            : candidate.getAttribute("href") === node.getAttribute("href")) &&
-          candidate.textContent === node.textContent,
+      candidate.localName === node.localName &&
+      candidate.className === node.className &&
+      (nav
+        ? candidate.getAttribute("data-nav") === nav
+        : candidate.getAttribute("href") === node.getAttribute("href")) &&
+      candidate.textContent === node.textContent
+    );
+  }
+
+  function sameControl(node: Element, root: HTMLElement) {
+    return (
+      [...root.querySelectorAll<HTMLElement>(node.localName)].find((candidate) =>
+        isSameControl(candidate, node),
       ) ?? null
     );
   }
@@ -938,6 +944,66 @@ export function createShell({
       }
     }
   });
+  // Each render of a load replaces the shell (the held page, "Loading…", then the page). A press
+  // on a sidebar, top bar or page header control that a render replaces before the release gets
+  // no click on its replacement: the browser drops the click or sends it to an ancestor, so the
+  // control's handler never runs (finding 2505). A release on that control in the shown shell
+  // activates it instead. Taps send their mouse events together on release, so only a held mouse
+  // press can straddle a render.
+  const shellControls =
+    ".sidebar a[href], .sidebar button, .topbar button, .page-header a[href], .page-header button";
+  let pressedControl: Element | null = null;
+  let activatedOnRelease: Element | null = null;
+  document.addEventListener(
+    "mousedown",
+    (event) => {
+      pressedControl =
+        event.button === 0 && event.target instanceof Element
+          ? event.target.closest(shellControls)
+          : null;
+    },
+    { capture: true },
+  );
+  document.addEventListener("mouseup", (event) => {
+    const pressed = pressedControl;
+    pressedControl = null;
+    const released =
+      event.target instanceof Element ? event.target.closest<HTMLElement>(shellControls) : null;
+    if (
+      !pressed ||
+      pressed.isConnected ||
+      !released ||
+      !event.isTrusted ||
+      event.button !== 0 ||
+      event.metaKey ||
+      event.ctrlKey ||
+      event.shiftKey ||
+      event.altKey ||
+      !isSameControl(released, pressed)
+    ) {
+      return;
+    }
+    // A browser that still sends this release's click to the control must not activate it twice.
+    activatedOnRelease = released;
+    setTimeout(() => {
+      activatedOnRelease = null;
+    });
+    released.click();
+  });
+  document.addEventListener(
+    "click",
+    (event) => {
+      if (
+        event.isTrusted &&
+        event.target instanceof Node &&
+        activatedOnRelease?.contains(event.target)
+      ) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }
+    },
+    { capture: true },
+  );
   document.addEventListener("keydown", (event) => {
     if (!drawerControls?.shell.classList.contains("drawer-open")) {
       return;
