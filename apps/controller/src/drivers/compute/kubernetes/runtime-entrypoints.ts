@@ -3574,7 +3574,17 @@ function codexChildEnvironment() {
   if (providerManagedPat) {
     delete environment.CODEX_ACCESS_TOKEN;
   }
+  delete environment.OPENCLAW_SHELL_NODE_EXTRA_CA_CERTS;
   return environment;
+}
+// Codex gives hook commands its own environment; shell_environment_policy shapes only
+// sandboxed commands, which cannot read the hook directory's Gateway CA copy.
+function shellNodeCaArguments() {
+  const ca = process.env.OPENCLAW_SHELL_NODE_EXTRA_CA_CERTS;
+  if (ca === undefined) return [];
+  return ca
+    ? ["-c", "shell_environment_policy.set.NODE_EXTRA_CA_CERTS=" + JSON.stringify(ca)]
+    : ["-c", 'shell_environment_policy.exclude=["NODE_EXTRA_CA_CERTS"]'];
 }
 // Codex reports provider HTTP rejections as "status 401 Unauthorized" or
 // "unexpected status 403 Forbidden"; transport failures carry no status.
@@ -4008,6 +4018,7 @@ const child = spawn(
     "shell_environment_policy.experimental_use_profile=false",
     "-c",
     "shell_environment_policy.set.PATH=" + JSON.stringify(process.env.PATH ?? ""),
+    ...shellNodeCaArguments(),
     ...(loginMode === "chatgptAuthTokens" || providerManagedPat ? ["-c", "cli_auth_credentials_store=file"] : []),
 ${disableUnboundedConnectionRetries ? '    "--disable", "unbounded_connection_retries",\n' : ""}    "app-server",
     "--listen",
@@ -4174,6 +4185,9 @@ if (gatewayCa) {
     ? readFileSync(process.env.NODE_EXTRA_CA_CERTS, "utf8")
     : "";
   hookCa = [inheritedCa, gatewayCa].filter(Boolean).join("\n");
+  // Hook commands run outside the Codex sandbox with Codex's own environment. Sandboxed
+  // commands cannot read the hook directory, so they keep the Pod's own CA setting.
+  codexEnv.OPENCLAW_SHELL_NODE_EXTRA_CA_CERTS = process.env.NODE_EXTRA_CA_CERTS || "";
   codexEnv.NODE_EXTRA_CA_CERTS = join(hookDirectory, "gateway-ca.pem");
 }
 // Harness code runs as this user and can replace the directory, for example with a

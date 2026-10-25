@@ -517,6 +517,9 @@ const environment = {
   CODEX_LOGIN_MODE: "api_key", OPENAI_API_KEY: "synthetic-offline-key",
   OPENCLAW_HARNESS_MODEL: "codex/gpt-5",
   APP_TOKEN_SHA: ${JSON.stringify(createHash("sha256").update("synthetic-transport-token").digest("hex"))}, APP_SERVER_PORT: "4500",
+  // The workspace node supervisor points hooks at a CA copy the sandbox cannot read.
+  NODE_EXTRA_CA_CERTS: "/home/node/.oce-native-hooks/gateway-ca.pem",
+  OPENCLAW_SHELL_NODE_EXTRA_CA_CERTS: "/run/oce/repository-credentials/ca-bundle.pem",
 };
 let native;
 // The entrypoint arrives on stdin: inlined, it can exceed the per-argument limit.
@@ -543,6 +546,8 @@ vm.runInNewContext(fs.readFileSync(0, "utf8"), {
         const appServerEnvironment = options.env ?? environment;
         assert.equal(Object.hasOwn(appServerEnvironment, "APP_SERVER_TOKEN"), false);
         assert.equal(Object.hasOwn(appServerEnvironment, "APP_TOKEN_SHA"), false);
+        assert.equal(Object.hasOwn(appServerEnvironment, "OPENCLAW_SHELL_NODE_EXTRA_CA_CERTS"), false);
+        assert.equal(appServerEnvironment.NODE_EXTRA_CA_CERTS, environment.NODE_EXTRA_CA_CERTS);
         native = cp.spawn(command, [...args.slice(0, appServer + 1), "--listen", "stdio://"], {
           ...options, env: appServerEnvironment, stdio: ["pipe", "pipe", "pipe"],
         });
@@ -577,14 +582,16 @@ const timeout = setTimeout(() => { native.kill("SIGKILL"); process.exitCode = 1;
     const { config } = await rpc("config/read", {});
     assert.equal(config.allow_login_shell, false);
     assert.equal(config.shell_environment_policy.set.PATH, environment.PATH);
+    assert.equal(config.shell_environment_policy.set.NODE_EXTRA_CA_CERTS, environment.OPENCLAW_SHELL_NODE_EXTRA_CA_CERTS);
     const result = await rpc("command/exec", {
-      command: ["/bin/bash", "-c", 'test -z "$APP_SERVER_TOKEN" || exit 1; test -z "$APP_TOKEN_SHA" || exit 1; command -v gh; command -v git; git config --system --get-all include.path'],
+      command: ["/bin/bash", "-c", 'test -z "$APP_SERVER_TOKEN" || exit 1; test -z "$APP_TOKEN_SHA" || exit 1; command -v gh; command -v git; git config --system --get-all include.path; echo "$NODE_EXTRA_CA_CERTS"'],
       sandboxPolicy: { type: "externalSandbox", networkAccess: "restricted" },
       timeoutMs: 5000,
     });
     assert.equal(result.exitCode, 0);
     assert.deepEqual(result.stdout.trim().split("\\n"), [
       "/opt/oce/repository-credentials/bin/gh", "/usr/bin/git", "/run/oce/repository-credentials/gitconfig",
+      environment.OPENCLAW_SHELL_NODE_EXTRA_CA_CERTS,
     ]);
     fs.accessSync("/opt/oce/repository-credentials/dist/drivers/repo/github/credentials/client/router.js");
     process.stdout.write("native-repository-shell-ready\\n");
@@ -1495,6 +1502,13 @@ const homeControlSentinelPath = "/home/node/openclaw-stock-codex-control-sentine
 const homeControlSentinel = "synthetic-openclaw-control-sentinel\\n";
 fs.writeFileSync(homeControlSentinelPath, homeControlSentinel, { mode: 0o600 });
 assert.equal(fs.readFileSync(homeControlSentinelPath, "utf8"), homeControlSentinel);
+// As the workspace node supervisor does: hooks trust a private CA copy the sandbox cannot
+// read, and sandboxed commands keep the Pod's broker CA bundle (finding 2412).
+const hookCaPath = "/home/node/.oce-native-hooks/gateway-ca.pem";
+fs.mkdirSync("/home/node/.oce-native-hooks", { mode: 0o700 });
+fs.writeFileSync(hookCaPath, fs.readFileSync(brokerCaBundle, "utf8"), { mode: 0o600 });
+environment.OPENCLAW_SHELL_NODE_EXTRA_CA_CERTS = brokerCaBundle;
+environment.NODE_EXTRA_CA_CERTS = hookCaPath;
 let native;
 vm.runInNewContext(${JSON.stringify(AGENT_RUNTIME_ENTRYPOINT)}, {
   URL, console, setTimeout, setInterval,
@@ -1624,6 +1638,14 @@ const timeout = setTimeout(() => {
 
     markStockBrokerStage("outside-home-read");
     await expectFailure("outside-workspace-home-read-denied", "cat " + homeControlSentinelPath, "No such file|Permission denied|Operation not permitted|EACCES|ENOENT");
+    await expectFailure("hook-ca-read-denied", "cat " + hookCaPath, "No such file|Permission denied|Operation not permitted|EACCES|ENOENT");
+    // Node loads extra CAs lazily; reading them proves the sandboxed command can.
+    const shellNodeCa = await execShell("node -e " + JSON.stringify('process.stdout.write(process.env.NODE_EXTRA_CA_CERTS + "|" + require("node:tls").getCACertificates("extra").length);'));
+    assert.equal(shellNodeCa.exitCode, 0, shellNodeCa.stderr);
+    assert.doesNotMatch(shellNodeCa.stderr, /Ignoring extra certs/);
+    const [shellCaPath, shellCaCount] = shellNodeCa.stdout.split("|");
+    assert.equal(shellCaPath, brokerCaBundle);
+    assert.ok(Number(shellCaCount) > 0, "sandboxed node must trust the broker CA bundle");
     const sentinelBeforeSandboxWrite = fs.readFileSync(homeControlSentinelPath, "utf8");
     markStockBrokerStage("outside-home-shadow-write");
     const shadowWrite = await execShell("printf shadowed > " + homeControlSentinelPath + " && printf sandbox-write-exit0", brokerPermissionProfile);
