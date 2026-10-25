@@ -530,6 +530,14 @@ export function renderAgentPlugins(
       return;
     }
     updateDenied = true;
+    // An unsaved edit kept from an earlier visit can be neither saved nor discarded from the
+    // summary, and kept Deploy on "Save or discard plugin changes" (finding 2463): the summary
+    // shows the Agent as read, so the kept edit is dropped and the tab reports a clean state.
+    context.drafts.forget("plugins");
+    input.value = initialText;
+    pluginApprovers = structuredClone(initialApprovers);
+    outcomeUnknown = false;
+    reloadRequired = false;
     updateState();
     // The saved selections and default approvers show as a summary, like a version snapshot's:
     // the editor's disabled Configure, Save and Discard controls and its instructions addressed

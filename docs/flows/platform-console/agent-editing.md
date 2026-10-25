@@ -103,8 +103,8 @@ generation (including a `409` from a racing save) requires **Reload draft**.
 The response must identify the same Configuration and Namespace, a newer generation, and
 the values and bindings sent as JSON. If it does not, the page reports an unknown outcome
 and requires a reload before another save.
-When a focused **Save Configuration** becomes disabled, focus moves to **Checking Configuration…**.
-Success focuses **Edit Configuration**, unless the reader moved focus elsewhere during the save.
+A focused, disabled **Save Configuration** moves focus to **Checking Configuration…**.
+Success focuses **Edit Configuration** unless the reader moved focus during the save.
 
 **Enable gateway password access** sets `gateway.auth.password` to reference
 `OPENCLAW_GATEWAY_PASSWORD`, changing nothing else; **Cancel** discards it. Kubernetes
@@ -113,9 +113,9 @@ Success focuses **Edit Configuration**, unless the reader moved focus elsewhere 
 Saves preserve scroll, focus and admitted snapshots. Rejected edits stay;
 an uncertain save requires readback. Unsaved edits block deployment; pending saves block tab and version changes.
 A refused write lists required grants without guessing which; a refused preflight read names read
-access, a Workspace file save Agent `operate`. Without Agent `update`, plugins and repository
-access read as summaries; authentication is disabled without it, Configuration `read`, or
-bound-source `operate`. Reads the answer refuses are skipped.
+access, a Workspace file save Agent `operate`. Without Agent `update`, Configuration `read` or
+bound-source `operate`, plugins and repository access are summaries (dropping a kept plugin edit)
+and authentication is disabled. Reads the answer refuses are skipped.
 Lacking Configuration `update` makes Configuration and channels read-only; lacking `operate` on a
 bound Secret does too, unless, for channels, each such Secret has a Slack token name; with nothing
 editable, the draft says so and, without deploy, has no checklist.

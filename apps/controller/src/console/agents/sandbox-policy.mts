@@ -23,6 +23,12 @@ type Policy = SandboxPolicyViewWire["policy"];
 
 const POLICY_READ_DENIED =
   "Your access does not include reading this Agent’s network policy or its suggestions.";
+// A draft of an Agent with no current version: never deployed, stopped, or first deployment
+// still running. The copy fits each, and a reader who cannot deploy is not told to.
+const NO_CURRENT_VERSION_DENIALS =
+  "Policy denials come from deployed versions. This Agent has no current version.";
+const NO_CURRENT_VERSION_SUGGESTIONS =
+  "Suggestions come from deployed versions. This Agent has no current version.";
 type LogLine = Extract<RuntimeLogRecord, { type: "line" }>;
 
 function errorText(cause: unknown, subject: string) {
@@ -375,20 +381,26 @@ export function renderAgentSandboxPolicy(
     if (!current() || suggestionsReading) {
       return;
     }
-    if (revisionId === "draft") {
-      suggestionStatus.textContent = agent.activeRevisionId
-        ? "Suggestions come from deployed versions. Open the current version to see them."
-        : "Deploy an Agent to collect provider suggestions.";
-      renderSuggestions();
-      return;
-    }
-    if (!(await policySupported()) || suggestionsReading) {
+    // The permission answer decides the first policy read. A reader it denies is not sent to
+    // the current version for suggestions, which refuses them too.
+    await firstPolicyRead;
+    if (!current() || suggestionsReading) {
       return;
     }
     if (policyReadDenied) {
       suggestionsDenied = true;
       suggestionStatus.textContent = POLICY_READ_DENIED;
       renderSuggestions();
+      return;
+    }
+    if (revisionId === "draft") {
+      suggestionStatus.textContent = agent.activeRevisionId
+        ? "Suggestions come from deployed versions. Open the current version to see them."
+        : NO_CURRENT_VERSION_SUGGESTIONS;
+      renderSuggestions();
+      return;
+    }
+    if (!(await policySupported()) || suggestionsReading) {
       return;
     }
     clearTimeout(suggestionTimer);
@@ -1007,7 +1019,7 @@ export function renderAgentSandboxPolicy(
     // The draft has no deployment of its own; a deployed Agent's denials are on its versions.
     logStatus.textContent = agent.activeRevisionId
       ? "Policy denials come from deployed versions. Open the current version to see them."
-      : "Deploy an Agent to load Sandbox policy decisions.";
+      : NO_CURRENT_VERSION_DENIALS;
   } else {
     void readLogs(true);
   }
