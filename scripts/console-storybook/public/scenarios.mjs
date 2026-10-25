@@ -5226,7 +5226,7 @@ export const scenarios = {
     description:
       "The same failed model check for a viewer whose permission answer denies Agent update and deploy. Recovery offers Open v7 Logs only.",
     steps: [
-      "Check that the recovery has one link, Open v7 Logs, and the header says Open version draft. The Versions list names the draft Version draft, Read-only Configuration.",
+      "Check that the recovery has one link, Open v7 Logs, and the header says Open version draft. The Versions list names the draft Version draft, Configuration draft.",
       "Open v7 Logs is the block's filled primary button; at 390 wide it spans the block.",
     ],
     gap: "The permission answer is simulated; the API still authorizes every page a link opens.",

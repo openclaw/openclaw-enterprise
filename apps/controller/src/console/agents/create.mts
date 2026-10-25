@@ -3003,6 +3003,10 @@ function renderAgentForm(
     if (usesOAuth) {
       return undefined;
     }
+    // The operator-managed runtime binding names no Secret, so it is sent as it is everywhere.
+    if (binding?.method === "runtime") {
+      return binding;
+    }
     if (credentialSourceTypes !== undefined) {
       const method = binding?.method ?? authMethod.value;
       return method === "api_key" || method === "codex_pat" ? { method } : undefined;
