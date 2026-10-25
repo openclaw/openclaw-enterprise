@@ -119,7 +119,9 @@ Saving channel Secrets additionally requires Secret,
 Configuration, and Namespace IAM permissions. Every Configuration save needs Secret `operate`
 on each Secret it keeps bound, and **Save channel Secrets** keeps every binding it does not change.
 When the Secret you cannot operate is a Slack token, the panel names it: choose another Secret for
-it, or the console refuses the save before sending it. When it is bound under another key, the
+it, or the console refuses the save before sending it. **Disable Slack** stays disabled until you
+do. Once that save succeeds, the plugin, repository and authentication source controls become
+editable without a reload. When it is bound under another key, the
 pickers are read-only and name that key. These are multiple writes, so a
 failure can leave partial progress. Granting the Agent a Secret needs Installation
 `administer`: when a member saves a token, the Configuration saves, but the member's session

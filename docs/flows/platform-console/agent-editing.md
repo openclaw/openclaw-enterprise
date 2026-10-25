@@ -205,7 +205,9 @@ Channel saves reread the Agent and Configuration. A changed Configuration, servi
 or generation requires **Reload draft** before a write or Secret grant. A provisioning
 reservation explains the refusal. PATCH sends
 `{ values, expectedGeneration }`, plus every binding after a Secret change; a save keeping a Secret
-the caller cannot `operate` is refused before the PATCH.
+the caller cannot `operate` is refused before the PATCH, so **Disable** is offered disabled.
+A save that rebinds such a Secret rereads the permission answer; Plugins, Repositories and the
+authentication source follow it without a reload.
 
 After PATCH, `apps/controller/src/console/agents/credential-access.mjs:ensureCredentialOperateBinding`
 grants the Agent service principal access to selected Secrets through Namespace
@@ -335,6 +337,7 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 
 ## Changelog
 
+- 2026-10-25: Agent-side tabs follow the reread after a channel save; Disable waits for a rebind. (findings 2470, 2471)
 - 2026-10-25: The sources note names a Harness ServiceAccount's `read`. (finding 2459)
 - 2026-10-25: Channel saves may replace unoperable Secrets. (finding 2444)
 

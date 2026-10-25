@@ -6221,6 +6221,28 @@ export const scenarios = {
     slack: true,
     description: "Enabled Socket Mode with standard unresolved credential references.",
   },
+  slackDisableReplaceDenied: {
+    group: "Components/Channels",
+    name: "Slack Disable, editor must replace the bot token Secret",
+    path: `${draft}&tab=channels`,
+    slack: true,
+    agentPermissionSummary: {
+      update: true,
+      deploy: true,
+      operate: true,
+      delete: true,
+      administer: true,
+      configurationUpdate: true,
+      configurationRead: true,
+      configurationSecretsOperate: false,
+      configurationSecretsOperateDeniedBindings: ["SLACK_BOT_TOKEN"],
+      agentSourcesOperate: false,
+      sandboxPolicyRead: true,
+    },
+    description:
+      "The permission answer lists the bot token binding as the only one whose Secret the editor cannot operate. Disable saves no bindings, so it would keep that Secret bound: Disable Slack is shown disabled with a note to choose another Secret in Edit Slack first. Edit Slack stays available.",
+    gap: "The permission answer is simulated, so a rebind here does not enable Disable; the browser test covers that step.",
+  },
   slackThreadedDefault: {
     group: "Components/Channels",
     name: "Slack threaded default",
