@@ -587,6 +587,7 @@ for (const mode of [
       if (mode === "lost provider reply") {
         f.gh.disconnectAfterMutation("POST", path);
       }
+      b.logs.splice(0);
       for (let i = 0; i < 2; i++) {
         const response = await send();
         assert.equal(response.status, 409);
@@ -594,12 +595,19 @@ for (const mode of [
         assert.equal(value.operationId, operationId);
         assert.equal(value.error, "outcome_unknown");
       }
+      // GitHub may have created this draft, so the operator log records no refusal.
+      assert.deepEqual(b.logs, []);
     }
+    // Finding 2429: another operation or a changed request gets the spent allowance's receipt.
+    // GitHub received nothing for it, so each is one operation_conflict line.
+    b.logs.splice(0);
     const other = await send({ headers: { ...headers, "x-oce-operation-id": randomUUID() } });
     assert.equal(other.status, 409);
     assert.equal(JSON.parse(other.text).error, "operation_conflict");
+    refusedOnceBy(b, other, "operation_conflict", "api");
     const changed = await send({ body: JSON.stringify({ ...packet, title: "different" }) });
     assert.equal(JSON.parse(changed.text).error, "operation_conflict");
+    refusedOnceBy(b, changed, "operation_conflict", "api");
     // An independently authenticated observer reconciles by reading, never by trying another create.
     // Its observation cannot be presented as a delivered result to the Agent which lost the reply.
     const observer = randomUUID();
