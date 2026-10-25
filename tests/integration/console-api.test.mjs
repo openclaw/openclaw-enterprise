@@ -6,6 +6,7 @@ import test from "node:test";
 import { brotliDecompressSync, gunzipSync } from "node:zlib";
 
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
+import { assertApiError } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
@@ -81,8 +82,7 @@ test("observability destination requires Installation administration", async (t)
   });
   const session = await fixture.signIn(limited.credentials);
   const denied = await fixture.request("GET", "/observability", { session });
-  assert.equal(denied.status, 403);
-  assert.equal(denied.body.error.code, "FORBIDDEN");
+  assertApiError(denied, 403, "FORBIDDEN");
 
   const absent = await createConsoleAppFixture(t);
   await absent.bootstrap("No observability destination");
@@ -140,8 +140,7 @@ test("console collection APIs keep exact Namespace and Agent IAM boundaries", as
   const hiddenAgents = await fixture.request("GET", `/namespaces/${beta.id}/agents`, {
     session: limitedSession,
   });
-  assert.equal(hiddenAgents.status, 403);
-  assert.equal(hiddenAgents.body.error.code, "FORBIDDEN");
+  assertApiError(hiddenAgents, 403, "FORBIDDEN");
   assert.equal(betaAgent.name, "Beta agent");
 
   const alphaImages = `/namespaces/${alpha.id}/agents/${alphaAgent.id}/runtime-images`;
@@ -162,8 +161,7 @@ test("console collection APIs keep exact Namespace and Agent IAM boundaries", as
   assert.equal(wrongNamespace.status, 404);
 
   const providerDenied = await fixture.request("GET", "/backends", { session: limitedSession });
-  assert.equal(providerDenied.status, 403);
-  assert.equal(providerDenied.body.error.code, "FORBIDDEN");
+  assertApiError(providerDenied, 403, "FORBIDDEN");
 
   fixture.policy.bindings.splice(
     fixture.policy.bindings.findIndex((binding) => binding.id === "binding-console-alpha-reader"),
@@ -251,8 +249,7 @@ test("caller permission summaries report primary IAM decisions without authorizi
     `/namespaces/${namespace.id}/agents/${other.id}/permissions`,
     { session },
   );
-  assert.equal(unshared.status, 403);
-  assert.equal(unshared.body.error.code, "FORBIDDEN");
+  assertApiError(unshared, 403, "FORBIDDEN");
   assert.deepEqual(
     denials().map((event) => event.action),
     ["openclaw.agents.permissions.read"],
@@ -270,8 +267,7 @@ test("caller permission summaries report primary IAM decisions without authorizi
   const before = await fixture.request("GET", revisionsPath);
   assert.equal(before.status, 200);
   const deploy = await fixture.request("POST", `${agentPath}/deploy`, { session });
-  assert.equal(deploy.status, 403);
-  assert.equal(deploy.body.error.code, "FORBIDDEN");
+  assertApiError(deploy, 403, "FORBIDDEN");
   assert.equal(denials().at(-1).action, "openclaw.agents.deploy");
   const after = await fixture.request("GET", revisionsPath);
   assert.equal(after.status, 200);

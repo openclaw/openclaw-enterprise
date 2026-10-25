@@ -40,6 +40,7 @@ import {
   ensureDevelopmentBootstrap,
   privateBootstrapDirectory,
 } from "../helpers/bootstrap-installation.mjs";
+import { assertApiError } from "../helpers/api-error.mjs";
 import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 import { withNamespaceLockHeld } from "../helpers/postgres-namespace-lock.mjs";
@@ -1190,8 +1191,7 @@ test(
     const message =
       "The selected Compute Driver cannot deliver repository credentials to this Harness topology.";
     const retried = await fixture.request("POST", `${admitted.data.provisioning.url}/retry`);
-    assert.equal(retried.status, 409, JSON.stringify(retried.body));
-    assert.equal(retried.body.error.code, "RESOURCE_CONFLICT");
+    assertApiError(retried, 409, "RESOURCE_CONFLICT");
     assert.equal(retried.body.error.message, message);
   },
 );
@@ -1223,8 +1223,7 @@ for (const authMethod of ["api_key", "codex_pat"]) {
       const denied = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
         body: foreign,
       });
-      assert.equal(denied.status, 400, JSON.stringify(denied.body));
-      assert.equal(denied.body.error.code, "INVALID_REQUEST");
+      assertApiError(denied, 400, "INVALID_REQUEST");
       assert.equal(denied.body.error.message, "Secret references cannot cross Namespaces.");
       const jobs = await fixture.pool.query(
         "SELECT work_id FROM occ.agent_provisioning_work WHERE namespace_id = $1",
@@ -2800,8 +2799,7 @@ test(
       ["POST", `${admitted.data.provisioning.url}/retry`],
     ]) {
       const refused = await fixture.request(method, path);
-      assert.equal(refused.status, 409, `${method} ${JSON.stringify(refused.body)}`);
-      assert.equal(refused.body.error.code, "RESOURCE_CONFLICT");
+      assertApiError(refused, 409, "RESOURCE_CONFLICT", method);
       assert.equal(refused.body.error.message, gone);
     }
     const work = await fixture.pool.query(
@@ -3010,8 +3008,7 @@ test(
     // Retry would run the plan again, so it is still refused, naming the stored plugin
     // without a request-body detail, and queues nothing.
     const retried = await switched.request("POST", `${admitted.data.provisioning.url}/retry`);
-    assert.equal(retried.status, 400, JSON.stringify(retried.body));
-    assert.equal(retried.body.error.code, "INVALID_REQUEST");
+    assertApiError(retried, 400, "INVALID_REQUEST");
     assert.match(
       retried.body.error.message,
       new RegExp(
@@ -3963,8 +3960,7 @@ test(
     assert.deepEqual(status.data.error, failed.progress.error);
     // Retry runs the plan again, so it is refused as a conflict; the driver's text stays local.
     const retried = await fixture.request("POST", `${admitted.data.provisioning.url}/retry`);
-    assert.equal(retried.status, 409, JSON.stringify(retried.body));
-    assert.equal(retried.body.error.code, "RESOURCE_CONFLICT");
+    assertApiError(retried, 409, "RESOURCE_CONFLICT");
     assert.equal(retried.body.error.message, message);
     assert.doesNotMatch(JSON.stringify(retried.body), /node enrollment/);
 
@@ -4156,8 +4152,7 @@ test(
     };
     await fixture.revokeCurrentPrincipal();
     const denied = await fixture.request("POST", provisionPath, { body });
-    assert.equal(denied.status, 403, JSON.stringify(denied.body));
-    assert.equal(denied.body.error.code, "FORBIDDEN");
+    assertApiError(denied, 403, "FORBIDDEN");
     assert.doesNotMatch(JSON.stringify(denied.body), /models\.providers/);
   },
 );
@@ -4235,8 +4230,7 @@ async function provisioningConfigurationId(pool, workId) {
 async function assertConfigurationDeletionRefused(fixture, namespaceId, configurationId, message) {
   const path = `/namespaces/${namespaceId}/configurations/${configurationId}`;
   const refused = await fixture.request("DELETE", path);
-  assert.equal(refused.status, 409, JSON.stringify(refused.body));
-  assert.equal(refused.body.error.code, "RESOURCE_CONFLICT");
+  assertApiError(refused, 409, "RESOURCE_CONFLICT");
   assert.match(refused.body.error.message, message);
   const kept = await fixture.request("GET", path);
   assert.equal(kept.status, 200, JSON.stringify(kept.body));
@@ -4336,8 +4330,7 @@ test(
       ["POST", `${provisioningUrl}/retry`],
     ]) {
       const answered = await fixture.request(method, path);
-      assert.equal(answered.status, 409, `${method} ${JSON.stringify(answered.body)}`);
-      assert.equal(answered.body.error.code, "RESOURCE_CONFLICT");
+      assertApiError(answered, 409, "RESOURCE_CONFLICT", method);
       assert.equal(answered.body.error.message, gone);
     }
     assert.deepEqual(await workState(), failedWork, "a refused retry queues nothing");

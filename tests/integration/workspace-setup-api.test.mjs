@@ -6,6 +6,7 @@ import { WORKSPACE_DEFAULTS_ID } from "../../packages/contracts/src/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
+import { assertApiError } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 
@@ -523,8 +524,7 @@ test("Agent create refuses dedicated OpenClaw on OpenShell settings its workspac
       assert.equal(refused.status, 201, JSON.stringify(refused.body));
       continue;
     }
-    assert.equal(refused.status, 400, JSON.stringify(refused.body));
-    assert.equal(refused.body.error.code, "INVALID_REQUEST");
+    assertApiError(refused, 400, "INVALID_REQUEST");
     assert.equal(refused.body.error.message, message);
     assert.equal(
       (await f.request("GET", f.path)).data.some(({ name }) => name === "OpenShell openclaw"),
@@ -572,8 +572,7 @@ test("Agent save refuses a dedicated Harness the Kubernetes Compute settings can
         assert.equal(response.status, saved, JSON.stringify(response.body));
         continue;
       }
-      assert.equal(response.status, 400, JSON.stringify(response.body));
-      assert.equal(response.body.error.code, "INVALID_REQUEST");
+      assertApiError(response, 400, "INVALID_REQUEST");
       assert.equal(response.body.error.message, message);
     }
     if (routed) {

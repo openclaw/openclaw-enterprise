@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
+import { assertApiError } from "../helpers/api-error.mjs";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { codexRuntimeArtifact } from "../../apps/controller/src/drivers/plugin/runtime-translator.ts";
@@ -214,8 +215,7 @@ test("Plugin discovery requires exact Namespace Agent-create permission before D
     ["/details", { accessToken, pluginId: remoteId }],
   ]) {
     const denied = await fixture.request("POST", `${fixture.path}${suffix}`, { session, body });
-    assert.equal(denied.status, 403);
-    assert.equal(denied.body.error.code, "FORBIDDEN");
+    assertApiError(denied, 403, "FORBIDDEN");
   }
   assert.deepEqual(fixture.calls, []);
   const denial = fixture.auditSink.events.at(-1);
@@ -432,8 +432,7 @@ test("Saved Agent plugin discovery requires exact Agent and Secret grants before
       ["/details", { pluginId: remoteId }],
     ]) {
       const result = await fixture.request("POST", `${path}${suffix}`, { session, body });
-      assert.equal(result.status, 403, JSON.stringify(result.body));
-      assert.equal(result.body.error.code, "FORBIDDEN");
+      assertApiError(result, 403, "FORBIDDEN");
       const denial = fixture.auditSink.events.at(-1);
       assert.equal(denial.kind, "authorization_denial");
       assert.deepEqual(denial.authorization, { principalId, action, resource });
@@ -543,8 +542,7 @@ test("Saved Agent source discovery denies missing grants and rechecks revocation
   ];
   const expectDenied = async (suffix, body) => {
     const denied = await fixture.request("POST", `${path}${suffix}`, { session, body });
-    assert.equal(denied.status, 403, JSON.stringify(denied.body));
-    assert.equal(denied.body.error.code, "FORBIDDEN");
+    assertApiError(denied, 403, "FORBIDDEN");
     assert.equal(fixture.calls.length, 1, "denied source use must not invoke discovery");
   };
   for (const binding of sourceBindings) {
@@ -597,8 +595,7 @@ test("Saved Agent plugin discovery rechecks Secret authority after the backend r
     });
 
   const denied = await fixture.request("POST", path, { body: {} });
-  assert.equal(denied.status, 403, JSON.stringify(denied.body));
-  assert.equal(denied.body.error.code, "FORBIDDEN");
+  assertApiError(denied, 403, "FORBIDDEN");
   assert.equal(secretReads, 1);
   assert.deepEqual(fixture.calls, []);
   assert.equal(
@@ -706,8 +703,7 @@ test("Saved Agent plugin discovery rechecks the caller's Secret authority after 
     });
 
   const denied = await fixture.request("POST", path, { session, body: {} });
-  assert.equal(denied.status, 403, JSON.stringify(denied.body));
-  assert.equal(denied.body.error.code, "FORBIDDEN");
+  assertApiError(denied, 403, "FORBIDDEN");
   assert.equal(secretReads, 1);
   assert.deepEqual(fixture.calls, []);
   assert.deepEqual(fixture.auditSink.events.at(-1).authorization, {
@@ -729,8 +725,7 @@ test("Saved Agent plugin discovery denies unauthorized callers before reporting 
     ["/details", { pluginId: remoteId }],
   ]) {
     const denied = await fixture.request("POST", `${path}${suffix}`, { session, body });
-    assert.equal(denied.status, 403, JSON.stringify(denied.body));
-    assert.equal(denied.body.error.code, "FORBIDDEN");
+    assertApiError(denied, 403, "FORBIDDEN");
   }
   assert.deepEqual(fixture.calls, []);
   assert.equal(secretReads(), 0);
@@ -884,11 +879,9 @@ test("Saved Agent uses a credential-free curated catalog for an API-key Codex Ag
     session,
     body: { pluginId: linear.remoteId },
   });
-  assert.equal(deleting.status, 409, JSON.stringify(deleting.body));
-  assert.equal(deleting.body.error.code, "AGENT_DELETING");
+  assertApiError(deleting, 409, "AGENT_DELETING");
   const capabilitiesDeleting = await fixture.request("GET", `${path}/capabilities`, { session });
-  assert.equal(capabilitiesDeleting.status, 409, JSON.stringify(capabilitiesDeleting.body));
-  assert.equal(capabilitiesDeleting.body.error.code, "AGENT_DELETING");
+  assertApiError(capabilitiesDeleting, 409, "AGENT_DELETING");
   assert.equal(secretReads(), 0);
 });
 
@@ -1034,8 +1027,7 @@ test("Selected Secret discovery rechecks Secret authority after the backend read
       body: { secretRef: secret.ref, ...extra },
     });
     // The first request reads the value and is then refused; the second is refused before it.
-    assert.equal(denied.status, 403, JSON.stringify(denied.body));
-    assert.equal(denied.body.error.code, "FORBIDDEN");
+    assertApiError(denied, 403, "FORBIDDEN");
   }
   assert.equal(secretReads, 1);
   assert.deepEqual(fixture.calls, []);
@@ -1521,8 +1513,7 @@ test("Hosted discovery requires a credential, and curated discovery still requir
     ["/details", { pluginId: remoteId }],
   ]) {
     const missing = await fixture.request("POST", `${fixture.path}${suffix}`, { body });
-    assert.equal(missing.status, 400);
-    assert.equal(missing.body.error.code, "PLUGIN_DISCOVERY_CREDENTIALS_REJECTED");
+    assertApiError(missing, 400, "PLUGIN_DISCOVERY_CREDENTIALS_REJECTED");
   }
   assert.deepEqual(fixture.calls, []);
 

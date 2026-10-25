@@ -462,7 +462,7 @@ export function renderSecrets(
     const valueField = field({
       label: "Value",
       control: value,
-      help: multiline ? "Spaces kept; line breaks saved as LF." : "Enter a single-line value.",
+      help: multiline ? "Spaces kept; line breaks normalized." : "Enter a single-line value.",
       className: "secret-value-field",
     });
     value.before(reveal);

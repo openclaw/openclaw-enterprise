@@ -19,6 +19,7 @@ import {
   InMemoryPlatformState,
   OpenClawController,
 } from "../../packages/occ/src/index.ts";
+import { assertApiError } from "../helpers/api-error.mjs";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { bindRole, grantRole } from "../helpers/iam-grants.mjs";
@@ -305,8 +306,7 @@ describe("Presets", { concurrency: 2 }, () => {
       ["PATCH", presetPath(alpha.id, hidden.id), { name: "Shared name" }],
     ]) {
       const conflict = await fixture.request(method, path, { body });
-      assert.equal(conflict.status, 409, method);
-      assert.equal(conflict.body.error.code, "RESOURCE_CONFLICT", method);
+      assertApiError(conflict, 409, "RESOURCE_CONFLICT", method);
       assert.equal(
         conflict.body.error.message,
         "A Preset with this name already exists in this Namespace. Choose a different name.",
@@ -361,8 +361,7 @@ describe("Presets", { concurrency: 2 }, () => {
         presetPath(beta.id, visible.id),
         method === "PATCH" ? { body: { name: "Moved" } } : {},
       );
-      assert.equal(misdirected.status, 404, `${method}: ${JSON.stringify(misdirected.body)}`);
-      assert.equal(misdirected.body.error.code, "NOT_FOUND", method);
+      assertApiError(misdirected, 404, "NOT_FOUND", method);
     }
 
     const renamed = await fixture.request("PATCH", presetPath(alpha.id, visible.id), {
@@ -555,8 +554,7 @@ describe("Presets", { concurrency: 2 }, () => {
         session,
         body: { name: "Withdrawn", template: {} },
       });
-      assert.equal(refused.status, 403, `${method}: ${JSON.stringify(refused.body)}`);
-      assert.equal(refused.body.error.code, "FORBIDDEN", method);
+      assertApiError(refused, 403, "FORBIDDEN", method);
       // The pre-body check passed and withdrew the grant; restore it for the next write.
       assert.equal(fixture.policy.bindings.includes(writer), false, method);
       fixture.policy.bindings.push(writer);
@@ -863,8 +861,7 @@ describe("Presets", { concurrency: 2 }, () => {
       const rejected = await fixture.request("POST", collection(namespace.id), {
         body: { name: "Rejected", template },
       });
-      assert.equal(rejected.status, 400, JSON.stringify(rejected.body));
-      assert.equal(rejected.body.error.code, "INVALID_REQUEST");
+      assertApiError(rejected, 400, "INVALID_REQUEST");
       assert.equal(rejected.body.error.message, message);
       assert.deepEqual(rejected.body.error.details, details);
     }
@@ -905,8 +902,7 @@ describe("Presets", { concurrency: 2 }, () => {
       const rejected = await fixture.request("POST", collection(namespace.id), {
         body: { name: "Rejected", template },
       });
-      assert.equal(rejected.status, 400, JSON.stringify(rejected.body));
-      assert.equal(rejected.body.error.code, "INVALID_REQUEST");
+      assertApiError(rejected, 400, "INVALID_REQUEST");
       assert.equal(rejected.body.error.message, message);
     }
     assert.deepEqual(await listPresets(fixture, namespace.id), []);
@@ -1421,8 +1417,7 @@ describe("Presets", { concurrency: 2 }, () => {
       ["PATCH", presetPath(permitted.data.id, provisioningPresets[0].id), { name: "Too early" }],
     ]) {
       const early = await fixture.request(method, path, { body });
-      assert.equal(early.status, 409, `${method}: ${JSON.stringify(early.body)}`);
-      assert.equal(early.body.error.code, "NAMESPACE_NOT_READY", method);
+      assertApiError(early, 409, "NAMESPACE_NOT_READY", method);
     }
     // Startup must skip a persisted non-administrator even when it is returned first.
     await initializeInstallationPresets(
@@ -1567,8 +1562,7 @@ describe("Presets", { concurrency: 2 }, () => {
     });
     const blockingSecret = await fixture.createSecret(edited.id, "blocking-secret", "value");
     const blocked = await fixture.request("DELETE", `/namespaces/${edited.id}`);
-    assert.equal(blocked.status, 409);
-    assert.equal(blocked.body.error.code, "NAMESPACE_NOT_EMPTY");
+    assertApiError(blocked, 409, "NAMESPACE_NOT_EMPTY");
     // Only the edited default is named; unmodified defaults are deleted with the Namespace.
     assert.equal(
       blocked.body.error.message,
@@ -1915,8 +1909,7 @@ describe("Presets", { concurrency: 2 }, () => {
     const editedCopy = await createPreset(fixture, edited.id, shipped[2].name, old);
     const renamedCopy = await createPreset(fixture, edited.id, "my-codex", shipped[3].template);
     const blocked = await fixture.request("DELETE", `/namespaces/${edited.id}`);
-    assert.equal(blocked.status, 409);
-    assert.equal(blocked.body.error.code, "NAMESPACE_NOT_EMPTY");
+    assertApiError(blocked, 409, "NAMESPACE_NOT_EMPTY");
     // The message lists them in storage order.
     const listed = (await listPresets(fixture, edited.id)).map(({ id }) => id);
     assert.deepEqual([...listed].sort(), [editedCopy.id, renamedCopy.id].sort());
