@@ -286,6 +286,31 @@ test("A failed older version raises no recovery while the current version is hid
   assert.equal(await summary.getByText("May be offline").count(), 0);
 });
 
+// The Versions list reads only the latest version's deployment record. A failed version lost
+// its mark once a newer version was deployed, so after a recovery every earlier failure looked
+// like an ordinary version (finding 2383). A failed record is final, so the mark stays.
+test("The Versions list keeps an earlier failed version's mark after a newer deploy", async (t) => {
+  const { fixture, namespace, agent, page } = await agentPage(t, "Failed then", "Failed then");
+  const first = await fixture.deployAgent(namespace.id, agent.id);
+  await routeFailedRecord(page, fixture, namespace, agent, first);
+
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  const rail = page.getByRole("toolbar", { name: "Versions" });
+  await rail.getByRole("button", { name: "View version v1, deployment failed" }).waitFor();
+  // A second deploy makes v2 the latest version, whose record is the one the list reads.
+  await fixture.deployAgent(namespace.id, agent.id);
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await rail.getByRole("button", { name: /^View version v2/ }).waitFor();
+  await rail.getByRole("button", { name: "View version v1, deployment failed" }).waitFor();
+  assert.equal(
+    await rail
+      .getByRole("button", { name: "View version v1, deployment failed" })
+      .locator(".version-outcome")
+      .textContent(),
+    "Failed",
+  );
+});
+
 // Nothing restarts a lost Sandbox (finding 2152): after a node restart the current version's
 // Sandbox can stay stopped while the Agent still reads active and its gateway refuses requests.
 // Live serving says so with the next step. Its note line is reserved from the first paint, so a

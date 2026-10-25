@@ -345,6 +345,14 @@ const DEPLOYMENT_OUTCOME_TONES: Partial<Record<DeploymentOutcome, string>> = {
   failed: "danger",
 };
 
+// Versions whose deployment record this tab has read as failed, keyed by Agent path and version
+// ID. The Versions list reads only the latest version's record, so an earlier failed version
+// lost its mark once a newer version was deployed (finding 2383). A failed record is final, so
+// the mark stays for as long as the console is open; a new page load knows only the latest one.
+const failedVersions = new Set<string>();
+const failedVersionKey = (agentPath: string, revisionId: string) =>
+  JSON.stringify([agentPath, revisionId]);
+
 // A recovery link opens a version tab far below the banner it sits in. Only the URL changed and
 // the page stayed at the top, so the link looked dead (finding 1586). The page the link opens,
 // switched in place, rebuilt or restored for Back, brings that tab into view and focuses it.
@@ -1661,8 +1669,12 @@ export async function renderAgentDetail(
     const status = latestDeploymentStatus;
     const tone = status && status !== "succeeded" && DEPLOYMENT_OUTCOME_TONES[status];
     const outcome = tone && [outcomeLabel(status), tone];
+    const failed = [outcomeLabel("failed"), DEPLOYMENT_OUTCOME_TONES.failed];
     for (const [id, { control, line, label }] of versionControls) {
-      const [text, tone] = (id === activityRevisionId && outcome) || [];
+      const [text, tone] =
+        (id === activityRevisionId
+          ? outcome
+          : failedVersions.has(failedVersionKey(path, id)) && failed) || [];
       const shown = line.querySelector<HTMLElement>(".version-outcome");
       if (
         (shown?.textContent ?? "") === (text ?? "") &&
@@ -2224,6 +2236,9 @@ export async function renderAgentDetail(
               }
               showPanel(nextPanel, status === "failed");
               latestDeploymentStatus = status;
+              if (status === "failed") {
+                failedVersions.add(failedVersionKey(path, mostRecent.id));
+              }
               // A refused or missing record ends the wait, so it no longer labels the version.
               if (record || !transientFailure) {
                 latestRecordedStatus = status;
