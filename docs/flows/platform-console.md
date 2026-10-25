@@ -243,10 +243,8 @@ provisioning, ordinary drafts, Secret grants, and harness authentication.
 channels, credentials, and workspace files;
 [stop and deletion](platform-console/agent-stop-and-deletion.md) have their own trace;
 [Agent sharing](platform-console/agent-sharing.md) traces policy writes.
-Responses follow the ordering checks below.
 
-`channels/slack.mjs:supportSlack` rejects shapes the editor cannot preserve;
-`updatedSlack` preserves untouched policies and reply overrides. The
+`channels/slack.mjs:supportSlack` rejects shapes the editor cannot preserve. The
 [editing flow](platform-console/agent-editing.md#4-render-draft-revision-or-channels)
 owns DM policies and channel-only reply defaults. Admission snapshots native values;
 Kubernetes `prepareRevision` carries them into `openclaw.json` without adding defaults.
@@ -308,11 +306,8 @@ backend error text. Backend authorization denial clears every retained preview,
 including other Namespace selections, because the permission is Installation-wide.
 
 The [detail action flow](platform-console/agent-stop-and-deletion.md#stop-agent) traces
-confirmed Stop and Delete requests and permissions. Acceptance
-is not completed shutdown or deletion. Uncertain outcomes block replay until
-readback; only confirmed absence returns to Agents. Deployment resumes
-a stopped Agent through a new Agent revision. The [Agent reference](../reference/agents.md#deletion)
-owns asynchronous cleanup.
+Stop and Delete: acceptance is not completion, and uncertain outcomes block replay until
+readback. The [Agent reference](../reference/agents.md#deletion) owns asynchronous cleanup.
 
 Logout first hides private state, then calls the sign-out endpoint.
 Confirmed success or session inspection proving absence replaces history with
@@ -356,11 +351,7 @@ refresh and inspection.
 
 ## Related docs
 
-- [Console reference](../reference/console.md)
-- [Console Agent creation](platform-console/agent-creation.md)
-- [Console Agent stop and deletion](platform-console/agent-stop-and-deletion.md)
 - [Authentication](../reference/authentication.md)
-- [Backend-managed credential delivery](service-account-driver-credential-delivery.md)
 - [Configuration and Agent revision](configuration-driver.md)
 - [Docker development](docker-compose-development.md)
 - [Production startup](production-startup.md)

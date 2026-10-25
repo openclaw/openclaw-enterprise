@@ -12,6 +12,10 @@ export const CredentialsSourcesOperateDenied = {
   ...story("credentialsSourcesOperateDenied"),
   name: "Model authentication, editor cannot operate a bound source",
 };
+export const CredentialsServiceAccountReadDenied = {
+  ...story("credentialsServiceAccountReadDenied"),
+  name: "Model authentication, editor may lack read on the ChatGPT service account",
+};
 export const CredentialsSlack = { ...story("credentialsSlack"), name: "Slack tokens missing" };
 export const CredentialsSlackReader = {
   ...story("credentialsSlackReader"),

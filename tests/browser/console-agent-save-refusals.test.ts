@@ -5,6 +5,7 @@ import type { Page } from "playwright";
 
 import type { AgentWire, NamespaceWire } from "../../packages/contracts/src/api/resources.ts";
 import type { Principal, Restriction } from "../../packages/contracts/src/index.ts";
+import type { PlatformUnitOfWork } from "../../packages/occ/src/state/platform-state.ts";
 
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
@@ -286,7 +287,7 @@ test("an Agent editor without read on the Harness ServiceAccount is told about i
   const member = await readOnlyMember(t, "Account Read Off");
   const { fixture, namespace, agent, page } = member;
   // Issuance is outside this test: the account is seeded through State.
-  const account = await fixture.controller.transact((state) =>
+  const account = await fixture.controller.transact((state: PlatformUnitOfWork) =>
     state.serviceAccounts.createServiceAccount({
       id: `sa_${randomUUID()}`,
       namespaceId: namespace.id,

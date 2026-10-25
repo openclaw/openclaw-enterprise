@@ -6884,6 +6884,28 @@ export const scenarios = {
       "The permission answer allows Agent update but not operate on every Secret and credential source the Agent and its Configuration bind, which each Agent update checks. Save authentication source and its fields are disabled, and the note names the missing grant. Plugins and repository access saves show the same note.",
     gap: "The permission answer is simulated; the API still authorizes every save.",
   },
+  credentialsServiceAccountReadDenied: {
+    group: "Components/Credentials",
+    name: "Model authentication, editor may lack read on the ChatGPT service account",
+    path: `${draft}&tab=credentials`,
+    auth: "service",
+    agentPermissionSummary: {
+      update: true,
+      deploy: true,
+      operate: true,
+      delete: true,
+      administer: true,
+      configurationUpdate: true,
+      configurationRead: true,
+      configurationSecretsOperate: true,
+      configurationSecretsOperateDeniedBindings: [],
+      agentSourcesOperate: false,
+      sandboxPolicyRead: false,
+    },
+    description:
+      "The Agent uses a ChatGPT service account for Harness authentication, which each Agent update reads. The permission answer says a source grant is missing but not which one, so the note names operate on the bound Secrets and credential sources and read on the service account.",
+    gap: "The permission answer is simulated; the API still authorizes every save.",
+  },
   credentialsSlack: {
     group: "Components/Credentials",
     name: "Slack tokens missing",

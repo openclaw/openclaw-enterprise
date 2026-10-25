@@ -8,6 +8,8 @@ This record preserves the dated changes to the Console Agent editing flow. See t
 
 ## Changelog
 
+- 2026-10-25: Draft labels, recovery and inline Secret creation follow permissions. (findings 2441, 2442)
+- 2026-10-25: Agent-side editors follow bound source `operate`. (finding 2441)
 - 2026-10-25: Readers see the draft read-only. (finding 2421)
 - 2026-10-25: Mark failed versions from the revision list. (finding 2422)
 - 2026-10-24: Restoring parked Workspace files applies the latest observed Agent operate answer. (pr-3474)

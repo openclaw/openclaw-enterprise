@@ -66,7 +66,8 @@ startup. A rejected save leaves the running version unchanged. For policy
 limits and errors, see [Agent plugins](../../reference/agent-plugins.md).
 Without Agent `update`, the selections and default plugin approvers show as a read-only summary
 with no editor, and a note names the grant to ask for. Every Agent save also needs `operate` on each Secret and credential
-source that the Agent and its Configuration bind; without it, they are read-only and a note says so.
+source that the Agent and its Configuration bind, and `read` on a ChatGPT service account it uses
+for authentication; without them, the selections show as that summary too, and a note says so.
 
 If you see **Plugin selections changed**, the Console stopped before saving.
 If you see **Outcome unknown**, your changes may already be saved. Note any edits
