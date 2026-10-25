@@ -759,10 +759,11 @@ test("Without a provisioning Sandbox Driver, Create Agent withholds Dedicated Op
     await page.locator("#execution-mode-hint").textContent(),
     "Codex uses Dedicated execution. Dedicated OpenClaw is unavailable because this installation selects no Sandbox Driver. Slack requires Codex.",
   );
-  // The harness hint states this Agent's outcome; Runtime details keep the conditions (finding 1904).
+  // The harness hint states this Agent's outcome; Runtime details keep the conditions (finding
+  // 1904), so the Sandbox Driver reason is said once (finding 2404).
   assert.equal(
     await page.locator("#agent-harness-hint").textContent(),
-    "This Agent will run OpenClaw with Embedded execution. This installation selects no Sandbox Driver, so choose Codex for Dedicated execution.",
+    "This Agent will run OpenClaw with Embedded execution. Choose Codex for Dedicated execution.",
   );
   // Anthropic hides Codex, so the hint names only why this Agent runs Embedded.
   await page.getByLabel("Provider", { exact: true }).selectOption("anthropic");
@@ -1232,7 +1233,7 @@ test("Create Agent's harness hint holds while Create is pending and drops the Co
   });
   const agentsPath = `${fixture.origin}/namespaces/${namespace.id}/agents`;
   const choosable =
-    "This Agent will run OpenClaw with Embedded execution. This installation selects no Sandbox Driver, so choose Codex for Dedicated execution.";
+    "This Agent will run OpenClaw with Embedded execution. Choose Codex for Dedicated execution.";
   const locked = "This Agent will run OpenClaw with Embedded execution.";
 
   await t.test("pending, then saved", async (t) => {

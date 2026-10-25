@@ -646,7 +646,9 @@ export function renderCreateAgent(context: CreateAgentContext, restored?: unknow
       element(
         "p",
         { className: "muted" },
-        "Choose a model, connect repositories, and give your Agent a place to work.",
+        // Repository access depends on the Installation; the form offers it where set up
+        // (finding 2404).
+        "Choose a model and give your Agent a place to work.",
       ),
       element(
         "div",
@@ -2515,13 +2517,12 @@ function renderAgentForm(
       if (modeUnavailable) {
         return `This Agent cannot run OpenClaw with ${runtime} on this installation.`;
       }
-      // Name Codex only when the reader can still choose it.
+      // Name Codex only when the reader can still choose it. Why Dedicated OpenClaw is refused
+      // stays under Runtime details, so it is said once (finding 2404).
       const reason = anthropic
         ? " Anthropic requires Embedded OpenClaw."
         : nativeRefused && !harnessChoiceLocked
-          ? noSandboxDriver
-            ? " This installation selects no Sandbox Driver, so choose Codex for Dedicated execution."
-            : " Choose Codex for Dedicated execution."
+          ? " Choose Codex for Dedicated execution."
           : "";
       return `This Agent will run OpenClaw with ${runtime}.${reason}`;
     };

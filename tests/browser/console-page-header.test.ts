@@ -273,6 +273,25 @@ test("Create Agent leads with ← Agents and puts the Namespace under its title"
     return { title: size(".page-header h1"), card: size(".launch-intro h2") };
   });
   assert.deepEqual(sizes, { title: "24px", card: "18px" });
+  // The intro promises nothing the Installation may not offer: repository access needs
+  // repository settings (finding 2404).
+  assert.equal(
+    await page.locator(".launch-intro > p.muted").textContent(),
+    "Choose a model and give your Agent a place to work.",
+  );
+  // Both start cards use the card padding at every width; the intro kept 24px on a phone while
+  // the Preset card narrowed to 16px (finding 2404).
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    const paddings = await page.evaluate(() =>
+      [".launch-intro", ".launch-preset"].map(
+        (selector) =>
+          globalThis.getComputedStyle(globalThis.document.querySelector(selector)!).padding,
+      ),
+    );
+    assert.equal(paddings[0], paddings[1], `${width}: ${paddings.join(" vs ")}`);
+  }
+  await page.setViewportSize({ width: 1440, height: 900 });
 
   await page.getByRole("link", { name: "← Agents", exact: true }).click();
   await page.getByRole("heading", { name: "Agents", exact: true, level: 1 }).waitFor();
