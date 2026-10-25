@@ -8358,6 +8358,13 @@ test("Agent provisioning and deploy name a refused channel token reference form 
         "references SLACK_SPARE_TOKEN without a Configuration Secret binding: bind SLACK_SPARE_TOKEN in secretBindings to an environment-backed Secret, or remove the reference",
       ),
     ],
+    // Finding 2520: the binding rule answers before the form rule, at save and at deploy.
+    [
+      "xoxb-${SLACK_SPARE_TOKEN}",
+      setting(
+        "references SLACK_SPARE_TOKEN without a Configuration Secret binding: bind SLACK_SPARE_TOKEN in secretBindings to an environment-backed Secret, or remove the reference",
+      ),
+    ],
   ];
   for (const [botToken, message] of forms) {
     const refused = await provision(botToken);

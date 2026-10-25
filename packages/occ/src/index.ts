@@ -9609,12 +9609,12 @@ export class OpenClawController {
       metadata,
     );
     // Before the Channel Driver, which reads only an env SecretRef and answers any other channel
-    // credential form with its generic binding refusal: the Configuration Driver's rules and the
-    // bundled Kubernetes channel rule, which deployment applies again below, so a stored
-    // Configuration that predates a rule gets the message its next save would, as provisioning
-    // does (findings 2506, 2516).
-    await configurationDriver.validate(configuration);
+    // credential form with its generic binding refusal: the bundled Kubernetes channel rule, then
+    // the Configuration Driver's rules, in save's order (finding 2520). Deployment applies them
+    // again below. A stored Configuration that predates a rule gets the message its next save
+    // would, as provisioning does (findings 2506, 2516).
     this.requireBundledChannelBindings(configuration.values, configuration.secretBindings ?? {});
+    await configurationDriver.validate(configuration);
     return this.validateChannelCredentials(
       principalId,
       input.namespaceId,
