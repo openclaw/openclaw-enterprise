@@ -134,8 +134,8 @@ returns `500 INTERNAL_ERROR`, not usable-session proof.
 
 In both profiles, after 10 failed sign-ins per minute per email, or 20
 per client address with [`api.trustedProxy`](settings/production.md#github-sign-in-and-trusted-proxies),
-attempts wait 1–8 s and return `429` with `Retry-After` and a message that gives
-the wait, whether or not the email exists; an Installation administrator's correct password still signs in, and so does
+attempts wait 1–8 s and return `429` with `Retry-After`, repeated in the message, whether
+or not the email exists; an Installation administrator's correct password still signs in, and so does
 the recovery account's with an external provider. Successful sign-ins spend nothing. Without
 one, browsers share the ingress address and startup logs
 `authentication.sign-in-limit-warning`. A successful sign-in within the budget
@@ -147,9 +147,6 @@ full). `email`, `device`, and `address` events also carry `keyHash`, a truncated
 the auth secret; `untracked` events have no key and no hash. The email and
 address are never logged. The bundled Collector
 exports the event and lane, not the hash.
-
-Wrong passwords and unknown emails get the same `401` message. A `503` says that
-sign-in is temporarily unavailable.
 
 Password checks attempt an `authentication.login` audit: success names the
 account's Principal and `userId`; wrong passwords and unknown emails produce

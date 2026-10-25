@@ -60,7 +60,9 @@ exchange (`providerExchangeFailure`) reports a rate limit, an outage, the
 browser-origin check, or an attempt that expired or was replaced, never a
 refused identity. Password sign-in and provider start report `429` with the
 `Retry-After` wait and the origin check with their own text; every other
-password `400`, `401` or `403` keeps one message.
+password `400`, `401` or `403` keeps one message. On the API side,
+`sendAuthEndpoint` answers `429` with the wait and `503` with an outage
+message; every refusal keeps the endpoint's one message.
 When login interrupts a recognized console route, `navigation.mts` records its
 page, validated Namespace ID, and recognized Agent version and tab without unrelated
 query parameters. Password
