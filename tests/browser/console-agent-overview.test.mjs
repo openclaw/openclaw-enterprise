@@ -343,7 +343,11 @@ test("A failed first version's page says nothing runs and offers one Create new 
   const failed = await fixture.deployAgent(namespace.id, agent.id);
   await routeFailedRecord(page, fixture, namespace, agent, failed);
 
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, failed.id, "configuration"));
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, failed.id, "configuration"),
+  );
   await page.getByRole("heading", { name: "Version v1" }).waitFor();
   const summary = page.getByRole("region", { name: "Agent state at a glance" });
   await summary.getByText("v1 · Failed", { exact: true }).waitFor();
