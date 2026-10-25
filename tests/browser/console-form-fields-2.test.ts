@@ -172,6 +172,7 @@ test("the workspace file editor shows an oversized file's error under the file",
     detailUrl(fixture, namespace.id, agent.id, active.revision.id, "workspace"),
   );
   const editor = page.getByLabel("AGENTS.md", { exact: true });
+  const reload = page.getByRole("button", { name: "Reload AGENTS.md", exact: true });
   await page.getByText("AGENTS.md loaded.", { exact: true }).waitFor();
   await editor.fill("a".repeat(16_385));
   const save = page.getByRole("button", { name: "Save AGENTS.md", exact: true });
@@ -206,13 +207,35 @@ test("the workspace file editor shows an oversized file's error under the file",
   await editor.fill("a".repeat(16_385));
   await save.click();
   await assertShownError(editor, error);
-  const reload = page.getByRole("button", { name: "Reload AGENTS.md", exact: true });
   await reload.click();
   await page.getByText("AGENTS.md loaded.", { exact: true }).waitFor();
   assert.equal(await editor.inputValue(), "before");
   assert.equal(await shownError(editor), null);
   assert.equal(await editor.getAttribute("aria-invalid"), null);
   assert.equal(await hasFocus(reload), true, "focus returns to Reload");
+  // Focus the reader moves out of the file's form while it saves stays where they put it.
+  const write = await holdRequests(
+    t,
+    page,
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/workspace/files/*`,
+    {
+      once: true,
+      method: "PUT",
+      fulfill: {
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ data: { name: "AGENTS.md", content: "moved" } }),
+      },
+    },
+  );
+  await editor.fill("moved");
+  await save.click();
+  await write.requested;
+  const agentsLink = page.getByRole("link", { name: "← Agents" });
+  await agentsLink.focus();
+  write.release();
+  await page.getByText("AGENTS.md saved.", { exact: true }).waitFor();
+  assert.equal(await hasFocus(agentsLink), true, "focus stays where the reader moved it");
 });
 
 // A Reload that finds the file gone empties the editor for a new file: the refused text's error

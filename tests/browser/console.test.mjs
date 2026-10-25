@@ -701,6 +701,28 @@ test("Agents with no readable Namespace names it once and keeps one Refresh", as
   }
 });
 
+// Secrets are scoped to a Namespace as Agents are: a URL naming one the caller cannot read shows
+// the unavailable panel and reads nothing for it.
+test("Secrets for a Namespace the caller cannot read shows Namespace unavailable", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  await fixture.createNamespace("Readable", { ready: true });
+  const unreadable = "ns_00000000-0000-4000-8000-000000000099";
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await trackSettledFetches(page);
+  await login(page, fixture, `/console/secrets?namespace=${unreadable}`);
+  await page
+    .locator(".state-panel")
+    .getByRole("heading", { name: "Namespace unavailable", exact: true })
+    .waitFor();
+  await waitForIdleFetches(page);
+  assert.deepEqual(
+    requests.filter((request) => request.path.startsWith(`/namespaces/${unreadable}`)),
+    [],
+  );
+});
+
 test("an unchanged retained view without a Namespace selection selects the default once one is readable", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
