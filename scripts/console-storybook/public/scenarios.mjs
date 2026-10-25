@@ -4387,6 +4387,7 @@ export const scenarios = {
       deploy: false,
       operate: false,
       delete: false,
+      administer: false,
       configurationUpdate: true,
       configurationRead: true,
       configurationSecretsOperate: false,

@@ -4384,6 +4384,7 @@ test("an editor without operate on a bound Secret views the version draft read-o
     deploy: false,
     operate: false,
     delete: false,
+    administer: false,
     configurationUpdate: true,
     configurationRead: true,
     configurationSecretsOperate: false,
