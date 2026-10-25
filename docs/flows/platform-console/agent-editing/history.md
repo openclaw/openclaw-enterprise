@@ -8,6 +8,7 @@ This record preserves the dated changes to the Console Agent editing flow. See t
 
 ## Changelog
 
+- 2026-10-25: Secret pickers refuse readable Secrets the caller may not `operate`. (finding 2453)
 - 2026-10-25: Draft labels, recovery and inline Secret creation follow permissions. (findings 2441, 2442)
 - 2026-10-25: Agent-side editors follow bound source `operate`. (finding 2441)
 - 2026-10-25: Readers see the draft read-only. (finding 2421)

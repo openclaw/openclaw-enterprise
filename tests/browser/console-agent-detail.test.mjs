@@ -4881,17 +4881,17 @@ test("Secret fields refuse a readable Secret the editor cannot operate", async (
   // Secret operate on the bound Secrets, the Harness authentication Secret and the extra token:
   // every save is allowed, but binding the spare token is not.
   fixture.policy.roles.push({
-    id: "role-operate-only-editor",
+    id: "role-operate-only-secrets",
     namespaceId: namespace.id,
     permissions: [{ action: "operate", resourceKind: "secret" }],
   });
   const grantOperate = (secretId) =>
     fixture.policy.bindings.push({
-      id: `binding-operate-only-editor-${secretId}`,
+      id: `binding-operate-only-secrets-${secretId}`,
       namespaceId: namespace.id,
       subjectKind: "identity",
       subjectId: member.principal.id,
-      roleId: "role-operate-only-editor",
+      roleId: "role-operate-only-secrets",
       resourceKind: "secret",
       resourceId: secretId,
     });
@@ -4929,7 +4929,13 @@ test("Secret fields refuse a readable Secret the editor cannot operate", async (
   await operateDeniedSecretOption(dialog, "Slack bot token", spare);
   await dialog.getByLabel("Slack bot token", { exact: true }).press("Escape");
   await dialog.getByRole("button", { name: "Cancel" }).click();
-  assert.deepEqual(nonAuthWriteRequests(requests), []);
+  // Nothing was saved: the drawer's only writes are its Slack directory lookups.
+  assert.deepEqual(
+    nonAuthWriteRequests(requests).filter(
+      (request) => !request.path.endsWith("/channel-directory/lookup"),
+    ),
+    [],
+  );
 
   // An operable Secret stages and saves as before. Operate on it is revoked after it is staged,
   // so the PATCH is refused: the refusal names the Secret and the grant, not Configuration
@@ -4939,7 +4945,7 @@ test("Secret fields refuse a readable Secret the editor cannot operate", async (
   await page.getByText("Secret binding staged. Save changes to apply it.").waitFor();
   fixture.policy.bindings.splice(
     fixture.policy.bindings.findIndex(
-      (binding) => binding.id === `binding-operate-only-editor-${extra.id}`,
+      (binding) => binding.id === `binding-operate-only-secrets-${extra.id}`,
     ),
     1,
   );

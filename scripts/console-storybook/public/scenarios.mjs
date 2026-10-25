@@ -6974,6 +6974,20 @@ export const scenarios = {
     ],
     gap: "The permission answer is simulated; the API still authorizes every save and the Secrets it binds.",
   },
+  credentialsSlackOperateDenied: {
+    group: "Components/Credentials",
+    name: "Slack tokens, editor cannot operate one readable Secret",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    secretOperateDenied: ["sec_demo_slack_backup_token"],
+    description:
+      "The Secret answer lists the Slack backup token as readable but not operable for this editor. Each Secret field lists it disabled with the reason and never stages it, since a save that binds it would be refused.",
+    steps: [
+      "Type backup in Slack bot token. Slack backup token (simulated) is listed with the access note under it; choosing it stages nothing and Save channel Secrets stays disabled.",
+      "Type backup in API key Secret: the same option is listed the same way.",
+    ],
+    gap: "The Secret answer is simulated; the API still authorizes every save and the Secrets it binds.",
+  },
   credentialsSlackStored: {
     group: "Components/Credentials",
     name: "Slack tokens stored",

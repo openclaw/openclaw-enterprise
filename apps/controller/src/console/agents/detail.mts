@@ -576,7 +576,8 @@ export async function renderAgentDetail(
     (secretsOperateRead ??= (
       request(`${path}/permissions/secrets`) as Promise<SecretPermissions>
     ).then(
-      (answer) => (Array.isArray(answer?.operateDenied) ? new Set(answer.operateDenied) : undefined),
+      (answer) =>
+        Array.isArray(answer?.operateDenied) ? new Set(answer.operateDenied) : undefined,
       () => undefined,
     ));
   context.setTitle(agent.name);
