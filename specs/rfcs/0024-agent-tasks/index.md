@@ -9,7 +9,7 @@ author: freeqaz
 - **ID:** RFC-0024
 - **Created:** 2026-10-25
 - **Last updated:** 2026-10-25
-- **RFC PR:** pending
+- **RFC PR:** [#3624](https://github.com/openclaw/openclaw-enterprise/pull/3624)
 - **Implementation plan:** to follow after review
 - **Related:** [API, CLI and MCP surface](api.md) · [Operator view](operator-view.md) ·
   [Failure handling and limits](failure-and-limits.md) · [Alternatives](alternatives.md) ·
