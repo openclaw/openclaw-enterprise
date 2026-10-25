@@ -1,6 +1,6 @@
 ---
 created: 2026-09-09
-updated: 2026-10-24
+updated: 2026-10-25
 last_updated_session: 01a162e5-4303-7a21-81d4-bb51cec37c66
 ---
 
@@ -81,10 +81,10 @@ overview refresh cannot identify this Agent, the page keeps the outcome and says
 
 On failure, `agents/deployment-recovery.mts` shows the API's message or suggests checking
 Logs if the message gives no next step. It hides the Logs link if the caller was denied the
-log text or version during this sign-in. **Open Configuration** needs Agent `update` and no
-known Configuration read error or denial. **Open version draft** (`deploy` only) and **Deploy again** (per the
-message) need `deploy` and a successful Configuration read; Deploy again focuses **Deploy new
-version**. Credentials recovery needs `update`. Hidden or unlisted
+log text or version during this sign-in. **Open Configuration** needs Configuration `update`,
+bound Secret `operate` and no known read denial. **Open version draft** (read-only Configuration) and
+**Deploy again** (per the message) need `deploy` and a readable Configuration; Deploy again focuses
+**Deploy new version**. Credentials recovery needs Agent saves. Hidden or unlisted
 current versions suppress recovery; viewed versions show results. Activity polls every
 `DEPLOYMENT_POLL_MS` through transient read errors until a result, denial, or missing
 record, patching in place (`patchChildren`); a new result rereads selection.

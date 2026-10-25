@@ -5374,17 +5374,43 @@ export const scenarios = {
       operate: false,
       delete: false,
       administer: false,
+      configurationUpdate: false,
+      configurationRead: true,
+      configurationSecretsOperate: false,
+      agentSourcesOperate: false,
+    },
+    description:
+      "Recovery offers Open version draft when the viewer may deploy but cannot edit the Configuration, so the draft is theirs to read and deploy.",
+    steps: [
+      "Select Open version draft and confirm the Configuration tab opens in view, focused, without deploying.",
+    ],
+    gap: "The failure and permissions are simulated; this story does not verify API authorization or deployment.",
+  },
+  deploymentModelProbeFailedConfigurationEditor: {
+    group: "Pages/Agent detail",
+    name: "New version failed, viewer may edit only the Configuration",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "format" },
+    agentPermissionSummary: {
+      update: true,
+      deploy: false,
+      operate: false,
+      delete: false,
+      administer: false,
       configurationUpdate: true,
       configurationRead: true,
       configurationSecretsOperate: true,
       agentSourcesOperate: false,
     },
     description:
-      "Recovery offers Open version draft when the viewer may deploy but cannot update the Agent. Configuration access is separate.",
+      "The viewer may save the Configuration but not the Agent: an Agent update would also need operate on its Harness authentication Secret. Recovery follows the Configuration's own answer and offers Open Configuration.",
     steps: [
-      "Select Open version draft and confirm the Configuration tab opens in view, focused, without deploying.",
+      "Check that the recovery shows Open v7 Logs and Open Configuration, with no Deploy again.",
+      "Select Open Configuration and confirm the draft's Configuration tab opens in view with Edit Configuration available.",
     ],
-    gap: "The failure and permissions are simulated; this story does not verify API authorization or deployment.",
+    gap: "The failure and permissions are simulated; the API still authorizes every save.",
   },
   deploymentFailedDeployAgain: {
     group: "Pages/Agent detail",
@@ -5437,9 +5463,9 @@ export const scenarios = {
       operate: false,
       delete: false,
       administer: false,
-      configurationUpdate: true,
-      configurationRead: true,
-      configurationSecretsOperate: true,
+      configurationUpdate: false,
+      configurationRead: false,
+      configurationSecretsOperate: false,
       agentSourcesOperate: false,
     },
     rules: [
@@ -5451,7 +5477,7 @@ export const scenarios = {
       },
     ],
     description:
-      "The startup model check failure for a viewer who may deploy but can neither update the Agent nor read its Configuration. The draft Open version draft opens would have no Deploy new version, so recovery reads the Configuration first and, on the denial, offers Open v7 Logs only.",
+      "The startup model check failure for a viewer who may deploy but can neither edit nor read the Configuration. The draft Open version draft opens would have no Deploy new version, so recovery reads the Configuration first and, on the denial, offers Open v7 Logs only.",
     steps: [
       "At 1440 and 390 wide, confirm the recovery shows one link, Open v7 Logs, and never shows Open version draft.",
     ],

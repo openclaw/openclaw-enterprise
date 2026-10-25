@@ -4,6 +4,7 @@ import test from "node:test";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
+import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -1501,17 +1502,12 @@ test("Agent detail saves plugin changes for the next revision without changing a
         return;
       }
       const status = rejectedStatuses.shift();
-      await route.fulfill({
-        status,
-        contentType: "application/json",
-        body: JSON.stringify({
-          error:
-            status === 501
-              ? { code: "NOT_IMPLEMENTED", message: "No selected Plugin Driver" }
-              : { code: "ACCESS_DENIED", message: "Agent update denied" },
-          meta: { requestId: "req_00000000-0000-4000-8000-000000000434" },
-        }),
-      });
+      const requestId = "req_00000000-0000-4000-8000-000000000434";
+      await route.fulfill(
+        status === 501
+          ? apiErrorResponse(501, "NOT_IMPLEMENTED", "No selected Plugin Driver", { requestId })
+          : apiErrorResponse(403, "FORBIDDEN", "Agent update denied", { requestId }),
+      );
     },
   );
   const unavailableResponse = page.waitForResponse(
@@ -2570,14 +2566,11 @@ test("Agent credentials report partial harness Secret grant failure", async (t) 
       await route.continue();
       return;
     }
-    await route.fulfill({
-      status: 403,
-      contentType: "application/json",
-      body: JSON.stringify({
-        error: { code: "ACCESS_DENIED", message: "masked IAM denial" },
-        meta: { requestId: "req_00000000-0000-4000-8000-000000000633" },
+    await route.fulfill(
+      apiErrorResponse(403, "FORBIDDEN", "masked IAM denial", {
+        requestId: "req_00000000-0000-4000-8000-000000000633",
       }),
-    });
+    );
   });
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "credentials");
 
@@ -4090,21 +4083,19 @@ test("a version editor without Agent update can recover a failed deployment from
   await recovery
     .getByText("v2 failed its startup model check (RUNTIME_MODEL_PROBE_FAILED).", { exact: false })
     .waitFor();
-  await recovery.getByRole("link", { name: "Open version draft" }).click();
-  await recovery.getByRole("link", { name: "Open version draft" }).waitFor();
+  // This caller may edit the Configuration, so recovery opens it as such (finding 2450).
+  await recovery.getByRole("link", { name: "Open Configuration", exact: true }).click();
+  await recovery.getByRole("link", { name: "Open Configuration", exact: true }).waitFor();
   await page.getByRole("button", { name: "Edit Configuration" }).click();
   await openAdvancedSettings(page);
   await page.getByLabel("Configuration JSON").fill(JSON.stringify(nativeValues("edited")));
-  // Hold the real reread after revoking deploy so the refreshed details render first.
+  // Hold the save's permission reread before it reaches the API, so the refreshed details render
+  // first and the reread sees Configuration update revoked after the save.
   const permission = await holdRequests(t, page, `${fixture.origin}${path}/permissions`, {
-    afterServer: true,
     once: true,
   });
   const role = fixture.policy.roles.find(({ id }) => id === "role-version-editor");
   const originalPermissions = role.permissions;
-  role.permissions = originalPermissions.filter(
-    ({ action, resourceKind }) => action !== "deploy" || resourceKind !== "agent",
-  );
   const saving = page.waitForResponse(
     (r) =>
       r.request().method() === "PATCH" &&
@@ -4116,12 +4107,22 @@ test("a version editor without Agent update can recover a failed deployment from
   assert.deepEqual((await saved.json()).data.values, nativeValues("edited"));
   await permission.requested;
   await page.getByText("Configuration saved.", { exact: true }).waitFor();
-  assert.equal(await recovery.getByRole("link", { name: "Open version draft" }).isVisible(), true);
+  assert.equal(
+    await recovery.getByRole("link", { name: "Open Configuration", exact: true }).isVisible(),
+    true,
+  );
+  role.permissions = originalPermissions.filter(
+    ({ action, resourceKind }) => action !== "update" || resourceKind !== "configuration",
+  );
   const reread = page.waitForResponse((r) => r.url().endsWith(path + "/permissions"));
   permission.release();
-  assert.equal((await (await reread).json()).data.deploy, false);
-  await recovery.getByRole("link", { name: "Open version draft" }).waitFor({ state: "detached" });
-  await recovery.getByRole("link", { name: "Open v2 Logs" }).waitFor();
+  assert.equal((await (await reread).json()).data.configurationUpdate, false);
+  // The reread applies to recovery: the Configuration is now read-only, so this deployer is
+  // offered the draft to read and deploy.
+  await recovery
+    .getByRole("link", { name: "Open Configuration", exact: true })
+    .waitFor({ state: "detached" });
+  await recovery.getByRole("link", { name: "Open version draft", exact: true }).waitFor();
 
   role.permissions = originalPermissions;
   await page.reload();
