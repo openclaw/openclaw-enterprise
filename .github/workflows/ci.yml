@@ -119,19 +119,21 @@ jobs:
       # the seccomp profile. Part 3 runs Docker-only files from part 1: two
       # that ran beside its startup file, and the native listener cases split
       # from that file, whose cases run one after another and set part 1's
-      # length.
+      # length. Part 3 also runs the CPU-contended model probe case beside
+      # them; it waits out the 110 s probe cap at 500m on any runner and sets
+      # part 3's length (it was a job of its own, Image Model Probes).
       # Runners: the k3d fixture and observability lanes use blacksmith
       # 32vcpu (8 CPUs). Its kernel enforces the NetworkPolicy proofs: with
       # K3s policy enforcement disabled, production-network-access fails
       # every deny case there. It ran these lanes about a minute faster than
       # ubuntu-22.04 (4 CPUs). Image Runtime Startup and Startup 2 use 32vcpu
       # too: their preparation is faster there, and Startup 2 runs its four
-      # files at once. Startup 3 (Docker only, no k3d) uses 16vcpu: its three
-      # files run their cases two at a time and took 45 s on 32vcpu, and
+      # files at once. Startup 3 (Docker only, no k3d) uses 16vcpu: its model
+      # probe case waits out the 110 s cap on any runner, its other three
+      # files run their cases two at a time beside it (45 s on 32vcpu), and
       # 16vcpu jobs do not queue when 32vcpu jobs do (10-24: 21 % of 32vcpu
       # jobs waited over 60 s for a runner, p90 268 s; no 16vcpu job over
-      # 12 s). Image Model Probes stays on 16vcpu: its one case waits
-      # out the 110 s model probe cap at 500m on any runner. PostgreSQL
+      # 12 s). PostgreSQL
       # Application uses 32vcpu too: it runs up to eight of its twelve files at
       # once, one per CPU (16vcpu caps it at four). Checks and Conformance 1
       # uses it for the same reason: on 16vcpu it ran four files at a time,
@@ -164,7 +166,6 @@ jobs:
               {"lane": "postgres-auth", "title": "PostgreSQL Authentication", "profile": "postgres", "timeout": 25, "runner": "blacksmith-16vcpu-ubuntu-2404"},
               {"lane": "postgres-platform", "title": "PostgreSQL Platform", "profile": "postgres", "timeout": 25, "runner": "blacksmith-16vcpu-ubuntu-2404"},
               {"lane": "images-packaging", "title": "Images and Packaging", "profile": "full", "timeout": 45, "runner": "blacksmith-16vcpu-ubuntu-2404"},
-              {"lane": "images-model-probes", "title": "Image Model Probes", "profile": "images", "timeout": 25, "runner": "blacksmith-16vcpu-ubuntu-2404"},
               {"lane": "images-runtime-startup", "title": "Image Runtime Startup", "profile": "full", "timeout": 30, "runner": "blacksmith-32vcpu-ubuntu-2404"},
               {"lane": "images-runtime-startup-2", "title": "Image Runtime Startup 2", "profile": "images", "timeout": 30, "runner": "blacksmith-32vcpu-ubuntu-2404"},
               {"lane": "images-runtime-startup-3", "title": "Image Runtime Startup 3", "profile": "images", "timeout": 30, "runner": "blacksmith-16vcpu-ubuntu-2404"},
