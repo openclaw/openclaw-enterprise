@@ -582,9 +582,13 @@ export function createSecretReferenceField({
         return;
       }
       if (secretOperateDenied(secret)) {
+        // A Secret created here is listed, disabled, until the list is read again.
+        if (!secrets.some((item) => item.id === secret.id)) {
+          secrets.push(secret);
+        }
         input.value = currentSecretLabel();
         setStatusTone(status, "danger");
-        status.textContent = `${secret.name} is not bound. ${SECRET_OPERATE_DENIED}`;
+        status.textContent = `${secret.name} cannot be chosen. ${SECRET_OPERATE_DENIED}`;
         listedHint = false;
         return;
       }
@@ -769,7 +773,9 @@ export function createSecretReferenceField({
         if (!dialog.open || !isCurrent()) {
           return;
         }
-        if (currentSecretId() === createdSecret.id) {
+        // A created Secret the answer says the caller may not operate is kept but not chosen;
+        // the field says why (finding 2453).
+        if (currentSecretId() === createdSecret.id || secretOperateDenied(createdSecret)) {
           dismiss();
           return;
         }

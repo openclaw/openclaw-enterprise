@@ -3242,7 +3242,6 @@ export async function renderAgentDetail(
     }
   }
 
-  // Reads the caller's permission answer again; a failed read keeps the last answer.
   // Why a save that bound these chosen Secrets was refused: the Secret answer, read again, names
   // each one the caller may not operate (finding 2453). Undefined when it names none or is
   // unknown, so the save's usual refusal applies.
@@ -3253,6 +3252,7 @@ export async function renderAgentDetail(
     return names.length ? secretOperateRefusal(names) : undefined;
   }
 
+  // Reads the caller's permission answer again; a failed read keeps the last answer.
   function rereadPermissions() {
     secretsOperateRead = null;
     const previous = latestPermissionsRead;
