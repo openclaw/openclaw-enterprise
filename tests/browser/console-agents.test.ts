@@ -669,9 +669,11 @@ test("Agent creation distinguishes unavailable repository choices from denied Ag
     response.url().endsWith("/agents/repository-options"),
   );
   await unavailablePage.getByRole("button", { name: "Start with default Preset" }).click();
+  // No Repo Driver is a fixed state: discovery answers no options and says why (finding 2387).
   const options = await optionsResponse;
-  assert.equal(options.status(), 503);
-  assert.equal((await options.json()).error.code, "REPOSITORY_OPTIONS_UNAVAILABLE");
+  assert.equal(options.status(), 200);
+  const optionsBody = await options.json();
+  assert.deepEqual([optionsBody.data, optionsBody.meta.notConfigured], [[], true]);
   await unavailablePage
     .getByText(/Repository access is not available in this Installation's configuration/)
     .waitFor();

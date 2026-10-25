@@ -1143,7 +1143,18 @@ export const BackendListResponse = Type.Object(
 export const RepositoryOptionListResponse = Type.Object(
   {
     data: Type.Array(RepositoryOptionSchema, { maxItems: 1000 }),
-    meta: Meta,
+    meta: Type.Object(
+      {
+        ...Meta.properties,
+        notConfigured: Type.Optional(
+          Type.Literal(true, {
+            description:
+              "Present when the Installation has no repository settings, so no repository credential Driver is selected. `data` is then empty, and Agent save refuses repository bindings with 409 RESOURCE_CONFLICT.",
+          }),
+        ),
+      },
+      { additionalProperties: false },
+    ),
   },
   { additionalProperties: false },
 );

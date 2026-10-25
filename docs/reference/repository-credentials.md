@@ -129,8 +129,8 @@ the exact-Agent editing route requires `update`. Both return approved
 `repositoryRef`, `displayName`, `allowedProfiles` and optional `description`.
 GitHub choices come from the approved registry without provider descriptions or
 background metadata requests. Authorized discovery failure yields
-`503 REPOSITORY_OPTIONS_UNAVAILABLE`; no approvals yields `[]`; a closed Namespace
-yields 409. Only success or that outage permits a fresh ordinary draft; editing
+`503 REPOSITORY_OPTIONS_UNAVAILABLE`, no approvals `[]`, no `repository` settings `[]`
+with `meta.notConfigured`, and a closed Namespace 409. Only success or that outage permits a fresh ordinary draft; editing
 requires success. Writes reauthorize and resolve.
 
 ### Profiles

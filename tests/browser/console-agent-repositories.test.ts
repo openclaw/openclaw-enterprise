@@ -3,7 +3,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { ErrorResponse } from "../../packages/contracts/src/api/common.ts";
 import type {
   AgentReadWire,
   AgentResponse,
@@ -433,7 +432,8 @@ test("Agent repository tab keeps Save disabled for an existing binding while rep
 });
 
 test("Agent repository tab without a Repo Driver names the setup step and offers no Retry", async (t) => {
-  // The default console fixture selects no Repo Driver: discovery answers a permanent 503.
+  // The default console fixture selects no Repo Driver: discovery answers no options and
+  // meta.notConfigured, not a 503, because no retry can change it (finding 2387).
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("No Repo Driver", { ready: true });
@@ -452,9 +452,9 @@ test("Agent repository tab without a Repo Driver names the setup step and offers
     `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=repositories`,
   );
   const response = await options;
-  assert.equal(response.status(), 503);
-  const { error }: ErrorResponse = await response.json();
-  assert.equal(error.code, "REPOSITORY_OPTIONS_UNAVAILABLE");
+  assert.equal(response.status(), 200);
+  const body = await response.json();
+  assert.deepEqual([body.data, body.meta.notConfigured], [[], true]);
   const status = page.getByRole("status").filter({
     hasText: "Repository access is not available in this Installation's configuration.",
   });

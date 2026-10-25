@@ -137,8 +137,8 @@ function discoveryFailure(
   if (error.status === 409) {
     return "conflict";
   }
-  // The API answers this code only for the Installation's fixed composition (no Repo Driver
-  // or no compatible Compute Driver), so retrying cannot succeed until an operator changes it.
+  // The API answers this code only for the Installation's fixed composition (no compatible
+  // Compute or Sandbox Driver), so retrying cannot succeed until an operator changes it.
   if (error.status === 503 && error.code === "REPOSITORY_OPTIONS_UNAVAILABLE") {
     if (allowDraft) {
       return "draft-only";
@@ -991,15 +991,24 @@ export function createRepositoryFields(
     }
     render();
     try {
-      const options = await context.request(
+      const { data: options, meta } = (await context.request(
         `${namespacePath(context.namespaceId)}/agents/${initial.agentId ? `${encodeURIComponent(initial.agentId)}/` : ""}repository-options`,
-        { expectedStatus: 200 },
-      );
+        { expectedStatus: 200, includeMeta: true },
+      )) as { data: unknown; meta?: unknown };
       if (!context.isCurrent() || generation !== loadGeneration) {
         return { kind: "obsolete" };
       }
       if (!validOptions(options)) {
         throw new Error("Invalid repository choices response.");
+      }
+      // An Installation without repository settings answers no options and says so (finding
+      // 2387). No retry or reload can change that, so show the setup link in every case.
+      if (responseFields(meta).notConfigured === true) {
+        return showFailure(
+          undefined,
+          discoveryContext(false).allowDraft ? "draft-only" : "not-configured",
+          false,
+        );
       }
       state.options = options;
       state.discovery = "ready";
@@ -1028,58 +1037,74 @@ export function createRepositoryFields(
       if (!context.isCurrent() || generation !== loadGeneration) {
         return { kind: "obsolete" };
       }
-      // A failed read cannot establish which retained choices are still approved.
-      state.options = [];
-      choices.setAttribute("aria-busy", "false");
-      state.discovery = discoveryFailure(failure, {
-        allowDraft: !clearSelections && !initial.agentId && state.selected.size === 0,
-        agentScoped: !clearSelections && Boolean(initial.agentId),
-      });
-      if (state.discovery === "denied") {
-        setStatusTone(status, "danger");
-        status.textContent = initial.agentId
-          ? "Repository choices are denied because you are not authorized to update this Agent."
-          : "Repository choices are denied because you are not authorized to create Agents in this Namespace.";
-      } else if (state.discovery === "conflict") {
-        setStatusTone(status, "danger");
-        status.textContent = initial.agentId
-          ? "Repository choices conflict with the current Agent or Namespace. Reload this draft before continuing."
-          : "This Namespace no longer accepts new Agents.";
-      } else if (clearSelections) {
-        setStatusTone(status, "danger");
-        status.textContent = `Repository choices could not be reloaded. ${message(error)} Retry the reload or start a new draft.`;
-      } else if (state.discovery === "draft-only" || state.discovery === "not-configured") {
-        setStatusTone(status, null);
-        status.replaceChildren(
-          "Repository access is not available in this Installation's configuration. ",
-          element(
-            "a",
-            {
-              href: "https://github.com/openclaw/openclaw-enterprise/blob/main/docs/guides/repository-credentials/team-runbook.md",
-              target: "_blank",
-              rel: "noopener noreferrer",
-            },
-            "Set up repository access",
-          ),
-          state.discovery === "draft-only"
-            ? ". You can continue without repository access."
-            : ". You can’t save repository changes on this page until an operator sets up repository access.",
-        );
-      } else {
-        setStatusTone(status, "danger");
-        status.textContent = `Repository choices could not be loaded. ${message(error)} Retry repository choices before ${initial.agentId ? "saving repository access" : "creating an Agent"}.`;
-      }
-      retry.hidden = clearSelections || ["draft-only", "not-configured"].includes(state.discovery);
-      revealInvalidSelections();
-      render();
-      onChange(false);
-      return {
-        kind:
-          state.discovery === "draft-only" || state.discovery === "not-configured"
-            ? "unavailable"
-            : state.discovery,
-      };
+      return showFailure(
+        error,
+        discoveryFailure(failure, discoveryContext(clearSelections)),
+        clearSelections,
+      );
     }
+  }
+
+  function discoveryContext(clearSelections: boolean) {
+    return {
+      allowDraft: !clearSelections && !initial.agentId && state.selected.size === 0,
+      agentScoped: !clearSelections && Boolean(initial.agentId),
+    };
+  }
+
+  function showFailure(
+    error: unknown,
+    discovery: DiscoveryFailure,
+    clearSelections: boolean,
+  ): { kind: LoadResult } {
+    // A failed read cannot establish which retained choices are still approved.
+    state.options = [];
+    choices.setAttribute("aria-busy", "false");
+    state.discovery = discovery;
+    if (state.discovery === "denied") {
+      setStatusTone(status, "danger");
+      status.textContent = initial.agentId
+        ? "Repository choices are denied because you are not authorized to update this Agent."
+        : "Repository choices are denied because you are not authorized to create Agents in this Namespace.";
+    } else if (state.discovery === "conflict") {
+      setStatusTone(status, "danger");
+      status.textContent = initial.agentId
+        ? "Repository choices conflict with the current Agent or Namespace. Reload this draft before continuing."
+        : "This Namespace no longer accepts new Agents.";
+    } else if (clearSelections) {
+      setStatusTone(status, "danger");
+      status.textContent = `Repository choices could not be reloaded. ${message(error)} Retry the reload or start a new draft.`;
+    } else if (state.discovery === "draft-only" || state.discovery === "not-configured") {
+      setStatusTone(status, null);
+      status.replaceChildren(
+        "Repository access is not available in this Installation's configuration. ",
+        element(
+          "a",
+          {
+            href: "https://github.com/openclaw/openclaw-enterprise/blob/main/docs/guides/repository-credentials/team-runbook.md",
+            target: "_blank",
+            rel: "noopener noreferrer",
+          },
+          "Set up repository access",
+        ),
+        state.discovery === "draft-only"
+          ? ". You can continue without repository access."
+          : ". You can’t save repository changes on this page until an operator sets up repository access.",
+      );
+    } else {
+      setStatusTone(status, "danger");
+      status.textContent = `Repository choices could not be loaded. ${message(error)} Retry repository choices before ${initial.agentId ? "saving repository access" : "creating an Agent"}.`;
+    }
+    retry.hidden = clearSelections || ["draft-only", "not-configured"].includes(state.discovery);
+    revealInvalidSelections();
+    render();
+    onChange(false);
+    return {
+      kind:
+        state.discovery === "draft-only" || state.discovery === "not-configured"
+          ? "unavailable"
+          : state.discovery,
+    };
   }
 
   function recordSuccessfulSave() {

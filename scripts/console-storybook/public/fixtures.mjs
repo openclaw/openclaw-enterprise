@@ -1021,7 +1021,10 @@ export function installFixture(scenario, evidence) {
           ),
           200,
           undefined,
-          descriptionsPending ? { descriptionsPending: true } : {},
+          {
+            ...(descriptionsPending ? { descriptionsPending: true } : {}),
+            ...(scenario.repositoryNotConfigured ? { notConfigured: true } : {}),
+          },
         );
       }
       if (resource === "presets" && method === "GET") {

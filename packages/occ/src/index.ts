@@ -2454,7 +2454,7 @@ export class OpenClawController {
     principalId: string,
     namespaceId: string,
     agentId?: string,
-  ): Promise<Readonly<RepositoryOptions>> {
+  ): Promise<Readonly<RepositoryOptions & { notConfigured?: true }>> {
     this.namespaceIdentity(namespaceId);
     if (agentId !== undefined) {
       const agent = await this.getAuthorizedAgent(principalId, namespaceId, agentId, "update");
@@ -2472,6 +2472,11 @@ export class OpenClawController {
     // Checked after authorization: the conflict names the Namespace state.
     if (namespace.status !== "provisioning" && namespace.status !== "ready") {
       throw new ResourceStateConflictError("The Namespace does not accept new Agents.");
+    }
+    // No repository settings is a fixed Installation state, not an outage: answer no options
+    // and say why, as Agent save names it (finding 2387).
+    if (!this.selections.has("repo")) {
+      return Object.freeze({ options: Object.freeze([]), notConfigured: true });
     }
     let compute: ComputeDriver;
     try {
