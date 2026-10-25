@@ -876,6 +876,13 @@ describe("Presets", { concurrency: 2 }, () => {
     // token waits for its launch, even with a default, since a launch may fill it differently.
     const fixture = await createFixture(t);
     const namespace = await fixture.createNamespace("Preset launch fields", { ready: true });
+    // Agent create checks plugin approvers only with a Plugin Driver selected, so without one
+    // Preset save leaves even a channel the Driver refuses to the launch.
+    const unplugged = await createPreset(fixture, namespace.id, "Approvers without plugins", {
+      agent: { pluginApprovers: [{ channel: "teams", id: "U123" }] },
+    });
+    assert.deepEqual(unplugged.template.agent.pluginApprovers, [{ channel: "teams", id: "U123" }]);
+    await deletePreset(fixture, namespace.id, unplugged.id);
     const pluginDriver = new OCCPluginDriver();
     fixture.controller.registerDriver(pluginDriver);
     fixture.controller.selectDriver("plugin", pluginDriver.id);
