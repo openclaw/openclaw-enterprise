@@ -192,7 +192,7 @@ restores the binding. Typing stages nothing; selection stages a reference,
 Cancel discards it. A false Namespace `secrets.create` disables creation, with its reason.
 On the Agent page, `GET .../agents/:agentId/permissions/secrets` lists readable Secrets the
 caller may not `operate`; each is disabled with its reason and never staged. A refused binding
-save rereads it to name such a Secret.
+save rereads it to name such a Secret; an inline create rereads it before staging.
 
 `apps/controller/src/console/agents/secret-picker.mjs:openCreateSecretDialog` shows
 an editable Agent-prefixed Name, the Secrets page's `secretValueControl` (CRLF becomes LF),

@@ -61,8 +61,8 @@ The model credential, people search and Slack token fields use the shared
 Secrets the caller may not `operate`, reported only to a caller with Namespace read and Agent
 `create`. Agent create, Configuration create and the people search refuse such a Secret, so each
 field lists it disabled with its reason and never stages it; the Preset's **Use existing Secret**
-list does the same, and **Use Preset** refuses it. A permission reread or a refused create reads
-the answer again. A failed read marks none.
+list does the same, and **Use Preset** refuses it. A permission reread, a refused create or an
+inline Secret create reads the answer again. A failed read marks none.
 
 ### 2. Choose a model and starter Configuration
 
@@ -165,6 +165,7 @@ Switching methods hides that feedback without changing the lookup or saved choic
 
 ## Changelog
 
+- 2026-10-25: An inline Secret create rereads the `operate` answer before staging. (finding 2486)
 - 2026-10-25: Secret fields and the Preset's existing Secret refuse readable Secrets the caller may not `operate`. (fix-2469, findings 2469, 2479)
 - 2026-10-25: Send the Agent name to the preflight; mark and focus the name field when the preflight, provisioning or Agent create refuses it as taken. (fix-dogfood-r36, finding 2420)
 - 2026-10-25 08:00: Refuse an operator-managed Preset when it opens where the Compute Driver refuses its binding (finding 2427). (fix-mutant-1025c)
