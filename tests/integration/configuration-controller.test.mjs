@@ -1496,6 +1496,11 @@ test("Configuration create, update and Agent create's check refuse a channel cre
     body: { values: slack, secretBindings: bothBindings },
   });
   assert.equal(bound.status, 200, JSON.stringify(bound.body));
+  // An update of values only, as the Console's Configuration JSON editor sends, keeps and checks
+  // against the stored bindings.
+  const valuesOnly = await request(context.app, "PATCH", item, { body: { values: slack } });
+  assert.equal(valuesOnly.status, 200, JSON.stringify(valuesOnly.body));
+  assert.deepEqual(valuesOnly.body.data.secretBindings, bothBindings);
   assertRefused(
     await request(context.app, "PATCH", item, {
       body: { values: slack, secretBindings: { SLACK_BOT_TOKEN: bothBindings.SLACK_BOT_TOKEN } },
@@ -1505,7 +1510,7 @@ test("Configuration create, update and Agent create's check refuse a channel cre
   );
   assert.deepEqual(
     (await request(context.app, "GET", item)).body.data,
-    bound.body.data,
+    valuesOnly.body.data,
     "update removes a binding",
   );
 
@@ -1519,6 +1524,14 @@ test("Configuration create, update and Agent create's check refuse a channel cre
     }),
     unboundChannelReference("channels.slack.accounts.work.botToken", "WORK_BOT_TOKEN"),
     { label: "named account" },
+  );
+  // A binding is an own key: an inherited name such as `constructor` binds nothing.
+  assertRefused(
+    await request(context.app, "PATCH", item, {
+      body: { values: slackWith({ botToken: "${constructor}" }), secretBindings: bothBindings },
+    }),
+    unboundChannelReference("channels.slack.botToken", "constructor"),
+    { label: "inherited name" },
   );
   const disabled = await request(context.app, "PATCH", item, {
     body: { values: slackWith({ enabled: false }), secretBindings: {} },

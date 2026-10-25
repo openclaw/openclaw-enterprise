@@ -635,61 +635,32 @@ export async function createConsoleAppFixture(t, options = {}) {
     return updated;
   }
 
-  // Configuration save refuses an enabled channel's credential reference without a Secret
-  // binding (finding 2319). A case that seeds one shows the Console a Configuration an older
-  // release stored, which it still reads, gates and repairs: the API saves the values without
-  // their channels, and the full values are then written past OCC, as that release stored them.
-  const UNBOUND_CHANNEL_REFERENCE = " without a Configuration Secret binding: ";
-  async function storeUnboundChannels(saved, values) {
-    const driver = appOptions.configurationDriver;
-    const stored = await driver.read({ namespaceId: saved.namespaceId, id: saved.id });
-    await driver.update({ ...stored, values: structuredClone(values) });
-    return { ...saved, values: structuredClone(values) };
-  }
-  const withoutChannels = ({ channels: _channels, ...values }) => values;
-  const unboundChannelRefusal = (response, values) =>
-    response.status === 400 &&
-    values.channels !== undefined &&
-    response.body.error?.message?.includes(UNBOUND_CHANNEL_REFERENCE);
-
   async function createConfiguration(namespaceId, values = {}, options = {}) {
-    const save = (body) =>
-      request("POST", `/namespaces/${namespaceId}/configurations`, {
-        body: {
-          kind: "agent",
-          values: body,
-          ...(options.secretBindings === undefined
-            ? {}
-            : { secretBindings: options.secretBindings }),
-        },
-      });
-    const configuration = await save(values);
-    if (unboundChannelRefusal(configuration, values)) {
-      const saved = await save(withoutChannels(values));
-      assert.equal(saved.status, 201, JSON.stringify(saved.body));
-      return storeUnboundChannels(saved.data, values);
-    }
-    assert.equal(configuration.status, 201, JSON.stringify(configuration.body));
+    const configuration = await request("POST", `/namespaces/${namespaceId}/configurations`, {
+      body: {
+        kind: "agent",
+        values,
+        ...(options.secretBindings === undefined ? {} : { secretBindings: options.secretBindings }),
+      },
+    });
+    assert.equal(configuration.status, 201);
     return configuration.data;
   }
 
   async function updateConfiguration(namespaceId, configurationId, values = {}, options = {}) {
-    const save = (body) =>
-      request("PATCH", `/namespaces/${namespaceId}/configurations/${configurationId}`, {
+    const configuration = await request(
+      "PATCH",
+      `/namespaces/${namespaceId}/configurations/${configurationId}`,
+      {
         body: {
-          values: body,
+          values,
           ...(options.secretBindings === undefined
             ? {}
             : { secretBindings: options.secretBindings }),
         },
-      });
-    const configuration = await save(values);
-    if (unboundChannelRefusal(configuration, values)) {
-      const saved = await save(withoutChannels(values));
-      assert.equal(saved.status, 200, JSON.stringify(saved.body));
-      return storeUnboundChannels(saved.data, values);
-    }
-    assert.equal(configuration.status, 200, JSON.stringify(configuration.body));
+      },
+    );
+    assert.equal(configuration.status, 200);
     return configuration.data;
   }
 

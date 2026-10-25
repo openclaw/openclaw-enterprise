@@ -1047,13 +1047,13 @@ interface RegisteredDriver {
 
 type DriverFor<Capability extends DriverCapability> = DriverByCapability[Capability];
 
-/** Bounds each synchronous Credential Gateway call made while serving an API request. */
 // The bundled Kubernetes Compute Driver's implementations: the Installation default and the
 // Driver's own default.
 const BUNDLED_KUBERNETES_COMPUTE: ReadonlySet<string> = new Set([
   "occ/kubernetes",
   "kubernetes-local",
 ]);
+/** Bounds each synchronous Credential Gateway call made while serving an API request. */
 const CREDENTIAL_GATEWAY_TIMEOUT_MS = 30_000;
 const MAX_AGENT_CREDENTIAL_SOURCES = 8;
 /** Overall deadline for one runtime status or log request, Driver calls included. */
