@@ -16,6 +16,7 @@ import {
   login,
   nativeValues,
   newPage,
+  nextFrames,
   pathRequests,
   selectSecret,
   settledView,
@@ -452,18 +453,20 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
   const session = await holdRequests(t, page, sessionPath, { afterServer: true, timeout: 0 });
 
   // Refocus checks access without discarding an open search or repeating its lookup.
+  const beforeRefocus = requests.length;
   await page.evaluate(() => {
     globalThis.dispatchEvent(new Event("focus"));
     globalThis.document.dispatchEvent(new Event("visibilitychange"));
   });
   await session.requested;
   await page.locator('.content [aria-live="polite"][inert]').waitFor();
-  await page.evaluate(
-    () =>
-      new Promise((resolve) =>
-        globalThis.requestAnimationFrame(() => globalThis.requestAnimationFrame(resolve)),
-      ),
-  );
+  await nextFrames(page);
+  // While the session answer is held the view stays inert with the search still open, and the
+  // check has not gone on to read the Namespaces.
+  assert.equal(await people.inputValue(), "Alex");
+  assert.equal(await people.getAttribute("aria-expanded"), "true");
+  assert.equal(await resultNode.evaluate((node) => node.isConnected), true);
+  assert.deepEqual(pathRequests(requests.slice(beforeRefocus), "GET", "/namespaces"), []);
   session.release();
   await page.locator('.content [aria-live="polite"]:not([inert])').waitFor();
   assert.equal(await people.inputValue(), "Alex");

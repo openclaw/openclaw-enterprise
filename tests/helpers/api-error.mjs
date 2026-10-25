@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { STATUS_CODES } from "node:http";
 import { createRequire } from "node:module";
 
 import { ErrorResponse } from "../../packages/contracts/src/api/common.ts";
@@ -23,8 +24,8 @@ export function assertApiError(response, status, code, label) {
  * A Playwright `route.fulfill()` answer carrying the API's error envelope:
  * `{ error: { code, message, details? }, meta: { requestId } }`. The envelope is checked
  * against the contract's ErrorResponse schema, so a faked refusal cannot use a code, detail or
- * request ID the API never sends. A response that is deliberately not the API's (a proxy's 502,
- * a body without a code) stays hand-written.
+ * request ID the API never sends. A refusal from something in front of the API uses
+ * proxyErrorResponse instead.
  *
  * @param {number} status
  * @param {import("../../packages/contracts/src/api/common.ts").ErrorCode} code
@@ -50,4 +51,25 @@ export function apiErrorResponse(status, code, message, { details, requestId } =
     );
   }
   return { status, contentType: "application/json", body: JSON.stringify(envelope) };
+}
+
+/**
+ * A Playwright `route.fulfill()` answer from a proxy or gateway in front of the API, such as an
+ * ingress rate limit (429) or an unreachable upstream (502): the proxy's HTML page, not the
+ * API's error envelope, so the Console has only the status to go on. Use it for a status the
+ * route itself never sends; an answer the API sends uses apiErrorResponse.
+ *
+ * @param {number} status
+ */
+export function proxyErrorResponse(status) {
+  const reason = STATUS_CODES[status];
+  if (status < 400 || status > 599 || reason === undefined) {
+    throw new Error(`A proxy refusal answers with a known 4xx or 5xx status, not ${status}`);
+  }
+  const title = `${status} ${reason}`;
+  return {
+    status,
+    contentType: "text/html",
+    body: `<html><head><title>${title}</title></head><body><h1>${title}</h1></body></html>`,
+  };
 }

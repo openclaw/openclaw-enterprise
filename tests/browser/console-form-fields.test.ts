@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import test, { type TestContext } from "node:test";
 import type { Locator, Page } from "playwright";
 
-import { apiErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture as createBaseConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   apiRequests,
@@ -575,15 +575,9 @@ for (const viewport of consoleViewports) {
     const namespace = await fixture.createNamespace("Secret refusals", { ready: true });
     const { page } = await newPage(t, fixture, { browser, context: { viewport } });
     await routeInstallationWithoutProvisioning(page, fixture);
-    const refusal = { status: 409, code: "NAMESPACE_NOT_READY" };
+    let refusal = apiErrorResponse(409, "NAMESPACE_NOT_READY", "refused");
     await page.route(`**/namespaces/${namespace.id}/secrets`, (route, request) =>
-      request.method() === "POST"
-        ? route.fulfill({
-            status: refusal.status,
-            contentType: "application/json",
-            body: JSON.stringify({ error: { code: refusal.code, message: "refused" } }),
-          })
-        : route.fallback(),
+      request.method() === "POST" ? route.fulfill(refusal) : route.fallback(),
     );
     await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
     await page.getByRole("button", { name: "Start with default Preset" }).click();
@@ -605,14 +599,18 @@ for (const viewport of consoleViewports) {
           inView: box.top >= 0 && box.bottom <= globalThis.innerHeight,
         };
       });
+    // The Secret API never answers 429: a rate limit in front of it (an ingress or proxy) does,
+    // with its own page and no API envelope.
     const cases = [
-      [409, "NAMESPACE_NOT_READY", "This Namespace is not ready, so it cannot store Secrets yet."],
       [
-        403,
-        "FORBIDDEN",
+        apiErrorResponse(409, "NAMESPACE_NOT_READY", "refused"),
+        "This Namespace is not ready, so it cannot store Secrets yet.",
+      ],
+      [
+        apiErrorResponse(403, "FORBIDDEN", "refused"),
         "Access denied. You do not have permission to manage this Secret binding.",
       ],
-      [429, "RATE_LIMITED", "Too many requests. Wait before trying again."],
+      [proxyErrorResponse(429), "Too many requests. Wait before trying again."],
     ] as const;
     // While the request runs, every control that could change or reveal the value is disabled.
     const pending = await holdRequests(t, page, `**/namespaces/${namespace.id}/secrets`, {
@@ -631,10 +629,10 @@ for (const viewport of consoleViewports) {
       assert.equal(await control.isDisabled(), true, "disabled while creating");
     }
     pending.release();
-    await dialog.getByRole("alert").filter({ hasText: cases[0][2] }).waitFor();
-    for (const [status, code, text] of cases) {
-      refusal.status = status;
-      refusal.code = code;
+    await dialog.getByRole("alert").filter({ hasText: cases[0][1] }).waitFor();
+    for (const [response, text] of cases) {
+      const { status } = response;
+      refusal = response;
       await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
       await dialog.getByRole("alert").filter({ hasText: text }).waitFor();
       const focused = await focusedRefusal();
@@ -644,8 +642,7 @@ for (const viewport of consoleViewports) {
       assert.equal(focused.inView, true, `${status}: in view`);
     }
     // A name conflict still puts focus on Name to change it.
-    refusal.code = "RESOURCE_CONFLICT";
-    refusal.status = 409;
+    refusal = apiErrorResponse(409, "RESOURCE_CONFLICT", "refused");
     await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
     await dialog.getByRole("alert").filter({ hasText: "may already exist" }).waitFor();
     assert.equal(
@@ -654,8 +651,7 @@ for (const viewport of consoleViewports) {
     );
     // An unknown outcome disables Name, Value and the submit, so its message takes focus like a
     // refusal (finding 2075). It is last: the dialog refuses another try until a refresh.
-    refusal.status = 503;
-    refusal.code = "SERVICE_UNAVAILABLE";
+    refusal = apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "refused");
     const unknown = "Secret creation outcome could not be confirmed. Refresh before trying again.";
     await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
     await dialog.getByRole("alert").filter({ hasText: unknown }).waitFor();

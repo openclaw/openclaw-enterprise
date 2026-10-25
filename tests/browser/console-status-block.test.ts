@@ -6,7 +6,7 @@ import type { AgentWire, NamespaceWire } from "../../packages/contracts/src/api/
 import type { PermissionAction } from "../../packages/contracts/src/index.ts";
 
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
-import { apiErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   consoleViewports,
@@ -553,16 +553,14 @@ test("Authentication source save outcomes", async (t) => {
     "an authentication source save with an unknown outcome stays a danger alert",
     async (t) => {
       const { page, save, agentUrl } = await authenticationSourcePage(t, "auth-unknown");
+      // A gateway in front of the API answers 502 (the API never does), with its own page and no
+      // API envelope: the save may or may not have reached the API.
       await page.route(agentUrl, async (route) => {
         if (route.request().method() === "GET") {
           await route.continue();
           return;
         }
-        await route.fulfill({
-          status: 502,
-          contentType: "application/json",
-          body: JSON.stringify({ error: { code: "BAD_GATEWAY", message: "Bad gateway" } }),
-        });
+        await route.fulfill(proxyErrorResponse(502));
       });
       await save.click();
       await page.locator("form > p.status[data-tone=danger][role=alert]").waitFor();
