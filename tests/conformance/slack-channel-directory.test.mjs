@@ -449,3 +449,41 @@ test("Slack credential checks refuse redirects instead of resending the bot toke
     });
   }
 });
+
+test("Slack credential checks read only a whole ${NAME} token string as an env reference", async () => {
+  const driver = new SlackChannelDriver(
+    async () => new Response(JSON.stringify({ ok: true, bot_id: "BBOT123", team_id: "TTEAM" })),
+  );
+  const read = [];
+  const check = (botToken) =>
+    driver.validateCredentials(
+      { channels: { slack: { mode: "http", botToken } } },
+      async (id, _field, use) => {
+        read.push(id);
+        return use(token);
+      },
+    );
+  // OpenClaw reads exactly one `${NAME}` as the env SecretRef to NAME (finding 2511).
+  await check("${SLACK_BOT_TOKEN}");
+  assert.deepEqual(read, ["SLACK_BOT_TOKEN"]);
+  // Any other string would reach the runtime as text, or as a fallback for an unset name, so it
+  // still asks for a Secret binding without reading one.
+  for (const botToken of [
+    "xoxb-${SLACK_BOT_TOKEN}",
+    "${SLACK_BOT_TOKEN} ",
+    " ${SLACK_BOT_TOKEN}",
+    "${SLACK_BOT_TOKEN}${SLACK_APP_TOKEN}",
+    "${SLACK_BOT_TOKEN:-}",
+    "${SLACK_BOT_TOKEN:-xoxb-fallback}",
+    "$SLACK_BOT_TOKEN",
+    "$${SLACK_BOT_TOKEN}",
+    "${slack_bot}",
+    token,
+  ]) {
+    await assert.rejects(check(botToken), {
+      reason: "binding_required",
+      path: "/channels/slack/botToken",
+    });
+  }
+  assert.deepEqual(read, ["SLACK_BOT_TOKEN"]);
+});

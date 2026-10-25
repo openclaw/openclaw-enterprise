@@ -21,6 +21,23 @@ export const environmentReferenceNames = (text: string, { fallbacks = true } = {
     .map(([reference]) => reference.slice(2, reference.search(/[:}]/)));
 
 /**
+ * The variable `text` names when it is exactly one `${NAME}` reference the runtime substitutes,
+ * with no fallback and nothing else, not even spaces; otherwise undefined. OpenClaw reads such a
+ * secret-input value as the environment SecretRef to NAME (`parseEnvTemplateSecretRef` in
+ * `src/config/types.secrets.ts`), so a reader of SecretRefs can read it as one.
+ */
+export function wholeEnvironmentReferenceName(text: string): string | undefined {
+  const [first, ...others] = text.matchAll(environmentReference);
+  return first !== undefined &&
+    others.length === 0 &&
+    first[0] === text &&
+    first[1] === undefined &&
+    first[2] === undefined
+    ? environmentReferenceNames(text)[0]
+    : undefined;
+}
+
+/**
  * The first `${` in `text` that is not a reference the runtime substitutes, up to the `}` that
  * ends it, if any: a lowercase name, `${VAR-text}`, a fallback that holds `$` or `{`, or an
  * unclosed `${`. The runtime keeps that text as written. A `$${` is an escape and never counts,

@@ -80,8 +80,22 @@ export function grantMember(fixture, label, grants) {
  * Removes one [action, resourceKind] grant from member `label`'s Role, which must hold it.
  * Returns a function that restores the grants the Role held before.
  */
-export function revokeMemberGrant(fixture, label, [action, resourceKind]) {
-  const role = memberRole(fixture, label);
+export function revokeMemberGrant(fixture, label, grant) {
+  return revokeRoleGrant(memberRole(fixture, label), label, grant);
+}
+
+/**
+ * Removes one [action, resourceKind] grant from the Installation administrator Role the fixture
+ * seeds for its administrator account, which `login` signs in by default. Returns a restore
+ * function, as revokeMemberGrant does.
+ */
+export function revokeAdministratorGrant(fixture, grant) {
+  const role = fixture.policy.roles.find(({ name }) => name === "Installation administrator");
+  assert.ok(role, "the fixture's administrator has a Role");
+  return revokeRoleGrant(role, "the administrator", grant);
+}
+
+function revokeRoleGrant(role, holder, [action, resourceKind]) {
   const before = role.permissions;
   role.permissions = before.filter(
     (grant) => grant.action !== action || grant.resourceKind !== resourceKind,
@@ -89,7 +103,7 @@ export function revokeMemberGrant(fixture, label, [action, resourceKind]) {
   assert.notEqual(
     role.permissions.length,
     before.length,
-    `${label} holds ${action} ${resourceKind}`,
+    `${holder} holds ${action} ${resourceKind}`,
   );
   return () => {
     role.permissions = before;
