@@ -28,8 +28,10 @@ with repository access now stays in progress at
 `REPOSITORY_GIT_MATERIAL_PENDING` until GitHub issues the version's first
 repository token, usually a few seconds. If that request fails, for example
 GitHub rejects the App key or is unreachable, the deployment fails with
-`REPOSITORY_GIT_TOKEN_QUARANTINED`. Earlier builds reported `succeeded` while
-every Git request of that version failed.
+`REPOSITORY_GIT_TOKEN_QUARANTINED`, and the controller stops that version, so
+the Agent has no running version until a deployment succeeds. Earlier builds
+reported `succeeded` and kept the Agent running while every Git request of that
+version failed.
 
 **Who is affected.** API clients, scripts and alerts that wait for a native
 repository deployment or expect it to report `succeeded`.

@@ -303,7 +303,7 @@ The deployment's own Work then runs
 `REPOSITORY_GIT_MATERIAL_PENDING` until each open session has a committed token and fails with
 `REPOSITORY_GIT_TOKEN_QUARANTINED` when one holds a quarantined attempt, which is never
 prepared again. An unfinished attempt stays pending because its own run can still commit it.
-The runtime stays; maintenance skips this check
+The failed version is then retired like any failed repository version; maintenance skips this check
 ([reference](../reference/repository-credentials/prepared-native-git.md#deployment-and-the-first-token)).
 
 If standing Git evidence is missing, the worker keeps Git closed and observes the existing

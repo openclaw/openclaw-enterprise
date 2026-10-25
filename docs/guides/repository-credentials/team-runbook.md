@@ -219,14 +219,16 @@ Check the worker's `PREPARED_GITHUB_RECOVERY_REQUIRED` reason (`quarantined`, th
 `blocked`) for the affected revision and repository. That version has no usable
 Git token and the worker does not retry it. An active Agent or a working model
 reply does not prove Git access. On the native broker route, a new deployment
-fails with `REPOSITORY_GIT_TOKEN_QUARANTINED`. On the OpenShell route, it can
+fails with `REPOSITORY_GIT_TOKEN_QUARANTINED` and the Agent stops until a
+deployment succeeds. On the OpenShell route, it can
 wait at `REPOSITORY_GIT_MATERIAL_PENDING` and fail at its convergence deadline.
 
 Put a key GitHub accepts in `private-key.pem` of the Secret selected by
 `repositoryCredentials.appKeySecretName`, using the protected-input procedure in
 [installation](installation.md#prepare-the-registry-and-protected-inputs).
-Keep it worker-only. Allow the mounted Secret to update, then deploy a new
-revision of each affected Agent and verify a fresh fetch. The worker re-reads the
+Keep it worker-only. Wait about two minutes for the mounted Secret to update: a
+version deployed before then can still be signed with the rejected key and fail
+again. Then deploy a new revision of each affected Agent and verify a fresh fetch. The worker re-reads the
 key; restoring it alone does not reopen a quarantined preparation. The new revision
 gets material at once when GitHub refused the old attempt. If GitHub's answer was
 lost, it waits until no token from that attempt can be valid, 72 minutes after the

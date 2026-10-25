@@ -3543,9 +3543,17 @@ for (const outcome of ["ready", "quarantined"]) {
         { revision: { repositoryCredentials: repository.snapshot } },
       );
       const checked = [];
+      const stopped = [];
       let published = 0;
       let waiting;
-      await fixture.start(fixture.compute, {
+      const compute = {
+        ...fixture.compute,
+        async stopRevision(revision) {
+          stopped.push(revision.id);
+          return fixture.compute.stopRevision(revision);
+        },
+      };
+      await fixture.start(compute, {
         async repositoryGitMaterial(revisionId) {
           checked.push(revisionId);
           // Like the owner, nothing is issued before the pointer is published. The first check
@@ -3567,15 +3575,30 @@ for (const outcome of ["ready", "quarantined"]) {
       if (outcome === "ready") {
         assert.equal(status.status, "succeeded");
         assert.equal(status.error, null);
-      } else {
-        // No later pass prepares this version again, so the deployment fails at once instead of
-        // at its convergence deadline, and names the cause and the recovery.
-        assert.equal(status.status, "failed");
-        assert.equal(status.error.code, "REPOSITORY_GIT_TOKEN_QUARANTINED");
-        assert.match(status.error.message, /deploy a new version\.$/);
+        assert.equal((await fixture.activePointer(owner)).rows[0].active_revision_id, candidate.id);
+        assert.deepEqual(stopped, []);
+        return;
       }
-      // The published runtime stays for diagnosis; a new deployment replaces it.
-      assert.equal((await fixture.activePointer(owner)).rows[0].active_revision_id, candidate.id);
+      // No later pass prepares this version again, so the deployment fails at once instead of
+      // at its convergence deadline, and names the cause and the recovery.
+      assert.equal(status.status, "failed");
+      assert.equal(status.error.code, "REPOSITORY_GIT_TOKEN_QUARANTINED");
+      assert.match(status.error.message, /deploy a new version\.$/);
+      // Like any repository version that failed for good, its runtime is then retired: the
+      // runtime stops and the Agent has no active version until the next deployment.
+      await waitFor("the failed version's runtime retirement", async () =>
+        (
+          await fixture.observerPool.query(
+            `SELECT 1 FROM occ.controller_work
+             WHERE revision_id = $1 AND idempotency_key LIKE $2 AND state = 'succeeded'`,
+            [candidate.id, `agent_revision:${candidate.id}:repository_cleanup:retire:%`],
+          )
+        ).rowCount === 1
+          ? true
+          : undefined,
+      );
+      assert.deepEqual(stopped, [candidate.id]);
+      assert.equal((await fixture.activePointer(owner)).rows[0].active_revision_id, null);
     },
   );
 }
