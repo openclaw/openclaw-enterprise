@@ -48,6 +48,7 @@
         "the revision worker retries transient Backend binding read failures without activating",
         "an older revision retry is superseded without preparing or retiring a newer active revision",
         "an expired claim keeps a started deployment running under any controller clock",
+        "revision cleanup status reads queued until claimed, running between attempts and its result once recorded",
         "real PostgreSQL preserves the failure budget while an Agent runtime converges",
         "terminal Compute preparation persists failure and resumes exact cleanup after worker restart",
         "an overdue Agent runtime fails closed without activating its incomplete revision",
