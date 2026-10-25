@@ -367,7 +367,9 @@ test("A failed first version's page says nothing runs and offers one Create new 
     1,
   );
   const rail = page.getByRole("toolbar", { name: "Versions" });
-  await rail.getByRole("button", { name: "Next version (draft)", exact: true }).click();
+  await rail
+    .getByRole("button", { name: "View new version, editable Configuration", exact: true })
+    .click();
   await page.getByRole("heading", { name: "Create new version" }).waitFor();
   await liveServing.getByText("Not running", { exact: true }).waitFor();
 });

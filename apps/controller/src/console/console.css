@@ -2055,7 +2055,8 @@ select:not([multiple])[size="1"] {
   text-align: left;
   border-color: var(--line);
 }
-.version-item small {
+.version-item small,
+.revision-create small {
   color: var(--muted);
   font-size: var(--text-sm);
 }

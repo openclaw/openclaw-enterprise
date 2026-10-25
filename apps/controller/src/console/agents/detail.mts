@@ -1731,15 +1731,16 @@ export async function renderAgentDetail(
     revisionControls.clear();
     versionControls.clear();
     // Opening the draft is navigation. Saving a Configuration and deploying have their own permissions.
-    // The draft is an entry in the list, not a second "Create new version": the page header holds
-    // that action (finding 2403).
-    const newVersion = button(
-      "Next version (draft)",
-      () => change("draft", "configuration"),
-      {
-        className: "revision-create",
-        ...(selected === "draft" ? { "aria-current": "page" } : {}),
-      },
+    // The draft is an entry in the list, named as the chooser below names it, not a second
+    // "Create new version": the page header holds that action (finding 2403).
+    const newVersion = button("", () => change("draft", "configuration"), {
+      className: "revision-create",
+      "aria-label": "View new version, editable Configuration",
+      ...(selected === "draft" ? { "aria-current": "page" } : {}),
+    });
+    newVersion.append(
+      element("strong", {}, "New version"),
+      element("small", {}, "Editable Configuration"),
     );
     trackRevisionControl(newVersion);
     railFocusKeys.set(newVersion, "new");
