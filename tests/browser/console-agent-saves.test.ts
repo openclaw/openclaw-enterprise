@@ -257,10 +257,7 @@ test("an unbound Slack token is refused at save, under its picker and under the 
   const bot = dialog.getByLabel("Slack bot token", { exact: true });
   await dialog.getByText("Slack bot token is required.", { exact: true }).waitFor();
   assert.equal(await bot.getAttribute("aria-invalid"), "true");
-  assert.equal(
-    await bot.evaluate((node) => node === globalThis.document.activeElement),
-    true,
-  );
+  assert.equal(await bot.evaluate((node) => node === globalThis.document.activeElement), true);
   assert.deepEqual(nonAuthWriteRequests(requests), []);
   await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
 

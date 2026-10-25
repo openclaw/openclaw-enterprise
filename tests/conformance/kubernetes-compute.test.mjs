@@ -10231,19 +10231,22 @@ test("native channel providers require Secret bindings and project them only to 
       },
     };
     driver.validateConfiguration(values);
-    assert.throws(() => driver.validateConfiguration(values, undefined, {}), (error) => {
-      assert.equal(error.name, "ConfigurationHarnessError");
-      // A long name shortens the setting path to fit the cap.
-      assert.match(error.message, /^Configuration setting channels\.msteams\.accounts/);
-      assert.ok(
-        error.message.endsWith(
-          ` references ${shown} without a Configuration Secret binding: bind ${shown} in secretBindings to an environment-backed Secret, or remove the reference.`,
-        ),
-        error.message,
-      );
-      assert.ok(error.message.length <= 256, error.message);
-      return true;
-    });
+    assert.throws(
+      () => driver.validateConfiguration(values, undefined, {}),
+      (error) => {
+        assert.equal(error.name, "ConfigurationHarnessError");
+        // A long name shortens the setting path to fit the cap.
+        assert.match(error.message, /^Configuration setting channels\.msteams\.accounts/);
+        assert.ok(
+          error.message.endsWith(
+            ` references ${shown} without a Configuration Secret binding: bind ${shown} in secretBindings to an environment-backed Secret, or remove the reference.`,
+          ),
+          error.message,
+        );
+        assert.ok(error.message.length <= 256, error.message);
+        return true;
+      },
+    );
   }
 
   const ipv6 = createKubernetesComputeDriver(
