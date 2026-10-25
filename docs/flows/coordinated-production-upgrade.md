@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
 updated: "2026-10-25"
-last_updated_session: "authoring-run/6fccb13c-5ec3-44d5-aded-c3c3e9c1da81"
+last_updated_session: "authoring-run/f03f716e-ea13-48ab-ad6e-e179b342d585"
 ---
 
 # Production image upgrade flow
@@ -266,8 +266,8 @@ checks the exported inventory before following the recovery procedure. Empty
 
 - Inspect `server-dry-run.txt` for chart or admission failures before mutation,
   and `preflight-<api|worker>.log` and `-status.json` for a rejected candidate.
-- For OCC rollout failures, inspect `helm-upgrade.txt`, initialization Job logs,
-  and API and worker rollout status.
+- For native scale, Helm upgrade, and rollout status failures, inspect
+  `native-command-failures.tsv` as described in [upgrade recovery](../guides/deploy/production-upgrade-recovery.md).
 - For runtime failures, inspect `dispatch/*.error`, version history, and
   `status/*.json` before retrying anything. Doctor failures are recorded in
   `status/*.doctor.json` and `status/*.doctor.error`.
@@ -295,6 +295,8 @@ checks the exported inventory before following the recovery procedure. Empty
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-25 11:53: Record native scale, Helm upgrade, and rollout failures without changing recovery. (authoring-run/f03f716e-ea13-48ab-ad6e-e179b342d585 - 87784a3230964bd8a7a1763f8350c1fd2b4284e0)
 
 - 2026-10-25 09:19: Keep preflight kubectl errors in private evidence. (authoring-run/6fccb13c-5ec3-44d5-aded-c3c3e9c1da81 - aaabca1fec6b28fbbb674f48f11f015242f86b59)
 - 2026-10-25 06:51: Identify temporary preflight resources by UID before cleanup. (authoring-run/d15969fb-1113-416f-9573-e045dd683b66 - dd36945fec0ec3de38cd15b971537eb10a90d0e4)

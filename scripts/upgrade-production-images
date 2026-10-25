@@ -38,6 +38,17 @@ die() {
   exit "${2:-1}"
 }
 
+# Record only fixed operation/component labels and the native exit status.
+# This is a client failure observation, not evidence of whether a write committed.
+# Append so a later resume cannot erase an earlier unknown outcome.
+native_command_failed() {
+  local status=$1 operation=$2 component=$3
+  printf '%s\t%s\t%s\n' "$operation" "$component" "$status" \
+    >>"$evidence_dir/native-command-failures.tsv" ||
+    warn "could not append native-command-failures.tsv in the evidence directory."
+  die "$operation for $component exited $status; inspect native-command-failures.tsv and reconcile live state before resuming." "$status"
+}
+
 require_command() {
   command -v "$1" >/dev/null 2>&1 || die "required command $1 is unavailable."
 }
@@ -954,7 +965,8 @@ if ((helm_complete == 0)); then
       (.spec.replicas == 0 or .spec.replicas == 1)
     ' "$evidence_dir/current-$component-deployment.json" >/dev/null || die "$deployment has unexpected ownership or replicas."
     quiescence_remaining
-    "${kube[@]}" --request-timeout="${remaining_seconds}s" --namespace "$namespace" scale "deployment/$deployment" --replicas=0
+    "${kube[@]}" --request-timeout="${remaining_seconds}s" --namespace "$namespace" scale "deployment/$deployment" --replicas=0 ||
+      native_command_failed "$?" quiescence-scale "$component"
   done
   while true; do
     quiescence_remaining
@@ -999,14 +1011,19 @@ PYTHON
     verify_pair_nodes
   fi
   touch "$evidence_dir/helm-started"
-  helm upgrade --install "$release" deploy/helm/openclaw-enterprise "${helm_args[@]}" \
-    --values "$values" --wait --timeout 5m >"$evidence_dir/helm-upgrade.txt"
+  # Open stdout before entering the native failure handler.
+  {
+    helm upgrade --install "$release" deploy/helm/openclaw-enterprise "${helm_args[@]}" \
+      --values "$values" --wait --timeout 5m ||
+      native_command_failed "$?" helm-upgrade release
+  } >"$evidence_dir/helm-upgrade.txt"
 fi
 
 repository_enabled=$(yq -r '.repositoryCredentials.enabled // false' "$candidate_values")
 for component in api worker; do
   deployment="openclaw-enterprise-$component"
-  "${kube[@]}" --namespace "$namespace" rollout status "deployment/$deployment" --timeout=180s
+  "${kube[@]}" --namespace "$namespace" rollout status "deployment/$deployment" --timeout=180s ||
+    native_command_failed "$?" rollout-status "$component"
   "${kube[@]}" --namespace "$namespace" get "deployment/$deployment" --output json \
     >"$evidence_dir/after-$component-deployment.json"
   # The broker-enabled worker may be an ordinary container on the existing

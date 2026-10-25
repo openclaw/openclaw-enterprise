@@ -468,6 +468,14 @@ async function fakeCommand(root, { command: tool, args, cwd }, io) {
       out(args.includes("logs") ? pod.log : { status: pod.status ?? { phase: pod.phase } });
     } else if (args.includes("--raw=/readyz")) {
       out("ok");
+    } else if (args.includes("rollout")) {
+      const component = args
+        .find((arg) => arg.startsWith("deployment/"))
+        .split("-")
+        .at(-1);
+      if (take("fail-rollout-" + component)) {
+        return fail(9);
+      }
     } else if (args.includes("scale")) {
       const component = args
         .find((a) => a.startsWith("deployment/"))
@@ -1227,21 +1235,55 @@ test("resume reads an accepted Secret write before Helm and preserves its other 
 });
 
 test("resume recognizes a committed Helm release without rerunning its migration", async (t) => {
-  const f = await fixture(t);
-  await f.failNext("lost-helm-response");
-  await assert.rejects(f.run(), injectedFault);
-  await f.run("--resume");
-  assert.equal((await f.events()).filter((event) => event === "migration").length, 1);
+  for (const [fault, operation, component] of [
+    ["lost-helm-response", "helm-upgrade", "release"],
+    ["fail-rollout-api", "rollout-status", "api"],
+    ["fail-rollout-worker", "rollout-status", "worker"],
+  ]) {
+    await t.test(fault, async (subtest) => {
+      const f = await fixture(subtest);
+      await f.failNext(fault);
+      await assert.rejects(f.run(), (error) => {
+        assert.equal(error.code, 9);
+        assert.match(error.stderr, new RegExp(`${operation}.*${component}.*9`));
+        return true;
+      });
+      const receipt = `${operation}\t${component}\t9\n`;
+      const path = join(f.evidence, "native-command-failures.tsv");
+      assert.equal(await readFile(path, "utf8"), receipt);
+      assert.equal(statSync(path).mode & 0o777, 0o600);
+      // The native failure says nothing about acceptance: Helm committed in
+      // every case, and a readback must recover without another migration.
+      const state = await f.state();
+      assert.equal(state.version, 2);
+      assert.equal(state.helmStatus, "deployed");
+      assert.equal(state.api, 1);
+      assert.equal(state.worker, 1);
+      assert.equal(await readFile(join(f.evidence, "helm-started"), "utf8"), "");
+      await f.run("--resume");
+      assert.equal(await readFile(path, "utf8"), receipt);
+      assert.equal((await f.events()).filter((event) => event === "migration").length, 1);
+    });
+  }
 });
 
 test("an interrupted quiescence never starts migration while the worker still runs", async (t) => {
   const f = await fixture(t);
   await f.failNext("fail-scale-worker");
   await assert.rejects(f.run(), injectedFault);
+  const path = join(f.evidence, "native-command-failures.tsv");
+  const receipt = "quiescence-scale\tworker\t9\n";
+  assert.equal(await readFile(path, "utf8"), receipt);
   assert.equal((await f.state()).api, 0);
   assert.equal((await f.state()).worker, 1);
+  assert.equal(existsSync(join(f.evidence, "helm-started")), false);
   assert.deepEqual(await f.events(), ["scale-api"]);
+  // A later failed attempt appends its observation instead of erasing the first.
+  await f.failNext("fail-scale-worker");
+  await assert.rejects(f.run("--resume"), injectedFault);
+  assert.equal(await readFile(path, "utf8"), receipt + receipt);
   await f.run("--resume");
+  assert.equal(await readFile(path, "utf8"), receipt + receipt);
   assert.equal((await f.events()).filter((event) => event === "migration").length, 1);
 });
 
