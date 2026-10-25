@@ -4533,13 +4533,9 @@ export const scenarios = {
       repositories: [{ repositoryRef: "application" }],
     },
     repositoryBindings: [{ repositoryRef: "application", profile: "git-full" }],
-    rules: [
-      {
-        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/repository-options",
-        status: 503,
-        code: "REPOSITORY_OPTIONS_UNAVAILABLE",
-      },
-    ],
+    // Without repository settings, discovery answers 200 with no options and meta.notConfigured.
+    repositoryOptions: [],
+    repositoryNotConfigured: true,
     description:
       "The Installation has no Repo Driver: the tab names the setup step, links the runbook, offers no Retry, and keeps Save repository access disabled.",
     gap: "Simulated UI proof only; this preview does not configure a Repo Driver.",
@@ -7880,6 +7876,16 @@ export const scenarios = {
     stopNoSelection: true,
     description:
       "An absent selected version does not establish candidate cleanup. Explicit repeated Stop remains available; history is readable.",
+  },
+  stopFirstDeploymentFailed: {
+    group: "Components/Stop Agent",
+    name: "Failed first deployment",
+    path: draft,
+    deployed: true,
+    firstDeploymentFailed: true,
+    description:
+      "A failed first deployment leaves the Agent requested to run with no selected version, so Stop is disabled and says there is nothing to stop.",
+    gap: "Simulated UI proof only; this preview does not run a deployment.",
   },
   stopNeverDeployed: {
     group: "Components/Stop Agent",

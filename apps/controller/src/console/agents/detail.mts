@@ -1964,8 +1964,10 @@ export async function renderAgentDetail(
           : "",
       );
       setLiveServing(false);
+      stopPanel.setNothingRunning(false);
       return;
     }
+    stopPanel.setNothingRunning(latestDeploymentStatus === "failed" && !currentRevisionId);
     const label = latestDeploymentStatus ? outcomeLabel(latestDeploymentStatus) : undefined;
     // A superseded or stopped deployment is neutral: it raises no banner and says nothing about
     // serving.

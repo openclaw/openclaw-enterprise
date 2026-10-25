@@ -44,6 +44,8 @@ export function createAgentStop(
     noReadableVersions: boolean | null | undefined;
     versionLabel(id: string): string | undefined;
     used: boolean;
+    /** The detail page's answer: the latest deployment failed and no version was selected. */
+    nothingRunning: boolean;
   } = {
     agent,
     pending: false,
@@ -56,6 +58,7 @@ export function createAgentStop(
     versionLabel: () => undefined,
     // Set once this viewer opens Stop or refreshes here, so the row never vanishes under them.
     used: false,
+    nothingRunning: false,
   };
 
   // Focus lands here when the control that would take it is not rendered.
@@ -77,6 +80,9 @@ export function createAgentStop(
 
   function render() {
     const requested = state.agent.desiredRuntimeState === "stopped";
+    // A first deployment that failed leaves the Agent requested to run with no version
+    // selected: Stop would change nothing, so it is disabled and says why (finding 2385).
+    const idle = state.nothingRunning && !requested && !state.agent.activeRevisionId;
     // A running Agent's row is the title, its sentence and Stop; the overview already shows the
     // current version. After a stop request the row reports what Refresh reads back.
     feedback.replaceChildren(
@@ -107,6 +113,15 @@ export function createAgentStop(
             ),
           ]
         : []),
+      ...(idle && !state.forbidden
+        ? [
+            statusBlock(
+              "info",
+              null,
+              "No version is running, so there is nothing to stop. Deploy a new version to start this Agent.",
+            ),
+          ]
+        : []),
       ...(state.forbidden ? [statusBlock("info", null, permissionNotice)] : []),
       ...(state.notice ? [statusBlock("info", null, state.notice)] : []),
       ...(state.error
@@ -122,7 +137,7 @@ export function createAgentStop(
           ]
         : []),
     );
-    stop.disabled = requested || state.pending || state.needsRefresh || state.forbidden;
+    stop.disabled = requested || state.pending || state.needsRefresh || state.forbidden || idle;
     repeat.disabled = state.pending || state.needsRefresh || state.forbidden;
     refresh.disabled = state.pending;
     refresh.textContent = state.pending ? "Checking…" : "Refresh stop status";
@@ -444,6 +459,14 @@ export function createAgentStop(
         return;
       }
       state.noReadableVersions = value;
+      render();
+    },
+    // The detail page reports whether its latest deployment failed with no version selected.
+    setNothingRunning(value: boolean) {
+      if (state.nothingRunning === value) {
+        return;
+      }
+      state.nothingRunning = value;
       render();
     },
     // `label(id)` names a version as the page does ("v3"), or is undefined when unlisted. Only a

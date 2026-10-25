@@ -572,10 +572,12 @@ test("Repository discovery supports a dedicated-only Compute Driver without admi
 test("Missing repository composition cannot hide denied or unavailable IAM", async (t) => {
   const f = await fixture(t, { repositories: false });
   const path = `${f.collection}/repository-options`;
-  const unavailable = await f.request("GET", path);
-  assert.equal(unavailable.status, 503, JSON.stringify(unavailable));
-  assert.equal(unavailable.error.code, "REPOSITORY_OPTIONS_UNAVAILABLE");
-  assert.equal(unavailable.error.message, "Repository options are unavailable.");
+  // No repository settings is a fixed Installation state, not an outage (finding 2387): the
+  // authorized read answers no options and says why instead of a 503 on every Agent page.
+  const notConfigured = await f.request("GET", path);
+  assert.equal(notConfigured.status, 200, JSON.stringify(notConfigured));
+  assert.deepEqual(notConfigured.data, []);
+  assert.equal(notConfigured.meta.notConfigured, true);
 
   f.iamState.restrictions.push({
     id: "deny-create-without-repositories",
@@ -1138,9 +1140,11 @@ test("Repository capability remains optional when no repository Backend or Drive
   assert.equal((await f.request("GET", f.collection)).data.length, 1, "no Agent was created");
   const unchanged = await f.request("GET", `${f.collection}/${agent.id}`);
   assert.equal(Object.hasOwn(unchanged.data, "repositoryBindings"), false);
+  // Without a repository Driver, discovery answers no options before the Compute check.
   const options = await f.request("GET", `${f.collection}/repository-options`);
-  assert.equal(options.status, 503, JSON.stringify(options));
-  assert.equal(options.error.code, "REPOSITORY_OPTIONS_UNAVAILABLE");
+  assert.equal(options.status, 200, JSON.stringify(options));
+  assert.deepEqual(options.data, []);
+  assert.equal(options.meta.notConfigured, true);
   // A binding stored before the Installation dropped its repository settings has no approval
   // scope to review: nothing can approve it, so the review lists none instead of the refusal.
   await f.state.transact((unit) =>

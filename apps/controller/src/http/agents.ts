@@ -147,7 +147,7 @@ async function listRepositoryOptions({
       allowedProfiles,
       ...(description === undefined ? {} : { description }),
     })),
-    meta: { requestId: request.id },
+    meta: { requestId: request.id, ...(result.notConfigured ? { notConfigured: true } : {}) },
   });
 }
 

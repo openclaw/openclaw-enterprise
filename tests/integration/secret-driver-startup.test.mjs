@@ -5,7 +5,7 @@ import { KubernetesSecretDriver } from "../../apps/controller/src/drivers/secret
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { createInstallationDriverConfiguration as installation } from "../helpers/installation-driver-configuration.mjs";
 import { loadInstallationFile } from "../helpers/installation-file.mjs";
-import pg from "pg";
+import { testPool } from "../helpers/postgres-database.mjs";
 
 test("secret-driver-startup constructs the bundled KubernetesSecretDriver from Installation YAML", async (t) => {
   const drivers = await loadInstallationFile(t, installation());
@@ -22,8 +22,7 @@ test("secret-driver-startup constructs the bundled KubernetesSecretDriver from I
   assert.equal(drivers.secretDriver.id, "secret-kubernetes");
   assert.equal(drivers.secretDriver.implementation, "occ/kubernetes-secret");
 
-  const pool = new pg.Pool({ connectionString: "postgresql://127.0.0.1:1/occ" });
-  t.after(async () => pool.end());
+  const pool = testPool(t, { connectionString: "postgresql://127.0.0.1:1/occ" });
   assert.doesNotThrow(() =>
     createControllerWorker({
       pool,

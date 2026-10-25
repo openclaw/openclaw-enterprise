@@ -79,8 +79,8 @@ Use **Dedicated** for Slack on the same Agent; follow the
 [same-Agent Console sequence](../reference/console/repository-access.md#use-repositories-and-slack-on-the-same-agent)
 for channels, credentials and deployment. Repository profiles and model
 authentication are separate. If repository discovery fails, **Create Agent**
-stays blocked until discovery succeeds. The exception is
-`503 REPOSITORY_OPTIONS_UNAVAILABLE` with no repositories selected: you can save
+stays blocked until discovery succeeds. The exception is an Installation without
+repository access or `503 REPOSITORY_OPTIONS_UNAVAILABLE`, with no repositories selected: you can save
 an ordinary draft, but cannot start guided provisioning. Other errors still
 block creation. Creation and deployment recheck Namespace repository policy;
 see [repository discovery](../reference/console/repository-access.md#discover-and-select-repositories).

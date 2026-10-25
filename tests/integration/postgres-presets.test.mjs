@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { InMemoryPlatformState } from "../../packages/occ/src/state/platform-state.ts";
-import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
 import { startController, request } from "../helpers/postgres-platform-state.mjs";
 
 const identifier = (kind) => `${kind}_${randomUUID()}`;
@@ -143,12 +143,9 @@ test(
   requiresPostgres,
   async (context) => {
     const api = await startController(context);
-    const [{ Pool }, { PostgresPlatformState }] = await Promise.all([
-      import("pg"),
-      import("../../packages/occ/src/state/postgres-state.ts"),
-    ]);
-    const pool = new Pool({ connectionString: databaseUrl });
-    context.after(() => pool.end());
+    const { PostgresPlatformState } =
+      await import("../../packages/occ/src/state/postgres-state.ts");
+    const pool = testPool(context, { connectionString: databaseUrl });
     const state = new PostgresPlatformState(pool);
     const namespace = {
       id: identifier("ns"),
@@ -189,13 +186,10 @@ test(
   "PostgreSQL Presets survive reopening and enforce names, ownership, and Namespace deletion",
   requiresPostgres,
   async (context) => {
-    const [{ Pool }, { PostgresPlatformState }] = await Promise.all([
-      import("pg"),
-      import("../../packages/occ/src/state/postgres-state.ts"),
-    ]);
-    const pool = new Pool({ connectionString: databaseUrl });
-    const secondPool = new Pool({ connectionString: databaseUrl });
-    context.after(() => Promise.all([pool.end(), secondPool.end()]));
+    const { PostgresPlatformState } =
+      await import("../../packages/occ/src/state/postgres-state.ts");
+    const pool = testPool(context, { connectionString: databaseUrl });
+    const secondPool = testPool(context, { connectionString: databaseUrl });
     const { preset, otherNamespace } = await exercisePresets(
       new PostgresPlatformState(pool),
       new PostgresPlatformState(secondPool),
