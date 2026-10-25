@@ -12,6 +12,10 @@ export const FormNamespaceBecomesReady = story("createFormNamespaceBecomesReady"
 export const FormNamespaceFailed = story("createFormNamespaceFailed");
 export const FormNamespaceMissing = story("createFormNamespaceMissing");
 export const CreateForm = { ...story("createForm"), name: "OpenAI with Codex harness" };
+export const CreateRepositoryNotConfigured = {
+  ...story("createRepositoryNotConfigured"),
+  name: "Repository access not set up",
+};
 export const CreateInvalidConfiguration = {
   ...story("createInvalidConfiguration"),
   name: "Invalid Configuration JSON",
