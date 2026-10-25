@@ -1135,7 +1135,8 @@ test("Provisioning names the placement setting a Codex-bound Preset cannot work 
 // so the preflight did not run: the form saved the Preset's model Secret and registered the source,
 // then provisioning answered the fixed 409 and left both behind (finding 2406). The preflight now
 // names the source type's login mode and refuses before either write, for a Secret the Preset
-// saves and for a Secret the form only registers.
+// saves and for a Secret the form only registers. The fixture's Sandbox Driver refuses Embedded
+// execution, so the form trims the placement advice here too (finding 2419).
 async function assertGatewayPreflightRefusal({ page, origin, namespace, calls }) {
   const requests = apiRequests(page, origin);
   const root = `${origin}/namespaces/${namespace.id}`;
@@ -1149,14 +1150,8 @@ async function assertGatewayPreflightRefusal({ page, origin, namespace, calls })
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   const response = await first;
   assert.equal(response.url(), `${root}/agents/validate`);
-  assert.equal(response.status(), 400);
   assert.deepEqual(response.request().postDataJSON().harnessAuth, { method: "api_key" });
-  const alert = page.getByRole("alert").filter({ hasText: "Dedicated Agents need" });
-  await alert.waitFor();
-  assert.match(
-    await alert.textContent(),
-    /^Dedicated Agents need gateway routing and node enrollment in this Installation's Kubernetes Compute configuration\./,
-  );
+  await assertPlacementRequirement(page, response);
   await page.getByRole("button", { name: "Create Agent", disabled: false }).waitFor();
   assert.equal(pathRequests(requests, "POST", `/namespaces/${namespace.id}/secrets`).length, 0);
   assert.equal(
