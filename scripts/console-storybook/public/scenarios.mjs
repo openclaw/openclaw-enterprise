@@ -1682,6 +1682,15 @@ export const scenarios = {
       "Choose Reset template and confirm to restore the standard runtime settings for the selected model.",
     ],
   },
+  createRepositoryNotConfigured: {
+    group: "Pages/Create Agent",
+    name: "Repository access not set up",
+    path: create,
+    actions: form,
+    repositoryNotConfigured: true,
+    description:
+      "An Installation without repository access: the intro offers a model and Slack, not repository access, and the Repository access card links its setup.",
+  },
   createInvalidConfiguration: {
     group: "Pages/Create Agent",
     name: "Invalid Configuration JSON",

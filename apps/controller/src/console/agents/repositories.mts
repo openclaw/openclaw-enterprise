@@ -1151,5 +1151,7 @@ export function createRepositoryFields(
     blocksCreate,
     /** Repository access is not set up in this Installation: only an empty selection saves. */
     notConfigured: () => state.discovery === "not-configured",
+    /** The Installation has no repository access to offer: the section shows only its setup link. */
+    unavailable: () => state.discovery === "draft-only" || state.discovery === "not-configured",
   };
 }

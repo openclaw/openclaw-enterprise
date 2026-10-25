@@ -28,6 +28,7 @@ import {
   openAdvancedSettings,
   routeInstallationProvisioning,
   routeInstallationWithoutProvisioning,
+  waitForProvisioningFailure,
 } from "./console-agents-test-support.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
@@ -1984,7 +1985,9 @@ test("Create Agent drops the Pod quota line when the deployment read is denied",
     }).observe(globalThis.document.body, { childList: true, subtree: true });
   });
   await page.getByRole("button", { name: "Create Agent" }).click();
-  await page.getByText("Provisioning failed.", { exact: true }).waitFor();
+  // Wide enough that the page is wider than the form (finding 2423).
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await waitForProvisioningFailure(page);
   assert.equal(read, reads.length);
   assert.equal(deploymentReads, 3);
   assert.deepEqual(await page.evaluate(() => globalThis.provisioningWrites), [
@@ -1993,7 +1996,6 @@ test("Create Agent drops the Pod quota line when the deployment read is denied",
     "Provisioning Agent…",
     quotaFull,
     "Provisioning Agent…",
-    "Provisioning failed.",
   ]);
 });
 
