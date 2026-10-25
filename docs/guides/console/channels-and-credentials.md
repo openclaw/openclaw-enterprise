@@ -116,11 +116,12 @@ This section appears when Slack is enabled in the saved Configuration.
 | **Slack app token** / **Slack bot token** pickers | Select a readable Namespace Secret or **Create new Secret...**. Missing tokens need a selected binding.          |
 | **Save channel Secrets**                          | Saves Configuration Secret bindings, grants the Agent access, and requires an explicit deployment to apply them. |
 
-The pickers bind only `SLACK_APP_TOKEN` and `SLACK_BOT_TOKEN`, and only the keys the Slack
-tokens read. HTTP mode reads no app token, so it shows only the **Slack bot token** picker. When
-the tokens read other keys, for example named accounts or other `${NAME}` references, the section
-lists each key as **Bound** or **Missing** without pickers. Bind them through the Configuration
-API; **Deploy new version** waits until each is bound. If the API refuses a save for a channel
+The pickers bind only `SLACK_APP_TOKEN` for the app token and `SLACK_BOT_TOKEN` for the bot
+token, and only the keys the Slack tokens read. HTTP mode reads no app token, so it shows only the
+**Slack bot token** picker. When the tokens read other keys, for example named accounts, other
+`${NAME}` references or each other's key, the section lists each key as **Bound** or **Missing**
+without pickers. Bind them through the Configuration API; **Deploy new version** waits until each
+is bound and the Agent can use its Secret. **Retry Secret access** stays available for them. If the API refuses a save for a channel
 setting, the panel shows the API's message, which names the setting. Fix that setting in the
 Configuration JSON on the Configuration tab. If the message asks for a Secret binding of another
 name, bind that name through the Configuration API.

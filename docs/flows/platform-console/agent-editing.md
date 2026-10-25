@@ -224,7 +224,8 @@ session sends no grant and says access was not verified until **Reload draft**. 
 also reads Namespace IAM to mark a bound Slack Secret without an Agent grant.
 `apps/controller/src/console/agents/credentials.mjs:missingChannelCredentialGroups` reads each
 token's key as the Slack Channel Driver does, and in HTTP mode each name the app token references;
-standard keys get pickers only when every key is one. A 400 that
+pickers appear only when each token reads its own standard key. Grant checks cover every listed
+key. A 400 that
 `apps/controller/src/console/agents/list.mjs:channelBindingRefusal` matches shows the API's
 message and where to fix it.
 An uncertain PATCH blocks another

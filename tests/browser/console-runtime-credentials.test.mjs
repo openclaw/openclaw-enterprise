@@ -578,7 +578,7 @@ test("Slack credential gate reads the keys the default account's tokens name", a
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
   await page
     .getByText(
-      "The Slack tokens read keys this form does not bind: it binds only SLACK_APP_TOKEN and SLACK_BOT_TOKEN. Bind the keys listed above through the Configuration API.",
+      "The token pickers bind only SLACK_APP_TOKEN for the app token and SLACK_BOT_TOKEN for the bot token. These Slack tokens read the keys listed above: bind them through the Configuration API.",
     )
     .waitFor();
   const rows = page.locator("section.channel-secrets .credential-status-list");
@@ -588,6 +588,105 @@ test("Slack credential gate reads the keys the default account's tokens name", a
   ]);
   assert.deepEqual(await rows.locator("dd").allTextContents(), ["Bound", "Bound"]);
   assert.equal(await page.getByRole("button", { name: "Save channel Secrets" }).count(), 0);
+  await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
+});
+
+// Each picker is labelled with the token it binds. Tokens that read each other's standard key
+// would bind the bot token's Secret under the app token picker's label, so the tab lists the keys
+// instead of offering role-labelled pickers.
+test("swapped standard Slack token keys get the list, not role-labelled pickers", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Swapped Slack token gate", { ready: true });
+  const [appSecret, botSecret] = await existingSlackSecrets(fixture, namespace.id);
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Swapped Slack Token Agent",
+    nativeValues("swapped-slack-tokens", {
+      harnessId: "codex",
+      channels: {
+        slack: { ...slack, appToken: "${SLACK_BOT_TOKEN}", botToken: "${SLACK_APP_TOKEN}" },
+      },
+    }),
+    {
+      executionMode: "dedicated",
+      secretBindings: {
+        SLACK_APP_TOKEN: envBinding(botSecret),
+        SLACK_BOT_TOKEN: envBinding(appSecret),
+      },
+    },
+  );
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
+  await page.getByText(/^The token pickers bind only/).waitFor();
+  const rows = page.locator("section.channel-secrets .credential-status-list");
+  assert.deepEqual(await rows.locator("dt").allTextContents(), [
+    "SLACK_APP_TOKEN",
+    "SLACK_BOT_TOKEN",
+  ]);
+  assert.equal(await page.getByLabel("Slack app token").count(), 0);
+  assert.equal(await page.getByLabel("Slack bot token").count(), 0);
+  await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
+});
+
+// The Agent needs a grant on every Secret its tokens read, not only those the pickers bind. An
+// Installation administrator's console reads that grant for listed keys too: a missing one marks
+// the row, holds Deploy and offers Retry Secret access, which grants it without saving bindings.
+test("a listed Slack key without the Agent's grant holds Deploy and offers Retry", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Listed Slack grant", { ready: true });
+  const [appSecret, botSecret] = await existingSlackSecrets(fixture, namespace.id);
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Listed Slack Grant Agent",
+    nativeValues("listed-slack-grant", {
+      harnessId: "codex",
+      channels: { slack: { ...slack, botToken: "${ACME_SLACK_BOT}" } },
+    }),
+    {
+      executionMode: "dedicated",
+      secretBindings: {
+        SLACK_APP_TOKEN: envBinding(appSecret),
+        ACME_SLACK_BOT: envBinding(botSecret),
+      },
+    },
+  );
+  // Remove the app token Secret's grant, as an administrator revoking it would.
+  const policyPath = `/namespaces/${namespace.id}/iam`;
+  const listed = await fixture.request("GET", `${policyPath}/access-bindings`);
+  const appGrant = listed.data.find(
+    (binding) =>
+      binding.subjectId === agent.servicePrincipalId && binding.resourceId === appSecret.id,
+  );
+  assert.ok(appGrant, "createAgent grants the bound app token Secret");
+  const removed = await fixture.request("DELETE", `${policyPath}/access-bindings/${appGrant.id}`);
+  assert.ok([200, 204].includes(removed.status), `binding removal answered ${removed.status}`);
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
+  const badges = page.locator("section.channel-secrets .credential-status-list .badge");
+  await page.getByText("Bound · Agent access not confirmed", { exact: true }).waitFor();
+  assert.deepEqual(await badges.allTextContents(), ["Bound", "Bound · Agent access not confirmed"]);
+  await page.getByText("Resolve the saved Secret access grant before deploying.").waitFor();
+  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
+  await page.getByRole("button", { name: "Retry Secret access" }).click();
+  await page
+    .getByText(
+      "This Agent can use its saved Slack Secrets. Deploy the new version to deliver them.",
+    )
+    .waitFor();
+  assert.deepEqual(await badges.allTextContents(), ["Bound", "Bound"]);
+  assert.deepEqual(await secretGrants(fixture, requests, namespace.id, agent), [appSecret.id]);
+  // Retry writes no Configuration.
+  assert.deepEqual(
+    pathRequests(
+      requests,
+      "PATCH",
+      `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+    ),
+    [],
+  );
   await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
 });
 
@@ -629,7 +728,7 @@ test("an HTTP-mode Slack account keeps the bot token picker alone", async (t) =>
   assert.equal(await page.getByLabel("Slack app token").count(), 0);
   const rows = page.locator("section.channel-secrets .credential-status-list");
   assert.deepEqual(await rows.locator("dt").allTextContents(), ["Slack bot token"]);
-  await expectNoText(page, /keys this form does not bind/);
+  await expectNoText(page, /The token pickers bind only/);
   await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
   // Rotating the bot token saves with only its picker filled.
   await selectSecret(page, "Slack bot token", replacement);
