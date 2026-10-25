@@ -580,7 +580,10 @@ export async function renderAgentDetail(
   // Agent-side saves (plugins, authentication source, repository access) are Agent updates;
   // Configuration saves need Configuration update, its own bit (findings 1530, 2421). A draft
   // refresh reads the answer again, so a grant applies without a page Refresh (finding 1538).
-  let agentSaveDenied = callerPermissionsRead.then(agentSaveDenial);
+  // The note names a Harness authentication ServiceAccount's read when the Agent uses one.
+  let agentSaveDenied = callerPermissionsRead.then((permissions) =>
+    agentSaveDenial(permissions, agent),
+  );
   // Only the latest reread's answer replaces the summary.
   let permissionsRereads = 0;
   // The newest reread whose operate answer the page's controls show.
@@ -618,7 +621,7 @@ export async function renderAgentDetail(
         );
   // Agent-side saves (plugins, authentication source, repository access) would be refused: the
   // answer denies Agent update or a grant each Agent update also checks (finding 2441).
-  const agentReadOnly = () => agentSaveDenial(callerPermissions) !== undefined;
+  const agentReadOnly = () => agentSaveDenial(callerPermissions, agent) !== undefined;
   // Channel saves that replace a bound Secret keep the draft changeable (finding 2444).
   const draftReadOnly = () => agentReadOnly() && channelsReadOnly();
   // Draft views that follow Configuration update. Nothing waits for an answer: a view drawn
@@ -3258,7 +3261,9 @@ export async function renderAgentDetail(
       updateCurrentAgent(freshAgent, latestRevisionResult, viewedSnapshot);
     }
     // The rebuilt editors take the fresh answer.
-    agentSaveDenied = rereadPermissions().then(agentSaveDenial);
+    agentSaveDenied = rereadPermissions().then((permissions) =>
+      agentSaveDenial(permissions, agent),
+    );
     const next = loadDetails();
     const data = await next;
     if (!context.isCurrent() || deleting || !data) {

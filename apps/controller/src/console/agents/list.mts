@@ -1,4 +1,5 @@
 import type {
+  Agent,
   AgentCallerPermissionsResponse,
   AgentDeploymentStatusWire,
   Namespace,
@@ -238,12 +239,18 @@ export const AGENT_CONFIGURATION_READ_DENIED =
 // also checks on what the Agent and its Configuration bind (finding 2441).
 export const AGENT_SOURCES_DENIED =
   "Saving these settings needs operate on each Secret and credential source this Agent and its Configuration bind, which your access does not include. Ask an administrator for that access.";
+// Shown instead when the Agent uses a ServiceAccount for Harness authentication: each Agent update
+// also checks read on it, and the answer does not say which of the grants is missing (finding
+// 2459).
+export const AGENT_SOURCES_SERVICE_ACCOUNT_DENIED =
+  "Saving these settings needs operate on each Secret and credential source this Agent and its Configuration bind, and read on the ServiceAccount it uses for Harness authentication. Your access does not include all of them. Ask an administrator for that access.";
 
 // Why the permission answer says an Agent-side save would be refused, or undefined when it allows
 // the save or is unknown. Each Agent update also needs Configuration read and checks the caller's
 // grant on every source the Agent and its Configuration bind (finding 2441).
 export function agentSaveDenial(
   permissions: Static<typeof AgentCallerPermissionsResponse>["data"] | null | undefined,
+  agent?: Partial<Pick<Agent, "harnessAuth">>,
 ): string | undefined {
   if (permissions?.update === false) {
     return AGENT_UPDATE_DENIED;
@@ -251,7 +258,13 @@ export function agentSaveDenial(
   if (permissions?.configurationRead === false) {
     return AGENT_CONFIGURATION_READ_DENIED;
   }
-  return permissions?.agentSourcesOperate === false ? AGENT_SOURCES_DENIED : undefined;
+  if (permissions?.agentSourcesOperate !== false) {
+    return undefined;
+  }
+  const harnessAuth = agent?.harnessAuth;
+  return harnessAuth?.method === "codex_pat" && harnessAuth.source.kind === "service_account"
+    ? AGENT_SOURCES_SERVICE_ACCOUNT_DENIED
+    : AGENT_SOURCES_DENIED;
 }
 
 // Marks a 403 from a save so message() names the grants it needs: the save's own when the

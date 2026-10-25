@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { stripTypeScriptTypes } from "node:module";
@@ -728,6 +729,34 @@ test("the Agent sources answer matches what a real Agent update checks", async (
   assert.equal(withoutUpdate.configurationRead, true);
   assert.equal(withoutUpdate.agentSourcesOperate, false);
   assertApiError(await save(), 403, "FORBIDDEN");
+
+  // A ServiceAccount used for Harness authentication is checked with read, not operate: every
+  // update reads it, so the answer needs that grant too (finding 2459).
+  editor.permissions.push({ action: "update", resourceKind: "agent" });
+  // Issuance is outside this test: the account is seeded through State as the console tests do.
+  const account = await fixture.controller.transact((state) =>
+    state.serviceAccounts.createServiceAccount({
+      id: `sa_${randomUUID()}`,
+      namespaceId: namespace.id,
+      name: "Harness account",
+    }),
+  );
+  const switched = await fixture.request("PATCH", agentPath, {
+    body: {
+      configurationId: agent.configurationId,
+      harnessAuth: {
+        method: "codex_pat",
+        source: { kind: "service_account", namespaceId: namespace.id, id: account.id },
+      },
+    },
+  });
+  assert.equal(switched.status, 200, JSON.stringify(switched.body));
+  // Operate on every bound Secret and Configuration read, but no ServiceAccount read.
+  assert.equal(await answer(), false);
+  assertApiError(await save(), 403, "FORBIDDEN");
+  grant("agent-sources-account", "read", "service_account", account.id);
+  assert.equal(await answer(), true);
+  assert.equal((await save()).status, 200);
 });
 
 test("console static routes expose only public assets and preserve API JSON failures", async (t) => {
