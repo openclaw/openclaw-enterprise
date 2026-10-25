@@ -474,6 +474,21 @@ test("Changing a Preset model keeps explicit and inherited roster selections dep
         await page.locator("#create-agent-form").evaluate((form: HTMLElement) => {
           form.dataset.kept = "";
         });
+        // A read that answers differently on return makes the console rebuild the form from the
+        // kept draft instead of mounting the retained view again. Repository discovery's fixed
+        // composition 503 is one such answer.
+        await page.route(`**/namespaces/${namespace.id}/agents/repository-options`, (route) =>
+          route.fulfill({
+            status: 503,
+            contentType: "application/json",
+            body: JSON.stringify({
+              error: {
+                code: "REPOSITORY_OPTIONS_UNAVAILABLE",
+                message: "Repository options are unavailable.",
+              },
+            }),
+          }),
+        );
         await page.getByRole("link", { name: "← Agents" }).click();
         await page.waitForURL(/\/console\/agents(\?|$)/);
         await page.getByRole("button", { name: "Create Agent", exact: true }).click();
@@ -2161,6 +2176,10 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
     [],
     "navigation must not save the local draft",
   );
+  // A retained draft revalidates the Preset read on return; saving never reads it again.
+  const presetPath = `/namespaces/${namespace.id}/presets/${preset.data.id}`;
+  const presetReads = pathRequests(requests, "GET", presetPath).length;
+  assert.ok(presetReads >= 1);
   // Canceling Start over keeps the ordinary draft and its ability to save.
   page.once("dialog", (dialog) => dialog.dismiss());
   await page.getByRole("button", { name: "Start over" }).click();
@@ -2225,10 +2244,7 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
   assert.equal(saved.data.values.plugins.entries.knowledge.config.marker, "changed");
   assert.deepEqual(saved.data.values.plugins.entries.knowledge.config.thresholds, [5, 6]);
   assert.equal(configurationPostRequests(requests, namespace.id).length, 1);
-  assert.equal(
-    pathRequests(requests, "GET", `/namespaces/${namespace.id}/presets/${preset.data.id}`).length,
-    1,
-  );
+  assert.equal(pathRequests(requests, "GET", presetPath).length, presetReads);
 
   await page.waitForURL((url) => url.pathname === `/console/agents/${created.id}`);
   await page.getByRole("tab", { name: "Credentials", exact: true }).click();
