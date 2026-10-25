@@ -1021,9 +1021,27 @@ test("the Namespace Secret answer names the readable Secrets Agent creation woul
   const created = await createAgent("Created create agent", configuration.data.id, spares[0]);
   assert.equal(created.status, 201);
 
-  // Without Namespace read the answer is refused like the Namespace permission answer, before
-  // anything is listed.
-  const unreadNamespace = await member(
+  // Without Namespace read the answer is refused and audited exactly like the Namespace
+  // permission answer, whether or not the caller may create Agents, and so is an unknown
+  // Namespace (finding 2478): the probe reveals nothing the Namespace answer does not.
+  const permissionsPath = `/namespaces/${namespace.id}/permissions`;
+  const missingNamespace = "/namespaces/ns_00000000-0000-4000-8000-000000000000/permissions";
+  const sameAsNamespaceAnswer = async (session, path) => {
+    const outcome = async (suffix) => {
+      const before = denials().length;
+      const response = await fixture.request("GET", path + suffix, { session });
+      return {
+        status: response.status,
+        code: response.body?.error?.code,
+        denials: denials().length - before,
+      };
+    };
+    const namespaceAnswer = await outcome("");
+    assert.equal(namespaceAnswer.status, 403);
+    assert.equal(namespaceAnswer.denials, 1);
+    assert.deepEqual(await outcome("/secrets"), namespaceAnswer);
+  };
+  const creatorWithoutRead = await member(
     "create-secret-answer-no-namespace-read",
     [
       ["create", "agent"],
@@ -1031,11 +1049,12 @@ test("the Namespace Secret answer names the readable Secrets Agent creation woul
     ],
     readable,
   );
-  assertApiError(
-    await fixture.request("GET", answerPath, { session: unreadNamespace.session }),
-    403,
-    "FORBIDDEN",
-  );
+  const stranger = await member("create-secret-answer-stranger", [["read", "configuration"]], []);
+  for (const { session } of [creatorWithoutRead, stranger]) {
+    await sameAsNamespaceAnswer(session, permissionsPath);
+    await sameAsNamespaceAnswer(session, missingNamespace);
+  }
+  await sameAsNamespaceAnswer(creator.session, missingNamespace);
 
   // An IAM failure on a Secret's operate decision is not a denial: the whole answer is
   // unavailable, so the console keeps every Secret choosable instead of marking some.
