@@ -65,6 +65,7 @@ import {
   ServiceAccountDriverNotConfiguredError,
 } from "../../packages/occ/src/index.ts";
 import {
+  AGENT_NAME_CONFLICT,
   DEPENDENCY_UNAVAILABLE,
   GENERIC_DENIAL,
   NAMESPACE_NOT_READY,
@@ -75,8 +76,6 @@ import {
 // Text that must never reach a client: the mappings below that answer with fixed text are
 // checked with an error carrying this message.
 const INTERNAL = "internal detail: postgres row agent_abc in ns_secret";
-const AGENT_NAME_CONFLICT =
-  "An Agent with this name already exists in this Namespace. Choose a different name.";
 const agentResource = { kind: "agent", id: "agt_1", namespaceId: "ns_1" };
 
 function apiError(statusCode) {

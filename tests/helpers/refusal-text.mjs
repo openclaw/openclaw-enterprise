@@ -10,6 +10,10 @@ export const DEPENDENCY_UNAVAILABLE = "A required platform dependency is unavail
 export const RESOURCE_CONFLICT = "The requested platform resource already exists.";
 export const RESOURCE_NOT_FOUND = "The requested platform resource was not found.";
 export const NAMESPACE_NOT_READY = "The requested Namespace is not ready.";
+// Agent create, its preflight and provisioning refuse a name another Agent in the Namespace has
+// (AGENT_NAME_CONFLICT in errors.ts); a provisioning job that loses the name race reports it too.
+export const AGENT_NAME_CONFLICT =
+  "An Agent with this name already exists in this Namespace. Choose a different name.";
 
 // Kubernetes Compute refuses a Dedicated Agent the Installation cannot place (no gateway routing
 // or node enrollment) at Agent save, provisioning and Create Agent's preflight. A Codex Agent

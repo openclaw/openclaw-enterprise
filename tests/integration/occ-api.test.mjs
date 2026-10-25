@@ -39,6 +39,7 @@ import { createTestConfigurationDriver } from "../helpers/configuration-driver.m
 import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { jsonLineDestination } from "../helpers/json-lines.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import { AGENT_NAME_CONFLICT } from "../helpers/refusal-text.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { availablePort } from "../helpers/available-port.mjs";
@@ -1871,10 +1872,7 @@ test("Create Agent's preflight refuses what Configuration and Agent create would
   const taken = await createAgent(controller, namespace.id, "taken-agent");
   const duplicate = await validate({}, { name: "taken-agent" });
   assertApiError(duplicate, 409, "RESOURCE_CONFLICT");
-  assert.equal(
-    duplicate.body.error.message,
-    "An Agent with this name already exists in this Namespace. Choose a different name.",
-  );
+  assert.equal(duplicate.body.error.message, AGENT_NAME_CONFLICT);
   for (const extra of [{ name: "free-agent" }, {}]) {
     const free = await validate({}, extra);
     assert.equal(free.status, 204, JSON.stringify(free.body));
@@ -5521,10 +5519,7 @@ test("OCC Fastify enforces strict schemas, canonical errors, and its real 64 KiB
   });
   assertApiError(duplicateAgent, 409, "RESOURCE_CONFLICT");
   // The caller chose only the name, so the conflict says the name is taken here.
-  assert.equal(
-    duplicateAgent.body.error.message,
-    "An Agent with this name already exists in this Namespace. Choose a different name.",
-  );
+  assert.equal(duplicateAgent.body.error.message, AGENT_NAME_CONFLICT);
 
   for (const configurationId of [null, [], "invalid"]) {
     const invalidCreation = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {

@@ -62,6 +62,7 @@ import {
   waitForProvisioningFailure,
 } from "./console-agents-test-support.mjs";
 import {
+  AGENT_NAME_CONFLICT,
   GENERIC_DENIAL,
   NAMESPACE_NOT_READY,
   RESOURCE_CONFLICT,
@@ -232,7 +233,7 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
   const failures = [
     {
       code: "PROVISIONING_REJECTED",
-      message: "An Agent with this name already exists in this Namespace. Choose a different name.",
+      message: AGENT_NAME_CONFLICT,
     },
     {
       code: "PROVISIONING_DEPENDENCY_UNAVAILABLE",
@@ -414,9 +415,7 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
   await page.getByLabel("Agent name").fill("Taken name");
   await page.getByRole("button", { name: "Create Agent" }).click();
   await page
-    .getByText(
-      "An Agent with this name already exists in this Namespace. Choose a different name. Select Create Agent to submit a new request.",
-    )
+    .getByText(`${AGENT_NAME_CONFLICT} Select Create Agent to submit a new request.`)
     .waitFor();
   assert.equal(await retry.isVisible(), false);
   await waitForEnabled(page.getByLabel("Agent name"));
@@ -2063,8 +2062,6 @@ test("Agent creation shows the API's duplicate-name conflict, a not-ready Namesp
   const agentsUrl = `${fixture.origin}/namespaces/${namespace.id}/agents`;
   const agentPost = (response: Response) =>
     response.url() === agentsUrl && response.request().method() === "POST";
-  const sentence =
-    "An Agent with this name already exists in this Namespace. Choose a different name.";
 
   // The preflight refuses a name another Agent has with create's 409, before the form saves a
   // Configuration it could no longer change, and marks the name field (finding 2420).
@@ -2074,7 +2071,7 @@ test("Agent creation shows the API's duplicate-name conflict, a not-ready Namesp
   );
   await page.getByRole("button", { name: "Create Agent" }).click();
   assert.equal((await preflight).status(), 409);
-  await page.getByRole("alert").filter({ hasText: sentence }).waitFor();
+  await page.getByRole("alert").filter({ hasText: AGENT_NAME_CONFLICT }).waitFor();
   await assertAgentNameTaken(page);
   assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
   assert.equal(agentPostRequests(requests, namespace.id).length, 0);
@@ -2151,12 +2148,11 @@ test("Agent creation shows the API's duplicate-name conflict, a not-ready Namesp
   const rejected = page.waitForResponse(agentPost);
   await page.getByRole("button", { name: "Create Agent" }).click();
   assert.equal((await rejected).status(), 409);
-  const feedback = page.getByRole("alert").filter({ hasText: sentence });
+  const feedback = page.getByRole("alert").filter({ hasText: AGENT_NAME_CONFLICT });
   await feedback.waitFor();
-  assert.match(
-    (await feedback.textContent()) ?? "",
-    /^An Agent with this name already exists in this Namespace\. Choose a different name\.( Request ID: req_[0-9a-f-]+)?$/,
-  );
+  const feedbackText = (await feedback.textContent()) ?? "";
+  assert.ok(feedbackText.startsWith(AGENT_NAME_CONFLICT), feedbackText);
+  assert.match(feedbackText.slice(AGENT_NAME_CONFLICT.length), /^( Request ID: req_[0-9a-f-]+)?$/);
   const name = page.getByLabel("Agent name");
   const create = page.getByRole("button", { name: "Create Agent" });
   await page.getByRole("button", { name: "Create Agent", disabled: false }).waitFor();
@@ -2290,9 +2286,7 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
   await page
     .getByText(`Configuration saved: ${savedConfiguration.data.id}.`, { exact: false })
     .waitFor();
-  await page
-    .getByText("An Agent with this name already exists in this Namespace. Choose a different name.")
-    .waitFor();
+  await page.getByText(AGENT_NAME_CONFLICT).waitFor();
   assert.equal(
     await page
       .getByRole("heading", {
