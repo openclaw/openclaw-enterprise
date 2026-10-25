@@ -29,6 +29,12 @@ const NO_CURRENT_VERSION_DENIALS =
   "Policy denials come from deployed versions. This Agent has no current version.";
 const NO_CURRENT_VERSION_SUGGESTIONS =
   "Suggestions come from deployed versions. This Agent has no current version.";
+// A version that runs without a Sandbox has no Sandbox log, so there are no denials to read: the
+// read would answer 400 "no such runtime log source" (finding 2484).
+const NO_SANDBOX_DENIALS =
+  "This Agent version runs without a Sandbox, so no policy denials are recorded for it.";
+const NO_SANDBOX_SUGGESTIONS =
+  "Suggestions come from policy denials. This Agent version runs without a Sandbox, so it has none.";
 type LogLine = Extract<RuntimeLogRecord, { type: "line" }>;
 
 function errorText(cause: unknown, subject: string) {
@@ -134,12 +140,16 @@ export function renderAgentSandboxPolicy(
     revisionId,
     descriptor,
     policyReadAllowed,
+    sandboxLogSource,
   }: {
     agent: Pick<Agent, "id" | "namespaceId" | "activeRevisionId" | "desiredRuntimeState">;
     revisionId: string;
     descriptor?: DriverConfigurationDescriptor;
     // The caller's advisory sandbox policy read answer; undefined when it is unknown.
     policyReadAllowed?: Promise<boolean | undefined>;
+    // Whether the viewed version has a Sandbox log source, from its snapshot; undefined when it
+    // is unknown, which reads the log and lets its answer decide.
+    sandboxLogSource?: Promise<boolean | undefined>;
   },
 ) {
   const path = `${namespacePath(agent.namespaceId)}/agents/${encodeURIComponent(agent.id)}`;
@@ -184,6 +194,26 @@ export function renderAgentSandboxPolicy(
   let suggestionsReading = false;
   // A permission refusal is not retried from here: the same request gets the same answer.
   let suggestionsDenied = false;
+  // Set once the viewed version is known to have no Sandbox log source.
+  let noSandboxLog = false;
+  async function sandboxLogMissing() {
+    if (
+      !noSandboxLog &&
+      (await Promise.resolve(sandboxLogSource).catch(() => undefined)) === false
+    ) {
+      noSandboxLog = true;
+    }
+    return noSandboxLog;
+  }
+  function showNoSandboxDenials() {
+    follow.checked = false;
+    clearTimeout(logTimer);
+    records = [];
+    logsLoaded = false;
+    count.textContent = "Denials in the loaded window: none recorded";
+    logStatus.textContent = NO_SANDBOX_DENIALS;
+    logRows.replaceChildren();
+  }
   // Set when the caller's permission answer denies sandbox policy read: the policy and its
   // suggestions are not read, so a reader meets no 403 and no refusal block (finding 2454).
   let policyReadDenied = false;
@@ -288,6 +318,12 @@ export function renderAgentSandboxPolicy(
     if (!(await policySupported()) || reading) {
       return;
     }
+    if (await sandboxLogMissing()) {
+      if (current()) {
+        showNoSandboxDenials();
+      }
+      return;
+    }
     clearTimeout(logTimer);
     reading = true;
     if (restart) {
@@ -315,6 +351,12 @@ export function renderAgentSandboxPolicy(
       renderLogs();
     } catch (error) {
       if (!current()) {
+        return;
+      }
+      if (requestFailure(error).code === "RUNTIME_LOGS_SOURCE_UNAVAILABLE") {
+        // The snapshot could not say; the answer does, and it is the same for every read.
+        noSandboxLog = true;
+        showNoSandboxDenials();
         return;
       }
       follow.checked = false;
@@ -401,6 +443,13 @@ export function renderAgentSandboxPolicy(
       return;
     }
     if (!(await policySupported()) || suggestionsReading) {
+      return;
+    }
+    if (await sandboxLogMissing()) {
+      if (current()) {
+        suggestionStatus.textContent = NO_SANDBOX_SUGGESTIONS;
+        renderSuggestions();
+      }
       return;
     }
     clearTimeout(suggestionTimer);

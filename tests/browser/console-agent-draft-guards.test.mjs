@@ -167,6 +167,27 @@ test("Policy denials says once that the Sandbox Driver lacks per-Agent network p
   assert.equal(await page.getByText("does not support per-Agent network policy").count(), 1);
 });
 
+// A version a Sandbox Driver provisioned names it in its snapshot, so the Policy denials tab reads
+// its Sandbox log. Only a version without one skips the read (finding 2484).
+test("Policy denials reads the Sandbox log of a version a Sandbox Driver provisioned", async (t) => {
+  const { fixture, namespace, agent } = await createPolicyConsole(t);
+  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const snapshot = await fixture.request("GET", `${agentPath}/revisions/${revision.id}`);
+  assert.equal(snapshot.data.sandboxDriverId, "policy-openshell");
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revision.id, "policy"));
+  await waitForCondition(
+    () =>
+      requests.some(({ path }) =>
+        path.startsWith(`${agentPath}/deployments/${revision.id}/runtime/logs?source=sandbox`),
+      ),
+    "the Sandbox log is read",
+  );
+  assert.equal(await page.getByText(/runs without a Sandbox/).count(), 0);
+});
+
 // A member whose grants do not include the Agent's SandboxPolicy gets a refusal; Retry would only
 // ask again for the same answer (finding 2060). With a permission answer the console skips the
 // read instead (finding 2454), so the answer is withheld here to reach the API's refusal.

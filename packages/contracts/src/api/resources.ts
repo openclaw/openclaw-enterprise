@@ -1283,6 +1283,13 @@ export const AgentRevisionSchema = Type.Object(
       { id: Type.String({ minLength: 1 }), implementation: Type.String({ minLength: 1 }) },
       { additionalProperties: false },
     ),
+    sandboxDriverId: Type.Optional(
+      Type.String({
+        minLength: 1,
+        description:
+          "The Sandbox Driver that provisions this version. Absent when the version runs without a Sandbox, so it has no Sandbox log source and records no policy denials.",
+      }),
+    ),
     secretDriverId: Type.Optional(Type.String({ minLength: 1 })),
     secretBindings: Type.Optional(SecretBindings),
     plugins: Type.Optional(

@@ -178,7 +178,9 @@ suggestion reads continue under their own permissions. It cannot leave those rea
 waiting for a policy request that never starts. When the caller's permission answer
 reports `sandboxPolicyRead` as `false`, the console skips the policy and suggestion
 reads and says so; an unknown answer keeps the reads. A tab opened after the answer
-settled rereads it first, so a later grant applies.
+settled rereads it first, so a later grant applies. A version snapshot without
+`sandboxDriverId` runs without a Sandbox, so the tab skips its log and suggestion reads
+and says no denials are recorded. A `RUNTIME_LOGS_SOURCE_UNAVAILABLE` answer shows the same.
 
 ## Debugging and Verification
 

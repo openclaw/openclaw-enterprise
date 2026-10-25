@@ -2,7 +2,8 @@
 
 Open an Agent in the OCE console, select its running version, and choose
 **Policy denials**. You need the Agent's existing Sandbox log permissions to see
-observed denials. Policy reads and changes have independent permissions; see the
+observed denials. A version that runs without a Sandbox records none, and the tab
+says so. Policy reads and changes have independent permissions; see the
 [policy reference](../../reference/sandbox-policies.md).
 
 1. Read **Denials in the loaded window** and any gap notices. Expand a row for
