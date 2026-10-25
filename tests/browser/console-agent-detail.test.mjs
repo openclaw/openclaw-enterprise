@@ -4293,6 +4293,49 @@ test("a late permission answer turns a reader's Channels and Channel Secrets rea
   );
 });
 
+// A tab parked before the answer landed is shown again with the answer applied (finding 2421).
+test("a Channels tab parked before a reader's permission answer returns read-only", async (t) => {
+  const { fixture, namespace } = await createRuntimeAuthFixture(t, "Parked reader tab");
+  const agent = await fixture.createAgent(namespace.id, "Parked reader Agent", nativeValues("v1"), {
+    harnessAuth: { method: "runtime" },
+  });
+  const reader = await fixture.createNamespaceMember("parked-reader", namespace.id, [
+    ["read", "namespace"],
+    ["read", "agent"],
+    ["read", "agent_revision"],
+    ["read", "configuration"],
+  ]);
+  const path = "/namespaces/" + namespace.id + "/agents/" + agent.id;
+  const { page } = await newPage(t, fixture);
+  const firstPermissions = await holdRequests(t, page, `${fixture.origin}${path}/permissions`, {
+    afterServer: true,
+    once: true,
+  });
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "channels"),
+    reader.credentials,
+  );
+  await firstPermissions.requested;
+  await page.getByText(/^Save and Disable update only the shared Configuration draft\./).waitFor();
+  // Park the editor's Channels view, then let the answer land on the Configuration tab.
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await page.getByRole("button", { name: "Edit Configuration" }).waitFor();
+  firstPermissions.release();
+  await page
+    .getByText("Your access does not include editing this Configuration.", { exact: true })
+    .waitFor();
+  await page.getByRole("tab", { name: "Channels", exact: true }).click();
+  await page
+    .getByText(
+      "These are the version draft’s channel settings. Your access does not include editing this Configuration.",
+      { exact: true },
+    )
+    .waitFor();
+  await expectNoText(page, /^Save and Disable update only the shared Configuration draft\./);
+});
+
 // A draft refresh reads the permission answer again. When the reread revokes Configuration
 // update after the rebuilt tab was drawn, the notice, the Versions entry and the Configuration
 // tab turn read-only without a page Refresh (finding 2421).

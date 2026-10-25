@@ -3333,6 +3333,8 @@ export async function renderAgentDetail(
       // The deployment may have settled while this tab was parked.
       renderVersionNotice();
       retained.resumeDrafts?.();
+      // So may a permission answer that changes Configuration access (finding 2421).
+      redrawConfigurationAccessViews();
       return;
     }
     showDraftEditorNavigationBlock = showBlockInPanel;
