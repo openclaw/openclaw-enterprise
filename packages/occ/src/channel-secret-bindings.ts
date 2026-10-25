@@ -93,13 +93,59 @@ export function requireChannelSecretBindings(
 const configuredValue = (value: unknown): boolean =>
   typeof value === "string" ? value.trim().length > 0 : value !== undefined && value !== null;
 
+/** A Slack account OpenClaw starts: its id (none for the implicit default account), its own settings and those merged over the channel's. */
+export interface SlackAccountTarget {
+  readonly account?: string;
+  readonly own: Readonly<Record<string, unknown>>;
+  readonly config: Readonly<Record<string, unknown>>;
+}
+
 /**
- * The first Slack token that is a SecretRef the Slack Channel Driver refuses with
+ * The Slack accounts OpenClaw starts from `channels.slack`, which the Slack Channel Driver checks
+ * and the Slack token rule mirrors: each named account, over the channel's settings, and the
+ * implicit default account from the channel's own tokens when there are no named accounts, or
+ * when none is called "default" and the channel configures a bot token (and an app token,
+ * outside HTTP mode).
+ */
+export function slackAccountTargets(
+  slack: Readonly<Record<string, unknown>>,
+): SlackAccountTarget[] {
+  const accounts = asRecord(slack.accounts) ?? {};
+  const named = Object.entries(accounts);
+  const implicitDefault =
+    named.length === 0 ||
+    (!Object.hasOwn(accounts, "default") &&
+      configuredValue(slack.botToken) &&
+      (slack.mode === "http" || configuredValue(slack.appToken)));
+  return [
+    ...(implicitDefault ? [{ own: slack, config: slack }] : []),
+    ...named.map(([account, value]) => {
+      const own = asRecord(value) ?? {};
+      return { account, own, config: { ...slack, ...own } };
+    }),
+  ];
+}
+
+// What a Slack token object that the Slack Channel Driver cannot read holds, for its refusal: a
+// SecretRef when it names a source, else some other object (finding 2518). Only an env SecretRef
+// with the default provider, or none, and a non-empty id, is one the Driver reads.
+const unreadableSlackToken = (token: Record<string, unknown>): string | undefined =>
+  token.source === "env" &&
+  (token.provider === undefined || token.provider === "default") &&
+  typeof token.id === "string" &&
+  token.id.length > 0
+    ? undefined
+    : typeof token.source === "string"
+      ? "a SecretRef"
+      : "an object that is not a SecretRef";
+
+/**
+ * The first Slack token that is an object the Slack Channel Driver refuses with
  * `binding_required` at provisioning and deployment: any but an env SecretRef with the `default`
- * provider (`validateCredentials` in `apps/controller/src/drivers/channel/slack.ts`; finding
- * 2514). Mirrors the Driver's scope: the app and bot tokens of each enabled account it checks
- * (the implicit default account and each named account, which inherits the channel's tokens),
- * without the app token in HTTP mode. Names the setting that holds the value, never the value.
+ * provider and an id (`validateCredentials` in `apps/controller/src/drivers/channel/slack.ts`;
+ * finding 2514). The Configuration Driver accepts other objects there, so this rule names them. It checks the Driver's targets (`slackAccountTargets`): the app and bot tokens of each
+ * enabled account, without the app token in HTTP mode. Names the setting that holds the value,
+ * never the value.
  */
 function slackTokenRefusal(
   value: unknown,
@@ -109,45 +155,24 @@ function slackTokenRefusal(
   if (slack === undefined) {
     return undefined;
   }
-  const accounts = asRecord(slack.accounts) ?? {};
-  const named = Object.entries(accounts);
-  // OpenClaw starts an implicit default account from the channel's tokens unless a named
-  // account is called "default", as the Driver's check reads it.
-  const implicitDefault =
-    named.length === 0 ||
-    (!Object.hasOwn(accounts, "default") &&
-      configuredValue(slack.botToken) &&
-      (slack.mode === "http" || configuredValue(slack.appToken)));
-  const targets = [
-    ...(implicitDefault ? [{ own: slack, config: slack, path }] : []),
-    ...named.map(([id, account]) => {
-      const own = asRecord(account) ?? {};
-      return {
-        own,
-        config: { ...slack, ...own },
-        path: keyedSettingPath(keyedSettingPath(path, "accounts"), id),
-      };
-    }),
-  ];
-  for (const target of targets) {
-    if (target.config.enabled === false) {
+  for (const { account, own, config } of slackAccountTargets(slack)) {
+    if (config.enabled === false) {
       continue;
     }
     for (const role of ["appToken", "botToken"]) {
-      const token = asRecord(target.config[role]);
-      if (
-        token === undefined ||
-        (role === "appToken" && target.config.mode === "http") ||
-        (token.source === "env" && (token.provider === undefined || token.provider === "default"))
-      ) {
+      const token = asRecord(config[role]);
+      const held = token === undefined ? undefined : unreadableSlackToken(token);
+      if (held === undefined || (role === "appToken" && config.mode === "http")) {
         continue;
       }
       // An inherited token is written on the channel.
-      const holder = Object.hasOwn(target.own, role) ? target.path : path;
+      const holder =
+        account !== undefined && Object.hasOwn(own, role)
+          ? keyedSettingPath(keyedSettingPath(path, "accounts"), account)
+          : path;
       return {
         path: keyedSettingPath(holder, role),
-        requirement:
-          "holds a SecretRef the Slack Channel Driver cannot read: use an env SecretRef with provider default, or one whole ${NAME}, bound in secretBindings",
+        requirement: `holds ${held} the Slack Channel Driver cannot read: use an env SecretRef with provider default, or one whole \${NAME}, bound in secretBindings`,
       };
     }
   }

@@ -26,8 +26,8 @@ real Installation.
 **What breaks.** On the bundled Kubernetes Compute, Configuration create and
 update, provisioning, and `POST .../agents/validate` with
 `configuration.secretBindings` answer `400 INVALID_REQUEST` when a Slack
-`appToken` or `botToken` is a `file` or `exec` SecretRef, or an env SecretRef
-with a provider other than `default`. Earlier builds saved it, and the Slack
+`appToken` or `botToken` is a `file` or `exec` SecretRef, an env SecretRef
+with a provider other than `default`, or another object. Earlier builds saved it, and the Slack
 credential check then refused provisioning and deployment with
 `binding_required`. A stored Configuration in this state still reads; an update
 that keeps the token is refused, and its deployment can now fail with this

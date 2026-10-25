@@ -564,7 +564,12 @@ export {
   urlHoldsUserinfo,
 } from "./model-provider-settings.ts";
 export { requireOpenClawRoster } from "./openclaw-roster.ts";
-export { enabledChannelEntries, requireChannelSecretBindings } from "./channel-secret-bindings.ts";
+export {
+  enabledChannelEntries,
+  requireChannelSecretBindings,
+  slackAccountTargets,
+} from "./channel-secret-bindings.ts";
+export type { SlackAccountTarget } from "./channel-secret-bindings.ts";
 export {
   CODEX_APPROVAL_POLICY_SETTING,
   codexApprovalPolicy,
