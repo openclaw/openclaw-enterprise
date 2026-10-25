@@ -4010,6 +4010,7 @@ test("a version editor without Agent update can recover a failed deployment from
     operate: false,
     delete: false,
     configurationUpdate: true,
+    configurationRead: true,
     configurationSecretsOperate: true,
     agentSourcesOperate: false,
   });
@@ -4119,6 +4120,7 @@ test("a reader without update views the version draft read-only", async (t) => {
     operate: false,
     delete: false,
     configurationUpdate: false,
+    configurationRead: true,
     configurationSecretsOperate: false,
     agentSourcesOperate: false,
   });
@@ -4252,6 +4254,7 @@ test("an Agent editor without Configuration update sees the Configuration read-o
     operate: false,
     delete: false,
     configurationUpdate: false,
+    configurationRead: true,
     configurationSecretsOperate: false,
     agentSourcesOperate: true,
   });
@@ -4656,6 +4659,7 @@ test("a negative permission answer reaching an open Stop or Delete dialog preven
           operate: false,
           delete: false,
           configurationUpdate: false,
+          configurationRead: true,
           configurationSecretsOperate: false,
           agentSourcesOperate: false,
         },

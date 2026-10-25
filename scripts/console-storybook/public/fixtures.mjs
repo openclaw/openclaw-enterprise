@@ -1773,6 +1773,7 @@ export function installFixture(scenario, evidence) {
               operate: allowed,
               delete: allowed,
               configurationUpdate: allowed,
+              configurationRead: true,
               configurationSecretsOperate: allowed,
               agentSourcesOperate: allowed,
             },
