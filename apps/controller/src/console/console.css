@@ -2193,6 +2193,24 @@ select:not([multiple])[size="1"] {
   border-top: 0;
   padding-top: 0;
 }
+/* On an Agent's Repositories tab the tab card is the card: the picker keeps its own border and
+   background only on Create Agent, where it is a block among other fields (finding 2402). */
+.agent-card:not(.agent-form) > .repository-selection {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+}
+/* An empty status line in a tab card or the picker adds no band; it stays a live region. */
+.agent-card > .hint:empty,
+.repository-selection > .hint:empty {
+  margin: 0;
+}
+/* With no repository choices to list (repository access not set up), the empty list adds no
+   band above the access limits (finding 2402). */
+.repository-options:has(> .repository-discovery > #repository-results:only-child:empty) {
+  margin-top: 0;
+}
 .agent-form {
   max-width: 960px;
 }
@@ -3720,6 +3738,8 @@ select:not([multiple])[size="1"] {
   font-size: var(--text-xl);
   font-weight: var(--weight-semibold);
   padding-right: var(--space-3);
+  /* The heading's gap above the first field label (finding 2402). */
+  margin-bottom: var(--space-3);
 }
 .harness-auth-fields > .form-field {
   margin: 0 0 var(--space-4);

@@ -451,8 +451,9 @@ test("saving and reloading the authentication source update the Agent page in pl
     await page.getByRole("status").filter({ hasText: "Authentication source saved." }).waitFor();
     await waitForInputValue(secretField, secretOptionLabel(secret));
     assert.deepEqual(await kept(), { marker: "kept", reloadedText: [] });
-    assert.equal(await focusedText(page), "Save authentication source");
-    assert.equal(await focusedDescription(page), "Authentication source saved.");
+    // Save is disabled with nothing left to save, so the saved status takes focus (finding
+    // 2402), as on the Plugins tab.
+    assert.equal(await focusedText(page), "Authentication source saved.");
     // The staged-Secret hint is gone after the save, so the page may end one line shorter.
     const scrollAfter = await scrollY(page);
     assert.ok(
@@ -481,8 +482,76 @@ test("saving and reloading the authentication source update the Agent page in pl
   await page.getByRole("tab", { name: "Credentials", exact: true }).click();
   await waitForInputValue(secretField, secretOptionLabel(first));
   await saveAuthentication.waitFor();
-  await waitForEnabled(saveAuthentication);
   await waitForEnabled(reload);
+  // Nothing changed, so Save waits for an edit (finding 2402); the controls are not left off.
+  assert.equal(await saveAuthentication.isDisabled(), true);
+  await selectSecret(page, "API key Secret", second);
+  await waitForEnabled(saveAuthentication);
+});
+
+// The Credentials tab's heading touched its first label, and Save authentication source was
+// primary and enabled with nothing changed. The Repositories tab without repository access
+// nested the picker's card inside the tab's card (finding 2402).
+test("the Credentials and Repositories tabs are one card each and Save waits for a change", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "One card");
+  const first = await fixture.createSecret(namespace.id, "First harness Secret", "hidden-first");
+  const second = await fixture.createSecret(namespace.id, "Second harness Secret", "hidden-second");
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "One Card",
+    nativeValues("card", { harnessId: "codex" }),
+    { harnessAuth: { method: "api_key", source: first.ref }, executionMode: "dedicated" },
+  );
+  const page = await openTab(t, fixture, namespace, agent, "credentials");
+  const secretField = page.getByLabel("API key Secret");
+  await waitForInputValue(secretField, secretOptionLabel(first));
+  const gap = await page
+    .locator("fieldset.harness-auth-fields")
+    .evaluate(
+      (fieldset) =>
+        fieldset.querySelector("label")!.getBoundingClientRect().top -
+        fieldset.querySelector("legend")!.getBoundingClientRect().bottom,
+    );
+  assert.ok(gap >= 8, `the heading sits ${gap}px above the first label`);
+  const save = page.getByRole("button", { name: "Save authentication source" });
+  assert.equal(await save.isDisabled(), true);
+  await selectSecret(page, "API key Secret", second);
+  await waitForEnabled(save);
+  // Choosing the saved Secret again leaves nothing to save.
+  await selectSecret(page, "API key Secret", first);
+  await page
+    .locator("form.agent-card button.button--primary:disabled")
+    .filter({ hasText: "Save authentication source" })
+    .waitFor();
+
+  // This Installation has no repository settings: the tab shows one card, without the picker's
+  // own border and background inside it, and no empty band below its last block.
+  await page.getByRole("tab", { name: "Repositories", exact: true }).click();
+  const card = page.locator(".agent-card:has(> .repository-selection)");
+  await card
+    .getByText("Repository access is not available in this Installation's configuration.", {
+      exact: false,
+    })
+    .waitFor();
+  assert.deepEqual(
+    await card.evaluate((node) => {
+      const picker = node.querySelector<HTMLElement>(":scope > .repository-selection")!;
+      const style = getComputedStyle(picker);
+      const last = picker.querySelector(".repository-access-details")!.getBoundingClientRect();
+      const box = node.getBoundingClientRect();
+      return {
+        border: style.borderTopWidth,
+        background: style.backgroundColor,
+        band: Math.round(
+          box.bottom -
+            node.clientTop -
+            parseFloat(getComputedStyle(node).paddingBottom) -
+            last.bottom,
+        ),
+      };
+    }),
+    { border: "0px", background: "rgba(0, 0, 0, 0)", band: 0 },
+  );
 });
 
 // Refresh sharing, the Configuration editor's Cancel and the Create Agent shortcuts replaced or

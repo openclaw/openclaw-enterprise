@@ -3783,6 +3783,22 @@ export async function renderAgentDetail(
         account,
       }: AuthenticationFields) =>
         JSON.stringify({ method, secretSource, credentialSource, account });
+      // Save is offered once something changed, as on the other tabs (finding 2402). It stays
+      // enabled for an Agent with no saved source, whose form may preselect one, and while the
+      // saved Secret's grant is missing: saving the same source again grants it.
+      const sameAuthentication = (fields: AuthenticationFields, original: AuthenticationFields) =>
+        bindingFields(fields) === bindingFields(original) &&
+        JSON.stringify(fields.oauthLogin ?? null) === JSON.stringify(original.oauthLogin ?? null);
+      const refreshSave = () => {
+        if (pending || outcomeUnknown || updateDenied || savedAuthentication) {
+          return;
+        }
+        save.disabled =
+          Boolean(baseline.harnessAuth) &&
+          !savedGrantMissing &&
+          // A Secret chosen again is no change; a finished sign-in is.
+          sameAuthentication(auth.capture(), originalFields);
+      };
       syncUnsavedAuthentication = () => {
         // Pending and saved states already gate deployment with their own messages.
         data.setAuthenticationUnsaved(
@@ -3792,6 +3808,7 @@ export async function renderAgentDetail(
             bindingFields(auth.capture()) !== bindingFields(originalFields),
         );
         applySavedGrantWarning();
+        refreshSave();
       };
       // The IAM answer is about the saved Secret. A later selection is what Save would grant,
       // so the warning follows that selection: another Secret clears it, and returning to the
@@ -3884,6 +3901,7 @@ export async function renderAgentDetail(
       void data.harnessGrantMissing().then((missing) => {
         savedGrantMissing = missing;
         applySavedGrantWarning();
+        refreshSave();
       });
       form.addEventListener("submit", async (event) => {
         event.preventDefault();
