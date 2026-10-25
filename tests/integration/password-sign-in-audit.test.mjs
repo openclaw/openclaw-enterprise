@@ -20,6 +20,29 @@ const password = "audited-account-password";
 
 const secret = "password-sign-in-audit-secret-at-least-32-bytes";
 
+const REFUSED = "The caller did not provide valid authentication credentials.";
+const UNAVAILABLE =
+  "Sign-in is temporarily unavailable. Try again shortly. If it continues, ask an operator to check the API logs.";
+
+// An outage and a rate limit each say what happened; neither reads as a wrong password.
+function assertUnavailable(response) {
+  assert.equal(response.status, 503, JSON.stringify(response.payload));
+  assert.deepEqual(response.payload.error, {
+    code: "DEPENDENCY_UNAVAILABLE",
+    message: UNAVAILABLE,
+  });
+}
+
+function assertLimited(response) {
+  assert.equal(response.status, 429, JSON.stringify(response.payload));
+  const seconds = Number(response.headers["retry-after"]);
+  assert.ok(seconds >= 1 && seconds <= 60, String(seconds));
+  assert.deepEqual(response.payload.error, {
+    code: "RATE_LIMITED",
+    message: `Too many attempts. Wait ${seconds === 1 ? "1 second" : `${seconds} seconds`}, then try again.`,
+  });
+}
+
 function controller(audit, extra = {}) {
   const memoryDatabase = { user: [], session: [], account: [], verification: [], apikey: [] };
   const auth = createControllerAuth({
@@ -73,11 +96,12 @@ test("a password-only sign-in reports its outcome to the audit seam", async () =
   });
   const account = await auth.createAccount({ email, password });
   assert.equal((await signIn(auth, { email, password })).status, 200);
-  assert.equal((await signIn(auth, { email, password: "wrong-password-guess" })).status, 401);
-  assert.equal(
-    (await signIn(auth, { email: "nobody@example.test", password: "wrong-password-guess" })).status,
-    401,
-  );
+  // A wrong password and an unknown email get the same answer, so it names no account.
+  for (const guess of [email, "nobody@example.test"]) {
+    const refused = await signIn(auth, { email: guess, password: "wrong-password-guess" });
+    assert.equal(refused.status, 401);
+    assert.deepEqual(refused.payload.error, { code: "UNAUTHENTICATED", message: REFUSED });
+  }
   assert.deepEqual(outcomes, [["accepted", account.id], ["refused"], ["refused"]]);
   assert.equal(memoryDatabase.session.length, 1);
 });
@@ -95,13 +119,11 @@ test("a sign-in that fails on its dependency is 503, not an audited or counted r
       throw new Error("database unavailable");
     },
   });
-  const statuses = [];
-  for (let attempt = 0; attempt < 11; attempt += 1) {
-    statuses.push((await signIn(auth, { email, password: "wrong-password-guess" })).status);
-  }
   // Nothing was refused, so nothing is audited as a refusal and no budget is spent: the
   // email lane admits ten failures, so the eleventh attempt would be 429 if these counted.
-  assert.deepEqual(new Set(statuses), new Set([503]));
+  for (let attempt = 0; attempt < 11; attempt += 1) {
+    assertUnavailable(await signIn(auth, { email, password: "wrong-password-guess" }));
+  }
   assert.deepEqual(outcomes, []);
 });
 
@@ -200,16 +222,13 @@ test("a wrong password whose denial audit fails is 503 and still spends the budg
     { onOperationalEvent: (event) => events.push(event) },
   );
   await auth.createAccount({ email, password });
-  const statuses = [];
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    statuses.push((await signIn(auth, { email, password: "wrong-password-guess" })).status);
-  }
   // The audit outage is reported, never hidden behind a 401.
-  assert.deepEqual(new Set(statuses), new Set([503]));
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    assertUnavailable(await signIn(auth, { email, password: "wrong-password-guess" }));
+  }
   assert.equal(refusals, 10);
   // Every failed guess counted: the next attempt is refused before the password is checked.
-  const limited = await signIn(auth, { email, password: "wrong-password-guess" });
-  assert.equal(limited.status, 429, JSON.stringify(limited.payload));
+  assertLimited(await signIn(auth, { email, password: "wrong-password-guess" }));
   assert.equal(refusals, 10);
   assert.deepEqual(
     events.map(({ event, lane }) => [event, lane]),
@@ -249,16 +268,13 @@ test("guarded profile: a wrong password whose denial audit fails is 503 and stil
     humanLogin,
     onOperationalEvent: (event) => events.push(event),
   });
-  const statuses = [];
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    statuses.push((await signIn(auth, { email, password: "wrong-password-guess" })).status);
-  }
   // The audit outage is reported, never hidden behind a 401.
-  assert.deepEqual(new Set(statuses), new Set([503]));
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    assertUnavailable(await signIn(auth, { email, password: "wrong-password-guess" }));
+  }
   assert.equal(denials, 10);
   // Every failed guess counted: the next attempt is refused before the password is checked.
-  const limited = await signIn(auth, { email, password: "wrong-password-guess" });
-  assert.equal(limited.status, 429, JSON.stringify(limited.payload));
+  assertLimited(await signIn(auth, { email, password: "wrong-password-guess" }));
   assert.equal(denials, 10);
   assert.deepEqual(
     events.map(({ event, lane }) => [event, lane]),

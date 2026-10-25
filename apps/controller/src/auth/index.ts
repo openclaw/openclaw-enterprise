@@ -794,6 +794,43 @@ function safeAuthenticatedSession(response: unknown): AuthenticatedSession | und
   return { id, userId, expiresAt: expiry.toISOString() };
 }
 
+/** What an auth endpoint says when it fails: `refused` for a refusal, `action` names it. */
+interface AuthEndpointFailure {
+  /** The one answer to every refusal, so it says nothing about the account or the factor. */
+  readonly refused: string;
+  /** Names the operation in the outage answer, for example "Sign-in". */
+  readonly action: string;
+}
+
+function waitDuration(seconds: number): string {
+  return seconds === 1 ? "1 second" : `${seconds} seconds`;
+}
+
+// The status already tells a rate limit and an outage apart from a refusal, and Retry-After
+// already carries the wait, so these answers reveal nothing the refusal hides.
+function authFailureMessage(error: unknown, status: number, failure: AuthEndpointFailure): string {
+  // A malformed request names its offending field, as on every API route. Every caller
+  // checks the Origin before it reads any credential, so naming the refused Origin
+  // reveals nothing about the session or password; keep it that way, because the
+  // endpoint's own message would misdirect a CLI user.
+  if (error instanceof RequestFailure) {
+    return error.message;
+  }
+  if (error instanceof AdmissionFailure && error.reason === "untrusted_origin") {
+    return UNTRUSTED_ORIGIN_MESSAGE;
+  }
+  if (status === 429) {
+    // Only the password limiter sets a wait; the external sign-in budgets refill each minute.
+    return error instanceof SignInRateLimited
+      ? `Too many attempts. Wait ${waitDuration(error.retryAfterSeconds)}, then try again.`
+      : "Too many attempts. Wait a minute, then try again.";
+  }
+  if (status === 503) {
+    return `${failure.action} is temporarily unavailable. Try again shortly. If it continues, ask an operator to check the API logs.`;
+  }
+  return failure.refused;
+}
+
 async function sendAuthEndpoint(
   request: FastifyRequest,
   reply: FastifyReply,
@@ -803,7 +840,7 @@ async function sendAuthEndpoint(
     readonly status?: number;
   } | null>,
   data: (response: unknown) => unknown,
-  failureMessage: string,
+  failureText: AuthEndpointFailure,
   additionalCookies: readonly string[] = [],
 ): Promise<void> {
   try {
@@ -821,16 +858,7 @@ async function sendAuthEndpoint(
     reply.status(failure.status).send({
       error: {
         code: failure.code,
-        // A malformed request names its offending field, as on every API route. Every caller
-        // checks the Origin before it reads any credential, so naming the refused Origin
-        // reveals nothing about the session or password; keep it that way, because the
-        // endpoint's own message would misdirect a CLI user.
-        message:
-          error instanceof RequestFailure
-            ? error.message
-            : error instanceof AdmissionFailure && error.reason === "untrusted_origin"
-              ? UNTRUSTED_ORIGIN_MESSAGE
-              : failureMessage,
+        message: authFailureMessage(error, failure.status, failureText),
       },
       meta: { requestId: request.id },
     });
@@ -1393,7 +1421,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
             return runPrivateEndpoint(request, `/oce/providers/${name}/start`);
           },
           (value) => value,
-          `${label} sign-in could not be started.`,
+          { refused: `${label} sign-in could not be started.`, action: `${label} sign-in` },
         );
       },
       async callback(request: FastifyRequest, reply: FastifyReply): Promise<void> {
@@ -1440,7 +1468,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
             const sessionKey = (value as { readonly sessionKey?: unknown } | null)?.sessionKey;
             return { sessionKey: isNonEmptyString(sessionKey) ? sessionKey : null };
           },
-          `${label} sign-in could not be confirmed.`,
+          { refused: `${label} sign-in could not be confirmed.`, action: `${label} sign-in` },
         );
       },
     };
@@ -1581,7 +1609,10 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
           ? { authenticated: true, sessionKey }
           : { authenticated: true };
       },
-      "The caller did not provide valid authentication credentials.",
+      {
+        refused: "The caller did not provide valid authentication credentials.",
+        action: "Sign-in",
+      },
       hostOnlySessionCookieCleanup,
     );
   }
@@ -1626,7 +1657,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
         return current === undefined ? revoke() : withSessionAuthority(current.id, revoke);
       },
       (response) => response,
-      "The controller session could not be revoked.",
+      { refused: "The controller session could not be revoked.", action: "Sign-out" },
       hostOnlySessionCookieCleanup,
     );
   }
@@ -1649,7 +1680,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
         return result;
       },
       (response) => safeSessionResponse(response, options.secret),
-      "The controller session could not be resolved.",
+      { refused: "The controller session could not be resolved.", action: "The session check" },
     );
   }
 
