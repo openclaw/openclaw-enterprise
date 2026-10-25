@@ -157,6 +157,7 @@ import {
   keyedSettingPath,
   KubernetesSecretWriteForbiddenError,
   provisionsDedicatedOpenClaw,
+  requireChannelSecretBindings,
   requireOpenClawRoster,
   resolveConfiguredHarnessId,
   ResourceConflictError,
@@ -4493,9 +4494,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
     credentialSourceType?: CredentialSourceType,
   ): void {
     // Agent save passes null bindings and checks only what depends on the Agent. What the
-    // Installation provides (a Sandbox Driver for dedicated OpenClaw, the channel runtime) and
-    // the Configuration's channel bindings, which it may stage after its values, wait for
-    // deployment.
+    // Installation provides (a Sandbox Driver for dedicated OpenClaw, the channel runtime) waits
+    // for deployment, and so do the Configuration's channel bindings: OCC's Configuration save
+    // runs the same rule (requireChannelSecretBindings), and deployment repeats it for a row
+    // stored before that.
     const agentSave = secretBindings === null;
     if (!agentSave) {
       requireNativeWorkerSandbox(harness, this.sandboxDriver);
@@ -14470,64 +14472,28 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     );
   }
 
-  // Each enabled channel's credential references (`${NAME}` or an env SecretRef) need a
-  // Configuration Secret binding of that name. The error names the channel, not the reference.
+  // Deployment admission: requireChannelSecretBindings, the rule OCC's Configuration save runs,
+  // against the Configuration's bindings, read only once a channel holds a reference.
   private validateChannelSecretBindings(
-    configuration: OpenClawConfigurationDocument,
+    configuration: Readonly<OpenClawConfigurationDocument>,
     secretBindings: SecretBindings | undefined,
   ): void {
-    const channels = asRecord(configuration.channels) ?? {};
     let bindings: ReturnType<typeof normalizeSecretBindings> | undefined;
-    for (const provider of enabledChannelProviders(
+    requireChannelSecretBindings(
       configuration,
-      CHANNEL_PROVIDERS,
-      callerSettingError,
-    )) {
-      const required = new Set<string>();
-      this.collectChannelSecretBindingIds(channels[provider], required);
-      if (required.size === 0) {
-        continue;
-      }
-      if (bindings === undefined) {
-        try {
-          bindings = normalizeSecretBindings(secretBindings);
-        } catch {
-          throw new ConfigurationFailure("AgentRevision Secret bindings are invalid.");
+      enabledChannelProviders(configuration, CHANNEL_PROVIDERS, callerSettingError),
+      (name) => {
+        if (bindings === undefined) {
+          try {
+            bindings = normalizeSecretBindings(secretBindings);
+          } catch {
+            throw new ConfigurationFailure("AgentRevision Secret bindings are invalid.");
+          }
         }
-      }
-      if ([...required].some((id) => bindings![id] === undefined)) {
-        throw callerSettingError(
-          keyedSettingPath("channels", provider),
-          "uses a credential reference without a matching Configuration Secret binding: bind each referenced name in secretBindings",
-        );
-      }
-    }
-  }
-
-  private collectChannelSecretBindingIds(value: unknown, ids: Set<string>): void {
-    if (typeof value === "string") {
-      const match = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/.exec(value);
-      if (match !== null) {
-        ids.add(match[1]!);
-      }
-      return;
-    }
-    if (Array.isArray(value)) {
-      for (const item of value) {
-        this.collectChannelSecretBindingIds(item, ids);
-      }
-      return;
-    }
-    const record = asRecord(value);
-    if (record === undefined) {
-      return;
-    }
-    if (record.source === "env" && typeof record.id === "string" && record.id.length > 0) {
-      ids.add(record.id);
-    }
-    for (const item of Object.values(record)) {
-      this.collectChannelSecretBindingIds(item, ids);
-    }
+        return Object.hasOwn(bindings, name);
+      },
+      callerSettingError,
+    );
   }
 
   private channelNetworkPolicy(

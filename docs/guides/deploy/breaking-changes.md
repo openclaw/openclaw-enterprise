@@ -21,6 +21,26 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-25: Configuration save refuses an unbound channel credential reference
+
+**What breaks.** On the bundled Kubernetes Compute, Configuration create and update,
+provisioning, and `POST .../agents/validate` with `configuration.secretBindings`
+answer `400 INVALID_REQUEST` when an enabled channel has a `${NAME}` reference
+or environment SecretRef without a binding of that name. Earlier builds refused
+only at deployment. An update of a stored Configuration in this state is
+refused until it adds the bindings.
+
+**Who is affected.** Clients that save channel values before their bindings,
+and Agents whose stored Configuration has an unbound channel reference.
+
+**How to tell.** The message names the setting and the binding, for example
+`channels.slack.botToken references SLACK_BOT_TOKEN`.
+
+**Steps.** Send the values and their `secretBindings` in one request. For a
+stored Configuration, save both Slack Secrets on the Agent's **Credentials**
+tab; fix named Slack accounts and `msteams` through the API, sending the
+values with every binding they reference.
+
 ## 2026-10-25: provisioning refuses a taken Agent name with 409
 
 **What breaks.** `POST /namespaces/{namespaceId}/agents/provision` with a name

@@ -8,7 +8,7 @@ import { randomBytes } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
-import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
+import { cpuScaledImageTimeoutMs } from "../helpers/image-smoke-timeout.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import {
@@ -19,6 +19,7 @@ import {
   failureTail,
   createAdmittedRuntimeImageConfiguration,
   runGatewaySmoke,
+  waitForContainerReady,
 } from "../helpers/runtime-image-startup.mjs";
 import { eachSettled } from "../helpers/child-processes.mjs";
 
@@ -33,24 +34,24 @@ http.createServer((req, res) => {
 }).listen(18880, "127.0.0.1");
 `;
 
-async function waitForListenerReady(containerName, probe) {
-  let lastReadinessFailure = "No readiness probe ran.";
-  for (let attempt = 0; attempt < 80 * imageSmokeTimeoutMultiplier; attempt++) {
-    try {
-      await runDocker(["exec", containerName, "node", "-e", probe]);
-      return;
-    } catch (error) {
-      lastReadinessFailure = failureTail(error.message, 2048);
-      await new Promise((resolve) => setTimeout(resolve, 250));
-    }
+// One docker exec polls the listener (see waitForContainerReady). The wait scales
+// with the runner's CPUs: the lane's other files start runtimes at the same time
+// (finding 2448). The 90 s base keeps the former limit: 80 probes of about 1 s each.
+async function waitForListenerReady(containerName, request) {
+  try {
+    await waitForContainerReady(containerName, {
+      label: "Listener",
+      request,
+      timeoutMs: cpuScaledImageTimeoutMs(90_000),
+    });
+  } catch (error) {
+    const logs = await runDocker(["logs", containerName]).then(
+      (result) => failureTail(commandOutput(result)),
+      () => "Docker logs unavailable.",
+    );
+    error.message += `\nContainer logs:\n${logs}`;
+    throw error;
   }
-  const logs = await runDocker(["logs", containerName]).then(
-    (result) => failureTail(commandOutput(result)),
-    () => "Docker logs unavailable.",
-  );
-  throw new Error(
-    `Listener readiness timed out.\nLast readiness failure: ${lastReadinessFailure}\nContainer logs:\n${logs}`,
-  );
 }
 
 async function assertNoModelRequests(containerName) {
@@ -102,10 +103,11 @@ test(
           "OPENCLAW_POD_UID=owned-native-tls",
         ],
       });
-      const nativeProbe = enabled
-        ? `require("https").get({hostname:"127.0.0.1",port:8080,path:"/readyz",servername:"openclaw-gateway",ca:require("fs").readFileSync("/home/node/tls/cert.pem")},r=>{r.resume();process.exit(r.statusCode===200?0:1)}).on("error",()=>process.exit(1));`
-        : `fetch("http://127.0.0.1:8080/readyz").then(r=>process.exit(r.status===200?0:1)).catch(()=>process.exit(1));`;
-      await waitForListenerReady(containerName, nativeProbe);
+      // The TLS request reads the certificate the Gateway generates at startup.
+      const nativeRequest = enabled
+        ? `() => new Promise((resolve, reject) => require("https").get({hostname:"127.0.0.1",port:8080,path:"/readyz",servername:"openclaw-gateway",ca:require("fs").readFileSync("/home/node/tls/cert.pem"),timeout:5000},r=>{r.resume();resolve(r.statusCode)}).on("error",reject).on("timeout",function(){this.destroy(new Error("timeout"))}))`
+        : `() => fetch("http://127.0.0.1:8080/readyz",{signal:AbortSignal.timeout(5000)}).then(r=>r.status)`;
+      await waitForListenerReady(containerName, nativeRequest);
       const readiness = () =>
         runDocker([
           "exec",
@@ -200,7 +202,7 @@ test(
       );
       await waitForListenerReady(
         containerName,
-        'fetch("http://127.0.0.1:18791/readyz").then(r=>process.exit(r.status===200?0:1)).catch(()=>process.exit(1));',
+        '() => fetch("http://127.0.0.1:18791/readyz",{signal:AbortSignal.timeout(5000)}).then(r=>r.status)',
       );
       const inspected = JSON.parse((await runDocker(["inspect", containerName])).stdout)[0];
       const address = inspected.NetworkSettings.Networks[network].IPAddress;

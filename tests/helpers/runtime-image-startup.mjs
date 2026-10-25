@@ -273,19 +273,23 @@ export function createAdmittedRuntimeImageConfiguration(harnessId, options = {})
   );
 }
 
-// Polls /readyz inside the container every 250 ms until `process.argv[1]`
-// milliseconds pass, then names the last failure. One `docker exec` runs the
-// whole wait; it dies with the container if the Gateway exits.
-const gatewayReadinessProbe = `(async () => {
+// A `node -e` program that calls `request` (an async function's source that resolves
+// to an HTTP status) every 250 ms until it answers 2xx or `process.argv[1]`
+// milliseconds pass, then names the last failure. One `docker exec` runs the whole
+// wait, instead of a Node start per attempt, which the lane's other files would
+// share CPUs with (finding 2448); it dies with the container if the Gateway exits.
+function readinessProbe(request) {
+  return `(async () => {
+  const request = ${request};
   const deadline = Date.now() + Number(process.argv[1]);
   let last = "no attempt";
   for (;;) {
     try {
-      const response = await fetch("http://127.0.0.1:8080/readyz", { signal: AbortSignal.timeout(5000) });
-      if (response.ok) process.exit(0);
-      last = "HTTP " + response.status;
+      const status = await request();
+      if (status >= 200 && status < 300) process.exit(0);
+      last = "HTTP " + status;
     } catch (error) {
-      last = String(error?.cause?.code ?? error?.cause?.message ?? error?.message ?? error);
+      last = String(error?.cause?.code ?? error?.cause?.message ?? error?.code ?? error?.message ?? error);
     }
     if (Date.now() >= deadline) break;
     await new Promise((resolve) => setTimeout(resolve, 250));
@@ -293,6 +297,7 @@ const gatewayReadinessProbe = `(async () => {
   console.error("Last /readyz attempt: " + last);
   process.exit(1);
 })();`;
+}
 
 // Each readiness attempt used to be a `docker inspect` and a `docker exec`
 // 250 ms apart: about 460 ms on an idle runner, longer under load. 1.5 s per
@@ -300,14 +305,24 @@ const gatewayReadinessProbe = `(async () => {
 const readinessAttemptMs = 1_500;
 
 export async function waitForGatewayReady(containerName, readinessAttempts = 60) {
-  const deadline =
-    Date.now() + readinessAttempts * readinessAttemptMs * imageSmokeTimeoutMultiplier;
+  return waitForContainerReady(containerName, {
+    label: "Gateway",
+    request:
+      '() => fetch("http://127.0.0.1:8080/readyz", { signal: AbortSignal.timeout(5000) }).then((response) => response.status)',
+    timeoutMs: readinessAttempts * readinessAttemptMs * imageSmokeTimeoutMultiplier,
+  });
+}
+
+// Waits until `request` (see readinessProbe) answers 2xx inside the running
+// container, failing early when the container stops.
+export async function waitForContainerReady(containerName, { label, request, timeoutMs }) {
+  const probe = readinessProbe(request);
+  const deadline = Date.now() + timeoutMs;
   for (;;) {
     const budgetMs = Math.max(0, deadline - Date.now());
-    const ready = await runDocker(
-      ["exec", containerName, "node", "-e", gatewayReadinessProbe, String(budgetMs)],
-      { timeout: budgetMs + 30_000 * imageSmokeTimeoutMultiplier },
-    ).catch((error) => error);
+    const ready = await runDocker(["exec", containerName, "node", "-e", probe, String(budgetMs)], {
+      timeout: budgetMs + 30_000 * imageSmokeTimeoutMultiplier,
+    }).catch((error) => error);
     if (!(ready instanceof Error)) {
       return;
     }
@@ -319,13 +334,13 @@ export async function waitForGatewayReady(containerName, readinessAttempts = 60)
     ]);
     const [running, exitCode] = inspect.stdout.trim().split(/\s+/);
     if (running !== "true") {
-      throw new Error(`Gateway container exited before readiness with code ${exitCode}.`);
+      throw new Error(`${label} container exited before readiness with code ${exitCode}.`);
     }
     // The probe ran out its budget, or its exec failed while the container still
     // ran (a dying PID 1 can end the exec before Docker marks the container
     // stopped): try again until the deadline, as each attempt used to.
     if (Date.now() >= deadline) {
-      throw new Error(`Gateway readiness timed out.\n${failureTail(commandOutput(ready), 2048)}`);
+      throw new Error(`${label} readiness timed out.\n${failureTail(commandOutput(ready), 2048)}`);
     }
     await new Promise((resolve) => setTimeout(resolve, 250));
   }

@@ -29,6 +29,10 @@ export const SlackChannelAccessIncomplete = {
   ...story("slackChannelAccessIncomplete"),
   name: "Slack sender access incomplete",
 };
+export const SlackTokensMissing = {
+  ...story("slackTokensMissing"),
+  name: "Slack token Secrets missing",
+};
 export const SlackSecretMenu = { ...story("slackSecretMenu"), name: "Slack Secret menu" };
 export const SlackSecretNameCollision = story("slackSecretNameCollision");
 export const SlackCreateSecretModal = {

@@ -230,6 +230,73 @@ test("saving a Configuration with negative zero confirms the value sent as JSON"
   assert.equal(await saved.isVisible(), true);
 });
 
+// Configuration save refuses an enabled channel's token reference without a Secret binding
+// (finding 2319). The Slack drawer names the missing token under its picker and sends nothing; the
+// JSON editor, which cannot bind Secrets, shows the API's refusal, naming the setting and the
+// binding, under the Configuration JSON.
+test("an unbound Slack token is refused at save, under its picker and under the Configuration JSON", async (t) => {
+  // The bundled Kubernetes Compute's implementation, under which OCC applies the rule.
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Unbound Slack", {
+    computeImplementation: "kubernetes-local",
+  });
+  const app = await fixture.createSecret(namespace.id, "Unbound Slack app token", "xapp-unbound");
+  const values = nativeValues("unbound", { harnessId: "codex" });
+  const agent = await fixture.createAgent(namespace.id, "Unbound Slack", values, {
+    executionMode: "dedicated",
+  });
+  const c = { fixture, namespace, agent };
+  const page = await openTab(t, fixture, namespace, agent, "channels");
+  const requests = apiRequests(page, fixture.origin);
+  await page.getByRole("button", { name: "Configure Slack", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Configure Slack" });
+  await dialog.getByLabel("Direct-message policy").selectOption("disabled");
+  await setSlackSelection(
+    dialog.getByRole("combobox", { name: "Channels", exact: true }),
+    "CUNBOUND123",
+  );
+  await dialog.getByLabel("Who can use the agent in these channels?").selectOption("everyone");
+  await selectSecret(dialog, "Slack app token", app);
+  await dialog.getByRole("button", { name: "Save configuration", exact: true }).click();
+  const bot = dialog.getByLabel("Slack bot token", { exact: true });
+  await dialog.getByText("Slack bot token is required.", { exact: true }).waitFor();
+  assert.equal(await bot.getAttribute("aria-invalid"), "true");
+  assert.equal(await bot.evaluate((node) => node === globalThis.document.activeElement), true);
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await page.getByRole("button", { name: "Edit Configuration" }).click();
+  await openAdvancedSettings(page);
+  const slack = {
+    ...values,
+    channels: {
+      slack: {
+        enabled: true,
+        mode: "socket",
+        appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+        botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+      },
+    },
+  };
+  const editor = page.getByLabel("Configuration JSON");
+  await editor.fill(JSON.stringify(slack, null, 2));
+  const url = fixture.origin + configurationPath(c);
+  const patched = page.waitForResponse((r) => r.url() === url && r.request().method() === "PATCH");
+  await page.getByRole("button", { name: "Save Configuration", exact: true }).click();
+  assert.equal((await patched).status(), 400);
+  await page
+    .locator("#configuration-json-error")
+    .filter({
+      hasText:
+        "Configuration setting channels.slack.appToken references SLACK_APP_TOKEN without a Configuration Secret binding: bind SLACK_APP_TOKEN in secretBindings to an environment-backed Secret, or remove the reference.",
+    })
+    .waitFor();
+  assert.equal(await editor.getAttribute("aria-invalid"), "true");
+  const stored = (await fixture.request("GET", configurationPath(c))).data;
+  assert.equal(stored.generation, 1);
+  assert.deepEqual(stored.values.channels, {});
+});
+
 // Each save or Reload draft refreshes the draft in place, names the saved generation, moves
 // focus to the control that remains, and leaves a draft that can be deployed.
 const inPlaceCases: {
@@ -1253,17 +1320,15 @@ const declinedCarryCases: {
     name: "moved to another Configuration",
     async elsewhere(c) {
       const current = (await c.fixture.request("GET", configurationPath(c))).data;
-      const other = await c.fixture.request(
-        "POST",
-        `/namespaces/${c.namespace.id}/configurations`,
-        { body: { kind: "agent", values: current.values } },
-      );
-      assert.equal(other.status, 201, JSON.stringify(other.body));
-      c.other = other.data;
+      // The fixture keeps the current values' unbound Slack references, as an older release did.
+      const other = await c.fixture.createConfiguration(c.namespace.id, current.values, {
+        secretBindings: current.secretBindings,
+      });
+      c.other = other;
       const moved = await c.fixture.request(
         "PATCH",
         `/namespaces/${c.namespace.id}/agents/${c.agent.id}`,
-        { body: { configurationId: other.data.id } },
+        { body: { configurationId: other.id } },
       );
       assert.equal(moved.status, 200, JSON.stringify(moved.body));
     },
@@ -1721,10 +1786,12 @@ for (const c of notReappliedCases) {
       },
       async elsewhere(other) {
         const current = (await other.fixture.request("GET", configurationPath(other))).data;
-        const changed = await other.fixture.request("PATCH", configurationPath(other), {
-          body: { values: c.other(current.values) },
-        });
-        assert.equal(changed.status, 200, JSON.stringify(changed.body));
+        // Named accounts' tokens stay unbound, as an older release stored them.
+        await other.fixture.updateConfiguration(
+          other.namespace.id,
+          other.agent.configurationId,
+          c.other(current.values),
+        );
       },
     });
     const { fixture, secondBot } = context;

@@ -47,6 +47,7 @@ import { createSlackApproverField } from "./slack-approvers.mjs";
 import { renderChannels } from "../channels.mjs";
 import {
   type AgentNavigation,
+  channelBindingRefusal,
   GENERIC_CONFLICT,
   link,
   message,
@@ -2416,6 +2417,13 @@ function renderAgentForm(
       }
     }
   }
+  // The Configuration JSON holds the refused channel reference; channel settings bind its Secret.
+  function showChannelBindingRefusal(cause: unknown) {
+    const refusal = channelBindingRefusal(cause);
+    if (refusal !== undefined) {
+      configurationError.show(refusal);
+    }
+  }
   const credentialSourceRefused = () =>
     credentialSourceTypes !== undefined &&
     (binding?.method ?? authMethod.value) !== "credential_source" &&
@@ -3270,7 +3278,9 @@ function renderAgentForm(
           expectedStatus: 204,
           body: {
             name: body.name,
-            configuration: { kind: "agent", values },
+            // The bindings it saves with the values, so a channel token reference without one
+            // is refused before anything is saved (finding 2319).
+            configuration: { kind: "agent", values, secretBindings: bindings },
             executionMode: body.executionMode,
             initialWorkspaceFiles: body.initialWorkspaceFiles,
             ...(body.plugins ? { plugins: body.plugins } : {}),
@@ -3296,6 +3306,7 @@ function renderAgentForm(
                 : followableRefusal(rejectionMessage(error));
           feedback.textContent =
             detail + (failure.requestId ? ` Request ID: ${failure.requestId}` : "");
+          showChannelBindingRefusal(error);
           // While the pressed control is still disabled, as after a save.
           focusFeedbackLine(feedback);
           if (nameTaken) {
@@ -3608,6 +3619,9 @@ function renderAgentForm(
         (memberGrantRefused ? MEMBER_GRANT_REFUSED : detail) +
         guidance +
         (error.requestId ? ` Request ID: ${error.requestId}` : "");
+      if (!savedConfiguration) {
+        showChannelBindingRefusal(cause);
+      }
       focusFeedbackLine(feedback);
       // A create that raced another Agent to the name (the preflight checked it).
       if (!savedAgent && error.status === 409 && error.serverMessage === AGENT_NAME_CONFLICT) {

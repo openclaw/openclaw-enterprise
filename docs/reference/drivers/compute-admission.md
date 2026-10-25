@@ -37,9 +37,10 @@ will be stored, with the messages deployment uses:
 Save leaves to deployment what depends on live state or not on the Agent: a
 Harness the Installation approves for neither mode, a Configuration that
 selects no model or no supported Harness, ServiceAccount and credential-source
-Harness authentication, a Secret binding whose Secret is gone, a Configuration
-channel's Secret bindings (which it may stage after its values), and whether
-the Installation provides dedicated OpenClaw or a channel runtime. A stored
+Harness authentication, a Secret binding whose Secret is gone, and whether
+the Installation provides dedicated OpenClaw or a channel runtime. On the
+bundled Kubernetes Compute, Configuration save already checked the channel
+Secret bindings (below). A stored
 Agent that fails a check still reads; its next update must fix the pair.
 
 ## Kubernetes Compute
@@ -85,6 +86,14 @@ Agent that fails a check still reads; its next update must fix the pair.
   value or `secrets` source does: the launch checks them once filled. A draft
   whose model policy selects no Harness is left to deployment.
 
+This Compute delivers channel credentials only from Configuration Secret
+bindings. OCC, not a Driver member, refuses at Configuration create and update,
+provisioning, and `/agents/validate` with `configuration.secretBindings` a
+`${NAME}` reference or environment SecretRef in an enabled channel without a
+binding of that name, under the bundled implementations (`occ/kubernetes`,
+`kubernetes-local`). It shares `requireChannelSecretBindings` with deployment
+admission; the message names the setting and the binding.
+
 These close the credential slots in a provider's `headers` and `request`.
 The provider `apiKey` stays, checked against the Harness binding. The
 Configuration Driver accepts the `apiKey`, the credential headers,
@@ -105,8 +114,9 @@ reads, still passes: the binding cannot see what a name means.
 Agent's `harnessAuth.method` when its topology cannot use it (embedded OpenClaw
 takes `api_key`, dedicated OpenClaw also `credential_source`, and dedicated
 Codex also `codex_pat` and `oauth`), then the model provider rule above, a
-channel credential reference without a Configuration Secret binding, and the
-dedicated OpenClaw model catalog settings. Whether the Installation supplies
+channel credential reference without a Configuration Secret binding (for a
+row stored before Configuration save checked it), and the dedicated
+OpenClaw model catalog settings. Whether the Installation supplies
 what a method needs (OAuth needs no Sandbox Driver; a credential source needs
 its paired Sandbox) stays a fixed `409`.
 The channel runtime rule stays at deployment: it depends on the execution mode

@@ -132,9 +132,13 @@ gateway-only credential values:
 | `slack`   | `SLACK_APP_TOKEN` and `SLACK_BOT_TOKEN` for the default account; account-specific keys for named accounts |
 | `msteams` | `MSTEAMS_APP_PASSWORD`                                                                                    |
 
-Every environment SecretRef used by an enabled native channel must have a
-matching `secretBindings` entry before deployment admission. Disabled channel
-provider blocks do not require bindings.
+On the bundled Kubernetes Compute, every `${NAME}` reference and environment SecretRef in
+an enabled native channel needs a matching `secretBindings` entry. Configuration
+create and update refuse a reference without one with `400 INVALID_REQUEST`,
+naming the setting and the binding, so send the values and their bindings in
+one request. Deployment refuses a stored Configuration that predates this rule
+with the same message. Disabled channel provider blocks do not require
+bindings.
 
 Add a native default Slack account with environment SecretRefs:
 

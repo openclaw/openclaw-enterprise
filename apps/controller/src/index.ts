@@ -2435,8 +2435,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         id: agent.configurationId,
         namespaceId,
       };
-      // Native admin UI access authorizes Agent administer on the exact Agent, so the console
-      // skips its audited probe for a caller without it.
       // The Agent's network policy and its suggestions authorize read on the Agent's own
       // sandbox_policy resource, which no other answer covers; the console skips both reads
       // for a caller without it (finding 2454).
@@ -2450,6 +2448,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         deploy,
         operate,
         remove,
+        // Native admin UI access authorizes Agent administer on the exact Agent, so the console
+        // skips its audited probe for a caller without it.
         administer,
         configurationUpdate,
         configurationRead,
@@ -2462,39 +2462,60 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         callerMay(context.actorId, "read", configuration),
         callerMay(context.actorId, "read", sandboxPolicy),
       ]);
-      // One IAM call per distinct grant, shared by the two answers below.
+      // One IAM call per distinct grant, shared by the answers below. A Secret bound to several
+      // names is one decision.
       const decisions = new Map<string, Promise<boolean>>();
-      const callerMayAll = async (grants: readonly [PermissionAction, ResourceRef][]) => {
-        const allowed = await Promise.all(
-          grants.map(([action, resource]) => {
-            const key = JSON.stringify([action, resource.kind, resource.namespaceId, resource.id]);
-            let decision = decisions.get(key);
-            if (decision === undefined) {
-              decision = callerMay(context.actorId, action, resource);
-              decisions.set(key, decision);
-            }
-            return decision;
-          }),
-        );
-        return allowed.every(Boolean);
+      const decide = (action: PermissionAction, resource: ResourceRef) => {
+        const key = JSON.stringify([action, resource.kind, resource.namespaceId, resource.id]);
+        let decision = decisions.get(key);
+        if (decision === undefined) {
+          decision = callerMay(context.actorId, action, resource);
+          decisions.set(key, decision);
+        }
+        return decision;
       };
+      const callerMayAll = async (grants: readonly [PermissionAction, ResourceRef][]) =>
+        (await Promise.all(grants.map(([action, resource]) => decide(action, resource)))).every(
+          Boolean,
+        );
       // Each Configuration save authorizes Secret operate on every Secret it binds, so
       // Configuration update alone does not say a save can succeed (finding 2437); each Agent
       // update checks them too (finding 2441). Only a caller who may read the Configuration and
       // update it or the Agent gets an answer: the bindings are visible to them, and a save
       // would report the same decision.
-      const bindingGrants: [PermissionAction, ResourceRef][] =
+      const boundSecrets: [string, ResourceRef][] =
         configurationRead && (configurationUpdate || update)
-          ? (
-              await controller.getConfigurationSecretSources(
+          ? Object.entries(
+              await controller.getConfigurationSecretBindingSources(
                 context.actorId,
                 namespaceId,
                 agent.configurationId,
+              ),
+            )
+          : [];
+      const bindingGrants = boundSecrets.map(([, source]): [PermissionAction, ResourceRef] => [
+        "operate",
+        source,
+      ]);
+      // A save that submits bindings is checked only on those, so one that rebinds each name
+      // listed here to a Secret the caller may operate needs nothing on the Secrets they bind
+      // now (finding 2444). Names only: the caller reads them on the Configuration already.
+      const configurationSecretsOperateDeniedBindings =
+        configurationUpdate && configurationRead
+          ? (
+              await Promise.all(
+                boundSecrets.map(async ([name, source]) =>
+                  (await decide("operate", source)) ? [] : [name],
+                ),
               )
-            ).map((source) => ["operate", source])
+            )
+              .flat()
+              .sort()
           : [];
       const configurationSecretsOperate =
-        configurationUpdate && configurationRead && (await callerMayAll(bindingGrants));
+        configurationUpdate &&
+        configurationRead &&
+        configurationSecretsOperateDeniedBindings.length === 0;
       // An Agent update needs Configuration read and checks the sources the Agent binds now,
       // which the Agent read shows. Unreadable saved settings leave it unanswered.
       const agentSourcesOperate =
@@ -2512,6 +2533,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           configurationUpdate,
           configurationRead,
           configurationSecretsOperate,
+          configurationSecretsOperateDeniedBindings,
           agentSourcesOperate,
           sandboxPolicyRead,
         },

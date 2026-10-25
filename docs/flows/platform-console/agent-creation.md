@@ -97,11 +97,14 @@ names what an administrator changes, because the form can change neither the bin
 Before any write, `create.mts:renderAgentForm` checks the Agent name with the API's Name rule
 (`namespaces.mts:namespaceNameProblem`) and each initial workspace file with the Workspace tab's
 `agents/workspace.mts:workspaceFileProblem`, which names the file; the check opens Advanced
-settings to it. It then checks the Agent name, draft values, plugins and the planned `harnessAuth`
+settings to it. It then checks the Agent name, draft values with their staged channel
+`secretBindings`, plugins and the planned `harnessAuth`
 (only the method for a Secret it saves next or registers with a Credential Gateway; none for
 ChatGPT sign-in) with
 `POST /namespaces/:namespaceId/agents/validate`, which refuses a name another Agent has with
-Agent create's `409`, then posts
+Agent create's `409` and a channel token reference without a binding with Configuration
+create's `400`, which `list.mts:channelBindingRefusal` also shows under the Configuration JSON;
+the Slack drawer requires both token Secrets while Slack is enabled. It then posts
 `{kind: "agent", values, secretBindings}` to `.../configurations` and submits its ID,
 plugins, `initialWorkspaceFiles`, and `workspaceDefaultsId` to `.../agents`.
 Console checks the returned Secret name and Namespace, the Configuration values and bindings

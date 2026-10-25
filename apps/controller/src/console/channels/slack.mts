@@ -310,7 +310,7 @@ function credentialReferenceField(
     fieldClassName: "channel-field channel-reference",
     selectClassName: "channel-select",
   });
-  return picker.field;
+  return picker;
 }
 
 function credentialNavigation(context: ChannelDrawerContext) {
@@ -407,22 +407,35 @@ function appendFields(body: HTMLFormElement, config: SlackConfig, context: Chann
     updateDmControls();
   });
   updateDmControls();
+  const tokenPickers = [...SLACK_SECRET_BINDINGS].reverse().map((binding) =>
+    credentialReferenceField(binding, context, (key) => {
+      if (key === "SLACK_BOT_TOKEN") {
+        for (const picker of [channelPicker, allowedUsersPicker, dmUsersPicker]) {
+          picker.refreshNames();
+        }
+      }
+    }),
+  );
+  // Configuration save refuses an enabled channel whose token references have no Secret
+  // binding (finding 2319), so a drawer that saves names the missing token under its picker
+  // first. Create Agent's drawer only stages settings, which may take several visits; its
+  // preflight refuses an unbound token before anything is saved.
+  const enabled = body.querySelector<HTMLInputElement>("#slack-enabled");
+  const requireTokens = () => {
+    for (const picker of tokenPickers) {
+      picker.setRequired(!context.creating && enabled?.checked !== false);
+    }
+  };
+  enabled?.addEventListener("change", requireTokens);
+  requireTokens();
   body.append(
     element("h2", {}, "Slack credentials"),
     element(
       "p",
       { className: "hint" },
-      "First, select or create a Slack bot token Secret to search channels and people by name. Then choose an app token for Socket Mode and configure access below. Both tokens are required before deployment.",
+      "First, select or create a Slack bot token Secret to search channels and people by name. Then choose an app token for Socket Mode and configure access below. An enabled Slack channel saves only with both tokens.",
     ),
-    ...[...SLACK_SECRET_BINDINGS].reverse().map((binding) =>
-      credentialReferenceField(binding, context, (key) => {
-        if (key === "SLACK_BOT_TOKEN") {
-          for (const picker of [channelPicker, allowedUsersPicker, dmUsersPicker]) {
-            picker.refreshNames();
-          }
-        }
-      }),
-    ),
+    ...tokenPickers.map((picker) => picker.field),
     credentialNavigation(context),
     element("h2", {}, "Channel access"),
     element(

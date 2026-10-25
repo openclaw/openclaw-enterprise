@@ -309,6 +309,15 @@ test("Create Agent keeps the search Secret out of plugin approver lookups", asyn
   fixture.controller.selectDriver("plugin", driver.id);
   const namespace = await fixture.createNamespace("Approver privacy", { ready: true });
   const bot = await fixture.createSecret(namespace.id, "Search bot", "synthetic-slack-token");
+  // This administrator may not create Secrets in the Namespace, so the Namespace permission answer
+  // denies Secret create; nothing here creates one.
+  fixture.policy.restrictions.push({
+    id: "deny-approver-secret-create",
+    namespaceId: namespace.id,
+    resourceKind: "secret",
+    action: "create",
+    effect: "deny",
+  });
   const { page } = await newPage(t, fixture, { browser });
   const lookups = [];
   await page.route(
@@ -329,6 +338,19 @@ test("Create Agent keeps the search Secret out of plugin approver lookups", asyn
   await page.getByRole("button", { name: "Start with default Preset" }).click();
   await openAdvancedSettings(page);
   await page.getByLabel("Default plugin approvers mode").selectOption("chosen");
+  // The people search's Secret picker follows the answer: its inline Create Secret is disabled
+  // with the reason (finding 2451).
+  await page
+    .getByLabel("Slack bot token Secret for people search", { exact: true })
+    .fill("no matching Secret");
+  const createAction = page
+    .locator('[id^="approver-directory-secret-option-"]')
+    .filter({ hasText: "Create new Secret..." });
+  assert.equal(
+    await createAction.textContent(),
+    "Create new Secret... Your access does not include creating Secrets in this Namespace.",
+  );
+  assert.equal(await createAction.getAttribute("aria-disabled"), "true");
   await selectSecret(page, "Slack bot token Secret for people search", bot);
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });

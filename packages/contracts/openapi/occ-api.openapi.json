@@ -16281,9 +16281,46 @@
                 "properties": {
                   "configuration": {
                     "additionalProperties": false,
-                    "description": "The Agent Configuration the caller will save, not yet saved.",
+                    "description": "The Agent Configuration the caller will save, not yet saved. With `secretBindings`, a channel credential reference without a binding is refused where Configuration create refuses it (the bundled Kubernetes Compute); the bound Secrets are not read. Without them, that check is skipped.",
                     "properties": {
                       "kind": { "const": "agent", "type": "string" },
+                      "secretBindings": {
+                        "additionalProperties": {
+                          "additionalProperties": false,
+                          "description": "Maps one destination environment variable to one exact Secret reference. Optional `delivery` defaults to `{ \"type\": \"env\" }` during admission.",
+                          "properties": {
+                            "delivery": {
+                              "additionalProperties": false,
+                              "description": "Gateway delivery mode. Only `{ \"type\": \"env\" }` is supported.",
+                              "properties": { "type": { "const": "env", "type": "string" } },
+                              "required": ["type"],
+                              "type": "object"
+                            },
+                            "source": {
+                              "additionalProperties": false,
+                              "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                              "properties": {
+                                "id": {
+                                  "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                },
+                                "kind": { "const": "secret", "type": "string" },
+                                "namespaceId": {
+                                  "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                }
+                              },
+                              "required": ["kind", "namespaceId", "id"],
+                              "type": "object"
+                            }
+                          },
+                          "required": ["source"],
+                          "type": "object"
+                        },
+                        "description": "Optional Secret binding map. Keys are destination environment variable names; at most 64 bindings are accepted. Each value must contain `source.kind`, `source.namespaceId`, and `source.id`, and may contain `delivery.type: \"env\"`. Admission rejects reserved or process-control destinations such as `OPENCLAW_*`, `CODEX_*`, `OPENAI_*`, `ANTHROPIC_*`, `OCC_*`, `KUBERNETES_*`, `PATH`, `HOME`, and proxy variables. Model authentication belongs to Agent.harnessAuth.",
+                        "maxProperties": 64,
+                        "type": "object"
+                      },
                       "values": {
                         "additionalProperties": { "$ref": "#/components/schemas/def-0" },
                         "description": "A native OpenClaw configuration document.",
@@ -21563,8 +21600,14 @@
                           "type": "boolean"
                         },
                         "configurationSecretsOperate": {
-                          "description": "Whether the selected IAM Driver allows Secret operate now on every Secret that the Agent's Configuration binds. Each Configuration save needs it for the Secrets it binds. `true` when the Configuration binds no Secret. Reported only to a caller with Configuration read and update; otherwise `false`. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
+                          "description": "Whether the selected IAM Driver allows Secret operate now on every Secret that the Agent's Configuration binds. Each Configuration save needs it for the Secrets it binds: the Secrets in its `secretBindings`, or every bound Secret when it omits them. `true` when the Configuration binds no Secret. Reported only to a caller with Configuration read and update; otherwise `false`. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
                           "type": "boolean"
+                        },
+                        "configurationSecretsOperateDeniedBindings": {
+                          "description": "The names of the Agent's Configuration Secret bindings whose bound Secret the selected IAM Driver does not allow Secret operate on now, sorted. A Configuration save that submits `secretBindings` needs Secret operate only on the Secrets it submits, so a save that binds each listed name to another Secret does not need it on the Secrets they bind now. A save that omits `secretBindings` keeps every binding. Empty when `configurationSecretsOperate` is `true`, and when it is not reported: reported only to a caller with Configuration read and update. Advisory only: other required permissions, lifecycle state, the Secrets a save binds, or a later authorization decision can still prevent the operation.",
+                          "items": { "minLength": 1, "type": "string" },
+                          "maxItems": 64,
+                          "type": "array"
                         },
                         "configurationUpdate": {
                           "description": "Whether the selected IAM Driver allows update of the Agent's Configuration now, which saving its draft Configuration needs. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
@@ -21600,6 +21643,7 @@
                         "configurationUpdate",
                         "configurationRead",
                         "configurationSecretsOperate",
+                        "configurationSecretsOperateDeniedBindings",
                         "agentSourcesOperate",
                         "sandboxPolicyRead"
                       ],

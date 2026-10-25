@@ -10193,14 +10193,15 @@ test("native channel providers require Secret bindings and project them only to 
         },
         { SLACK_APP_TOKEN: secretBindings.SLACK_APP_TOKEN },
       ),
-    // The caller fixes its own Configuration, so admission names the channel, not the reference.
+    // A row stored before Configuration save checked it: admission names the setting and the
+    // missing binding, as save does.
     {
       name: "ConfigurationHarnessError",
       message:
-        "Configuration setting channels.slack uses a credential reference without a matching Configuration Secret binding: bind each referenced name in secretBindings.",
+        "Configuration setting channels.slack.botToken references SLACK_BOT_TOKEN without a Configuration Secret binding: bind SLACK_BOT_TOKEN in secretBindings to an environment-backed Secret, or remove the reference.",
     },
   );
-  // Agent save passes null bindings: a Configuration may stage its bindings after its values.
+  // Agent save passes null bindings: OCC's Configuration save runs the channel binding rule.
   driver.validateHarnessAuth(
     revision.harness,
     revision.harnessAuth,
@@ -10215,6 +10216,38 @@ test("native channel providers require Secret bindings and project them only to 
     },
     null,
   );
+  // A binding name is an own key (an inherited one such as "constructor" binds nothing), and an
+  // env SecretRef id that is not a plain name is quoted and shortened, so the message keeps its
+  // 256-character cap.
+  const unboundId = `constructor ${"x".repeat(300)}`;
+  for (const [id, shown] of [
+    ["constructor", "constructor"],
+    [unboundId, `"constructor ${"x".repeat(19)}…"`],
+  ]) {
+    const values = {
+      agents: { defaults: { model: "codex/gpt-5" } },
+      channels: {
+        msteams: { accounts: [{ appPassword: { source: "env", provider: "default", id } }] },
+      },
+    };
+    driver.validateHarnessAuth(revision.harness, revision.harnessAuth, values, null);
+    assert.throws(
+      () => driver.validateHarnessAuth(revision.harness, revision.harnessAuth, values, {}),
+      (error) => {
+        assert.equal(error.name, "ConfigurationHarnessError");
+        // A long name shortens the setting path to fit the cap.
+        assert.match(error.message, /^Configuration setting channels\.msteams\.accounts/);
+        assert.ok(
+          error.message.endsWith(
+            ` references ${shown} without a Configuration Secret binding: bind ${shown} in secretBindings to an environment-backed Secret, or remove the reference.`,
+          ),
+          error.message,
+        );
+        assert.ok(error.message.length <= 256, error.message);
+        return true;
+      },
+    );
+  }
 
   const ipv6 = createKubernetesComputeDriver(
     options({

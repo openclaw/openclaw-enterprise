@@ -496,6 +496,16 @@ test("a member without Secret create sees the inline Create Secret action disabl
   // A forced click skips the disabled check: choosing the action still opens nothing.
   await action.click({ force: true });
   assert.equal(await page.getByRole("dialog").count(), 0);
+  // The Configure Slack drawer's token fields get the same answer (finding 2451).
+  await page.getByRole("button", { name: "Configure Slack", exact: true }).click();
+  const drawer = page.getByRole("dialog", { name: "Configure Slack" });
+  await drawer.getByLabel("Slack app token", { exact: true }).fill("no matching Secret");
+  const drawerAction = drawer.getByRole("option", {
+    name: `Create new Secret... ${denial}`,
+    exact: true,
+  });
+  await drawerAction.waitFor();
+  assert.equal(await drawerAction.getAttribute("aria-disabled"), "true");
   assert.deepEqual(
     answers.filter((answer) => answer.startsWith("POST ") && answer.includes("/secrets")),
     [],

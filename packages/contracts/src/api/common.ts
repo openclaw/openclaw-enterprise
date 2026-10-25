@@ -787,10 +787,15 @@ export const ValidateAgentCreateBody = Type.Object(
     ),
     initialWorkspaceFiles: Type.Optional(CreateAgentBody.properties.initialWorkspaceFiles),
     configuration: Type.Object(
-      { kind: ConfigurationKindSchema, values: ConfigurationValues },
+      {
+        kind: ConfigurationKindSchema,
+        values: ConfigurationValues,
+        secretBindings: Type.Optional(SecretBindings),
+      },
       {
         additionalProperties: false,
-        description: "The Agent Configuration the caller will save, not yet saved.",
+        description:
+          "The Agent Configuration the caller will save, not yet saved. With `secretBindings`, a channel credential reference without a binding is refused where Configuration create refuses it (the bundled Kubernetes Compute); the bound Secrets are not read. Without them, that check is skipped.",
       },
     ),
     executionMode: Type.Optional(HarnessExecutionModeSchema),

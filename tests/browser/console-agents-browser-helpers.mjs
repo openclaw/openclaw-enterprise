@@ -58,7 +58,12 @@ export async function grantStaleConfigurationUpdate(page) {
       response,
       json: {
         ...body,
-        data: { ...body.data, configurationUpdate: true, configurationSecretsOperate: true },
+        data: {
+          ...body.data,
+          configurationUpdate: true,
+          configurationSecretsOperate: true,
+          configurationSecretsOperateDeniedBindings: [],
+        },
       },
     });
   });

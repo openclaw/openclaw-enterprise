@@ -351,11 +351,80 @@ function renderSlackBindings(state: ChannelState) {
 }
 
 // Why the channel Secrets are read-only: the caller may not update the Configuration, or may not
-// operate every Secret it binds, which each Configuration save also needs (finding 2437).
+// operate a Secret that a save keeps bound, which each Configuration save also needs (finding
+// 2437). A save is checked on the Secrets it submits, not on those it replaces (finding 2444).
 export const CHANNEL_SECRETS_CONFIGURATION_READ_ONLY =
   "Your access does not include editing this Configuration, so its channel Secrets are read-only.";
 export const CHANNEL_SECRETS_OPERATE_READ_ONLY =
-  "Saving channel Secrets needs Secret operate on each Secret the Configuration binds, which your access does not include.";
+  "Saving channel Secrets needs Secret operate on each Secret the saved Configuration keeps bound, which your access does not include.";
+
+const bindingNames = (keys: readonly string[]) =>
+  keys.map((key) => SLACK_SECRET_BINDINGS.find((binding) => binding.key === key)?.label ?? key);
+const listed = (names: readonly string[]) =>
+  names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+
+/**
+ * The binding names a channel save must replace, from the permission answer: each bound Secret
+ * the caller may not operate sits under a Slack token name, which channel saves replace (finding
+ * 2444). Null when the answer allows every save, denies Configuration update, does not list the
+ * names, or lists one that channel saves keep, so the usual rule applies.
+ */
+export function channelBindingsToReplace(
+  permissions:
+    | {
+        configurationUpdate?: boolean;
+        configurationSecretsOperate?: boolean;
+        configurationSecretsOperateDeniedBindings?: readonly string[];
+      }
+    | null
+    | undefined,
+): readonly string[] | null {
+  const denied = permissions?.configurationSecretsOperateDeniedBindings;
+  return permissions?.configurationUpdate === true &&
+    permissions.configurationSecretsOperate === false &&
+    Array.isArray(denied) &&
+    denied.length > 0 &&
+    denied.every((key) => SLACK_SECRET_BINDINGS.some((binding) => binding.key === key))
+    ? denied
+    : null;
+}
+
+/** Why channel saves are read-only when a bound Secret the caller may not operate stays bound. */
+export function channelSecretsOperateReadOnly(
+  denied: readonly string[] | undefined,
+  unlisted = CHANNEL_SECRETS_OPERATE_READ_ONLY,
+) {
+  const kept = (denied ?? []).filter(
+    (key) => !SLACK_SECRET_BINDINGS.some((binding) => binding.key === key),
+  );
+  return kept.length
+    ? `Each Configuration save needs Secret operate on every Secret it keeps bound. Your access does not include it for ${listed(kept)}, which channel saves keep.`
+    : unlisted;
+}
+
+/** What a channel editor says while a bound Secret it must replace is still bound. */
+export function channelReplaceHint(keys: readonly string[]) {
+  const names = listed(bindingNames(keys));
+  return `Your access does not include Secret operate on the Secret bound to ${names}. Each save needs it for every Secret it keeps bound, so choose another Secret for ${keys.length > 1 ? "them" : "it"} before saving.`;
+}
+
+/**
+ * Refuses, before any request, a channel save that keeps a listed binding on the Secret it binds
+ * now: the API would answer 403 (finding 2444). A save that submits no bindings keeps them all.
+ */
+export function channelReplaceRefusal(
+  keys: readonly string[] | null,
+  saved: SecretBindings | undefined,
+  submitted: SecretBindings | undefined,
+) {
+  const kept = (keys ?? []).filter((key) => {
+    const id = secretIdForBinding(submitted === undefined ? saved?.[key] : submitted[key]);
+    return id !== null && id === secretIdForBinding(saved?.[key]);
+  });
+  return kept.length
+    ? `This save keeps ${listed(bindingNames(kept))} on a Secret your access cannot operate. Choose another Secret for ${kept.length > 1 ? "them" : "it"}, then save.`
+    : null;
+}
 
 export function createChannelSecretsPanel({
   context,
@@ -370,6 +439,7 @@ export function createChannelSecretsPanel({
   canGrant = true,
   readOnly = () => false,
   readOnlyReason = () => CHANNEL_SECRETS_CONFIGURATION_READ_ONLY,
+  bindingsToReplace = () => null,
   isCurrent = () => true,
   onOutstandingGrants,
   onConfigurationChange,
@@ -396,6 +466,9 @@ export function createChannelSecretsPanel({
   // Why the bindings are read-only: Configuration update, or Secret operate on the Secrets it
   // binds, which every Configuration save also needs (finding 2437).
   readOnlyReason?(): string;
+  // Slack token names whose bound Secret the caller may not operate: a save must replace each of
+  // them, since it is checked on the Secrets it submits (finding 2444).
+  bindingsToReplace?(): readonly string[] | null;
   // Whether this panel is still the page's own, for answers that arrive late.
   isCurrent?(): boolean;
   onConfigurationChange?(configuration: Configuration): void;
@@ -616,6 +689,7 @@ export function createChannelSecretsPanel({
       "Save channel Secrets",
     );
     const readOnlyNote = element("p", { className: "hint" }, readOnlyReason());
+    const replaceNote = element("p", { className: "hint" });
     shown.status = status;
     shown.save = save;
     function createTokenPicker(binding: (typeof SLACK_SECRET_BINDINGS)[number]) {
@@ -682,6 +756,9 @@ export function createChannelSecretsPanel({
       // gets no Save the API would refuse either (finding 2432).
       readOnlyNote.hidden = !readOnly();
       readOnlyNote.textContent = readOnlyReason();
+      const replace = readOnly() ? [] : (bindingsToReplace() ?? []);
+      replaceNote.hidden = replace.length === 0;
+      replaceNote.textContent = replace.length ? channelReplaceHint(replace) : "";
       save.hidden = readOnly() || (!state.unsavedSecrets && unverifiedGrants());
     };
     shown.updateControls = updateControls;
@@ -689,6 +766,7 @@ export function createChannelSecretsPanel({
       "form",
       { id: formId, className: "credential-form", novalidate: "" },
       readOnlyNote,
+      replaceNote,
       ...SLACK_SECRET_BINDINGS.map((binding) => createTokenPicker(binding)),
       status,
       element("div", { className: "form-actions" }, save),
@@ -707,6 +785,19 @@ export function createChannelSecretsPanel({
       }
       // A retry writes no Configuration: the saved bindings stay as they are (finding 1920).
       const retry = !state.unsavedSecrets;
+      const refusal = retry
+        ? null
+        : channelReplaceRefusal(
+            bindingsToReplace(),
+            state.configuration.secretBindings,
+            draft.secretBindings,
+          );
+      if (refusal) {
+        status.textContent = "";
+        setStatusTone(error, "danger");
+        error.textContent = refusal;
+        return;
+      }
       saveCount += 1;
       state.saving = true;
       state.saveError = null;

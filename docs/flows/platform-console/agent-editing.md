@@ -1,6 +1,6 @@
 ---
 created: 2026-09-09
-updated: 2026-10-24
+updated: 2026-10-25
 last_updated_session: 01a162e5-4303-7a21-81d4-bb51cec37c66
 ---
 
@@ -81,10 +81,10 @@ overview refresh cannot identify this Agent, the page keeps the outcome and says
 
 On failure, `agents/deployment-recovery.mts` shows the API's message or suggests checking
 Logs if the message gives no next step. It hides the Logs link if the caller was denied the
-log text or version during this sign-in. **Open Configuration** needs Agent `update` and no
-known Configuration read error or denial. **Open version draft** (`deploy` only) and **Deploy again** (per the
-message) need `deploy` and a successful Configuration read; Deploy again focuses **Deploy new
-version**. Credentials recovery needs `update`. Hidden or unlisted
+log text or version during this sign-in. **Open Configuration** needs Configuration `update`,
+bound Secret `operate` and no known read denial. **Open version draft** (read-only Configuration) and
+**Deploy again** (per the message) need `deploy` and a readable Configuration; Deploy again focuses
+**Deploy new version**. Credentials recovery needs Agent saves. Hidden or unlisted
 current versions suppress recovery; viewed versions show results. Activity polls every
 `DEPLOYMENT_POLL_MS` through transient read errors until a result, denial, or missing
 record, patching in place (`patchChildren`); a new result rereads selection.
@@ -116,9 +116,9 @@ A refused write lists required grants without guessing which; a refused prefligh
 access, a Workspace file save Agent `operate`. Without Agent `update`, plugins and repository
 access read as summaries; authentication is disabled without it, Configuration `read`, or
 bound-source `operate`. Reads the answer refuses are skipped.
-Lacking Configuration `update` or `operate` on a bound Secret makes
-Configuration, Channels and channel Secrets read-only; lacking that and an Agent-side grant, the
-draft says so and, without deploy, has no checklist.
+Lacking Configuration `update` makes Configuration and channels read-only; lacking `operate` on a
+bound Secret does too, unless, for channels, each such Secret has a Slack token name; with nothing
+editable, the draft says so and, without deploy, has no checklist.
 
 `agents/plugin-fields.mts:createPluginFields` renders **Plugins**.
 `agents/plugins.mts:savePlugins` rereads the Agent before PATCH. If the Agent,
@@ -205,7 +205,8 @@ Values are never retrieved.
 Channel saves reread the Agent and Configuration. A changed Configuration, service principal,
 or generation requires **Reload draft** before a write or Secret grant. A provisioning
 reservation explains the refusal. PATCH sends
-`{ values, expectedGeneration }` and changed `secretBindings`. Rejection grants no Secret access.
+`{ values, expectedGeneration }`, plus every binding after a Secret change; a save keeping a Secret
+the caller cannot `operate` is refused before the PATCH.
 
 After PATCH, `apps/controller/src/console/agents/credential-access.mjs:ensureCredentialOperateBinding`
 grants the Agent service principal access to selected Secrets through Namespace
@@ -261,14 +262,11 @@ groups. Bytes enter neither Configuration nor audit.
 Failure admits no version; retry rechecks status. Missing credentials after an
 earlier version require operator investigation. Model/channel Secrets stay separate.
 
-On explicit submission, the browser rereads Agent and Configuration; a changed
-ID or generation requires reload. It then PATCHes selected Secret references with
-`expectedGeneration`, preserving other bindings, then calls `ensureCredentialOperateBinding` for changed
-and pending Secrets. A post-PATCH grant failure leaves bindings saved and blocks
+On explicit submission, the panel rereads and refuses as channel saves do above, PATCHes every
+binding with `expectedGeneration`, then calls `ensureCredentialOperateBinding` for changed and
+pending Secrets. A post-PATCH grant failure leaves bindings saved and blocks
 deployment in the current view; later saves retry still-referenced pending grants.
 Only a confirmed grant or confirmed removal of its reference clears the pending Secret.
-Explicit refresh resets local outcome tracking; the API always enforces Secret access.
-Pickers switch references; rotating shared Secret values is separate.
 
 ### 6. Read and replace live workspace files
 
@@ -350,6 +348,7 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 
 ## Changelog
 
+- 2026-10-25: Channel saves may replace unoperable Secrets. (finding 2444)
 - 2026-10-25: Draft labels, recovery and inline Secret creation follow permissions. (findings 2441, 2442)
 - 2026-10-25: Agent-side editors follow bound source `operate`. (finding 2441)
 
