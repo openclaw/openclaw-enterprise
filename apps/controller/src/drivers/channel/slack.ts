@@ -7,6 +7,7 @@ import {
   ChannelCredentialError,
   ChannelDirectoryError,
   ResourceStateConflictError,
+  slackAccountTargets,
   wholeEnvironmentReferenceName,
 } from "@openclaw-enterprise/occ";
 import { asRecord, readCappedBody } from "@openclaw-enterprise/utils";
@@ -45,12 +46,6 @@ class SlackUnansweredError extends ChannelDirectoryError {
   constructor() {
     super("unavailable");
   }
-}
-
-function configuredValue(value: unknown): boolean {
-  return typeof value === "string"
-    ? value.trim().length > 0
-    : value !== undefined && value !== null;
 }
 
 function boundedString(value: unknown, maxLength = 200): string | undefined {
@@ -155,22 +150,15 @@ export class SlackChannelDriver implements ChannelDriver {
       return;
     }
     const signal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
-    const accounts = asRecord(slack.accounts);
-    const named = accounts === undefined ? [] : Object.entries(accounts);
     // OpenClaw still starts an implicit "default" account from the top-level bot and app
     // tokens when named accounts exist, unless one of them is named "default".
-    const implicitDefault =
-      named.length === 0 ||
-      (!Object.hasOwn(accounts ?? {}, "default") &&
-        configuredValue(slack.botToken) &&
-        (slack.mode === "http" || configuredValue(slack.appToken)));
-    const targets = [
-      ...(implicitDefault ? [{ config: slack, path: "/channels/slack" }] : []),
-      ...named.map(([id, value]) => ({
-        config: { ...slack, ...asRecord(value) },
-        path: `/channels/slack/accounts/${id.replaceAll("~", "~0").replaceAll("/", "~1")}`,
-      })),
-    ];
+    const targets = slackAccountTargets(slack).map(({ account, config }) => ({
+      config,
+      path:
+        account === undefined
+          ? "/channels/slack"
+          : `/channels/slack/accounts/${account.replaceAll("~", "~0").replaceAll("/", "~1")}`,
+    }));
     for (const { config, path } of targets) {
       if (config.enabled === false) {
         continue;

@@ -388,6 +388,12 @@ const unsubstitutedChannelReference = (path, shown) =>
   setting(path, `contains ${shown}, which the runtime does not substitute: ${useUppercase}`);
 const unsubstitutedChannelText = (path) =>
   setting(path, `contains a \${ the runtime does not substitute: ${useUppercase}`);
+// A Slack token SecretRef the Slack Channel Driver cannot read (finding 2514).
+const unreadableSlackReference = (path) =>
+  setting(
+    path,
+    "holds a SecretRef the Slack Channel Driver cannot read: use an env SecretRef with provider default, or one whole ${NAME}, bound in secretBindings",
+  );
 const absoluteUrl = (field) =>
   `Configuration field ${field} must be an absolute http or https URL.`;
 const modelApi = (field) =>
@@ -1600,6 +1606,97 @@ test("Configuration create, update and Agent create's check refuse a channel cre
   ]) {
     const checked = await validate(configuration);
     assert.equal(checked.status, 204, JSON.stringify(checked.body));
+  }
+});
+
+// The Slack Channel Driver reads a token only from an env SecretRef with the default provider or
+// one whole `${NAME}`, and refuses any other SecretRef with binding_required at provisioning and
+// deployment. Save refuses those where the binding rule runs, for exactly the tokens the Driver
+// checks, naming the setting and never the value (finding 2514).
+test("Configuration save and Agent create's check refuse a Slack token SecretRef the Slack Channel Driver cannot read", async (t) => {
+  // The real Filesystem Configuration Driver, whose credential slot rule runs after OCC's.
+  const root = await temporaryDirectory(t, "occ-slack-token-refs-");
+  const { namespace, collection, ...context } = await fixture({
+    configurationDriver: new FilesystemConfigurationDriver(root),
+    computeDriver: kubernetesRules("compute-slack-token-refs", ...configurationRules),
+    computeImplementation: "kubernetes-local",
+  });
+  await context.controller.transact((state) =>
+    state.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+  );
+  const binding = async (name) => {
+    const secret = await context.controller.createSecret(context.principal.id, {
+      namespaceId: namespace.id,
+      name,
+      value: `synthetic-${name}`,
+    });
+    return { source: secret.ref, delivery: { type: "env" } };
+  };
+  const secretBindings = {
+    SLACK_APP_TOKEN: await binding("slack-app"),
+    SLACK_BOT_TOKEN: await binding("slack-bot"),
+  };
+  const appToken = { source: "env", provider: "default", id: "SLACK_APP_TOKEN" };
+  const fileRef = { source: "file", provider: "default", id: "/run/slack/bot" };
+  const slackWith = (slack) => ({
+    ...runtimeSelected,
+    channels: {
+      slack: { enabled: true, mode: "socket", appToken, botToken: "${SLACK_BOT_TOKEN}", ...slack },
+    },
+  });
+  const save = (values) =>
+    request(context.app, "POST", collection, { body: { kind: "agent", values, secretBindings } });
+  const validate = (values) =>
+    request(context.app, "POST", `/namespaces/${namespace.id}/agents/validate`, {
+      body: {
+        configuration: { kind: "agent", values, secretBindings },
+        executionMode: "dedicated",
+      },
+    });
+
+  for (const [slack, path] of [
+    [{ botToken: fileRef }, "channels.slack.botToken"],
+    [{ appToken: { source: "exec", provider: "default", id: "slack" } }, "channels.slack.appToken"],
+    [
+      { botToken: { source: "env", provider: "vault", id: "SLACK_BOT_TOKEN" } },
+      "channels.slack.botToken",
+    ],
+    [{ accounts: { work: { botToken: fileRef } } }, "channels.slack.accounts.work.botToken"],
+    // An account named "default" replaces the implicit one, and inherits the channel's token.
+    [{ botToken: fileRef, accounts: { default: { appToken } } }, "channels.slack.botToken"],
+  ]) {
+    const values = slackWith(slack);
+    const label = JSON.stringify(slack);
+    assertRefused(await save(values), unreadableSlackReference(path), {
+      label,
+      sentinel: "/run/slack/bot",
+    });
+    assertRefused(await validate(values), unreadableSlackReference(path), { label });
+  }
+  // The Driver reads no other object either, and the Configuration Driver accepts one there, so
+  // it is refused without being called a SecretRef, never echoing the value (finding 2518).
+  for (const botToken of [{ value: "xoxb-not-a-reference" }, {}]) {
+    assertRefused(
+      await save(slackWith({ botToken })),
+      setting(
+        "channels.slack.botToken",
+        "holds an object that is not a SecretRef the Slack Channel Driver cannot read: use an env SecretRef with provider default, or one whole ${NAME}, bound in secretBindings",
+      ),
+      { label: JSON.stringify(botToken), sentinel: "xoxb-not-a-reference" },
+    );
+  }
+  // The Driver skips the app token in HTTP mode, a disabled account and fields it does not read,
+  // and the channel's token when an account called "default" sets its own (finding 2519).
+  for (const slack of [
+    { mode: "http", appToken: fileRef },
+    { accounts: { work: { enabled: false, botToken: fileRef } } },
+    { signingSecret: fileRef },
+    { botToken: fileRef, accounts: { default: { appToken, botToken: "${SLACK_BOT_TOKEN}" } } },
+    // The Driver reads an env SecretRef without a provider as the default one.
+    { botToken: { source: "env", id: "SLACK_BOT_TOKEN" } },
+  ]) {
+    const saved = await save(slackWith(slack));
+    assert.equal(saved.status, 201, `${JSON.stringify(slack)}: ${JSON.stringify(saved.body)}`);
   }
 });
 
