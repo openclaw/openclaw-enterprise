@@ -199,7 +199,13 @@ each token and session still expires. Remove standing approval with its current
 approval generation **before** clearing the repository binding. An already
 authorized request can finish after withdrawal.
 
-A repository-scoped one-draft grant spends its allowance at authorization, before
+By default (`draftPullLimit: one-per-grant`), a repository-scoped draft grant allows one
+draft, and every Agent and version that has the grant shares it. To let Agents open a new
+draft from the same review ref, set `draftPullLimit: none` in the Namespace policy. OCE then
+records each draft use without spending an allowance; the draft-only, head and base checks
+still apply. This changes the grant identity: deploy a new version to use it.
+
+A one-draft grant spends its allowance at authorization, before
 OCE knows whether GitHub created a draft. On an uncertain push or draft outcome,
 inspect the original remote ref or PR and retained operation; do not replay it.
 See [Credential Proxy uncertainty](../drivers/credential-proxy.md#cancellation-retries-and-uncertainty).

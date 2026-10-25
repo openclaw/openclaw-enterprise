@@ -27,9 +27,12 @@ Reads cover the repository, not just the review branch. GitHub's `contents: writ
 permission is not branch-scoped: protect important refs at GitHub independently,
 without an App bypass. The Git-only profile exposes fetch and push, not GitHub REST or GraphQL.
 
-One repository session handles at most four Git requests at the same time. A fifth
-concurrent request gets HTTP 503, and Git shows `The requested URL returned error: 503`.
-Run parallel clones and fetches in groups of four or fewer.
+By default (`limits.exchangesPerSession: 4`), one repository session handles at most four
+Git requests at the same time. A fifth concurrent request gets HTTP 503, and Git shows
+`The requested URL returned error: 503`. The service-wide `limits.exchanges` bound (default 32)
+also answers 503, so a session can get it with fewer requests. Run parallel clones and
+fetches in groups no larger than the configured
+[service limits](../repository-credentials.md#client-routing-and-limits).
 
 A separately selected protected Credential Proxy can authorize a bounded
 `metadata-read` operation. Its [response policy](../../../apps/controller/src/drivers/repo/github/credentials/metadata-response.ts)
@@ -50,12 +53,12 @@ base. Later feedback and commits use ordinary Git on the same branch. The Agent 
 also force-push or delete that branch, and deleting it closes the draft; protect the
 branch on GitHub to stop either.
 
-By default (`draftPullLimit: one-per-grant`), the grant allows one draft. The grant is the
-repository, review ref and base, and every Agent and version that has it shares the
-allowance. Closing the draft or deleting its branch does not give the allowance back.
-A later create gets `operation_conflict`, and GitHub does not receive it. To let Agents
-open a new draft from the same review ref, set `draftPullLimit: none` in the Namespace
-policy. This changes the grant identity: deploy a new version to use it.
+On this route, each grant allows one draft. The grant is the repository, review ref and
+base, and every Agent and version that has it shares the allowance. Closing the draft or
+deleting its branch does not give the allowance back. A later create gets
+`operation_conflict`, and GitHub does not receive it. Changing the policy's review ref, base
+or transport makes a new grant: after a new version deploys, it allows one more draft. The
+`draftPullLimit: none` opt-out applies only to [OpenShell Git](protected-openshell-git.md#use-the-admitted-repository).
 
 The Agent uses `oce-github pr-create --draft` with the head, base, title, optional
 explicit `--body` text and a fresh operation ID. The helper refuses `--body-file`;
