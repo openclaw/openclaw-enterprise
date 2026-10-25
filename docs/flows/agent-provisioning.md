@@ -81,6 +81,8 @@ After an Installation selects another Secret Driver, request, status and retry a
 
 Before admission, the ChannelDriver checks configured credentials through authorized Secret callbacks. Slack checks token roles and bot authentication; this neither pins Secret versions nor adds worker revalidation. The repository Driver validates Namespace selections before queueing and when creating the Agent. Undeliverable repository bindings, including Sandbox repositories, keep Agent create's `409` on admission and retry ([Compute admission](../reference/drivers/compute-admission.md)). Initial workspace files require the selected Sandbox's `validateWorkspaceSetup` capability; Compute delegates validation or refuses unsupported placement before staging files. Deployment checks the exact Harness topology.
 
+A name that another Agent in the Namespace has gets Agent create's `409` under the Namespace lock, before anything is stored; two new requests for one free name are both admitted, and the later Agent create fails its job with the same message.
+
 OCC stores the accepted request and deduplication fingerprint in `agent_provisioning_work`, then queues `controller_work` with `work_kind = 'provisioning'`. Configuration and Agent creation happen later. The same actor, Namespace and request ID return the existing work; changed input conflicts.
 
 The `202` response contains `data.provisioning`, with the work ID and status URL. Public progress exposes result IDs and safe errors without input values or backend credentials.
@@ -167,6 +169,7 @@ No API deletes a provisioning request. Agent deletion removes the Agent's reques
 
 ## Changelog
 
+- 2026-10-25: Refuse a taken Agent name at admission with Agent create's `409`. (fix-dogfood-r36, finding 2420)
 - 2026-10-25 03:30: Check a Secret binding's placement before the Compute plan check; Console runs the preflight first. (fix-postland-1025b - 2b1f510594)
 
 - 2026-10-17: Bound optional deployment details to the provisioning poll interval. (PR #2685)

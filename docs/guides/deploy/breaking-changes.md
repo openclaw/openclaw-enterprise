@@ -21,6 +21,24 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-25: provisioning refuses a taken Agent name with 409
+
+**What breaks.** `POST /namespaces/{namespaceId}/agents/provision` with a name
+that another Agent in the Namespace has answers `409 RESOURCE_CONFLICT` with
+`An Agent with this name already exists in this Namespace. Choose a different
+name.` and stores no job. Earlier builds answered `202` and the job failed
+with `PROVISIONING_REJECTED` and the same message. Two new requests for one
+free name are still both admitted, and the later job fails as before.
+`POST /namespaces/{namespaceId}/agents/validate` accepts an optional `name` and
+refuses a taken one with the same `409`.
+
+**Who is affected.** API clients and alerts that expect `202` for a taken name
+or match the failed job.
+
+**How to tell.** The provisioning request answers `409` with that message.
+
+**Steps.** Choose another name and send the request again.
+
 ## 2026-10-25: provisioning refuses an unplaceable dedicated Agent with 400
 
 **What breaks.** `POST /namespaces/{namespaceId}/agents/provision` with a Secret
