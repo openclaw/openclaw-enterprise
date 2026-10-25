@@ -38,7 +38,8 @@ The page polls every 10 seconds while visible, using the list and Agent-feed cur
 - The **result**: the latest report, its outcome and its artifacts, pinned above the timeline once present.
 - A reply box. Replying to an open question attaches the answer to it; a question with choices shows them as buttons.
 
-The page never shows tool output or the full transcript. A person with `administer` on the Agent can follow a link
+Agent-authored text is untrusted: the page renders it as plain text or sanitized Markdown, never as HTML, and links
+only to `https` artifact URLs. The page never shows tool output or the full transcript. A person with `administer` on the Agent can follow a link
 to the native admin UI, where the session is named after the Task ID; others see the Task feed only.
 
 ## Agent page
