@@ -42,7 +42,6 @@ test("image lanes use separate cache scopes without exposing credentials or comp
   for (const [lane, roles] of [
     // Images and Packaging builds its two images at once.
     ["images-packaging", ["controller", "runtime"]],
-    ["images-model-probes", ["runtime"]],
     ["images-runtime-startup", ["runtime"]],
     ["images-runtime-startup-2", ["runtime"]],
     ["images-runtime-startup-3", ["runtime"]],

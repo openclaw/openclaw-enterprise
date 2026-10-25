@@ -20,13 +20,7 @@ import {
 import { type PluginDiscoveryContext, createPluginDiscovery } from "./plugin-discovery.mjs";
 import { isPluginSelections } from "./plugin-fields.mjs";
 import { createSlackApproverField } from "./slack-approvers.mjs";
-import {
-  AGENT_UPDATE_DENIED,
-  SAVE_REFUSALS,
-  assertReadableConfiguration,
-  message,
-  rejectionMessage,
-} from "./list.mjs";
+import { SAVE_REFUSALS, assertReadableConfiguration, message, rejectionMessage } from "./list.mjs";
 import { configuredHarnessId } from "./harness-auth.mjs";
 
 type PluginAgent = Pick<
@@ -69,7 +63,8 @@ interface PluginEditorOptions {
   onSaved(savedAgent: Readonly<Record<string, unknown>>): void;
   onReload(): void;
   savedNotice?: string;
-  updateAllowed?: Promise<boolean | undefined> | null;
+  /** Why the permission answer refuses a save (Agent update, or its source grants). */
+  saveDenied?: Promise<string | undefined> | null;
 }
 
 // A caller who may not update the Agent reads its plugin selections (finding 2436).
@@ -108,7 +103,7 @@ export function renderAgentPlugins(
     onSaved,
     onReload,
     savedNotice = "",
-    updateAllowed = null,
+    saveDenied = null,
   }: PluginEditorOptions,
 ) {
   if (!draft) {
@@ -510,17 +505,19 @@ export function renderAgentPlugins(
   // An answer already settled applies before this section is first painted. Reading the policy
   // capabilities needs Agent update: a caller the answer denies it reads the saved selections
   // and is not sent a read that answers 403. An unknown answer still reads them (finding 2436).
-  void Promise.resolve(updateAllowed).then((allowed) => {
+  // A caller missing only the source grants a save checks is not sent it either: no save could
+  // keep a policy edit (finding 2441).
+  void Promise.resolve(saveDenied).then((reason) => {
     if (!context.isCurrent()) {
       return;
     }
-    if (allowed !== false) {
+    if (reason === undefined) {
       readCapabilities();
       return;
     }
     updateDenied = true;
     intro.textContent = PLUGINS_READ_ONLY;
-    updateNote.textContent = AGENT_UPDATE_DENIED;
+    updateNote.textContent = reason;
     updateNote.hidden = false;
     // The selections stay in view while their fields are disabled.
     input.closest("details")?.setAttribute("open", "");

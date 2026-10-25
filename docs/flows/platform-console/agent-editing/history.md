@@ -8,6 +8,8 @@ This record preserves the dated changes to the Console Agent editing flow. See t
 
 ## Changelog
 
+- 2026-10-24: Restoring parked Workspace files applies the latest observed Agent operate answer. (pr-3474)
+- 2026-10-24 17:30: Stop and Run diagnostics follow the latest observed operate answer. (fix-2328)
 - 2026-10-24 23:40: Apply a newer Agent operate answer when parked Workspace files return, and keep unsaved text if operate is removed. (workspace-operate-restore)
 - 2026-10-24 22:05: Say in the Secret value help that line breaks are saved as LF, as browsers normalize textarea CRLF. (fix-backlog-1024b)
 - 2026-10-24 19:00: Check inline Create Secret names and values with the API's rules, keeping multiline values exact. (fix-2339-2341)

@@ -199,6 +199,7 @@ test("caller permission summaries report primary IAM decisions without authorizi
     administer: true,
     configurationUpdate: true,
     configurationSecretsOperate: true,
+    agentSourcesOperate: true,
   });
   const adminNamespace = await fixture.request("GET", namespacePath);
   assert.equal(adminNamespace.status, 200);
@@ -251,6 +252,7 @@ test("caller permission summaries report primary IAM decisions without authorizi
     administer: false,
     configurationUpdate: false,
     configurationSecretsOperate: false,
+    agentSourcesOperate: false,
   });
   // Configuration update on the Agent's Configuration is its own grant (finding 2421).
   fixture.policy.roles.push({
@@ -406,6 +408,118 @@ test("caller permission summaries report primary IAM decisions without authorizi
   const withOperate = await fixture.request("GET", boundPermissions, { session });
   assert.equal(withOperate.data.configurationSecretsOperate, true);
   assert.equal((await resave()).status, 200);
+});
+
+// Each Agent update also checks the caller's grant on every source the Agent and its
+// Configuration bind, so Agent update alone does not say a save of plugins, authentication or
+// repository access can succeed (finding 2441). The answer covers the Configuration's bound
+// Secrets and the Harness authentication Secret, and only for a caller who may update the Agent
+// and read its Configuration. Each step proves the answer against the same real Agent PATCH.
+test("the Agent sources answer matches what a real Agent update checks", async (t) => {
+  const auditSink = new InMemoryAuditSink();
+  const fixture = await createConsoleAppFixture(t, { auditSink });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Agent sources", { ready: true });
+  const bound = await fixture.createSecret(namespace.id, "Bound token", "bound-token-value");
+  const second = await fixture.createSecret(namespace.id, "Second token", "second-token-value");
+  // The fixture binds a Harness authentication Secret too; a Secret bound to two names is one
+  // decision.
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Sources agent",
+    {},
+    {
+      secretBindings: {
+        EXTERNAL_API_TOKEN: { source: bound.ref, delivery: { type: "env" } },
+        EXTERNAL_API_TOKEN_ALIAS: { source: bound.ref, delivery: { type: "env" } },
+        SECOND_API_TOKEN: { source: second.ref, delivery: { type: "env" } },
+      },
+    },
+  );
+  assert.equal(agent.harnessAuth.method, "api_key");
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const member = await fixture.createAccountWithPolicy("agent-sources", (principal) => {
+    fixture.policy.roles.push({
+      id: "role-agent-sources-editor",
+      namespaceId: namespace.id,
+      permissions: [
+        { action: "read", resourceKind: "namespace" },
+        { action: "read", resourceKind: "agent" },
+        { action: "update", resourceKind: "agent" },
+      ],
+    });
+    fixture.policy.bindings.push({
+      id: "binding-agent-sources-editor",
+      namespaceId: namespace.id,
+      subjectKind: "identity",
+      subjectId: principal.id,
+      roleId: "role-agent-sources-editor",
+    });
+  });
+  const session = await fixture.signIn(member.credentials);
+  const grant = (id, action, resourceKind, resourceId) => {
+    if (!fixture.policy.roles.some((role) => role.id === `role-${id}`)) {
+      fixture.policy.roles.push({
+        id: `role-${id}`,
+        namespaceId: namespace.id,
+        permissions: [{ action, resourceKind }],
+      });
+    }
+    fixture.policy.bindings.push({
+      id: `binding-${id}`,
+      namespaceId: namespace.id,
+      subjectKind: "identity",
+      subjectId: member.principal.id,
+      roleId: `role-${id}`,
+      resourceKind,
+      resourceId,
+    });
+  };
+  const answer = async () => {
+    const response = await fixture.request("GET", `${agentPath}/permissions`, { session });
+    assert.equal(response.status, 200);
+    assert.equal(response.data.update, true);
+    return response.data.agentSourcesOperate;
+  };
+  // A no-op save, as the console's plugin, authentication and repository saves are on top.
+  const save = () =>
+    fixture.request("PATCH", agentPath, {
+      session,
+      body: { configurationId: agent.configurationId },
+    });
+  const denials = () => auditSink.list().filter((event) => event.kind === "authorization_denial");
+
+  const revoke = (id) => {
+    const index = fixture.policy.bindings.findIndex((binding) => binding.id === `binding-${id}`);
+    assert.notEqual(index, -1);
+    fixture.policy.bindings.splice(index, 1);
+  };
+
+  // Operate on every bound source, but no Configuration read: an update needs that read and the
+  // bindings are not visible without it, so there is no answer.
+  grant("agent-sources-bound", "operate", "secret", bound.id);
+  grant("agent-sources-second", "operate", "secret", second.id);
+  grant("agent-sources-harness", "operate", "secret", agent.harnessAuth.source.id);
+  assert.equal(await answer(), false);
+  assertApiError(await save(), 403, "FORBIDDEN");
+  // With Configuration read the set is complete, and the same save succeeds.
+  grant("agent-sources-configuration", "read", "configuration", agent.configurationId);
+  assert.equal(await answer(), true);
+  assert.equal((await save()).status, 200);
+  // Operate on one of the two Configuration Secrets is not enough: the answer covers every
+  // bound Secret, not any of them.
+  revoke("agent-sources-second");
+  assert.equal(await answer(), false);
+  assertApiError(await save(), 403, "FORBIDDEN");
+  // Every Configuration Secret but not the Harness authentication Secret: still refused.
+  grant("agent-sources-second", "operate", "secret", second.id);
+  revoke("agent-sources-harness");
+  const refusals = denials().length;
+  assert.equal(await answer(), false);
+  // The answers are not attempted operations; only the refused save is audited.
+  assert.equal(denials().length, refusals);
+  assertApiError(await save(), 403, "FORBIDDEN");
+  assert.equal(denials().length, refusals + 1);
 });
 
 test("console static routes expose only public assets and preserve API JSON failures", async (t) => {

@@ -65,6 +65,8 @@ at save and deployment; installation and app access are checked later during
 startup. A rejected save leaves the running version unchanged. For policy
 limits and errors, see [Agent plugins](../../reference/agent-plugins.md).
 Without Agent `update`, the selections are read-only and a note names the grant to ask for.
+Every Agent save also needs `operate` on each Secret and credential source that the Agent and its
+Configuration bind; without it, the selections are read-only and a note says so.
 
 If you see **Plugin selections changed**, the Console stopped before saving.
 If you see **Outcome unknown**, your changes may already be saved. Note any edits

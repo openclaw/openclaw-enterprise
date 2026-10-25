@@ -15,6 +15,7 @@ import {
   nativeValues,
   newPage,
   nextFrames,
+  nonAuthWriteRequests,
   pathRequests,
   waitForEnabled,
   grantStaleConfigurationUpdate,
@@ -39,6 +40,8 @@ const browser = fileBrowser();
 
 const AGENT_UPDATE_DENIED =
   "Your access does not include updating this Agent. Ask an administrator for Agent update access to save these settings.";
+const AGENT_SOURCES_DENIED =
+  "Saving these settings needs operate on each Secret and credential source this Agent and its Configuration bind, which your access does not include. Ask an administrator for that access.";
 const READ_REFUSAL =
   "You do not have permission to read this Agent's saved settings. Ask an administrator for Agent read and Configuration read access.";
 
@@ -186,33 +189,41 @@ const editableFields = (page: Page, scope = ".agent-card") =>
       .map((field) => field.id || field.getAttribute("aria-label") || field.name),
   );
 
-test("a member without Agent update sees the Agent-side saves and fields disabled with the reason", async (t) => {
-  const { fixture, namespace, agent, member, page } = await readOnlyMember(t, "Agent Saves Off");
-  const tabs = [
-    { tab: "plugins", save: "Save plugin selections", field: "Plugin selections JSON" },
-    // The Channel Secrets card below saves the Configuration, not the Agent.
-    {
-      tab: "credentials",
-      save: "Save authentication source",
-      field: "Authentication source",
-      scope: "form:has(#harness-auth-method)",
-    },
-    // Repository fields need a repository Driver; the next test covers them.
-    { tab: "repositories", save: "Save repository access" },
-  ];
+// The Agent-side editors: each Save sends an Agent update.
+const agentSaves = (repositorySave?: string) => [
+  { tab: "plugins", save: "Save plugin selections", field: "Plugin selections JSON" },
+  // The Channel Secrets card below saves the Configuration, not the Agent.
+  {
+    tab: "credentials",
+    save: "Save authentication source",
+    field: "Authentication source",
+    scope: "form:has(#harness-auth-method)",
+  },
+  // Repository fields need a repository Driver; the repository test covers them.
+  { tab: "repositories", save: repositorySave },
+];
+
+// Opens each Agent-side editor as the signed-in member and checks it shows `note`, offers no
+// Save and takes no edit, and that nothing was written.
+async function assertAgentSavesDisabled(
+  { fixture, namespace, agent, member, page }: Awaited<ReturnType<typeof readOnlyMember>>,
+  note: string,
+  saves: ReturnType<typeof agentSaves>,
+) {
   const requests = apiRequests(page, fixture.origin);
-  for (const [index, { tab, save, field, scope }] of tabs.entries()) {
+  for (const [index, { tab, save, field, scope }] of saves.entries()) {
     const url = detailUrl(fixture, namespace.id, agent.id, "draft", tab).href;
     if (index === 0) {
       await login(page, fixture, url, member.credentials);
     } else {
       await page.goto(url);
     }
-    const button = page.getByRole("button", { name: save, exact: true });
-    await button.waitFor();
-    await page.getByRole("status").filter({ hasText: AGENT_UPDATE_DENIED }).waitFor();
-    // The note is the proof where Save is also disabled for an unedited form.
-    assert.equal(await button.isDisabled(), true, `${save} is disabled`);
+    await page.getByRole("status").filter({ hasText: note }).waitFor();
+    if (save) {
+      // The note is the proof where Save is also disabled for an unedited form.
+      const button = page.getByRole("button", { name: save, exact: true });
+      assert.equal(await button.isDisabled(), true, `${save} is disabled`);
+    }
     assert.deepEqual(await editableFields(page, scope), [], `no ${tab} field takes an edit`);
     if (field) {
       // The saved settings stay in view.
@@ -225,10 +236,37 @@ test("a member without Agent update sees the Agent-side saves and fields disable
       assert.equal(await json.isEditable(), false);
     }
   }
-  assert.deepEqual(
-    requests.filter(({ method }) => method === "PATCH"),
-    [],
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+}
+
+test("a member without Agent update sees the Agent-side saves and fields disabled with the reason", async (t) => {
+  await assertAgentSavesDisabled(
+    await readOnlyMember(t, "Agent Saves Off"),
+    AGENT_UPDATE_DENIED,
+    agentSaves("Save repository access"),
   );
+});
+
+// Each Agent update also checks operate on every source the Agent and its Configuration bind:
+// here the Slack token Secrets and the Harness authentication Secret. A member with Agent update
+// but no Secret operate was offered these saves, and each answered 403 (finding 2441).
+test("an Agent editor without operate on the bound Secrets sees the Agent-side saves disabled", async (t) => {
+  const member = await readOnlyMember(t, "Agent Sources Off");
+  const reader = member.fixture.policy.roles.find((role) => role.id === "role-save-refusal-reader");
+  assert.ok(reader, "the read-only role exists");
+  reader.permissions.push({ action: "update", resourceKind: "agent" });
+  // Without a repository Driver an Agent editor's repository tab offers no Save at all; the
+  // note and the disabled fields still show.
+  await assertAgentSavesDisabled(member, AGENT_SOURCES_DENIED, agentSaves());
+  // The answer the page showed: Agent update, but not the bound sources.
+  const session = await member.fixture.signIn(member.member.credentials);
+  const answer = await member.fixture.request(
+    "GET",
+    `/namespaces/${member.namespace.id}/agents/${member.agent.id}/permissions`,
+    { session },
+  );
+  assert.equal(answer.data.update, true);
+  assert.equal(answer.data.agentSourcesOperate, false);
 });
 
 test("a member without Agent update cannot edit repository access", async (t) => {
@@ -294,6 +332,14 @@ test("a granted Agent update enables the Agent-side save on the next draft refre
   reader.permissions.push({ action: "update", resourceKind: "agent" });
   await page.getByRole("button", { name: "Reload authentication source", exact: true }).click();
   await note.waitFor({ state: "detached" });
+  // Each Agent update also checks operate on the Secrets the Agent and its Configuration bind,
+  // which this member lacks: the reread names that grant instead (finding 2441).
+  const sourcesNote = page.getByRole("status").filter({ hasText: AGENT_SOURCES_DENIED });
+  await sourcesNote.waitFor();
+  assert.equal(await save.isDisabled(), true);
+  reader.permissions.push({ action: "operate", resourceKind: "secret" });
+  await page.getByRole("button", { name: "Reload authentication source", exact: true }).click();
+  await sourcesNote.waitFor({ state: "detached" });
   await page
     .getByRole("button", { name: "Save authentication source", exact: true, disabled: false })
     .waitFor();
