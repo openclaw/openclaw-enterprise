@@ -575,8 +575,9 @@ test("A version that is deploying is labelled Deploying, not Historical, until i
   assert.equal(labels.includes("Historical version"), false, labels.join(" → "));
 });
 
-// A Configuration tab parked while the deployment fails shows Historical when it comes back.
-test("A deploying version's parked Configuration tab says Historical once the deployment fails", async (t) => {
+// A Configuration tab parked while the deployment fails shows Failed when it comes back: a failed
+// version that never became current is not history (finding 2403).
+test("A deploying version's parked Configuration tab says Failed once the deployment fails", async (t) => {
   const { page, record } = await deployingVersion(t, "Deploying parked");
   await page.getByRole("tab", { name: "Plugins", exact: true }).click();
   await page.getByRole("tab", { name: "Plugins", exact: true, selected: true }).waitFor();
@@ -584,8 +585,9 @@ test("A deploying version's parked Configuration tab says Historical once the de
   await page.clock.runFor(DEPLOYMENT_POLL_MS);
   await page.getByText("v2 · Failed", { exact: true }).waitFor();
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
-  await page.getByText(/^Historical version · read-only admitted snapshot/).waitFor();
+  await page.getByText(/^Failed version · read-only admitted snapshot/).waitFor();
   assert.equal(await page.getByText(/^Deploying version/).count(), 0);
+  assert.equal(await page.getByText(/^Historical version/).count(), 0);
 });
 
 // A queued deployment is deploying too, and only the deploying version is: an older version

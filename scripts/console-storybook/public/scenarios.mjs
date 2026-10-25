@@ -1223,6 +1223,15 @@ export const scenarios = {
     description:
       "A stale Namespace link for a reader with no readable Namespace points at the header's Refresh, with no Switch Namespace button.",
   },
+  namespaceMissingAgentBookmark: {
+    group: "Pages/Agents",
+    name: "Namespace unavailable, Agent bookmark",
+    emptyNamespaces: true,
+    path: "/console/agents/agt_bookmarked?namespace=ns_missing",
+    description:
+      "An Agent bookmark in a Namespace the reader can no longer read shows the Agents header and the panel, without the Agent's ID, copy button or back link.",
+    gap: "Simulated UI proof only; this preview does not revoke a grant.",
+  },
   agentsCreateRestricted: {
     group: "Pages/Agents",
     name: "Create Agent unavailable for this caller",
@@ -3883,6 +3892,21 @@ export const scenarios = {
     ],
     description:
       "An Agent without a version can edit saved settings and deploy its first immutable version.",
+  },
+  failedFirstVersion: {
+    group: "Pages/Agent detail",
+    name: "Failed first version",
+    path: revision,
+    deployed: true,
+    firstDeploymentFailed: true,
+    description:
+      "The only version's deployment failed, so no version serves. Live serving says Not running, the version is labelled Failed rather than Historical, and no diagnostics are offered for a runtime that never started.",
+    steps: [
+      "Read Live serving in the summary: Not running.",
+      "Read the notice above the Configuration snapshot: Failed version.",
+      "Find Create new version once, in the page header. The Versions list names the draft as New version, Editable Configuration.",
+    ],
+    gap: "Simulated UI proof only; this preview does not run a deployment.",
   },
   newVersion: {
     group: "Pages/Agent detail",

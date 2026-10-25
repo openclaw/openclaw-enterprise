@@ -591,7 +591,15 @@ export function createVersionDeploymentEvidence(
   context: DeploymentContext,
   path: string,
   revisionId: string,
-  { shared, operateAllowed }: { shared: boolean; operateAllowed: Promise<boolean | undefined> },
+  {
+    shared,
+    operateAllowed,
+    isCurrentVersion,
+  }: {
+    shared: boolean;
+    operateAllowed: Promise<boolean | undefined>;
+    isCurrentVersion: () => boolean;
+  },
 ) {
   const section = element("section", { className: "agent-card version-deployment-record" });
   let status: Deployment | null = null;
@@ -609,6 +617,7 @@ export function createVersionDeploymentEvidence(
     revisionId,
     () => status,
     operateAllowed,
+    isCurrentVersion,
   );
   // Bumped whenever a newer record arrives from elsewhere so a slower read cannot overwrite it.
   let generation = 0;
@@ -738,6 +747,8 @@ export function createVersionDeploymentEvidence(
     show,
     release,
     setFailureShownAbove,
+    // The page calls this when its current version changes.
+    renderDiagnostics: diagnostics.render,
     applyOperate: diagnostics.applyOperate,
   };
 }

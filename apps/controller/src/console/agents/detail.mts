@@ -776,10 +776,26 @@ export async function renderAgentDetail(
         ? answer.status.harness
         : undefined;
     const lost = expected && harness?.state === "lost";
+    // With no current version nothing serves, so there is nothing to verify (finding 2403): a
+    // failed first deployment said "Not verified" here. A requested stop stays unverified: the
+    // page does not show when shutdown completes.
+    const nothingRunning =
+      !deleting &&
+      !currentRevisionId &&
+      !(
+        currentRuntimeState === "stopped" &&
+        (!visibleRevisionsLoaded || visibleRevisions.length > 0)
+      );
     const badge = liveServingBadge;
     setText(
       badge,
-      lost ? "Sandbox lost" : mayBeOfflineAfterFailure ? "May be offline" : "Not verified",
+      lost
+        ? "Sandbox lost"
+        : mayBeOfflineAfterFailure
+          ? "May be offline"
+          : nothingRunning
+            ? "Not running"
+            : "Not verified",
     );
     const tone = lost ? "danger" : mayBeOfflineAfterFailure ? "warning" : undefined;
     if (tone === undefined) {
@@ -1507,7 +1523,11 @@ export async function renderAgentDetail(
           ? "Deploying version · read-only admitted snapshot. It becomes the current version only if its deployment completes."
           : deployedRevision()?.id === selected
             ? "Deployed version · read-only admitted snapshot. Its deployment completed, but the current version could not be refreshed."
-            : "Historical version · read-only admitted snapshot. Browsing it does not change the current version.";
+            : // A failed version that is not current is not history: after a failed first
+              // deployment it was the only version and was called "Historical" (finding 2403).
+              failedVersions.has(failedVersionKey(path, selected))
+              ? "Failed version · read-only admitted snapshot. Its deployment did not complete."
+              : "Historical version · read-only admitted snapshot. Browsing it does not change the current version.";
   }
 
   // The newest version while its deployment is queued or running and it is not yet current. Right
@@ -1711,13 +1731,16 @@ export async function renderAgentDetail(
     revisionControls.clear();
     versionControls.clear();
     // Opening the draft is navigation. Saving a Configuration and deploying have their own permissions.
-    const newVersion = button(
-      callerPermissions?.update === false ? "Open version draft" : "Create new version",
-      () => change("draft", "configuration"),
-      {
-        className: "revision-create",
-        ...(selected === "draft" ? { "aria-current": "page" } : {}),
-      },
+    // The draft is an entry in the list, named as the chooser below names it, not a second
+    // "Create new version": the page header holds that action (finding 2403).
+    const newVersion = button("", () => change("draft", "configuration"), {
+      className: "revision-create",
+      "aria-label": "View new version, editable Configuration",
+      ...(selected === "draft" ? { "aria-current": "page" } : {}),
+    });
+    newVersion.append(
+      element("strong", {}, "New version"),
+      element("small", {}, "Editable Configuration"),
     );
     trackRevisionControl(newVersion);
     railFocusKeys.set(newVersion, "new");
@@ -1939,6 +1962,7 @@ export async function renderAgentDetail(
     }
     renderDetailHeading();
     renderVersionNotice();
+    versionRecord?.renderDiagnostics();
   }
 
   // The failed version the recovery block leads with, if any. The viewed version's record does
@@ -2330,9 +2354,6 @@ export async function renderAgentDetail(
       if (headerNewVersion) {
         headerNewVersion.textContent = "Open version draft";
       }
-      for (const control of selector.querySelectorAll(".revision-create")) {
-        control.textContent = "Open version draft";
-      }
     }
     refreshDeployControls();
   });
@@ -2402,6 +2423,7 @@ export async function renderAgentDetail(
       versionRecord = createVersionDeploymentEvidence(context, path, selected, {
         shared: activityRevisionId === selected && !latestDeploymentUnavailable,
         operateAllowed: latestPermissionsRead.then((permissions) => permissions?.operate),
+        isCurrentVersion: () => currentRevisionId === selected,
       });
       versionEvidence.append(...versionRecord.panels);
       versionRecord.setFailureShownAbove(recoveryRevisionId === selected);

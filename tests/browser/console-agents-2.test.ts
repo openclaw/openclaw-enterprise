@@ -1962,7 +1962,10 @@ test("Agent creation recognizes its saved Configuration when JSON serializes neg
   assert.equal(response.status(), 201);
   const { data } = await response.json();
   assert.equal(data.values.agents.defaults.models[model].params.temperature, 0);
-  const details = page.getByRole("button", { name: "Create new version", exact: true });
+  const details = page.getByRole("button", {
+    name: "View new version, editable Configuration",
+    exact: true,
+  });
   await details.or(page.getByRole("alert").filter({ hasText: "Outcome unknown" })).waitFor();
   assert.equal(configurationPostRequests(requests, namespace.id).length, 1);
   assert.equal(
@@ -2488,7 +2491,9 @@ for (const swapped of ["Agent", "service principal"]) {
     });
     // If creation incorrectly continues to Agent details, inspect the actual grant before failing.
     await warning
-      .or(page.getByRole("button", { name: "Create new version", exact: true }))
+      .or(
+        page.getByRole("button", { name: "View new version, editable Configuration", exact: true }),
+      )
       .waitFor();
     const saved = await fixture.request("GET", bindings);
     assert.equal(saved.status, 200);

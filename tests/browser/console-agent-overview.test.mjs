@@ -336,6 +336,48 @@ test("Stop is disabled with its reason when a failed first deployment left nothi
   );
 });
 
+// The failed first version's own page (finding 2403) said "Not verified" for Live serving while
+// nothing ran, called the only version "Historical" and offered diagnostics for a runtime that
+// never started. "Create new version" also showed twice: in the header and in the Versions list.
+test("A failed first version's page says nothing runs and offers one Create new version", async (t) => {
+  const { fixture, namespace, agent, page } = await agentPage(t, "Failed only", "Failed only");
+  const failed = await fixture.deployAgent(namespace.id, agent.id);
+  await routeFailedRecord(page, fixture, namespace, agent, failed);
+
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, failed.id, "configuration"),
+  );
+  await page.getByRole("heading", { name: "Version v1" }).waitFor();
+  const summary = page.getByRole("region", { name: "Agent state at a glance" });
+  await summary.getByText("v1 · Failed", { exact: true }).waitFor();
+  const liveServing = summary.locator(".stat").filter({ hasText: "Live serving" });
+  await liveServing.getByText("Not running", { exact: true }).waitFor();
+  await page
+    .getByText("Failed version · read-only admitted snapshot. Its deployment did not complete.", {
+      exact: true,
+    })
+    .waitFor();
+  assert.equal(await page.getByText(/^Historical version/).count(), 0);
+  // The version's record stays; there is no runtime for diagnostics to check.
+  await page.getByRole("heading", { name: "This version’s deployment record" }).waitFor();
+  assert.equal(
+    await page.getByRole("button", { name: "Run diagnostics for this version" }).count(),
+    0,
+  );
+  // The header holds the action; the Versions list names the draft as one of its entries.
+  assert.equal(
+    await page.getByRole("button", { name: "Create new version", exact: true }).count(),
+    1,
+  );
+  await page
+    .getByRole("button", { name: "View new version, editable Configuration", exact: true })
+    .click();
+  await page.getByRole("heading", { name: "Configuration draft" }).waitFor();
+  await liveServing.getByText("Not running", { exact: true }).waitFor();
+});
+
 // Nothing restarts a lost Sandbox (finding 2152): after a node restart the current version's
 // Sandbox can stay stopped while the Agent still reads active and its gateway refuses requests.
 // Live serving says so with the next step. Its note line is reserved from the first paint, so a
@@ -1559,6 +1601,7 @@ test("a late first deployment read moves nothing above the version tabs", async 
             tabs: box(".agent-tabs").top,
             overview: box(".agent-overview-status"),
             record: box(".version-deployment-record")?.height ?? 0,
+            diagnostics: box(".version-diagnostics")?.height ?? 0,
           };
         }),
       );
@@ -1653,11 +1696,20 @@ test("a late first deployment read moves nothing above the version tabs", async 
         const near = (actual, expected, what) =>
           assert.ok(Math.abs(actual - expected) < 1, `${name} at ${width}: ${what}`);
         near(is.overview.height, was.overview.height, "the overview keeps its height");
-        near(
-          is.tabs - was.tabs,
-          is.overview.top - was.overview.top + (is.record - was.record),
-          "only the card and the record move the tabs",
-        );
+        const expected = is.overview.top - was.overview.top + (is.record - was.record);
+        // A failed version that is not current offers no diagnostics (finding 2403): the panel
+        // leaves once the record says so, and the tabs can rise by up to its height and the gap
+        // above it (the Versions rail beside it may keep part of that space).
+        const diagnosticsLeft = was.diagnostics - is.diagnostics;
+        if (diagnosticsLeft > 0) {
+          const moved = is.tabs - was.tabs;
+          assert.ok(
+            moved <= expected + 1 && moved >= expected - diagnosticsLeft - 32,
+            `${name} at ${width}: only the card, the record and the diagnostics move the tabs`,
+          );
+        } else {
+          near(is.tabs - was.tabs, expected, "only the card and the record move the tabs");
+        }
         if (c.stillOn.includes(view)) {
           near(is.tabs, was.tabs, "the tabs stay");
         }
