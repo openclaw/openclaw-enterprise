@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
 updated: "2026-10-25"
-last_updated_session: "authoring-run/d15969fb-1113-416f-9573-e045dd683b66"
+last_updated_session: "authoring-run/6fccb13c-5ec3-44d5-aded-c3c3e9c1da81"
 ---
 
 # Production image upgrade flow
@@ -119,14 +119,14 @@ A missing rule refuses the candidate and points to
 
 When the chart renders `openclaw-enterprise-dependency-egress`, the helper first
 creates a temporary NetworkPolicy with its egress and execution-cluster API
-rules. The chart's default-deny NetworkPolicy also selects the Pods. Only after
-both Pod creates does the helper try to save their statuses and logs. A startup
-failure, stuck image pull, timeout, failed create, or missing usable UID stops
-preparation before writers stop. Best-effort cleanup of the temporary Secret,
-Pods, and conditional NetworkPolicy asks Kubernetes to delete each only with the
-unique ID (UID) returned on create, leaving same-name replacements alone. The
-helper never deletes by name alone; the operator must check whether an ambiguous
-create left an object behind.
+rules. The chart's default-deny NetworkPolicy also selects the Pods. It saves Pod
+statuses and logs only after both creates. A startup failure, stuck image pull,
+timeout, failed create, or missing usable UID stops preparation before writers
+stop and keeps kubectl's error in `preflight-<resource>-create.err`. Best-effort
+cleanup deletes the temporary Secret, Pods, and conditional NetworkPolicy only by
+the unique ID (UID) returned on create, leaving same-name replacements alone;
+`preflight-cleanup.err` records refusals. The operator checks whether an
+ambiguous create left an object behind.
 
 With `--preflight-only`, the helper leaves writers running, retains private
 evidence, and exits without marking preparation complete. The evidence cannot be
@@ -296,6 +296,7 @@ checks the exported inventory before following the recovery procedure. Empty
 
 ## Changelog
 
+- 2026-10-25 09:19: Keep preflight kubectl errors in private evidence. (authoring-run/6fccb13c-5ec3-44d5-aded-c3c3e9c1da81 - aaabca1fec6b28fbbb674f48f11f015242f86b59)
 - 2026-10-25 06:51: Identify temporary preflight resources by UID before cleanup. (authoring-run/d15969fb-1113-416f-9573-e045dd683b66 - dd36945fec0ec3de38cd15b971537eb10a90d0e4)
 
 - 2026-10-23 09:50: Document preflight-only rehearsal and fresh checks at deployment. (authoring-run/3c1a4d88-d619-47e3-9eba-dbaf0988d2e9 - 4e9f5935d5fa4878a719e82db5e504ec6ae55d64)

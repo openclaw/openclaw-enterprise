@@ -253,7 +253,8 @@ or the name
 the command prints each failure, attempts to delete these resources, and stops;
 the old release keeps serving. Logs and status are saved as
 `preflight-<api|worker>.log` and `-status.json`, taking up to about 90 seconds
-past `--timeout-seconds`. Runtime upgrades use the current
+past `--timeout-seconds`. When a create or cleanup fails, kubectl's error is saved
+as `preflight-<resource>-create.err` or `preflight-cleanup.err`. Runtime upgrades use the current
 controller image. If the helper is killed, delete its leftovers with
 `kubectl delete pod,secret,networkpolicy.networking.k8s.io -n <namespace> -l app.kubernetes.io/instance=<release>,app.kubernetes.io/component=upgrade-preflight`.
 

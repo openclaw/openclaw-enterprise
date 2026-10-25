@@ -326,25 +326,53 @@ helm_args=(--kubeconfig "$kubeconfig" --kube-context "$context" --namespace "$na
 occ_json=("$occ" --output json)
 
 # Only a successful create acknowledgement establishes cleanup ownership.
+# kubectl's error output stays off the terminal but is kept in the private
+# evidence directory, so the operator can tell a refusal (quota, admission,
+# RBAC, a failed Secret build) from a create whose acknowledgement was lost.
 preflight_resources=()
 unconfirmed_preflight() {
-  die "ownership unconfirmed for ${1:0:300}; no cleanup was attempted for this name. Check whether this object remains in the selected namespace. Correct the failure and use a fresh evidence directory. This run stopped no OCC writer."
+  local resource=$1 errors=$2 status=$3 reason
+  if ((status == 2)); then
+    reason="The create returned no usable UID; kubectl's error output, if any, is in $errors in the evidence directory."
+  else
+    reason="kubectl reported an error for the create; see $errors in the evidence directory."
+  fi
+  die "ownership unconfirmed for ${resource:0:300}; no cleanup was attempted for this name. $reason Check whether this object remains in the selected namespace. Correct the failure and use a fresh evidence directory. This run stopped no OCC writer."
 }
+# create_preflight FILE ERRORS [scrub] prints guarded DeleteOptions for the
+# created object. It returns 1 when kubectl failed and 2 when kubectl succeeded
+# without a usable UID.
 create_preflight() {
+  local errors="$evidence_dir/$2"
+  local statuses
   # Validate the opaque UID before Bash can strip newlines or NULs, and build
   # the complete guarded request before cleanup can start a DELETE.
   "${kube[@]}" --request-timeout=30s --namespace "$namespace" create \
-    --filename "$1" -o 'jsonpath={.metadata.uid}' 2>/dev/null |
+    --filename "$1" -o 'jsonpath={.metadata.uid}' 2>"$errors" |
     python3 -c '
 import json, sys
 uid = sys.stdin.buffer.read().decode("utf-8")
 if not uid or not uid.isprintable() or any(c.isspace() for c in uid):
     sys.exit(1)
 print(json.dumps({"apiVersion": "v1", "kind": "DeleteOptions", "propagationPolicy": "Background", "preconditions": {"uid": uid}}, separators=(",", ":")))
-' 2>/dev/null
+' 2>/dev/null && statuses=(0 0) || statuses=("${PIPESTATUS[@]}")
+  # kubectl echoes a manifest it cannot decode. The Secret's only data is the
+  # candidate Installation, already saved here, base64-encoded; drop long
+  # base64 runs so this file never holds a second copy.
+  if [[ "${3:-}" == scrub && -s "$errors" ]]; then
+    python3 - "$errors" <<'PYTHON' || : >"$errors"
+import re, sys
+with open(sys.argv[1], encoding="utf-8", errors="replace") as source:
+    text = source.read()
+with open(sys.argv[1], "w", encoding="utf-8") as target:
+    target.write(re.sub(r"[A-Za-z0-9+/]{32,}={0,2}", "[redacted]", text))
+PYTHON
+  fi
+  ((statuses[0] == 0)) || return 1
+  ((statuses[1] == 0)) || return 2
 }
 cleanup_preflight() {
-  local entry resource name uri delete_options
+  local entry resource name uri delete_options errors
   for entry in ${preflight_resources[@]+"${preflight_resources[@]}"}; do
     resource=${entry%% *}
     delete_options=${entry#* }
@@ -357,9 +385,14 @@ cleanup_preflight() {
     esac
     # The server must compare the UID atomically with deletion, including if a
     # different object has taken this name since the create acknowledgement.
-    if ! "${kube[@]}" --request-timeout=15s delete --raw="$uri" -f - \
-      <<<"$delete_options" >/dev/null 2>&1; then
-      warn "could not confirm cleanup of ${resource:0:300}."
+    if ! errors=$("${kube[@]}" --request-timeout=15s delete --raw="$uri" -f - \
+      <<<"$delete_options" 2>&1 >/dev/null); then
+      printf '%s\n%s\n' "${resource:0:300}:" "$errors" >>"$evidence_dir/preflight-cleanup.err"
+      if [[ "$errors" == *"Precondition failed: UID in precondition"* ]]; then
+        warn "could not confirm cleanup of ${resource:0:300}: an object with a different UID now holds this name, so it was left in place; see preflight-cleanup.err in the evidence directory."
+      else
+        warn "could not confirm cleanup of ${resource:0:300}: the delete request failed; see preflight-cleanup.err in the evidence directory."
+      fi
     fi
   done
   preflight_resources=()
@@ -383,13 +416,15 @@ preflight_startup() {
     "$secret" "$namespace" "$release" >"$evidence_dir/preflight-networkpolicy.json" ||
     die "cannot build the startup preflight NetworkPolicy from the rendered chart; no OCC writer was stopped."
   if [[ "$(cat "$evidence_dir/preflight-networkpolicy.json")" != null ]]; then
-    delete_options=$(create_preflight "$evidence_dir/preflight-networkpolicy.json") ||
-      unconfirmed_preflight "networkpolicy.networking.k8s.io/$secret"
+    delete_options=$(create_preflight "$evidence_dir/preflight-networkpolicy.json" \
+      preflight-networkpolicy-create.err) ||
+      unconfirmed_preflight "networkpolicy.networking.k8s.io/$secret" preflight-networkpolicy-create.err $?
     preflight_resources+=("networkpolicy.networking.k8s.io/$secret $delete_options")
   fi
   delete_options=$(node scripts/upgrade-startup-preflight.mjs secret "$candidate_installation" \
-    "$installation_key" "$secret" "$namespace" "$release" | create_preflight -) ||
-    unconfirmed_preflight "secret/$secret"
+    "$installation_key" "$secret" "$namespace" "$release" |
+    create_preflight - preflight-secret-create.err scrub) ||
+    unconfirmed_preflight "secret/$secret" preflight-secret-create.err $?
   preflight_resources+=("secret/$secret $delete_options")
   for component in api worker; do
     pod="$release-upgrade-preflight-$component-$suffix"
@@ -398,8 +433,9 @@ preflight_startup() {
       "$selected_controller" "$timeout_seconds" "$evidence_dir/installation.json" \
       >"$evidence_dir/preflight-$component-pod.json" ||
       die "cannot build the $component startup preflight Pod from the rendered chart; no OCC writer was stopped."
-    delete_options=$(create_preflight "$evidence_dir/preflight-$component-pod.json") ||
-      unconfirmed_preflight "pod/$pod"
+    delete_options=$(create_preflight "$evidence_dir/preflight-$component-pod.json" \
+      "preflight-$component-pod-create.err") ||
+      unconfirmed_preflight "pod/$pod" "preflight-$component-pod-create.err" $?
     preflight_resources+=("pod/$pod $delete_options")
   done
   # Wait for every Pod and save each one's status and log before reporting, so a

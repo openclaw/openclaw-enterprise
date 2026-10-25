@@ -9,6 +9,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -328,9 +329,8 @@ async function fakeCommand(root, { command: tool, args, cwd }, io) {
     };
     if (args.includes("create") && args.includes("--filename")) {
       const source = fileArg("--filename");
-      const object = JSON.parse(
-        source === "-" ? await io.readInput() : readFileSync(source, "utf8"),
-      );
+      const manifest = source === "-" ? await io.readInput() : readFileSync(source, "utf8");
+      const object = JSON.parse(manifest);
       const kind = {
         Secret: "secret",
         NetworkPolicy: "networkpolicy.networking.k8s.io",
@@ -342,6 +342,13 @@ async function fakeCommand(root, { command: tool, args, cwd }, io) {
       const target = object.kind === "Pod" ? object.spec.containers[0].name : kind;
       const inventory = state.preflight[collection[kind]];
       const fault = state.preflightFault?.target === target ? state.preflightFault.mode : null;
+      // Stock kubectl quotes a manifest it cannot decode in its error, before any request.
+      if (fault === "decode") {
+        return fail(
+          1,
+          `error: unable to decode "STDIN": Object 'Kind' is missing in '${manifest}'`,
+        );
+      }
       // A competing creator wins the name before this request reaches the API.
       if (fault === "conflict") {
         inventory[name] = {
@@ -353,7 +360,10 @@ async function fakeCommand(root, { command: tool, args, cwd }, io) {
         save();
         // Even stdout from a failed create must not establish ownership.
         out(inventory[name].metadata.uid);
-        return fail(1, "AlreadyExists");
+        return fail(
+          1,
+          `Error from server (AlreadyExists): ${collection[kind]} "${name}" already exists`,
+        );
       }
       object.metadata.uid = randomUUID();
       inventory[name] =
@@ -424,7 +434,17 @@ async function fakeCommand(root, { command: tool, args, cwd }, io) {
       }
       if (uid && current.metadata.uid !== uid) {
         save();
-        return fail(1, "UID precondition failed: private-response-marker");
+        // The API server's wording for a failed UID precondition (HTTP 409).
+        return fail(
+          1,
+          `Error from server (Conflict): Operation cannot be fulfilled on ${collection[kind]} "${name}": Precondition failed: UID in precondition: ${uid}, UID in object meta: ${current.metadata.uid}\nprivate-response-marker`,
+        );
+      }
+      if (state.preflightFault?.mode === "delete-refused" && state.preflightFault.target === kind) {
+        return fail(
+          1,
+          `Error from server (Forbidden): ${collection[kind]} "${name}" is forbidden: private-response-marker`,
+        );
       }
       // Keep unsafe name-only deletion functional: baseline failures must show
       // the foreign object actually removed, not an unsupported-command error.
@@ -2444,12 +2464,42 @@ test("preflight-only checks the candidate without preparing or deploying it", as
 });
 
 // The command fixture models API inventory and conditional deletion; it is not a live cluster.
-for (const [target, mode, acknowledged] of [
-  ["networkpolicy.networking.k8s.io", "conflict", 0],
-  ["secret", "lost", 1],
-  ["api", "empty", 2],
+// kubectl's create output stays off the terminal but is kept in the private evidence
+// directory, so an operator can tell a refusal from a lost or unusable acknowledgement.
+for (const [target, mode, acknowledged, errors, reason, kubectlOutput] of [
+  [
+    "networkpolicy.networking.k8s.io",
+    "conflict",
+    0,
+    "preflight-networkpolicy-create.err",
+    "kubectl reported an error for the create; see preflight-networkpolicy-create.err in the evidence directory.",
+    /^Error from server \(AlreadyExists\): networkpolicies "[^"]+" already exists$/m,
+  ],
+  [
+    "secret",
+    "lost",
+    1,
+    "preflight-secret-create.err",
+    "kubectl reported an error for the create; see preflight-secret-create.err in the evidence directory.",
+    /^create acknowledgement lost: private-response-marker$/m,
+  ],
+  [
+    "api",
+    "empty",
+    2,
+    "preflight-api-pod-create.err",
+    "The create returned no usable UID; kubectl's error output, if any, is in preflight-api-pod-create.err in the evidence directory.",
+    /^$/,
+  ],
   // Bash command substitution would otherwise strip this invalid receipt's newline.
-  ["worker", "newline", 3],
+  [
+    "worker",
+    "newline",
+    3,
+    "preflight-worker-pod-create.err",
+    "The create returned no usable UID; kubectl's error output, if any, is in preflight-worker-pod-create.err in the evidence directory.",
+    /^$/,
+  ],
 ]) {
   test(`cleanup ownership: ${target} ${mode} preserves unconfirmed inventory`, async (t) => {
     const f = await fixture(t, {
@@ -2467,18 +2517,46 @@ for (const [target, mode, acknowledged] of [
     assert.equal(failure.code, 1);
     assert.ok(
       failure.stderr.includes(
-        `/${remaining[0].metadata.name}; no cleanup was attempted for this name.`,
+        `/${remaining[0].metadata.name}; no cleanup was attempted for this name. ${reason} Check whether`,
       ),
     );
     assert.match(
       failure.stderr,
       /Check whether this object remains in the selected namespace\. Correct the failure and use a fresh evidence directory\. This run stopped no OCC writer\./,
     );
+    assert.match(await readFile(join(f.evidence, errors), "utf8"), kubectlOutput);
+    assert.equal(statSync(join(f.evidence, errors)).mode & 0o777, 0o600);
     assert.ok(!failure.stderr.includes(remaining[0].metadata.uid), "create response stays private");
     assert.doesNotMatch(failure.stdout + failure.stderr, /private-(?:delete-)?response-marker/);
     assert.deepEqual(await f.events(), [], "no writer stops or migration");
   });
 }
+
+test("cleanup ownership: a Secret manifest kubectl quotes stays out of the evidence", async (t) => {
+  const f = await fixture(t, {
+    controllerOnly: true,
+    preflightPolicy: true,
+    preflightFault: { target: "secret", mode: "decode" },
+  });
+  const failure = await f.run().catch((error) => error);
+  const state = await f.state();
+  assert.equal(failure.code, 1);
+  assert.match(
+    failure.stderr,
+    /ownership unconfirmed for secret\/[^;]+; no cleanup was attempted for this name\. kubectl reported an error for the create; see preflight-secret-create\.err in the evidence directory\./,
+  );
+  // kubectl refused before any request; only the NetworkPolicy existed and is cleaned.
+  assert.deepEqual(state.preflight.secrets, {});
+  assert.equal(state.preflight.deleted.length, 1);
+  // The diagnosis survives, but not the Installation bytes the Secret carried.
+  const errors = await readFile(join(f.evidence, "preflight-secret-create.err"), "utf8");
+  assert.match(errors, /^error: unable to decode "STDIN": Object 'Kind' is missing in '/);
+  const installation = await readFile(join(f.evidence, "candidate-installation.yaml"));
+  assert.ok(installation.length > 24, "the fixture Installation is long enough to redact");
+  assert.ok(!errors.includes(installation.toString("base64")), "Secret data stays out");
+  assert.match(errors, /\[redacted\]/);
+  assert.deepEqual(await f.events(), []);
+});
 
 test("cleanup ownership: same-name replacement survives EXIT cleanup", async (t) => {
   const f = await fixture(t, {
@@ -2496,7 +2574,45 @@ test("cleanup ownership: same-name replacement survives EXIT cleanup", async (t)
   assert.equal(state.preflight.deleted.length, 3, "cleanup continues for other owned objects");
   assert.equal(failure.code, 1);
   assert.match(failure.stderr, /primary startup failure/);
-  assert.match(failure.stderr, /could not confirm cleanup of pod\//);
+  // The warning says the identity did not match, and the API's answer stays private.
+  assert.match(
+    failure.stderr,
+    /could not confirm cleanup of pod\/[^:]+: an object with a different UID now holds this name, so it was left in place; see preflight-cleanup\.err in the evidence directory\./,
+  );
+  assert.match(
+    await readFile(join(f.evidence, "preflight-cleanup.err"), "utf8"),
+    /^pod\/[^\n]+-api-[^\n]+:\nError from server \(Conflict\): .*Precondition failed: UID in precondition: /m,
+  );
+  assert.doesNotMatch(failure.stdout + failure.stderr, /private-(?:delete-)?response-marker/);
+  assert.deepEqual(await f.events(), []);
+});
+
+test("cleanup ownership: a refused DELETE is reported as a failed request", async (t) => {
+  const f = await fixture(t, {
+    controllerOnly: true,
+    preflightPolicy: true,
+    preflightFault: { target: "secret", mode: "delete-refused" },
+    preflightResults: {
+      worker: { phase: "Failed", log: "primary startup failure\n" },
+    },
+  });
+  const failure = await f.run().catch((error) => error);
+  const state = await f.state();
+  assert.equal(failure.code, 1);
+  assert.match(failure.stderr, /primary startup failure/);
+  assert.equal(Object.values(state.preflight.secrets).length, 1);
+  assert.equal(state.preflight.deleted.length, 3, "cleanup continues for other owned objects");
+  assert.match(
+    failure.stderr,
+    /could not confirm cleanup of secret\/[^:]+: the delete request failed; see preflight-cleanup\.err in the evidence directory\./,
+  );
+  assert.doesNotMatch(failure.stderr, /different UID/);
+  const errors = await readFile(join(f.evidence, "preflight-cleanup.err"), "utf8");
+  assert.match(
+    errors,
+    /^secret\/[^\n]+:\nError from server \(Forbidden\): secrets "[^"]+" is forbidden: /m,
+  );
+  assert.equal(statSync(join(f.evidence, "preflight-cleanup.err")).mode & 0o777, 0o600);
   assert.doesNotMatch(failure.stdout + failure.stderr, /private-(?:delete-)?response-marker/);
   assert.deepEqual(await f.events(), []);
 });
