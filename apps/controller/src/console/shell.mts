@@ -361,8 +361,9 @@ export function createShell({
         : "Checking access…";
       if (session && !namespaceAdmissionPending) {
         // The page's panel names the missing access; the disabled selector only says it is empty
-        // (finding 2371).
-        placeholder = namespaceId === null ? "None" : "Namespace unavailable";
+        // (finding 2371). Its "Namespace" label already names the kind, so the compact control
+        // fits the whole word (finding 2423).
+        placeholder = namespaceId === null ? "None" : "Unavailable";
       }
       select.append(element("option", { value: "", disabled: true, selected: true }, placeholder));
     }

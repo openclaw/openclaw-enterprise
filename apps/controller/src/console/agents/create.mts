@@ -520,7 +520,13 @@ async function waitForProvisioning({
   const stopped =
     current?.status === "failed" &&
     (current.error?.code === "REVISION_STOPPED" || cancelledAgent === "kept");
-  status.textContent = stopped ? "Provisioning stopped." : provisioningStatusText(current?.status);
+  // A failed job's reason leads the form's error line, so its status line would only repeat
+  // that it failed (finding 2423).
+  status.textContent = stopped
+    ? "Provisioning stopped."
+    : current?.status === "failed"
+      ? ""
+      : provisioningStatusText(current?.status);
   if (current?.status !== "succeeded") {
     throw new ProvisioningFailure(current, stopped, cancelledAgent === "unknown");
   }
@@ -1875,6 +1881,10 @@ function renderAgentForm(
     submit,
   );
   const channelEditor = element("div", { className: "create-channels" });
+  // The intro names repository access only where the Installation offers it (finding 2423).
+  const introText = (repositoryAccess: boolean) =>
+    `Choose a model${repositoryAccess ? " and repository access" : ""}. Add Slack when you want this Agent to work with your team.`;
+  const intro = element("p", { className: "muted" }, introText(true));
   // The collapsed Runtime details still name the selected execution mode.
   const runtimeModeSummary = element("span", { className: "muted" });
   let repositories: Repositories;
@@ -2334,6 +2344,7 @@ function renderAgentForm(
     (binding?.method ?? authMethod.value) !== "credential_source" &&
     (!shouldProvision() || !modelSourceType());
   const updateControls = () => {
+    setText(intro, introText(!repositories.unavailable()));
     const saved = Boolean(savedConfiguration || savedAgent || provisioningAttempt);
     const planLocked =
       pending ||
@@ -3513,11 +3524,7 @@ function renderAgentForm(
   });
   view.replaceChildren(
     ...(notReadyNote ? [notReadyNote] : []),
-    element(
-      "p",
-      { className: "muted" },
-      "Choose a model and repository access. Add Slack when you want this Agent to work with your team.",
-    ),
+    intro,
     accessStatus,
     form,
     channelEditor,

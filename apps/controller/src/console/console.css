@@ -3043,6 +3043,13 @@ select:not([multiple])[size="1"] {
 .revision-selector {
   padding: var(--space-5) var(--space-6);
 }
+/* Narrow, the Versions card pads like every other Agent card (finding 2423). */
+@media (max-width: 760px) {
+  .revision-selector,
+  .agent-version-layout > .revision-selector {
+    padding: var(--space-4);
+  }
+}
 .revision-selector > p {
   margin-bottom: var(--space-2);
   font-size: var(--text-md);
@@ -3758,6 +3765,8 @@ select:not([multiple])[size="1"] {
 .launch-intro,
 .launch-preset,
 #create-agent-form ~ .create-channels,
+#create-agent-form ~ .error,
+#create-agent-form ~ .hint,
 #create-agent-form ~ .form-actions {
   max-width: 960px;
 }

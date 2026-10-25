@@ -587,6 +587,13 @@ test("Dedicated repository Agent keeps its bindings through Slack save and the c
   await page.getByLabel("Agent name").fill("Dedicated repository Agent");
   assert.equal(await page.getByLabel("Execution mode").inputValue(), "dedicated");
   await repositoryCheckbox(page, "example/application").click();
+  // The intro names repository access where the Installation offers it (finding 2423).
+  await page
+    .getByText(
+      "Choose a model and repository access. Add Slack when you want this Agent to work with your team.",
+      { exact: true },
+    )
+    .waitFor();
   await page.locator("#repository-default-git-full").check();
   const createdResponse = page.waitForResponse(
     (response) =>
@@ -688,6 +695,12 @@ test("Agent creation distinguishes unavailable repository choices from denied Ag
       .innerText(),
     /You can continue without repository access/,
   );
+  // Without repository access the intro offers only what the form has (finding 2423).
+  await unavailablePage
+    .getByText("Choose a model. Add Slack when you want this Agent to work with your team.", {
+      exact: true,
+    })
+    .waitFor();
   const setupGuide = unavailablePage.getByRole("link", { name: "Set up repository access" });
   assert.equal(
     await setupGuide.getAttribute("href"),
