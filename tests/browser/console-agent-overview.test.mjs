@@ -829,12 +829,8 @@ test("Recovery offers no draft link without Agent update or deploy permission", 
   );
   const recovery = page.getByRole("region", { name: "Deployment needs attention" });
   await recovery.getByText("v2 deployment failed").waitFor();
-  // The header relabels once the permission answer arrives; the recovery follows it, and so does
-  // the Versions list's draft entry, which this reader cannot edit (finding 2405).
+  // The header relabels once the permission answer arrives; the recovery follows it.
   await page.getByRole("button", { name: "Open version draft" }).first().waitFor();
-  await page
-    .getByRole("button", { name: "View version draft, read-only Configuration", exact: true })
-    .waitFor();
   const logs = recovery.getByRole("link", { name: "Open v2 Logs" });
   await logs.waitFor();
   assert.equal(await logs.getAttribute("class"), "button button--primary");

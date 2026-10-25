@@ -4010,6 +4010,9 @@ test("a version editor without Agent update can recover a failed deployment from
     .locator(".agent-toolbar-actions")
     .getByRole("button", { name: "Open version draft" })
     .waitFor();
+  // Without Agent update the Versions list's draft entry is not called editable, nor read-only:
+  // this caller can save the Configuration (finding 2405).
+  await page.getByRole("button", { name: "View version draft", exact: true }).waitFor();
   const recovery = page.getByRole("region", { name: "Deployment needs attention" });
   await recovery
     .getByText("v2 failed its startup model check (RUNTIME_MODEL_PROBE_FAILED).", { exact: false })

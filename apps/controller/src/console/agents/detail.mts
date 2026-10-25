@@ -1717,18 +1717,14 @@ export async function renderAgentDetail(
       }
     }
   }
-  // The Versions list's draft entry and chooser option. A reader without update cannot edit the
-  // draft's Configuration, so neither calls it editable (finding 2405). The permission answer can
-  // land after the list is built, so its callback labels them again.
+  // The Versions list's draft entry and chooser option. Without Agent update they do not call the
+  // Configuration editable (finding 2405), nor read-only: Configuration update is a separate
+  // grant this page does not read. The permission answer can land after the list is built, so its
+  // callback labels them again.
   function labelDraftEntry() {
     const [title, detail, name, option] =
       callerPermissions?.update === false
-        ? [
-            "Version draft",
-            "Read-only Configuration",
-            "View version draft, read-only Configuration",
-            "Version draft · read-only Configuration",
-          ]
+        ? ["Version draft", "Configuration draft", "View version draft", "Version draft"]
         : [
             "New version",
             "Editable Configuration",
