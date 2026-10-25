@@ -8735,10 +8735,16 @@ test("Slack validation with no Slack proxy names the setting at provision and de
   const bot = await makeSecret("bot", "xoxb-synthetic-bot");
   const model = await makeSecret("model", "synthetic-model");
   // Finding 2521: production composition builds the Driver with expectProxy, since its API
-  // egress is default-deny. With no proxy URL, a check that gets no answer from Slack means the
-  // Installation has no Slack route: a fixed refusal names the setting instead of "Retry".
+  // egress is default-deny unless sign-in settings open it. With no proxy URL, a check that gets
+  // no answer from Slack usually means the Installation has no Slack route: a fixed refusal names
+  // the setting, and still allows a retry for an open route that timed out (finding 2531).
+  // The rejection has the shape Node's fetch gives a connection that timed out.
+  const timedOut = () =>
+    new TypeError("fetch failed", {
+      cause: Object.assign(new Error("connect ETIMEDOUT"), { code: "ETIMEDOUT" }),
+    });
   let calls = 0;
-  let answer = new Error("connect ETIMEDOUT");
+  let answer = timedOut();
   const channel = new SlackChannelDriver(
     async () => {
       calls++;
@@ -8778,7 +8784,7 @@ test("Slack validation with no Slack proxy names the setting at provision and de
       ),
     });
   const noRoute =
-    "OCC could not reach Slack, and this Installation has no Slack proxy for the API. An administrator must set Helm slackProxy.enabled or api.channelDirectoryProxyUrl; see https://docs-enterprise.openclaw.org/guides/integrations/slack/";
+    "OCC could not reach Slack, and the API has no Slack proxy. If the API has another approved route to Slack, try again. Otherwise an administrator must set Helm slackProxy.enabled or api.channelDirectoryProxyUrl; see the Slack integration guide.";
   // Checks that need no provider call keep their own answers: a wrong token role is still named.
   assertApiError(await provision(), 400, "CHANNEL_CREDENTIAL_ROLE_MISMATCH");
   assert.equal(calls, 0);
@@ -8786,7 +8792,7 @@ test("Slack validation with no Slack proxy names the setting at provision and de
   const refused = await provision();
   assertApiError(refused, 409, "RESOURCE_CONFLICT");
   assert.equal(refused.body.error.message, noRoute);
-  assert.doesNotMatch(JSON.stringify(refused.body), /retry|xoxb-synthetic|xapp-synthetic/i);
+  assert.doesNotMatch(JSON.stringify(refused.body), /xoxb-synthetic|xapp-synthetic/);
   assert.equal(calls, 1);
   assert.deepEqual(
     await fixture.platformState.read((view) => view.agents.listAgents(namespace.id)),
@@ -8798,8 +8804,11 @@ test("Slack validation with no Slack proxy names the setting at provision and de
   // A route an operator approved instead of the proxy still validates: the fixture has no
   // durable work queue, so its error means the plan passed channel validation.
   answer = () => new Response(JSON.stringify({ ok: true, bot_id: "B123", team_id: "T123" }));
+  const before = calls;
   assertApiError(await provision(), 503, "DEPENDENCY_UNAVAILABLE");
-  answer = new Error("connect ETIMEDOUT");
+  // auth.test ran and passed: the 503 comes after validation, not from skipping it.
+  assert.equal(calls, before + 1);
+  answer = timedOut();
 
   // Deployment of a saved Agent gets the same answer.
   const config = await controller.request("POST", `${base}/configurations`, {

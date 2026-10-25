@@ -45,9 +45,11 @@ and never opens a Socket Mode connection or sends a message.
 
 Failures return sanitized `CHANNEL_CREDENTIAL_*` errors with the native field
 path. A retryable `503` means Slack or its route failed. When the production API
-has no proxy URL and `auth.test` gets no answer from Slack, validation instead
-returns `409` `RESOURCE_CONFLICT`, which names the
-[proxy settings](#enable-lookup-in-production) and does not ask for a retry. App-token prefixes do not prove validity, scopes, or app/bot pairing.
+has no proxy URL and `auth.test` gets no answer from Slack (connection, DNS, or
+time budget failure), validation instead returns `409` `RESOURCE_CONFLICT`. The
+message names the [proxy settings](#enable-lookup-in-production) and says to try
+again if the API has another approved route to Slack, because an open route that
+timed out gets the same answer. App-token prefixes do not prove validity, scopes, or app/bot pairing.
 Validation checks the current values; credentials can change before runtime
 startup, which remains a separate connectivity check.
 
