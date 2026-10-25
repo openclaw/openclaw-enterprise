@@ -3973,6 +3973,20 @@ export const scenarios = {
       "Choose Cancel: the editor closes and Edit Configuration takes focus.",
     ],
   },
+  currentConfigurationReader: {
+    group: "Pages/Agent detail",
+    name: "Current Configuration, viewer can only read",
+    path: `${revision}&tab=configuration`,
+    deployed: true,
+    readOnlyPermissionSummary: true,
+    description:
+      "The permission answer denies Configuration update, so a version's Configuration tab offers Open version draft instead of Edit current Configuration. The draft it opens shows the saved JSON with no editor. The API still decides.",
+    steps: [
+      "Find Open version draft below the Configuration snapshot, and no Edit current Configuration.",
+      "Choose Open version draft: the draft opens read-only, with no Edit Configuration button.",
+    ],
+    gap: "The permission answer is simulated; the API still authorizes every save.",
+  },
   agentHeaderActions: {
     group: "Pages/Agent detail",
     name: "Header actions",
@@ -4321,7 +4335,7 @@ export const scenarios = {
     pluginDiscovery,
     readOnlyPermissionSummary: true,
     description:
-      "The permission answer denies Agent update, so Save plugin selections and the plugin fields are disabled, the saved selections stay in view, and the note names the grant to ask for. The API still decides.",
+      "The permission answer denies Agent update, so Save plugin selections and the plugin fields are disabled, the saved selections stay in view as read-only, and the note names the grant to ask for. The page does not read the plugin policy capabilities, which need Agent update. The API still decides.",
     gap: "The permission answer is simulated; the API still authorizes every save.",
   },
   draftReader: {
