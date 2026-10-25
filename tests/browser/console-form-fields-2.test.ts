@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test, { type TestContext } from "node:test";
 import type { BrowserContextOptions, Locator, Page } from "playwright";
 
+import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   apiRequests,
@@ -257,16 +258,7 @@ test("the workspace file editor drops an oversized file's error when Reload find
       }
       return route.fulfill(
         missing
-          ? {
-              status: 404,
-              contentType: "application/json",
-              body: JSON.stringify({
-                error: {
-                  code: "NOT_FOUND",
-                  message: "The requested workspace file was not found.",
-                },
-              }),
-            }
+          ? apiErrorResponse(404, "NOT_FOUND", "The requested workspace file was not found.")
           : {
               status: 200,
               contentType: "application/json",
@@ -373,7 +365,7 @@ test("Plugin selections JSON", async (t) => {
   const outcomes = [
     {
       name: "refusal",
-      status: 409,
+      response: apiErrorResponse(409, "RESOURCE_CONFLICT", "Held."),
       shown: (page: Page) =>
         page.getByRole("alert").filter({
           hasText:
@@ -384,7 +376,7 @@ test("Plugin selections JSON", async (t) => {
     },
     {
       name: "unknown outcome",
-      status: 500,
+      response: apiErrorResponse(500, "INTERNAL_ERROR", "Held."),
       shown: (page: Page) =>
         page.getByText(
           "Outcome unknown. Plugin selections may have been saved. Reload this Agent before trying again.",
@@ -407,14 +399,7 @@ test("Plugin selections JSON", async (t) => {
             t,
             page,
             `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`,
-            {
-              method: "PATCH",
-              fulfill: {
-                status: outcome.status,
-                contentType: "application/json",
-                body: JSON.stringify({ error: { code: "TEST", message: "Held." } }),
-              },
-            },
+            { method: "PATCH", fulfill: outcome.response },
           );
           await page.getByRole("button", { name: "Save plugin selections", exact: true }).focus();
           await page.keyboard.press("Enter");

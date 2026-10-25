@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import test from "node:test";
 
+import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
@@ -131,17 +132,13 @@ test("draft Agent offers deployment without a generated-credential step", async 
   // A missing tenant RoleBinding refuses the credential check before admission (D396).
   const deployUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deploy`;
   await page.route(deployUrl, (route) =>
-    route.fulfill({
-      status: 503,
-      contentType: "application/json",
-      body: JSON.stringify({
-        error: {
-          code: "RUNTIME_CREDENTIALS_CLUSTER_RBAC",
-          message: "The cluster denied OCC access needed for this Agent's runtime credentials.",
-        },
-        meta: { requestId: `req_${randomUUID()}` },
-      }),
-    }),
+    route.fulfill(
+      apiErrorResponse(
+        503,
+        "RUNTIME_CREDENTIALS_CLUSTER_RBAC",
+        "The cluster denied OCC access needed for this Agent's runtime credentials.",
+      ),
+    ),
   );
   await deploy.click();
   await page
@@ -195,14 +192,9 @@ test("Deploy names a 503 refused before admission and keeps Deploy available", a
   await page.route(
     `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`,
     (route) =>
-      route.fulfill({
-        status: 503,
-        contentType: "application/json",
-        body: JSON.stringify({
-          error: { code: "DEPENDENCY_UNAVAILABLE", message: "The Agent store is unavailable." },
-          meta: { requestId: `req_${randomUUID()}` },
-        }),
-      }),
+      route.fulfill(
+        apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "The Agent store is unavailable."),
+      ),
     { times: 1 },
   );
   await deploy.click();
@@ -432,14 +424,7 @@ test("revision deployment blocks unavailable reads and does not replay a lost re
     `${fixture.origin}/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
     async (route) => {
       if (configurationUnavailable) {
-        await route.fulfill({
-          status: 503,
-          contentType: "application/json",
-          body: JSON.stringify({
-            error: { code: "DEPENDENCY_UNAVAILABLE", message: "Unavailable" },
-            meta: { requestId: `req_${randomUUID()}` },
-          }),
-        });
+        await route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Unavailable"));
         return;
       }
       await route.fallback();
@@ -865,11 +850,7 @@ test("operator-managed console binding saves and deploys without a managed crede
   // Runtime removes only the credential gate, not failed-history protection.
   const revisionsPath = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/revisions`;
   await page.route(revisionsPath, (route) =>
-    route.fulfill({
-      status: 503,
-      contentType: "application/json",
-      body: JSON.stringify({ error: { code: "DEPENDENCY_UNAVAILABLE" } }),
-    }),
+    route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", DEPENDENCY_UNAVAILABLE)),
   );
   await page.reload();
   await page

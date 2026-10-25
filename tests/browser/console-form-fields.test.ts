@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test, { type TestContext } from "node:test";
 import type { Locator, Page } from "playwright";
 
+import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture as createBaseConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   apiRequests,
@@ -617,11 +618,7 @@ for (const viewport of consoleViewports) {
     const pending = await holdRequests(t, page, `**/namespaces/${namespace.id}/secrets`, {
       once: true,
       method: "POST",
-      fulfill: {
-        status: 409,
-        contentType: "application/json",
-        body: JSON.stringify({ error: { code: "NAMESPACE_NOT_READY", message: "refused" } }),
-      },
+      fulfill: apiErrorResponse(409, "NAMESPACE_NOT_READY", "refused"),
     });
     await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
     await pending.requested;

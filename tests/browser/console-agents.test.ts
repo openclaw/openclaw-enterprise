@@ -34,6 +34,7 @@ import {
   accessBindingPostRequests,
   apiRequests,
   detailUrl,
+  holdRequests,
   login,
   setSlackSelection,
   slackSelectionValue,
@@ -261,20 +262,13 @@ test("Agent creation stores its API key separately, grants exact access, and sav
   await openCreateSecretDialog(createChannelDialog, "Slack bot token");
   assert.equal(await createSecretDialog.getByLabel("Value", { exact: true }).inputValue(), "");
   await createSecretDialog.getByLabel("Value", { exact: true }).fill(createdSlackBotSecretValue);
-  const secretReached = Promise.withResolvers<void>();
-  const secretRelease = Promise.withResolvers<void>();
-  t.after(() => secretRelease.resolve());
   // The real Secret write must finish before its dialog can be dismissed.
-  await page.route(`${fixture.origin}/namespaces/${namespace.id}/secrets`, async (route) => {
-    if (route.request().method() !== "POST") {
-      await route.continue();
-      return;
-    }
-    const response = await route.fetch();
-    secretReached.resolve();
-    await secretRelease.promise;
-    await route.fulfill({ response });
-  });
+  const secretWrite = await holdRequests(
+    t,
+    page,
+    `${fixture.origin}/namespaces/${namespace.id}/secrets`,
+    { method: "POST", afterServer: true, timeout: 0 },
+  );
   const botSecretResponse = page.waitForResponse((response) => {
     if (
       response.url() !== `${fixture.origin}/namespaces/${namespace.id}/secrets` ||
@@ -285,14 +279,14 @@ test("Agent creation stores its API key separately, grants exact access, and sav
     return response.request().postDataJSON()?.name === "Console-created Agent Slack bot token";
   });
   await createSecretDialog.getByRole("button", { name: "Create Secret" }).click();
-  await secretReached.promise;
+  await secretWrite.requested;
   await page.mouse.click(secretBounds.x / 2, secretBounds.y + 8);
   assert.equal(await createSecretDialog.isVisible(), true);
   assert.equal(
     await createSecretDialog.getByRole("button", { name: "Create Secret" }).isDisabled(),
     true,
   );
-  secretRelease.resolve();
+  secretWrite.release();
   const createdSlackBotSecret = (await (await botSecretResponse).json()).data;
   await createChannelDialog
     .getByText("Secret selected. Apply channel settings, then Create Agent binds it.")
@@ -531,18 +525,17 @@ test("Agent creation keeps loading and empty repository discovery safe for an or
   ]);
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
-  const { promise: optionsGate, resolve: releaseOptions } = Promise.withResolvers<void>();
-  t.after(() => releaseOptions());
-  await page.route(`**/namespaces/${namespace.id}/agents/repository-options`, async (route) => {
-    await optionsGate;
-    await route.continue();
-  });
+  const options = await holdRequests(
+    t,
+    page,
+    `**/namespaces/${namespace.id}/agents/repository-options`,
+  );
 
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start with default Preset" }).click();
   await page.getByText("Loading approved repositories…").waitFor();
   assert.equal(await page.getByRole("button", { name: "Create Agent" }).isDisabled(), true);
-  releaseOptions();
+  options.release();
   await page.getByText(/No approved repositories are available/).waitFor();
   await waitForCreateFormReads(page);
   await waitForEnabled(page.getByRole("button", { name: "Create Agent" }));

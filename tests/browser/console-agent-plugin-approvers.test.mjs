@@ -12,6 +12,7 @@ import {
   apiRequests,
   detailUrl,
   fileBrowser,
+  holdRequests,
   login,
   nativeValues,
   newPage,
@@ -447,29 +448,15 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
   await result.waitFor();
   const resultNode = await result.elementHandle();
   const lookupCount = directoryBodies.length;
-  let releaseSession;
-  const sessionGate = new Promise((resolve) => {
-    releaseSession = resolve;
-  });
-  t.after(() => releaseSession());
-  let sessionReached;
-  const sessionHeld = new Promise((resolve) => {
-    sessionReached = resolve;
-  });
   const sessionPath = `${fixture.origin}/api/auth/session`;
-  await page.route(sessionPath, async (route) => {
-    const response = await route.fetch();
-    sessionReached();
-    await sessionGate;
-    await route.fulfill({ response });
-  });
+  const session = await holdRequests(t, page, sessionPath, { afterServer: true, timeout: 0 });
 
   // Refocus checks access without discarding an open search or repeating its lookup.
   await page.evaluate(() => {
     globalThis.dispatchEvent(new Event("focus"));
     globalThis.document.dispatchEvent(new Event("visibilitychange"));
   });
-  await sessionHeld;
+  await session.requested;
   await page.locator('.content [aria-live="polite"][inert]').waitFor();
   await page.evaluate(
     () =>
@@ -477,7 +464,7 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
         globalThis.requestAnimationFrame(() => globalThis.requestAnimationFrame(resolve)),
       ),
   );
-  releaseSession();
+  session.release();
   await page.locator('.content [aria-live="polite"]:not([inert])').waitFor();
   assert.equal(await people.inputValue(), "Alex");
   assert.equal(await people.getAttribute("aria-expanded"), "true");

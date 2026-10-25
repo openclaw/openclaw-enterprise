@@ -8,6 +8,7 @@ export const Draft = story("draft");
 export const NewVersion = story("newVersion");
 export const FailedFirstVersion = story("failedFirstVersion");
 export const EditCurrentConfiguration = story("editCurrentConfiguration");
+export const CurrentConfigurationReader = story("currentConfigurationReader");
 export const HeaderActions = story("agentHeaderActions");
 export const EarlierFailedVersion = story("earlierFailedVersion");
 export const LongVersionHistory = story("longVersionHistory");

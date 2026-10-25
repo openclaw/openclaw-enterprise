@@ -23,7 +23,8 @@ Driver owns the password; the Console shows only its reference.
 
 **Edit Configuration** edits native JSON. **Save Configuration** requires an object;
 **Cancel** discards edits. **Edit current Configuration** opens the current draft's editor,
-not a historical copy. Saving preserves Secret bindings and saved versions;
+not a historical copy. Without Configuration `update`, it reads **Open version draft** and
+opens the draft read-only. Saving preserves Secret bindings and saved versions;
 **Deploy new version** applies saved values, including for Agents sharing this
 Configuration on their next deployment.
 
@@ -63,6 +64,7 @@ selections on the next deployment. The selected Plugin Driver validates policy
 at save and deployment; installation and app access are checked later during
 startup. A rejected save leaves the running version unchanged. For policy
 limits and errors, see [Agent plugins](../../reference/agent-plugins.md).
+Without Agent `update`, the selections are read-only and a note names the grant to ask for.
 
 If you see **Plugin selections changed**, the Console stopped before saving.
 If you see **Outcome unknown**, your changes may already be saved. Note any edits

@@ -8,6 +8,7 @@ import {
   apiRequests,
   expectWriteAsksBeforeUnload,
   fileBrowser,
+  holdRequests,
   login,
   newPage,
   pathRequests,
@@ -68,17 +69,9 @@ test("create a Namespace from the console, then open its Agent workflow", async 
 
   // Hold the real controller's response: Escape and repeated submission cannot abandon or
   // replay a write while its result is still pending.
-  let release;
-  const held = new Promise((resolve) => {
-    release = resolve;
-  });
-  await page.route(`${fixture.origin}/namespaces`, async (route) => {
-    if (route.request().method() !== "POST") {
-      return route.continue();
-    }
-    const response = await route.fetch();
-    await held;
-    await route.fulfill({ response });
+  const create = await holdRequests(t, page, `${fixture.origin}/namespaces`, {
+    method: "POST",
+    afterServer: true,
   });
   await name.fill("  Support team  ");
   await dialog.getByRole("button", { name: "Create Namespace", exact: true }).click();
@@ -93,7 +86,7 @@ test("create a Namespace from the console, then open its Agent workflow", async 
   });
   await page.keyboard.press("Escape");
   assert.equal(await dialog.isVisible(), true);
-  release();
+  create.release();
 
   dialog = page.getByRole("dialog", { name: "Namespace created", exact: true });
   await dialog.getByText(/Provisioning is in progress/).waitFor();

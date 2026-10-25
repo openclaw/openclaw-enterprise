@@ -72,6 +72,10 @@ interface PluginEditorOptions {
   updateAllowed?: Promise<boolean | undefined> | null;
 }
 
+// A caller who may not update the Agent reads its plugin selections (finding 2436).
+const PLUGINS_READ_ONLY =
+  "These are the version draft's plugin selections, read-only with your access. The next deployment uses them as saved.";
+
 export const API_KEY_PLUGIN_MESSAGE =
   "Codex plugins need a ChatGPT login. This Agent uses an API key, so each selected plugin is disabled when it deploys (PLUGIN_AUTH_REQUIRED). Change its Harness authentication under Credentials to use plugins.";
 
@@ -185,21 +189,25 @@ export function renderAgentPlugins(
     catalogPath: `${path}/plugins`,
     requestBody: (body) => body,
     canDiscover: () =>
+      !updateDenied &&
       codex &&
       !apiKeyAuth &&
       (catalogCredential === "none" || (catalogCredential === "required" && hasBoundCredential)),
-    canPrefetch: () => codex && !apiKeyAuth && hasBoundCredential,
+    canPrefetch: () => !updateDenied && codex && !apiKeyAuth && hasBoundCredential,
     isPending: () => pending,
     unavailableMessage: () =>
-      !codex
-        ? "Plugin browsing requires the Codex harness. You can still edit existing plugin selections."
-        : apiKeyAuth
-          ? "Plugin browsing is unavailable with API-key authentication."
-          : !catalogCapabilityChecked
-            ? "Checking plugin catalog availability…"
-            : catalogCapabilityError
-              ? "Could not check plugin catalog availability. Refresh this page or edit existing plugin selections."
-              : "Hosted plugin browsing requires a saved ChatGPT login or Service Accounts token Secret. Select it under Credentials, or edit existing plugin selections.",
+      // A caller who may not update the Agent is not told to edit its selections (finding 2436).
+      updateDenied
+        ? "Plugin browsing needs Agent update access."
+        : !codex
+          ? "Plugin browsing requires the Codex harness. You can still edit existing plugin selections."
+          : apiKeyAuth
+            ? "Plugin browsing is unavailable with API-key authentication."
+            : !catalogCapabilityChecked
+              ? "Checking plugin catalog availability…"
+              : catalogCapabilityError
+                ? "Could not check plugin catalog availability. Refresh this page or edit existing plugin selections."
+                : "Hosted plugin browsing requires a saved ChatGPT login or Service Accounts token Secret. Select it under Credentials, or edit existing plugin selections.",
     saveHint: "Changes are saved when you choose Save plugin selections.",
     deniedMessage:
       "Check Agent edit access. Hosted browsing also requires that both you and this Agent can use its bound credential. Saved selections can still be edited.",
@@ -257,14 +265,15 @@ export function renderAgentPlugins(
     reload.disabled = true;
     void onReload();
   });
+  const intro = element(
+    "p",
+    { className: "muted" },
+    "Save selections on this Agent, then deploy a new version to apply them.",
+  );
   const section = element(
     "section",
     { className: "agent-card" },
-    element(
-      "p",
-      { className: "muted" },
-      "Save selections on this Agent, then deploy a new version to apply them.",
-    ),
+    intro,
     ...(agent.harnessAuth?.method === "credential_source"
       ? [
           statusBlock(
@@ -321,7 +330,8 @@ export function renderAgentPlugins(
     } else if (reloadRequired) {
       feedback.textContent = "Plugin selections changed. Reload this Agent before saving again.";
     } else if (!dirty && !pending) {
-      feedback.textContent = "No plugin changes to save.";
+      // A caller who may not save reads the selections; nothing addresses an editor.
+      feedback.textContent = updateDenied ? "" : "No plugin changes to save.";
     }
   }
 
@@ -466,45 +476,56 @@ export function renderAgentPlugins(
   if (savedNotice) {
     feedback.textContent = savedNotice;
   }
-  // An answer already settled applies before this section is first painted.
-  void updateAllowed?.then((allowed) => {
-    if (allowed === false && context.isCurrent()) {
-      updateDenied = true;
-      updateNote.textContent = AGENT_UPDATE_DENIED;
-      updateNote.hidden = false;
-      // The selections stay in view while their fields are disabled.
-      input.closest("details")?.setAttribute("open", "");
-      updateState();
-    }
-  });
-  void context.request(`${path}/plugins/capabilities`).then(
-    (response) => {
-      if (context.isCurrent()) {
-        const capabilities = response as PluginCapabilities;
-        catalogCredential = capabilities.discoveryCredential;
-        catalogCapabilityChecked = true;
-        discovery.fields.setCapabilities(capabilities);
-        discovery.update();
-        defaultApprovers.hidden = capabilities.approvers?.agent !== true;
-        if (!defaultApprovers.hidden) {
-          defaultApprovers.refreshNames();
+  function readCapabilities() {
+    void context.request(`${path}/plugins/capabilities`).then(
+      (response) => {
+        if (context.isCurrent()) {
+          const capabilities = response as PluginCapabilities;
+          catalogCredential = capabilities.discoveryCredential;
+          catalogCapabilityChecked = true;
+          discovery.fields.setCapabilities(capabilities);
+          discovery.update();
+          defaultApprovers.hidden = capabilities.approvers?.agent !== true;
+          if (!defaultApprovers.hidden) {
+            defaultApprovers.refreshNames();
+          }
         }
-      }
-    },
-    (cause: unknown) => {
-      if (!context.isCurrent()) {
-        return;
-      }
-      if (requestFailure(cause).status === 401) {
-        context.onExpired();
-      } else {
-        catalogCapabilityError = true;
-        catalogCapabilityChecked = true;
-        discovery.update();
-        capabilitiesStatus.textContent =
-          "Plugin policy controls could not be loaded. Plugin selections JSON remains editable.";
-      }
-    },
-  );
+      },
+      (cause: unknown) => {
+        if (!context.isCurrent()) {
+          return;
+        }
+        if (requestFailure(cause).status === 401) {
+          context.onExpired();
+        } else {
+          catalogCapabilityError = true;
+          catalogCapabilityChecked = true;
+          discovery.update();
+          capabilitiesStatus.textContent =
+            "Plugin policy controls could not be loaded. Plugin selections JSON remains editable.";
+        }
+      },
+    );
+  }
+  // An answer already settled applies before this section is first painted. Reading the policy
+  // capabilities needs Agent update: a caller the answer denies it reads the saved selections
+  // and is not sent a read that answers 403. An unknown answer still reads them (finding 2436).
+  void Promise.resolve(updateAllowed).then((allowed) => {
+    if (!context.isCurrent()) {
+      return;
+    }
+    if (allowed !== false) {
+      readCapabilities();
+      return;
+    }
+    updateDenied = true;
+    intro.textContent = PLUGINS_READ_ONLY;
+    updateNote.textContent = AGENT_UPDATE_DENIED;
+    updateNote.hidden = false;
+    // The selections stay in view while their fields are disabled.
+    input.closest("details")?.setAttribute("open", "");
+    updateState();
+    discovery.update();
+  });
   return section;
 }

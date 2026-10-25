@@ -19,6 +19,7 @@ import type {
 } from "../../packages/contracts/src/api/resources.ts";
 
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
+import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   accessBindingPostRequests,
@@ -1390,17 +1391,11 @@ for (const [c, generic] of configurationSaveCases.flatMap((c) => [
             return;
           }
           writes += 1;
-          await route.fulfill({
-            status: 409,
-            contentType: "application/json",
-            body: JSON.stringify({
-              error: {
-                code: "RESOURCE_CONFLICT",
-                message: refusal,
-              },
-              meta: { requestId: "req_00000000-0000-4000-8000-000000000001" },
+          await route.fulfill(
+            apiErrorResponse(409, "RESOURCE_CONFLICT", refusal, {
+              requestId: "req_00000000-0000-4000-8000-000000000001",
             }),
-          });
+          );
         }),
     });
     await page.getByRole("heading", { name: `Reserved ${c.name}` }).waitFor();

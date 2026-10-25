@@ -6,6 +6,7 @@ import type { AgentWire, NamespaceWire } from "../../packages/contracts/src/api/
 import type { PermissionAction } from "../../packages/contracts/src/index.ts";
 
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
+import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   consoleViewports,
@@ -155,11 +156,11 @@ const onScreen = (locator: Locator) =>
     };
   });
 
-const FORBIDDEN = {
-  status: 403,
-  contentType: "application/json",
-  body: JSON.stringify({ error: { code: "FORBIDDEN", message: "Forbidden" } }),
-};
+// The API's 403 carries a request ID, which the console shows with a refusal.
+const FORBIDDEN_REQUEST_ID = "req_00000000-0000-4000-8000-000000000403";
+const FORBIDDEN = apiErrorResponse(403, "FORBIDDEN", "Forbidden", {
+  requestId: FORBIDDEN_REQUEST_ID,
+});
 
 // The API's 403 for a policy write.
 const forbidden = async (route: Route) => {
@@ -271,7 +272,7 @@ test("Share Agent refusals", async (t) => {
         // Every existing word is kept.
         assert.equal(
           await alert.textContent(),
-          `${SHARE_REFUSAL} Refresh sharing to inspect current policy before another change.`,
+          `${SHARE_REFUSAL} Refresh sharing to inspect current policy before another change. Request ID: ${FORBIDDEN_REQUEST_ID}`,
         );
         assertPaint(await statusPaint(alert), "danger", "Share refusal");
       },
@@ -803,18 +804,15 @@ test("Configuration save outcomes", async (t) => {
   for (const outcome of [
     {
       name: "conflict",
-      status: 409,
-      error: {
-        code: "RESOURCE_CONFLICT",
-        message: "Conflict.",
-        details: [{ path: "/expectedGeneration" }],
-      },
+      // The API's stale-generation refusal.
+      response: apiErrorResponse(409, "RESOURCE_CONFLICT", "Conflict.", {
+        details: [{ path: "/expectedGeneration", code: "INVALID_VALUE" }],
+      }),
       text: RELOAD_DRAFT_BEFORE_SAVING,
     },
     {
       name: "unknown outcome",
-      status: 500,
-      error: { code: "INTERNAL", message: "Held." },
+      response: apiErrorResponse(500, "INTERNAL_ERROR", "Held."),
       text: "Outcome unknown. Configuration may have been saved. Reload this draft before saving again.",
     },
   ]) {
@@ -828,14 +826,7 @@ test("Configuration save outcomes", async (t) => {
         t,
         page,
         `${fixture.origin}/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
-        {
-          method: "PATCH",
-          fulfill: {
-            status: outcome.status,
-            contentType: "application/json",
-            body: JSON.stringify({ error: outcome.error }),
-          },
-        },
+        { method: "PATCH", fulfill: outcome.response },
       );
       const feedback = await editConfiguration(page, agent, "edited");
       const save = page.getByRole("button", { name: "Save Configuration" });

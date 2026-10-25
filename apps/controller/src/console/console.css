@@ -3081,9 +3081,6 @@ select:not([multiple])[size="1"] {
   opacity: 0.6;
 }
 
-.channel-secrets {
-  max-width: 960px;
-}
 .credential-status-list {
   display: grid;
   grid-template-columns: 130px minmax(0, 1fr);

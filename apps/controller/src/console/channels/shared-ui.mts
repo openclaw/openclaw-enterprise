@@ -254,6 +254,12 @@ function renderCard(section: HTMLElement, state: ChannelState, provider: Channel
     isRecord(providerConfig(state.values, provider.id));
   const action =
     status.label === "Not configured" ? `Configure ${provider.name}` : `Edit ${provider.name}`;
+  // The setup step asks for Secret bindings; once each one is bound it is done (finding 2438).
+  const bindingsMissing =
+    provider.secretBindings.length === 0 ||
+    provider.secretBindings.some(
+      (binding) => !state.drawerContext.secretBindings?.[binding.key]?.source,
+    );
   const actionAttrs = canOpen ? {} : { disabled: "" };
   const card = element(
     "section",
@@ -270,7 +276,7 @@ function renderCard(section: HTMLElement, state: ChannelState, provider: Channel
           {},
           support.supported ? provider.summary(support.config, status) : provider.description,
         ),
-        element("p", { className: "hint" }, provider.setup),
+        bindingsMissing ? element("p", { className: "hint" }, provider.setup) : null,
       ),
       element(
         "div",

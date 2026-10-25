@@ -20,6 +20,7 @@ import {
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   apiRequests,
+  holdRequests,
   login,
   nativeValues,
   newPage,
@@ -295,24 +296,21 @@ test("Agent repository access preserves inheritance, custom overrides, and expli
   );
   await page.getByText("Read-only · Custom", { exact: true }).waitFor();
   const optionsPath = `**/namespaces/${namespace.id}/agents/${legacy.id}/repository-options`;
-  const optionsHeld = Promise.withResolvers<void>();
-  t.after(() => optionsHeld.resolve());
-  await page.route(optionsPath, async (route) => {
-    await optionsHeld.promise;
-    await route.fulfill({
+  const optionsHeld = await holdRequests(t, page, optionsPath, {
+    fulfill: {
       status: 503,
       contentType: "application/json",
       body: JSON.stringify({
         error: { code: "DEPENDENCY_UNAVAILABLE", message: "Discovery unavailable" },
       }),
-    });
+    },
   });
   await page.reload();
   const awaiting = page.getByText("Access awaiting verification", { exact: true });
   await awaiting.waitFor();
   // Choices that are still loading are not a problem: info, not red (finding 1970).
   assert.equal(await awaiting.getAttribute("data-tone"), "info");
-  optionsHeld.resolve();
+  optionsHeld.release();
   await page.getByText(/Retry repository choices before saving repository access/).waitFor();
   assert.deepEqual(await statusTone(page.getByText(/^Repository choices could not be loaded\. /)), {
     className: "status",
@@ -350,17 +348,12 @@ test("Agent repository access preserves inheritance, custom overrides, and expli
     },
   ]);
   // While the retry is held, the refusal gives way to a quiet loading hint.
-  const retryHeld = Promise.withResolvers<void>();
-  t.after(() => retryHeld.resolve());
-  await page.route(optionsPath, async (route) => {
-    await retryHeld.promise;
-    await route.continue();
-  });
+  const retryHeld = await holdRequests(t, page, optionsPath);
   await page.getByRole("button", { name: "Retry repository choices" }).click();
   const loading = page.getByText("Loading approved repositories…", { exact: true });
   await loading.waitFor();
   assert.deepEqual(await statusTone(loading), { className: "hint", tone: null, role: "status" });
-  retryHeld.resolve();
+  retryHeld.release();
   const gone = page.getByText(
     "This repository is no longer available. Remove it or retry discovery.",
   );
@@ -873,28 +866,21 @@ test("Agent repository editor distinguishes stale, rejected, and uncertain saves
 
   // Commit through the real API, then lose its response. Hold completion long enough
   // to verify pending controls before proving that readback is required after loss.
-  const committed = Promise.withResolvers<number>();
-  const release = Promise.withResolvers<void>();
-  t.after(() => release.resolve());
-  await page.route(`${fixture.origin}${path}`, async (route) => {
-    if (route.request().method() !== "PATCH") {
-      await route.continue();
-      return;
-    }
-    const response = await route.fetch();
-    committed.resolve(response.status());
-    await release.promise;
-    await route.abort("failed");
+  const committed = await holdRequests(t, page, `${fixture.origin}${path}`, {
+    method: "PATCH",
+    afterServer: true,
+    loseResponse: true,
+    timeout: 0,
   });
   await save.click();
-  assert.equal(await committed.promise, 200);
+  assert.equal((await committed.requested)?.status(), 200);
   assert.equal(await save.isDisabled(), true);
   assert.equal(
     await page.getByRole("button", { name: "Remove example/application" }).isDisabled(),
     true,
   );
   assert.equal(await page.getByRole("tab", { name: "Channels", exact: true }).isDisabled(), true);
-  release.resolve();
+  committed.release();
   await page
     .getByText(
       "Outcome unknown. The result could not be confirmed. Refresh and inspect the saved state before trying again.",
