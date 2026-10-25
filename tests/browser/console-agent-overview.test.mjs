@@ -289,7 +289,9 @@ test("A failed older version raises no recovery while the current version is hid
 
 // The Versions list reads only the latest version's deployment record. A failed version lost
 // its mark once a newer version was deployed, so after a recovery every earlier failure looked
-// like an ordinary version (finding 2383). A failed record is final, so the mark stays.
+// like an ordinary version (finding 2383). A failed record is final, so the mark stays. After a
+// reload only the latest record is read again, so the earlier failed version read "Historical"
+// with no mark beside its own record's "Failed" (finding 2407); opening it reads that record.
 test("The Versions list keeps an earlier failed version's mark after a newer deploy", async (t) => {
   const { fixture, namespace, agent, page } = await agentPage(t, "Failed then", "Failed then");
   const first = await fixture.deployAgent(namespace.id, agent.id);
@@ -310,6 +312,17 @@ test("The Versions list keeps an earlier failed version's mark after a newer dep
       .textContent(),
     "Failed",
   );
+
+  await page.reload();
+  await rail.getByRole("button", { name: /^View version v2/ }).waitFor();
+  await rail.getByRole("button", { name: /^View version v1/ }).click();
+  await page.getByText("Recorded outcome: Failed", { exact: true }).waitFor();
+  await page
+    .getByText("Failed version · read-only admitted snapshot. Its deployment did not complete.", {
+      exact: true,
+    })
+    .waitFor();
+  await rail.getByRole("button", { name: "View version v1, deployment failed" }).waitFor();
 });
 
 // A first deployment that failed leaves the Agent requested to run with no version selected
@@ -816,8 +829,12 @@ test("Recovery offers no draft link without Agent update or deploy permission", 
   );
   const recovery = page.getByRole("region", { name: "Deployment needs attention" });
   await recovery.getByText("v2 deployment failed").waitFor();
-  // The header relabels once the permission answer arrives; the recovery follows it.
+  // The header relabels once the permission answer arrives; the recovery follows it, and so does
+  // the Versions list's draft entry, which this reader cannot edit (finding 2405).
   await page.getByRole("button", { name: "Open version draft" }).first().waitFor();
+  await page
+    .getByRole("button", { name: "View version draft, read-only Configuration", exact: true })
+    .waitFor();
   const logs = recovery.getByRole("link", { name: "Open v2 Logs" });
   await logs.waitFor();
   assert.equal(await logs.getAttribute("class"), "button button--primary");

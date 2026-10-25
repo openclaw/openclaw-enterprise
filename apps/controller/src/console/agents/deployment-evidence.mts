@@ -595,10 +595,13 @@ export function createVersionDeploymentEvidence(
     shared,
     operateAllowed,
     isCurrentVersion,
+    onRecord,
   }: {
     shared: boolean;
     operateAllowed: Promise<boolean | undefined>;
     isCurrentVersion: () => boolean;
+    // Each record this panel shows, read here or handed over by the page.
+    onRecord: (record: Deployment) => void;
   },
 ) {
   const section = element("section", { className: "agent-card version-deployment-record" });
@@ -654,6 +657,9 @@ export function createVersionDeploymentEvidence(
         loading = false;
         render();
         diagnostics.render();
+        if (status) {
+          onRecord(status);
+        }
       }
     }
   }
@@ -670,6 +676,7 @@ export function createVersionDeploymentEvidence(
     error = null;
     render();
     diagnostics.render();
+    onRecord(next);
   }
 
   // Deployment activity hands each 5 s poll's record to show(): rewrite only what changed

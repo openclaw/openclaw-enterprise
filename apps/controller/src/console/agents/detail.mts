@@ -59,6 +59,7 @@ import {
   GENERIC_DENIAL,
   NAMESPACE_NOT_READY_MESSAGE,
   NEUTRAL_DEPLOYMENT_NOTES,
+  deploymentOutcome,
   outcomeLabel,
   preAdmissionRefusal,
 } from "./list.mjs";
@@ -348,7 +349,8 @@ const DEPLOYMENT_OUTCOME_TONES: Partial<Record<DeploymentOutcome, string>> = {
 // Versions whose deployment record this tab has read as failed, keyed by Agent path and version
 // ID. The Versions list reads only the latest version's record, so an earlier failed version
 // lost its mark once a newer version was deployed (finding 2383). A failed record is final, so
-// the mark stays for as long as the console is open; a new page load knows only the latest one.
+// the mark stays for as long as the console is open. A new page load knows the latest one and
+// each version opened since, whose own record panel adds it (finding 2407).
 const failedVersions = new Set<string>();
 const failedVersionKey = (agentPath: string, revisionId: string) =>
   JSON.stringify([agentPath, revisionId]);
@@ -1715,6 +1717,32 @@ export async function renderAgentDetail(
       }
     }
   }
+  // The Versions list's draft entry and chooser option. A reader without update cannot edit the
+  // draft's Configuration, so neither calls it editable (finding 2405). The permission answer can
+  // land after the list is built, so its callback labels them again.
+  function labelDraftEntry() {
+    const [title, detail, name, option] =
+      callerPermissions?.update === false
+        ? [
+            "Version draft",
+            "Read-only Configuration",
+            "View version draft, read-only Configuration",
+            "Version draft · read-only Configuration",
+          ]
+        : [
+            "New version",
+            "Editable Configuration",
+            "View new version, editable Configuration",
+            "New version · editable Configuration",
+          ];
+    const entry = selector.querySelector(".revision-create");
+    entry?.setAttribute("aria-label", name);
+    entry?.replaceChildren(element("strong", {}, title), element("small", {}, detail));
+    const choice = selector.querySelector("#revision-selector option[value=draft]");
+    if (choice) {
+      choice.textContent = option;
+    }
+  }
   function renderVersions(
     revisions: Revision[],
     snapshot: Snapshot | null,
@@ -1735,13 +1763,8 @@ export async function renderAgentDetail(
     // "Create new version": the page header holds that action (finding 2403).
     const newVersion = button("", () => change("draft", "configuration"), {
       className: "revision-create",
-      "aria-label": "View new version, editable Configuration",
       ...(selected === "draft" ? { "aria-current": "page" } : {}),
     });
-    newVersion.append(
-      element("strong", {}, "New version"),
-      element("small", {}, "Editable Configuration"),
-    );
     trackRevisionControl(newVersion);
     railFocusKeys.set(newVersion, "new");
     // The versions, the viewed one included, are one Tab stop (finding 2101), so the list is a
@@ -1823,7 +1846,7 @@ export async function renderAgentDetail(
     const chooser = element(
       "select",
       { id: "revision-selector" },
-      element("option", { value: "draft" }, "New version · editable Configuration"),
+      element("option", { value: "draft" }),
       ...revisions.map((revision) =>
         element(
           "option",
@@ -1885,6 +1908,7 @@ export async function renderAgentDetail(
           : null,
       ].filter((child) => child !== null),
     );
+    labelDraftEntry();
     updateNavigationControls();
     list.scrollTop = listScroll;
     // A rebuild while the reader is in the rail (a poll that lands an outcome, or older versions
@@ -2354,6 +2378,7 @@ export async function renderAgentDetail(
       if (headerNewVersion) {
         headerNewVersion.textContent = "Open version draft";
       }
+      labelDraftEntry();
     }
     refreshDeployControls();
   });
@@ -2424,6 +2449,16 @@ export async function renderAgentDetail(
         shared: activityRevisionId === selected && !latestDeploymentUnavailable,
         operateAllowed: latestPermissionsRead.then((permissions) => permissions?.operate),
         isCurrentVersion: () => currentRevisionId === selected,
+        // After a reload only the latest record feeds the cache, so an earlier failed version
+        // read "Historical" with no mark beside its own "Failed" record (finding 2407).
+        onRecord: (record) => {
+          const key = failedVersionKey(path, selected);
+          if (deploymentOutcome(record) === "failed" && !failedVersions.has(key)) {
+            failedVersions.add(key);
+            renderVersionNotice();
+            markVersionOutcomes();
+          }
+        },
       });
       versionEvidence.append(...versionRecord.panels);
       versionRecord.setFailureShownAbove(recoveryRevisionId === selected);
