@@ -4089,17 +4089,13 @@ test("a version editor without Agent update can recover a failed deployment from
   await page.getByRole("button", { name: "Edit Configuration" }).click();
   await openAdvancedSettings(page);
   await page.getByLabel("Configuration JSON").fill(JSON.stringify(nativeValues("edited")));
-  // Hold the real reread after revoking Configuration update so the refreshed details render
-  // first.
+  // Hold the save's permission reread before it reaches the API, so the refreshed details render
+  // first and the reread sees Configuration update revoked after the save.
   const permission = await holdRequests(t, page, `${fixture.origin}${path}/permissions`, {
-    afterServer: true,
     once: true,
   });
   const role = fixture.policy.roles.find(({ id }) => id === "role-version-editor");
   const originalPermissions = role.permissions;
-  role.permissions = originalPermissions.filter(
-    ({ action, resourceKind }) => action !== "update" || resourceKind !== "configuration",
-  );
   const saving = page.waitForResponse(
     (r) =>
       r.request().method() === "PATCH" &&
@@ -4114,6 +4110,9 @@ test("a version editor without Agent update can recover a failed deployment from
   assert.equal(
     await recovery.getByRole("link", { name: "Open Configuration", exact: true }).isVisible(),
     true,
+  );
+  role.permissions = originalPermissions.filter(
+    ({ action, resourceKind }) => action !== "update" || resourceKind !== "configuration",
   );
   const reread = page.waitForResponse((r) => r.url().endsWith(path + "/permissions"));
   permission.release();
