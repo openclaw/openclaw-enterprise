@@ -3008,8 +3008,8 @@ function renderAgentForm(
         detail = followableRefusal(rejectionMessage(cause, mutationStarted));
       }
       const feedbackText = detail + (error.requestId ? ` Request ID: ${error.requestId}` : "");
-      // A job that ended keeps its final status; any other progress line spoke for the request
-      // that just ended (finding 1490).
+      // A job that ended keeps its final status (none once it failed: the error line says so);
+      // any other progress line spoke for the request that just ended (finding 1490).
       if (!terminal) {
         if (savedSecret || savedConfiguration || savedAgent) {
           showSavedStatus();
