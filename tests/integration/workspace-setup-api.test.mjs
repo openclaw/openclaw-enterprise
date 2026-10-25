@@ -7,6 +7,7 @@ import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 
@@ -544,13 +545,19 @@ test("Agent create refuses dedicated OpenClaw on OpenShell settings its workspac
 // and deployment refused it after Agent save answered 201. Save now refuses it with the deployment
 // message wherever it checks Harness authentication: a Configuration that selects a model and a
 // Secret or runtime binding (finding 2376). Create Agent's preflight refuses it too when it names
-// the planned binding, before the console saves a Secret or Configuration (finding 2391).
+// the planned binding, before the console saves a Secret or Configuration (finding 2391), and so
+// does Agent provisioning, which Kubernetes Compute offers for every dedicated Agent (finding 2395).
 test("Agent save refuses a dedicated Harness the Kubernetes Compute settings cannot place", async (t) => {
   // The fixture's unrouted Driver has no node enrollment either (composition always supplies it).
   const message =
     "Dedicated Agents need gateway routing and node enrollment in this Installation's Kubernetes Compute configuration. Codex runs only as a Dedicated Agent: select Embedded OpenClaw, or ask an operator to configure it.";
   for (const routed of [false, true]) {
-    const f = await setup(t, { channelRuntime: true, routed });
+    const f = await setup(t, {
+      channelRuntime: true,
+      routed,
+      agentProvisioning: true,
+      configurationDriver: createTestConfigurationDriver({ exact: true }),
+    });
     const secret = await f.createSecret(f.namespace.id, `model-key-${routed}`, "test-api-key");
     const harnessAuth = { method: "api_key", source: secret.ref };
     const codex = await storeConfiguration(f, "codex", "codex/gpt-5.1");
@@ -580,6 +587,29 @@ test("Agent save refuses a dedicated Harness the Kubernetes Compute settings can
       }
       assertApiError(response, 400, "INVALID_REQUEST", JSON.stringify(fields));
       assert.equal(response.body.error.message, message);
+    }
+    // Provisioning admits the whole plan in one request. Its Compute plan check answered a fixed
+    // 409 that names no setting; it now answers save's 400 first and queues nothing. (This
+    // fixture's IAM Driver cannot admit a plan, so only the refusal is checked here.)
+    if (!routed) {
+      const requestId = `req_${crypto.randomUUID()}`;
+      const provisioned = await f.request("POST", `${f.path}/provision`, {
+        body: {
+          requestId,
+          name: "Provisioned Codex",
+          executionMode: "dedicated",
+          configuration: { kind: "agent", values: codex.data.values },
+          harnessAuth,
+        },
+      });
+      assertApiError(provisioned, 400, "INVALID_REQUEST");
+      assert.equal(provisioned.body.error.message, message);
+      // The administrator the fixture signs in as.
+      const actorId = f.policy.identities[0].id;
+      const job = await f.state.read((view) =>
+        view.provisioning.findByRequest(f.namespace.id, actorId, requestId),
+      );
+      assert.equal(job, undefined);
     }
     const dedicated = await f.create("Codex", {
       configurationId: codex.data.id,

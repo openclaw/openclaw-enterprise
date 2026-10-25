@@ -42,6 +42,7 @@ import {
   expectVersionRecord,
   openDeploymentActivity,
 } from "./console-deployment-activity-helpers.mjs";
+import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import { fileReadyNamespace } from "./console-ready-namespace.mjs";
 
 // The Agent page's first screen while its reads settle and its polls run: loading cues, quiet
@@ -453,6 +454,20 @@ test("Live serving shows a lost Sandbox and its next step without moving the pag
     assert.equal(await page.getByText("token-secret", { exact: false }).count(), 0);
   }
 
+  // A Sandbox Driver that keeps no lifecycle record answers unobserved. With no record to show,
+  // the note says why serving is not verified (finding 2367).
+  {
+    const { observeHarness } = sandboxDriver;
+    delete sandboxDriver.observeHarness;
+    try {
+      const { page } = await openOverview(consoleViewports[0]);
+      await liveServing(page).getByText("OCC sends no test request.", { exact: true }).waitFor();
+      assert.equal(await liveServing(page).locator(".badge").textContent(), "Not verified");
+    } finally {
+      sandboxDriver.observeHarness = observeHarness;
+    }
+  }
+
   // Stopping the Agent drops the answer for the old serving state: a stopped Agent's Sandbox
   // is removed by design, so Live serving no longer reports it lost, and nothing is read.
   {
@@ -472,6 +487,62 @@ test("Live serving shows a lost Sandbox and its next step without moving the pag
     assert.equal(await liveServing(page).locator(".stat-help").textContent(), "");
     assert.equal(harnessReads.length, 1);
   }
+});
+
+// Recovery leads with the newest failed version; another failed version's record keeps its own
+// error, which nothing above repeats (finding 2368).
+test("An older failed version's record keeps its own error under a newer failure's recovery", async (t) => {
+  const { fixture, namespace } = await readyNamespace(t, "Two failures", runtimeLogs());
+  const agent = await fixture.createAgent(namespace.id, "Two Failures", nativeValues("v1"));
+  // Never deployed: v1 and then v2 failed.
+  const first = await fixture.deployAgent(namespace.id, agent.id);
+  const second = await fixture.deployAgent(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture, { browser });
+  const firstError = await routeFailedRecord(
+    page,
+    fixture,
+    namespace,
+    agent,
+    first,
+    "CONVERGENCE_DEADLINE_EXCEEDED",
+  );
+  await routeFailedRecord(page, fixture, namespace, agent, second);
+
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, first.id, "configuration"));
+  const recovery = page.getByRole("region", { name: "Deployment needs attention" });
+  await recovery.getByRole("heading", { name: "v2 deployment failed", exact: true }).waitFor();
+  const record = await expectVersionRecord(page, "Failed");
+  await record.getByText(`${firstError.code}: ${firstError.message}`, { exact: true }).waitFor();
+  assert.equal(
+    await record.getByText("The error and its next step are at the top of this page.").count(),
+    0,
+  );
+});
+
+// Operator-managed harness credentials have no Credentials tab step the reader can take, so a
+// rejected credential's recovery offers no Open Credentials link, even with Agent update.
+test("Recovery offers no Credentials link for operator-managed harness credentials", async (t) => {
+  const { fixture, namespace } = await createRuntimeAuthFixture(t, "Runtime credentials");
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Runtime Credentials",
+    nativeValues("runtime-credentials"),
+    { harnessAuth: { method: "runtime" } },
+  );
+  const failed = await fixture.deployAgent(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture, { browser });
+  await routeFailedRecord(page, fixture, namespace, agent, failed, "RUNTIME_AUTHENTICATION_FAILED");
+  await trackSettledFetches(page);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  const recovery = page.getByRole("region", { name: "Deployment needs attention" });
+  await recovery
+    .getByText("v1 did not deploy successfully (RUNTIME_AUTHENTICATION_FAILED).", {
+      exact: false,
+    })
+    .waitFor();
+  await recovery.getByRole("link", { name: "Open v1 Logs" }).waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(await recovery.getByRole("link", { name: "Open Credentials" }).count(), 0);
 });
 
 // One readable version per history page: the first page lists the newest readable version.

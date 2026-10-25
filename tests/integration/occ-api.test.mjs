@@ -302,18 +302,7 @@ function provisioningRequestBody(namespaceId, secrets, { configuration, ...overr
 }
 
 function createProvisioningCapableConfigurationDriver() {
-  const driver = createTestConfigurationDriver({ id: "configuration-provisioning-api" });
-  driver.createExact = (configuration) => driver.create(configuration);
-  driver.inspectExact = async (configuration) => {
-    try {
-      const stored = await driver.read(configuration);
-      assert.deepEqual(stored, configuration);
-      return stored;
-    } catch {
-      return undefined;
-    }
-  };
-  return driver;
+  return createTestConfigurationDriver({ id: "configuration-provisioning-api", exact: true });
 }
 
 function createProvisioningCapableComputeDriver() {

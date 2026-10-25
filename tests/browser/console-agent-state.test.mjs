@@ -928,6 +928,12 @@ test("Agent detail reports a failed selected version as probably not serving", a
       /v2 is still selected, but its runtime replaced the previous version before deployment finished/,
     )
     .waitFor();
+  // The warning is the whole answer: no note says that nothing checked serving (finding 2367).
+  const liveServingNote = summary
+    .locator(".stat")
+    .filter({ hasText: "Live serving" })
+    .locator(".stat-help");
+  assert.equal(await liveServingNote.textContent(), "");
 });
 
 // A startup model check that failed or timed out, or a Gateway that refused its own
@@ -971,6 +977,21 @@ test("Deployment activity guides a failed model check or an unauthorized gateway
       }),
       nextStep: /^The startup model check failed for a reason other than a rejected credential, /,
       cause: "The model provider check reported a failure (error-event)",
+    },
+    {
+      // A billing refusal has its own provider text, as a rate limit does.
+      error: persistedDeploymentError("RUNTIME_MODEL_PROBE_FAILED", {
+        runtimeFailure: {
+          component: "agent",
+          check: "model-probe",
+          checkedAt: "2026-10-03T08:00:00.000Z",
+          code: "MODEL_PROBE_FAILED",
+          cause: { kind: "PROBE_STATUS", detail: "billing" },
+        },
+      }),
+      nextStep: /^The startup model check failed for a reason other than a rejected credential, /,
+      cause:
+        "The model provider rejected the request: billing or credit problem (billing). Check the provider account's plan and credits, then deploy a new version.",
     },
     // Finding 1600: a Codex check retried once ends its detail -attempt2. The advice
     // follows the token without the suffix, and the text says the retry also failed.
@@ -1022,6 +1043,16 @@ test("Deployment activity guides a failed model check or an unauthorized gateway
     const activity = await openFailureDetails(page);
     await activity.getByText(`${error.code}: ${error.message}`, { exact: true }).waitFor();
     const recovery = page.getByRole("region", { name: "Deployment needs attention" });
+    // A failed or timed-out model check leads as one; a refused gateway CLI does not.
+    const lead = error.code.startsWith("RUNTIME_MODEL_PROBE_")
+      ? "v1 failed its startup model check"
+      : "v1 did not deploy successfully";
+    assert.ok(
+      (await recovery.locator(".status-body").textContent()).startsWith(
+        `${lead} (${error.code}). `,
+      ),
+      error.code,
+    );
     assert.equal(
       await activity.getByText("Cause", { exact: true }).count(),
       cause === undefined ? 0 : 1,

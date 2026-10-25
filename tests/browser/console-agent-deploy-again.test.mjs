@@ -458,8 +458,8 @@ test("Open version draft waits for the Configuration read to succeed", async (t)
 // finished (finding 2065). Its notice says it is deploying until it becomes current. `record`
 // drives the newest deployment's answer: its status, or an error while `fail` holds an HTTP
 // status (503, 403); `agentFail` answers the Agent read with a 503. `recordReads` counts the
-// newest deployment's reads. With `older`, a version admitted before the deploying one is
-// neither current nor deploying.
+// newest deployment's reads, and `warnings` are its startup warnings. With `older`, a version
+// admitted before the deploying one is neither current nor deploying.
 const failure = (status) => ({
   status,
   contentType: "application/json",
@@ -480,7 +480,7 @@ async function deployingVersion(t, name, { status = "running", older = false } =
   const previous = older ? await fixture.deployAgent(namespace.id, agent.id) : null;
   const next = await fixture.deployAgent(namespace.id, agent.id);
   const { page } = await newPage(t, fixture, { browser });
-  const record = { status, fail: false, agentFail: false, recordReads: 0 };
+  const record = { status, fail: false, agentFail: false, recordReads: 0, warnings: [] };
   await page.route(
     (url) => url.pathname === `/namespaces/${namespace.id}/agents/${agent.id}`,
     (route) =>
@@ -505,7 +505,7 @@ async function deployingVersion(t, name, { status = "running", older = false } =
                 record.status === "failed"
                   ? persistedDeploymentError("DEPENDENCY_UNAVAILABLE")
                   : null,
-              warnings: [],
+              warnings: record.warnings,
               progress: null,
             },
             meta: { requestId: "req_test_deploying_label" },
@@ -683,6 +683,19 @@ test("One failed status read keeps a deploying version Deploying and polling", a
   assert.equal(labels.includes("Historical version"), false, labels.join(" → "));
 });
 
+// A rate limit is not an answer either: a 429 status read leaves the version Deploying and
+// polling goes on, as after a 503.
+test("A rate-limited status read keeps a deploying version polling", async (t) => {
+  const { page, record, summary } = await deployingVersion(t, "Status rate limit");
+  record.fail = 429;
+  await page.clock.runFor(DEPLOYMENT_POLL_MS);
+  await summary.getByText("v2 · Unavailable", { exact: true }).waitFor();
+  assert.equal(await page.getByText(/^Deploying version · /).count(), 1);
+  record.fail = false;
+  await page.clock.runFor(DEPLOYMENT_POLL_MS);
+  await summary.getByText("v2 · In progress", { exact: true }).waitFor();
+});
+
 // A completed record is not by itself a failed reread: the newest version whose record reads
 // completed while the Agent still names v1 current (activation not yet seen, or a stopped Agent
 // with no current version) stays Historical, not "Deployed" (internal review of finding 2085).
@@ -772,6 +785,22 @@ test("A failure read by a refresh that cannot reread the Agent keeps its warning
   );
   // The panel renders the warning and the card folds the details in one task, so once the
   // warning is in the page the details' state is settled.
+  await warning.waitFor({ state: "attached" });
+  assert.equal(await deploymentDetailsOpen(page), true);
+  assert.equal(await warning.evaluate((node) => node.checkVisibility()), true);
+});
+
+// Nor does the card carry a failure's startup warnings: a failure read with warnings keeps the
+// details open on them.
+test("A failure read with startup warnings keeps them in view", async (t) => {
+  const { page, record } = await deployingVersion(t, "Failed warnings");
+  record.status = "failed";
+  record.warnings = [{ code: "PLUGIN_INSTALL_FAILED", pluginId: "remote-calendar" }];
+  await page.getByRole("button", { name: "Refresh deployment" }).click();
+  await page.getByRole("region", { name: "Deployment needs attention" }).waitFor();
+  const warning = page
+    .locator(".deployment-status")
+    .getByText("remote-calendar was disabled for this startup", { exact: false });
   await warning.waitFor({ state: "attached" });
   assert.equal(await deploymentDetailsOpen(page), true);
   assert.equal(await warning.evaluate((node) => node.checkVisibility()), true);
