@@ -7881,6 +7881,16 @@ export const scenarios = {
     description:
       "An absent selected version does not establish candidate cleanup. Explicit repeated Stop remains available; history is readable.",
   },
+  stopFirstDeploymentFailed: {
+    group: "Components/Stop Agent",
+    name: "Failed first deployment",
+    path: draft,
+    deployed: true,
+    firstDeploymentFailed: true,
+    description:
+      "A failed first deployment leaves the Agent requested to run with no selected version, so Stop is disabled and says there is nothing to stop.",
+    gap: "Simulated UI proof only; this preview does not run a deployment.",
+  },
   stopNeverDeployed: {
     group: "Components/Stop Agent",
     name: "Never deployed",

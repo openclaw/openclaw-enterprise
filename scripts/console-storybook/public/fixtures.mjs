@@ -409,7 +409,8 @@ export function installFixture(scenario, evidence) {
       : {}),
     servicePrincipalId: "identity_demo_agent",
     createdAt,
-    activeRevisionId: scenario.stopNoSelection ? null : selectedRevisionId,
+    activeRevisionId:
+      scenario.stopNoSelection || scenario.firstDeploymentFailed ? null : selectedRevisionId,
     ...(scenario.repositoryAccess
       ? { repositoryAccess: structuredClone(scenario.repositoryAccess) }
       : {}),
@@ -507,9 +508,12 @@ export function installFixture(scenario, evidence) {
       deploymentId: revisionId,
       namespaceId,
       agentId: agent.id,
-      status: "succeeded",
+      // A failed first deployment selects no version for service.
+      status: scenario.firstDeploymentFailed ? "failed" : "succeeded",
       progress: null,
-      error: null,
+      error: scenario.firstDeploymentFailed
+        ? candidateDeploymentError(scenario, currentRevision.createdAt)
+        : null,
       warnings: [],
     });
     if (scenario.candidateDeploymentStatus) {

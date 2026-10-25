@@ -286,6 +286,30 @@ test("A failed older version raises no recovery while the current version is hid
   assert.equal(await summary.getByText("May be offline").count(), 0);
 });
 
+// A first deployment that failed leaves the Agent requested to run with no version selected
+// (finding 2385). Stop would change nothing, so the danger zone disables it and says why,
+// instead of offering to stop "the running version".
+test("Stop is disabled with its reason when a failed first deployment left nothing running", async (t) => {
+  const { fixture, namespace, agent, page } = await agentPage(t, "Failed first", "Failed first");
+  const failed = await fixture.deployAgent(namespace.id, agent.id);
+  await routeFailedRecord(page, fixture, namespace, agent, failed);
+
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  const summary = page.locator(".agent-current-summary");
+  await summary.getByText("v1 · Failed", { exact: true }).waitFor();
+  const stopRegion = page.getByRole("region", { name: "Stop Agent", exact: true });
+  await stopRegion
+    .getByText(
+      "No version is running, so there is nothing to stop. Deploy a new version to start this Agent.",
+      { exact: true },
+    )
+    .waitFor();
+  assert.equal(
+    await stopRegion.getByRole("button", { name: "Stop Agent", exact: true }).isDisabled(),
+    true,
+  );
+});
+
 // Nothing restarts a lost Sandbox (finding 2152): after a node restart the current version's
 // Sandbox can stay stopped while the Agent still reads active and its gateway refuses requests.
 // Live serving says so with the next step. Its note line is reserved from the first paint, so a
