@@ -1295,6 +1295,10 @@ export const AgentRevisionSummarySchema = Type.Object(
           "The status that reading this revision's deployment would report, or `null` when OCC has no deployment record for it.",
       },
     ),
+    deploymentErrorCode: Type.Union([Type.String({ minLength: 1 }), Type.Null()], {
+      description:
+        "The `error.code` that reading this revision's deployment would report, or `null` when it reports no error. It tells a failure from a deployment that a newer version or a Stop ended.",
+    }),
   },
   {
     description:

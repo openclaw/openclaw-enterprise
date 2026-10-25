@@ -88,9 +88,18 @@ function routeFailedRecord(
   });
 }
 
-// The in-memory fixture keeps no deployment records, so its Versions list reports no outcome.
-// This lists `revision` as failed, as the API does once its record failed (finding 2422).
-async function routeFailedListing(page, fixture, namespace, agent, revision) {
+// The in-memory fixture never runs deployment work, so its Versions list reports a deployment as
+// queued at most. This lists `revision` as failed with `code`, as the API does once its record
+// ended that way (finding 2422; postgres-agent-provisioning.test.mjs and
+// postgres-worker-agent-revision.test.mjs list real stopped and superseded work).
+async function routeFailedListing(
+  page,
+  fixture,
+  namespace,
+  agent,
+  revision,
+  code = "RUNTIME_MODEL_PROBE_FAILED",
+) {
   const listPath = `/namespaces/${namespace.id}/agents/${agent.id}/revisions`;
   await page.route(
     (url) => url.origin === fixture.origin && url.pathname === listPath,
@@ -100,6 +109,7 @@ async function routeFailedListing(page, fixture, namespace, agent, revision) {
       for (const item of body.data ?? []) {
         if (item.id === revision.id) {
           item.deploymentStatus = "failed";
+          item.deploymentErrorCode = code;
         }
       }
       await route.fulfill({ response, json: body });
@@ -372,6 +382,43 @@ test("The Versions list keeps an earlier failed version's mark after a newer dep
   );
   await rail.getByRole("button", { name: "View version v1, deployment failed" }).waitFor();
 });
+
+// A deployment that a newer version or a Stop ended is listed as failed, the status its record
+// reports, with the code that says it did not fail. A new page load marks earlier failed
+// versions from the list, so it must not mark these (finding 2422): the version reads as a
+// plain historical version, and its own record says Superseded or Stopped.
+for (const [code, outcome] of [
+  ["REVISION_SUPERSEDED", "Superseded"],
+  ["REVISION_STOPPED", "Stopped"],
+]) {
+  test(`The Versions list leaves a version that ended with ${code} unmarked after a load`, async (t) => {
+    const { fixture, namespace, agent, page } = await agentPage(t, `Neutral ${outcome}`, "Neutral");
+    const first = await fixture.deployAgent(namespace.id, agent.id);
+    await routeFailedRecord(page, fixture, namespace, agent, first, code);
+    await routeFailedListing(page, fixture, namespace, agent, first, code);
+    await fixture.deployAgent(namespace.id, agent.id);
+
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
+    );
+    const rail = page.getByRole("toolbar", { name: "Versions" });
+    await rail.getByRole("button", { name: /^View version v2/ }).waitFor();
+    const v1 = rail.getByRole("button", { name: /^View version v1/ });
+    assert.equal(await v1.getAttribute("aria-label"), "View version v1");
+    assert.equal(await v1.locator(".version-outcome").count(), 0);
+
+    await v1.click();
+    await page.getByRole("heading", { name: "Version v1" }).waitFor();
+    await page.getByText(`Recorded outcome: ${outcome}`, { exact: true }).waitFor();
+    assert.equal(
+      await page.locator(".version-selection-notice").textContent(),
+      "Historical version · read-only admitted snapshot. Browsing it does not change the current version.",
+    );
+    assert.equal(await v1.getAttribute("aria-label"), "View version v1");
+  });
+}
 
 // A first deployment that failed leaves the Agent requested to run with no version selected
 // (finding 2385). Stop would change nothing, so the danger zone disables it and says why,

@@ -60,6 +60,7 @@ import {
   NAMESPACE_NOT_READY_MESSAGE,
   NEUTRAL_DEPLOYMENT_NOTES,
   deploymentOutcome,
+  neutralDeploymentOutcome,
   outcomeLabel,
   preAdmissionRefusal,
 } from "./list.mjs";
@@ -532,7 +533,15 @@ export async function renderAgentDetail(
       );
     }
     for (const item of page.revisions) {
-      if (item.deploymentStatus === "failed") {
+      // A version that a newer one or a Stop ended is listed as failed too, with the code that
+      // says so; it is not marked (finding 2422).
+      if (
+        item.deploymentStatus === "failed" &&
+        !neutralDeploymentOutcome({
+          status: item.deploymentStatus,
+          error: item.deploymentErrorCode === null ? null : { code: item.deploymentErrorCode },
+        })
+      ) {
         failedVersions.add(failedVersionKey(path, item.id));
       }
     }

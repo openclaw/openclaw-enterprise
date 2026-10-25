@@ -1863,8 +1863,9 @@ export function installFixture(scenario, evidence) {
               configurationGeneration: item.configurationGeneration,
               harness: item.harness,
               createdAt: item.createdAt,
-              // The API lists each version's deployment outcome (finding 2422).
+              // The API lists each version's deployment outcome and error code (finding 2422).
               deploymentStatus: deployments.get(item.id)?.status ?? null,
+              deploymentErrorCode: deployments.get(item.id)?.error?.code ?? null,
             })),
             200,
             undefined,

@@ -805,10 +805,13 @@ export interface CreateAgentInput {
 
 /**
  * A listed revision with its deployment outcome, so a Versions list marks a failed version
- * without reading each record (finding 2422). Null when no deployment record matches it.
+ * without reading each record (finding 2422). Both are null when no deployment record matches
+ * it. The error code is the record's `error.code`: clients tell a superseded or stopped ending
+ * from a failure by it, as they do for the record itself.
  */
 export type AgentRevisionListing = AgentRevisionSummary & {
   readonly deploymentStatus: DeploymentStatusResult["status"] | null;
+  readonly deploymentErrorCode: string | null;
 };
 
 export interface AgentRevisionListPage {
@@ -4082,6 +4085,7 @@ export class OpenClawController {
             Object.freeze({
               ...revision,
               deploymentStatus: matches ? controllerWorkDeploymentStatus(work, this.clock()) : null,
+              deploymentErrorCode: matches ? (deploymentErrorForWork(work)?.code ?? null) : null,
             }),
           );
         }

@@ -24,7 +24,7 @@ import {
 import { stopProcess } from "../helpers/stop-process.mjs";
 
 // Revision lists return summaries, newest first (finding 1323), each with its deployment's
-// status. An activated revision's deployment is finishing or has finished.
+// status. An activated revision's deployment is finishing or has finished, with no error.
 const revisionSummary = (revision, deploymentStatus) => ({
   id: revision.id,
   namespaceId: revision.namespaceId,
@@ -36,6 +36,7 @@ const revisionSummary = (revision, deploymentStatus) => ({
   harness: revision.harness,
   createdAt: revision.createdAt,
   deploymentStatus,
+  deploymentErrorCode: null,
 });
 const activatedStatuses = (listed) => {
   const statuses = listed.map((item) => item.deploymentStatus);

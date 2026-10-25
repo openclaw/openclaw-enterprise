@@ -1983,6 +1983,7 @@ test(
       harness: item.harness,
       createdAt: item.createdAt,
       deploymentStatus,
+      deploymentErrorCode: null,
     });
     // The planted revision has no deployment work; the deployed one is queued.
     const revisions = await request(api, "GET", revisionPath);

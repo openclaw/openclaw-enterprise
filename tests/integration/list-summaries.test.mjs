@@ -16,6 +16,7 @@ const REVISION_SUMMARY_KEYS = [
   "configurationGeneration",
   "configurationId",
   "createdAt",
+  "deploymentErrorCode",
   "deploymentStatus",
   "harness",
   "id",
@@ -143,10 +144,12 @@ test("Preset and revision lists return summaries, not the stored documents", asy
     harness: revision.data.harness,
     createdAt: revision.data.createdAt,
     deploymentStatus: null,
+    deploymentErrorCode: null,
   });
 
   // The in-memory fixture runs no worker and keeps no deployment records, so every summary
-  // reports none; postgres-agent-provisioning.test.mjs lists a failed one (finding 2422).
+  // reports none; postgres-agent-provisioning.test.mjs lists a stopped one with its code
+  // (finding 2422).
   assert.deepEqual(
     listedRevisions.data.map(({ deploymentStatus }) => deploymentStatus),
     [null, null, null, null, null],
