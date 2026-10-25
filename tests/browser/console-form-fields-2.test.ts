@@ -499,6 +499,12 @@ test("Create Agent refuses what the API would refuse before any write", async (t
     const name = dialog.getByLabel("Name", { exact: true });
     const value = dialog.getByLabel("Value", { exact: true });
     const submit = dialog.getByRole("button", { name: "Create Secret", exact: true });
+    // The value help says in plain words what is kept, short enough for the phone sheet
+    // (finding 2388).
+    assert.match(
+      await dialog.locator(".secret-value-field").innerText(),
+      /The value is never read back\. Spaces kept; line breaks normalized\./,
+    );
     assert.equal(await name.inputValue(), "Support\tbot model credential");
     await value.fill("token");
     await submit.click();
