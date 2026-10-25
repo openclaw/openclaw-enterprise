@@ -10,6 +10,7 @@ import type {
   SecretWire,
 } from "../../packages/contracts/src/api/resources.ts";
 
+import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   holdRequests,
@@ -217,10 +218,7 @@ const CREDENTIAL_ACCESS_UNCONFIRMED =
   "The Agent was created, but credential access is not confirmed.";
 
 function unavailable(route: Route) {
-  return route.fulfill({
-    status: 503,
-    json: { error: { code: "DEPENDENCY_UNAVAILABLE", message: "Try again." } },
-  });
+  return route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Try again."));
 }
 
 test("a member whose permission check failed is told so and retries only that check", async (t) => {
@@ -252,7 +250,7 @@ test("a member whose permission check failed is told so and retries only that ch
   // A retry that fails again says so again and stays available.
   const failing = await holdRequests(t, page, permissionsPath, {
     once: true,
-    fulfill: { status: 503, json: { error: { code: "DEPENDENCY_UNAVAILABLE", message: "x" } } },
+    fulfill: apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "x"),
   });
   await retry.click();
   await failing.requested;
@@ -372,12 +370,7 @@ test("an administrator's refused credential grant keeps the retry and the API's 
   const { fixture, namespace, secret } = await setup(t);
   const { page } = await newPage(t, fixture);
   await page.route(`${fixture.origin}/namespaces/${namespace.id}/iam/roles`, (route) =>
-    route.fulfill({
-      status: 403,
-      json: {
-        error: { code: "FORBIDDEN", message: GENERIC_DENIAL },
-      },
-    }),
+    route.fulfill(apiErrorResponse(403, "FORBIDDEN", GENERIC_DENIAL)),
   );
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await fillDefaultPreset(page, secret, "Administrator Agent");

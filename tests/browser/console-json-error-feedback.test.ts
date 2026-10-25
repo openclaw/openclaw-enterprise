@@ -5,6 +5,7 @@ import type { Page } from "playwright";
 
 import type { AgentWire, NamespaceWire } from "../../packages/contracts/src/api/resources.ts";
 
+import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   detailUrl,
@@ -75,14 +76,11 @@ test("a refused or stale Configuration save is an error; editing again is a hint
       return;
     }
     if (patchAnswer === "refuse") {
-      await route.fulfill({
-        status: 400,
-        contentType: "application/json",
-        body: JSON.stringify({
-          error: { code: "VALIDATION_FAILED", message: "Refused for this test." },
-          meta: { requestId: "req_00000000-0000-4000-8000-000000000400" },
+      await route.fulfill(
+        apiErrorResponse(400, "INVALID_REQUEST", "Refused for this test.", {
+          requestId: "req_00000000-0000-4000-8000-000000000400",
         }),
-      });
+      );
       return;
     }
     // Another browser saves between this page's reread and its PATCH.
@@ -131,14 +129,11 @@ test("an unknown Configuration save outcome stays an error when the editor is re
       return;
     }
     await route.fetch();
-    await route.fulfill({
-      status: 503,
-      contentType: "application/json",
-      body: JSON.stringify({
-        error: { code: "DEPENDENCY_UNAVAILABLE", message: "masked Configuration response" },
-        meta: { requestId: "req_00000000-0000-4000-8000-000000000503" },
+    await route.fulfill(
+      apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "masked Configuration response", {
+        requestId: "req_00000000-0000-4000-8000-000000000503",
       }),
-    });
+    );
   });
   const outcomeUnknown = page
     .locator("#configuration-editor-feedback")

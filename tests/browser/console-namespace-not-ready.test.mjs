@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { SshComputeDriver } from "../../apps/controller/src/drivers/compute/ssh/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
+import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   apiRequests,
@@ -488,11 +489,7 @@ test("the Agents list keeps checking its Namespace after a failed read", async (
   assert.equal(await view.locator("#namespace-not-ready[data-kept]").count(), 1);
   await page.route(
     (url) => url.pathname === "/namespaces",
-    (route) =>
-      route.fulfill({
-        status: 503,
-        json: { error: { code: "UNAVAILABLE", message: "Try again." } },
-      }),
+    (route) => route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Try again.")),
     { times: 1 },
   );
   await poll();

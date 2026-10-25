@@ -4,6 +4,7 @@ import test from "node:test";
 
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/deployment-evidence.mts";
+import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { grantRole } from "../helpers/iam-grants.mjs";
 import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.mjs";
 import {
@@ -84,14 +85,7 @@ function watchDeployAgain() {
 }
 
 // The failed deployment's own message says to deploy again; the page's 503 answer for a read.
-const unavailable = {
-  status: 503,
-  contentType: "application/json",
-  body: JSON.stringify({
-    error: { code: "DEPENDENCY_UNAVAILABLE", message: "Try again later." },
-    meta: { requestId: "req_test_deploy_again_unavailable" },
-  }),
-};
+const unavailable = apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Try again later.");
 
 // A Namespace member whose role grants Agent deploy and log reading but no Configuration read.
 function deployerWithoutConfiguration(fixture, namespace) {
@@ -326,15 +320,7 @@ test("Recovery offers no Deploy again when the caller's permission answer fails"
   );
   await page.route(
     `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/permissions`,
-    (route) =>
-      route.fulfill({
-        status: 503,
-        contentType: "application/json",
-        body: JSON.stringify({
-          error: { code: "DEPENDENCY_UNAVAILABLE", message: "Try again later." },
-          meta: { requestId: "req_test_deploy_again_permissions_failed" },
-        }),
-      }),
+    (route) => route.fulfill(unavailable),
   );
   await page.addInitScript(watchDeployAgain);
 
