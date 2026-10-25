@@ -38,7 +38,8 @@ and Agents whose stored Configuration has an unbound channel reference.
 
 **Steps.** Send the values and their `secretBindings` in one request. For a
 stored Configuration, save both Slack Secrets on the Agent's **Credentials**
-tab.
+tab; fix named Slack accounts and `msteams` through the API, sending the
+values with every binding they reference.
 
 ## 2026-10-25: provisioning refuses a taken Agent name with 409
 
