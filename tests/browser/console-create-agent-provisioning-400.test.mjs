@@ -8,6 +8,7 @@ import { ConfigurationHarnessError } from "../../packages/occ/src/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import {
   apiRequests,
   fileBrowser,
@@ -21,6 +22,7 @@ import {
 import {
   agentPostRequests,
   agentProvisionPostRequests,
+  assertAgentNameTaken,
   configurationPostRequests,
   createModelCredentialSecret,
   enterManualModel,
@@ -195,6 +197,51 @@ test("Dedicated Agent provisioning shows the API's 400 message for an inline mod
   );
   // A 400 means the request was never admitted, so the form unlocks for a fix.
   await waitForEnabled(configuration);
+});
+
+test("Dedicated Agent provisioning refuses a taken Agent name at admission and marks the field", async (t) => {
+  // Exact Configuration create and inspect, as provisioning admission requires, in storage that
+  // can also hold the Configuration of the Agent that already has the name.
+  const { computeDriver } = provisioningDrivers();
+  const configurationDriver = createTestConfigurationDriver({
+    id: "console-provisioning-configuration",
+    exact: true,
+  });
+  const fixture = await createConsoleAppFixture(t, { computeDriver, configurationDriver });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Provision taken name", { ready: true });
+  await fixture.createAgent(namespace.id, "Taken provisioned");
+  const { page } = await newPage(t, fixture, { browser });
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Agent name").fill("Taken provisioned");
+  await pickCodexCredential(page);
+  const refused = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/provision` &&
+      response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Create Agent" }).click();
+  const response = await refused;
+  // Admission answers Agent create's 409 instead of accepting a job that can only fail
+  // (finding 2420); the console shows it and marks the name field.
+  assert.equal(response.status(), 409);
+  const { error, meta } = await response.json();
+  assert.equal(error.code, "RESOURCE_CONFLICT");
+  assert.equal(
+    error.message,
+    "An Agent with this name already exists in this Namespace. Choose a different name.",
+  );
+  const feedback = page.getByRole("alert").filter({ hasText: meta.requestId });
+  await feedback.waitFor();
+  assert.equal(await feedback.textContent(), `${error.message} Request ID: ${meta.requestId}`);
+  await assertAgentNameTaken(page);
+  assert.equal(agentProvisionPostRequests(requests, namespace.id).length, 1);
+  assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
+  // Editing the name clears the mark.
+  await page.getByLabel("Agent name").fill("Free provisioned");
+  assert.equal(await page.getByLabel("Agent name").getAttribute("aria-invalid"), null);
 });
 
 test("The pinned runtime lets the Console request dedicated OpenClaw provisioning", async (t) => {

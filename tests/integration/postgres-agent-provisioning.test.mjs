@@ -2596,7 +2596,7 @@ test(
 );
 
 test(
-  "provisioning a duplicate Agent name fails permanently, says the name is taken and deletes the Configuration it wrote",
+  "provisioning refuses a taken Agent name at admission; a same-name job admitted alongside fails permanently, says the name is taken and deletes the Configuration it wrote",
   { ...requiresPostgres, timeout: 120_000 },
   async (context) => {
     const configurationDriver = createProvisioningConfigurationDriver({
@@ -2612,31 +2612,36 @@ test(
     const namespace = await fixture.bootstrapNamespace();
     const secrets = await createProvisioningSecrets(fixture, namespace.id);
     const name = `Duplicate ${randomUUID().slice(0, 8)}`;
-    const first = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
-      body: provisioningBody(namespace.id, secrets, { name }),
-    });
-    assert.equal(first.status, 202, JSON.stringify(first.body));
+    const provisionPath = `/namespaces/${namespace.id}/agents/provision`;
+    // Admission refuses a name an Agent already has (finding 2420), so only requests admitted
+    // before either job creates its Agent reach the worker's Agent insert, where the unique
+    // name constraint refuses the later one. That job must report the cause instead of the
+    // generic failure text.
+    const admitted = [];
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const response = await fixture.request("POST", provisionPath, {
+        body: provisioningBody(namespace.id, secrets, { name }),
+      });
+      assert.equal(response.status, 202, JSON.stringify(response.body));
+      admitted.push(response);
+    }
     await fixture.startWorker();
-    const created = await waitFor("first Agent provisioning to succeed", async () => {
-      const observed = await fixture.request("GET", first.data.provisioning.url);
-      assert.equal(observed.status, 200, JSON.stringify(observed.body));
-      return observed.data.status === "succeeded" ? observed.data : undefined;
+    const outcomes = await waitFor("both same-name provisioning jobs to finish", async () => {
+      const observed = await Promise.all(
+        admitted.map((response) => fixture.request("GET", response.data.provisioning.url)),
+      );
+      for (const response of observed) {
+        assert.equal(response.status, 200, JSON.stringify(response.body));
+      }
+      return observed.every(({ data }) => data.status === "succeeded" || data.status === "failed")
+        ? observed.map(({ data }) => data)
+        : undefined;
     });
+    assert.deepEqual(outcomes.map(({ status }) => status).sort(), ["failed", "succeeded"]);
+    const winner = outcomes.findIndex(({ status }) => status === "succeeded");
+    const created = outcomes[winner];
+    const duplicate = admitted[1 - winner];
     fixture.cancelProvisioningAtTeardown(namespace.id, created.agentId);
-
-    // Admission does not check names; the worker's Agent insert hits the unique name
-    // constraint. The job must report that cause instead of the generic failure text.
-    const duplicate = await fixture.request(
-      "POST",
-      `/namespaces/${namespace.id}/agents/provision`,
-      { body: provisioningBody(namespace.id, secrets, { name }) },
-    );
-    assert.equal(duplicate.status, 202, JSON.stringify(duplicate.body));
-    await waitFor("duplicate-name Agent provisioning to fail", async () => {
-      const observed = await fixture.request("GET", duplicate.data.provisioning.url);
-      assert.equal(observed.status, 200, JSON.stringify(observed.body));
-      return observed.data.status === "failed" ? observed.data : undefined;
-    });
     // The status read takes the job and the queue row in separate statements, so the
     // poll that first sees the failure can miss the recorded error. Read the settled job.
     const failed = await fixture.request("GET", duplicate.data.provisioning.url);
@@ -2646,6 +2651,22 @@ test(
       code: "PROVISIONING_REJECTED",
       message: "An Agent with this name already exists in this Namespace. Choose a different name.",
     });
+
+    // Now that the Agent exists, admission answers Agent create's 409 and queues no job.
+    const refused = await fixture.request("POST", provisionPath, {
+      body: provisioningBody(namespace.id, secrets, { name }),
+    });
+    assert.equal(refused.status, 409, JSON.stringify(refused.body));
+    assert.equal(refused.body.error.code, "RESOURCE_CONFLICT");
+    assert.equal(
+      refused.body.error.message,
+      "An Agent with this name already exists in this Namespace. Choose a different name.",
+    );
+    const jobs = await fixture.pool.query(
+      "SELECT count(*)::int AS count FROM occ.agent_provisioning_work WHERE namespace_id = $1",
+      [namespace.id],
+    );
+    assert.equal(jobs.rows[0].count, 2);
     const work = await fixture.pool.query(
       "SELECT state, reason_code FROM occ.controller_work WHERE work_kind = 'provisioning' AND namespace_id = $1 AND idempotency_key = $2",
       [namespace.id, duplicate.data.provisioning.workId],
@@ -2666,8 +2687,11 @@ test(
     // ConfigMap no Configuration answers for; finding 1395) and the job forgets it. The delete
     // runs before the refusal commits, so it is done once the job reads as failed.
     assert.equal(written.length, 2);
-    assert.equal(written[0], created.configurationId);
-    const rejectedConfiguration = { namespaceId: namespace.id, id: written[1] };
+    assert.ok(written.includes(created.configurationId));
+    const rejectedConfiguration = {
+      namespaceId: namespace.id,
+      id: written.find((id) => id !== created.configurationId),
+    };
     assert.equal(configurationDriver.stored(rejectedConfiguration), undefined);
     // The delete succeeded, so nothing stays marked for a later attempt to delete either.
     const rejectedRecord = await fixture.pool.query(

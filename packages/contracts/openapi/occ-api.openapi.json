@@ -16437,6 +16437,13 @@
                     },
                     "type": "object"
                   },
+                  "name": {
+                    "description": "The Agent name create will use. A name that another Agent in the Namespace has is refused with create's `409`.",
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
+                    "type": "string"
+                  },
                   "pluginApprovers": { "$ref": "#/components/schemas/def-2" },
                   "plugins": { "$ref": "#/components/schemas/def-6" }
                 },

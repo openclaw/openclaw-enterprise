@@ -64,7 +64,9 @@ import {
   configurationPostRequests,
   routeInstallationWithoutProvisioning,
   agentPostRequests,
+  assertAgentNameTaken,
   optionValues,
+  raceAgentName,
   waitForCreateFormReads,
 } from "./console-agents-test-support.mjs";
 
@@ -2188,7 +2190,9 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
     JSON.parse(await page.getByLabel("Configuration JSON", { exact: true }).inputValue()),
     edited,
   );
-  await page.getByLabel("Agent name", { exact: true }).fill("Existing Agent");
+  // Another create takes the name after the preflight, so the Configuration is saved first.
+  await page.getByLabel("Agent name", { exact: true }).fill("Racing Agent");
+  await raceAgentName(page, fixture, namespace.id, "Racing Agent");
   const conflict = page.waitForResponse(
     (response) =>
       response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
@@ -2354,6 +2358,26 @@ test("standard Codex password Preset creates one scoped Secret and reuses it aft
   );
   assert.equal(nonAuthWriteRequests(requests).length, 0);
   const save = page.getByRole("button", { name: "Create Agent", exact: true });
+  // The preflight refuses the taken name before the Preset's model Secret is saved, so no Secret
+  // is left behind, and marks the name field (finding 2420).
+  const preflight = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/namespaces/${namespace.id}/agents/validate`) &&
+      response.request().method() === "POST",
+  );
+  await save.click();
+  assert.equal((await preflight).status(), 409);
+  await page
+    .getByText("An Agent with this name already exists in this Namespace. Choose a different name.")
+    .waitFor();
+  await assertAgentNameTaken(page);
+  assert.deepEqual(secretPostRequests(requests, namespace.id), []);
+  assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
+  assert.equal(await apiKey.inputValue(), key);
+  // Another create takes the next name after the preflight: the Secret and Configuration are
+  // saved, and the retry reuses them.
+  await page.getByLabel("Agent name", { exact: true }).fill("Racing Agent");
+  await raceAgentName(page, fixture, namespace.id, "Racing Agent");
   const conflict = page.waitForResponse(
     (response) =>
       response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
@@ -2675,7 +2699,6 @@ test("codex_pat password Preset creates one Secret and reuses it after an Agent 
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Codex PAT Preset", { ready: true });
-  await fixture.createAgent(namespace.id, "Existing Codex Agent");
   const artifact = structuredClone(standardCodexPreset);
   artifact.name = "standard-codex-pat";
   const auth = artifact.template.agent.harnessAuth;
@@ -2703,6 +2726,8 @@ test("codex_pat password Preset creates one Secret and reuses it after an Agent 
   const token = page.getByLabel("Service account token", { exact: true });
   assert.equal(await token.inputValue(), "at-codex-pat-preset-token");
   const save = page.getByRole("button", { name: "Create Agent", exact: true });
+  // Another create takes the name after the preflight, so the Secret is saved first.
+  await raceAgentName(page, fixture, namespace.id, "Existing Codex Agent");
   const conflict = page.waitForResponse(
     (response) =>
       response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
@@ -2889,7 +2914,6 @@ test("Create Agent reuses its PAT Secret and resumes plugin prefetch after an Ag
   fixture.controller.registerDriver(driver);
   fixture.controller.selectDriver("plugin", driver.id);
   const namespace = await fixture.createNamespace("Create credential picker", { ready: true });
-  await fixture.createAgent(namespace.id, "Existing picker Agent");
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
@@ -2921,10 +2945,16 @@ test("Create Agent reuses its PAT Secret and resumes plugin prefetch after an Ag
   const submitStarted = Promise.withResolvers<void>();
   const submitRelease = Promise.withResolvers<void>();
   t.after(() => submitRelease.resolve());
+  let raced = false;
   await page.route(`${fixture.origin}/namespaces/${namespace.id}/agents`, async (route) => {
     if (route.request().method() === "POST") {
       submitStarted.resolve();
       await submitRelease.promise;
+      // Another create takes the name after the preflight, so the API refuses the first create.
+      if (!raced) {
+        raced = true;
+        await fixture.createAgent(namespace.id, "Existing picker Agent");
+      }
     }
     await route.continue();
   });

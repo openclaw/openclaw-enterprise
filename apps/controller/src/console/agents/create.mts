@@ -26,6 +26,7 @@ import {
   field as formField,
   fieldError,
   jsonObjectProblem,
+  setFieldError,
   setStatusTone,
   setText,
   statusBlock,
@@ -841,6 +842,16 @@ function renderAgentForm(
   // The API's Name rule: length and control characters, checked before any write, so a
   // refused name never leaves a saved Configuration behind (finding 2340).
   const checkName = () => name.setCustomValidity(namespaceNameProblem(name.value));
+  // A name the API refused as taken is marked under the field, which takes focus once the form
+  // enables it again; editing the name clears the mark (finding 2420). The API decides on every
+  // submit, so a marked name is not refused locally.
+  let nameTakenMarked = false;
+  let focusTakenName = false;
+  const markNameTaken = () => {
+    nameTakenMarked = true;
+    focusTakenName = true;
+    setFieldError(name, AGENT_NAME_CONFLICT);
+  };
   const dedicatedOption = element("option", { value: "dedicated" }, "Dedicated");
   const embeddedOption = element("option", { value: "embedded" }, "Embedded");
   const mode = element("select", { id: "execution-mode" }, dedicatedOption, embeddedOption);
@@ -1939,6 +1950,10 @@ function renderAgentForm(
     }
     if (event.target === name) {
       checkName();
+      if (nameTakenMarked) {
+        nameTakenMarked = false;
+        setFieldError(name, "");
+      }
     }
   });
   form.addEventListener("change", () => {
@@ -2678,6 +2693,10 @@ function renderAgentForm(
     submit.textContent = savedAgent ? "Retry credential access" : "Create Agent";
     submit.setAttribute("aria-busy", createPending ? "true" : "false");
     waitForNamespace();
+    if (focusTakenName && !name.disabled) {
+      focusTakenName = false;
+      name.focus();
+    }
   };
   // Every way Create's request ends clears its busy state, a navigation away included: the view
   // it leaves may still show as an inert preview.
@@ -2968,6 +2987,13 @@ function renderAgentForm(
         feedback.append(link(" Open Agent", `agents/${terminal.job.agentId}`, context));
       }
       focusFeedbackLine(feedback);
+      // Admission refuses a taken name; a job admitted alongside another with it fails with it.
+      if (
+        (error.status === 409 && error.serverMessage === AGENT_NAME_CONFLICT) ||
+        (terminal?.failed && !terminal.job.agentId && error.message === AGENT_NAME_CONFLICT)
+      ) {
+        markNameTaken();
+      }
       // A 400 to an unacknowledged request means the API never admitted it: a resend of
       // an admitted request returns that job before validation.
       requestAdmitted =
@@ -3165,6 +3191,7 @@ function renderAgentForm(
           method: "POST",
           expectedStatus: 204,
           body: {
+            name: body.name,
             configuration: { kind: "agent", values },
             executionMode: body.executionMode,
             initialWorkspaceFiles: body.initialWorkspaceFiles,
@@ -3190,6 +3217,9 @@ function renderAgentForm(
             detail + (failure.requestId ? ` Request ID: ${failure.requestId}` : "");
           // While the pressed control is still disabled, as after a save.
           focusFeedbackLine(feedback);
+          if (failure.status === 409 && failure.serverMessage === AGENT_NAME_CONFLICT) {
+            markNameTaken();
+          }
         }
         pending = false;
         updateControls();
@@ -3498,6 +3528,10 @@ function renderAgentForm(
         guidance +
         (error.requestId ? ` Request ID: ${error.requestId}` : "");
       focusFeedbackLine(feedback);
+      // A create that raced another Agent to the name (the preflight checked it).
+      if (!savedAgent && error.status === 409 && error.serverMessage === AGENT_NAME_CONFLICT) {
+        markNameTaken();
+      }
       keepDraftAfterRefusal();
     } finally {
       endCreate();

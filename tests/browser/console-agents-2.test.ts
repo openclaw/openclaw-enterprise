@@ -56,7 +56,9 @@ import {
   routeInstallationProvisioning,
   routeInstallationWithoutProvisioning,
   agentPostRequests,
+  assertAgentNameTaken,
   optionValues,
+  raceAgentName,
 } from "./console-agents-test-support.mjs";
 
 const defaultCodexPreset = JSON.parse(
@@ -412,6 +414,8 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
     .waitFor();
   assert.equal(await retry.isVisible(), false);
   await waitForEnabled(page.getByLabel("Agent name"));
+  // A job that lost the name to another request marks the field, as admission's 409 does.
+  await assertAgentNameTaken(page);
 
   await page.getByLabel("Agent name").fill("Free name");
   await page.getByRole("button", { name: "Create Agent" }).click();
@@ -2067,6 +2071,24 @@ test("Agent creation shows the API's duplicate-name conflict, a not-ready Namesp
   const agentsUrl = `${fixture.origin}/namespaces/${namespace.id}/agents`;
   const agentPost = (response: Response) =>
     response.url() === agentsUrl && response.request().method() === "POST";
+  const sentence =
+    "An Agent with this name already exists in this Namespace. Choose a different name.";
+
+  // The preflight refuses a name another Agent has with create's 409, before the form saves a
+  // Configuration it could no longer change, and marks the name field (finding 2420).
+  const preflight = page.waitForResponse(
+    (response) =>
+      response.url() === `${agentsUrl}/validate` && response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Create Agent" }).click();
+  assert.equal((await preflight).status(), 409);
+  await page.getByRole("alert").filter({ hasText: sentence }).waitFor();
+  await assertAgentNameTaken(page);
+  assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
+  assert.equal(agentPostRequests(requests, namespace.id).length, 0);
+  // Another name clears the mark; the conflicts below come after the Configuration is saved.
+  await page.getByLabel("Agent name").fill("Racing Agent");
+  assert.equal(await page.getByLabel("Agent name").getAttribute("aria-invalid"), null);
 
   // Any other conflict keeps the generic text: plain conflicts reach the client as "The
   // requested platform resource already exists.", which would mislead on this form.
@@ -2132,11 +2154,11 @@ test("Agent creation shows the API's duplicate-name conflict, a not-ready Namesp
   await page.unroute(agentsUrl, notReady);
   await page.getByRole("button", { name: "Create Agent", disabled: false }).waitFor();
 
+  // Another create takes the name after the preflight: the API's own 409 names it too.
+  await raceAgentName(page, fixture, namespace.id, "Racing Agent");
   const rejected = page.waitForResponse(agentPost);
   await page.getByRole("button", { name: "Create Agent" }).click();
   assert.equal((await rejected).status(), 409);
-  const sentence =
-    "An Agent with this name already exists in this Namespace. Choose a different name.";
   const feedback = page.getByRole("alert").filter({ hasText: sentence });
   await feedback.waitFor();
   assert.match(
@@ -2148,6 +2170,7 @@ test("Agent creation shows the API's duplicate-name conflict, a not-ready Namesp
   await page.getByRole("button", { name: "Create Agent", disabled: false }).waitFor();
   await waitForEnabled(name);
   await waitForEnabled(create);
+  await assertAgentNameTaken(page);
 
   // A new name saves through the same Configuration.
   await name.fill("Free Agent");

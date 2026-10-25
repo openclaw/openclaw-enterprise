@@ -1865,6 +1865,25 @@ test("Create Agent's preflight refuses what Configuration and Agent create would
     const listed = await controller.request("GET", `/namespaces/${namespace.id}/${collection}`);
     assert.deepEqual(listed.data, [], collection);
   }
+
+  // A name another Agent has gets Agent create's 409, so the form saves no Secret or
+  // Configuration it would leave behind (finding 2420). Another name, or none, still passes.
+  const taken = await createAgent(controller, namespace.id, "taken-agent");
+  const duplicate = await validate({}, { name: "taken-agent" });
+  assertApiError(duplicate, 409, "RESOURCE_CONFLICT");
+  assert.equal(
+    duplicate.body.error.message,
+    "An Agent with this name already exists in this Namespace. Choose a different name.",
+  );
+  for (const extra of [{ name: "free-agent" }, {}]) {
+    const free = await validate({}, extra);
+    assert.equal(free.status, 204, JSON.stringify(free.body));
+  }
+  const listed = await controller.request("GET", `/namespaces/${namespace.id}/agents`);
+  assert.deepEqual(
+    listed.data.map(({ id }) => id),
+    [taken.id],
+  );
 });
 
 test("Namespace IAM reports invalid policy input as 400 with the field and refuses inert Permissions", async () => {

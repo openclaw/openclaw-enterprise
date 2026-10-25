@@ -25,6 +25,7 @@ import {
   createRepositoryLaunchFixture,
   enterManualModel,
   routeInstallationProvisioning,
+  raceAgentName,
   routeInstallationWithoutProvisioning,
 } from "./console-agents-test-support.mjs";
 
@@ -118,7 +119,6 @@ test("a refused Create stays a draft for a reload and a return, and the retry re
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Refused create", { ready: true });
-  await fixture.createAgent(namespace.id, "Existing Agent");
   const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
     body: standardCodexPreset,
   });
@@ -136,6 +136,9 @@ test("a refused Create stays a draft for a reload and a return, and the retry re
   await name.waitFor();
   assert.equal(await asksBeforeUnload(page), true);
 
+  // Another create takes the name after the preflight, so the Secret and Configuration are saved
+  // before the API refuses the Agent.
+  await raceAgentName(page, fixture, namespace.id, "Existing Agent");
   const conflict = page.waitForResponse(
     (response) =>
       response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
