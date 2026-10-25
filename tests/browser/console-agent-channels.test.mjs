@@ -820,6 +820,33 @@ describe("Agent channels", { concurrency: 3 }, () => {
     assert.equal(configuration.data.generation, 1);
   });
 
+  // A DM policy changed and changed back is no change either, though leaving Open cleared its
+  // wildcard sender list: the editor made that change itself, not the reader (finding 1509).
+  test("Edit Slack keeps Save disabled after a DM policy is changed back", async (t) => {
+    const { fixture, namespace } = await readyNamespace(t, "Slack DM no-op save");
+    const { agent } = await createSlackAgent(fixture, namespace, {
+      name: "Slack DM No-op Agent",
+      slug: "slack-dm-noop",
+      slack: { dmPolicy: "open", allowFrom: ["*"] },
+      secretBindings: await slackTokenBindings(fixture, namespace, "DM no-op"),
+    });
+    const { page } = await newPage(t, fixture, { browser });
+    await openDraft(page, fixture, agent, "Slack DM No-op Agent");
+    await page.getByRole("button", { name: "Edit Slack" }).click();
+    const dialog = page.getByRole("dialog", { name: "Edit Slack" });
+    const save = dialog.getByRole("button", { name: "Save configuration", exact: true });
+    await waitForInputValue(
+      dialog.getByLabel("Slack bot token", { exact: true }),
+      "DM no-op Slack bot token",
+    );
+    assert.equal(await save.isDisabled(), true);
+    const policy = dialog.getByLabel("Direct-message policy", { exact: true });
+    await policy.selectOption("allowlist");
+    await waitForEnabled(save);
+    await policy.selectOption("open");
+    assert.equal(await save.isDisabled(), true);
+  });
+
   test("Channel drawer round trips existing Slack everyone channel access", async (t) => {
     const { fixture, namespace } = await readyNamespace(t, "Slack everyone access");
     const { agent, slack } = await createSlackAgent(fixture, namespace, {
@@ -1547,6 +1574,40 @@ describe("Agent channels", { concurrency: 3 }, () => {
       await page.getByRole("dialog", { name: "Create Slack app token Secret" }).count(),
       0,
     );
+  });
+
+  // A failed Secret create answer is unknown, not a refusal: the drawer keeps its inline Create
+  // Secret and its create wording, and the API decides if the dialog is submitted.
+  test("an unknown Secret create answer keeps the Edit Slack drawer's Create Secret", async (t) => {
+    const { fixture, namespace } = await readyNamespace(t, "Drawer unknown create");
+    const { agent } = await createSlackAgent(fixture, namespace, {
+      name: "Drawer Unknown Agent",
+      slug: "drawer-unknown",
+    });
+    const { page } = await newPage(t, fixture, { browser });
+    const permissionsUrl = `${fixture.origin}/namespaces/${namespace.id}/permissions`;
+    await page.route(permissionsUrl, (route) =>
+      route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Permissions unavailable.")),
+    );
+    // The page asks once, when its first Secret field needs the answer.
+    const answered = page.waitForResponse(permissionsUrl);
+    await openDraft(page, fixture, agent, "Drawer Unknown Agent");
+    await page.getByRole("button", { name: "Edit Slack" }).click();
+    const drawer = page.getByRole("dialog", { name: "Edit Slack" });
+    assert.equal((await answered).status(), 503);
+    await nextFrames(page);
+    await drawer
+      .getByText(
+        "Choose existing Slack token Secrets or create them here. Secret menu changes are saved with these channel settings.",
+        { exact: true },
+      )
+      .waitFor();
+    await drawer.getByLabel("Slack app token", { exact: true }).fill("Create a new Secret");
+    const action = drawer.getByRole("option", { name: "Create new Secret...", exact: true });
+    await action.waitFor();
+    assert.equal(await action.getAttribute("aria-disabled"), null);
+    await action.click();
+    await page.getByRole("dialog", { name: "Create Slack app token Secret" }).waitFor();
   });
 
   test("a long Agent name's suggested Slack Secret name stays within the Name rule", async (t) => {

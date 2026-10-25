@@ -149,7 +149,8 @@ node uses when it restarts. Native workers and SandboxDriver Harnesses receive t
 their environment, keep it for restarts, and are replaced to attach the node.
 Installations that enrolled one node for each Agent revision enroll a new Agent device once,
 at the first replacement; retiring each earlier Agent revision deletes its node Secret.
-Sessions stay on the private Gateway claim, inaccessible to the Harness.
+Gateway conversation history stays on its private claim. Resuming the original Codex thread
+also requires the Harness claim’s `codex-sessions`.
 Selected generated-image bytes use the Codex remote-media reader; no image mount
 is shared. Each image initializes its bundled/plugin assets without shared Skill-tree mounts.
 Embedded Agents use the private claim without creating this Harness claim.

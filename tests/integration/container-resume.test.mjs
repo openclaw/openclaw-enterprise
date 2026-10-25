@@ -145,6 +145,8 @@ if (args[0] === "inspect") {
     digest: `sha256:${"c".repeat(64)}`,
   }));
   const publishWorkflowRecord = { id: 2, path: publishWorkflow, state: "active" };
+  // The jobs of a rerun's second attempt; the first attempt keeps `jobs`.
+  let retryJobs = [];
   let workflowComparison;
   let packageVisibility = "public";
   let interruptRuntime = false;
@@ -177,6 +179,9 @@ if (args[0] === "inspect") {
     }
     if (path.endsWith("/runs/123/attempts/1/jobs")) {
       return Response.json({ jobs });
+    }
+    if (path.endsWith("/runs/123/attempts/2/jobs")) {
+      return Response.json({ jobs: retryJobs });
     }
     if (path.endsWith("/runs/123/artifacts")) {
       return Response.json({ artifacts });
@@ -251,7 +256,7 @@ if (args[0] === "inspect") {
     `
 import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
-const { env, sourceSha, workflowSha, repository, publishWorkflow, repo, run, jobs, artifacts, images, prepared, statePath, publishWorkflowRecord, workflowComparison, packageVisibility, interruptRuntime, sourceCiConclusion, metadataMissing, tag } = JSON.parse(await readFile(${JSON.stringify(fixtureConfig)}, "utf8"));
+const { env, sourceSha, workflowSha, repository, publishWorkflow, repo, run, jobs, retryJobs, artifacts, images, prepared, statePath, publishWorkflowRecord, workflowComparison, packageVisibility, interruptRuntime, sourceCiConclusion, metadataMissing, tag } = JSON.parse(await readFile(${JSON.stringify(fixtureConfig)}, "utf8"));
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 globalThis.fetch = ${fetchFixture.toString()};
 globalThis.setTimeout = (resolve) => queueMicrotask(resolve);
@@ -269,6 +274,7 @@ globalThis.setTimeout = (resolve) => queueMicrotask(resolve);
         repo,
         run,
         jobs,
+        retryJobs,
         artifacts,
         images,
         prepared,
@@ -365,6 +371,18 @@ globalThis.setTimeout = (resolve) => queueMicrotask(resolve);
     ],
     [() => (jobs[6].conclusion = "failure"), /^Assemble runtime OCI image job must have succeeded/],
     [
+      // The selected attempt's own jobs decide: attempt 1 succeeded, but rerun attempt 2's
+      // runtime assembly failed.
+      () => {
+        env.PREPARATION_ATTEMPT = "2";
+        run.run_attempt = 2;
+        retryJobs = jobs.map((job) =>
+          job.name === "Assemble runtime OCI image" ? { ...job, conclusion: "failure" } : job,
+        );
+      },
+      /^Assemble runtime OCI image job must have succeeded/,
+    ],
+    [
       () => artifacts.push({ ...artifacts[0] }),
       /^One retained artifact named container-controller/,
     ],
@@ -394,6 +412,7 @@ globalThis.setTimeout = (resolve) => queueMicrotask(resolve);
     artifacts.splice(0, Infinity, ...restored.artifacts);
     Object.assign(env, restored.env);
     Object.assign(publishWorkflowRecord, restored.publishWorkflowRecord);
+    retryJobs = [];
     workflowComparison = undefined;
     packageVisibility = "public";
     sourceCiConclusion = "success";
@@ -474,6 +493,13 @@ globalThis.setTimeout = (resolve) => queueMicrotask(resolve);
   // Retrying recovery verifies both existing digests without another copy.
   await runRecovery();
   assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), state);
+  // A cancelled producer recovers too, as does a successful preparation-only run (publish: false).
+  for (const conclusion of ["cancelled", "success"]) {
+    run.conclusion = conclusion;
+    await runRecovery();
+    assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), state);
+  }
+  run.conclusion = "failure";
   // Older producers sealed both architectures in one job per image.
   jobs.splice(1, Infinity, ...legacyJobs);
   await runRecovery();
@@ -499,6 +525,27 @@ globalThis.setTimeout = (resolve) => queueMicrotask(resolve);
       JSON.stringify(prepared[index].metadata),
     );
   }
+  // Recovery on the producer's own commit: main has not moved since, so the comparison is
+  // identical rather than ahead, and both immutable tags are copied.
+  run.head_sha = sourceSha;
+  jobs.splice(
+    0,
+    Infinity,
+    ...JSON.parse(pristine).jobs.map((job) => ({ ...job, head_sha: sourceSha })),
+  );
+  for (const artifact of artifacts) {
+    artifact.workflow_run.head_sha = sourceSha;
+  }
+  await writeFile(statePath, JSON.stringify({ remote: {}, copies: [] }));
+  const identical = await runRecovery();
+  assert.deepEqual(
+    identical.images.map(({ digest }) => digest),
+    prepared.map(({ metadata }) => metadata.digest),
+  );
+  assert.deepEqual(
+    JSON.parse(await readFile(statePath, "utf8")).copies,
+    prepared.map(({ remote }) => remote),
+  );
   const runPublication = async (alias = "") => {
     await writeFixture();
     execFileSync(

@@ -1126,6 +1126,100 @@ test("a Channels save cannot change the service principal receiving its Secret g
   );
 });
 
+// A Slack edit kept while the reader leaves the Agent page reopens when they return. When the
+// saved Configuration changed meanwhile, the reopened editor says so and Save stays disabled,
+// even after another edit: saving would replace the newer settings.
+test("a kept Slack edit reopened over a changed Configuration cannot be saved", async (t) => {
+  const context = await slackAgent(t, "Channels Stale");
+  const { fixture, namespace } = context;
+  const { page } = await newPage(t, fixture, { browser });
+  await login(
+    page,
+    fixture,
+    new URL(`/console/agents?namespace=${namespace.id}`, fixture.origin).href,
+  );
+  await page.getByRole("link", { name: "Channels Stale", exact: true }).click();
+  await page.getByRole("heading", { name: "Channels Stale" }).waitFor();
+  await page.getByRole("tab", { name: "Channels", exact: true }).click();
+  await page.getByRole("button", { name: "Edit Slack", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Edit Slack" });
+  const mention = dialog.getByLabel("Require a mention", { exact: true });
+  const save = dialog.getByRole("button", { name: "Save configuration", exact: true });
+  await waitForInputValue(
+    dialog.getByLabel("Slack bot token", { exact: true }),
+    "Channels Stale bot token",
+  );
+  await mention.uncheck();
+  await waitForEnabled(save);
+  await page.goBack();
+  await page.goBack();
+  await changeElsewhere(context);
+  await page.goForward();
+  await page.goForward();
+  await dialog
+    .getByText(
+      "The saved Configuration changed while you were editing. Cancel this editor to use current settings.",
+      { exact: true },
+    )
+    .waitFor();
+  assert.equal(await save.isDisabled(), true);
+  // The reopened editor's first field shows its suggestions; the keyboard reaches the box.
+  await mention.focus();
+  await page.keyboard.press("Space");
+  assert.equal(await mention.isChecked(), true);
+  assert.equal(await save.isDisabled(), true);
+  assert.equal((await fixture.request("GET", configurationPath(context))).data.generation, 2);
+});
+
+// A Slack save whose answer was lost leaves its edit kept but unresolved: the editor reopened on
+// return says the outcome is unknown and keeps Save disabled, even after another edit, so the
+// same settings are not written blind a second time.
+test("a kept Slack edit from a save with an unknown outcome cannot be saved again", async (t) => {
+  const context = await slackAgent(t, "Channels Unknown");
+  const { fixture, namespace, agent } = context;
+  const page = await openTab(t, fixture, namespace, agent, "channels");
+  await page.route(`**${configurationPath(context)}`, async (route, request) => {
+    if (request.method() !== "PATCH") {
+      await route.fallback();
+      return;
+    }
+    // The connection drops, so the page cannot tell whether the write landed. It did not, so
+    // the saved Configuration is unchanged and only the unknown outcome blocks the save.
+    await route.abort("connectionreset");
+  });
+  await page.getByRole("heading", { name: "Channels Unknown" }).waitFor();
+  await page.getByRole("button", { name: "Edit Slack", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Edit Slack" });
+  const mention = dialog.getByLabel("Require a mention", { exact: true });
+  const save = dialog.getByRole("button", { name: "Save configuration", exact: true });
+  await waitForInputValue(
+    dialog.getByLabel("Slack bot token", { exact: true }),
+    "Channels Unknown bot token",
+  );
+  await mention.uncheck();
+  await save.click();
+  await dialog.waitFor({ state: "detached" });
+  // The sidebar leaves with the unresolved edit kept, and Back returns to it.
+  await page
+    .getByRole("navigation", { name: "Main navigation" })
+    .getByRole("link", { name: "Namespaces", exact: true })
+    .click();
+  await page.getByRole("heading", { name: "Namespaces", exact: true }).waitFor();
+  await page.goBack();
+  await dialog
+    .getByText(
+      "Outcome unknown. Cancel this editor and reload the page to inspect saved settings before saving again.",
+      { exact: true },
+    )
+    .waitFor();
+  assert.equal(await save.isDisabled(), true);
+  await mention.focus();
+  await page.keyboard.press("Space");
+  assert.equal(await mention.isChecked(), true);
+  assert.equal(await save.isDisabled(), true);
+  assert.equal((await fixture.request("GET", configurationPath(context))).data.generation, 1);
+});
+
 // A Channels save that conflicted with another browser's save failed the same way on every
 // retry: Cancel, reopening the editor and tab switches kept the page's old generation, and only
 // a browser reload recovered (finding 1480). The section now offers Reload draft.
