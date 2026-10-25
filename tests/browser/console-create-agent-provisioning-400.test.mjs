@@ -1055,28 +1055,30 @@ test("When the Sandbox Driver's settings refuse Dedicated OpenClaw, Create Agent
 // Compute plan check answered a fixed 409 that names no setting (finding 2395). Provisioning now
 // answers Agent save's 400. The token fixes the harness to Codex, so the form quotes only the
 // requirement, not the advice to select Embedded OpenClaw (finding 2396).
-test("Provisioning names the placement setting a Codex-bound Preset cannot work around", async (t) => {
-  const fixture = await createConsoleAppFixture(
-    t,
-    provisioningDrivers({ channelRuntime: true, routed: false }),
-  );
+const PLACEMENT_REQUIREMENT =
+  "Dedicated Agents need gateway routing and node enrollment in this Installation's Kubernetes Compute configuration.";
+
+// Opens Create Agent on a standard Codex Preset bound to a saved service account token, on a
+// fixture built with `options` whose Kubernetes Compute cannot place a Dedicated Agent, and
+// submits it. The binding fixes the harness to Codex, so the refusal's "select Embedded
+// OpenClaw" advice is one this form cannot follow.
+async function submitBoundCodexPreset(t, options, name) {
+  const fixture = await createConsoleAppFixture(t, options);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Unplaceable bound Codex", { ready: true });
+  const namespace = await fixture.createNamespace(name, { ready: true });
   const standard = JSON.parse(
     await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
   );
   const { modelSecret: _secretVariable, ...variables } = standard.template.variables;
   const token = await fixture.createSecret(namespace.id, "Codex token", "synthetic-codex-token");
+  const harnessAuth = { method: "codex_pat", source: token.ref };
   const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
     body: {
       name: "Bound Codex token",
       template: {
         ...standard.template,
         variables,
-        agent: {
-          ...standard.template.agent,
-          harnessAuth: { method: "codex_pat", source: token.ref },
-        },
+        agent: { ...standard.template.agent, harnessAuth },
       },
     },
   });
@@ -1088,27 +1090,40 @@ test("Provisioning names the placement setting a Codex-bound Preset cannot work 
   await page.getByLabel("Name", { exact: true }).fill("bound-codex");
   await page.getByLabel("Model", { exact: true }).fill("gpt-4.1");
   await page.getByRole("button", { name: "Use Preset" }).click();
+  const agentsPath = `${fixture.origin}/namespaces/${namespace.id}/agents`;
   const refused = page.waitForResponse(
     (response) =>
-      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/provision` &&
+      [`${agentsPath}/provision`, `${agentsPath}/validate`].includes(response.url()) &&
       response.request().method() === "POST",
   );
   await page.getByRole("button", { name: "Create Agent" }).click();
-  const response = await refused;
+  return { page, namespace, requests, harnessAuth, response: await refused };
+}
+
+// The refusal the form shows: only the requirement, then the step a reader can take.
+async function assertPlacementRequirement(page, response) {
   assert.equal(response.status(), 400);
   const { error, meta } = await response.json();
-  const requirement =
-    "Dedicated Agents need gateway routing and node enrollment in this Installation's Kubernetes Compute configuration.";
   assert.equal(
     error.message,
-    `${requirement} Codex runs only as a Dedicated Agent: select Embedded OpenClaw, or ask an operator to configure it.`,
+    `${PLACEMENT_REQUIREMENT} Codex runs only as a Dedicated Agent: select Embedded OpenClaw, or ask an operator to configure it.`,
   );
   const alert = page.getByRole("alert").filter({ hasText: meta.requestId });
   await alert.waitFor();
   assert.equal(
     await alert.textContent(),
-    `${requirement} Ask an operator to configure it. Request ID: ${meta.requestId}`,
+    `${PLACEMENT_REQUIREMENT} Ask an operator to configure it. Request ID: ${meta.requestId}`,
   );
+}
+
+test("Provisioning names the placement setting a Codex-bound Preset cannot work around", async (t) => {
+  const { page, namespace, requests, response } = await submitBoundCodexPreset(
+    t,
+    provisioningDrivers({ channelRuntime: true, routed: false }),
+    "Unplaceable bound Codex",
+  );
+  assert.equal(new URL(response.url()).pathname, `/namespaces/${namespace.id}/agents/provision`);
+  await assertPlacementRequirement(page, response);
   assert.equal(await page.getByLabel("Harness", { exact: true }).isDisabled(), true);
   // The Preset's token was the only Secret; the refused request saved nothing.
   assert.equal(pathRequests(requests, "POST", `/namespaces/${namespace.id}/secrets`).length, 0);
@@ -1180,6 +1195,57 @@ test("Create Agent refuses an unplaceable Dedicated Agent before a Credential Ga
     const { page } = await openModelSourceForm(t, fixture, namespace);
     await assertGatewayPreflightRefusal({ page, origin: fixture.origin, namespace, calls });
   });
+});
+
+// Without Agent provisioning, Create Agent saves a Configuration and then the Agent. Its
+// preflight sends the Preset's binding, so Agent save's placement check refuses before the
+// Configuration is saved (finding 2391), and the refusal is trimmed as above.
+test("Create Agent's preflight refuses a Codex-bound Preset the Installation cannot place", async (t) => {
+  // The same Drivers without the provisioning capability, as most Console cases use them.
+  const drivers = provisioningDrivers({ channelRuntime: true, routed: false });
+  Object.assign(drivers.computeDriver, { agentProvisioning: undefined });
+  const { page, namespace, requests, harnessAuth, response } = await submitBoundCodexPreset(
+    t,
+    drivers,
+    "Unplaceable bound Codex draft",
+  );
+  assert.equal(new URL(response.url()).pathname, `/namespaces/${namespace.id}/agents/validate`);
+  assert.deepEqual(response.request().postDataJSON().harnessAuth, harnessAuth);
+  await assertPlacementRequirement(page, response);
+  assert.equal(await page.getByLabel("Harness", { exact: true }).isDisabled(), true);
+  assert.deepEqual(
+    createWrites(requests, namespace.id).map(({ method, path }) => `${method} ${path}`),
+    [`POST /namespaces/${namespace.id}/agents/validate`],
+  );
+});
+
+// A Sandbox Driver that refuses Embedded execution leaves no Embedded OpenClaw to select, so the
+// placement refusal's advice is trimmed too, although the harness itself can still change
+// (finding 2396).
+test("Create Agent trims placement advice when the Sandbox Driver refuses Embedded execution", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(
+    t,
+    "Unplaceable sandboxed Codex",
+    {
+      sandboxDriver: nativeSandboxDriver(),
+      channelRuntime: true,
+      routed: false,
+    },
+  );
+  const { page } = await newPage(t, fixture, { browser });
+  await startWithoutPreset(page, fixture, namespace);
+  await page.getByText("Checking installation capabilities…").waitFor({ state: "detached" });
+  await page.getByLabel("Agent name").fill("sandboxed-codex");
+  await page.getByLabel("Harness", { exact: true }).selectOption("codex");
+  await enterManualModel(page, `model-secret-${randomUUID()}`, "gpt-5.1");
+  const refused = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/validate` &&
+      response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await assertPlacementRequirement(page, await refused);
+  assert.equal(await page.getByLabel("Harness", { exact: true }).isDisabled(), false);
 });
 
 const SANDBOX_DRIVER_OUTAGE =
