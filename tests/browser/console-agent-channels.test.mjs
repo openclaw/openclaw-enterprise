@@ -74,7 +74,8 @@ async function openDraft(page, fixture, agent, heading, tab = "channels") {
   await page.getByRole("heading", { name: heading }).waitFor();
 }
 
-// Answers `method` requests to `pattern` with an API error; other requests reach the API.
+// Answers `method` requests to `pattern` with `answer` (an API error or a proxy page); other
+// requests reach the API.
 async function failMethod(page, pattern, method, answer) {
   await page.route(pattern, async (route, request) => {
     if (request.method() !== method) {
