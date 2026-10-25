@@ -84,8 +84,8 @@ failures block submission.
 
 Supported Dedicated runtimes submit inline Configuration, optional repository
 access, and Secret references to [provisioning](../agent-provisioning.md), even after
-a `503 REPOSITORY_OPTIONS_UNAVAILABLE` outage. The form saves the model Secret first, so it runs the
-preflight below before that write too. The worker reauthorizes, creates resources and exact Secret grants,
+a `503 REPOSITORY_OPTIONS_UNAVAILABLE` outage. Before it saves a model Secret for the request, the
+form runs the preflight below with that binding. The worker reauthorizes, creates resources and exact Secret grants,
 and deploys; Console polls and opens the saved version. Where the form cannot follow a placement
 refusal's advice to select Embedded OpenClaw, it shows only the missing setting.
 

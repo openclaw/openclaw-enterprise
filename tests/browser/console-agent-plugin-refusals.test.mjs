@@ -277,7 +277,7 @@ test("Create Agent refuses a Dedicated Agent the Installation cannot place befor
       options: { channelRuntime: true, routed: false, agentProvisioning: true },
     },
   );
-  const { fixture, namespace, page, configuration, isPreflight } = form;
+  const { fixture, page, configuration, isPreflight } = form;
   const installation = await fixture.request("GET", "/installation");
   assert.deepEqual(installation.data.capabilities.agentProvisioning, {
     executionModes: ["dedicated"],
@@ -287,13 +287,11 @@ test("Create Agent refuses a Dedicated Agent the Installation cannot place befor
   const response = await refused;
   assert.equal(response.status(), 400);
   assert.deepEqual(response.request().postDataJSON().harnessAuth, { method: "api_key" });
-  const placement =
-    "Dedicated Agents need gateway routing and node enrollment in this Installation's Kubernetes Compute configuration.";
   const alert = page.getByRole("alert").filter({ hasText: "Dedicated Agents need" });
   await alert.waitFor();
   assert.ok(
     (await alert.textContent()).startsWith(
-      `${placement} Codex runs only as a Dedicated Agent: select Embedded OpenClaw, or ask an operator to configure it.`,
+      "Dedicated Agents need gateway routing and node enrollment in this Installation's Kubernetes Compute configuration. Codex runs only as a Dedicated Agent: select Embedded OpenClaw, or ask an operator to configure it.",
     ),
   );
   await page.getByRole("button", { name: "Create Agent", disabled: false }).waitFor();
@@ -301,43 +299,6 @@ test("Create Agent refuses a Dedicated Agent the Installation cannot place befor
   // Nothing is saved, so the form can still follow that advice.
   assert.equal(await configuration.isDisabled(), false);
   assert.equal(await page.getByLabel("Harness", { exact: true }).isDisabled(), false);
-
-  // A Preset bound to a saved service account token fixes the harness to Codex, so the form
-  // cannot follow the advice to select Embedded OpenClaw: it quotes only the requirement and
-  // the operator (finding 2396).
-  const codex = JSON.parse(
-    await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
-  );
-  const { modelSecret: _secretVariable, ...variables } = codex.template.variables;
-  const token = await fixture.createSecret(namespace.id, "Codex token", "synthetic-codex-token");
-  const bound = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
-    body: {
-      name: "Bound Codex token",
-      template: {
-        ...codex.template,
-        variables,
-        agent: { ...codex.template.agent, harnessAuth: { method: "codex_pat", source: token.ref } },
-      },
-    },
-  });
-  assert.equal(bound.status, 201, JSON.stringify(bound.body));
-  const { page: boundPage } = await newPage(t, fixture, { browser });
-  await login(boundPage, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await boundPage.getByLabel("Preset template").selectOption({ label: "Bound Codex token" });
-  await boundPage.getByLabel("Name", { exact: true }).fill("bound-codex");
-  await boundPage.getByLabel("Model", { exact: true }).fill("gpt-4.1");
-  await boundPage.getByRole("button", { name: "Use Preset" }).click();
-  const boundRefused = boundPage.waitForResponse(isPreflight);
-  await submitWithKeyboard(boundPage);
-  const boundResponse = await boundRefused;
-  assert.equal(boundResponse.status(), 400);
-  const boundAlert = boundPage.getByRole("alert").filter({ hasText: "Dedicated Agents need" });
-  await boundAlert.waitFor();
-  assert.equal(
-    await boundAlert.textContent(),
-    `${placement} Ask an operator to configure it. Request ID: ${(await boundResponse.json()).meta.requestId}`,
-  );
-  assert.equal(await boundPage.getByLabel("Harness", { exact: true }).isDisabled(), true);
 });
 
 // With several roster entries, deselecting the plugin only led to the next refusal: initial

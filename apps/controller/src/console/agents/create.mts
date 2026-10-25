@@ -3135,12 +3135,18 @@ function renderAgentForm(
     // Before anything is saved, ask the API whether Agent create would refuse these plugin
     // selections or initial workspace files with this Configuration. A refusal then leaves the
     // whole form editable, the Configuration included, instead of a saved Configuration this
-    // form can no longer change (finding 1863). Provisioning admits its plan in one request, but
-    // only after this form saved the model Secret it names, so it runs the preflight too: an
-    // Installation that cannot place a Dedicated Agent is refused before that Secret exists
-    // (finding 2395).
-    if (!savedConfiguration && !savedAgent) {
-      const harnessAuth = plannedHarnessAuth(usesOAuth);
+    // form can no longer change (finding 1863). Provisioning admits its plan in one request
+    // before it saves a Configuration, with its own rules, so it needs no preflight, except
+    // before this form saves the model Secret the plan names: then the preflight checks that
+    // binding, so an Installation that cannot place a Dedicated Agent refuses it before the
+    // Secret exists (finding 2395).
+    const plannedAuth = plannedHarnessAuth(usesOAuth);
+    const savesSecretFirst = passwordAuth && !usesOAuth && !savedSecret;
+    if (
+      !savedConfiguration &&
+      !savedAgent &&
+      (!shouldProvision() || (savesSecretFirst && plannedAuth !== undefined))
+    ) {
       try {
         await request(`${namespacePath(namespaceId)}/agents/validate`, {
           method: "POST",
@@ -3151,7 +3157,7 @@ function renderAgentForm(
             initialWorkspaceFiles: body.initialWorkspaceFiles,
             ...(body.plugins ? { plugins: body.plugins } : {}),
             ...(body.pluginApprovers ? { pluginApprovers: body.pluginApprovers } : {}),
-            ...(harnessAuth ? { harnessAuth } : {}),
+            ...(plannedAuth ? { harnessAuth: plannedAuth } : {}),
           },
         });
       } catch (error) {
