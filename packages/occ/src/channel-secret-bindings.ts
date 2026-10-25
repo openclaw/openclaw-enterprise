@@ -57,9 +57,11 @@ export function enabledChannelEntries(
  * with one and a `$NAME` value (`environment-references.ts`): an unbound name is never set there,
  * so the fallback, often empty, would replace the credential. A secret-input field that holds a
  * `${` the runtime does not substitute, such as a lowercase name, is refused too: the runtime
- * would send that text as the credential (findings 2475-2477). Refuses the first such value,
- * naming its setting and the binding or text. Configuration save, provisioning and Agent create's
- * check (OCC) and Kubernetes deployment admission share this rule (finding 2319).
+ * would send that text as the credential (findings 2475-2477). A Slack token the Slack Channel
+ * Driver reads must also be an env SecretRef with the `default` provider or one whole `${NAME}`
+ * (`slackTokenRefusal`). Refuses the first such value, naming its setting and the binding or
+ * text. Configuration save, provisioning and Agent create's check (OCC) and Kubernetes deployment
+ * admission share this rule (finding 2319).
  */
 export function requireChannelSecretBindings(
   configuration: Readonly<OpenClawConfigurationDocument>,
@@ -80,6 +82,76 @@ export function requireChannelSecretBindings(
       throw createError(refusal.path, refusal.requirement);
     }
   }
+  const slack = providers.includes("slack")
+    ? slackTokenRefusal(channels.slack, keyedSettingPath("channels", "slack"))
+    : undefined;
+  if (slack !== undefined) {
+    throw createError(slack.path, slack.requirement);
+  }
+}
+
+const configuredValue = (value: unknown): boolean =>
+  typeof value === "string" ? value.trim().length > 0 : value !== undefined && value !== null;
+
+/**
+ * The first Slack token that is a SecretRef the Slack Channel Driver refuses with
+ * `binding_required` at provisioning and deployment: any but an env SecretRef with the `default`
+ * provider (`validateCredentials` in `apps/controller/src/drivers/channel/slack.ts`; finding
+ * 2514). Mirrors the Driver's scope: the app and bot tokens of each enabled account it checks
+ * (the implicit default account and each named account, which inherits the channel's tokens),
+ * without the app token in HTTP mode. Names the setting that holds the value, never the value.
+ */
+function slackTokenRefusal(
+  value: unknown,
+  path: string,
+): { readonly path: string; readonly requirement: string } | undefined {
+  const slack = asRecord(value);
+  if (slack === undefined) {
+    return undefined;
+  }
+  const accounts = asRecord(slack.accounts) ?? {};
+  const named = Object.entries(accounts);
+  // OpenClaw starts an implicit default account from the channel's tokens unless a named
+  // account is called "default", as the Driver's check reads it.
+  const implicitDefault =
+    named.length === 0 ||
+    (!Object.hasOwn(accounts, "default") &&
+      configuredValue(slack.botToken) &&
+      (slack.mode === "http" || configuredValue(slack.appToken)));
+  const targets = [
+    ...(implicitDefault ? [{ own: slack, config: slack, path }] : []),
+    ...named.map(([id, account]) => {
+      const own = asRecord(account) ?? {};
+      return {
+        own,
+        config: { ...slack, ...own },
+        path: keyedSettingPath(keyedSettingPath(path, "accounts"), id),
+      };
+    }),
+  ];
+  for (const target of targets) {
+    if (target.config.enabled === false) {
+      continue;
+    }
+    for (const role of ["appToken", "botToken"]) {
+      const token = asRecord(target.config[role]);
+      if (
+        token === undefined ||
+        (role === "appToken" && target.config.mode === "http") ||
+        (token.source === "env" && (token.provider === undefined || token.provider === "default"))
+      ) {
+        continue;
+      }
+      // An inherited token is written on the channel.
+      const holder = Object.hasOwn(target.own, role) ? target.path : path;
+      return {
+        path: keyedSettingPath(holder, role),
+        requirement:
+          "holds a SecretRef the Slack Channel Driver cannot read: use an env SecretRef with provider default, or one whole ${NAME}, bound in secretBindings",
+      };
+    }
+  }
+  return undefined;
 }
 
 const unboundRequirement = (name: string): string => {

@@ -10429,6 +10429,22 @@ test("native channel providers require Secret bindings and project them only to 
       message: `Configuration setting channels.slack.accounts.ops.relay.authToken contains \${relay}, which the runtime does not substitute: ${useUppercase}.`,
     },
   );
+  // Admission refuses a Slack token SecretRef the Slack Channel Driver cannot read, as save does
+  // (finding 2514).
+  assert.throws(
+    () =>
+      driver.validateHarnessAuth(
+        revision.harness,
+        revision.harnessAuth,
+        slackAccount({ botToken: { source: "file", provider: "default", id: "/run/slack/bot" } }),
+        {},
+      ),
+    {
+      name: "ConfigurationHarnessError",
+      message:
+        "Configuration setting channels.slack.accounts.ops.botToken holds a SecretRef the Slack Channel Driver cannot read: use an env SecretRef with provider default, or one whole ${NAME}, bound in secretBindings.",
+    },
+  );
   // Outside a secret-input field the runtime keeps `$NAME` and other `${` text as written, and a
   // `:-fallback` fills an unset name, so none of them needs a binding.
   for (const name of ["$OPS", "${x}", "${OPS_NAME:-ops}"]) {
