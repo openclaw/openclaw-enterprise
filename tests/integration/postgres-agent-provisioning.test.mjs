@@ -12,7 +12,6 @@ import {
   ProvisioningSecretDriverError,
   ServiceAccountDriverNotConfiguredError,
 } from "../../packages/occ/src/index.ts";
-import { assertApiError } from "../helpers/api-error.mjs";
 import { composePostgresDevelopment } from "../helpers/password-hasher.mjs";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import {
@@ -41,6 +40,7 @@ import {
   ensureDevelopmentBootstrap,
   privateBootstrapDirectory,
 } from "../helpers/bootstrap-installation.mjs";
+import { assertApiError } from "../helpers/api-error.mjs";
 import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 import { withNamespaceLockHeld } from "../helpers/postgres-namespace-lock.mjs";

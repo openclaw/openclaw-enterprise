@@ -345,7 +345,8 @@ test("native admin status requires exact Agent administer and reports lifecycle 
     "GET",
     `/namespaces/${context.namespace.id}/agents/agt_${randomUUID()}/native-admin`,
   );
-  assertApiError(missingStatus, 404, "NOT_FOUND");
+  assert.equal(missingStatus.status, 404);
+  assert.equal(missingStatus.body.error.code, "NOT_FOUND");
 
   const stopped = await context.fixture.request(
     "POST",
@@ -465,7 +466,8 @@ test("native admin disabled status still requires exact Agent administer", async
     "GET",
     `/namespaces/${context.namespace.id}/agents/agt_${randomUUID()}/native-admin`,
   );
-  assertApiError(missingStatus, 404, "NOT_FOUND");
+  assert.equal(missingStatus.status, 404);
+  assert.equal(missingStatus.body.error.code, "NOT_FOUND");
 });
 
 async function issueServiceKeyForNativeAgent(context) {

@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { assertApiError } from "../helpers/api-error.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import {
   encodeSyntheticEvents,
@@ -3194,7 +3193,8 @@ test("protected admission refuses an Agent's network policy additions instead of
     "POST",
     `/namespaces/${f.namespace.id}/agents/${f.agent.id}/deploy`,
   );
-  assertApiError(refused, 409, "SANDBOX_POLICY_PROTECTED_EXECUTION");
+  assert.equal(refused.status, 409, JSON.stringify(refused.body));
+  assert.equal(refused.body.error.code, "SANDBOX_POLICY_PROTECTED_EXECUTION");
   assert.match(
     refused.body.error.message,
     /^Protected execution keeps only the Credential Proxy egress policy, so this Agent's network policy additions are refused\./,
@@ -3229,7 +3229,8 @@ test("the policy endpoint refuses additions and live application while the activ
   const refused = await f.request("PUT", base, {
     body: { expectedVersion: version, additions: [grant] },
   });
-  assertApiError(refused, 409, "SANDBOX_POLICY_PROTECTED_EXECUTION");
+  assert.equal(refused.status, 409, JSON.stringify(refused.body));
+  assert.equal(refused.body.error.code, "SANDBOX_POLICY_PROTECTED_EXECUTION");
   assert.match(
     refused.body.error.message,
     /^Protected execution.*Credential Proxy.*additions are refused/,
@@ -3244,7 +3245,8 @@ test("the policy endpoint refuses additions and live application while the activ
   const applied = await f.request("POST", `${base}/apply`, {
     body: { expectedVersion: version + 1, revisionId: f.revision.id },
   });
-  assertApiError(applied, 409, "SANDBOX_POLICY_PROTECTED_EXECUTION");
+  assert.equal(applied.status, 409, JSON.stringify(applied.body));
+  assert.equal(applied.body.error.code, "SANDBOX_POLICY_PROTECTED_EXECUTION");
   assert.match(
     applied.body.error.message,
     /protected execution.*Credential Proxy.*application is refused/,
@@ -3262,7 +3264,8 @@ test("the policy endpoint refuses additions before an Agent's first protected de
   const refused = await f.request("PUT", base, {
     body: { expectedVersion: version, additions: [grant] },
   });
-  assertApiError(refused, 409, "SANDBOX_POLICY_PROTECTED_EXECUTION");
+  assert.equal(refused.status, 409, JSON.stringify(refused.body));
+  assert.equal(refused.body.error.code, "SANDBOX_POLICY_PROTECTED_EXECUTION");
   assert.equal(
     refused.body.error.message,
     "Protected execution applies to this Agent: the Credential Proxy routes alone govern its egress, so network policy additions are refused; only an empty policy can be saved.",
