@@ -315,8 +315,8 @@ test("The Versions list keeps an earlier failed version's mark after a newer dep
 
   await page.reload();
   await rail.getByRole("button", { name: /^View version v2/ }).waitFor();
-  // v1's record lands after its page shows, so the notice already reads; the record that lands
-  // then corrects it at once, not at some later poll.
+  // Hold v1's record until v1's page and its notice show. The record that lands then must
+  // relabel the notice at once: no later poll rerenders it (finding 2407).
   const record = await holdRequests(
     t,
     page,
@@ -339,11 +339,6 @@ test("The Versions list keeps an earlier failed version's mark after a newer dep
     await page.locator(".version-selection-notice").textContent(),
     "Failed version · read-only admitted snapshot. Its deployment did not complete.",
   );
-  await page
-    .getByText("Failed version · read-only admitted snapshot. Its deployment did not complete.", {
-      exact: true,
-    })
-    .waitFor();
   await rail.getByRole("button", { name: "View version v1, deployment failed" }).waitFor();
 });
 

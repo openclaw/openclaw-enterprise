@@ -3989,8 +3989,8 @@ test("a version editor without Agent update can recover a failed deployment from
     }),
   );
   const requests = apiRequests(page, fixture.origin);
-  // The permission answer lands after the Versions list is built, so the list's draft entry is
-  // labelled again when it does.
+  // Hold the permission answer until the Versions list is built: the draft entry and the chooser
+  // option must be labelled again when it lands (finding 2405).
   const firstPermissions = await holdRequests(t, page, `${fixture.origin}${path}/permissions`, {
     afterServer: true,
     once: true,
