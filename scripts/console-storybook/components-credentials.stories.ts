@@ -3,6 +3,10 @@ import { story } from "./story.ts";
 export default { title: "Components/Credentials" };
 
 export const Credentials = { ...story("credentials"), name: "Model authentication" };
+export const CredentialsSecretCreateNotPermitted = {
+  ...story("credentialsSecretCreateNotPermitted"),
+  name: "Model authentication, Secret creation not permitted",
+};
 export const CredentialsUpdateDenied = story("credentialsUpdateDenied");
 export const CredentialsSourcesOperateDenied = {
   ...story("credentialsSourcesOperateDenied"),

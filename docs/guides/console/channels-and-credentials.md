@@ -21,7 +21,7 @@ unavailable.
 | ----------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Enable Slack**                                                        | Enables Slack in the draft when saved.                                                                                                                                                                          |
 | **Slack bot token** / **Slack app token**                               | Search readable Secrets by name or ID, then select with arrow keys and Enter, or choose **Create new Secret...**. The bot token Secret also enables name search below.                                          |
-| **Create new Secret...**                                                | Opens a modal with an editable Name (the Agent name and token by default), the fixed binding key, and a masked Value.                                                                                           |
+| **Create new Secret...**                                                | Opens a modal with an editable Name (the Agent name and token by default), the fixed binding key, and a masked Value. Without Secret `create` in the Namespace, it is disabled and says why.                    |
 | **View bot token Secret metadata** / **View app token Secret metadata** | Opens the selected Secret's metadata in a new tab, keeping unsaved drawer inputs.                                                                                                                               |
 | **Channels**                                                            | Search channels by name with the bot token Secret, or paste exact channel IDs. Existing properties of retained channels are preserved.                                                                          |
 | **Who can use the agent in these channels?**                            | **Specific people** limits mentions to **Allowed people in these channels**; **Everyone in these channels** allows any Slack user there. Direct-message access is separate.                                     |
@@ -72,8 +72,9 @@ the console. Use the operator workflow for those Agents.
 | **ChatGPT service account**      | Select an already issued account in this Namespace. This selector does not create an account.                     |
 
 **Save authentication source** saves the Agent binding for a future deployment.
-It needs Agent `update` and `operate` on each Secret and credential source that the Agent and its
-Configuration bind; without them, the source is read-only and a note names what is missing.
+It needs Agent `update`, Configuration `read`, and `operate` on each Secret and credential source
+that the Agent and its Configuration bind; without them, the source is read-only and a note names
+what is missing.
 For API keys and Service Accounts tokens, it also grants the Agent access to
 that exact Secret. Granting needs Installation `administer`. When a member saves
 the source, the binding saves, but the member's session sends no grant, so it
