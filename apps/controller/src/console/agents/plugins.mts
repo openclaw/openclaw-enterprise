@@ -81,6 +81,37 @@ const PLUGIN_WARNING_EXPLANATIONS = Object.freeze({
     "was disabled for this startup because it could not be installed. Check the Agent's runtime logs.",
 });
 
+// The saved Agent default approvers as text: a version's snapshot and a reader's view of the
+// draft, which has no field to edit them (finding 2447).
+function approverSummary(
+  approvers: PluginApprovers | undefined,
+  notes: { inherited: string; empty: string; listed: string },
+) {
+  return [
+    element("h3", {}, "Default plugin approvers"),
+    element(
+      "p",
+      { className: "muted" },
+      approvers === undefined
+        ? notes.inherited
+        : approvers.length === 0
+          ? notes.empty
+          : notes.listed,
+    ),
+    ...(approvers?.length
+      ? [
+          element(
+            "ul",
+            {},
+            ...approvers.map((entry) =>
+              element("li", {}, element("code", {}, `${entry.channel}: ${entry.id}`)),
+            ),
+          ),
+        ]
+      : []),
+  ];
+}
+
 /** One sentence per deployment startup warning, keeping its code for lookup. */
 export function pluginWarningText(warning: PluginDeploymentWarning) {
   const explanation = Object.hasOwn(PLUGIN_WARNING_EXPLANATIONS, warning.code)
@@ -117,27 +148,12 @@ export function renderAgentPlugins(
         "This version's plugin selections are immutable. Select Create new version to change them for a future deployment.",
       ),
       element("pre", { tabindex: "0" }, JSON.stringify(snapshot.plugins?.plugins ?? {}, null, 2)),
-      element("h3", {}, "Default plugin approvers"),
-      element(
-        "p",
-        { className: "muted" },
-        snapshot.pluginApprovers === undefined
-          ? "No Agent default was set when this version was created; the existing OpenClaw approval routing applies."
-          : snapshot.pluginApprovers.length === 0
-            ? "Explicit empty list: no Slack user can approve plugins in this version by default."
-            : "This version's Agent default approvers are immutable.",
-      ),
-      ...(snapshot.pluginApprovers?.length
-        ? [
-            element(
-              "ul",
-              {},
-              ...snapshot.pluginApprovers.map((entry) =>
-                element("li", {}, element("code", {}, `${entry.channel}: ${entry.id}`)),
-              ),
-            ),
-          ]
-        : []),
+      ...approverSummary(snapshot.pluginApprovers, {
+        inherited:
+          "No Agent default was set when this version was created; the existing OpenClaw approval routing applies.",
+        empty: "Explicit empty list: no Slack user can approve plugins in this version by default.",
+        listed: "This version's Agent default approvers are immutable.",
+      }),
     );
   }
 
@@ -519,6 +535,20 @@ export function renderAgentPlugins(
     intro.textContent = PLUGINS_READ_ONLY;
     updateNote.textContent = reason;
     updateNote.hidden = false;
+    // The approver field waits for the capabilities read skipped above, so the saved default
+    // approvers, which the next deployment also uses, are shown as text (finding 2447).
+    discovery.fields.section.insertBefore(
+      element(
+        "div",
+        { className: "plugin-approvers-saved" },
+        ...approverSummary(agent.pluginApprovers, {
+          inherited: "No Agent default is set; the existing OpenClaw approval routing applies.",
+          empty: "Explicit empty list: no Slack user can approve plugins by default.",
+          listed: "The next deployment uses these Agent default approvers.",
+        }),
+      ),
+      defaultApprovers,
+    );
     // The selections stay in view while their fields are disabled.
     input.closest("details")?.setAttribute("open", "");
     updateState();

@@ -672,6 +672,53 @@ test("Unsaved default plugin approvers block deployment after leaving Plugins", 
   assert.equal(await deploy.isDisabled(), true);
 });
 
+// A member who can only read the Agent sees the draft's saved default approvers, which the next
+// deployment uses. The approver field waits for the policy capabilities, a read that needs Agent
+// update and is skipped for this reader, so they show as text, as a version's snapshot does
+// (finding 2447).
+test("A reader sees the version draft's default plugin approvers", async (t) => {
+  const { fixture, namespace } = await createRuntimeAuthFixture(t, "Reader plugin approvers");
+  const pluginDriver = new CodexPluginDriver();
+  fixture.controller.registerDriver(pluginDriver);
+  fixture.controller.selectDriver("plugin", pluginDriver.id);
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Reader Approver Agent",
+    nativeValues("reader-approvers"),
+    { executionMode: "embedded", harnessAuth: { method: "runtime" } },
+  );
+  const approver = "team:TTEST123:user:UREADER1";
+  await fixture.updateAgent(namespace.id, agent.id, {
+    configurationId: agent.configurationId,
+    pluginApprovers: [{ channel: "slack", id: approver }],
+  });
+  const reader = await fixture.createNamespaceMember("approver-reader", namespace.id, [
+    ["read", "namespace"],
+    ["read", "agent"],
+    ["read", "agent_revision"],
+    ["read", "configuration"],
+  ]);
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const { page } = await newPage(t, fixture, { browser });
+  const requests = apiRequests(page, fixture.origin);
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"),
+    reader.credentials,
+  );
+  await page
+    .getByText("These are the version draft's plugin selections, read-only", { exact: false })
+    .waitFor();
+  const saved = page.locator(".plugin-approvers-saved");
+  await saved.getByRole("heading", { name: "Default plugin approvers", exact: true }).waitFor();
+  await saved.getByText("The next deployment uses these Agent default approvers.").waitFor();
+  assert.deepEqual(await saved.getByRole("listitem").allTextContents(), [`slack: ${approver}`]);
+  // No editable field stands in for the text, and no capabilities read answers 403.
+  assert.equal(await page.getByLabel("Default plugin approvers mode").isVisible(), false);
+  assert.deepEqual(pathRequests(requests, "GET", `${path}/plugins/capabilities`), []);
+});
+
 test("Codex Agents offer only default plugin approvers", async (t) => {
   const { fixture, namespace } = await createRuntimeAuthFixture(t, "Codex plugin approvers");
   const pluginDriver = new CodexPluginDriver();

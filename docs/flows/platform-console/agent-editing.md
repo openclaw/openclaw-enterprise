@@ -119,7 +119,9 @@ Lacking Configuration `update` or `operate` on a bound Secret makes
 Configuration, Channels and channel Secrets read-only; lacking that and Agent `update`, the draft
 says so and, without deploy, has no checklist.
 
-`agents/plugin-fields.mts:createPluginFields` renders **Plugins**.
+`agents/plugin-fields.mts:createPluginFields` renders **Plugins**. `agents/plugins.mts` reads the
+policy capabilities, which need Agent `update`, only when the permission answer allows a save
+or is unknown; otherwise it shows the saved default approvers as text.
 `agents/plugins.mts:savePlugins` rereads the Agent before PATCH. If the Agent,
 Namespace, Configuration, selections, or approvers differ from the editor's
 baseline, it sends no write. This read does not lock the Agent. The editor clears
