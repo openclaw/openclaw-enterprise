@@ -5378,7 +5378,6 @@ export const scenarios = {
       configurationUpdate: true,
       configurationRead: true,
       configurationSecretsOperate: true,
-      configurationSecretsOperateDeniedBindings: [],
       agentSourcesOperate: false,
     },
     description:
@@ -5442,7 +5441,6 @@ export const scenarios = {
       configurationUpdate: true,
       configurationRead: true,
       configurationSecretsOperate: true,
-      configurationSecretsOperateDeniedBindings: [],
       agentSourcesOperate: false,
     },
     rules: [
