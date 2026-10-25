@@ -1509,23 +1509,29 @@ test("sign-in failures name a rate limit, an outage and the origin check", async
   const outage = failure(503, "DEPENDENCY_UNAVAILABLE", "Sign-in is temporarily unavailable.");
   const signIn = async (expected) => {
     await page.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
-    await page.getByLabel("Password").fill(fixture.credentials.password);
+    // A wrong password: no step may sign in, whatever the API answers.
+    await page.getByLabel("Password").fill("not-the-password");
     await page.getByRole("button", { name: "Sign in" }).click();
     await page.getByText(expected, { exact: true }).waitFor();
   };
   await page.goto(`${fixture.origin}/console/login`);
 
   // The real API refuses a sign-in sent from another Origin before it reads the password.
-  await page.route("**/api/auth/sign-in/email", (route) =>
-    route.continue({
-      headers: { ...route.request().headers(), origin: "https://elsewhere.example.test" },
+  // The browser keeps its own Origin, so the request is resent from the test with another.
+  await page.route("**/api/auth/sign-in/email", async (route) =>
+    route.fulfill({
+      response: await route.fetch({
+        headers: { ...route.request().headers(), origin: "https://elsewhere.example.test" },
+      }),
     }),
   );
   const refused = page.waitForResponse((response) =>
     response.url().endsWith("/api/auth/sign-in/email"),
   );
-  await signIn(UNTRUSTED_ORIGIN_SIGN_IN);
-  assert.equal((await refused).status(), 403);
+  const signingIn = signIn(UNTRUSTED_ORIGIN_SIGN_IN);
+  const answer = await refused;
+  assert.equal(answer.status(), 403, await answer.text());
+  await signingIn;
   await page.unroute("**/api/auth/sign-in/email");
 
   for (const [response, expected] of [

@@ -13,7 +13,11 @@ runtime checks belong to the [deployment guide](../guides/deploy.md).
 
 Enter your provisioned account email and password, then select **Sign in**. Public
 signup, single sign-on, and self-service password recovery are unavailable; ask
-your administrator for an account or password reset. For your own
+your administrator for an account or password reset. A wrong email or password
+always gets the same message. Other sign-in failures say what to do: wait the
+time shown after too many attempts, try again shortly when sign-in is unavailable,
+or open the console from its configured address when the API refuses the
+browser origin. For your own
 Installation, see the
 [quickstart](../guides/quickstart.md#open-the-platform-console) or
 [deployment guide](../guides/deploy.md#open-the-platform-console).
