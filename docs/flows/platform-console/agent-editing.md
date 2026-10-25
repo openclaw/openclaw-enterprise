@@ -113,8 +113,9 @@ Success focuses **Edit Configuration**, unless the reader moved focus elsewhere 
 Saves preserve scroll, focus and admitted snapshots. Rejected edits stay in the editor;
 an uncertain save requires readback. Unsaved edits block deployment; pending saves block tab and version changes.
 A refused write lists required grants without guessing which; a refused preflight read names read
-access, a Workspace file save Agent `operate`. Lacking Agent `update` disables plugin, repository
-and authentication editors. Lacking Configuration `update` or `operate` on a bound Secret makes
+access, a Workspace file save Agent `operate`. Plugin, repository and authentication editors are
+disabled without Agent `update` or `operate` on each source the Agent and its Configuration bind.
+Lacking Configuration `update` or `operate` on a bound Secret makes
 Configuration, Channels and channel Secrets read-only; lacking that and Agent `update`, the draft
 says so and, without deploy, has no checklist.
 
@@ -349,9 +350,8 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 
 ## Changelog
 
+- 2026-10-25: Agent-side editors follow bound source `operate`. (finding 2441)
 - 2026-10-25: Readers see the draft read-only. (finding 2421)
 - 2026-10-25: Mark failed versions from the revision list. (finding 2422)
-- 2026-10-24: Restoring parked Workspace files applies the latest observed Agent operate answer. (pr-3474)
-- 2026-10-24 17:30: Stop and Run diagnostics follow the latest observed operate answer. (fix-2328)
 
 [Console Agent editing documentation history](agent-editing/history.md) preserves the older dated entries.
