@@ -3884,6 +3884,21 @@ export const scenarios = {
     description:
       "An Agent without a version can edit saved settings and deploy its first immutable version.",
   },
+  failedFirstVersion: {
+    group: "Pages/Agent detail",
+    name: "Failed first version",
+    path: revision,
+    deployed: true,
+    firstDeploymentFailed: true,
+    description:
+      "The only version's deployment failed, so no version serves. Live serving says Not running, the version is labelled Failed rather than Historical, and no diagnostics are offered for a runtime that never started.",
+    steps: [
+      "Read Live serving in the summary: Not running.",
+      "Read the notice above the Configuration snapshot: Failed version.",
+      "Find Create new version once, in the page header. The Versions list names the draft as New version, Editable Configuration.",
+    ],
+    gap: "Simulated UI proof only; this preview does not run a deployment.",
+  },
   newVersion: {
     group: "Pages/Agent detail",
     name: "Create new version",
