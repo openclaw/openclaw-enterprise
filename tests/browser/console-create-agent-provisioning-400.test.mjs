@@ -17,7 +17,10 @@ import {
   login,
   nativeValues,
   newPage,
+  operateDeniedSecretOption,
   pathRequests,
+  revokeAdministratorGrant,
+  selectSecret,
   trackSettledFetches,
   waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
@@ -280,6 +283,46 @@ test("Dedicated Agent provisioning refuses a taken Agent name at admission and m
   // Editing the name clears the mark.
   await page.getByLabel("Agent name").fill("Free provisioned");
   assert.equal(await page.getByLabel("Agent name").getAttribute("aria-invalid"), null);
+});
+
+// Admission checks Secret operate on the Harness authentication Secret, so a refused provisioning
+// request can follow a revoked grant. As after a refused Agent create, the Secret field reads the
+// operate answer again when it next opens, instead of offering the key from its cached answer.
+test("A refused provisioning request reads the Secret answer again", async (t) => {
+  const fixture = await createConsoleAppFixture(t, {
+    ...provisioningDrivers(),
+    defaultPresets: [defaultCodexPreset],
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Provision revoked operate", { ready: true });
+  const secret = await fixture.createSecret(namespace.id, "Provision model key", "sk-provision");
+  const { page } = await newPage(t, fixture, { browser });
+  const requests = apiRequests(page, fixture.origin);
+  const answerPath = `/namespaces/${namespace.id}/permissions/secrets`;
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start with default Preset", exact: true }).click();
+  await page.getByLabel("Agent name", { exact: true }).fill("Revoked operate Agent");
+  await selectSecret(page, "API key Secret", secret);
+  await page.getByText("Secret selected. Create Agent binds it.").waitFor();
+  const model = page.getByLabel("Model ID", { exact: true });
+  if (!(await model.isVisible())) {
+    await page.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
+  }
+  await model.fill("gpt-5.1");
+  await model.press("Tab");
+  // Secret operate is revoked after the key is staged: the real admission refuses the request.
+  revokeAdministratorGrant(fixture, ["operate", "secret"]);
+  const refused = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/provision` &&
+      response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  assert.equal((await refused).status(), 403);
+  // The field reads the answer again and now lists the key disabled with the reason.
+  await operateDeniedSecretOption(page, "API key Secret", secret);
+  assert.equal(pathRequests(requests, "GET", answerPath).length, 2);
+  assert.equal(agentProvisionPostRequests(requests, namespace.id).length, 1);
 });
 
 // A request lost in transit leaves its outcome unknown, so the form locks the plan: the API may

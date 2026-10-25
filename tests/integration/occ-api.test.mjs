@@ -8469,3 +8469,96 @@ test("Slack validation rejects swapped credentials and preserves authorization",
   assert.equal(disabled.body.error.code, "DEPENDENCY_UNAVAILABLE");
   assert.equal(calls, beforeDisabled);
 });
+
+test("Slack validation reads a whole ${NAME} token as the env SecretRef it binds", async () => {
+  const controller = await configuredController({
+    computeDriver: createProvisioningCapableComputeDriver(),
+    configurationDriver: createProvisioningCapableConfigurationDriver(),
+  });
+  const { fixture } = controller;
+  await bootstrap(controller);
+  const namespace = await createNamespace(controller, "slack-whole-reference");
+  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
+  const base = `/namespaces/${namespace.id}`;
+  const makeSecret = async (name, value) => {
+    const result = await controller.request("POST", `${base}/secrets`, { body: { name, value } });
+    assert.equal(result.status, 201);
+    return result.data;
+  };
+  const app = await makeSecret("app", "xapp-synthetic-app");
+  const bot = await makeSecret("bot", "xoxb-synthetic-bot");
+  const model = await makeSecret("model", "synthetic-model");
+  const tokens = [];
+  const channel = new SlackChannelDriver(async (url, options) => {
+    assert.equal(new URL(url).pathname, "/api/auth.test");
+    tokens.push(options.headers.authorization);
+    return new Response(JSON.stringify({ ok: true, bot_id: "B123", team_id: "T123" }));
+  });
+  fixture.controller.registerDriver(channel);
+  fixture.controller.selectDriver("channel", channel.id);
+  // Configuration save accepts the whole-reference form and Edit Slack keeps it; OpenClaw reads
+  // it as the env SecretRef to that name (finding 2511).
+  const configuration = {
+    kind: "agent",
+    values: {
+      channels: {
+        slack: {
+          enabled: true,
+          mode: "socket",
+          appToken: "${SLACK_APP_TOKEN}",
+          botToken: "${SLACK_BOT_TOKEN}",
+        },
+      },
+    },
+    secretBindings: {
+      SLACK_APP_TOKEN: { source: app.ref, delivery: { type: "env" } },
+      SLACK_BOT_TOKEN: { source: bot.ref, delivery: { type: "env" } },
+    },
+  };
+  const provision = (plan) =>
+    controller.request("POST", `${base}/agents/provision`, {
+      body: provisioningRequestBody(
+        namespace.id,
+        { modelApiKey: model, toolApiKey: model },
+        { configuration: plan },
+      ),
+    });
+  // The fixture has no durable work queue: its error means the plan passed channel validation,
+  // which sent the bound bot token to Slack.
+  assert.equal((await provision(configuration)).body.error.code, "DEPENDENCY_UNAVAILABLE");
+  assert.deepEqual(tokens, ["Bearer xoxb-synthetic-bot"]);
+
+  // The name still needs a binding: an unbound one is refused before Slack is called.
+  const unbound = structuredClone(configuration);
+  delete unbound.secretBindings.SLACK_BOT_TOKEN;
+  const refused = await provision(unbound);
+  assertApiError(refused, 400, "CHANNEL_CREDENTIAL_BINDING_REQUIRED");
+  assert.equal(refused.body.error.details[0].path, "/channels/slack/botToken");
+  assert.equal(tokens.length, 1);
+
+  // Deployment of a saved Configuration applies the same rule.
+  const config = await controller.request("POST", `${base}/configurations`, {
+    body: configuration,
+  });
+  assert.equal(config.status, 201, JSON.stringify(config.body));
+  assert.equal(config.data.values.channels.slack.botToken, "${SLACK_BOT_TOKEN}");
+  const agent = await controller.request("POST", `${base}/agents`, {
+    body: { name: "slack-whole-reference", configurationId: config.data.id },
+  });
+  assert.equal(agent.status, 201, JSON.stringify(agent.body));
+  await bindHarnessKey(fixture, namespace.id, agent.data);
+  for (const secret of [app, bot]) {
+    fixture.state.bindings.push({
+      id: `slack-${secret.id}`,
+      namespaceId: namespace.id,
+      subjectKind: "identity",
+      subjectId: agent.data.servicePrincipalId,
+      roleId: `harness-key-${agent.data.id}`,
+      resourceKind: "secret",
+      resourceId: secret.id,
+    });
+  }
+  const deploy = await controller.request("POST", `${base}/agents/${agent.data.id}/deploy`);
+  assert.equal(deploy.status, 202, JSON.stringify(deploy.body));
+  assert.deepEqual(tokens, ["Bearer xoxb-synthetic-bot", "Bearer xoxb-synthetic-bot"]);
+});
