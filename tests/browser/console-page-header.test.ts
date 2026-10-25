@@ -214,7 +214,7 @@ test("an Agent's page leads with ← Agents and keeps its ID and Namespace under
 
     // The Versions card pads like the card above it at every width; on a phone it kept 24 px
     // while the other cards narrowed to 16 px (finding 2423).
-    const cards = [".agent-overview-status > .agent-card", ".revision-selector"];
+    const cards = [".agent-stat-card", ".revision-selector"];
     for (const selector of cards) {
       await page.locator(selector).waitFor();
     }
