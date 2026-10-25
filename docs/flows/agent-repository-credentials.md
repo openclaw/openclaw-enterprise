@@ -242,7 +242,8 @@ bearers. System Git includes
 `/run/oce/repository-credentials/gitconfig`, preserving HOME/global configuration.
 Embedded `repositoryNativeConfiguration` keeps the `gh` router first in
 `tools.exec.pathPrepend`. `AGENT_RUNTIME_ENTRYPOINT` sets Codex's
-`allow_login_shell=false` and `shell_environment_policy.set.PATH`. Model authentication remains intact.
+`allow_login_shell=false` and `shell_environment_policy.set.PATH`, and keeps the Pod's
+`NODE_EXTRA_CA_CERTS` for sandboxed commands. Model authentication remains intact.
 App keys, JWTs, installation tokens and the control socket never enter consumer material.
 The [networking contract](../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking)
 defines Codex plugin and repository-bound filesystem and proxy access, explicit denies,
