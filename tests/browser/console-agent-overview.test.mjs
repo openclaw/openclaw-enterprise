@@ -1527,6 +1527,7 @@ test("a late first deployment read moves nothing above the version tabs", async 
             tabs: box(".agent-tabs").top,
             overview: box(".agent-overview-status"),
             record: box(".version-deployment-record")?.height ?? 0,
+            diagnostics: box(".version-diagnostics")?.height ?? 0,
           };
         }),
       );
@@ -1621,11 +1622,20 @@ test("a late first deployment read moves nothing above the version tabs", async 
         const near = (actual, expected, what) =>
           assert.ok(Math.abs(actual - expected) < 1, `${name} at ${width}: ${what}`);
         near(is.overview.height, was.overview.height, "the overview keeps its height");
-        near(
-          is.tabs - was.tabs,
-          is.overview.top - was.overview.top + (is.record - was.record),
-          "only the card and the record move the tabs",
-        );
+        const expected = is.overview.top - was.overview.top + (is.record - was.record);
+        // A failed version that is not current offers no diagnostics (finding 2403): the panel
+        // leaves once the record says so, and the tabs can rise by up to its height (the Versions
+        // rail beside it may keep part of that space).
+        const diagnosticsLeft = was.diagnostics - is.diagnostics;
+        if (diagnosticsLeft > 0) {
+          const moved = is.tabs - was.tabs;
+          assert.ok(
+            moved <= expected + 1 && moved >= expected - diagnosticsLeft - 1,
+            `${name} at ${width}: only the card, the record and the diagnostics move the tabs`,
+          );
+        } else {
+          near(is.tabs - was.tabs, expected, "only the card and the record move the tabs");
+        }
         if (c.stillOn.includes(view)) {
           near(is.tabs, was.tabs, "the tabs stay");
         }

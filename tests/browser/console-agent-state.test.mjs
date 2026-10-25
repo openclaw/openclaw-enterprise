@@ -314,7 +314,9 @@ test("Diagnostics explain UNAVAILABLE checks and point at the recorded failure",
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Diagnostics explain", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Diagnostics Agent", nativeValues("v1"));
-  const revision = await fixture.deployAgent(namespace.id, agent.id);
+  // Diagnostics are offered for the current version: an Embedded version is selected before its
+  // gateway is ready, so a failed record can belong to it (finding 2403).
+  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const deploymentPath = `/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revision.id}`;
   const { page } = await newPage(t, fixture);
   await page.route(`${fixture.origin}${deploymentPath}`, (route) =>
@@ -503,7 +505,9 @@ test("Diagnostics explain a missing Slack channel and keep the recorded failure 
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Diagnostics scope", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Embedded Agent", nativeValues("v1"));
-  const revision = await fixture.deployAgent(namespace.id, agent.id);
+  // Diagnostics are offered for the current version: an Embedded version is selected before its
+  // gateway is ready, so a failed record can belong to it (finding 2403).
+  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const deploymentPath = `/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revision.id}`;
   const { page } = await newPage(t, fixture);
   await page.route(`${fixture.origin}${deploymentPath}`, (route) =>
