@@ -626,7 +626,7 @@ export function renderCreateAgent(context: CreateAgentContext, restored?: unknow
   const notReady = createNamespaceState(context);
   const unavailable =
     context.permissions?.agents?.create === false
-      ? "Your access does not include creating Agents in this Namespace. Ask an administrator for access, or choose another Namespace."
+      ? "Your access does not include creating Agents in this Namespace. Only an Installation administrator can create Agents: ask one to create it and to give you access to edit and deploy it."
       : notReady?.blocked
         ? notReady.note
         : null;
