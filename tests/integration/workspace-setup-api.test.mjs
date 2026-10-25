@@ -7,6 +7,7 @@ import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 
 async function setup(t, options = {}) {
   const audit = new InMemoryAuditSink();
@@ -256,6 +257,29 @@ test("Agent save and deployment refuse initial workspace files the Configuration
   assert.equal(deployed.body.error.message, workspace);
   assert.deepEqual((await f.request("GET", `${agentPath}/revisions`)).data, []);
   assert.equal((await f.staged(created.data.id)).completed, false);
+
+  // Finding 2296: every deployment delivers a completed setup, so an update naming another
+  // execution mode checks it against the same Configuration. The second managed workspace
+  // reads for this dedicated Agent but not once it is embedded.
+  const dedicatedValues = createHarnessConfiguration("openclaw", "gpt-4.1");
+  dedicatedValues.agents.defaults.workspace = "/home/node/workspace";
+  const dedicatedOnly = await f.createConfiguration(f.namespace.id, dedicatedValues);
+  const dedicated = await f.create("Completed setup", {
+    configurationId: dedicatedOnly.id,
+    executionMode: "dedicated",
+    initialWorkspaceFiles: files,
+    harnessAuth: { method: "api_key", source: key.ref },
+  });
+  assert.equal(dedicated.status, 201, JSON.stringify(dedicated.body));
+  const setupId = (await f.staged(dedicated.data.id)).id;
+  await f.state.transact((unit) =>
+    unit.workspaceSetups.complete(f.namespace.id, dedicated.data.id, setupId),
+  );
+  const embedded = await f.request("PATCH", `${f.path}/${dedicated.data.id}`, {
+    body: { configurationId: dedicatedOnly.id, executionMode: "embedded" },
+  });
+  assert.equal(embedded.status, 400, JSON.stringify(embedded.body));
+  assert.equal(embedded.body.error.message, workspace);
 });
 
 test("Agent save accepts initial workspace files for a main roster entry in any letter case", async (t) => {
