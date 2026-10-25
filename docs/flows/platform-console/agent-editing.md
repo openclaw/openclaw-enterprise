@@ -115,9 +115,9 @@ an uncertain save requires readback. Unsaved edits block deployment; pending sav
 A refused write lists required grants without guessing which; a refused preflight read names read
 access, a Workspace file save Agent `operate`. Plugin, repository and authentication editors are
 disabled without Agent `update`, Configuration `read`, or `operate` on each bound source.
-Lacking Configuration `update` or `operate` on a bound Secret makes
-Configuration read-only, and Channels and channel Secrets unless each such Secret has a Slack token
-name; with nothing editable, the draft says so and, without deploy, has no checklist.
+Lacking Configuration `update` makes Configuration and channels read-only; lacking `operate` on a
+bound Secret does too, unless, for channels, each such Secret has a Slack token name; with nothing
+editable, the draft says so and, without deploy, has no checklist.
 
 `agents/plugin-fields.mts:createPluginFields` renders **Plugins**.
 `agents/plugins.mts:savePlugins` rereads the Agent before PATCH. If the Agent,

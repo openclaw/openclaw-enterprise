@@ -2629,6 +2629,10 @@ export async function renderAgentDetail(
             viewedSnapshot = configuration;
             renderDetailHeading();
             updateDeployControls();
+            // The answer's denied binding names describe the bindings before this save. Read it
+            // again, so the panel and the Channels drawer stop asking to replace a binding the
+            // save rebound (findings 2444, 2457).
+            void rereadPermissions();
           },
           onReload: (carried = null) => {
             carriedChannelSecrets = carried;

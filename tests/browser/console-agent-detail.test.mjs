@@ -4719,6 +4719,13 @@ test("a channel Secrets save may replace a bound Secret the member cannot operat
     )
     .waitFor();
   assert.equal(await page.getByText(READ_ONLY_DRAFT_NOTICE, { exact: true }).count(), 0);
+  // The Configuration editor submits no bindings, so its save keeps the administrator's Secret:
+  // it stays read-only for this member.
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await page.getByText(CONFIGURATION_SECRETS_READ_ONLY, { exact: true }).waitFor();
+  assert.equal(await page.getByRole("button", { name: "Edit Configuration" }).count(), 0);
+  await page.getByRole("tab", { name: "Credentials", exact: true }).click();
+  await page.getByText(REPLACE_BOT_TOKEN, { exact: true }).waitFor();
 
   // Changing only the app token keeps the administrator's bot token Secret: refused up front.
   await selectSecret(page, "Slack app token", own);
@@ -4743,8 +4750,9 @@ test("a channel Secrets save may replace a bound Secret the member cannot operat
     SLACK_APP_TOKEN: { source: app.ref, delivery: { type: "env" } },
     SLACK_BOT_TOKEN: { source: own.ref, delivery: { type: "env" } },
   });
-  // The bot token now binds the member's own Secret: nothing is left to replace, so the next
-  // save is not refused.
+  // The bot token now binds the member's own Secret. The page reads the answer again, so nothing
+  // is left to replace: neither the next panel save nor a Channels drawer save is refused
+  // (finding 2457).
   await page.getByText(REPLACE_BOT_TOKEN, { exact: true }).waitFor({ state: "detached" });
   await selectSecret(page, "Slack app token", own);
   const resaving = page.waitForResponse(
@@ -4752,6 +4760,17 @@ test("a channel Secrets save may replace a bound Secret the member cannot operat
   );
   await page.getByRole("button", { name: "Save channel Secrets" }).click();
   assert.equal((await resaving).status(), 200);
+  await page.getByRole("tab", { name: "Channels", exact: true }).click();
+  await page.getByRole("button", { name: "Edit Slack" }).click();
+  const dialog = page.getByRole("dialog", { name: "Edit Slack" });
+  await dialog.getByLabel("Require a mention").waitFor();
+  assert.equal(await dialog.getByText(/choose another Secret/).count(), 0);
+  await dialog.getByLabel("Require a mention").setChecked(false);
+  const drawerSaving = page.waitForResponse(
+    (r) => r.request().method() === "PATCH" && r.url().endsWith(configurationPath),
+  );
+  await dialog.getByRole("button", { name: "Save configuration" }).click();
+  assert.equal((await drawerSaving).status(), 200);
 });
 
 // The Channels drawer saves the same bindings. While the administrator's bot token Secret stays

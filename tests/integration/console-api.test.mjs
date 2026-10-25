@@ -580,6 +580,23 @@ test("the per-binding Secret answer names the bindings a Configuration save must
   const operable = await answer();
   assert.equal(operable.configurationSecretsOperate, true);
   assert.deepEqual(operable.configurationSecretsOperateDeniedBindings, []);
+
+  // An IAM failure on a bound Secret's operate decision is not a denial: the whole answer is
+  // unavailable, so the console keeps its usual rule instead of listing or omitting a name.
+  const authorize = fixture.iamDriver.authorize;
+  fixture.iamDriver.authorize = async (request) => {
+    if (request.action === "operate" && request.resource.kind === "secret") {
+      throw new Error("IAM outage");
+    }
+    return authorize.call(fixture.iamDriver, request);
+  };
+  let outage;
+  try {
+    outage = await fixture.request("GET", permissionsPath, { session });
+  } finally {
+    fixture.iamDriver.authorize = authorize;
+  }
+  assertApiError(outage, 503, "DEPENDENCY_UNAVAILABLE");
 });
 
 // Each Agent update also checks the caller's grant on every source the Agent and its
