@@ -14,6 +14,7 @@ import {
 } from "../../packages/contracts/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
+import { assertApiError } from "../helpers/api-error.mjs";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
@@ -407,8 +408,7 @@ const savePreset = (context, template, name = "Refused") =>
 
 // A 400 that names `message` and never echoes `sentinel`.
 function assertRefused(response, message, { label = "", sentinel } = {}) {
-  assert.equal(response.status, 400, `${label}: ${JSON.stringify(response.body)}`);
-  assert.equal(response.body.error.code, "INVALID_REQUEST", label);
+  assertApiError(response, 400, "INVALID_REQUEST", label);
   assert.equal(response.body.error.message, message, label);
   if (sentinel !== undefined) {
     assert.equal(JSON.stringify(response.body).includes(sentinel), false, label);
@@ -532,8 +532,7 @@ test("native OpenClaw Configuration HTTP CRUD preserves documents, SecretRefs, e
   assert.equal(deleted.body, undefined);
 
   const missing = await request(context.app, "GET", pathname);
-  assert.equal(missing.status, 404);
-  assert.equal(missing.body.error.code, "NOT_FOUND");
+  assertApiError(missing, 404, "NOT_FOUND");
   assert.deepEqual(
     context.auditSink.events
       .filter((event) => event.resource.kind === "configuration")
@@ -576,8 +575,7 @@ test("Configuration HTTP PATCH refuses a stale expectedGeneration and keeps the 
     const stale = await request(context.app, "PATCH", pathname, {
       body: { values: { model: "stale" }, expectedGeneration },
     });
-    assert.equal(stale.status, 409, JSON.stringify(stale.body));
-    assert.equal(stale.body.error.code, "RESOURCE_CONFLICT");
+    assertApiError(stale, 409, "RESOURCE_CONFLICT");
     assert.equal(
       stale.body.error.message,
       "The Configuration changed since it was read. Read its current generation before updating it.",
@@ -598,8 +596,7 @@ test("Configuration HTTP PATCH refuses a stale expectedGeneration and keeps the 
     const invalid = await request(context.app, "PATCH", pathname, {
       body: { values: { model: "invalid" }, expectedGeneration },
     });
-    assert.equal(invalid.status, 400, JSON.stringify(invalid.body));
-    assert.equal(invalid.body.error.code, "INVALID_REQUEST");
+    assertApiError(invalid, 400, "INVALID_REQUEST");
   }
 
   const unchecked = await request(context.app, "PATCH", pathname, {
@@ -628,8 +625,7 @@ test("Configuration HTTP requires native supported requests and rejects immutabl
     const invalid = await request(context.app, "POST", collection, {
       body: { kind: "agent", values },
     });
-    assert.equal(invalid.status, 400, JSON.stringify(invalid.body));
-    assert.equal(invalid.body.error.code, "INVALID_REQUEST");
+    assertApiError(invalid, 400, "INVALID_REQUEST");
     assert.deepEqual(configurationDriver.storedConfigurations(), []);
   }
 
@@ -647,8 +643,7 @@ test("Configuration HTTP requires native supported requests and rejects immutabl
   ]) {
     // Consumers cannot omit/invent kind or supply server-managed generation.
     const rejected = await request(context.app, "POST", collection, { body });
-    assert.equal(rejected.status, 400, JSON.stringify(rejected.body));
-    assert.equal(rejected.body.error.code, "INVALID_REQUEST");
+    assertApiError(rejected, 400, "INVALID_REQUEST");
   }
   assert.deepEqual(configurationDriver.storedConfigurations(), []);
   assert.equal(
@@ -670,8 +665,7 @@ test("Configuration HTTP requires native supported requests and rejects immutabl
     const rejected = await request(context.app, "PATCH", `${collection}/${created.body.data.id}`, {
       body,
     });
-    assert.equal(rejected.status, 400, JSON.stringify(rejected.body));
-    assert.equal(rejected.body.error.code, "INVALID_REQUEST");
+    assertApiError(rejected, 400, "INVALID_REQUEST");
     // Clients that print only the message, such as occ, must still see which field to drop.
     const field = Object.keys(body).find((key) => key !== "values");
     assert.match(
@@ -2017,8 +2011,7 @@ test("Namespace deletion names the Configuration IDs that keep it occupied", asy
   // to delete. Configurations created in the same millisecond may be named in any order.
   const named = async () => {
     const blocked = await request(context.app, "DELETE", `/namespaces/${namespace.id}`);
-    assert.equal(blocked.status, 409);
-    assert.equal(blocked.body.error.code, "NAMESPACE_NOT_EMPTY");
+    assertApiError(blocked, 409, "NAMESPACE_NOT_EMPTY");
     const listed =
       /^The requested Namespace is not empty\. It still contains: Configurations \((.+)\)\.$/.exec(
         blocked.body.error.message,
@@ -2053,8 +2046,7 @@ test("Configuration HTTP routes reject foreign Namespace ownership and missing a
     `${collection}/${created.body.data.id}`,
     { authorization: false },
   );
-  assert.equal(unauthenticated.status, 401);
-  assert.equal(unauthenticated.body.error.code, "UNAUTHENTICATED");
+  assertApiError(unauthenticated, 401, "UNAUTHENTICATED");
 });
 
 test("Configuration authorization failures target the exact Configuration resource", async () => {
@@ -2075,8 +2067,7 @@ test("Configuration authorization failures target the exact Configuration resour
     "GET",
     `/namespaces/${namespace.id}/configurations/${created.body.data.id}`,
   );
-  assert.equal(denied.status, 403);
-  assert.equal(denied.body.error.code, "FORBIDDEN");
+  assertApiError(denied, 403, "FORBIDDEN");
   assert.equal(context.auditSink.events.at(-1).resource.kind, "configuration");
   assert.equal(context.auditSink.events.at(-1).resource.id, created.body.data.id);
 });
@@ -2110,8 +2101,7 @@ for (const runtimeLogging of [undefined, "driver"]) {
 
     // A referenced Configuration cannot be deleted and leave an Agent with a dangling reference.
     const referenced = await request(context.app, "DELETE", `${collection}/${configurationId}`);
-    assert.equal(referenced.status, 409);
-    assert.equal(referenced.body.error.code, "RESOURCE_CONFLICT");
+    assertApiError(referenced, 409, "RESOURCE_CONFLICT");
     // Only a stale expectedGeneration carries the /expectedGeneration detail; the console offers
     // Reload draft for that one, and a reread cannot fix this conflict (finding 1511).
     assert.equal(referenced.body.error.details, undefined);
@@ -2180,8 +2170,7 @@ test("Deploy rejects Configuration content that selects no supported Harness run
 
   const deployed = await request(context.app, "POST", `${agentPath}/deploy`);
   // The Agent exists and is visible, so a Configuration content problem is not a 404.
-  assert.equal(deployed.status, 400, JSON.stringify(deployed.body));
-  assert.equal(deployed.body.error.code, "INVALID_REQUEST");
+  assertApiError(deployed, 400, "INVALID_REQUEST");
   assert.equal(
     deployed.body.error.message,
     "The configured Agent model requires an explicit supported Harness runtime.",

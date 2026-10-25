@@ -8,6 +8,7 @@ import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/sr
 import { createControllerApp } from "../../apps/controller/src/index.ts";
 import { requestFailure } from "../../apps/controller/src/http/errors.ts";
 import { resolveApprovedHarness as resolveApprovedDevelopmentHarness } from "../../apps/controller/src/composition/production-harness.ts";
+import { assertApiError } from "../helpers/api-error.mjs";
 import {
   authenticatedHeaders,
   createTestAuthPrincipal,
@@ -380,8 +381,7 @@ test("Agent model discovery requires namespace Agent-create permission before pr
   const denied = await request(readerApp, "POST", `/namespaces/${namespace.id}/agents/models`, {
     body: { provider: "openai", authMethod: "api_key", apiKey },
   });
-  assert.equal(denied.status, 403);
-  assert.equal(denied.body.error.code, "FORBIDDEN");
+  assertApiError(denied, 403, "FORBIDDEN");
   assert.equal(transport.mock.callCount(), 0);
   const denial = fixture.auditSink.events.at(-1);
   assert.equal(denial.kind, "authorization_denial");
@@ -538,8 +538,7 @@ test("Secret API stores values through the selected driver and returns metadata 
       body: { agentId: agent.id, name: "Removed owner key", value: `secret-value-${randomUUID()}` },
     },
   );
-  assert.equal(removedOwnerField.status, 400);
-  assert.equal(removedOwnerField.body.error.code, "INVALID_REQUEST");
+  assertApiError(removedOwnerField, 400, "INVALID_REQUEST");
 
   const created = await request(fixture.app, "POST", `/namespaces/${namespace.id}/secrets`, {
     body: { name: "Backend API key", value: originalValue },
@@ -629,8 +628,7 @@ test("Secret API stores values through the selected driver and returns metadata 
       `/namespaces/${namespace.id}/secrets/${created.data.id}`,
       { body: { value: invalid } },
     );
-    assert.equal(rejected.status, 400);
-    assert.equal(rejected.body.error.code, "INVALID_REQUEST");
+    assertApiError(rejected, 400, "INVALID_REQUEST");
   }
   // An empty value or name also names the schema's minimum length, so the caller can fix it.
   for (const [method, path, body, field] of [
@@ -716,8 +714,7 @@ test("Secret API accepts the largest default JSON body and rejects one byte over
       body: oversizedCreateBody,
     },
   );
-  assert.equal(oversizedCreate.status, 413);
-  assert.equal(oversizedCreate.body.error.code, "PAYLOAD_TOO_LARGE");
+  assertApiError(oversizedCreate, 413, "PAYLOAD_TOO_LARGE");
   assert.equal(JSON.stringify(oversizedCreate.body).includes(syntheticSecretSentinel), false);
 
   const updateEnvelope = bodyAtJsonLimit(defaultControllerBodyLimit, (value) => ({ value }));
@@ -739,8 +736,7 @@ test("Secret API accepts the largest default JSON body and rejects one byte over
     `/namespaces/${namespace.id}/secrets/${created.data.id}`,
     { body: oversizedUpdateBody },
   );
-  assert.equal(oversizedUpdate.status, 413);
-  assert.equal(oversizedUpdate.body.error.code, "PAYLOAD_TOO_LARGE");
+  assertApiError(oversizedUpdate, 413, "PAYLOAD_TOO_LARGE");
   assert.equal(JSON.stringify(oversizedUpdate.body).includes(syntheticSecretSentinel), false);
   assert.equal(fixture.secretDriver.valueFor(created.data), updateEnvelope.value);
   assert.equal(JSON.stringify(fixture.auditSink.events).includes(syntheticSecretSentinel), false);
@@ -768,8 +764,7 @@ test("Secret API denial and storage failures return value-free errors", async ()
     "GET",
     `/namespaces/${namespace.id}/secrets/${created.data.id}`,
   );
-  assert.equal(denied.status, 403);
-  assert.equal(denied.body.error.code, "FORBIDDEN");
+  assertApiError(denied, 403, "FORBIDDEN");
   const denial = fixture.auditSink.events.at(-1);
   assert.equal(denial.kind, "authorization_denial");
   assert.deepEqual(denial.authorization, {
@@ -886,8 +881,7 @@ for (const [model, method, executionMode] of [
       "DELETE",
       `/namespaces/${namespace.id}/secrets/${key.data.id}`,
     );
-    assert.equal(forbidden.status, 403);
-    assert.equal(forbidden.body.error.code, "FORBIDDEN");
+    assertApiError(forbidden, 403, "FORBIDDEN");
     // Administrative rights on the actor do not give the Agent permission to receive a key.
     const { servicePrincipalId } = await fixture
       .controller()
@@ -1055,8 +1049,7 @@ test("Secret consumers name only readable references, on GET and in the delete c
     truncated: false,
   });
   const memberDelete = await request(memberApp, "DELETE", keyPath);
-  assert.equal(memberDelete.status, 409);
-  assert.equal(memberDelete.body.error.code, "RESOURCE_CONFLICT");
+  assertApiError(memberDelete, 409, "RESOURCE_CONFLICT");
   assert.equal(
     memberDelete.body.error.message,
     `The Secret is still referenced by Configuration ${visible}; 2 resources you cannot read. Remove those references first.`,
