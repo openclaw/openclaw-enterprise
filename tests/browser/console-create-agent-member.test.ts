@@ -518,7 +518,9 @@ test("a member without Secret create sees the inline Create Secret action disabl
 // in Create Agent and met a 403 after the click (finding 2469). Each Create Agent Secret field
 // lists them disabled with the reason and never stages one. The people search field, which only
 // a reader of the Installation sees, is covered in console-agent-plugin-approvers.
-test("Create Agent's Secret fields refuse a readable Secret the member cannot operate", async (t) => {
+// A member with every Create Agent grant except Secret operate, which it has on the team key
+// only, and a readable spare key it may not operate.
+async function operateSomeSetup(t: TestContext) {
   const { fixture, namespace, secret } = await setup(t);
   const spare = await fixture.createSecret(namespace.id, "Spare key", "sk-member-spare");
   const member = await fixture.createNamespaceMember(
@@ -526,7 +528,6 @@ test("Create Agent's Secret fields refuse a readable Secret the member cannot op
     namespace.id,
     MEMBER_WRITE.filter(([action, kind]) => !(action === "operate" && kind === "secret")),
   );
-  // Secret operate on the team key only.
   fixture.policy.roles.push({
     id: "role-operate-team-key",
     namespaceId: namespace.id,
@@ -542,6 +543,11 @@ test("Create Agent's Secret fields refuse a readable Secret the member cannot op
     resourceId: secret.id,
   });
   const answerPath = `/namespaces/${namespace.id}/permissions/secrets`;
+  return { fixture, namespace, secret, spare, member, answerPath };
+}
+
+test("Create Agent's Secret fields refuse a readable Secret the member cannot operate", async (t) => {
+  const { fixture, namespace, secret, spare, member, answerPath } = await operateSomeSetup(t);
   const { page } = await newPage(t, fixture);
   const answers = apiResponses(page, fixture.origin);
   // The first pick is made before the answer arrives: it waits for the answer.
@@ -597,5 +603,80 @@ test("Create Agent's Secret fields refuse a readable Secret the member cannot op
   assert.deepEqual(
     answers.filter((answer) => !answer.startsWith("GET ") && !answer.includes("/auth/")),
     [],
+  );
+});
+
+// The Preset's "Use existing Secret" choice becomes the Agent's Harness authentication Secret,
+// which Agent create refuses without Secret operate on it (finding 2479). It lists the spare key
+// disabled with the reason, and Use Preset refuses it, naming why, instead of staging it.
+test("a Preset's existing Secret choice refuses a Secret the member cannot operate", async (t) => {
+  const { fixture, namespace, secret, spare, member } = await operateSomeSetup(t);
+  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: JSON.parse(
+      await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
+    ),
+  });
+  assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`, member.credentials);
+  await page.getByLabel("Preset template").selectOption(preset.data.id);
+  await page.getByLabel("Name", { exact: true }).fill("Preset member Agent");
+  await page.getByLabel("Model", { exact: true }).fill("gpt-5.1");
+  await page.getByLabel("Secret source for Model Secret", { exact: true }).selectOption("existing");
+  const existing = page.getByLabel("Existing Secret for Model Secret", { exact: true });
+  await waitForEnabled(existing);
+  const spareOption = existing.locator(`option[value="${spare.id}"]`);
+  assert.equal(await spareOption.isDisabled(), true);
+  assert.equal(await spareOption.textContent(), `${spare.name} (${SECRET_OPERATE_DENIED})`);
+  assert.equal(await existing.locator(`option[value="${secret.id}"]`).isDisabled(), false);
+  // A choice the list cannot offer, as a restored or scripted value, is refused with the reason.
+  await existing.evaluate((select: HTMLSelectElement, id: string) => {
+    select.value = id;
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  }, spare.id);
+  await page.getByRole("button", { name: "Use Preset" }).click();
+  await page
+    .getByText(`${spare.name} cannot be chosen. ${SECRET_OPERATE_DENIED}`, { exact: true })
+    .waitFor();
+  assert.equal(await page.locator("#create-agent-form").count(), 0);
+  // The operable key is used as before.
+  await existing.selectOption(secret.id);
+  await page.getByRole("button", { name: "Use Preset" }).click();
+  await page
+    .getByText("Preset authentication: API key · Secret configured", { exact: true })
+    .waitFor();
+});
+
+// A refused create can follow a revoked grant, so the form reads the Secret answer again when a
+// field next opens, as the Agent page does after a refused save.
+test("a refused Create reads the Secret answer again", async (t) => {
+  const { fixture, namespace, secret, member, answerPath } = await operateSomeSetup(t);
+  const { page } = await newPage(t, fixture);
+  const answers = apiResponses(page, fixture.origin);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`, member.credentials);
+  await fillDefaultPreset(page, secret, "Refused member Agent");
+  // Configuration create and operate on the chosen key are revoked after it is staged.
+  const role = fixture.policy.roles.find((item) => item.id === "role-member-operate-some");
+  assert.ok(role);
+  role.permissions = role.permissions.filter(
+    (permission) =>
+      !(permission.action === "create" && permission.resourceKind === "configuration"),
+  );
+  fixture.policy.bindings.splice(
+    fixture.policy.bindings.findIndex((binding) => binding.id === "binding-operate-team-key"),
+    1,
+  );
+  const refused = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}/namespaces/${namespace.id}/configurations` &&
+      response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  assert.equal((await refused).status(), 403);
+  // The field reads the answer again and now lists the key disabled with the reason.
+  await operateDeniedSecretOption(page, "API key Secret", secret);
+  assert.deepEqual(
+    answers.filter((answer) => answer.includes(answerPath)),
+    [`GET ${answerPath} 200`, `GET ${answerPath} 200`],
   );
 });

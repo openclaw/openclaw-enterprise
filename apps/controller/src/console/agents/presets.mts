@@ -16,10 +16,13 @@ import {
   validatePresetTemplate,
 } from "../preset-variables.mjs";
 import { message, namespacePath } from "./list.mjs";
+import { SECRET_OPERATE_DENIED } from "./secret-picker.mjs";
 
 type PresetContext = Pick<NamespacePageContext, "request" | "isCurrent" | "onExpired"> & {
   namespaceId: string;
   drafts: ReturnType<ReturnType<typeof createDraftStore>["scope"]>;
+  // The readable Secrets the caller may not operate; undefined when the answer is unknown.
+  secretsOperateDenied?: (() => Promise<ReadonlySet<string> | undefined>) | undefined;
 };
 
 interface VariableField {
@@ -37,6 +40,8 @@ interface SecretField extends VariableField {
   secretField: HTMLElement;
   restoredSecret: string | undefined;
   secrets: SecretMetadata[];
+  // Listed Secrets the caller may not operate: listed disabled, never used (finding 2469).
+  operateDenied: ReadonlySet<string>;
   secretsState: "loading" | "ready" | "failed";
 }
 
@@ -109,10 +114,23 @@ function sameNamespaceSecret(context: PresetContext, value: unknown): value is S
   );
 }
 
-function renderSecretOptions(secrets: readonly SecretMetadata[]) {
+// A Secret the caller may read but not operate is listed disabled with the shared reason: Agent
+// create binds it as the Harness authentication Secret and would refuse it (finding 2469).
+function renderSecretOptions(
+  secrets: readonly SecretMetadata[],
+  operateDenied: ReadonlySet<string>,
+) {
   return [
     element("option", { value: "" }, "Choose an existing Secret"),
-    ...secrets.map((secret) => element("option", { value: secret.id }, secret.name)),
+    ...secrets.map((secret) =>
+      operateDenied.has(secret.id)
+        ? element(
+            "option",
+            { value: secret.id, disabled: true },
+            `${secret.name} (${SECRET_OPERATE_DENIED})`,
+          )
+        : element("option", { value: secret.id }, secret.name),
+    ),
   ];
 }
 
@@ -217,19 +235,28 @@ export function createPresetFields(
       updatePasswordField(field);
     }
     try {
-      const secrets = await context.request(`${namespacePath(context.namespaceId)}/secrets`);
+      // The list shows once the operate answer is in, so no denied Secret is ever choosable.
+      const [secrets, operateDenied] = await Promise.all([
+        context.request(`${namespacePath(context.namespaceId)}/secrets`),
+        (context.secretsOperateDenied?.() ?? Promise.resolve(undefined)).catch(() => undefined),
+      ]);
       if (!context.isCurrent() || !section.isConnected || version !== loadVersion) {
         return;
       }
       for (const field of passwordFields) {
+        field.operateDenied = operateDenied ?? new Set();
         field.secrets = Array.isArray(secrets)
           ? secrets.filter((value: unknown): value is SecretMetadata =>
               sameNamespaceSecret(context, value),
             )
           : [];
         field.secretsState = "ready";
-        field.secretSelect.replaceChildren(...renderSecretOptions(field.secrets));
-        field.secretSelect.value = field.restoredSecret ?? "";
+        field.secretSelect.replaceChildren(
+          ...renderSecretOptions(field.secrets, field.operateDenied),
+        );
+        // A restored choice the answer now denies is not kept.
+        const restored = field.restoredSecret ?? "";
+        field.secretSelect.value = field.operateDenied.has(restored) ? "" : restored;
         field.restoredSecret = undefined;
         field.secretStatus.textContent = field.secrets.length
           ? "Existing Secrets in this Namespace are available. Secret values are never shown."
@@ -278,6 +305,10 @@ export function createPresetFields(
             const secret = field.secrets.find((item) => item.id === field.secretSelect.value);
             if (!sameNamespaceSecret(context, secret)) {
               feedback.textContent = "Choose an existing Secret from this Namespace.";
+              return;
+            }
+            if (field.operateDenied.has(secret.id)) {
+              feedback.textContent = `${secret.name} cannot be chosen. ${SECRET_OPERATE_DENIED}`;
               return;
             }
             modelSecret = { kind: "existing", secret };
@@ -479,6 +510,7 @@ export function createPresetFields(
           secretField,
           restoredSecret: saved?.type === "password" ? saved.secret : undefined,
           secrets: [],
+          operateDenied: new Set(),
           secretsState: "loading",
         };
         mode.addEventListener("change", () => {
