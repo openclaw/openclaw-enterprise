@@ -90,7 +90,8 @@ and deploys; Console polls and opens the saved version.
 Before any write, `create.mts:renderAgentForm` checks the Agent name with the API's Name rule
 (`namespaces.mts:namespaceNameProblem`) and each initial workspace file with the Workspace tab's
 `agents/workspace.mts:workspaceFileProblem`, which names the file; the check opens Advanced
-settings to it. It then checks draft values and plugins with
+settings to it. It then checks draft values, plugins and the planned `harnessAuth`
+(only the method for a Secret it saves next; none for a credential source) with
 `POST /namespaces/:namespaceId/agents/validate`, then posts
 `{kind: "agent", values, secretBindings}` to `.../configurations` and submits its ID,
 plugins, `initialWorkspaceFiles`, and `workspaceDefaultsId` to `.../agents`.

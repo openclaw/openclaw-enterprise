@@ -4472,8 +4472,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
             ? "runtime.gatewayNodeSelector"
             : undefined;
     if (missing !== undefined) {
+      // Only OpenClaw has an embedded mode; Codex Agents name it as a harness change (finding 2391).
+      const embedded =
+        harness.id === "openclaw"
+          ? "Select Embedded OpenClaw"
+          : "Codex runs only as a Dedicated Agent: select Embedded OpenClaw";
       throw new ConfigurationHarnessError(
-        `Dedicated Agents need ${missing} in this Installation's Kubernetes Compute configuration. Select an embedded Agent, or ask an operator to configure it.`,
+        `Dedicated Agents need ${missing} in this Installation's Kubernetes Compute configuration. ${embedded}, or ask an operator to configure it.`,
       );
     }
   }
