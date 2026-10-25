@@ -112,6 +112,20 @@ export function assertRevisionUrl(page, revisionId) {
   assert.equal(url.searchParams.get("revision"), revisionId);
 }
 
+// A failed provisioning job's reason is the form's one error line; the status line under it
+// does not repeat that provisioning failed (finding 2423).
+export async function waitForProvisioningFailure(page) {
+  await page.locator("#create-agent-form ~ p[role=alert]").filter({ hasText: /\S/ }).waitFor();
+  assert.equal(await page.getByText("Provisioning failed.", { exact: true }).count(), 0);
+  // The error line is as wide as the form above it, not the page.
+  const [form, error] = await page.evaluate(() =>
+    ["#create-agent-form", "#create-agent-form ~ p[role=alert]"].map(
+      (selector) => globalThis.document.querySelector(selector).getBoundingClientRect().width,
+    ),
+  );
+  assert.ok(error <= form + 0.5, `error line ${error}px, form ${form}px`);
+}
+
 export function configurationPostRequests(requests, namespaceId) {
   return pathRequests(requests, "POST", `/namespaces/${namespaceId}/configurations`);
 }

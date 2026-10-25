@@ -271,6 +271,18 @@ function settingRequirement(refusal: string): string {
   return refusal.split(/(?<=\.)\s+/u)[0] ?? refusal;
 }
 
+// How Agent save refuses a Harness authentication method the Compute Driver does not deliver to
+// the Agent's topology. It ends with ": change harnessAuth or executionMode.", which a Preset's
+// operator-managed binding leaves this form unable to do.
+const HARNESS_AUTH_REFUSAL = "Agent setting harnessAuth.method must be ";
+
+// That refusal for an operator-managed Preset binding: the requirement, then what an operator
+// changes (finding 2427).
+function runtimeBindingRefusal(refusal: string): string {
+  const requirement = refusal.replace(/: change [^:]*$/u, ".");
+  return `This Preset's operator-managed credentials need a Compute Driver that supplies them. ${requirement} Ask an administrator to change the Preset's harnessAuth or the Compute Driver, or start without a Preset.`;
+}
+
 function selectedHarnessAuth(
   method: string,
   source: CredentialReference | null | undefined,
@@ -520,7 +532,13 @@ async function waitForProvisioning({
   const stopped =
     current?.status === "failed" &&
     (current.error?.code === "REVISION_STOPPED" || cancelledAgent === "kept");
-  status.textContent = stopped ? "Provisioning stopped." : provisioningStatusText(current?.status);
+  // A failed job's reason leads the form's error line, so its status line would only repeat
+  // that it failed (finding 2423).
+  status.textContent = stopped
+    ? "Provisioning stopped."
+    : current?.status === "failed"
+      ? ""
+      : provisioningStatusText(current?.status);
   if (current?.status !== "succeeded") {
     throw new ProvisioningFailure(current, stopped, cancelledAgent === "unknown");
   }
@@ -1875,6 +1893,10 @@ function renderAgentForm(
     submit,
   );
   const channelEditor = element("div", { className: "create-channels" });
+  // The intro names repository access only where the Installation offers it (finding 2423).
+  const introText = (repositoryAccess: boolean) =>
+    `Choose a model${repositoryAccess ? " and repository access" : ""}. Add Slack when you want this Agent to work with your team.`;
+  const intro = element("p", { className: "muted" }, introText(true));
   // The collapsed Runtime details still name the selected execution mode.
   const runtimeModeSummary = element("span", { className: "muted" });
   let repositories: Repositories;
@@ -2322,18 +2344,64 @@ function renderAgentForm(
   // <setting> …" and then advises Embedded OpenClaw (finding 2391). Where this form cannot select
   // it (a Preset's binding, a saved service account token or a saved Configuration fixes the
   // harness to Codex, or the installation's Sandbox Driver refuses Embedded execution), quote only
-  // the requirement, as for a Sandbox Driver's setting refusal (findings 2392, 2396).
-  const followableRefusal = (text: string) =>
-    !text.startsWith(PLACEMENT_REFUSAL) ||
-    (!(capabilityDiscoveryDone && !openclawModeUsable("embedded")) &&
-      (harness.value === "openclaw" || !(savedConfiguration || credentialLocksHarness())))
+  // the requirement, as for a Sandbox Driver's setting refusal (findings 2392, 2396). A Compute
+  // Driver's refusal of an operator-managed binding names what an operator changes instead.
+  const followableRefusal = (text: string) => {
+    if (binding?.method === "runtime" && text.startsWith(HARNESS_AUTH_REFUSAL)) {
+      return runtimeBindingRefusal(text);
+    }
+    return !text.startsWith(PLACEMENT_REFUSAL) ||
+      (!(capabilityDiscoveryDone && !openclawModeUsable("embedded")) &&
+        (harness.value === "openclaw" || !(savedConfiguration || credentialLocksHarness())))
       ? text
       : `${settingRequirement(text)} Ask an operator to configure it.`;
+  };
+  // The Installation's capabilities do not say whether its Compute Driver delivers an
+  // operator-managed Preset binding (Kubernetes Compute does not), so Agent save's own check
+  // answers that once the capabilities are read. A refusal there holds for every value this form
+  // can change, so the form refuses the Preset up front, as it does when a Sandbox Driver refuses
+  // Embedded execution (finding 2427). Create Agent's preflight stays the authority.
+  let runtimeBindingRefused: string | undefined;
+  let runtimeBindingChecked = false;
+  async function checkRuntimeBinding() {
+    const values = parseObject(configuration);
+    if (
+      runtimeBindingChecked ||
+      binding?.method !== "runtime" ||
+      savedConfiguration ||
+      savedAgent ||
+      sandboxDriverUnavailable ||
+      !openclawModeUsable(mode.value) ||
+      values === undefined
+    ) {
+      return;
+    }
+    runtimeBindingChecked = true;
+    const harnessAuth = plannedHarnessAuth(false);
+    try {
+      await request(`${namespacePath(namespaceId)}/agents/validate`, {
+        method: "POST",
+        expectedStatus: 204,
+        body: {
+          configuration: { kind: "agent", values },
+          executionMode: mode.value,
+          ...(harnessAuth ? { harnessAuth } : {}),
+        },
+      });
+    } catch (error) {
+      const refusal = requestFailure(error).serverMessage ?? "";
+      if (context.isCurrent() && refusal.startsWith(HARNESS_AUTH_REFUSAL)) {
+        runtimeBindingRefused = runtimeBindingRefusal(refusal);
+        updateControls();
+      }
+    }
+  }
   const credentialSourceRefused = () =>
     credentialSourceTypes !== undefined &&
     (binding?.method ?? authMethod.value) !== "credential_source" &&
     (!shouldProvision() || !modelSourceType());
   const updateControls = () => {
+    setText(intro, introText(!repositories.unavailable()));
     const saved = Boolean(savedConfiguration || savedAgent || provisioningAttempt);
     const planLocked =
       pending ||
@@ -2443,7 +2511,7 @@ function renderAgentForm(
             : nativeProvider.value === "anthropic"
               ? "Anthropic uses Embedded OpenClaw, which this installation refuses because it selects a Sandbox Driver. Choose OpenAI to use Dedicated execution."
               : "Embedded OpenClaw is unavailable: this installation selects a Sandbox Driver, which requires Dedicated execution. Select Dedicated under Runtime details."
-          : "";
+          : (runtimeBindingRefused ?? "");
     if (openclawModeUnavailable.textContent !== modeRefusal) {
       openclawModeUnavailable.textContent = modeRefusal;
     }
@@ -2778,6 +2846,7 @@ function renderAgentForm(
         mode.value = defaultOpenClawMode();
         renderChannelEditor();
       }
+      void checkRuntimeBinding();
     } catch (error) {
       if (!context.isCurrent()) {
         return;
@@ -2939,8 +3008,8 @@ function renderAgentForm(
         detail = followableRefusal(rejectionMessage(cause, mutationStarted));
       }
       const feedbackText = detail + (error.requestId ? ` Request ID: ${error.requestId}` : "");
-      // A job that ended keeps its final status; any other progress line spoke for the request
-      // that just ended (finding 1490).
+      // A job that ended keeps its final status (none once it failed: the error line says so);
+      // any other progress line spoke for the request that just ended (finding 1490).
       if (!terminal) {
         if (savedSecret || savedConfiguration || savedAgent) {
           showSavedStatus();
@@ -3513,11 +3582,7 @@ function renderAgentForm(
   });
   view.replaceChildren(
     ...(notReadyNote ? [notReadyNote] : []),
-    element(
-      "p",
-      { className: "muted" },
-      "Choose a model and repository access. Add Slack when you want this Agent to work with your team.",
-    ),
+    intro,
     accessStatus,
     form,
     channelEditor,

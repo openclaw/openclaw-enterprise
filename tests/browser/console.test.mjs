@@ -674,7 +674,7 @@ test("Agents with no readable Namespace names it once and keeps one Refresh", as
       `/console/agents?namespace=${granted.id}`,
       "Namespace unavailable",
       "This Namespace is missing or you no longer have access, and you cannot read any other Namespace. Ask an administrator to grant you access to one, then Refresh.",
-      "Namespace unavailable",
+      "Unavailable",
     ],
     // An Agent bookmark in that Namespace kept the Agent page's header above the panel: the
     // unreadable Agent's ID and copy button, a "← Agents" link to the same page and a cut-off
@@ -683,7 +683,7 @@ test("Agents with no readable Namespace names it once and keeps one Refresh", as
       `/console/agents/${agent.id}?namespace=${granted.id}`,
       "Namespace unavailable",
       "This Namespace is missing or you no longer have access, and you cannot read any other Namespace. Ask an administrator to grant you access to one, then Refresh.",
-      "Namespace unavailable",
+      "Unavailable",
     ],
   ]) {
     fixture.policy.restrictions.push(denyAll);
@@ -696,12 +696,25 @@ test("Agents with no readable Namespace names it once and keeps one Refresh", as
     assert.equal(await state.getByRole("button").count(), 0, `${path}: no second Refresh`);
     assert.equal(await page.getByRole("button", { name: "Refresh", exact: true }).count(), 1);
     if (title !== selected) {
-      // Said once: the disabled selector reads only "None".
+      // Said once: the disabled selector reads only "None" or "Unavailable".
       assert.equal(await page.getByText(title).count(), 1);
     }
     const selector = page.getByRole("combobox", { name: "Namespace", exact: true });
     assert.equal(await selector.isDisabled(), true);
     assert.equal(await selector.locator("option:checked").textContent(), selected);
+    // The compact selector shows its whole selection, not "Namespace una…" (finding 2423).
+    assert.ok(
+      await selector.evaluate((select) => {
+        const style = globalThis.getComputedStyle(select);
+        const context = globalThis.document.createElement("canvas").getContext("2d");
+        context.font = style.font;
+        const text = context.measureText(select.selectedOptions[0].textContent).width;
+        const room =
+          select.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+        return text <= room;
+      }),
+      `${path}: the selector's text fits`,
+    );
     await page.getByRole("heading", { level: 1, name: "Agents", exact: true }).waitFor();
     assert.equal(await page.locator(".page-header--subpage").count(), 0, path);
     assert.equal(await page.getByRole("button", { name: "Copy Agent ID" }).count(), 0, path);

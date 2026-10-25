@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test, { type TestContext } from "node:test";
-import type { Dialog, Locator, Request, Response as BrowserResponse } from "playwright";
+import type { Dialog, Locator, Page, Request, Response as BrowserResponse } from "playwright";
 
 import type {
   HarnessAuthBinding,
@@ -41,6 +41,7 @@ import { consoleStorage } from "../helpers/console-storage.mjs";
 import {
   apiRequests,
   detailUrl,
+  holdRequests,
   login,
   nativeValues,
   newPage,
@@ -846,9 +847,11 @@ test("Runtime-auth Presets retain OpenClaw when changing from Anthropic to OpenA
 });
 
 // The same operator-managed binding on Kubernetes Compute, which takes only an API key for
-// embedded OpenClaw. Create Agent's preflight sends the Preset's runtime binding, so Agent save's
-// refusal comes before anything is saved. Without it, the form saved a Configuration that Agent
-// create then refused, and the form could no longer edit that Configuration.
+// embedded OpenClaw. The Installation's capabilities do not say so, so Create Agent asks Agent
+// save's preflight with the Preset's runtime binding once they are read, and refuses the Preset
+// up front, naming what an operator changes: the form can change neither the binding nor the
+// execution mode the refusal names (finding 2427). Without the binding in the preflight, the form
+// saved a Configuration that Agent create then refused, and could no longer edit it.
 test("Runtime-auth Presets are refused before anything is saved where Compute refuses them", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -871,27 +874,61 @@ test("Runtime-auth Presets are refused before anything is saved where Compute re
     },
   );
   assert.equal(preset.status, 201);
-  const { page } = await newPage(t, fixture);
-  const requests = apiRequests(page, fixture.origin);
-  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset template").selectOption(preset.data.id);
-  await page.getByRole("button", { name: "Use Preset" }).click();
-  const preflight = page.waitForResponse(
-    (response) =>
-      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/validate` &&
-      response.request().method() === "POST",
-  );
-  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  const response = await preflight;
-  assert.equal(response.status(), 400);
-  assert.deepEqual(response.request().postDataJSON().harnessAuth, { method: "runtime" });
-  await page
-    .getByRole("alert")
-    .filter({ hasText: "harnessAuth.method must be api_key for embedded OpenClaw" })
-    .waitFor();
-  await page.getByRole("button", { name: "Create Agent", disabled: false }).waitFor();
-  assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
-  assert.equal(agentPostRequests(requests, namespace.id).length, 0);
+  const refusal =
+    "This Preset's operator-managed credentials need a Compute Driver that supplies them. Agent setting harnessAuth.method must be api_key for embedded OpenClaw on Kubernetes Compute. Ask an administrator to change the Preset's harnessAuth or the Compute Driver, or start without a Preset.";
+  const validatePath = `/namespaces/${namespace.id}/agents/validate`;
+  const createButton = (page: Page) =>
+    page.getByRole("button", { name: "Create Agent", exact: true });
+  await t.test("up front", async (t) => {
+    const { page } = await newPage(t, fixture);
+    const requests = apiRequests(page, fixture.origin);
+    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+    await page.getByLabel("Preset template").selectOption(preset.data.id);
+    await page.getByRole("button", { name: "Use Preset" }).click();
+    const alert = page.getByRole("alert").filter({ hasText: "operator-managed credentials" });
+    await alert.waitFor();
+    assert.equal(await alert.textContent(), refusal);
+    assert.equal(await createButton(page).isDisabled(), true);
+    // The only request is the preflight with the Preset's binding; nothing was saved.
+    const checks = pathRequests(requests, "POST", validatePath);
+    assert.equal(checks.length, 1);
+    assert.deepEqual((checks[0]?.body as { harnessAuth?: unknown }).harnessAuth, {
+      method: "runtime",
+    });
+    assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
+    assert.equal(agentPostRequests(requests, namespace.id).length, 0);
+  });
+  // Create Agent pressed before that answer arrives: its own preflight refuses with the same copy,
+  // before any write.
+  await t.test("at Create Agent", async (t) => {
+    const { page } = await newPage(t, fixture);
+    const requests = apiRequests(page, fixture.origin);
+    const early = await holdRequests(t, page, `${fixture.origin}${validatePath}`, {
+      once: true,
+      method: "POST",
+    });
+    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+    await page.getByLabel("Preset template").selectOption(preset.data.id);
+    await page.getByRole("button", { name: "Use Preset" }).click();
+    await early.requested;
+    const preflight = page.waitForResponse(
+      (response) =>
+        response.url() === `${fixture.origin}${validatePath}` &&
+        response.request().method() === "POST",
+    );
+    await createButton(page).click();
+    const response = await preflight;
+    assert.equal(response.status(), 400);
+    assert.deepEqual(response.request().postDataJSON().harnessAuth, { method: "runtime" });
+    const { meta } = await response.json();
+    const feedback = page.getByRole("alert").filter({ hasText: meta.requestId });
+    await feedback.waitFor();
+    assert.equal(await feedback.textContent(), `${refusal} Request ID: ${meta.requestId}`);
+    assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
+    assert.equal(agentPostRequests(requests, namespace.id).length, 0);
+    early.release();
+    await page.getByRole("button", { name: "Create Agent", disabled: true }).waitFor();
+  });
 });
 
 test("Create Agent browses the curated plugin catalog without a discovery credential", async (t) => {

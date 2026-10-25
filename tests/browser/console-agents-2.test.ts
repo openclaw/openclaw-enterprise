@@ -57,6 +57,7 @@ import {
   routeInstallationWithoutProvisioning,
   agentPostRequests,
   optionValues,
+  waitForProvisioningFailure,
 } from "./console-agents-test-support.mjs";
 
 const defaultCodexPreset = JSON.parse(
@@ -792,7 +793,7 @@ test("Dedicated Agent creation reports a stop during or before the first deploym
         false,
       );
     } else {
-      await page.getByText("Provisioning failed.", { exact: true }).waitFor();
+      await waitForProvisioningFailure(page);
       assert.equal(await page.locator(".provisioning-stopped").count(), 0);
     }
     const open = page.getByRole("link", { name: c.link ?? "Open Agent", exact: true });
@@ -892,13 +893,12 @@ test("Dedicated Agent creation keeps one provisioning label while the job retrie
     await waitForIdleFetches(page);
     await page.clock.runFor(1_000);
   }
-  await page.getByText("Provisioning failed.", { exact: true }).waitFor();
+  await waitForProvisioningFailure(page);
   assert.equal(read, reads.length);
   assert.deepEqual(await page.evaluate(() => globalThis.provisioningWrites), [
     "Provisioning request accepted.",
     "Provisioning queued…",
     "Provisioning Agent…",
-    "Provisioning failed.",
   ]);
 });
 
@@ -1098,7 +1098,7 @@ test("Dedicated Agent creation names a full Namespace Pod quota while it waits",
       }
       await page.clock.runFor(1_000);
     }
-    await page.getByText("Provisioning failed.", { exact: true }).waitFor();
+    await waitForProvisioningFailure(page);
     assert.equal(read, reads.length);
     // Only a running job that handed off its deployment reads it, once per job read.
     assert.deepEqual(deploymentReads, [3, 4, 5]);
@@ -1117,20 +1117,13 @@ test("Dedicated Agent creation names a full Namespace Pod quota while it waits",
           "Provisioning Agent…",
           quotaFull,
           "Provisioning Agent…",
-          "Provisioning failed.",
         ],
-        refused: [
-          "Provisioning request accepted.",
-          "Provisioning queued…",
-          "Provisioning Agent…",
-          "Provisioning failed.",
-        ],
+        refused: ["Provisioning request accepted.", "Provisioning queued…", "Provisioning Agent…"],
         interrupted: [
           "Provisioning request accepted.",
           "Provisioning queued…",
           "Provisioning Agent…",
           quotaFull,
-          "Provisioning failed.",
         ],
       }[mode === "access lost" ? "readable" : mode],
       `deployment reads: ${mode}`,
@@ -1319,7 +1312,7 @@ test("Dedicated Agent creation names the first deployment's wait while it provis
       await waitForIdleFetches(page);
       await page.clock.runFor(1_000);
     }
-    await page.getByText("Provisioning failed.", { exact: true }).waitFor();
+    await waitForProvisioningFailure(page);
     assert.equal(read, reads.length);
     assert.deepEqual(
       await page.evaluate(() => globalThis.provisioningWrites),
@@ -1337,14 +1330,8 @@ test("Dedicated Agent creation names the first deployment's wait while it provis
             "Provisioning Agent…",
             stopping,
             "Provisioning Agent…",
-            "Provisioning failed.",
           ]
-        : [
-            "Provisioning request accepted.",
-            "Provisioning queued…",
-            "Provisioning Agent…",
-            "Provisioning failed.",
-          ],
+        : ["Provisioning request accepted.", "Provisioning queued…", "Provisioning Agent…"],
       `provisioning lines for a ${reader}`,
     );
   }

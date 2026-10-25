@@ -28,6 +28,7 @@ import {
   openAdvancedSettings,
   routeInstallationProvisioning,
   routeInstallationWithoutProvisioning,
+  waitForProvisioningFailure,
 } from "./console-agents-test-support.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
@@ -88,6 +89,14 @@ async function modelSourceFixture(t, { compute, ...options } = {}, gatewayMethod
           rotation: "none",
           harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
         },
+        // The OpenShell Gateway's Codex personal access token type, as its catalog lists it.
+        {
+          type: "codex-pat",
+          config: [],
+          secrets: [{ name: "access_token", required: true }],
+          rotation: "none",
+          harnessAuth: { modelProvider: "openai", loginMode: "codex_pat" },
+        },
       ];
     },
     async registerSource(context, input) {
@@ -127,7 +136,7 @@ async function pickCodexCredential(page, secretValue = `model-secret-${randomUUI
   await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
 }
 
-async function openModelSourceForm(t, fixture, namespace, harness = "codex") {
+async function openModelSourceForm(t, fixture, namespace, harness = "codex", method = "api_key") {
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
@@ -136,6 +145,7 @@ async function openModelSourceForm(t, fixture, namespace, harness = "codex") {
     await page.locator(".launch-runtime:not([open]) > summary").click();
     await page.getByLabel("Execution mode").selectOption("dedicated");
   }
+  await page.getByLabel("Authentication method").selectOption(method);
   await page.getByLabel("Agent name").fill("Source-backed " + harness);
   const secret = await createModelCredentialSecret(page, "synthetic-source-model-key-" + harness);
   await page.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
@@ -1137,7 +1147,13 @@ test("Provisioning names the placement setting a Codex-bound Preset cannot work 
 // names the source type's login mode and refuses before either write, for a Secret the Preset
 // saves and for a Secret the form only registers. The fixture's Sandbox Driver refuses Embedded
 // execution, so the form trims the placement advice here too (finding 2419).
-async function assertGatewayPreflightRefusal({ page, origin, namespace, calls }) {
+async function assertGatewayPreflightRefusal({
+  page,
+  origin,
+  namespace,
+  calls,
+  method = "api_key",
+}) {
   const requests = apiRequests(page, origin);
   const root = `${origin}/namespaces/${namespace.id}`;
   // The first answer: the preflight's, or (without it) the Secret save's or registration's.
@@ -1150,7 +1166,7 @@ async function assertGatewayPreflightRefusal({ page, origin, namespace, calls })
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   const response = await first;
   assert.equal(response.url(), `${root}/agents/validate`);
-  assert.deepEqual(response.request().postDataJSON().harnessAuth, { method: "api_key" });
+  assert.deepEqual(response.request().postDataJSON().harnessAuth, { method });
   await assertPlacementRequirement(page, response);
   await page.getByRole("button", { name: "Create Agent", disabled: false }).waitFor();
   assert.equal(pathRequests(requests, "POST", `/namespaces/${namespace.id}/secrets`).length, 0);
@@ -1189,6 +1205,20 @@ test("Create Agent refuses an unplaceable Dedicated Agent before a Credential Ga
     // The form's Secret dialog saved the model Secret; only the registration would follow.
     const { page } = await openModelSourceForm(t, fixture, namespace);
     await assertGatewayPreflightRefusal({ page, origin: fixture.origin, namespace, calls });
+  });
+  // A Codex service account token registers as the Gateway's codex_pat source type, so the
+  // preflight names that login mode.
+  await t.test("selected service account token", async (t) => {
+    const { fixture, calls } = await modelSourceFixture(t, unplaceable);
+    const namespace = await fixture.createNamespace("Gateway token unplaceable", { ready: true });
+    const { page } = await openModelSourceForm(t, fixture, namespace, "codex", "codex_pat");
+    await assertGatewayPreflightRefusal({
+      page,
+      origin: fixture.origin,
+      namespace,
+      calls,
+      method: "codex_pat",
+    });
   });
 });
 
@@ -1955,7 +1985,9 @@ test("Create Agent drops the Pod quota line when the deployment read is denied",
     }).observe(globalThis.document.body, { childList: true, subtree: true });
   });
   await page.getByRole("button", { name: "Create Agent" }).click();
-  await page.getByText("Provisioning failed.", { exact: true }).waitFor();
+  // Wide enough that the page is wider than the form (finding 2423).
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await waitForProvisioningFailure(page);
   assert.equal(read, reads.length);
   assert.equal(deploymentReads, 3);
   assert.deepEqual(await page.evaluate(() => globalThis.provisioningWrites), [
@@ -1964,7 +1996,6 @@ test("Create Agent drops the Pod quota line when the deployment read is denied",
     "Provisioning Agent…",
     quotaFull,
     "Provisioning Agent…",
-    "Provisioning failed.",
   ]);
 });
 
