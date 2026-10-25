@@ -17,6 +17,7 @@ import {
   nextFrames,
   pathRequests,
   waitForEnabled,
+  grantStaleConfigurationUpdate,
 } from "./console-agents-browser-helpers.mjs";
 import {
   createRepositoryLaunchFixture,
@@ -99,6 +100,7 @@ async function readOnlyMember(t: TestContext, name: string) {
   );
   const member = await createReader(fixture, namespace);
   const { page } = await newPage(t, fixture, { browser });
+  await grantStaleConfigurationUpdate(page);
   const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
   const refusedPatch = () =>
     page.waitForResponse(

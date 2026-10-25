@@ -572,6 +572,13 @@ export async function renderAgentDetail(
   // says so instead of addressing an editor (finding 2421). An unknown answer keeps the editor.
   const configurationReadOnly = () => callerPermissions?.configurationUpdate === false;
   const draftReadOnly = () => callerPermissions?.update === false && configurationReadOnly();
+  // Draft views drawn before the first answer, redrawn once it lands; nothing waits for it.
+  const permissionRerenders = new Set<() => void>();
+  function afterFirstPermissions(rerender: () => void) {
+    if (!callerPermissionsSettled) {
+      permissionRerenders.add(rerender);
+    }
+  }
   let deleting = agent.status === "deleting";
   let currentRevisionId = agent.activeRevisionId;
   // The Agent as last read; Stop and finished deployments update it in place.
@@ -2392,6 +2399,10 @@ export async function renderAgentDetail(
       labelDraftEntry();
     }
     renderVersionNotice();
+    for (const rerender of permissionRerenders) {
+      rerender();
+    }
+    permissionRerenders.clear();
     refreshDeployControls();
   });
 
@@ -2426,8 +2437,6 @@ export async function renderAgentDetail(
     const results = await Promise.allSettled([
       revisionsPromise,
       selected === "draft" && agent.configurationReadError ? Promise.resolve(null) : readSnapshot(),
-      // A draft's editors follow the caller's permissions, read alongside (finding 2421).
-      selected === "draft" ? callerPermissionsRead : null,
     ]);
     if (!context.isCurrent() || deleting) {
       return;
@@ -3758,6 +3767,14 @@ export async function renderAgentDetail(
         channels,
         navigationFeedback,
       );
+      // Drawn editable before the answer landed: redraw read-only (finding 2421).
+      if (draft) {
+        afterFirstPermissions(() => {
+          if (context.isCurrent() && configurationReadOnly()) {
+            void renderTab();
+          }
+        });
+      }
     } else if (selectedTab === "credentials" && draft) {
       const { credentials, channelSecretsNote } = data;
       const retained = context.drafts.get("authentication") as AuthenticationDraft | undefined;
@@ -4841,6 +4858,12 @@ export async function renderAgentDetail(
     }
 
     render();
+    // An answer that lands after this view turns it read-only (finding 2421).
+    afterFirstPermissions(() => {
+      if (context.isCurrent() && !editing && configurationReadOnly()) {
+        render();
+      }
+    });
     return container;
   }
 

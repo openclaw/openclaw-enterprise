@@ -18,6 +18,7 @@ import {
   newPage,
   selectSecret,
   statusTone,
+  grantStaleConfigurationUpdate,
 } from "./console-agents-browser-helpers.mjs";
 import {
   createRepositoryLaunchFixture,
@@ -693,6 +694,9 @@ test("Configuration save outcomes", async (t) => {
     marker: string,
     credentials?: ConsoleFixture["credentials"],
   ) {
+    if (credentials) {
+      await grantStaleConfigurationUpdate(page);
+    }
     await login(
       page,
       fixture,

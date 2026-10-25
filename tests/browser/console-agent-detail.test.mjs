@@ -4195,7 +4195,13 @@ test("a negative permission answer reaching an open Stop or Delete dialog preven
     }
     assert.deepEqual(await received.promise, {
       status: 200,
-      data: { update: false, deploy: false, operate: false, delete: false },
+      data: {
+        update: false,
+        deploy: false,
+        operate: false,
+        delete: false,
+        configurationUpdate: false,
+      },
     });
 
     await page.getByRole("button", { name: action + " Agent", exact: true }).click();

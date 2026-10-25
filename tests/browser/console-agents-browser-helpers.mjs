@@ -47,6 +47,20 @@ export function persistedDeploymentError(code, data) {
   });
 }
 
+// The caller-permissions answer is advisory. Report Configuration update as granted, as a page
+// that read the answer before a revocation would, so the Configuration editor opens and what a
+// test sees is the API's refusal (finding 2421).
+export async function grantStaleConfigurationUpdate(page) {
+  await page.route(/\/agents\/[^/]+\/permissions$/, async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    await route.fulfill({
+      response,
+      json: { ...body, data: { ...body.data, configurationUpdate: true } },
+    });
+  });
+}
+
 export function apiRequests(page, origin) {
   /** @type {{ method: string, path: string, body: unknown }[]} */
   const requests = [];
