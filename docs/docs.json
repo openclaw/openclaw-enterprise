@@ -314,6 +314,10 @@
                             "label": "Storage and Credentials"
                           },
                           {
+                            "page": "reference/drivers/kubernetes-compute/managed-native-configuration",
+                            "label": "Managed Native Configuration"
+                          },
+                          {
                             "page": "reference/drivers/kubernetes-compute/codex-oauth-storage",
                             "label": "Codex OAuth Storage"
                           },

@@ -721,6 +721,10 @@ const PERMISSIONS_UNREAD =
 // (SAVE_REFUSALS): one fixed text for every 403 (finding 2111).
 const CONFIGURATION_CREATE_REFUSAL =
   "You do not have permission to create this Agent's Configuration. Ask an administrator for Configuration create access in this Namespace, plus Secret operate on each Secret it binds.";
+// This form saves Secret bindings only from its Slack channel settings. A channel refusal that
+// asks for a binding gets where to add one, as on the Agent page (findings 2494, 2506).
+const CHANNEL_BINDING_FORM_REMEDY =
+  "On this form, the Slack channel settings bind SLACK_APP_TOKEN and SLACK_BOT_TOKEN to the Secrets you select there; bind other names through the Configuration API after the Agent exists.";
 // A typed model key is saved as a new Secret, which Agent create then binds (finding 2492).
 const NEW_SECRET_REFUSAL = `${NEW_SECRET_OPERATE_DENIED} Select Start over and use an existing Secret. ${NEW_SECRET_OPERATE_REMEDY}`;
 
@@ -2445,12 +2449,20 @@ function renderAgentForm(
       }
     }
   }
-  // The Configuration JSON holds the refused channel reference; channel settings bind its Secret.
+  // The Configuration JSON holds the refused channel reference, so the refusal shows once, under
+  // it, and the caller moves focus there once the form is editable again (finding 2506). Returns
+  // whether it did.
   function showChannelBindingRefusal(cause: unknown) {
     const refusal = channelBindingRefusal(cause);
-    if (refusal !== undefined) {
-      configurationError.show(refusal);
+    if (refusal === undefined) {
+      return false;
     }
+    configurationError.show(
+      refusal.includes(" in secretBindings")
+        ? `${refusal} ${CHANNEL_BINDING_FORM_REMEDY}`
+        : refusal,
+    );
+    return true;
   }
   const credentialSourceRefused = () =>
     credentialSourceTypes !== undefined &&
@@ -2993,6 +3005,7 @@ function renderAgentForm(
     updateControls();
     feedback.textContent = "";
     let mutationStarted = false;
+    let refusedInConfiguration = false;
     try {
       mutationStarted = true;
       const finishing = finishProvisioningAttempt({
@@ -3082,13 +3095,15 @@ function renderAgentForm(
           savedStatus.textContent = "";
         }
       }
+      // Admission's channel reference refusal names the Configuration JSON's setting.
+      refusedInConfiguration = !terminal && !outcomeUnknown && showChannelBindingRefusal(cause);
       if (terminal?.stopped) {
         // Not an error: keep the guidance out of the error colour. Later messages replace the span.
         feedback.replaceChildren(
           element("span", { className: "provisioning-stopped" }, feedbackText),
         );
       } else {
-        feedback.textContent = feedbackText;
+        feedback.textContent = refusedInConfiguration ? "" : feedbackText;
       }
       if (terminal?.job.revisionId && terminal.job.agentId) {
         feedback.append(
@@ -3133,6 +3148,9 @@ function renderAgentForm(
       if (context.isCurrent()) {
         pending = false;
         updateControls();
+        if (refusedInConfiguration) {
+          focusConfiguration();
+        }
       }
     }
   }
@@ -3347,6 +3365,7 @@ function renderAgentForm(
           return;
         }
         const failure = requestFailure(error);
+        let refusedInConfiguration = false;
         if (failure.status === 401) {
           context.onExpired();
         } else {
@@ -3357,9 +3376,10 @@ function renderAgentForm(
               : nameTaken
                 ? AGENT_NAME_CONFLICT
                 : followableRefusal(rejectionMessage(error));
-          feedback.textContent =
-            detail + (failure.requestId ? ` Request ID: ${failure.requestId}` : "");
-          showChannelBindingRefusal(error);
+          refusedInConfiguration = showChannelBindingRefusal(error);
+          feedback.textContent = refusedInConfiguration
+            ? ""
+            : detail + (failure.requestId ? ` Request ID: ${failure.requestId}` : "");
           // While the pressed control is still disabled, as after a save.
           focusFeedbackLine(feedback);
           if (nameTaken) {
@@ -3368,6 +3388,9 @@ function renderAgentForm(
         }
         pending = false;
         updateControls();
+        if (refusedInConfiguration) {
+          focusConfiguration();
+        }
         return;
       }
       if (!context.isCurrent()) {
@@ -3378,6 +3401,7 @@ function renderAgentForm(
     context.setDraftCapture(null);
     let mutationStarted = false;
     let creatingSecret = false;
+    let refusedInConfiguration = false;
     try {
       if (passwordAuth && !usesOAuth && !savedSecret) {
         mutationStarted = true;
@@ -3673,13 +3697,12 @@ function renderAgentForm(
         capabilitiesUnreadable &&
         error.status === 403;
       credentialGrantRefused ||= memberGrantRefused;
-      feedback.textContent =
-        (memberGrantRefused ? MEMBER_GRANT_REFUSED : detail) +
-        guidance +
-        (error.requestId ? ` Request ID: ${error.requestId}` : "");
-      if (!savedConfiguration) {
-        showChannelBindingRefusal(cause);
-      }
+      refusedInConfiguration = !savedConfiguration && showChannelBindingRefusal(cause);
+      feedback.textContent = refusedInConfiguration
+        ? ""
+        : (memberGrantRefused ? MEMBER_GRANT_REFUSED : detail) +
+          guidance +
+          (error.requestId ? ` Request ID: ${error.requestId}` : "");
       focusFeedbackLine(feedback);
       // A create that raced another Agent to the name (the preflight checked it).
       if (!savedAgent && error.status === 409 && error.serverMessage === AGENT_NAME_CONFLICT) {
@@ -3695,6 +3718,9 @@ function renderAgentForm(
           renderChannelEditor();
         }
         updateControls();
+        if (refusedInConfiguration) {
+          focusConfiguration();
+        }
       }
     }
   });

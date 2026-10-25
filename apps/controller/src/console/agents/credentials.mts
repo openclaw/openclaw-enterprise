@@ -9,6 +9,7 @@ import type {
 import { requestFailure, responseFields } from "../api-client.mjs";
 import { sameValue } from "../carry.mjs";
 import { element, button, focusSaveOutcome, setStatusTone, validateFields } from "../dom.mjs";
+import { wholeEnvironmentReferenceName } from "../environment-references.mjs";
 import {
   configurationConflictMessage,
   isStaleGeneration,
@@ -46,6 +47,16 @@ function channelEnabled(values: unknown, provider: string) {
   );
 }
 
+// The environment key a Slack token reads, as the Slack Channel Driver reads it: an env
+// SecretRef's id, or NAME when the token is exactly one `${NAME}` (finding 2513).
+function slackTokenKey(token: unknown) {
+  if (typeof token === "string") {
+    return wholeEnvironmentReferenceName(token);
+  }
+  const { source, id } = responseFields(token);
+  return source === "env" && typeof id === "string" ? id : undefined;
+}
+
 // Named accounts must not use the standard keys: OpenClaw reads SLACK_APP_TOKEN and
 // SLACK_BOT_TOKEN as an extra implicit default account. For them, require exactly the
 // environment keys the native document references; null means the default account only.
@@ -59,9 +70,9 @@ function namedSlackAccountKeys(values: unknown) {
   for (const account of [slack, ...Object.values(accounts)]) {
     const { appToken, botToken } = responseFields(account);
     for (const token of [appToken, botToken]) {
-      const { source, id } = responseFields(token);
-      if (source === "env" && typeof id === "string") {
-        keys.add(id);
+      const key = slackTokenKey(token);
+      if (key !== undefined) {
+        keys.add(key);
       }
     }
   }

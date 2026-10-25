@@ -115,7 +115,8 @@ is refused before any write. It then checks the Agent name, draft values with th
 ChatGPT sign-in) with
 `POST /namespaces/:namespaceId/agents/validate`, which refuses a name another Agent has with
 Agent create's `409` and a channel token reference without a binding with Configuration
-create's `400`, which `list.mts:channelBindingRefusal` also shows under the Configuration JSON;
+create's `400`. `list.mts:channelBindingRefusal` shows that refusal, and the same one from
+provisioning, only under the Configuration JSON;
 the Slack drawer requires both token Secrets while Slack is enabled. It then posts
 `{kind: "agent", values, secretBindings}` to `.../configurations` and submits its ID,
 plugins, `initialWorkspaceFiles`, and `workspaceDefaultsId` to `.../agents`.

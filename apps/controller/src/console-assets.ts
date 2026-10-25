@@ -112,6 +112,14 @@ const CONSOLE_ASSETS = new Map([
       contentType: "text/javascript; charset=utf-8",
     },
   ],
+  // The Console reads Slack tokens with OCC's environment reference grammar.
+  [
+    "/console/environment-references.mjs",
+    {
+      path: new URL("../../../packages/occ/src/environment-references.ts", import.meta.url),
+      contentType: "text/javascript; charset=utf-8",
+    },
+  ],
 ]);
 const CONSOLE_SHELL_ROUTES = new Set([
   "/console",
@@ -206,9 +214,7 @@ export async function readConsoleAsset(
     if (!asset.contentType.startsWith("text/")) {
       return { body: source, contentType: asset.contentType, statusCode: 200 };
     }
-    const body = asset.path.pathname.endsWith(".mts")
-      ? browserJavaScript(pathname, source)
-      : source;
+    const body = /\.m?ts$/.test(asset.path.pathname) ? browserJavaScript(pathname, source) : source;
     return encodedAsset(pathname, body, asset.contentType, acceptEncoding);
   }
   const shell = await readFile(CONSOLE_SHELL);

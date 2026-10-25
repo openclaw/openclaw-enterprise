@@ -25,6 +25,7 @@ import {
 } from "../helpers/auth-session.mjs";
 import { bindRole } from "../helpers/iam-grants.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
+import { referenceFormRefusal } from "../helpers/refusal-text.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 function createConfigurationBackend() {
@@ -4227,6 +4228,10 @@ test("Configuration and Preset saves refuse a literal secret in the other slots 
     at(field, value),
     message(field),
   ];
+  // A channel setting is named as the channel rules name it, `channels.telegram.botToken`
+  // (finding 2517).
+  const channelLiteral = (field) =>
+    referenceFormRefusal(field.slice(1).replaceAll("/", "."), "inline");
   const tokenUrl = `https://chat.example.test/?token=${sentinel}`;
   const refused = [
     // Slots the pinned OpenClaw schema registers sensitive.
@@ -4243,22 +4248,22 @@ test("Configuration and Preset saves refuse a literal secret in the other slots 
     slot("/agents/defaults/sandbox/ssh/knownHostsData"),
     slot("/storage/locations/backup/encryption/passphrase"),
     // Channel settings: a token, an account's password and an inline service account.
-    slot("/channels/telegram/botToken"),
-    slot("/channels/matrix/accounts/work/password"),
-    slot("/channels/googlechat/serviceAccount", literalKey, { private_key: sentinel }),
+    slot("/channels/telegram/botToken", channelLiteral),
+    slot("/channels/matrix/accounts/work/password", channelLiteral),
+    slot("/channels/googlechat/serviceAccount", channelLiteral, { private_key: sentinel }),
     // A field only the channel's manifest marks sensitive: a URL that carries a token.
-    slot("/channels/synology-chat/incomingUrl", literalKey, tokenUrl),
-    slot("/channels/synology-chat/accounts/ops/webhookUrl", literalKey, tokenUrl),
-    slot("/channels/synology-chat/webhookUrl", literalKey, tokenUrl),
-    slot("/channels/synology-chat/accounts/ops/incomingUrl", literalKey, tokenUrl),
+    slot("/channels/synology-chat/incomingUrl", channelLiteral, tokenUrl),
+    slot("/channels/synology-chat/accounts/ops/webhookUrl", channelLiteral, tokenUrl),
+    slot("/channels/synology-chat/webhookUrl", channelLiteral, tokenUrl),
+    slot("/channels/synology-chat/accounts/ops/incomingUrl", channelLiteral, tokenUrl),
     // Each word of the rule: a secret, an encryption key, a service account reference.
-    slot("/channels/line/channelSecret"),
-    slot("/channels/feishu/encryptKey"),
-    slot("/channels/googlechat/serviceAccountRef"),
+    slot("/channels/line/channelSecret", channelLiteral),
+    slot("/channels/feishu/encryptKey", channelLiteral),
+    slot("/channels/googlechat/serviceAccountRef", channelLiteral),
     // Two literals in one channel: the first in the document is named.
     [
       { channels: { telegram: { botToken: sentinel, webhookSecret: sentinel } } },
-      literalKey("/channels/telegram/botToken"),
+      channelLiteral("/channels/telegram/botToken"),
     ],
     // Plugin settings: a key, an account's password, a list entry, a field only the manifest
     // marks sensitive and a headers map.
@@ -4296,7 +4301,7 @@ test("Configuration and Preset saves refuse a literal secret in the other slots 
     variables: { token: { type: "string" } },
     configuration: { values: { channels: { telegram: { botToken: "{{ vars.token }}" } } } },
   });
-  assertRefused(variable, literalKey("/channels/telegram/botToken"));
+  assertRefused(variable, channelLiteral("/channels/telegram/botToken"));
   await assertNothingStored(context, [`${created.body.data.id}.json`]);
 
   // `${NAME}` and SecretRef references still save, and so do settings the rule leaves alone:
@@ -4375,21 +4380,21 @@ test("a credential reference that is not the whole value is refused with a messa
   assert.equal(created.status, 201, JSON.stringify(created.body));
   const item = `${context.collection}/${created.body.data.id}`;
   const sentinel = `synthetic-${randomUUID()}`;
-  const field = (path) => `Configuration field ${path} holds`;
-  const shorthand = (path) =>
-    `${field(path)} a $NAME value, where a credential reference is required. Write it as one \${NAME} reference, or a SecretRef.`;
-  const fallback = (path) =>
-    `${field(path)} a \${NAME:-…} fallback, which would replace a missing credential. Make the value one \${NAME} reference without a fallback, or a SecretRef.`;
-  const around = (path) =>
-    `${field(path)} text around a \${NAME} reference, where a credential reference must be the whole value. Make the value one \${NAME} reference alone, or a SecretRef.`;
+  // The message names the setting as the channel binding rules do (finding 2503).
+  const shorthand = (path) => referenceFormRefusal(path, "shorthand");
+  const fallback = (path) => referenceFormRefusal(path, "fallback");
+  const otherText = (path) => referenceFormRefusal(path, "otherText");
   const slack = (botToken) => ({ channels: { slack: { enabled: true, botToken } } });
-  const bot = "/channels/slack/botToken";
+  const bot = "channels.slack.botToken";
   for (const [values, message] of [
     [slack("$SLACK_BOT_TOKEN"), shorthand(bot)],
     [slack("${SLACK_BOT_TOKEN:-}"), fallback(bot)],
     [slack(`\${SLACK_BOT_TOKEN:-${sentinel}}`), fallback(bot)],
-    [slack(`${sentinel}-\${SLACK_BOT_TOKEN}`), around(bot)],
-    [slack("xoxb-${SLACK_BOT_TOKEN}"), around(bot)],
+    [slack(`${sentinel}-\${SLACK_BOT_TOKEN}`), otherText(bot)],
+    [slack("xoxb-${SLACK_BOT_TOKEN}"), otherText(bot)],
+    // A line break or a second reference is not text, but still not the whole value (finding 2503).
+    [slack("${SLACK_BOT_TOKEN}\n"), otherText(bot)],
+    [slack("${SLACK_BOT_TOKEN}${SLACK_APP_TOKEN}"), otherText(bot)],
     // Any key slot: a plugin's API key and the Gateway's remote token.
     [
       {
@@ -4397,11 +4402,13 @@ test("a credential reference that is not the whole value is refused with a messa
           entries: { brave: { config: { webSearch: { apiKey: "Bearer ${BRAVE_KEY}" } } } },
         },
       },
-      around("/plugins/entries/brave/config/webSearch/apiKey"),
+      otherText("plugins.entries.brave.config.webSearch.apiKey"),
     ],
-    [{ gateway: { remote: { token: "$REMOTE_TOKEN" } } }, shorthand("/gateway/remote/token")],
-    // An escape renders literal text, so it is a literal credential, with that message.
-    [slack("$${SLACK_BOT_TOKEN}"), literalKey(bot)],
+    [{ gateway: { remote: { token: "$REMOTE_TOKEN" } } }, shorthand("gateway.remote.token")],
+    // An escape renders literal text, so it is a literal credential, with that message. So is a
+    // `$` before a name the runtime does not read as one (finding 2517).
+    [slack("$${SLACK_BOT_TOKEN}"), referenceFormRefusal(bot, "inline")],
+    [slack(`$xoxb${sentinel}`), referenceFormRefusal(bot, "inline")],
   ]) {
     await refusedOnSave(context, values, message, { item, sentinel });
   }
