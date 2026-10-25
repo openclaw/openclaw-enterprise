@@ -14,7 +14,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { promisify } from "node:util";
-import { imageSmokeTimeoutMultiplier } from "./image-smoke-timeout.mjs";
+import { cpuScaledImageTimeoutMs, imageSmokeTimeoutMultiplier } from "./image-smoke-timeout.mjs";
 import { temporaryDirectory } from "./temporary-directory.mjs";
 import { followContainer } from "./docker-follow.mjs";
 import { GATEWAY_RUNTIME_ENTRYPOINT as DOCKER_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/docker/index.ts";
@@ -301,7 +301,8 @@ function readinessProbe(request) {
 
 // Each readiness attempt used to be a `docker inspect` and a `docker exec`
 // 250 ms apart: about 460 ms on an idle runner, longer under load. 1.5 s per
-// attempt keeps at least that time.
+// attempt keeps at least that time on 8 CPUs; the wait grows on fewer CPUs,
+// where the lane's other files start runtimes at the same time (finding 2460).
 const readinessAttemptMs = 1_500;
 
 export async function waitForGatewayReady(containerName, readinessAttempts = 60) {
@@ -309,7 +310,7 @@ export async function waitForGatewayReady(containerName, readinessAttempts = 60)
     label: "Gateway",
     request:
       '() => fetch("http://127.0.0.1:8080/readyz", { signal: AbortSignal.timeout(5000) }).then((response) => response.status)',
-    timeoutMs: readinessAttempts * readinessAttemptMs * imageSmokeTimeoutMultiplier,
+    timeoutMs: cpuScaledImageTimeoutMs(readinessAttempts * readinessAttemptMs),
   });
 }
 
