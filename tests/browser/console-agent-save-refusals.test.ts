@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import test, { type TestContext } from "node:test";
 import type { Page } from "playwright";
 
@@ -42,6 +43,8 @@ const AGENT_UPDATE_DENIED =
   "Your access does not include updating this Agent. Ask an administrator for Agent update access to save these settings.";
 const AGENT_SOURCES_DENIED =
   "Saving these settings needs operate on each Secret and credential source this Agent and its Configuration bind, which your access does not include. Ask an administrator for that access.";
+const AGENT_SOURCES_SERVICE_ACCOUNT_DENIED =
+  "Saving these settings needs operate on each Secret and credential source this Agent and its Configuration bind, and read on the ServiceAccount it uses for Harness authentication. Your access does not include all of them. Ask an administrator for that access.";
 const AGENT_CONFIGURATION_READ_DENIED =
   "Saving these settings needs read access to this Agent's Configuration, which your access does not include. Ask an administrator for Configuration read access.";
 const READ_REFUSAL =
@@ -269,6 +272,53 @@ test("an Agent editor without operate on the bound Secrets sees the Agent-side s
   );
   assert.equal(answer.data.update, true);
   assert.equal(answer.data.agentSourcesOperate, false);
+});
+
+// An Agent that uses a ServiceAccount for Harness authentication: each update also reads it. A
+// member with every operate grant but no read on that account was asked only for operate, which
+// an administrator could grant without effect (finding 2459). The note names both grants.
+test("an Agent editor without read on the Harness ServiceAccount is told about it", async (t) => {
+  const member = await readOnlyMember(t, "Account Read Off");
+  const { fixture, namespace, agent, page } = member;
+  // Issuance is outside this test: the account is seeded through State.
+  const account = await fixture.controller.transact((state) =>
+    state.serviceAccounts.createServiceAccount({
+      id: `sa_${randomUUID()}`,
+      namespaceId: namespace.id,
+      name: "Harness account",
+    }),
+  );
+  const switched = await fixture.request(
+    "PATCH",
+    `/namespaces/${namespace.id}/agents/${agent.id}`,
+    {
+      body: {
+        configurationId: agent.configurationId,
+        harnessAuth: {
+          method: "codex_pat",
+          source: { kind: "service_account", namespaceId: namespace.id, id: account.id },
+        },
+      },
+    },
+  );
+  assert.equal(switched.status, 200);
+  const reader = fixture.policy.roles.find((role) => role.id === "role-save-refusal-reader");
+  assert.ok(reader, "the read-only role exists");
+  reader.permissions.push(
+    { action: "update", resourceKind: "agent" },
+    { action: "operate", resourceKind: "secret" },
+  );
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "credentials").href,
+    member.member.credentials,
+  );
+  await page
+    .getByRole("status")
+    .filter({ hasText: AGENT_SOURCES_SERVICE_ACCOUNT_DENIED })
+    .waitFor();
+  assert.equal(await page.getByRole("status").filter({ hasText: AGENT_SOURCES_DENIED }).count(), 0);
 });
 
 // Each Agent update also needs Configuration read. When that read is the missing grant, the note

@@ -109,11 +109,7 @@ renders the name as text. `/console/theme/` serves only referenced images and
 generated CSS, returns a plain 404 for missing assets, and uses `no-store` so an
 API restart can replace the theme.
 
-`apps/controller/src/composition/production.ts:composeProduction`
-
-`apps/controller/src/composition/development-postgres.ts:composePostgresDevelopment`
-
-Startup passes safe Backend `{id,type}` summaries to `createFastifyApp`.
+Startup (see Entry Points) passes safe Backend `{id,type}` summaries to `createFastifyApp`.
 [Backend-managed delivery](service-account-driver-credential-delivery.md) owns
 Driver activation. Requests do not reread configuration or credentials.
 
@@ -376,10 +372,5 @@ refresh and inspection.
 ## Changelog
 
 - 2026-10-21 22:22: Connect console themes to API startup and the shared shell. (authoring-run/634a754f-a79e-4aac-94fe-0646caf6a287 - 2c9e7f6c4)
-- 2026-10-20 15:53: Add Namespace Secret management and uncertain-write recovery in the accompanying console change. (authoring-run/9b10a6df-a6ce-4d38-859d-480a59d95cf0 - e8185dac8)
-- 2026-10-20 14:55: Add startup-loaded console themes and public asset confinement with accompanying source changes. (authoring-run/485ab8a9-4293-44df-a85f-f8f051b74bf8 - e8185dac805b737363c7178d3068b310a53a7c24)
-
-- 2026-10-20 05:00: Move the Create Agent form trace to [Agent creation](platform-console/agent-creation.md). (docs-split-1020)
-- 2026-10-19 15:16: Namespace creation and recovery. (authoring-run/e988d724-dd95-4e63-a711-5fd44393f211 - 141515257737cccdb75137fabbeec707915856af)
 
 [Platform console request documentation history](platform-console/history.md) preserves the older dated entries.
