@@ -4010,7 +4010,7 @@ export async function renderAgentDetail(
       let updateDenied = false;
       const applyUpdateDenial = (reason: string | undefined) => {
         // Retry credential access only rechecks the Secret grant; it is not an Agent update.
-        if (savedAuthentication || updateDenied === (reason !== undefined)) {
+        if (savedAuthentication || (reason === undefined && !updateDenied)) {
           return;
         }
         updateDenied = reason !== undefined;
