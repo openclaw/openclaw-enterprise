@@ -487,3 +487,41 @@ test("Slack credential checks read only a whole ${NAME} token string as an env r
   }
   assert.deepEqual(read, ["SLACK_BOT_TOKEN"]);
 });
+
+test("Slack credential checks name the missing proxy only when production expects one and Slack never answered", async (t) => {
+  // Finding 2521: production composition passes expectProxy. With no proxy URL, an unanswered
+  // auth.test means the Installation has no Slack route, so the refusal names the Helm setting.
+  const check = (driver) =>
+    driver.validateCredentials(
+      { channels: { slack: { mode: "http", botToken: "${SLACK_BOT_TOKEN}" } } },
+      async (_id, _field, use) => use(token),
+    );
+  const unanswered = async () => {
+    throw new TypeError("fetch failed");
+  };
+  await assert.rejects(
+    check(new SlackChannelDriver(unanswered, undefined, { expectProxy: true })),
+    {
+      name: "SlackRouteNotConfiguredError",
+      message: /no Slack proxy for the API\. An administrator must set Helm slackProxy\.enabled/,
+    },
+  );
+  // Development composition expects no proxy: the same failure stays the transient outage.
+  await assert.rejects(check(new SlackChannelDriver(unanswered)), {
+    reason: "unavailable",
+    path: "/channels/slack/botToken",
+  });
+  // With a proxy configured, a refused tunnel is an outage of that route, not a missing setting.
+  const proxy = createServer();
+  proxy.on("connect", (_request, socket) => {
+    socket.end("HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n");
+  });
+  await new Promise((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+  t.after(() => proxy.close());
+  const proxied = new SlackChannelDriver(
+    globalThis.fetch,
+    `http://127.0.0.1:${proxy.address().port}`,
+    { expectProxy: true },
+  );
+  await assert.rejects(check(proxied), { reason: "unavailable", path: "/channels/slack/botToken" });
+});
