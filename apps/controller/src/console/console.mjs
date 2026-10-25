@@ -485,6 +485,28 @@ function takeNativeFragment(current) {
 const shellUI = createShell({ app, pages, route, pageUrl, navigate, loadPage, logout });
 shellUI.setLeaveGuard((options) => Boolean(leaveGuard?.(options)));
 const { publicPanel, renderRows, switchNamespace } = shellUI;
+
+// The page names a Namespace the reader cannot read. Switch Namespace focuses the header's
+// selector, which is disabled when no Namespace is readable (a member whose only grant was
+// revoked, on a bookmarked link), so the panel then points at the header's Refresh, as the
+// no-readable-Namespace panel does (findings 2371, 2393).
+function namespaceUnavailablePanel(view) {
+  if (namespaces.length) {
+    panel(
+      view,
+      "Namespace unavailable",
+      "This Namespace is missing or you no longer have access. Choose another Namespace.",
+      "Switch Namespace",
+      () => switchNamespace(),
+    );
+    return;
+  }
+  panel(
+    view,
+    "Namespace unavailable",
+    "This Namespace is missing or you no longer have access, and you cannot read any other Namespace. Ask an administrator to grant you access to one, then Refresh.",
+  );
+}
 const request = createApiClient({
   lifetime,
   hasSession: () => session !== null,
@@ -1806,16 +1828,17 @@ async function loadPage({
     }
     if (scopedNamespaceUnavailable) {
       clearRetainedViewsForNamespace(namespaceId);
-      // With nothing to switch to, the header's Refresh is the one way to look again, so the
-      // panel adds no second Refresh (finding 2371).
-      panel(
-        shell.view,
-        namespaceId === null ? "No readable Namespaces" : "Namespace unavailable",
-        namespaceId === null
-          ? "Ask an administrator to create a Namespace or grant you access to one, then Refresh."
-          : "This Namespace is missing or you no longer have access. Choose another Namespace.",
-        ...(namespaces.length ? ["Switch Namespace", () => switchNamespace()] : []),
-      );
+      if (namespaceId === null) {
+        // With nothing to switch to, the header's Refresh is the one way to look again, so the
+        // panel adds no second Refresh (finding 2371).
+        panel(
+          shell.view,
+          "No readable Namespaces",
+          "Ask an administrator to create a Namespace or grant you access to one, then Refresh.",
+        );
+      } else {
+        namespaceUnavailablePanel(shell.view);
+      }
       return;
     }
     const agentContext = {
@@ -2357,14 +2380,7 @@ async function revalidateMountedAgent(current) {
     if (!namespaces.some((item) => item.id === selectedNamespace)) {
       clearRetainedViewsForNamespace(selectedNamespace);
       resetReads();
-      const shell = renderShell(current.feature);
-      panel(
-        shell.view,
-        "Namespace unavailable",
-        "This Namespace is missing or you no longer have access. Choose another Namespace.",
-        "Switch Namespace",
-        () => switchNamespace(),
-      );
+      namespaceUnavailablePanel(renderShell(current.feature).view);
       return;
     }
     checking = "detail";

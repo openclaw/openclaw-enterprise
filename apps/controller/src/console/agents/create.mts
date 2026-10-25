@@ -262,6 +262,12 @@ function configurationTemplate(harnessId: string, nativeProvider: string, provid
   };
 }
 
+// The first sentence of a Driver refusal that names a setting: the requirement, without the
+// advice that follows it.
+function settingRequirement(refusal: string): string {
+  return refusal.split(/(?<=\.)\s+/u)[0] ?? refusal;
+}
+
 function selectedHarnessAuth(
   method: string,
   source: CredentialReference | null | undefined,
@@ -2373,15 +2379,29 @@ function renderAgentForm(
     nativeWorkersUnavailable.hidden =
       !nativeRefused || noOpenClawMode || mode.value !== "dedicated";
     // A setting refusal names the setting to change, not another Sandbox Driver (finding 2373).
+    // Its last sentence advises "Select Codex, or ask an operator to …"; quote only the
+    // requirement when this form cannot select Codex: a Preset's binding locks the harness, or
+    // Anthropic hides it (finding 2392).
+    const codexSelectable = !harnessChoiceLocked && nativeProvider.value !== "anthropic";
     const dedicatedRefusalReason = dedicatedSettingRefusal
-      ? `its settings refuse Dedicated OpenClaw. ${dedicatedSettingRefusal}`
+      ? `its settings refuse Dedicated OpenClaw. ${codexSelectable ? dedicatedSettingRefusal : settingRequirement(dedicatedSettingRefusal)}`
       : "it cannot run Dedicated OpenClaw.";
+    // What a reader without a Preset can do when no OpenClaw mode is usable.
+    let noOpenClawAdvice = "";
+    if (!dedicatedSettingRefusal) {
+      noOpenClawAdvice =
+        " Choose OpenAI with the Codex harness, or ask an administrator to select a Sandbox Driver that can provision dedicated OpenClaw, with a runtime that has native worker support.";
+    } else if (!codexSelectable && !harnessChoiceLocked) {
+      // Anthropic hides Codex, so name the provider switch the Driver's advice leaves out.
+      noOpenClawAdvice =
+        " Choose OpenAI with the Codex harness, or ask an operator to change that setting.";
+    }
     const modeRefusal = sandboxDriverOutage
       ? SANDBOX_DRIVER_OUTAGE
       : noOpenClawMode
         ? binding?.method === "runtime"
           ? `OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and ${dedicatedRefusalReason} This Preset's operator-managed credentials require OpenClaw. Ask an administrator, or start without a Preset.`
-          : `OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and ${dedicatedRefusalReason}${dedicatedSettingRefusal ? "" : " Choose OpenAI with the Codex harness, or ask an administrator to select a Sandbox Driver that can provision dedicated OpenClaw, with a runtime that has native worker support."}`
+          : `OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and ${dedicatedRefusalReason}${noOpenClawAdvice}`
         : openclawEmbeddedRefused && mode.value === "embedded"
           ? binding?.method === "runtime"
             ? "This Preset's operator-managed credentials require Embedded OpenClaw, which this installation refuses because it selects a Sandbox Driver. Ask an administrator, or start without a Preset."

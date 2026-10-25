@@ -986,6 +986,16 @@ test("When the Sandbox Driver's settings refuse Dedicated OpenClaw, Create Agent
     await page.getByRole("button", { name: "Create Agent", exact: true }).isDisabled(),
     true,
   );
+  // Anthropic hides Codex, so the refusal keeps the setting and names the provider switch instead
+  // of "Select Codex" (finding 2392).
+  await page.getByLabel("Provider", { exact: true }).selectOption("anthropic");
+  await alert
+    .filter({ hasText: /Choose OpenAI with the Codex harness, or ask an operator/ })
+    .waitFor();
+  assert.equal(
+    await alert.textContent(),
+    "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and its settings refuse Dedicated OpenClaw. Dedicated OpenClaw needs example.setting: false in the Sandbox Driver configuration. Choose OpenAI with the Codex harness, or ask an operator to change that setting.",
+  );
   assert.deepEqual(writesSinceFill(), []);
 });
 
@@ -1301,10 +1311,17 @@ test("Operator-managed Preset credentials name the Preset when the Installation 
       { executionModes: [] },
       "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and it cannot run Dedicated OpenClaw. This Preset's operator-managed credentials require OpenClaw. Ask an administrator, or start without a Preset.",
     ],
-    // A setting refusal is shown as the API words it (finding 2373).
+    // A setting refusal names the setting as the API words it (finding 2373), but not its "Select
+    // Codex" advice: the Preset locks the harness to OpenClaw (finding 2392).
     [
-      { executionModes: [], settingRefusals: { dedicated: "Set example.setting: false." } },
-      "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and its settings refuse Dedicated OpenClaw. Set example.setting: false. This Preset's operator-managed credentials require OpenClaw. Ask an administrator, or start without a Preset.",
+      {
+        executionModes: [],
+        settingRefusals: {
+          dedicated:
+            "Dedicated OpenClaw needs example.setting: false in the Sandbox Driver configuration. Select Codex, or ask an operator to set it.",
+        },
+      },
+      "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and its settings refuse Dedicated OpenClaw. Dedicated OpenClaw needs example.setting: false in the Sandbox Driver configuration. This Preset's operator-managed credentials require OpenClaw. Ask an administrator, or start without a Preset.",
     ],
     [
       { executionModes: ["dedicated"] },

@@ -1212,6 +1212,14 @@ export const scenarios = {
     path: "/console/agents?namespace=ns_missing",
     description: "A stale Namespace link asks the reader to switch scope.",
   },
+  namespaceMissingNoneReadable: {
+    group: "Pages/Agents",
+    name: "Namespace unavailable, none readable",
+    emptyNamespaces: true,
+    path: "/console/agents?namespace=ns_missing",
+    description:
+      "A stale Namespace link for a reader with no readable Namespace points at the header's Refresh, with no Switch Namespace button.",
+  },
   agentsCreateRestricted: {
     group: "Pages/Agents",
     name: "Create Agent unavailable for this caller",
