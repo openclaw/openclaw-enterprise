@@ -3,6 +3,11 @@ import { element } from "../dom.mjs";
 import { SLACK_SECRET_BINDINGS } from "../agents/credentials.mjs";
 import { createSlackDirectoryField, isSlackConfigTarget } from "../agents/slack-directory.mjs";
 import {
+  environmentReferenceNames,
+  secretInputShorthandName,
+  unsubstitutedReference,
+} from "../environment-references.mjs";
+import {
   createSecretReferenceField,
   sameNamespaceSecretHref,
   secretBinding,
@@ -36,12 +41,27 @@ const STANDARD_REFS = {
 const standardToken = (value: unknown, ref: { readonly id: string }) =>
   value === undefined || refsEqual(value, ref) || value === `\${${ref.id}}`;
 
-// A string with no `$` is the token itself, pasted as the value: it is named as Configuration
-// save names it, never shown (finding 2523). Anything else is a reference in another form.
-const tokenForm = (value: unknown) =>
-  typeof value === "string" && value.trim() !== "" && !value.includes("$")
-    ? "holds a credential value inline, where a reference is required"
-    : "uses a credential reference this editor does not write";
+// The card names a token it cannot edit as Configuration save names it, and never shows it
+// (findings 2523, 2530). A string is a reference only in a form the runtime reads as one, or with
+// a `${` it keeps as written. An object with a source is a SecretRef; any other object is the
+// object save refuses. Every other value holds the credential inline.
+const INLINE_TOKEN = "holds a credential value inline, where a reference is required";
+const REFERENCE_TOKEN = "uses a credential reference this editor does not write";
+const tokenForm = (value: unknown) => {
+  if (typeof value === "string") {
+    return secretInputShorthandName(value) !== undefined ||
+      environmentReferenceNames(value).length > 0 ||
+      unsubstitutedReference(value) !== undefined
+      ? REFERENCE_TOKEN
+      : INLINE_TOKEN;
+  }
+  if (isRecord(value)) {
+    return typeof value.source === "string"
+      ? REFERENCE_TOKEN
+      : "holds an object the Slack Channel Driver cannot read";
+  }
+  return INLINE_TOKEN;
+};
 
 const DM_POLICIES = ["pairing", "allowlist", "open", "disabled"];
 type SlackChannel = { users?: string[]; requireMention?: boolean };

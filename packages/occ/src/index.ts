@@ -552,7 +552,9 @@ export { imageReferenceProblem } from "./image-reference.ts";
 export type { ImageReferenceProblem } from "./image-reference.ts";
 export {
   environmentReference,
+  environmentReferenceNames,
   secretInputShorthandName,
+  unsubstitutedReference,
   wholeEnvironmentReferenceName,
 } from "./environment-references.ts";
 export {
