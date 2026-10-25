@@ -379,11 +379,14 @@ const unboundChannelReference = (path, name) =>
     path,
     `references ${name} without a Configuration Secret binding: bind ${name} in secretBindings to an environment-backed Secret, or remove the reference`,
   );
-const unsubstitutedChannelReference = (path, text) =>
-  setting(
-    path,
-    `contains ${text}, which the runtime does not substitute: use an uppercase \${NAME} bound to a Secret in secretBindings, or escape literal text as $\${NAME}`,
-  );
+// A channel credential `${` the runtime does not substitute (finding 2477), shown as a plain
+// `${name}` or, for other text, only described.
+const useUppercase =
+  "use an uppercase ${NAME} bound to a Secret in secretBindings, or escape literal text as $${NAME}";
+const unsubstitutedChannelReference = (path, shown) =>
+  setting(path, `contains ${shown}, which the runtime does not substitute: ${useUppercase}`);
+const unsubstitutedChannelText = (path) =>
+  setting(path, `contains a \${ the runtime does not substitute: ${useUppercase}`);
 const absoluteUrl = (field) =>
   `Configuration field ${field} must be an absolute http or https URL.`;
 const modelApi = (field) =>
@@ -1718,17 +1721,30 @@ for (const computeImplementation of ["occ/kubernetes", "kubernetes-local"]) {
       );
     }
     // A `${` the runtime does not substitute (a lowercase name, `-` without `:`) would reach
-    // Teams as written, so it is refused even with every binding (finding 2477).
-    for (const [appPassword, shown] of [
-      ["${msteams_password}", "${msteams_password}"],
-      ["${MSTEAMS_APP_PASSWORD-fallback}", '"${MSTEAMS_APP_PASSWORD-fallback}"'],
+    // Teams as written, so it is refused even with every binding (finding 2477). That text may be
+    // the password itself: the message shows only a plain `${name}` or the name before `-`, and
+    // never the rest of the value.
+    const secretText = "9f3c2a7b1d8e4f60a5b6c7d8e9f01234";
+    for (const [appPassword, message] of [
+      [
+        "${msteams_password}",
+        unsubstitutedChannelReference("channels.msteams.appPassword", "${msteams_password}"),
+      ],
+      [`\${${secretText}}`, unsubstitutedChannelText("channels.msteams.appPassword")],
+      [
+        `${secretText}\${MSTEAMS_APP_PASSWORD-${secretText}}`,
+        setting(
+          "channels.msteams.appPassword",
+          "contains ${MSTEAMS_APP_PASSWORD-…}, which the runtime does not substitute: write a fallback as ${MSTEAMS_APP_PASSWORD:-text}, with MSTEAMS_APP_PASSWORD bound to a Secret in secretBindings",
+        ),
+      ],
     ]) {
       assertRefused(
         await request(context.app, "PATCH", `${collection}/${saved.body.data.id}`, {
           body: { values: withAppPassword(appPassword), secretBindings: allBindings },
         }),
-        unsubstitutedChannelReference("channels.msteams.appPassword", shown),
-        { label: appPassword },
+        message,
+        { label: appPassword, sentinel: secretText },
       );
     }
     for (const appPassword of [

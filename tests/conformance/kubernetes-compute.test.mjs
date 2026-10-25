@@ -10360,30 +10360,78 @@ test("native channel providers require Secret bindings and project them only to 
     );
   }
   // A `${` the runtime does not substitute would reach Slack as written: a secret-input field
-  // refuses it whatever the bindings hold (finding 2477).
+  // refuses it whatever the bindings hold (finding 2477). That text may be the token itself, so
+  // the message shows it only as a plain `${name}`, or only the name of `${NAME-text}`; the
+  // message is also the deployment diagnostic.
+  const useUppercase =
+    "use an uppercase ${NAME} bound to a Secret in secretBindings, or escape literal text as $${NAME}";
+  const token = "xoxb-1234567890-0987654321-AbCdEfGhIjKl";
+  const tokenForm = `Configuration setting channels.slack.botToken contains a \${ the runtime does not substitute: ${useUppercase}.`;
+  for (const [botToken, message] of [
+    [
+      "${slack_bot}",
+      `Configuration setting channels.slack.botToken contains \${slack_bot}, which the runtime does not substitute: ${useUppercase}.`,
+    ],
+    [
+      "${SLACK_BOT_TOKEN-xoxb-fallback}",
+      "Configuration setting channels.slack.botToken contains ${SLACK_BOT_TOKEN-…}, which the runtime does not substitute: write a fallback as ${SLACK_BOT_TOKEN:-text}, with SLACK_BOT_TOKEN bound to a Secret in secretBindings.",
+    ],
+    [`\${${token}}`, tokenForm],
+    [`\${${token}`, tokenForm],
+  ]) {
+    assert.throws(
+      () =>
+        driver.validateHarnessAuth(revision.harness, revision.harnessAuth, slackToken(botToken), {
+          ...appBinding,
+          slack_bot: secretBindings.SLACK_BOT_TOKEN,
+          SLACK_BOT_TOKEN: secretBindings.SLACK_BOT_TOKEN,
+        }),
+      (error) => {
+        assert.equal(error.name, "ConfigurationHarnessError");
+        assert.equal(error.message, message, botToken);
+        assert.equal(error.message.includes("1234567890"), false, botToken);
+        return true;
+      },
+    );
+  }
+  // Named Slack accounts have the same secret-input fields, nested `relay.authToken` included.
+  const slackAccount = (account) => ({
+    agents: { defaults: { model: "codex/gpt-5" } },
+    channels: { slack: { accounts: { ops: account } } },
+  });
   assert.throws(
     () =>
       driver.validateHarnessAuth(
         revision.harness,
         revision.harnessAuth,
-        slackToken("${slack_bot}"),
-        { ...appBinding, slack_bot: secretBindings.SLACK_BOT_TOKEN },
+        slackAccount({ botToken: "$OPS_BOT" }),
+        {},
       ),
     {
       name: "ConfigurationHarnessError",
       message:
-        "Configuration setting channels.slack.botToken contains ${slack_bot}, which the runtime does not substitute: use an uppercase ${NAME} bound to a Secret in secretBindings, or escape literal text as $${NAME}.",
+        "Configuration setting channels.slack.accounts.ops.botToken references OPS_BOT without a Configuration Secret binding: bind OPS_BOT in secretBindings to an environment-backed Secret, or remove the reference.",
     },
   );
-  // Elsewhere the runtime keeps both forms as written, so they need no binding: a named Teams
-  // account's appPassword is not a secret-input field.
+  assert.throws(
+    () =>
+      driver.validateHarnessAuth(
+        revision.harness,
+        revision.harnessAuth,
+        slackAccount({ relay: { authToken: "${relay}" } }),
+        {},
+      ),
+    {
+      name: "ConfigurationHarnessError",
+      message: `Configuration setting channels.slack.accounts.ops.relay.authToken contains \${relay}, which the runtime does not substitute: ${useUppercase}.`,
+    },
+  );
+  // Outside a secret-input field the runtime keeps `$NAME` and other `${` text as written, and a
+  // `:-fallback` fills an unset name, so none of them needs a binding.
   driver.validateHarnessAuth(
     revision.harness,
     revision.harnessAuth,
-    {
-      agents: { defaults: { model: "codex/gpt-5" } },
-      channels: { msteams: { accounts: [{ appPassword: "$TEAMS_PASSWORD${teams}" }] } },
-    },
+    slackAccount({ name: "$OPS ${x} ${OPS_NAME:-ops}" }),
     {},
   );
 

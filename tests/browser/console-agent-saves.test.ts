@@ -292,6 +292,28 @@ test("an unbound Slack token is refused at save, under its picker and under the 
     })
     .waitFor();
   assert.equal(await editor.getAttribute("aria-invalid"), "true");
+  // A token `${` the runtime does not substitute is refused under the Configuration JSON too
+  // (finding 2477).
+  await editor.fill(
+    JSON.stringify(
+      { ...slack, channels: { slack: { ...slack.channels.slack, appToken: "${slack_app}" } } },
+      null,
+      2,
+    ),
+  );
+  const unsubstituted = page.waitForResponse(
+    (r) => r.url() === url && r.request().method() === "PATCH",
+  );
+  await page.getByRole("button", { name: "Save Configuration", exact: true }).click();
+  assert.equal((await unsubstituted).status(), 400);
+  await page
+    .locator("#configuration-json-error")
+    .filter({
+      hasText:
+        "Configuration setting channels.slack.appToken contains ${slack_app}, which the runtime does not substitute: use an uppercase ${NAME} bound to a Secret in secretBindings, or escape literal text as $${NAME}.",
+    })
+    .waitFor();
+  assert.equal(await editor.getAttribute("aria-invalid"), "true");
   const stored = (await fixture.request("GET", configurationPath(c))).data;
   assert.equal(stored.generation, 1);
   assert.deepEqual(stored.values.channels, {});

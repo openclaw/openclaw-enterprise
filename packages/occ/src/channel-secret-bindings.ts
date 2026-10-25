@@ -52,10 +52,10 @@ export function enabledChannelEntries(
 /**
  * Each listed channel's credential references need a Configuration Secret binding of that name
  * where the Compute delivers channel credentials only from bindings, as Kubernetes Compute does.
- * A reference is an env SecretRef's `id`, each `${NAME}` the runtime substitutes in a string, and
- * in a secret-input field (`CHANNEL_SECRET_INPUTS`) a `$NAME` value (`environment-references.ts`).
- * A `${NAME}` counts anywhere in the text and also with a `:-fallback`: an unbound name is never
- * set there, so the fallback, often empty, always replaces it. A secret-input field that holds a
+ * A reference is an env SecretRef's `id`, each `${NAME}` the runtime substitutes in a string
+ * without a `:-fallback`, and in a secret-input field (`CHANNEL_SECRET_INPUTS`) also a `${NAME}`
+ * with one and a `$NAME` value (`environment-references.ts`): an unbound name is never set there,
+ * so the fallback, often empty, would replace the credential. A secret-input field that holds a
  * `${` the runtime does not substitute, such as a lowercase name, is refused too: the runtime
  * would send that text as the credential (findings 2475-2477). Refuses the first such value,
  * naming its setting and the binding or text. Configuration save, provisioning and Agent create's
@@ -82,15 +82,27 @@ export function requireChannelSecretBindings(
   }
 }
 
-// Plain names show as written; any other text is quoted and shortened, so the message keeps its
-// cap.
-const shown = (text: string, plain: RegExp): string =>
-  text.length <= 32 && plain.test(text) ? text : quotedSettingKey(text, 32);
-
 const unboundRequirement = (name: string): string => {
-  const written = shown(name, /^[A-Za-z_][A-Za-z0-9_]*$/);
+  // Plain names show as written; any other env SecretRef id is quoted and shortened, so the
+  // message keeps its cap.
+  const written =
+    name.length <= 32 && /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ? name : quotedSettingKey(name, 32);
   return `references ${written} without a Configuration Secret binding: bind ${written} in secretBindings to an environment-backed Secret, or remove the reference`;
 };
+
+// The text the runtime keeps as written may be the credential itself, so the refusal shows it only
+// when it is a plain `${name}`, or only the name of `${NAME-text}`; otherwise it names the form.
+function unsubstitutedRequirement(literal: string): string {
+  const bind = "bound to a Secret in secretBindings";
+  if (/^\$\{[A-Za-z_][A-Za-z0-9_]{0,28}\}$/.test(literal)) {
+    return `contains ${literal}, which the runtime does not substitute: use an uppercase \${NAME} ${bind}, or escape literal text as $\${NAME}`;
+  }
+  const name = /^\$\{([A-Z_][A-Z0-9_]{0,28})-/.exec(literal)?.[1];
+  if (name !== undefined) {
+    return `contains \${${name}-…}, which the runtime does not substitute: write a fallback as \${${name}:-text}, with ${name} ${bind}`;
+  }
+  return `contains a \${ the runtime does not substitute: use an uppercase \${NAME} ${bind}, or escape literal text as $\${NAME}`;
+}
 
 const sameKeys = (left: readonly (string | number)[], right: readonly string[]): boolean =>
   left.length === right.length && right.every((key, index) => left[index] === key);
@@ -121,14 +133,13 @@ function channelReferenceRefusal(
     const secretInput = isSecretInput(keys, fields);
     const literal = secretInput ? unsubstitutedReference(value) : undefined;
     if (literal !== undefined) {
-      return {
-        path,
-        requirement: `contains ${shown(literal, /^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/)}, which the runtime does not substitute: use an uppercase \${NAME} bound to a Secret in secretBindings, or escape literal text as $\${NAME}`,
-      };
+      return { path, requirement: unsubstitutedRequirement(literal) };
     }
     const shorthand = secretInput ? secretInputShorthandName(value) : undefined;
+    // Outside a credential, a fallback works without a binding (`${SLACK_MODE:-socket}`); in one
+    // it would replace the unset name, often with an empty token.
     const name = [
-      ...environmentReferenceNames(value),
+      ...environmentReferenceNames(value, { fallbacks: secretInput }),
       ...(shorthand === undefined ? [] : [shorthand]),
     ].find((reference) => !bound(reference));
     return name === undefined ? undefined : { path, requirement: unboundRequirement(name) };

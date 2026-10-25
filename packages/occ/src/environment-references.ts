@@ -8,10 +8,16 @@
 // (`src/config/env-substitution.ts`).
 export const environmentReference = /\$(\$)?\{[A-Z_][A-Z0-9_]*(?::-([^${}]*))?\}/g;
 
-/** The variable names the runtime substitutes in `text`, in order: an escape names none. */
-export const environmentReferenceNames = (text: string): string[] =>
+/**
+ * The variable names the runtime substitutes in `text`, in order: an escape names none. With
+ * `fallbacks: false`, only those of references without a `:-fallback`, which fail the runtime's
+ * config load when the variable is unset.
+ */
+export const environmentReferenceNames = (text: string, { fallbacks = true } = {}): string[] =>
   [...text.matchAll(environmentReference)]
-    .filter(([, escaped]) => escaped === undefined)
+    .filter(
+      ([, escaped, fallback]) => escaped === undefined && (fallbacks || fallback === undefined),
+    )
     .map(([reference]) => reference.slice(2, reference.search(/[:}]/)));
 
 /**

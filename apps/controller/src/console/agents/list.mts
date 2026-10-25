@@ -332,13 +332,15 @@ export function rejectionMessage(cause: unknown, mutation = false): string {
 }
 
 // Configuration save's refusal of a channel credential reference without a Secret binding
-// (finding 2319), or undefined. It names the Configuration setting, so a form shows it under the
-// field that holds the Configuration as well as in its outcome.
+// (finding 2319), or of a channel credential `${` the runtime does not substitute (finding
+// 2477), or undefined. It names the Configuration setting, so a form shows it under the field
+// that holds the Configuration as well as in its outcome.
 export function channelBindingRefusal(cause: unknown): string | undefined {
   const { status, serverMessage } = requestFailure(cause);
   return status === 400 &&
     serverMessage?.startsWith("Configuration setting channels.") &&
-    serverMessage.includes(" without a Configuration Secret binding: ")
+    (serverMessage.includes(" without a Configuration Secret binding: ") ||
+      serverMessage.includes(" the runtime does not substitute: "))
     ? serverMessage
     : undefined;
 }
