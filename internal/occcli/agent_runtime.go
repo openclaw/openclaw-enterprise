@@ -36,7 +36,7 @@ var sleepContext = func(ctx context.Context, d time.Duration) error {
 
 // agentRevision returns the requested revision, or the Agent's active revision.
 // Without an active revision (for example, after a failed first deploy) it uses
-// the latest revision the caller can list and says so on notices, because that
+// the latest revision the caller can read and says so on notices, because that
 // is the version whose Pods and output explain the failure. When it had to read
 // the chosen revision's runtime description to decide, it returns that
 // description too (else nil).
@@ -71,7 +71,7 @@ func (app *application) agentRevision(
 		if err != nil {
 			return "", nil, err
 		}
-		noticef(notices, "notice: agent %s has no active revision; using %s, the latest revision you can list", agentID, latest)
+		noticef(notices, "notice: agent %s has no active revision; using %s, the latest revision you can read", agentID, latest)
 		return latest, nil, nil
 	}
 	// A newer revision than the active one is being deployed or has failed; while
@@ -234,7 +234,7 @@ func (app *application) agentRuntimeCommand() *cobra.Command {
 			return app.printRuntime(description, namespace, args[0], revisionID)
 		},
 	}
-	command.Flags().StringVar(&revision, "revision", "", "Revision ID (default: a newer not-yet-active revision with Pods or concrete Harness status, else the active revision, else the latest revision)")
+	command.Flags().StringVar(&revision, "revision", "", "Revision ID (default: a newer not-yet-active revision with Pods or concrete Harness status, else the active revision, else the latest revision you can read)")
 	return command
 }
 
@@ -268,7 +268,7 @@ func (app *application) agentLogsCommand() *cobra.Command {
 	}
 	flags := command.Flags()
 	flags.StringVar(&options.source, "source", "", "Log source: gateway, agent or sandbox")
-	flags.StringVar(&options.revision, "revision", "", "Revision ID (default: a newer not-yet-active revision with Pods or concrete Harness status, else the active revision, else the latest revision)")
+	flags.StringVar(&options.revision, "revision", "", "Revision ID (default: a newer not-yet-active revision with Pods or concrete Harness status, else the active revision, else the latest revision you can read)")
 	flags.StringVar(&options.pod, "pod", "", "Pod name (default: the source's first Pod)")
 	flags.BoolVar(&options.previous, "previous", false, "Read the previous container instance")
 	flags.IntVar(&options.tail, "tail", 200, "Lines from the end of the stream, 1 to 1000")

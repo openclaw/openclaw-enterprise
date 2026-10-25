@@ -139,7 +139,7 @@ a candidate with Pods is read unless exact active metadata proves it older.
 Unreadable or invalid active metadata does not exclude that Pod candidate.
 A candidate with only provider Harness status (`running`, `starting`, or `lost`)
 needs to be proven newer; `unknown` alone is not runtime evidence. Otherwise
-both read the selected version, else the latest version. They print the revision ID they
+both read the selected version, else the latest version you can `read`. They print the revision ID they
 read to stderr; a reader without Agent `operate` cannot probe runtime status, so the
 notice names the other readable version to pass. Notices call any other version newer or
 older only when the selected version's metadata proves it. `runtime` accepts `-o table|json|yaml`
