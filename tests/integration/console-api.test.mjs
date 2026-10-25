@@ -1308,10 +1308,9 @@ test("an IAM failure on any caller permission decision fails the whole answer in
   const namespacePermissions = `/namespaces/${namespace.id}/permissions`;
   const outage = (path, failing, session) =>
     fixture.withIamOutage(failing, () => fixture.request("GET", path, { session }));
+  // One exact decision: an action on one resource.
   const decision = (action, kind, id) => (request) =>
-    request.action === action &&
-    request.resource.kind === kind &&
-    (id === undefined || request.resource.id === id);
+    request.action === action && request.resource.kind === kind && request.resource.id === id;
 
   // The administrator's answers probe every decision; each one fails alone.
   for (const [label, failing] of [
