@@ -110,6 +110,9 @@ export const namespaceListNeed = (items: string): AccessNeed => ({
   grant: "Namespace read",
 });
 
+// A 403 that names no grant. message() adds who grants access; administratorMessage() does not.
+const PLAIN_ACCESS_DENIED = "Access denied. You do not have permission for this operation.";
+
 export function accessDenied({ task, grant }: AccessNeed) {
   return `Access denied. ${task} needs ${grant}, which your access does not include. Granting it ${askInstallationAdministrator("check that grant")}`;
 }
@@ -167,6 +170,15 @@ export const NEUTRAL_DEPLOYMENT_NOTES = {
   stopped: "Stopped before it finished",
 };
 
+// message() for a caller known to administer the Installation: its own 403 is not one that asking
+// an Installation administrator can fix, so the denial names nobody (finding 2113).
+export function administratorMessage(cause: unknown): string {
+  const error = responseFields(cause);
+  return error.status === 403 && typeof error.refusal !== "string"
+    ? PLAIN_ACCESS_DENIED
+    : message(cause);
+}
+
 export function message(cause: unknown, mutation = false, need?: AccessNeed): string {
   const error = responseFields(cause);
   if (error.code === "SAVED_CONFIGURATION_UNREADABLE") {
@@ -187,7 +199,7 @@ export function message(cause: unknown, mutation = false, need?: AccessNeed): st
       ? error.refusal
       : need
         ? accessDenied(need)
-        : `Access denied. You do not have permission for this operation. Granting it ${askInstallationAdministrator("check your access")}`;
+        : `${PLAIN_ACCESS_DENIED} Granting it ${askInstallationAdministrator("check your access")}`;
   }
   if (error.status === 404) {
     return "Resource unavailable in this Namespace. Check the ID and your access.";

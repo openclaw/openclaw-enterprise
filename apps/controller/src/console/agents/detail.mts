@@ -66,6 +66,7 @@ import {
   neutralDeploymentOutcome,
   outcomeLabel,
   preAdmissionRefusal,
+  askInstallationAdministrator,
   type AccessNeed,
 } from "./list.mjs";
 import {
@@ -86,7 +87,6 @@ import {
   channelCredentialBlockReason,
 } from "./credentials.mjs";
 import {
-  askInstallationAdministrator,
   credentialOperateGrants,
   ensureCredentialOperateBinding,
   secretOperateAnswer,

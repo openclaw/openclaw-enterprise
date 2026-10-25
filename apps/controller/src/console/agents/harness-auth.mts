@@ -304,7 +304,7 @@ export function createHarnessAuthFields(
       if (requestFailure(error).status === 401) {
         context.onExpired();
       } else {
-        feedback.textContent = `Service accounts unavailable. ${message(error, false, namespaceListNeed("service accounts"))}`;
+        feedback.textContent = `Service Accounts unavailable. ${message(error, false, namespaceListNeed("Service Accounts"))}`;
       }
     });
   return {

@@ -72,7 +72,11 @@ import {
   raceAgentName,
   waitForCreateFormReads,
 } from "./console-agents-test-support.mjs";
-import { AGENT_NAME_CONFLICT, READ_UNAVAILABLE } from "../helpers/refusal-text.mjs";
+import {
+  AGENT_NAME_CONFLICT,
+  READ_UNAVAILABLE,
+  namespaceListDenied,
+} from "../helpers/refusal-text.mjs";
 
 type ConsoleFixture = Awaited<ReturnType<typeof createBaseConsoleAppFixture>>;
 type FixtureResponse<Data> = Omit<Awaited<ReturnType<ConsoleFixture["request"]>>, "data"> & {
@@ -3200,6 +3204,61 @@ test("Preset Secret picker preserves existing mode on catalog failure and can sw
     await page.getByLabel("API key", { exact: true }).inputValue(),
     "new-token-after-catalog-error",
   );
+});
+
+test("Preset list and Preset Secret field name the Namespace read a Restriction denies", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Preset Namespace read", { ready: true });
+  const preset: FixtureResponse<Preset> = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/presets`,
+    { body: structuredClone(standardCodexPreset) },
+  );
+  assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  const { page } = await newPage(t, fixture);
+  await routeInstallationWithoutProvisioning(page, fixture);
+  // A Restriction on Namespace read, held only while Native IAM answers one list request: both
+  // lists check Namespace read first, so the real 403 is that grant's, never an item's.
+  const denyNamespaceReadOnce = (path: string) =>
+    page.route(
+      `${fixture.origin}${path}`,
+      async (route) => {
+        const restriction = {
+          id: `deny-namespace-read-${path}`,
+          namespaceId: namespace.id,
+          resourceKind: "namespace",
+          resourceId: namespace.id,
+          action: "read",
+          effect: "deny",
+        } as const;
+        fixture.policy.restrictions.push(restriction);
+        const response = await route.fetch().finally(() => {
+          fixture.policy.restrictions.splice(fixture.policy.restrictions.indexOf(restriction), 1);
+        });
+        assert.equal(response.status(), 403);
+        await route.fulfill({ response });
+      },
+      { times: 1 },
+    );
+
+  await denyNamespaceReadOnce(`/namespaces/${namespace.id}/presets`);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page
+    .getByText(`Presets unavailable. ${namespaceListDenied("Presets")}`, { exact: true })
+    .waitFor();
+
+  // With the list readable again, the chosen Preset's Secret field lists the Namespace's Secrets.
+  await page.reload();
+  await denyNamespaceReadOnce(`/namespaces/${namespace.id}/secrets`);
+  await page.getByLabel("Preset template").selectOption(preset.data.id);
+  await page.getByLabel("Secret source for Model Secret", { exact: true }).selectOption("existing");
+  await page
+    .getByText(
+      `Existing Secrets unavailable. ${namespaceListDenied("Secrets")} Choose create-new mode to enter a new token.`,
+      { exact: true },
+    )
+    .waitFor();
 });
 
 test("Preset picker ignores stale Preset responses after switching selection", async (t) => {

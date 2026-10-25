@@ -69,9 +69,6 @@ export function secretOperateAnswer(read: () => Promise<unknown>) {
 
 type CredentialReference = SecretReference | CredentialSourceReference;
 
-// Defined beside message(), whose denials use it too.
-export { askInstallationAdministrator } from "./list.mjs";
-
 // A malformed policy read is not an empty policy: never create a grant on that evidence.
 export function policyList<T>(value: unknown, read: (item: unknown) => T): T[] {
   if (!Array.isArray(value)) {

@@ -48,7 +48,7 @@ const ASK_INSTALLATION_ADMINISTRATOR =
   "needs Installation administration access: ask an Installation administrator to";
 export const accessDeniedNeeding = (task, grant) =>
   `Access denied. ${task} needs ${grant}, which your access does not include. Granting it ${ASK_INSTALLATION_ADMINISTRATOR} check that grant.`;
-// A Namespace list (Secrets, Presets, service accounts) is refused for lack of Namespace read.
+// A Namespace list (Secrets, Presets, Service Accounts) is refused for lack of Namespace read.
 export const namespaceListDenied = (items) =>
   accessDeniedNeeding(`Listing ${items} in this Namespace`, "Namespace read");
 export const CONSOLE_ACCESS_DENIED = `Access denied. You do not have permission for this operation. Granting it ${ASK_INSTALLATION_ADMINISTRATOR} check your access.`;

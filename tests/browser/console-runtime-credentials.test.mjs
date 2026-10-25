@@ -867,7 +867,7 @@ test("Credentials shows issued-account denial only while that source is selected
   fixture.policy.restrictions.splice(fixture.policy.restrictions.indexOf(restriction), 1);
   // The refusal names the grant the list checks and who can grant it.
   const feedback = page.getByText(
-    `Service accounts unavailable. ${namespaceListDenied("service accounts")}`,
+    `Service Accounts unavailable. ${namespaceListDenied("Service Accounts")}`,
     { exact: true },
   );
   const issuedAccount = page.getByLabel("Issued ChatGPT service account", { exact: true });
