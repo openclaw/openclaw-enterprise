@@ -350,6 +350,13 @@ function renderSlackBindings(state: ChannelState) {
   return list;
 }
 
+// Why the channel Secrets are read-only: the caller may not update the Configuration, or may not
+// operate every Secret it binds, which each Configuration save also needs (finding 2437).
+export const CHANNEL_SECRETS_CONFIGURATION_READ_ONLY =
+  "Your access does not include editing this Configuration, so its channel Secrets are read-only.";
+export const CHANNEL_SECRETS_OPERATE_READ_ONLY =
+  "Saving channel Secrets needs Secret operate on each Secret the Configuration binds, which your access does not include.";
+
 export function createChannelSecretsPanel({
   context,
   path,
@@ -362,8 +369,7 @@ export function createChannelSecretsPanel({
   checkGrants = false,
   canGrant = true,
   readOnly = () => false,
-  readOnlyReason = () =>
-    "Your access does not include editing this Configuration, so its channel Secrets are read-only.",
+  readOnlyReason = () => CHANNEL_SECRETS_CONFIGURATION_READ_ONLY,
   isCurrent = () => true,
   onOutstandingGrants,
   onConfigurationChange,

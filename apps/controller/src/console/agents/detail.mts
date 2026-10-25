@@ -72,6 +72,8 @@ import {
   grantWarning,
   harnessGrantSubject,
   createChannelSecretsPanel,
+  CHANNEL_SECRETS_CONFIGURATION_READ_ONLY,
+  CHANNEL_SECRETS_OPERATE_READ_ONLY,
   hasRequiredChannelCredentials,
   channelCredentialBlockReason,
 } from "./credentials.mjs";
@@ -2591,8 +2593,8 @@ export async function renderAgentDetail(
           readOnly: configurationReadOnly,
           readOnlyReason: () =>
             callerPermissions?.configurationUpdate === false
-              ? "Your access does not include editing this Configuration, so its channel Secrets are read-only."
-              : "Saving channel Secrets needs Secret operate on each Secret the Configuration binds, which your access does not include.",
+              ? CHANNEL_SECRETS_CONFIGURATION_READ_ONLY
+              : CHANNEL_SECRETS_OPERATE_READ_ONLY,
           isCurrent: () => panelNumber === channelPanelCount,
           onChange() {
             updateNavigationControls();
