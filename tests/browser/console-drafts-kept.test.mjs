@@ -17,6 +17,7 @@ import {
   repositoryCheckbox,
   selectSecret,
   settlePageRequests,
+  settledView,
   waitForCondition,
   waitForInputValue,
   writeRequests,
@@ -55,6 +56,10 @@ const sidebarLink = (page, name) =>
     .getByRole("navigation", { name: "Main navigation" })
     .getByRole("link", { name, exact: true });
 const heading = (page, name) => page.getByRole("heading", { name, exact: true });
+// A page load renders the whole shell more than once (the held or pending page, then the page),
+// and each render replaces the sidebar. A click whose press and release straddle a render is
+// lost, so a step that clicks after a navigation waits for that load to settle (finding 2504).
+const settled = (page) => page.locator(settledView).waitFor();
 // Refocusing the window rechecks the session and Namespace access.
 const refocus = (page) => page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
 
@@ -276,25 +281,32 @@ test("a failed Namespace read keeps drafts; a read that no longer lists their Na
   assert.equal(await asksBeforeUnload(page), true);
   await page.getByRole("button", { name: "Retry", exact: true }).click();
   await heading(page, "Namespaces").waitFor();
+  await settled(page);
   await sidebarLink(page, "Agents").click();
+  await settled(page);
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   await waitForInputValue(page.getByLabel("Agent name", { exact: true }), "Kept draft");
 
   // Another Namespace's pages keep the draft; a read that no longer lists its Namespace drops it.
+  // Until the switch settles, the held Create Agent form still shows its own Create Agent button.
   await page.getByLabel("Namespace", { exact: true }).selectOption(other.id);
+  await settled(page);
   await page.getByRole("button", { name: "Create Agent", exact: true }).waitFor();
   assert.equal(await asksBeforeUnload(page), true);
   revokeNamespace(fixture, namespace, "drafts-kept-revoke");
   await sidebarLink(page, "Namespaces").click();
   await heading(page, "Namespaces").waitFor();
+  await settled(page);
   await page.getByText("Other drafts", { exact: true }).waitFor();
   assert.equal(await page.getByText("Kept drafts", { exact: true }).count(), 0);
   assert.equal(await asksBeforeUnload(page), false);
 
   restoreNamespace(fixture, "drafts-kept-revoke");
   await sidebarLink(page, "Agents").click();
+  await settled(page);
   await page.getByRole("button", { name: "Create Agent", exact: true }).waitFor();
   await page.getByLabel("Namespace", { exact: true }).selectOption(namespace.id);
+  await settled(page);
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   await page.getByRole("button", { name: "Start with default Preset", exact: true }).waitFor();
   assert.equal(await page.getByLabel("Agent name", { exact: true }).count(), 0);
