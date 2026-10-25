@@ -20,7 +20,7 @@ function* slices(body: Buffer): Generator<Buffer> {
 }
 
 /**
- * Where a request with credentials was refused (finding 2411): the credential itself, the
+ * Where a request with credentials was refused (finding 2411): its credential for the route, the
  * session, the session's exchange capacity, the request target, its body, the send (the owner
  * refused or could not authorize it, or the provider connection failed before any write), the
  * spent draft allowance, or an internal failure.
@@ -48,6 +48,31 @@ export type RefusalRecord = Readonly<
     operation?: string;
   } & Partial<SessionLogIdentity>
 >;
+
+/**
+ * The token a Bearer or Basic authorization carries, for log attribution only: it names a
+ * session only if it is exactly an open session's bearer. The route's backend still decides
+ * whether the request is authenticated; a request for a repository that no binding names
+ * carries the session's own credential but is refused before session lookup.
+ */
+function presentedToken(authorization: string): string | undefined {
+  const bearer = /^(?:Bearer|token) ([A-Za-z0-9_-]{1,256})$/i.exec(authorization)?.[1];
+  if (bearer !== undefined) {
+    return bearer;
+  }
+  const basic = /^Basic ([A-Za-z0-9+/]{1,1024}={0,2})$/i.exec(authorization)?.[1];
+  if (basic === undefined) {
+    return undefined;
+  }
+  const bytes = Buffer.from(basic, "base64");
+  try {
+    const text = bytes.toString("utf8");
+    const colon = text.indexOf(":");
+    return colon < 0 ? undefined : text.slice(colon + 1);
+  } finally {
+    bytes.fill(0);
+  }
+}
 
 export interface AgentHandlerOptions {
   readonly config: ServiceConfig;
@@ -99,8 +124,12 @@ export function createAgentHandler(
     // Every refusal after this point is: one line per request, like the OpenShell route's
     // worker.openshell-git-denied. Each request is a separate TLS connection within the
     // listener's socket limit, so the Agent's own request rate bounds the volume.
-    const identity =
-      options.log && typeof bearer === "string" ? service.identify(bearer) : undefined;
+    const token = !options.log
+      ? undefined
+      : typeof bearer === "string"
+        ? bearer
+        : presentedToken(parsed.authorization);
+    const identity = token === undefined ? undefined : service.identify(token);
     let operation: string | undefined;
     const report = (status: number, code: string, reason: RefusalReason) => {
       try {

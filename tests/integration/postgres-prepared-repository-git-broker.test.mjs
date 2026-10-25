@@ -271,7 +271,8 @@ test(
     assert.equal(mixed.status, 400);
     keep();
     refusedOnce(mixed, "input_refused", "git-push");
-    // Another repository, GitHub REST and GraphQL are outside the Git-only route.
+    // Another repository, GitHub REST and GraphQL are outside the Git-only route, so the
+    // session's Git credential is not accepted there; the record still names the session.
     for (const path of [
       discovery.replace(b.repository, "wrong/other"),
       "/repos/" + b.repository,
@@ -279,8 +280,14 @@ test(
     ]) {
       const response = await b.http(path);
       keep();
-      refusedOnce(response, "request_refused");
+      refusedOnce(response, "credential_refused");
     }
+    // With an API credential, the Git-only route refuses the REST request itself.
+    const rest = await b.http("/repos/" + b.repository, {
+      headers: { authorization: "Bearer " + b.opened.bearer },
+    });
+    keep();
+    refusedOnce(rest, "request_refused");
     assert.equal(await useCount(), before);
     assert.equal(b.observed.length, beforeOrigin);
 

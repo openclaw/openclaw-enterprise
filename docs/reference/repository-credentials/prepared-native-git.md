@@ -107,16 +107,16 @@ Pod's `repository-credentials` container. Each refused request that carried a se
 credential writes one `repository-credentials.denied` JSON line. `reasonCode` is the code
 the Agent received, and `reason` says where the broker refused the request:
 
-| `reason`              | Cause                                                                                                |
-| --------------------- | ---------------------------------------------------------------------------------------------------- |
-| `session_unavailable` | The session is closed, expired or unknown to this broker                                             |
-| `capacity`            | The session has four requests in progress, or the broker is at its total limit (`exchange-capacity`) |
-| `request_refused`     | The route does not admit the request, for example another repository or the GitHub API               |
-| `input_refused`       | The request body was refused, for example a push to another ref or a draft with another head or base |
-| `not_dispatched`      | The worker did not authorize the send, for example after withdrawal, or the GitHub connection failed |
-| `operation_conflict`  | The grant's draft allowance was already used                                                         |
-| `credential_refused`  | The request carried a malformed session credential                                                   |
-| `service_error`       | An internal broker failure                                                                           |
+| `reason`              | Cause                                                                                                  |
+| --------------------- | ------------------------------------------------------------------------------------------------------ |
+| `session_unavailable` | The session is closed, expired or unknown to this broker                                               |
+| `capacity`            | The session has four requests in progress, or the broker is at its total limit (`exchange-capacity`)   |
+| `request_refused`     | The route does not admit the request, for example a GitHub API request on the Git-only profile         |
+| `input_refused`       | The request body was refused, for example a push to another ref or a draft with another head or base   |
+| `not_dispatched`      | The worker did not authorize the send, for example after withdrawal, or the GitHub connection failed   |
+| `operation_conflict`  | The grant's draft allowance was already used                                                           |
+| `credential_refused`  | The route does not accept the credential, for example a request for a repository that no binding names |
+| `service_error`       | An internal broker failure                                                                             |
 
 The line also carries `status`, `operation` (such as `git-push`) once the route is known,
 and the session ID, Namespace and `repositoryRef`. It never carries the session credential,
