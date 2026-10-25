@@ -21,6 +21,7 @@ import type {
   SandboxDriver,
 } from "@openclaw-enterprise/contracts";
 import {
+  CredentialProxyRepositoryOnlyError,
   DependencyUnavailableError,
   RepositoryGitProfileUnsupportedError,
   RepositoryGitSenderUnqualifiedError,
@@ -36,6 +37,25 @@ import {
   openShellExchangeCapabilities as capabilities,
 } from "./openshell-exchange-capabilities.ts";
 import { openAiStaticProvider } from "./openai-provider.ts";
+
+/** Whether `registration` is a registered supervisor middleware advertising no execution capability. */
+function registeredWithoutExecution(extensions: unknown, registration: string): boolean {
+  return (
+    Array.isArray(extensions) &&
+    extensions.some((value) => {
+      const item = asRecord(value);
+      return (
+        item?.configured_name === registration &&
+        (item.kind === "EXTENSION_KIND_SUPERVISOR_MIDDLEWARE" || item.kind === 4) &&
+        item.protocol_major === 1 &&
+        ![item.required_capabilities, item.supported_capabilities].some(
+          (list) =>
+            Array.isArray(list) && list.some((entry) => capabilities.includes(entry as string)),
+        )
+      );
+    })
+  );
+}
 
 export interface OpenShellProxyOptions {
   readonly middlewareName: string;
@@ -355,6 +375,17 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
             );
           })
         ) {
+          // Finding 2360: repository.openShell makes the request-phase Git service the only
+          // registration. Registered with no execution capability at all, it is a configuration
+          // that never serves a non-Git profile, not an outage or a partial negotiation.
+          if (
+            !git &&
+            registration === options.repositoryMiddlewareName &&
+            registration !== undefined &&
+            registeredWithoutExecution(extensions, registration)
+          ) {
+            throw new CredentialProxyRepositoryOnlyError();
+          }
           throw new DependencyUnavailableError(
             "The selected OpenShell counterpart has no negotiated protected egress authority.",
           );

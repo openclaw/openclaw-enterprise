@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 
 import type { CredentialReadLifetime } from "@openclaw-enterprise/contracts";
 import { DependencyUnavailableError } from "@openclaw-enterprise/occ";
+import { MAX_TIMER_DELAY_MS } from "@openclaw-enterprise/utils";
 
 /**
  * Which optional wait asks whether other Work is waiting: an ordinary stop's Gateway drain, or any
@@ -49,7 +50,7 @@ export async function withComputeOperationDeadline<Result>(
   const signal = AbortSignal.any([
     lifetime.signal,
     ...(parent ? [parent.signal] : []),
-    AbortSignal.timeout(Math.min(Math.ceil(remaining), 2_147_483_647)),
+    AbortSignal.timeout(Math.min(Math.ceil(remaining), MAX_TIMER_DELAY_MS)),
   ]);
   signal.throwIfAborted();
   const effective = { signal, deadline };

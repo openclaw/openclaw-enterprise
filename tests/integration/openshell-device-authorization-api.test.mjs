@@ -5,8 +5,10 @@ import { createOpenShellBackend } from "../../apps/controller/src/backends/opens
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
+import { assertApiError } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { jsonLineDestination } from "../helpers/json-lines.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 
@@ -20,17 +22,7 @@ test("Console device login completes through the paired OpenShell Refresh Driver
   const logger = createOccLogger({
     component: "occ-api",
     level: "info",
-    destination: {
-      write(chunk) {
-        logs.push(
-          ...String(chunk)
-            .split("\n")
-            .filter(Boolean)
-            .map((line) => JSON.parse(line)),
-        );
-        return true;
-      },
-    },
+    destination: jsonLineDestination(logs),
   });
   const providers = new Map();
   const operations = [];
@@ -401,8 +393,7 @@ test("Console device login completes through the paired OpenShell Refresh Driver
     const before = operations.length;
     const rotated = await fixture.request("POST", `${source.path}/rotate`);
     const removed = await fixture.request("DELETE", source.path);
-    assert.equal(removed.status, 404, JSON.stringify(removed.body));
-    assert.equal(removed.body.error.code, "NOT_FOUND");
+    assertApiError(removed, 404, "NOT_FOUND");
     assert.deepEqual(
       operations.slice(before),
       [],

@@ -37,6 +37,8 @@ import { type DeviceLogin, createDeviceLogin } from "./device-login.mjs";
 import { createRepositoryFields } from "./repositories.mjs";
 import { ensureCredentialOperateBinding } from "./credential-access.mjs";
 import { createSecretReferenceField, secretMetadata } from "./secret-picker.mjs";
+import { workspaceFileProblem } from "./workspace.mjs";
+import { namespaceNameProblem } from "../namespaces.mjs";
 import { createPresetFields } from "./presets.mjs";
 import { provisioningJob } from "./provisioning-job.mjs";
 import { createPluginDiscovery } from "./plugin-discovery.mjs";
@@ -100,11 +102,23 @@ type LaunchValues = Record<string, unknown> & {
       model?: ModelSelection | undefined;
       models?: Record<string, ModelSettings>;
     };
-    entries?: Record<string, { model?: ModelSelection }>;
+    entries?: Record<string, { model?: ModelSelection; models?: Record<string, ModelSettings> }>;
   };
   models?: { providers?: Record<string, { models?: ProviderModel[] }> };
   plugins?: { entries?: Record<string, unknown>; allow?: string[] };
 };
+
+function modelPrimary(selection: ModelSelection | undefined): string | undefined {
+  return typeof selection === "string" ? selection : selection?.primary;
+}
+
+function configuredModelSelection(values: LaunchValues | undefined): ModelSelection | undefined {
+  const defaults = values?.agents?.defaults?.model;
+  return modelPrimary(defaults)
+    ? defaults
+    : (Object.values(values?.agents?.entries ?? {}).find((entry) => modelPrimary(entry?.model))
+        ?.model ?? defaults);
+}
 
 export interface CreateAgentDraft {
   rendered: PresetLaunchSettings;
@@ -114,7 +128,8 @@ export interface CreateAgentDraft {
   edited: boolean;
   manualModel: boolean;
   pendingModelSettings: ModelSettings | undefined;
-  pendingProviderModel: string | undefined;
+  pendingPrimaryModel: string | undefined;
+  pendingModelSelections: Record<string, unknown> | undefined;
   configurationSecretBindings: SecretBindings;
   pluginApprovers: PluginApprovers | undefined;
   oauthLogin: DeviceLogin | null | undefined;
@@ -141,8 +156,6 @@ type ProvisioningJob = ReturnType<typeof provisioningJob>;
 // so only this one is shown as sent.
 const AGENT_NAME_CONFLICT =
   "An Agent with this name already exists in this Namespace. Choose a different name.";
-// The API's Agent name limit, in characters (code points).
-const AGENT_NAME_MAX_CHARACTERS = 200;
 // The open Create Agent form rechecks its Namespace when the window regains focus. The page's own
 // recheck skips any open form, because a reload would discard it (finding 2012).
 let recheckOpenForm: (() => void) | null = null;
@@ -247,6 +260,12 @@ function configurationTemplate(harnessId: string, nativeProvider: string, provid
     // Codex model transport must use its authenticated app server, never direct HTTP.
     ...(harnessId === "codex" ? { plugins } : {}),
   };
+}
+
+// The first sentence of a Driver refusal that names a setting: the requirement, without the
+// advice that follows it.
+function settingRequirement(refusal: string): string {
+  return refusal.split(/(?<=\.)\s+/u)[0] ?? refusal;
 }
 
 function selectedHarnessAuth(
@@ -381,6 +400,12 @@ const NAMED_DEPLOYMENT_WAITS = new Set([
 // save and deploy answer 503 for every harness until the selected Sandbox Driver returns.
 const SANDBOX_DRIVER_OUTAGE =
   "Agents cannot be created right now: this installation's Sandbox Driver is unavailable. Reload this page to check again, or ask an administrator if it persists.";
+// Without native worker support the Installation does not say why (finding 1612), unless it
+// lists Embedded: then it selects no Sandbox Driver, and the reason is exact (finding 2384).
+const NATIVE_WORKERS_UNAVAILABLE =
+  "Dedicated OpenClaw is unavailable: this installation has no Sandbox Driver that can provision it, or its OpenClaw runtime lacks native worker support. Choose the Codex harness, or Embedded execution if the installation selects no Sandbox Driver. Otherwise an administrator must select a Sandbox Driver that can provision dedicated OpenClaw, or a runtime with native worker support.";
+const NO_SANDBOX_DRIVER_DEDICATED =
+  "Dedicated OpenClaw is unavailable: this installation selects no Sandbox Driver. Choose the Codex harness or Embedded execution, or ask an administrator to select a Sandbox Driver that can provision dedicated OpenClaw.";
 // The deployment read was refused (401, 403 or 404): the reader can't see its waits now.
 const DEPLOYMENT_UNREADABLE = Symbol("deployment unreadable");
 
@@ -800,7 +825,7 @@ function renderAgentForm(
 
   const formId = "create-agent-form";
   // No maxlength: it counts UTF-16 code units, so an emoji would count twice. The API
-  // counts characters (code points), and so does this check.
+  // counts characters (code points), and so does namespaceNameProblem.
   const name = element("input", {
     id: "agent-name",
     name: "name",
@@ -808,12 +833,9 @@ function renderAgentForm(
     "data-trim": "",
     autocomplete: "off",
   });
-  const checkNameLength = () =>
-    name.setCustomValidity(
-      Array.from(name.value.trim()).length > AGENT_NAME_MAX_CHARACTERS
-        ? `Use at most ${AGENT_NAME_MAX_CHARACTERS} characters.`
-        : "",
-    );
+  // The API's Name rule: length and control characters, checked before any write, so a
+  // refused name never leaves a saved Configuration behind (finding 2340).
+  const checkName = () => name.setCustomValidity(namespaceNameProblem(name.value));
   const dedicatedOption = element("option", { value: "dedicated" }, "Dedicated");
   const embeddedOption = element("option", { value: "embedded" }, "Embedded");
   const mode = element("select", { id: "execution-mode" }, dedicatedOption, embeddedOption);
@@ -836,13 +858,9 @@ function renderAgentForm(
   // the runtime supports native workers and a Sandbox Driver can provision them (finding 1608).
   // Its absence does not say whether Embedded remains: any selected Sandbox Driver refuses
   // Embedded execution, so the copy names Codex and the condition (finding 1612).
-  const nativeWorkersUnavailable = statusBlock(
-    "danger",
-    null,
-    "Dedicated OpenClaw is unavailable: this installation has no Sandbox Driver that can provision it, or its OpenClaw runtime lacks native worker support. Choose the Codex harness, or Embedded execution if the installation selects no Sandbox Driver. Otherwise an administrator must select a Sandbox Driver that can provision dedicated OpenClaw, or a runtime with native worker support.",
-    [],
-    { hidden: true },
-  );
+  const nativeWorkersUnavailable = statusBlock("danger", null, NATIVE_WORKERS_UNAVAILABLE, [], {
+    hidden: true,
+  });
   // The Installation lists the OpenClaw execution modes admission accepts (#2670). When the
   // selected mode is not one of them, say so here and keep Create disabled, before any write.
   const openclawModeUnavailable = statusBlock("danger", null, null, [], { hidden: true });
@@ -859,9 +877,8 @@ function renderAgentForm(
     "aria-describedby": "configuration-json-hint",
   });
   const configurationError = fieldError(configuration);
-  const primary = (rendered.configuration?.values as LaunchValues | undefined)?.agents?.defaults
-    ?.model;
-  const initialModel = typeof primary === "string" ? primary : primary?.primary;
+  const primary = configuredModelSelection(rendered.configuration?.values);
+  const initialModel = modelPrimary(primary);
   const nativeProvider = element(
     "select",
     { id: "model-provider" },
@@ -915,7 +932,28 @@ function renderAgentForm(
   apiKey.setAttribute("aria-describedby", credentialHelp.id);
   let manualModel = !useModelChoices;
   let pendingModelSettings = draft.pendingModelSettings;
-  let pendingProviderModel = draft.pendingProviderModel;
+  let pendingPrimaryModel = draft.pendingPrimaryModel;
+  let pendingModelSelections = draft.pendingModelSelections;
+  const modelSelections = (values: LaunchValues) => ({
+    defaults: isObject(values.agents?.defaults)
+      ? { model: values.agents.defaults.model }
+      : values.agents?.defaults,
+    entries: isObject(values.agents?.entries)
+      ? Object.fromEntries(
+          Object.entries(values.agents.entries).map(([id, entry]) => [
+            id,
+            isObject(entry) ? { model: entry.model } : entry,
+          ]),
+        )
+      : values.agents?.entries,
+  });
+  function retainPendingModel(values: LaunchValues) {
+    if (pendingModelSelections && !sameValue(pendingModelSelections, modelSelections(values))) {
+      pendingModelSettings = undefined;
+      pendingPrimaryModel = undefined;
+      pendingModelSelections = undefined;
+    }
+  }
   const modelChoice = element(
     "select",
     { id: "agent-model" },
@@ -1085,7 +1123,8 @@ function renderAgentForm(
       return;
     }
     pendingModelSettings = undefined;
-    pendingProviderModel = undefined;
+    pendingPrimaryModel = undefined;
+    pendingModelSelections = undefined;
     configuration.value = currentTemplate();
     configurationError.clear();
     feedback.textContent = "";
@@ -1096,9 +1135,10 @@ function renderAgentForm(
     if (values === undefined) {
       return;
     }
+    retainPendingModel(values);
     const next = configurationTemplate(harness.value, nativeProvider.value, model.value.trim());
     const previous = values.agents?.defaults?.model;
-    const previousModel = typeof previous === "string" ? previous : previous?.primary;
+    const previousModel = modelPrimary(configuredModelSelection(values)) ?? pendingPrimaryModel;
     const modelSettings = { ...values.agents?.defaults?.models };
     const selectedModel = next.agents?.defaults.model;
     const selectedSettings = {
@@ -1112,12 +1152,73 @@ function renderAgentForm(
       typeof previous === "object" && previous !== null
         ? { ...previous, primary: selectedModel }
         : selectedModel;
+    // OCC requires one primary across the roster. Keep explicit selections in step with
+    // the edited primary, without materializing inherited selections or losing local policy.
+    const entries = values.agents?.entries;
+    const defaultPrimary = modelPrimary(previous);
+    // Only a shared, qualified primary is a bulk-edit basis. Pending state comes from
+    // clearing this control; a JSON selection edit revokes it before reading new selections.
+    const sharedPrimary =
+      typeof previousModel === "string" &&
+      previousModel.includes("/") &&
+      !previousModel.startsWith("/") &&
+      !previousModel.endsWith("/") &&
+      (previous === undefined ||
+        defaultPrimary === previousModel ||
+        (defaultPrimary === undefined && pendingPrimaryModel === previousModel)) &&
+      (entries === undefined ||
+        (isObject(entries) &&
+          Object.values(entries).every(
+            (entry) =>
+              isObject(entry) &&
+              (entry.model === undefined
+                ? defaultPrimary === previousModel || pendingPrimaryModel === previousModel
+                : modelPrimary(entry.model as ModelSelection) === previousModel),
+          )));
+    const nextEntries =
+      selectedModel && sharedPrimary && isObject(entries)
+        ? Object.fromEntries(
+            Object.entries(entries).map(([id, entry]) => {
+              if (!isObject(entry)) {
+                return [id, entry];
+              }
+              const selection = entry.model as ModelSelection | undefined;
+              const localPolicy = isObject(entry.models)
+                ? (entry.models[selectedModel] ??
+                  (previousModel ? entry.models[previousModel] : undefined))
+                : undefined;
+              return [
+                id,
+                {
+                  ...entry,
+                  ...(selection === undefined
+                    ? {}
+                    : {
+                        model:
+                          typeof selection === "string"
+                            ? selectedModel
+                            : { ...selection, primary: selectedModel },
+                      }),
+                  ...(isObject(localPolicy)
+                    ? {
+                        models: {
+                          ...entry.models,
+                          [selectedModel]: {
+                            ...localPolicy,
+                            ...next.agents?.defaults.models[selectedModel],
+                          },
+                        },
+                      }
+                    : {}),
+                },
+              ];
+            }),
+          )
+        : entries;
     const selections = [
       nextModel,
-      ...(values.agents?.entries &&
-      typeof values.agents.entries === "object" &&
-      !Array.isArray(values.agents.entries)
-        ? Object.values(values.agents.entries).map((entry) => entry?.model)
+      ...(nextEntries && typeof nextEntries === "object" && !Array.isArray(nextEntries)
+        ? Object.values(nextEntries).map((entry) => entry?.model)
         : []),
     ];
     const referencedModels = new Set(
@@ -1132,9 +1233,17 @@ function renderAgentForm(
     );
     if (previousModel && !referencedModels.has(previousModel)) {
       delete modelSettings[previousModel];
+      if (nextEntries !== entries) {
+        for (const entry of Object.values(nextEntries ?? {})) {
+          if (isObject(entry?.models)) {
+            delete entry.models[previousModel];
+          }
+        }
+      }
     }
     values.agents = {
       ...values.agents,
+      ...(nextEntries === undefined ? {} : { entries: nextEntries }),
       defaults: {
         ...values.agents?.defaults,
         model: nextModel,
@@ -1148,9 +1257,9 @@ function renderAgentForm(
     const previousId =
       typeof previousModel === "string"
         ? previousModel.slice(previousModel.indexOf("/") + 1)
-        : pendingProviderModel;
+        : undefined;
     // Keep transport and model metadata while no model is selected.
-    pendingProviderModel = selectedModel || resetTransport ? undefined : previousId;
+    pendingPrimaryModel = !selectedModel && sharedPrimary ? previousModel : undefined;
     if (resetTransport) {
       delete providers.openai;
       delete providers.anthropic;
@@ -1211,6 +1320,12 @@ function renderAgentForm(
       }
     }
     configuration.value = JSON.stringify(values, null, 2);
+    // Snapshot the serialized selections, where an undefined primary is omitted. Unrelated
+    // JSON edits keep catalog provenance; changed selections cannot borrow clear-state trust.
+    pendingModelSelections =
+      !selectedModel && sharedPrimary
+        ? modelSelections(JSON.parse(configuration.value) as LaunchValues)
+        : undefined;
     configuration.setCustomValidity("");
     feedback.textContent = "";
     renderChannelEditor();
@@ -1280,8 +1395,13 @@ function renderAgentForm(
     configurationError.clear();
     feedback.textContent = "";
     const values = parseObject(configuration);
-    const selected = values?.agents?.defaults?.model;
-    const ref = typeof selected === "string" ? selected : selected?.primary;
+    if (values) {
+      retainPendingModel(values);
+    }
+    // A cleared Model ID stays cleared until the JSON changes a model selection: a roster entry
+    // still names the previous primary, but the defaults no longer select it (finding 2342).
+    const selected = pendingModelSelections ? undefined : configuredModelSelection(values);
+    const ref = modelPrimary(selected);
     const selectedHarness = values && configuredHarnessId(values);
     if (typeof ref === "string" && selectedHarness) {
       harness.value = selectedHarness;
@@ -1489,6 +1609,9 @@ function renderAgentForm(
   // The Installation's selected Sandbox Driver is unavailable right now, so it lists no OpenClaw
   // mode and refuses every Agent save (finding 1624).
   let sandboxDriverUnavailable = false;
+  // Admission's refusal when the Sandbox Driver could provision Dedicated OpenClaw but its
+  // settings refuse it; it names the setting to change (finding 2373).
+  let dedicatedSettingRefusal: string | undefined;
   // Whether the form chose the execution mode, rather than the Preset, the draft or the user.
   let modeDefaulted =
     agent.executionMode === undefined && !Object.hasOwn(draft.inputs ?? {}, "mode");
@@ -1810,7 +1933,7 @@ function renderAgentForm(
       control.setCustomValidity("");
     }
     if (event.target === name) {
-      checkNameLength();
+      checkName();
     }
   });
   form.addEventListener("change", () => {
@@ -1868,7 +1991,8 @@ function renderAgentForm(
     pluginApprovers,
     edited,
     pendingModelSettings,
-    pendingProviderModel,
+    pendingPrimaryModel,
+    pendingModelSelections,
     configurationSecretBindings,
     stagedChannelSecrets,
     modelCredentialSource,
@@ -2252,16 +2376,51 @@ function renderAgentForm(
     const openclawEmbeddedRefused = embeddedRefused && harness.value === "openclaw";
     const noOpenClawMode = nativeRefused && openclawEmbeddedRefused;
     const sandboxDriverOutage = capabilityDiscoveryDone && sandboxDriverUnavailable;
+    // A selected Sandbox Driver refuses Embedded execution, so an Installation that lists Embedded
+    // selects none, and that is exactly why Dedicated OpenClaw is refused (finding 2384).
+    const noSandboxDriver =
+      nativeRefused && !sandboxDriverOutage && openclawExecutionModes?.has("embedded") === true;
     dedicatedOption.disabled = nativeRefused;
     embeddedOption.disabled = embeddedRefused;
     nativeWorkersUnavailable.hidden =
       !nativeRefused || noOpenClawMode || mode.value !== "dedicated";
+    const nativeWorkersReason = noSandboxDriver
+      ? NO_SANDBOX_DRIVER_DEDICATED
+      : NATIVE_WORKERS_UNAVAILABLE;
+    if (nativeWorkersUnavailable.textContent !== nativeWorkersReason) {
+      nativeWorkersUnavailable.textContent = nativeWorkersReason;
+    }
+    // A setting refusal names the setting to change, not another Sandbox Driver (finding 2373).
+    // Its last sentence advises "Select Codex, or ask an operator to …"; quote only the
+    // requirement when this form cannot select Codex: a Preset's binding locks the harness, or
+    // Anthropic hides it (finding 2392). A saved or bound model credential also locks the
+    // provider, so switching to OpenAI is not offered then either.
+    const codexSelectable = !harnessChoiceLocked && nativeProvider.value !== "anthropic";
+    const providerLocked =
+      Boolean(savedSecret || savedCredentialSource || credentialRegistration) ||
+      hasBoundModelCredential;
+    const dedicatedRefusalReason = dedicatedSettingRefusal
+      ? `its settings refuse Dedicated OpenClaw. ${codexSelectable ? dedicatedSettingRefusal : settingRequirement(dedicatedSettingRefusal)}`
+      : "it cannot run Dedicated OpenClaw.";
+    // What a reader without an operator-managed Preset can do when no OpenClaw mode is usable.
+    let noOpenClawAdvice = "";
+    if (!dedicatedSettingRefusal) {
+      noOpenClawAdvice =
+        " Choose OpenAI with the Codex harness, or ask an administrator to select a Sandbox Driver that can provision dedicated OpenClaw, with a runtime that has native worker support.";
+    } else if (!codexSelectable) {
+      // Anthropic hides Codex: name the provider switch the Driver's advice leaves out, when the
+      // form still allows it.
+      noOpenClawAdvice =
+        harnessChoiceLocked || providerLocked
+          ? " Ask an operator to change that setting."
+          : " Choose OpenAI with the Codex harness, or ask an operator to change that setting.";
+    }
     const modeRefusal = sandboxDriverOutage
       ? SANDBOX_DRIVER_OUTAGE
       : noOpenClawMode
         ? binding?.method === "runtime"
-          ? "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and it cannot run Dedicated OpenClaw. This Preset's operator-managed credentials require OpenClaw. Ask an administrator, or start without a Preset."
-          : "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and it cannot run Dedicated OpenClaw. Choose OpenAI with the Codex harness, or ask an administrator to select a Sandbox Driver that can provision dedicated OpenClaw, with a runtime that has native worker support."
+          ? `OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and ${dedicatedRefusalReason} This Preset's operator-managed credentials require OpenClaw. Ask an administrator, or start without a Preset.`
+          : `OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and ${dedicatedRefusalReason}${noOpenClawAdvice}`
         : openclawEmbeddedRefused && mode.value === "embedded"
           ? binding?.method === "runtime"
             ? "This Preset's operator-managed credentials require Embedded OpenClaw, which this installation refuses because it selects a Sandbox Driver. Ask an administrator, or start without a Preset."
@@ -2283,11 +2442,13 @@ function renderAgentForm(
         ? "Codex and OpenClaw are unavailable while this installation's Sandbox Driver is unavailable."
         : embeddedRefused && dedicatedRefused
           ? "Codex uses Dedicated execution. OpenClaw is unavailable on this installation. Slack requires Codex."
-          : nativeRefused
-            ? "Codex uses Dedicated execution. Dedicated OpenClaw is unavailable because this installation has no Sandbox Driver that can provision it, or its OpenClaw runtime lacks native worker support. Embedded OpenClaw works only when the installation selects no Sandbox Driver. Slack requires Codex."
-            : embeddedRefused
-              ? "Codex uses Dedicated execution. This installation selects a Sandbox Driver, so OpenClaw uses Dedicated execution too. Slack requires Dedicated execution."
-              : "Codex uses Dedicated execution. OpenClaw uses Dedicated execution with a Sandbox Driver that provisions it, and Embedded execution without a Sandbox Driver. Slack requires Dedicated execution.";
+          : noSandboxDriver
+            ? "Codex uses Dedicated execution. Dedicated OpenClaw is unavailable because this installation selects no Sandbox Driver. Slack requires Codex."
+            : nativeRefused
+              ? "Codex uses Dedicated execution. Dedicated OpenClaw is unavailable because this installation has no Sandbox Driver that can provision it, or its OpenClaw runtime lacks native worker support. Embedded OpenClaw works only when the installation selects no Sandbox Driver. Slack requires Codex."
+              : embeddedRefused
+                ? "Codex uses Dedicated execution. This installation selects a Sandbox Driver, so OpenClaw uses Dedicated execution too. Slack requires Dedicated execution."
+                : "Codex uses Dedicated execution. OpenClaw uses Dedicated execution with a Sandbox Driver that provisions it, and Embedded execution without a Sandbox Driver. Slack requires Dedicated execution.";
     }
     if (capabilitiesSettled()) {
       let nextStatus = "";
@@ -2329,7 +2490,9 @@ function renderAgentForm(
         return "OpenClaw is available for both providers. With OpenAI its execution mode depends on the installation's Sandbox Driver; Anthropic uses Embedded OpenClaw.";
       }
       if (noOpenClawMode) {
-        return "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and it cannot run Dedicated OpenClaw.";
+        return dedicatedSettingRefusal
+          ? "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and its settings refuse Dedicated OpenClaw."
+          : "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and it cannot run Dedicated OpenClaw.";
       }
       const runtime = `${mode.value === "dedicated" ? "Dedicated" : "Embedded"} execution`;
       if (anthropic && mode.value !== "embedded") {
@@ -2342,7 +2505,9 @@ function renderAgentForm(
       const reason = anthropic
         ? " Anthropic requires Embedded OpenClaw."
         : nativeRefused && !harnessChoiceLocked
-          ? " Choose Codex for Dedicated execution."
+          ? noSandboxDriver
+            ? " This installation selects no Sandbox Driver, so choose Codex for Dedicated execution."
+            : " Choose Codex for Dedicated execution."
           : "";
       return `This Agent will run OpenClaw with ${runtime}.${reason}`;
     };
@@ -2360,9 +2525,7 @@ function renderAgentForm(
       harnessHint.textContent =
         "This Preset's operator-managed credentials require the OpenClaw harness.";
     }
-    nativeProvider.disabled ||=
-      Boolean(savedSecret || savedCredentialSource || credentialRegistration) ||
-      hasBoundModelCredential;
+    nativeProvider.disabled ||= providerLocked;
     authMethod.disabled ||= Boolean(savedSecret || savedCredentialSource || credentialRegistration);
     apiKeyOption.textContent =
       nativeProvider.value === "anthropic" ? "Anthropic API key" : "OpenAI API key";
@@ -2577,6 +2740,9 @@ function renderAgentForm(
       openclawExecutionModes = Array.isArray(openclawModes) ? new Set(openclawModes) : undefined;
       sandboxDriverUnavailable =
         installation.capabilities?.openclaw?.sandboxDriverUnavailable === true;
+      const settingRefusal = installation.capabilities?.openclaw?.settingRefusals?.dedicated;
+      dedicatedSettingRefusal =
+        typeof settingRefusal === "string" && settingRefusal ? settingRefusal : undefined;
       credentialSourceTypes = installation.capabilities?.credentialSources?.types;
       provisionableExecutionModes.clear();
       for (const executionMode of installation.capabilities?.agentProvisioning?.executionModes ??
@@ -2810,10 +2976,37 @@ function renderAgentForm(
       }
     }
   }
+  // The Harness authentication Agent create will name, as far as it is known before anything is
+  // saved, so the preflight also runs Agent save's check of it against the execution mode and the
+  // Compute settings (finding 2391). A Secret this form saves next is sent as its method alone. A
+  // credential source (ChatGPT sign-in, or one this form registers) is not sent: save cannot check
+  // it either.
+  function plannedHarnessAuth(
+    usesOAuth: boolean,
+  ): HarnessAuthBinding | { method: "api_key" | "codex_pat" } | undefined {
+    if (binding) {
+      return binding;
+    }
+    if (usesOAuth || credentialSourceTypes !== undefined) {
+      return undefined;
+    }
+    const source = passwordAuth ? savedSecret?.ref : modelCredentialSource;
+    if (source?.kind === "secret") {
+      return selectedHarnessAuth(authMethod.value, source);
+    }
+    return passwordAuth && (authMethod.value === "api_key" || authMethod.value === "codex_pat")
+      ? { method: authMethod.value }
+      : undefined;
+  }
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    // A restored draft sets the name without an input event.
-    checkNameLength();
+    // A restored draft sets the name and files without an input event.
+    checkName();
+    // The Workspace tab's check, naming the file; validateFields opens Advanced settings to it
+    // (finding 2341).
+    for (const [filename, input] of workspaceInputs) {
+      input.setCustomValidity(workspaceFileProblem(filename, input.value));
+    }
     if (
       pending ||
       outcomeUnknown ||
@@ -2847,8 +3040,8 @@ function renderAgentForm(
         "Choose an available model or enter a model ID before creating the Agent.";
       return;
     }
-    const selected = values.agents?.defaults?.model;
-    const primaryModel = typeof selected === "string" ? selected : selected?.primary;
+    const selected = configuredModelSelection(values);
+    const primaryModel = modelPrimary(selected);
     const fallbackPrefixes =
       harness.value === "codex" ? ["openai/", "codex/"] : [`${nativeProvider.value}/`];
     // Bound Codex Presets may use either supported provider prefix; OpenClaw keeps its provider.
@@ -2931,6 +3124,7 @@ function renderAgentForm(
     // form can no longer change (finding 1863). Provisioning admits its plan in one request
     // before it saves a Configuration, with its own rules, so it needs no preflight.
     if (!shouldProvision() && !savedConfiguration && !savedAgent) {
+      const harnessAuth = plannedHarnessAuth(usesOAuth);
       try {
         await request(`${namespacePath(namespaceId)}/agents/validate`, {
           method: "POST",
@@ -2941,6 +3135,7 @@ function renderAgentForm(
             initialWorkspaceFiles: body.initialWorkspaceFiles,
             ...(body.plugins ? { plugins: body.plugins } : {}),
             ...(body.pluginApprovers ? { pluginApprovers: body.pluginApprovers } : {}),
+            ...(harnessAuth ? { harnessAuth } : {}),
           },
         });
       } catch (error) {
@@ -2952,9 +3147,12 @@ function renderAgentForm(
         if (failure.status === 401) {
           context.onExpired();
         } else {
+          const detail =
+            error instanceof Error && error.name === "TimeoutError"
+              ? "The configuration check timed out. Your entries are still here. Try Create Agent again."
+              : rejectionMessage(error);
           feedback.textContent =
-            rejectionMessage(error) +
-            (failure.requestId ? ` Request ID: ${failure.requestId}` : "");
+            detail + (failure.requestId ? ` Request ID: ${failure.requestId}` : "");
           // While the pressed control is still disabled, as after a save.
           focusFeedbackLine(feedback);
         }

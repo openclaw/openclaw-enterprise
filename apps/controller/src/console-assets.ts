@@ -31,7 +31,13 @@ const CONSOLE_ROOT = new URL("./console/", import.meta.url);
 const CONSOLE_SHELL = new URL("index.html", CONSOLE_ROOT);
 const CONSOLE_ASSETS = new Map([
   ...Object.entries({
-    "image/png": ["oce-mascot.png", "favicon-16.png", "favicon-32.png", "apple-touch-icon.png"],
+    "image/png": [
+      "oce-mascot.png",
+      "oce-mascot-inverse.png",
+      "favicon-16.png",
+      "favicon-32.png",
+      "apple-touch-icon.png",
+    ],
     "image/vnd.microsoft.icon": ["favicon.ico"],
     "text/javascript; charset=utf-8": [
       "api-client.mts",

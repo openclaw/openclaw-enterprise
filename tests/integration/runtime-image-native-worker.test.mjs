@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import test from "node:test";
+import { describe, test } from "node:test";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
 import { assertAllPassed } from "../helpers/node-test-summary.mjs";
 import { GATEWAY_RUNTIME_ENTRYPOINT as DOCKER_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/docker/index.ts";
@@ -22,57 +22,62 @@ import {
   runGatewaySmoke,
 } from "../helpers/runtime-image-startup.mjs";
 
-test(
-  "runtime image enrolls the restricted workspace node and reconnects with saved credentials",
-  imageTestOptions,
-  async (t) => {
-    // The Kubernetes entrypoint admits the workspace command grant before pairing.
-    const configurationPath = await temporaryGatewayConfiguration(t, "codex");
-    const { containerName } = await runGatewaySmoke(t, "codex", {
-      configurationPath: "/etc/openclaw/openclaw.json",
-      entrypoint: KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
-      volumes: [`${configurationPath}:/etc/openclaw/openclaw.json:ro`],
-    });
-    const source = await readFile(
-      new URL("../fixtures/runtime-workspace-node.mjs", import.meta.url),
-      "utf8",
-    );
-    const { stdout } = await runDocker(
-      ["exec", containerName, "node", "--input-type=module", "-e", source],
-      { timeout: 240_000 * imageSmokeTimeoutMultiplier },
-    );
-    const result = JSON.parse(stdout);
-    assert.equal(result.sameIdentityAfterRestart, true);
-    assert.equal(result.singleBootstrapCompletion, true);
-    assert.equal(result.commands.length, 7);
-  },
-);
+// Each case starts its own randomly named container with no published port.
+// Only the first writes host files, into its own temporary directory; the others
+// pass their programs over stdin. The cases share no container, port, volume or
+// fixture state. Two run at a time.
+describe("runtime image native worker", { concurrency: 2 }, () => {
+  test(
+    "runtime image enrolls the restricted workspace node and reconnects with saved credentials",
+    imageTestOptions,
+    async (t) => {
+      // The Kubernetes entrypoint admits the workspace command grant before pairing.
+      const configurationPath = await temporaryGatewayConfiguration(t, "codex");
+      const { containerName } = await runGatewaySmoke(t, "codex", {
+        configurationPath: "/etc/openclaw/openclaw.json",
+        entrypoint: KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
+        volumes: [`${configurationPath}:/etc/openclaw/openclaw.json:ro`],
+      });
+      const source = await readFile(
+        new URL("../fixtures/runtime-workspace-node.mjs", import.meta.url),
+        "utf8",
+      );
+      const { stdout } = await runDocker(
+        ["exec", containerName, "node", "--input-type=module", "-e", source],
+        { timeout: 240_000 * imageSmokeTimeoutMultiplier },
+      );
+      const result = JSON.parse(stdout);
+      assert.equal(result.sameIdentityAfterRestart, true);
+      assert.equal(result.singleBootstrapCompletion, true);
+      assert.equal(result.commands.length, 7);
+    },
+  );
 
-test(
-  "runtime image reaps descendants during workspace node and Codex restarts",
-  imageTestOptions,
-  async (t) => {
-    const containerName = `oce-runtime-image-supervisor-${randomBytes(6).toString("hex")}`;
-    t.after(() => runDocker(["rm", "-f", containerName]).catch(() => {}));
-    // Run the same process proof inside the image, using the production init
-    // command. Copy source over argv so this also works with a remote Docker engine.
-    const paths = [
-      "tests/conformance/workspace-node-supervisor.test.mjs",
-      "tests/helpers/available-port.mjs",
-      "apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts",
-      "apps/controller/src/drivers/compute/harness-egress-enrollment.ts",
-      "apps/controller/src/drivers/compute/node-program.ts",
-      "apps/controller/src/drivers/compute/runtime-startup.ts",
-      "apps/controller/src/drivers/plugin/runtime-translator.ts",
-      "packages/contracts/src/runtime-failure.mjs",
-    ];
-    const files = await Promise.all(
-      paths.map(async (path) => [
-        path,
-        await readFile(new URL(`../../${path}`, import.meta.url), "utf8"),
-      ]),
-    );
-    const launch = String.raw`
+  test(
+    "runtime image reaps descendants during workspace node and Codex restarts",
+    imageTestOptions,
+    async (t) => {
+      const containerName = `oce-runtime-image-supervisor-${randomBytes(6).toString("hex")}`;
+      t.after(() => runDocker(["rm", "-f", containerName]).catch(() => {}));
+      // Run the same process proof inside the image, using the production init
+      // command. Copy source over argv so this also works with a remote Docker engine.
+      const paths = [
+        "tests/conformance/workspace-node-supervisor.test.mjs",
+        "tests/helpers/available-port.mjs",
+        "apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts",
+        "apps/controller/src/drivers/compute/harness-egress-enrollment.ts",
+        "apps/controller/src/drivers/compute/node-program.ts",
+        "apps/controller/src/drivers/compute/runtime-startup.ts",
+        "apps/controller/src/drivers/plugin/runtime-translator.ts",
+        "packages/contracts/src/runtime-failure.mjs",
+      ];
+      const files = await Promise.all(
+        paths.map(async (path) => [
+          path,
+          await readFile(new URL(`../../${path}`, import.meta.url), "utf8"),
+        ]),
+      );
+      const launch = String.raw`
 const { mkdirSync, readFileSync, writeFileSync } = require("node:fs");
 const { dirname, join } = require("node:path");
 const { spawnSync } = require("node:child_process");
@@ -85,68 +90,68 @@ const child = spawnSync(process.execPath, ["--test", "/tmp/proof/tests/conforman
 if (child.error) throw child.error;
 process.exit(child.status ?? 1);
 `;
-    const { stdout } = await runDocker(
-      [
-        "run",
-        "-i",
-        "--rm",
-        "--name",
-        containerName,
-        "--user",
-        "1000:1000",
-        "--read-only",
-        "--cap-drop",
-        "ALL",
-        "--security-opt",
-        "no-new-privileges",
-        "--network",
-        "none",
-        "--tmpfs",
-        "/tmp:size=64m,mode=1777",
-        "--entrypoint",
-        "/usr/bin/tini",
-        image,
-        "-s",
-        "--",
-        "node",
-        "-e",
-        launch,
-      ],
-      {},
-      JSON.stringify(files),
-    ).catch((error) => {
-      // CI truncates the error message and drops the command output, so name the
-      // in-image proof that failed first (main run 37424312731 lost it).
-      const report = commandOutput(error);
-      const failing = report.indexOf("failing tests:");
-      const summary =
-        failing !== -1
-          ? report.slice(failing, failing + 2_000)
-          : report.trim() !== ""
-            ? report.slice(-2_000)
-            : error.message;
-      const stopped = error.killed ? ` (killed by ${error.signal ?? "a signal"})` : "";
-      throw new Error(`The in-image supervisor proof failed${stopped}: ${summary}`, {
-        cause: error,
+      const { stdout } = await runDocker(
+        [
+          "run",
+          "-i",
+          "--rm",
+          "--name",
+          containerName,
+          "--user",
+          "1000:1000",
+          "--read-only",
+          "--cap-drop",
+          "ALL",
+          "--security-opt",
+          "no-new-privileges",
+          "--network",
+          "none",
+          "--tmpfs",
+          "/tmp:size=64m,mode=1777",
+          "--entrypoint",
+          "/usr/bin/tini",
+          image,
+          "-s",
+          "--",
+          "node",
+          "-e",
+          launch,
+        ],
+        {},
+        JSON.stringify(files),
+      ).catch((error) => {
+        // CI truncates the error message and drops the command output, so name the
+        // in-image proof that failed first (main run 37424312731 lost it).
+        const report = commandOutput(error);
+        const failing = report.indexOf("failing tests:");
+        const summary =
+          failing !== -1
+            ? report.slice(failing, failing + 2_000)
+            : report.trim() !== ""
+              ? report.slice(-2_000)
+              : error.message;
+        const stopped = error.killed ? ` (killed by ${error.signal ?? "a signal"})` : "";
+        throw new Error(`The in-image supervisor proof failed${stopped}: ${summary}`, {
+          cause: error,
+        });
       });
-    });
-    // Every supervisor proof in the file must pass in the image. The check reads
-    // the run's own totals, so adding a proof needs no change here. The floor is
-    // the 7 proofs the file had when the count stopped being hard-coded
-    // (finding 1032); lower it only when a proof is removed on purpose.
-    assertAllPassed(stdout, { minimum: 7 });
-  },
-);
+      // Every supervisor proof in the file must pass in the image. The check reads
+      // the run's own totals, so adding a proof needs no change here. The floor is
+      // the 7 proofs the file had when the count stopped being hard-coded
+      // (finding 1032); lower it only when a proof is removed on purpose.
+      assertAllPassed(stdout, { minimum: 7 });
+    },
+  );
 
-test(
-  "runtime image omits inactive Slack approvers and checks native compatibility before gateway launch",
-  imageTestOptions,
-  async (t) => {
-    const containerName = `oce-runtime-image-approvers-${randomBytes(6).toString("hex")}`;
-    t.after(() => runDocker(["rm", "-f", containerName]).catch(() => {}));
-    // Exercise both production launchers against the selected native image. No
-    // model or Slack credentials are provided, and the container has no network.
-    const launch = String.raw`
+  test(
+    "runtime image omits inactive Slack approvers and checks native compatibility before gateway launch",
+    imageTestOptions,
+    async (t) => {
+      const containerName = `oce-runtime-image-approvers-${randomBytes(6).toString("hex")}`;
+      t.after(() => runDocker(["rm", "-f", containerName]).catch(() => {}));
+      // Exercise both production launchers against the selected native image. No
+      // model or Slack credentials are provided, and the container has no network.
+      const launch = String.raw`
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const cp = require("node:child_process");
@@ -220,31 +225,32 @@ async function scenario(entrypoint, channel, label) {
   console.log("PLUGIN_APPROVER_STARTUP_PASSED");
 })().catch(error => { console.error(error); process.exitCode = 1; });
 `;
-    const { stdout } = await runDocker(
-      [
-        "run",
-        "-i",
-        "--rm",
-        "--name",
-        containerName,
-        "--network",
-        "none",
-        "--cap-drop",
-        "ALL",
-        "--security-opt",
-        "no-new-privileges",
-        "--entrypoint",
-        "node",
-        image,
-        "-e",
-        launch,
-      ],
-      { timeout: 180_000 * imageSmokeTimeoutMultiplier },
-      JSON.stringify({
-        docker: nodeProgramArguments(DOCKER_GATEWAY_RUNTIME_ENTRYPOINT),
-        kubernetes: nodeProgramArguments(KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT),
-      }),
-    );
-    assert.match(stdout, /PLUGIN_APPROVER_STARTUP_PASSED/);
-  },
-);
+      const { stdout } = await runDocker(
+        [
+          "run",
+          "-i",
+          "--rm",
+          "--name",
+          containerName,
+          "--network",
+          "none",
+          "--cap-drop",
+          "ALL",
+          "--security-opt",
+          "no-new-privileges",
+          "--entrypoint",
+          "node",
+          image,
+          "-e",
+          launch,
+        ],
+        { timeout: 180_000 * imageSmokeTimeoutMultiplier },
+        JSON.stringify({
+          docker: nodeProgramArguments(DOCKER_GATEWAY_RUNTIME_ENTRYPOINT),
+          kubernetes: nodeProgramArguments(KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT),
+        }),
+      );
+      assert.match(stdout, /PLUGIN_APPROVER_STARTUP_PASSED/);
+    },
+  );
+});

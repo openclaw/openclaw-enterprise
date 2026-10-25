@@ -6,7 +6,9 @@ import { WORKSPACE_DEFAULTS_ID } from "../../packages/contracts/src/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
+import { assertApiError } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 
 async function setup(t, options = {}) {
   const audit = new InMemoryAuditSink();
@@ -120,13 +122,15 @@ test("invalid workspace content and stale defaults reject the complete create wi
   for (const [index, files] of invalidFiles.entries()) {
     await assertRejectedCreate(`Invalid ${index}`, { initialWorkspaceFiles: files }, 400);
   }
-  for (const [defaultsId, status] of [
+  for (const [index, [defaultsId, status]] of [
     ["0".repeat(64), 409],
     ["A".repeat(64), 400],
+    ["0".repeat(63), 400],
+    ["0".repeat(65), 400],
     [null, 400],
-  ]) {
+  ].entries()) {
     await assertRejectedCreate(
-      "Wrong defaults",
+      `Wrong defaults ${index}`,
       { initialWorkspaceFiles: { "USER.md": privateContent }, workspaceDefaultsId: defaultsId },
       status,
     );
@@ -254,6 +258,29 @@ test("Agent save and deployment refuse initial workspace files the Configuration
   assert.equal(deployed.body.error.message, workspace);
   assert.deepEqual((await f.request("GET", `${agentPath}/revisions`)).data, []);
   assert.equal((await f.staged(created.data.id)).completed, false);
+
+  // Finding 2296: every deployment delivers a completed setup, so an update naming another
+  // execution mode checks it against the same Configuration. The second managed workspace
+  // reads for this dedicated Agent but not once it is embedded.
+  const dedicatedValues = createHarnessConfiguration("openclaw", "gpt-4.1");
+  dedicatedValues.agents.defaults.workspace = "/home/node/workspace";
+  const dedicatedOnly = await f.createConfiguration(f.namespace.id, dedicatedValues);
+  const dedicated = await f.create("Completed setup", {
+    configurationId: dedicatedOnly.id,
+    executionMode: "dedicated",
+    initialWorkspaceFiles: files,
+    harnessAuth: { method: "api_key", source: key.ref },
+  });
+  assert.equal(dedicated.status, 201, JSON.stringify(dedicated.body));
+  const setupId = (await f.staged(dedicated.data.id)).id;
+  await f.state.transact((unit) =>
+    unit.workspaceSetups.complete(f.namespace.id, dedicated.data.id, setupId),
+  );
+  const embedded = await f.request("PATCH", `${f.path}/${dedicated.data.id}`, {
+    body: { configurationId: dedicatedOnly.id, executionMode: "embedded" },
+  });
+  assert.equal(embedded.status, 400, JSON.stringify(embedded.body));
+  assert.equal(embedded.body.error.message, workspace);
 });
 
 test("Agent save accepts initial workspace files for a main roster entry in any letter case", async (t) => {
@@ -312,7 +339,12 @@ test("Agent save refuses initial workspace files in a Sandbox with a 409 that na
     // OpenShell's own rewrite: the workspace moves to the Sandbox data mount.
     configureAgent(configuration, harness) {
       return OpenShellSandboxDriver.prototype.configureAgent.call(
-        { options: { kubernetes: { sandboxDataMount: { mountPath: "/sandbox/data" } } } },
+        {
+          options: {
+            gateway: {},
+            kubernetes: { userNamespaces: false, sandboxDataMount: { mountPath: "/sandbox/data" } },
+          },
+        },
         configuration,
         harness,
       );
@@ -355,7 +387,23 @@ test("Agent save refuses initial workspace files in a Sandbox with a 409 that na
   );
 });
 
-test("Agent create admits private workspace files through the OpenShell initializer contract", async (t) => {
+/** A real OpenShell Sandbox Driver whose Kubernetes settings `overrides` overrides (an
+ * undefined value removes the setting), with extra `gateway` settings. */
+function openShellSandbox(t, overrides = {}, gateway = {}) {
+  const kubernetes = {
+    runtimeClassName: "openshell-sandbox",
+    // Native OpenClaw workspace preparation requires it.
+    userNamespaces: false,
+    serviceAccount: { mode: "gatewayConfigured" },
+    sandboxDataMount: { subPath: "workspace", mountPath: "/sandbox/enterprise", readOnly: false },
+  };
+  for (const [key, value] of Object.entries(overrides)) {
+    if (value === undefined) {
+      delete kubernetes[key];
+    } else {
+      kubernetes[key] = value;
+    }
+  }
   const definition = {
     id: "workspace-openshell",
     type: "openshell",
@@ -369,16 +417,8 @@ test("Agent create admits private workspace files through the OpenShell initiali
   t.after(() => backend.client.close());
   const sandboxDriver = new OpenShellSandboxDriver(
     {
-      gateway: { workspaceMode: "operator" },
-      kubernetes: {
-        runtimeClassName: "openshell-sandbox",
-        serviceAccount: { mode: "gatewayConfigured" },
-        sandboxDataMount: {
-          subPath: "workspace",
-          mountPath: "/sandbox/enterprise",
-          readOnly: false,
-        },
-      },
+      gateway: { workspaceMode: "operator", ...gateway },
+      kubernetes,
       policy: {
         process: { runAsUser: "1000", runAsGroup: "1000" },
         networkPolicies: [
@@ -392,7 +432,7 @@ test("Agent create admits private workspace files through the OpenShell initiali
     },
     { id: "workspace-openshell-sandbox", backend },
   );
-  const f = await setup(t, {
+  return {
     sandboxDriver,
     driverConfigurations: [
       {
@@ -402,20 +442,30 @@ test("Agent create admits private workspace files through the OpenShell initiali
         definition: OpenShellSandboxDriver,
       },
     ],
+  };
+}
+
+/** Saves an Agent Configuration that selects `model` on the `runtime` Harness. */
+async function storeConfiguration(f, runtime, model) {
+  const stored = await f.request("POST", `/namespaces/${f.namespace.id}/configurations`, {
+    body: {
+      kind: "agent",
+      values: {
+        agents: { defaults: { model, models: { [model]: { agentRuntime: { id: runtime } } } } },
+      },
+    },
   });
+  assert.equal(stored.status, 201, JSON.stringify(stored.body));
+  return stored;
+}
+
+test("Agent create admits private workspace files through the OpenShell initializer contract", async (t) => {
+  const f = await setup(t, openShellSandbox(t));
   for (const [runtime, model] of [
     ["openclaw", "openai/gpt-4.1"],
     ["codex", "codex/gpt-5.1"],
   ]) {
-    const stored = await f.request("POST", `/namespaces/${f.namespace.id}/configurations`, {
-      body: {
-        kind: "agent",
-        values: {
-          agents: { defaults: { model, models: { [model]: { agentRuntime: { id: runtime } } } } },
-        },
-      },
-    });
-    assert.equal(stored.status, 201, JSON.stringify(stored.body));
+    const stored = await storeConfiguration(f, runtime, model);
     const files = { "USER.md": `private-${runtime}-workspace-content` };
     // Real API admission composes Compute with OpenShell's workspace projection and validator.
     // No Sandbox is provisioned: the private payload remains staged for deployment.
@@ -428,5 +478,141 @@ test("Agent create admits private workspace files through the OpenShell initiali
     assert.equal(created.data.desiredRuntimeState, "stopped");
     assert.deepEqual((await f.staged(created.data.id)).files, files);
     assert.equal(JSON.stringify(created.body).includes(files["USER.md"]), false);
+  }
+});
+
+// Native OpenClaw's workspace preparation needs userNamespaces: false and at most one operator
+// ServiceAccount, and runs only after a deploy has stopped its predecessors, so Agent save refuses
+// those settings first and the Installation stops offering dedicated OpenClaw (findings 2334,
+// 2346, 2347).
+test("Agent create refuses dedicated OpenClaw on OpenShell settings its workspace preparation refuses", async (t) => {
+  const userNamespaces =
+    "Dedicated OpenClaw needs kubernetes.userNamespaces: false in the OpenShell Sandbox Driver configuration. Select Codex, or ask an operator to set it.";
+  const serviceAccounts = ["a", "b"].map((name) => ({
+    apiVersion: "v1",
+    kind: "ServiceAccount",
+    metadata: { name },
+  }));
+  for (const [kubernetes, gateway, message] of [
+    [{ userNamespaces: undefined }, {}, userNamespaces],
+    [{ userNamespaces: true }, {}, userNamespaces],
+    [
+      {},
+      { operatorWorkspaceResources: serviceAccounts },
+      "Dedicated OpenClaw needs at most one ServiceAccount in gateway.operatorWorkspaceResources of the OpenShell Sandbox Driver configuration. Select Codex, or ask an operator to remove the others.",
+    ],
+    // Control: the shape workspace preparation accepts.
+    [{}, { operatorWorkspaceResources: serviceAccounts.slice(0, 1) }],
+  ]) {
+    const f = await setup(t, openShellSandbox(t, kubernetes, gateway));
+    const installation = await f.request("GET", "/installation");
+    assert.equal(installation.status, 200, JSON.stringify(installation.body));
+    // Create Agent offers only the modes admission accepts, and shows the refusal that names the
+    // setting (finding 2373).
+    assert.deepEqual(
+      installation.data.capabilities.openclaw,
+      message === undefined
+        ? { executionModes: ["dedicated"] }
+        : { executionModes: [], settingRefusals: { dedicated: message } },
+    );
+    const openclaw = await storeConfiguration(f, "openclaw", "openai/gpt-4.1");
+    const refused = await f.create("OpenShell openclaw", {
+      configurationId: openclaw.data.id,
+      executionMode: "dedicated",
+    });
+    if (message === undefined) {
+      assert.equal(refused.status, 201, JSON.stringify(refused.body));
+      continue;
+    }
+    assertApiError(refused, 400, "INVALID_REQUEST");
+    assert.equal(refused.body.error.message, message);
+    assert.equal(
+      (await f.request("GET", f.path)).data.some(({ name }) => name === "OpenShell openclaw"),
+      false,
+    );
+    // Control: Codex never runs that preparation and still saves.
+    const codex = await storeConfiguration(f, "codex", "codex/gpt-5.1");
+    const created = await f.create("OpenShell codex", {
+      configurationId: codex.data.id,
+      executionMode: "dedicated",
+    });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+  }
+});
+
+// Kubernetes Compute with runtime storage but no gateway routing cannot place a dedicated Harness,
+// and deployment refused it after Agent save answered 201. Save now refuses it with the deployment
+// message wherever it checks Harness authentication: a Configuration that selects a model and a
+// Secret or runtime binding (finding 2376). Create Agent's preflight refuses it too when it names
+// the planned binding, before the console saves a Secret or Configuration (finding 2391).
+test("Agent save refuses a dedicated Harness the Kubernetes Compute settings cannot place", async (t) => {
+  // The fixture's unrouted Driver has no node enrollment either (composition always supplies it).
+  const message =
+    "Dedicated Agents need gateway routing and node enrollment in this Installation's Kubernetes Compute configuration. Codex runs only as a Dedicated Agent: select Embedded OpenClaw, or ask an operator to configure it.";
+  for (const routed of [false, true]) {
+    const f = await setup(t, { channelRuntime: true, routed });
+    const secret = await f.createSecret(f.namespace.id, `model-key-${routed}`, "test-api-key");
+    const harnessAuth = { method: "api_key", source: secret.ref };
+    const codex = await storeConfiguration(f, "codex", "codex/gpt-5.1");
+    const openclaw = await storeConfiguration(f, "openclaw", "openai/gpt-4.1");
+    const validate = (fields) =>
+      f.request("POST", `${f.path}/validate`, {
+        body: {
+          configuration: { kind: "agent", values: codex.data.values },
+          executionMode: "dedicated",
+          ...fields,
+        },
+      });
+    // The preflight checks the binding Agent create will name: the method of a Secret the console
+    // saves next, or an existing Secret. Without one it checks no Harness authentication, as
+    // before.
+    for (const [fields, refused] of [
+      [{ harnessAuth: { method: "api_key" } }, !routed],
+      [{ harnessAuth: { method: "codex_pat" } }, !routed],
+      [{ harnessAuth }, !routed],
+      [{}, false],
+      [{ harnessAuth: null }, false],
+    ]) {
+      const response = await validate(fields);
+      if (!refused) {
+        assert.equal(response.status, 204, JSON.stringify([fields, response.body]));
+        continue;
+      }
+      assertApiError(response, 400, "INVALID_REQUEST", JSON.stringify(fields));
+      assert.equal(response.body.error.message, message);
+    }
+    const dedicated = await f.create("Codex", {
+      configurationId: codex.data.id,
+      executionMode: "dedicated",
+      harnessAuth,
+    });
+    const embedded = await f.create("Embedded", { configurationId: openclaw.data.id, harnessAuth });
+    assert.equal(embedded.status, 201, JSON.stringify(embedded.body));
+    const update = await f.request("PATCH", `${f.path}/${embedded.data.id}`, {
+      body: { configurationId: codex.data.id, executionMode: "dedicated" },
+    });
+    for (const [response, saved] of [
+      [dedicated, 201],
+      [update, 200],
+    ]) {
+      if (routed) {
+        assert.equal(response.status, saved, JSON.stringify(response.body));
+        continue;
+      }
+      assertApiError(response, 400, "INVALID_REQUEST");
+      assert.equal(response.body.error.message, message);
+    }
+    if (routed) {
+      continue;
+    }
+    // A draft Configuration that selects no model has nothing to check Harness authentication
+    // against, so save accepts it; deployment refuses it.
+    const draft = await f.create("Draft", { executionMode: "dedicated", harnessAuth });
+    assert.equal(draft.status, 201, JSON.stringify(draft.body));
+    const stored = (await f.request("GET", f.path)).data;
+    assert.deepEqual(stored.map(({ name, executionMode }) => [name, executionMode]).sort(), [
+      ["Draft", "dedicated"],
+      ["Embedded", "embedded"],
+    ]);
   }
 });

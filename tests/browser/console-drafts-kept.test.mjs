@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
+import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { createConsoleAppFixture as createBaseConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   apiRequests,
@@ -450,7 +450,7 @@ for (const pending of [
       await page.locator("summary", { hasText: "Plugin selections JSON" }).first().click();
       await page
         .getByLabel("Plugin selections JSON")
-        .fill(JSON.stringify({ "occ-plugin:diffs": { enabled: true } }));
+        .fill(JSON.stringify({ "codex-plugin:linear@openai-curated-remote": { enabled: true } }));
       await page.getByRole("button", { name: "Save plugin selections" }).click();
     },
   },
@@ -459,7 +459,7 @@ for (const pending of [
     const fixture = await createConsoleAppFixture(t);
     await fixture.bootstrap();
     if (pending.tab === "plugins") {
-      const driver = new OCCPluginDriver();
+      const driver = new CodexPluginDriver();
       fixture.controller.registerDriver(driver);
       fixture.controller.selectDriver("plugin", driver.id);
     }
@@ -566,7 +566,7 @@ for (const pending of [
 test("a plugin save that settles after Delete lets the page go", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const driver = new OCCPluginDriver();
+  const driver = new CodexPluginDriver();
   fixture.controller.registerDriver(driver);
   fixture.controller.selectDriver("plugin", driver.id);
   const namespace = await fixture.createNamespace("Plugin save delete", { ready: true });
@@ -583,7 +583,7 @@ test("a plugin save that settles after Delete lets the page go", async (t) => {
   await page.locator("summary", { hasText: "Plugin selections JSON" }).first().click();
   await page
     .getByLabel("Plugin selections JSON")
-    .fill(JSON.stringify({ "occ-plugin:diffs": { enabled: true } }));
+    .fill(JSON.stringify({ "codex-plugin:linear@openai-curated-remote": { enabled: true } }));
   await page.getByRole("button", { name: "Save plugin selections" }).click();
   await held.requested;
 

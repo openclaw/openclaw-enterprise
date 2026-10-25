@@ -9,6 +9,7 @@ import { chromium, request as playwrightRequest } from "playwright";
 import { watchBrowserContext } from "../helpers/browser-failure-diagnostics.mjs";
 import { keepRequestInterceptionEnabled } from "../helpers/browser-request-interception.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { waitUntil } from "../helpers/wait-for.mjs";
 import {
   deploymentErrorForWork,
   deploymentProgressForWork,
@@ -291,6 +292,16 @@ export function nonAuthWriteRequests(requests) {
   );
 }
 
+// Whether a Secret value control hides what is typed: a password input, or the masked
+// multiline box every Create Secret form uses where the browser supports masking (finding 2339).
+export async function isMaskedSecretValue(control) {
+  return control.evaluate(
+    (node) =>
+      node.getAttribute("type") === "password" ||
+      globalThis.getComputedStyle(node).getPropertyValue("-webkit-text-security") === "disc",
+  );
+}
+
 export function secretOptionLabel(secret) {
   return secret.name;
 }
@@ -309,10 +320,27 @@ export function expireSessions(fixture) {
   }
 }
 
-export async function expectNoText(page, pattern) {
-  await assert.rejects(
-    page.getByText(pattern).waitFor({ state: "visible", timeout: 300 }),
-    /Timeout/,
+// Checks that no visible text matches `pattern`. `settled` resolves once the page has done what
+// could have shown the text: the read behind it settled (waitForIdleFetches,
+// waitForSettledFetches), or the page shows its last render before a held read answers. The
+// check runs once that has rendered, without a fixed wait. Without `settled`, it watches the
+// page for 300 ms: keep that where a timer could still show the text, such as the loading
+// timers that run while a test holds a session or admission read. The settled check waits for
+// page frames, so it hangs on a page whose clock is paused (page.clock.pauseAt).
+export async function expectNoText(page, pattern, settled) {
+  if (settled === undefined) {
+    await assert.rejects(
+      page.getByText(pattern).waitFor({ state: "visible", timeout: 300 }),
+      /Timeout/,
+    );
+    return;
+  }
+  await settled();
+  await nextFrames(page);
+  assert.equal(
+    await page.getByText(pattern).filter({ visible: true }).count(),
+    0,
+    `no visible text matches ${pattern}`,
   );
 }
 
@@ -465,15 +493,19 @@ export async function waitForIdleFetches(page) {
   await page.waitForFunction(() => globalThis.inFlightFetchCount() === 0);
 }
 
+// Polls `predicate` until it is truthy; on timeout, `message` alone is the failure.
 export async function waitForCondition(predicate, message, timeoutMs = 5_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await predicate()) {
-      return;
+  try {
+    await waitUntil(message, predicate, { timeoutMs, intervalMs: 50 });
+  } catch (error) {
+    if (
+      error instanceof assert.AssertionError &&
+      error.message === `Timed out waiting for ${message}.`
+    ) {
+      assert.fail(message);
     }
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    throw error;
   }
-  assert.fail(message);
 }
 
 export function nativeValues(marker, options = {}) {

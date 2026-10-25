@@ -149,6 +149,10 @@ after sign-in and exact-Agent authorization. OCC drops queries and session suffi
 API requests, writes, WebSockets and permission denials never redirect. Reload an
 open native tab after expiry.
 
+A signed-in `administer` denial on that navigation stays HTTP 403. The page does
+not name the Agent and links **Go to your Agents** to `/console/agents` on the
+configured public origin. JSON and WebSocket refusals stay unchanged.
+
 Status and proxy checks reuse one Better Auth lookup for identity, expiry and
 attribution. Each WebSocket lease checks the current session again. After handling
 stopped, replacing or unsupported Agents, admission rechecks both Compute owner
@@ -227,6 +231,8 @@ admin Configuration remains Pod-local.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-24 23:25: Documented the authenticated browser 403 Agents link.
 
 - 2026-10-20 14:54: Extract persistence repair; trim repeated prose. (agent:roboclaw:dashboard:830a6ba7-3357-4ae0-9037-95d98205608c - 1ce18eeea10c83c856c8c08f6b0815e4b39308e0)
 

@@ -49,6 +49,7 @@ import {
   waitForEnabled,
   waitForInputValue,
   statusTone,
+  isMaskedSecretValue,
 } from "./console-agents-browser-helpers.mjs";
 import {
   STARTER_CONTROL_UI,
@@ -226,13 +227,23 @@ test("Agent creation stores its API key separately, grants exact access, and sav
     .waitFor();
   assert.equal(await createSecretDialog.getByLabel("Binding key").inputValue(), "SLACK_BOT_TOKEN");
   assert.equal(await createSecretDialog.getByLabel("Binding key").getAttribute("readonly"), "");
+  // The fixed key reads as text, not as a field like Name (finding 2370).
+  const fieldChrome = (label: string, exact = false) =>
+    createSecretDialog.getByLabel(label, { exact }).evaluate((node) => {
+      const style = getComputedStyle(node);
+      return { border: style.borderTopColor, background: style.backgroundColor };
+    });
+  const [fixedKey, nameField] = [await fieldChrome("Binding key"), await fieldChrome("Name", true)];
+  assert.equal(fixedKey.border, "rgba(0, 0, 0, 0)");
+  assert.equal(fixedKey.background, "rgba(0, 0, 0, 0)");
+  assert.notEqual(nameField.border, fixedKey.border);
   assert.equal(
     await createSecretDialog.getByLabel("Name", { exact: true }).inputValue(),
     "Console-created Agent Slack bot token",
   );
   assert.equal(
-    await createSecretDialog.getByLabel("Value", { exact: true }).getAttribute("type"),
-    "password",
+    await isMaskedSecretValue(createSecretDialog.getByLabel("Value", { exact: true })),
+    true,
   );
   // Dismissing the topmost dialog discards its token, not the underlying Slack edits.
   await createSecretDialog.getByLabel("Value", { exact: true }).fill("discarded-secret-value");
@@ -658,9 +669,11 @@ test("Agent creation distinguishes unavailable repository choices from denied Ag
     response.url().endsWith("/agents/repository-options"),
   );
   await unavailablePage.getByRole("button", { name: "Start with default Preset" }).click();
+  // No Repo Driver is a fixed state: discovery answers no options and says why (finding 2387).
   const options = await optionsResponse;
-  assert.equal(options.status(), 503);
-  assert.equal((await options.json()).error.code, "REPOSITORY_OPTIONS_UNAVAILABLE");
+  assert.equal(options.status(), 200);
+  const optionsBody = await options.json();
+  assert.deepEqual([optionsBody.data, optionsBody.meta.notConfigured], [[], true]);
   await unavailablePage
     .getByText(/Repository access is not available in this Installation's configuration/)
     .waitFor();

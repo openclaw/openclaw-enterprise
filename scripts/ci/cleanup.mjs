@@ -4,10 +4,11 @@ import { cleanupKeycloak, keycloakResourceKind } from "./keycloak.mjs";
 import { laneImagesResourceKind, restoreLaneImages } from "./lane-images.mjs";
 import { fork, spawn } from "node:child_process";
 import { constants } from "node:fs";
-import { access, chmod, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { access, chmod, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { withStateLock } from "./state-lock.mjs";
+import { runPostgresAdmin } from "./postgres-admin.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const composePostgresFile = join(repositoryRoot, "compose.postgres.yaml");
@@ -39,8 +40,9 @@ function parseArgs(argv) {
 }
 
 // Every container engine and k3d command has a limit, so one that never returns cannot hold
-// the job's Cleanup lane step, or a test's database drop, until the job timeout. Past it the
-// command gets SIGTERM, then SIGKILL after a grace period. Tests shorten both.
+// the job's Cleanup lane step until the job timeout. Past it the command gets SIGTERM, then
+// SIGKILL after a grace period. Tests shorten both. A test's database drop, a direct
+// connection to the lane's server, has the shorter limit below.
 function positiveEnvMs(name, fallback) {
   const value = Number(process.env[name]);
   return Number.isFinite(value) && value > 0 ? value : fallback;
@@ -309,29 +311,66 @@ async function cleanupDatabase(resource, state) {
   if (!compose) {
     return;
   }
-  await execFile(
-    process.env.OCC_DOCKER_BIN ?? "docker",
-    [
-      ...composeArgs(compose, state, "exec", "-T", "postgres"),
-      "psql",
-      "-v",
-      "ON_ERROR_STOP=1",
-      "-U",
-      "postgres",
-      "-d",
-      "postgres",
-      "-c",
-      `DROP DATABASE IF EXISTS ${quoteIdentifier(resource.name)} WITH (FORCE)`,
-    ],
-    { env: { OCC_POSTGRES_PORT: String(compose.port) }, timeoutMs: databaseDropTimeoutMs() },
-  );
+  // Checks the server is this state's owned lane server before connecting to its port.
+  composeArgs(compose, state);
+  // FORCE ends the database's remaining sessions first.
+  await runPostgresAdmin({
+    port: compose.port,
+    statements: [`DROP DATABASE IF EXISTS ${quoteIdentifier(resource.name)} WITH (FORCE)`],
+    timeoutMs: databaseDropTimeoutMs(),
+  });
 }
 
 async function cleanupK3dCluster(resource, state) {
   assertResourceOwner(resource, state);
   assertOwnedK3dFilesystem(resource);
   await deleteOwnedK3dCluster(resource);
+  await emptyK3dSharedStorage(resource);
   await rm(resource.directory, { recursive: true, force: true });
+}
+
+// The fixture lanes bind <directory>/storage into every node as local-path's storage
+// (prepare.mjs). local-path creates each claim's volume directory as root and removes it with a
+// helper Pod only after the claim is deleted, so volumes of namespaces that tests deleted without
+// waiting leave directories the runner user cannot remove. The cluster is gone by now, so nothing
+// writes there again: empty the storage as root from the cluster's own node image, which is
+// already present (never pulled here), with no network.
+async function emptyK3dSharedStorage(resource) {
+  const storage = join(resource.directory, "storage");
+  let entries;
+  try {
+    entries = await readdir(storage);
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return;
+    }
+    throw error;
+  }
+  if (entries.length === 0) {
+    return;
+  }
+  assertString(resource.nodeImage, "k3d node image");
+  if (resource.nodeImage.startsWith("-")) {
+    throw new Error(`Refusing an invalid k3d node image: ${resource.nodeImage}`);
+  }
+  await execFile(process.env.OCC_DOCKER_BIN ?? "docker", [
+    "run",
+    "--rm",
+    "--pull=never",
+    "--network=none",
+    "--user=0",
+    // The k3d nodes are privileged; this container is not, so SELinux hosts would deny it the
+    // unlabelled bind mount.
+    "--security-opt=label=disable",
+    "--entrypoint=find",
+    "--volume",
+    `${storage}:/storage`,
+    resource.nodeImage,
+    "/storage",
+    "-mindepth",
+    "1",
+    "-delete",
+  ]);
 }
 
 // Delete an owned cluster and its exact cluster-labelled Docker resources, and

@@ -79,16 +79,23 @@ func runOCC(t *testing.T, responses map[string]string, args ...string) (string, 
 func runOCCWithNotices(t *testing.T, responses map[string]string, args ...string) (string, string, []string, error) {
 	t.Helper()
 	fake := &fakeOCC{responses: responses}
-	server := httptest.NewServer(fake)
+	out, errOut, err := runOCCAgainst(t, fake, args...)
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	return out, errOut, append([]string(nil), fake.requested...), err
+}
+
+// runOCCAgainst runs occ against handler and returns stdout, stderr, and the error.
+func runOCCAgainst(t *testing.T, handler http.Handler, args ...string) (string, string, error) {
+	t.Helper()
+	server := httptest.NewServer(handler)
 	defer server.Close()
 	keyFile := writeKeyFile(t, `{"data":{"key":"test-key"}}`)
 	var out, errOut bytes.Buffer
 	command := New(&out, &errOut)
 	command.SetArgs(append([]string{"--url", server.URL, "--service-key-file", keyFile}, args...))
 	err := command.Execute()
-	fake.mu.Lock()
-	defer fake.mu.Unlock()
-	return out.String(), errOut.String(), append([]string(nil), fake.requested...), err
+	return out.String(), errOut.String(), err
 }
 
 func TestNamespaceTableLabelsTheAdoptedNamespaceColumn(t *testing.T) {
@@ -1084,13 +1091,8 @@ func TestAgentRevisionsPagesWithCursor(t *testing.T) {
 	if !strings.Contains(notices, "agent revisions "+testAgentID+" --limit 1 --cursor v1.2") {
 		t.Fatalf("expected a next-page hint that keeps --limit: %q", notices)
 	}
-	_, continuation, found := strings.Cut(notices, `older revisions may exist; run "`)
-	if !found {
-		t.Fatalf("missing next-page command: %q", notices)
-	}
-	continuation, _, _ = strings.Cut(continuation, `"`)
 	responses["GET "+agentPath+"/revisions"] = `raw:200 {"data":[{"id":"` + testRevision1ID + `","revision":1,"createdAt":"2026-09-30T00:00:00.000Z"}],"meta":{"requestId":"req_test","nextCursor":null}}`
-	nextOut, nextRequested, err := runOCC(t, responses, strings.Fields(continuation)[1:]...)
+	nextOut, nextRequested, err := runOCC(t, responses, nextPageCommand(t, notices)...)
 	if err != nil {
 		t.Fatalf("advertised next-page command failed: %v", err)
 	}
@@ -1102,6 +1104,85 @@ func TestAgentRevisionsPagesWithCursor(t *testing.T) {
 			t.Fatalf("--limit %s must be refused locally", limit)
 		}
 	}
+}
+
+// Without --limit, the next-page hint must not add one: "--limit 0" is refused
+// locally, so the advertised command would fail.
+func TestAgentRevisionsNextPageHintOmitsAnUnsetLimit(t *testing.T) {
+	responses := agentRevisionResponses()
+	agentPath := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID
+	responses["GET "+agentPath+"/revisions"] = `raw:200 {"data":[{"id":"` + testRevision2ID + `","revision":2,"createdAt":"2026-09-30T01:00:00.000Z"}],"meta":{"requestId":"req_test","nextCursor":"v1.2"}}`
+	_, notices, requested, err := runOCCWithNotices(t, responses, "--namespace", testNamespaceID, "agent", "revisions", testAgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The request leaves the page size to OCC too: OCC refuses limit=0.
+	if !slices.Contains(requested, "GET "+agentPath+"/revisions") {
+		t.Fatalf("an unset --limit must send no limit (OCC refuses limit=0): %v", requested)
+	}
+	if next := nextPageCommand(t, notices); slices.Contains(next, "--limit") {
+		t.Fatalf("next-page command adds a --limit the caller did not pass: %q", next)
+	}
+}
+
+// A revision list without data is a malformed answer, not an Agent without revisions.
+func TestAgentRevisionsRefusesAPageWithoutData(t *testing.T) {
+	responses := agentRevisionResponses()
+	agentPath := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID
+	responses["GET "+agentPath+"/revisions"] = `raw:200 {"meta":{"requestId":"req_test"}}`
+	_, _, err := runOCC(t, responses, "--namespace", testNamespaceID, "agent", "revisions", testAgentID)
+	if err == nil || err.Error() != "OCC returned an invalid response (HTTP 200)" {
+		t.Fatalf("error = %v, want the invalid response refusal", err)
+	}
+}
+
+// The default revision lookup stops when OCC hands back the cursor it was sent, as
+// older servers can, instead of asking for the same empty page forever.
+func TestDefaultRevisionLookupStopsAtARepeatedCursor(t *testing.T) {
+	responses := agentRevisionResponses()
+	agentPath := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID
+	responses["GET "+agentPath+"/revisions"] = `raw:200 {"data":[],"meta":{"requestId":"req_test","nextCursor":"v1.2"}}`
+	fake := &fakeOCC{responses: responses}
+	var lists []string
+	handler := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == agentPath+"/revisions" {
+			lists = append(lists, request.URL.RawQuery)
+			if len(lists) > 3 {
+				// Bound a looping client so a regression fails instead of hanging.
+				writer.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+		}
+		fake.ServeHTTP(writer, request)
+	})
+	_, _, err := runOCCAgainst(t, handler, "--namespace", testNamespaceID, "agent", "deployment-status", testAgentID)
+	if err == nil || !strings.HasPrefix(err.Error(), "agent "+testAgentID+" has no revision you can read") {
+		t.Fatalf("error = %v, want the no readable revision refusal", err)
+	}
+	if want := []string{"limit=100", "cursor=v1.2&limit=100"}; !slices.Equal(lists, want) {
+		t.Fatalf("revision list queries = %q, want %q", lists, want)
+	}
+}
+
+// OCC answers a delete with a bodyless 204; any other success is malformed.
+func TestDeleteRefusesASuccessOtherThanNoContent(t *testing.T) {
+	path := "/namespaces/" + testNamespaceID + "/configurations/cfg_1"
+	_, _, err := runOCC(t, map[string]string{"DELETE " + path: "raw:200 "}, "--namespace", testNamespaceID, "configuration", "delete", "cfg_1")
+	if err == nil || err.Error() != "OCC returned an invalid empty response (HTTP 200)" {
+		t.Fatalf("error = %v, want the invalid empty response refusal", err)
+	}
+}
+
+// nextPageCommand returns the arguments of the "occ ..." command that an
+// agent revisions notice advertises for the next page, without "occ".
+func nextPageCommand(t *testing.T, notices string) []string {
+	t.Helper()
+	_, continuation, found := strings.Cut(notices, `older revisions may exist; run "`)
+	if !found {
+		t.Fatalf("missing next-page command: %q", notices)
+	}
+	continuation, _, _ = strings.Cut(continuation, `"`)
+	return strings.Fields(continuation)[1:]
 }
 
 // Subject IDs are opaque and can match across identities and groups. Tables

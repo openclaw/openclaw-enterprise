@@ -19,8 +19,13 @@ Kubernetes storage, credential delivery, or runtime consumption.
    outcome**, and **Concurrent reference conflict**. Uncertain submissions must
    remain disabled. Close, then refresh or inspect current state as instructed.
 7. Inspect **Empty**, **Loading**, **Read unavailable**, **No readable Namespace**,
-   and **Namespace provisioning**. Repeat the creation and deletion controls in
-   **Mobile** at 390 × 844.
+   and **Namespace provisioning**.
+8. In **Mobile** (390 × 844), open the single search result, then **Replace value**.
+   The header and sheet reach the right edge without an empty strip. Press Escape,
+   clear **Search Secrets**, scroll to the last Secret, and open it. A classic
+   scrollbar takes its usual space; an overlay scrollbar takes no extra width.
+   Escape returns focus to the Secret you opened. Repeat creation and deletion
+   in this phone layout.
 
 Capture final desktop/mobile screenshots, consumer and failure states, and a
 short create/replace/delete recording outside the checkout. Record the tested

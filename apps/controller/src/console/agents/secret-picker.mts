@@ -16,12 +16,35 @@ import {
   validateFields,
 } from "../dom.mjs";
 import { message, namespacePath } from "./list.mjs";
+import { NAME_MAX_CHARACTERS, namespaceNameProblem } from "../namespaces.mjs";
+import { secretValueControl } from "../secrets.mjs";
 
 // A preview can show an existing reference without a live Namespace or request function.
 type SecretContext = Partial<AgentAccessContext> & {
   operatorId?: string;
   installationAdmin?: boolean | null;
 };
+
+// The API's Name length for Secrets, in code points: the Name rule namespaces.mts mirrors.
+export const SECRET_NAME_MAX_CHARACTERS = NAME_MAX_CHARACTERS;
+// The suggested name's ending that shortening keeps: what the Secret is for, such as
+// "harness authentication" or "Slack bot token".
+const SUGGESTED_NAME_KEPT_ENDING = 40;
+
+/**
+ * A suggested Secret name within the API's Name length. Suggestions join the Agent name, which
+ * may itself use every allowed character, with what the Secret is for, so a long one keeps that
+ * ending and shortens the middle (finding 1809).
+ */
+export function suggestedSecretName(suggestion: string) {
+  const characters = Array.from(suggestion.trim());
+  if (characters.length <= SECRET_NAME_MAX_CHARACTERS) {
+    return characters.join("");
+  }
+  const start = characters.slice(0, SECRET_NAME_MAX_CHARACTERS - SUGGESTED_NAME_KEPT_ENDING - 1);
+  const ending = characters.slice(-SUGGESTED_NAME_KEPT_ENDING);
+  return `${start.join("").trimEnd()}…${ending.join("").trimStart()}`;
+}
 
 export function secretIdForBinding(binding: unknown) {
   return secretSourceForBinding(binding)?.id ?? null;
@@ -513,14 +536,22 @@ export function createSecretReferenceField({
       required: "",
       "data-trim": "",
       autocomplete: "off",
-      value: createSecretName(),
+      value: suggestedSecretName(createSecretName()),
     });
-    const value = element("input", {
-      id: `create-${id}-value`,
-      type: "password",
-      required: "",
-      autocomplete: "off",
+    // The API's Name rule, checked as the Secrets page checks it (finding 2339).
+    name.addEventListener("input", () => name.setCustomValidity(namespaceNameProblem(name.value)));
+    // The Secrets page's value control: a multiline value is kept exactly, and a value the API
+    // would refuse is named under the field before any request.
+    const { value, reveal, multiline } = secretValueControl(`create-${id}-value`);
+    const valueField = formField({
+      label: "Value",
+      control: value,
+      help: `Stored as a Namespace Secret. The value is never read back. ${
+        multiline ? "Spaces kept; line breaks normalized." : "Enter a single-line value."
+      }`,
+      className: "form-field secret-value-field",
     });
+    value.before(reveal);
     const feedback = statusBlock("danger", null, null);
     const cancel = element("button", { type: "button" }, "Cancel");
     const submit = element(
@@ -558,12 +589,7 @@ export function createSecretReferenceField({
         help: "Unique within this Namespace.",
         className: "form-field",
       }),
-      formField({
-        label: "Value",
-        control: value,
-        help: "Stored as a Namespace Secret. The value is never read back.",
-        className: "form-field",
-      }),
+      valueField,
       feedback,
       element("div", { className: "dialog-actions" }, cancel, submit),
     );
@@ -587,6 +613,8 @@ export function createSecretReferenceField({
     cancel.addEventListener("click", close);
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
+      // The suggested name arrives without an input event, and may carry what the Agent name does.
+      name.setCustomValidity(namespaceNameProblem(name.value));
       // The console checks the fields, so no browser bubble shows; a Name of only spaces is
       // missing too (UX plan C3).
       if (
@@ -604,6 +632,7 @@ export function createSecretReferenceField({
       cancel.disabled = true;
       name.disabled = true;
       value.disabled = true;
+      reveal.disabled = true;
       feedback.textContent = "";
       let created = false;
       try {
@@ -655,6 +684,7 @@ export function createSecretReferenceField({
         cancel.disabled = false;
         name.disabled = outcomeUnknown;
         value.disabled = outcomeUnknown;
+        reveal.disabled = outcomeUnknown;
         if (status === 409 && code !== "NAMESPACE_NOT_READY") {
           name.focus();
         } else {

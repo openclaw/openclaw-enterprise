@@ -873,6 +873,7 @@ test("Dedicated Agent creation keeps one provisioning label while the job retrie
     }),
   );
 
+  await trackSettledFetches(page);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
   await page.getByRole("button", { name: "Start without Preset" }).click();
@@ -881,7 +882,16 @@ test("Dedicated Agent creation keeps one provisioning label while the job retrie
   await createModelCredentialSecret(page, "model-secret-value");
   await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
   await page.evaluate(recordProvisioningWrites, ["Provisioning"]);
+  const start = Date.now();
+  await page.clock.install({ time: start });
+  await page.clock.pauseAt(start + 1_000);
   await page.getByRole("button", { name: "Create Agent" }).click();
+  // Advance each poll only after the page has consumed the preceding response.
+  for (let poll = 0; poll < reads.length; poll += 1) {
+    await waitForCondition(() => clientRequestId && read === poll, `job read ${poll}`);
+    await waitForIdleFetches(page);
+    await page.clock.runFor(1_000);
+  }
   await page.getByText("Provisioning failed.", { exact: true }).waitFor();
   assert.equal(read, reads.length);
   assert.deepEqual(await page.evaluate(() => globalThis.provisioningWrites), [
@@ -1203,9 +1213,11 @@ test("Dedicated Agent creation names the first deployment's wait while it provis
     // image pull failure before the job does. The deployment then waits for the Pod quota, then
     // the job names the image pull and the workspace node while the read is briefly unavailable
     // (503). Then the job still names the runtime wait while the read already reports the Pod
-    // quota, and then the reader loses access (403). A stop's gateway drain follows, then no
-    // recorded wait, and the job fails. The image pull, the quota and the stop stand alone. A
-    // member can't read the deployment and gets the job's own code.
+    // quota, and then the reader loses access (403). The refusal cleared the quota the earlier
+    // read named, so a later unavailable read, while the job names only its own pending code,
+    // adds nothing to the line. A stop's gateway drain follows, then no recorded wait, and the job
+    // fails. The image pull, the quota and the stop stand alone. A member can't read the
+    // deployment and gets the job's own code.
     const runtimeWait = { code: "REVISION_INCOMPLETE", message: runtime };
     const quotaWait = { code: "NAMESPACE_POD_QUOTA_EXCEEDED", message: quotaFull };
     const pullWait = { code: "REVISION_IMAGE_PULL_FAILED", message: pullFailed };
@@ -1219,6 +1231,8 @@ test("Dedicated Agent creation names the first deployment's wait while it provis
           [{ code: "WORKSPACE_NODE_PENDING", message: node }, 503],
           [runtimeWait, quotaWait],
           [runtimeWait, 403],
+          // Writes nothing: the refusal dropped the quota, and the pending code adds no detail.
+          [pending, 503],
           [stopWait, stopWait],
         ]
       : Array.from({ length: 6 }, () => [pending, 403]);
@@ -1982,22 +1996,25 @@ test("Agent creation names the Configuration field that holds an inline model cr
     providers: { ...edited.models?.providers, openai: { apiKey: sentinel } },
   };
   await configuration.fill(JSON.stringify(edited, null, 2));
+  // The preflight checks the selected model credential Secret against the Configuration as Agent
+  // save would (finding 2391), so it refuses the inline key before the Configuration is saved.
   const rejected = page.waitForResponse(
     (response) =>
-      response.url() === `${fixture.origin}/namespaces/${namespace.id}/configurations` &&
+      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/validate` &&
       response.request().method() === "POST",
   );
   await page.getByRole("button", { name: "Create Agent" }).click();
   assert.equal((await rejected).status(), 400);
   const feedback = page.getByRole("alert").filter({
     hasText:
-      "Configuration field /models/providers/openai/apiKey holds a credential value inline, where a reference is required. Store the key as a Secret and select it as the Agent's model credential instead.",
+      "Configuration setting models.providers.openai.apiKey must be unset: Dedicated Codex receives model credentials from the Agent's Harness authentication binding.",
   });
   await feedback.waitFor();
   // Only the editor holds the key; the explanation never repeats it.
   const explanation = await feedback.textContent();
   assert.ok(explanation, "expected the explanation of the credential field");
   assert.equal(explanation.includes(sentinel), false);
+  assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
   assert.equal(agentPostRequests(requests, namespace.id).length, 0);
   await waitForEnabled(configuration);
 });

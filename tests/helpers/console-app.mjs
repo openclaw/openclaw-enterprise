@@ -16,6 +16,7 @@ import { backendSummariesFromDefinitions } from "../../apps/controller/src/compo
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
+import { NAME_MAX_CHARACTERS } from "../../packages/contracts/src/api/plain-text.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
 import { authenticatedHeaders, signInWithEmailPassword } from "./auth-session.mjs";
@@ -24,6 +25,7 @@ import { createTestSecretDriver } from "./secret-driver.mjs";
 import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";
 import { reservePort } from "./available-port.mjs";
 import { sharedRsaPrivateKeyPem } from "../fixtures/repository-credentials/shared-keys.mjs";
+import { temporaryDirectory } from "./temporary-directory.mjs";
 
 export const backendFixtures = Object.freeze([
   Object.freeze({
@@ -41,6 +43,7 @@ export const backendFixtures = Object.freeze([
 function computeDriver({
   repositoryCredentials = false,
   channelRuntime = false,
+  routed = true,
   discoverHarnessModels = async () => [],
   agentProvisioning = false,
   sandboxDriver,
@@ -51,6 +54,7 @@ function computeDriver({
     sandboxDriver,
     credentialGatewayDriver,
     channelRuntime,
+    routed,
   });
 
   return Object.assign(driver, {
@@ -85,6 +89,13 @@ function computeDriver({
     },
     async retireRevision() {},
   });
+}
+
+// The default model credential Secret's name for createAgent. An Agent name may use all of the
+// Name rule's characters, so "Auth <Agent name>" is cut to that length (in code points); the cut
+// can land after a space, which a Name cannot end with.
+function authSecretName(agentName) {
+  return Array.from(`Auth ${agentName}`).slice(0, NAME_MAX_CHARACTERS).join("").trimEnd();
 }
 
 function spkiHash(cert) {
@@ -387,8 +398,7 @@ export async function createConsoleAppFixture(t, options = {}) {
   ) {
     // Native value validation (Preset seeding, inline credential checks) needs the
     // real storage Driver; the in-memory test Driver accepts any values.
-    const root = await mkdtemp(join(tmpdir(), "occ-console-configuration-"));
-    t.after(() => rm(root, { recursive: true, force: true }));
+    const root = await temporaryDirectory(t, "occ-console-configuration-");
     configurationDriver = new FilesystemConfigurationDriver(root);
   }
   let controller;
@@ -405,6 +415,7 @@ export async function createConsoleAppFixture(t, options = {}) {
       computeDriver({
         repositoryCredentials: options.repositoryCredentials === true,
         channelRuntime: options.channelRuntime === true,
+        routed: options.routed !== false,
         discoverHarnessModels: options.discoverHarnessModels,
         agentProvisioning: options.agentProvisioning,
         sandboxDriver: options.sandboxDriver,
@@ -743,7 +754,7 @@ export async function createConsoleAppFixture(t, options = {}) {
         ? {
             method: "api_key",
             source: (
-              await createSecret(namespaceId, `Auth ${name}`, `test-api-key-${randomUUID()}`)
+              await createSecret(namespaceId, authSecretName(name), `test-api-key-${randomUUID()}`)
             ).ref,
           }
         : (options.harnessAuth ?? null);

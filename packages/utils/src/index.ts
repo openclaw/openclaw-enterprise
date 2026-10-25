@@ -13,3 +13,4 @@ export { numericErrorStatus } from "./errors.ts";
 export { cookieHeaderFromSetCookie, readCappedBody } from "./http.ts";
 export { hasControlCharacter } from "./text.ts";
 export { publicCaBundle } from "./tls.ts";
+export { MAX_TIMER_DELAY_MS } from "./timers.ts";

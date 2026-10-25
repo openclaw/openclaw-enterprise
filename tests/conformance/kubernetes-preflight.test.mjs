@@ -16,6 +16,9 @@ import {
   createTestKubernetesComputeDriver,
 } from "../helpers/kubernetes-compute.mjs";
 import { refusingPort } from "../helpers/available-port.mjs";
+import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { loadInstallationFile } from "../helpers/installation-file.mjs";
+import { jsonChunkDestination } from "../helpers/json-lines.mjs";
 
 function driverForVersion(gitVersion) {
   const driver = createTestKubernetesComputeDriver("compute-kubernetes-preflight");
@@ -157,12 +160,7 @@ test("Kubernetes preflight names the unreachable API server endpoint", async (t)
     const lines = [];
     const logger = createOccLogger({
       component: "occ-worker",
-      destination: {
-        write(chunk) {
-          lines.push(JSON.parse(String(chunk)));
-          return true;
-        },
-      },
+      destination: jsonChunkDestination(lines),
     });
     emitOccLogEvent(logger, { event: "worker.startup-error", ...startupDependencyFailure(error) });
     assert.deepEqual(
@@ -276,7 +274,18 @@ function executionOptions(network = {}) {
   return configured;
 }
 
-test("execution-cluster diagnostics name the operator's original fields", () => {
+test("startup reports Kubernetes configuration errors at their original paths", async (t) => {
+  const config = createInstallationDriverConfiguration();
+  const { compute } = config.drivers;
+  const start = () => loadInstallationFile(t, config);
+  // Keep the startup settings production requires that the driver-level options don't carry.
+  const { images, servicePrincipalCredentials } = compute.configuration;
+  const twoClusters = { ...executionOptions(), images, servicePrincipalCredentials };
+
+  assert.equal((await start()).computeDriver.id, compute.id);
+  compute.configuration = twoClusters;
+  assert.equal((await start()).computeDriver.id, compute.id);
+
   for (const [change, path, message, code = "INVALID_FORMAT"] of [
     [
       (c) => {
@@ -328,18 +337,42 @@ test("execution-cluster diagnostics name the operator's original fields", () => 
       "/executionCluster/harnessRouting/hostname",
       "Harness routing hostname must be a DNS hostname without a port or path.",
     ],
-  ]) {
-    const options = executionOptions();
-    change(options);
-    assert.throws(
-      () => createKubernetesComputeDriver(options),
-      (error) => {
-        assert.ok(error instanceof ConfigurationValidationError);
-        assert.deepEqual(error.error.details, [{ path, code, message }]);
-        assert.doesNotMatch(JSON.stringify(error.error.details), /relative|Bad_NS|Bad_Host/);
-        return true;
+    [
+      (c) => {
+        c.executionCluster.authentication = { mode: "inCluster" };
       },
-    );
+      "/executionCluster/authentication",
+      "The execution cluster requires its own explicit kubeconfig.",
+    ],
+    [
+      (c) => {
+        c.executionCluster.network.dns = {
+          namespace: "kube-system",
+          podLabels: { "private/key/name": "dns" },
+        };
+      },
+      "/executionCluster/network/dns/podLabels",
+      "DNS peer label keys must be Kubernetes label keys.",
+    ],
+    [
+      (c) => {
+        c.network.gatewayClients = [c.network.dns];
+      },
+      "/network/gatewayClients",
+      "Gateway routing derives the Envoy gateway client peer; do not configure network.gatewayClients.",
+    ],
+  ]) {
+    compute.configuration = structuredClone(twoClusters);
+    change(compute.configuration);
+    await assert.rejects(start, (error) => {
+      assert.ok(error instanceof ConfigurationValidationError);
+      assert.deepEqual(error.error.details, [{ path, code, message }]);
+      assert.doesNotMatch(
+        JSON.stringify(error.error.details),
+        /relative|Bad_NS|Bad_Host|private\/key\/name/,
+      );
+      return true;
+    });
   }
 });
 
@@ -429,12 +462,7 @@ test("Kubernetes preflight warns about status proxy sources wider than one addre
   const lines = [];
   const logger = createOccLogger({
     component: "occ-worker",
-    destination: {
-      write(chunk) {
-        lines.push(JSON.parse(String(chunk)));
-        return true;
-      },
-    },
+    destination: jsonChunkDestination(lines),
   });
   for (const entry of result.warnings) {
     emitOccLogEvent(logger, { event: "compute.preflight-warning", ...entry });

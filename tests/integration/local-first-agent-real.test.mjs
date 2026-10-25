@@ -224,7 +224,7 @@ async function readPrivateJson(path, label) {
   }
 }
 
-async function readKubernetesJson({ stateDirectory, cluster, env }, args, label) {
+async function readKubernetes({ stateDirectory, cluster, env }, args, label, output, signal) {
   const environment = { ...env };
   delete environment.OPENAI_API_KEY;
   delete environment.OPENAI_API_KEY_FILE;
@@ -240,14 +240,34 @@ async function readKubernetesJson({ stateDirectory, cluster, env }, args, label)
         `k3d-${cluster}`,
         ...args,
         "--output",
-        "json",
+        output,
       ],
-      { env: environment, timeout: 20_000, maxBuffer: 1024 * 1024 },
+      { env: environment, timeout: 20_000, signal, maxBuffer: 1024 * 1024 },
     );
-    return JSON.parse(stdout);
+    return output === "json" ? JSON.parse(stdout) : stdout;
   } catch {
     throw new Error(`Could not read ${label} in the local Kubernetes context.`);
   }
+}
+
+function readKubernetesJson(kube, args, label) {
+  return readKubernetes(kube, args, label, "json");
+}
+
+function nativeAgentPodSelector(agentId, revisionId) {
+  return `openclaw.dev/agent=${agentId},openclaw.dev/revision=${revisionId},openclaw.dev/workload-role=agent`;
+}
+
+// Project only the fields needed to join the agent imageID to the model probe's log stream.
+function readNativeProbePod(kube, { namespaceId, agentId, revisionId }, signal) {
+  const selector = `${nativeAgentPodSelector(agentId, revisionId)},openclaw.dev/namespace=${namespaceId}`;
+  return readKubernetes(
+    kube,
+    ["get", "pods", "--all-namespaces", "--selector", selector],
+    "the native model probe's Harness Pod",
+    'jsonpath={range .items[*]}{.metadata.name} {.metadata.uid} {range .status.containerStatuses[?(@.name=="agent")]}{.restartCount} {.imageID}{end}{"\\n"}{end}',
+    signal,
+  );
 }
 
 async function readSecretResourceVersion({ stateDirectory, cluster, env, namespaceId, secretId }) {
@@ -437,16 +457,23 @@ test("native terminal failures report only fixed failure codes", async (t) => {
     progress: null,
     error: failure("RUNTIME_AUTHENTICATION_FAILED"),
   };
+  const probeStream = {
+    source: "agent",
+    container: "agent",
+    pod: "native-agent",
+    podUid: randomUUID(),
+    restartCount: 0,
+  };
   const probeLog = (fields) =>
     sanitizeRuntimeLogChunk({
-      stream: { source: "agent", container: "agent" },
+      stream: probeStream,
       lines: [
         { raw: JSON.stringify({ event: "openclaw.model_probe", elapsedMs: 5, ...fields }) },
         { raw: "private-sentinel" },
       ],
       truncated: false,
     }).records;
-  const page = (records) => ({ revisionId, source: "agent", records });
+  const page = (records) => ({ revisionId, source: "agent", stream: probeStream, records });
 
   function reportedFailure(message) {
     assert.doesNotMatch(message, /sentinel|ns_|agt_|rev_/i);
@@ -460,6 +487,9 @@ test("native terminal failures report only fixed failure codes", async (t) => {
       for (const [key, value] of Object.entries(observation.modelProbe)) {
         assert.ok(retained.includes(`"${key}":${JSON.stringify(value)}`), retained);
       }
+      if (typeof observation.probePodImage === "object") {
+        assert.ok(retained.includes(JSON.stringify(observation.probePodImage)), retained);
+      }
       if (observation.modelProbe.providerStatus === 401) {
         assert.match(retained, /"credentialAttachment":"not observed"/);
       }
@@ -467,7 +497,7 @@ test("native terminal failures report only fixed failure codes", async (t) => {
     return { category, ...observation };
   }
 
-  async function observe(response, provisioned, responses, expectedPaths) {
+  async function observe(response, provisioned, responses, expectedPaths, readProbePod) {
     const calls = [];
     const request = async (method, path, body, signal) => {
       calls.push({ method, path, body, signal });
@@ -481,6 +511,7 @@ test("native terminal failures report only fixed failure codes", async (t) => {
         namespaceId,
         provisioningPath,
         provisioned,
+        readProbePod,
         signal,
       }),
       (error) => {
@@ -541,6 +572,84 @@ test("native terminal failures report only fixed failure codes", async (t) => {
       modelProbe: { probes: 1, code: "AUTHENTICATION_FAILED", ...provider },
       credentialAttachment: "not observed",
     });
+
+    const { pod, podUid } = records[0].stream;
+    const digest = `sha256:${"a".repeat(64)}`;
+    const row = `${pod} ${podUid} 0 private-sentinel@${digest}`;
+    const imageFor = async (result, lines = records) => {
+      const failure = await observe(
+        handoff,
+        handoff,
+        [deployment, page(lines)],
+        [deploymentPath, logPath],
+        async () => {
+          if (result === undefined) {
+            throw new Error("private-sentinel");
+          }
+          return result;
+        },
+      );
+      assert.equal(failure.modelProbe.providerStatus, 401);
+      return failure.probePodImage;
+    };
+    assert.deepEqual(await imageFor(row), { digest, podUid });
+    for (const other of [
+      row.replace(podUid, randomUUID()),
+      row.replace(" 0 ", " 1 "),
+      `${row}\n${row}`,
+      row.slice(0, -1),
+      undefined,
+    ]) {
+      assert.equal(await imageFor(other), "unavailable");
+    }
+    const gap = { type: "gap", reason: "stream_replaced", stream: probeStream };
+    assert.equal(await imageFor(row, [gap, ...records]), "unavailable");
+
+    // A later READY keeps the observed 401, and the image can belong only to that 401.
+    const ready = probeLog({ code: "READY" });
+    const recovered = await observe(
+      handoff,
+      handoff,
+      [deployment, page([...records, ...ready])],
+      [deploymentPath, logPath],
+      async () => row,
+    );
+    assert.deepEqual(recovered.modelProbe, {
+      probes: 2,
+      code: "AUTHENTICATION_FAILED",
+      ...provider,
+    });
+    assert.deepEqual(recovered.probePodImage, { digest, podUid });
+
+    // A success-only, ambiguous, mismatched or mixed-stream page reads no Pod.
+    // The diagnostic catch would swallow a throw here, so count reads instead.
+    let podReads = 0;
+    const noPodRead = async () => {
+      podReads += 1;
+      return row;
+    };
+    const otherStream = { ...probeStream, podUid: randomUUID() };
+    const mixed = [...records, ...ready.map((record) => ({ ...record, stream: otherStream }))];
+    const unattributed = [
+      [deployment, ready],
+      [deployment, [...records, ...records]],
+      [deployment, mixed],
+      [
+        { ...deployment, error: failure("RUNTIME_MODEL_PROBE_FAILED") },
+        probeLog({ code: "AUTHENTICATION_FAILED", ...provider }),
+      ],
+    ];
+    for (const [current, lines] of unattributed) {
+      const { probePodImage } = await observe(
+        handoff,
+        handoff,
+        [current, page(lines)],
+        [deploymentPath, logPath],
+        noPodRead,
+      );
+      assert.equal(probePodImage, "unavailable");
+    }
+    assert.equal(podReads, 0);
   });
 
   await t.test("print other for values outside the fixed vocabularies", async () => {
@@ -1378,6 +1487,7 @@ test(
             first.namespaceId,
             submitted.provisioning,
           );
+          const kube = { stateDirectory, cluster: recorded.cluster, env };
           let provisioned;
           let deployment;
           let nativeAgent;
@@ -1390,6 +1500,7 @@ test(
               provisioningPath,
               provisioned,
               signal: nativeContext.signal,
+              readProbePod: (revision, signal) => readNativeProbePod(kube, revision, signal),
             };
             await assertNativeWorkNotFailed(
               provisioned,
@@ -1494,7 +1605,6 @@ test(
             agentId: nativeAgent.id,
             workspaceFile,
           };
-          const kube = { stateDirectory, cluster: recorded.cluster, env };
           const readProviderRevision = async (revisionId) => {
             const pods = await readKubernetesJson(
               kube,
@@ -1503,7 +1613,7 @@ test(
                 "pods",
                 "--all-namespaces",
                 "--selector",
-                `openclaw.dev/agent=${nativeAgent.id},openclaw.dev/revision=${revisionId},openclaw.dev/workload-role=agent`,
+                nativeAgentPodSelector(nativeAgent.id, revisionId),
               ],
               "the native OpenShell Harness",
             );

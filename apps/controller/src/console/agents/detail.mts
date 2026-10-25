@@ -167,6 +167,7 @@ interface MountedTab {
   resumeDrafts?(): void;
   showBlock?(): void;
   refresh?(): void;
+  applyOperate?(allowed: boolean | undefined): void;
   nodes?: ChildNode[];
 }
 
@@ -343,6 +344,14 @@ const DEPLOYMENT_OUTCOME_TONES: Partial<Record<DeploymentOutcome, string>> = {
   succeeded: "success",
   failed: "danger",
 };
+
+// Versions whose deployment record this tab has read as failed, keyed by Agent path and version
+// ID. The Versions list reads only the latest version's record, so an earlier failed version
+// lost its mark once a newer version was deployed (finding 2383). A failed record is final, so
+// the mark stays for as long as the console is open; a new page load knows only the latest one.
+const failedVersions = new Set<string>();
+const failedVersionKey = (agentPath: string, revisionId: string) =>
+  JSON.stringify([agentPath, revisionId]);
 
 // A recovery link opens a version tab far below the banner it sits in. Only the URL changed and
 // the page stayed at the top, so the link looked dead (finding 1586). The page the link opens,
@@ -544,6 +553,8 @@ export async function renderAgentDetail(
   let agentUpdateAllowed = callerPermissionsRead.then((permissions) => permissions?.update);
   // Only the latest reread's answer replaces the summary.
   let permissionsRereads = 0;
+  // The newest reread whose operate answer the page's controls show.
+  let appliedOperateReread = 0;
   // The newest permission read. Logs compares a remembered status denial with it, so an
   // operate grant read since the page was built applies (finding 1579).
   let latestPermissionsRead = callerPermissionsRead;
@@ -779,8 +790,14 @@ export async function renderAgentDetail(
       badge.dataset.tone = tone;
     }
     liveServingNote.classList.toggle("stat-help-line", expected);
+    // Nothing sends a running version a request to verify it, so "Not verified" says why
+    // (finding 2367); a Sandbox note takes its place.
+    const unchecked =
+      tone === undefined && !deleting && currentRuntimeState === "running" && currentRevisionId
+        ? "OCC sends no test request."
+        : "";
     if (!expected) {
-      setText(liveServingNote, "");
+      setText(liveServingNote, unchecked);
     } else if (answer === null) {
       setDelayedText(liveServingNote, "", "Checking Sandbox…");
     } else if (lost) {
@@ -797,7 +814,7 @@ export async function renderAgentDetail(
       setText(liveServingNote, "Sandbox starting.");
     } else {
       // The Sandbox Driver keeps no record of this Sandbox.
-      setText(liveServingNote, "");
+      setText(liveServingNote, unchecked);
     }
   }
   function setLiveServing(mayBeOffline: boolean) {
@@ -1652,8 +1669,12 @@ export async function renderAgentDetail(
     const status = latestDeploymentStatus;
     const tone = status && status !== "succeeded" && DEPLOYMENT_OUTCOME_TONES[status];
     const outcome = tone && [outcomeLabel(status), tone];
+    const failed = [outcomeLabel("failed"), DEPLOYMENT_OUTCOME_TONES.failed];
     for (const [id, { control, line, label }] of versionControls) {
-      const [text, tone] = (id === activityRevisionId && outcome) || [];
+      const [text, tone] =
+        (id === activityRevisionId
+          ? outcome
+          : failedVersions.has(failedVersionKey(path, id)) && failed) || [];
       const shown = line.querySelector<HTMLElement>(".version-outcome");
       if (
         (shown?.textContent ?? "") === (text ?? "") &&
@@ -1920,11 +1941,20 @@ export async function renderAgentDetail(
     renderVersionNotice();
   }
 
+  // The failed version the recovery block leads with, if any. The viewed version's record does
+  // not repeat that version's error below it (finding 2368).
+  let recoveryRevisionId: string | null = null;
+  function showRecovery(failure: Parameters<typeof recovery.show>[0]) {
+    recovery.show(failure);
+    recoveryRevisionId = failure?.latest.id ?? null;
+    versionRecord?.setFailureShownAbove(recoveryRevisionId === selected);
+  }
+
   function renderLatestDeployment() {
     markVersionOutcomes();
     const latest = visibleRevisions[0];
     if (!latest) {
-      recovery.show(null);
+      showRecovery(null);
       delete latestDeploymentValue.dataset.outcome;
       if (latestRevisionResult) {
         const rejected = latestRevisionResult.status === "rejected";
@@ -1946,8 +1976,10 @@ export async function renderAgentDetail(
           : "",
       );
       setLiveServing(false);
+      stopPanel.setNothingRunning(false);
       return;
     }
+    stopPanel.setNothingRunning(latestDeploymentStatus === "failed" && !currentRevisionId);
     const label = latestDeploymentStatus ? outcomeLabel(latestDeploymentStatus) : undefined;
     // A superseded or stopped deployment is neutral: it raises no banner and says nothing about
     // serving.
@@ -2055,7 +2087,7 @@ export async function renderAgentDetail(
       currentHidden ||
       currentUnknown ||
       !callerPermissionsSettled;
-    recovery.show(
+    showRecovery(
       hideRecovery
         ? null
         : {
@@ -2206,6 +2238,9 @@ export async function renderAgentDetail(
               }
               showPanel(nextPanel, status === "failed");
               latestDeploymentStatus = status;
+              if (status === "failed") {
+                failedVersions.add(failedVersionKey(path, mostRecent.id));
+              }
               // A refused or missing record ends the wait, so it no longer labels the version.
               if (record || !transientFailure) {
                 latestRecordedStatus = status;
@@ -2366,9 +2401,10 @@ export async function renderAgentDetail(
     if ("revision" in found) {
       versionRecord = createVersionDeploymentEvidence(context, path, selected, {
         shared: activityRevisionId === selected && !latestDeploymentUnavailable,
-        operateAllowed: callerPermissionsRead.then((permissions) => permissions?.operate),
+        operateAllowed: latestPermissionsRead.then((permissions) => permissions?.operate),
       });
       versionEvidence.append(...versionRecord.panels);
+      versionRecord.setFailureShownAbove(recoveryRevisionId === selected);
       if (latestDeploymentRecord?.deploymentId === selected) {
         versionRecord.show(latestDeploymentRecord);
       }
@@ -3002,6 +3038,17 @@ export async function renderAgentDetail(
     }
   }
 
+  // Every operate-gated control follows the newest answer read, without a reload: the Stop row,
+  // the shown version's Run diagnostics, and Workspace editors, shown or parked (finding 2328).
+  function applyOperateAnswer(allowed: boolean | undefined) {
+    stopPanel.applyOperate(allowed);
+    versionRecord?.applyOperate(allowed);
+    mountedTab?.applyOperate?.(allowed);
+    for (const tab of retainedTabs.values()) {
+      tab.applyOperate?.(allowed);
+    }
+  }
+
   // Reads the caller's permission answer again; a failed read keeps the last answer.
   function rereadPermissions() {
     const previous = latestPermissionsRead;
@@ -3013,6 +3060,12 @@ export async function renderAgentDetail(
           if (latestDeploymentStatus === "failed" && !deleting) {
             renderLatestDeployment();
           }
+        }
+        // An older reread still applies when no newer one has answered: a newer read that
+        // fails resolves to this answer, which the controls would otherwise never see.
+        if (context.isCurrent() && reread > appliedOperateReread) {
+          appliedOperateReread = reread;
+          applyOperateAnswer(permissions?.operate);
         }
         return permissions;
       },
@@ -3072,9 +3125,13 @@ export async function renderAgentDetail(
     if (anchorBelow && shrunk < 0) {
       globalThis.scrollBy({ top: shrunk, behavior: "instant" });
     }
-    // `focus` may list fallbacks; the first enabled match in the tab takes focus.
+    // `focus` may list fallbacks; the first enabled, shown match in the tab takes focus. A
+    // Cancel that the rebuilt editor hides falls back to the tab (finding 2386).
     const named = [...content.querySelectorAll("button")].find(
-      (candidate) => [focus].flat().includes(candidate.textContent) && !candidate.disabled,
+      (candidate) =>
+        [focus].flat().includes(candidate.textContent) &&
+        !candidate.disabled &&
+        !candidate.closest("[hidden]"),
     );
     const status = saved
       ? [...content.querySelectorAll<HTMLElement>('[role="status"]')].find(
@@ -3199,6 +3256,9 @@ export async function renderAgentDetail(
         latestPermissionsRead.then((permissions) => permissions?.operate),
       );
       state.refresh = workspace.refresh;
+      if (workspace.applyOperate) {
+        state.applyOperate = workspace.applyOperate;
+      }
       content.append(workspace.section);
       state.loading = false;
       content.style.minHeight = "";
@@ -3677,8 +3737,8 @@ export async function renderAgentDetail(
         { className: "agent-card", novalidate: "" },
         auth.section,
         updateNote,
-        save,
-        reload,
+        // One action row, so Save and Reload keep the shared gap (finding 2386).
+        element("div", { className: "form-actions" }, save, reload),
         feedback,
       );
       data.setAuthenticationForm(form);
@@ -3731,6 +3791,57 @@ export async function renderAgentDetail(
             !savedAuthentication &&
             bindingFields(auth.capture()) !== bindingFields(originalFields),
         );
+        applySavedGrantWarning();
+      };
+      // The IAM answer is about the saved Secret. A later selection is what Save would grant,
+      // so the warning follows that selection: another Secret clears it, and returning to the
+      // saved Secret restores it. A submit since the read began still owns the status line.
+      let submitted = false;
+      form.addEventListener("submit", () => {
+        submitted = true;
+      });
+      let savedGrantMissing = false;
+      const missingGrantWarning = () =>
+        grantWarning(
+          "missing",
+          harnessGrantSubject(
+            agent.harnessAuth?.method === "credential_source" ? "credential_source" : "secret",
+          ),
+        );
+      const selectionMatchesSavedGrant = () => {
+        const saved = baseline.harnessAuth;
+        const credential = harnessCredential(saved, context.namespaceId);
+        if (!credential) {
+          return false;
+        }
+        const fields = auth.capture();
+        if (credential.kind === "secret") {
+          return (
+            saved?.method === fields.method &&
+            fields.secretSource?.kind === "secret" &&
+            fields.secretSource.id === credential.id &&
+            fields.secretSource.namespaceId === credential.namespaceId
+          );
+        }
+        return (
+          fields.method === "credential_source" &&
+          (fields.credentialSource === null || fields.credentialSource.id === credential.id)
+        );
+      };
+      const applySavedGrantWarning = () => {
+        if (submitted || savedAuthentication || outcomeUnknown) {
+          return;
+        }
+        const warning = missingGrantWarning();
+        if (savedGrantMissing && selectionMatchesSavedGrant()) {
+          setStatusTone(feedback, "warning");
+          feedback.textContent = warning;
+          return;
+        }
+        if (feedback.textContent === warning) {
+          setStatusTone(feedback, null);
+          feedback.textContent = "";
+        }
       };
       form.addEventListener("input", () => syncUnsavedAuthentication());
       form.addEventListener("change", () => syncUnsavedAuthentication());
@@ -3768,28 +3879,11 @@ export async function renderAgentDetail(
         feedback.textContent = "Outcome unknown. Reload authentication source before saving again.";
       }
       // This administrator's console read the saved source's grant as missing: saving the source
-      // again grants it, which the shared wording names (finding 2260).
-      // A submit since the read began owns the status line, even when it failed before saving.
-      let submitted = false;
-      form.addEventListener("submit", () => {
-        submitted = true;
-      });
+      // again grants it, which the shared wording names (finding 2260). The form is retained
+      // while another tab is shown, so the answer is applied even when this tab is parked.
       void data.harnessGrantMissing().then((missing) => {
-        if (
-          missing &&
-          !submitted &&
-          !savedAuthentication &&
-          !outcomeUnknown &&
-          context.isCurrent()
-        ) {
-          setStatusTone(feedback, "warning");
-          feedback.textContent = grantWarning(
-            "missing",
-            harnessGrantSubject(
-              agent.harnessAuth?.method === "credential_source" ? "credential_source" : "secret",
-            ),
-          );
-        }
+        savedGrantMissing = missing;
+        applySavedGrantWarning();
       });
       form.addEventListener("submit", async (event) => {
         event.preventDefault();
@@ -4070,6 +4164,7 @@ export async function renderAgentDetail(
       });
       rebuild("", "Cancel");
     });
+    const actions = element("div", { className: "form-actions" }, save, cancel, reload);
     function update() {
       if (reloading) {
         // A Save during the reread would write the edit being discarded, and a late field
@@ -4093,6 +4188,19 @@ export async function renderAgentDetail(
       }
       cancel.disabled = locked;
       reload.hidden = !outcomeUnknown && !reloadRequired;
+      // Without repository access in the Installation no save can succeed, and the status says
+      // so: Save is not offered, and Cancel only to undo an edit (finding 2386).
+      // A control hidden while focused would drop focus to the page, so the tab takes it.
+      const hide = (control: HTMLButtonElement, hidden: boolean) => {
+        if (hidden && document.activeElement === control) {
+          tabControls.get(selectedTab)?.focus({ preventScroll: true });
+        }
+        control.hidden = hidden;
+      };
+      const notConfigured = fields?.notConfigured() ?? false;
+      hide(save, notConfigured);
+      hide(cancel, notConfigured && !dirty);
+      actions.hidden = save.hidden && cancel.hidden && reload.hidden;
       // An edit that cannot be saved would only block leaving the tab (finding 1539).
       fields?.setDisabled(locked || updateDenied);
     }
@@ -4203,7 +4311,7 @@ export async function renderAgentDetail(
       { className: "agent-card" },
       fields.section,
       updateNote,
-      element("div", { className: "form-actions" }, save, cancel, reload),
+      actions,
       feedback,
     );
   }

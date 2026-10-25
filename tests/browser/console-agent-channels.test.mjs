@@ -682,6 +682,11 @@ describe("Agent channels", { concurrency: 3 }, () => {
     );
     await page.getByRole("button", { name: "Save configuration", exact: true }).click();
     assert.equal((await saved).status(), 200);
+    // The PATCH answer reaches the test before the page has closed the drawer and rebuilt the
+    // tab. A click begun then can pass Playwright's enabled check on the old card's Edit Slack
+    // under the open drawer and land after the save disabled it: no drawer opens (finding 2282).
+    // The status comes with the rebuilt tab.
+    await page.getByRole("status").filter({ hasText: "Channels saved." }).waitFor();
 
     const configuration = await fixture.request(
       "GET",
@@ -1306,4 +1311,40 @@ describe("Agent channels", { concurrency: 3 }, () => {
       }
     });
   }
+
+  test("a long Agent name's suggested Slack Secret name stays within the Name rule", async (t) => {
+    const { fixture, namespace } = await readyNamespace(t, "Long Agent names");
+    // An Agent name may use all 200 characters, so "<Agent name> Slack app token" cannot be
+    // suggested as is; the dialog shortens the middle and keeps what the Secret is for
+    // (finding 1809).
+    const name = `Long Slack Agent ${"n".repeat(183)}`;
+    assert.equal(Array.from(name).length, 200);
+    const { agent } = await createSlackAgent(fixture, namespace, { name, slug: "long-slack" });
+    const { page } = await newPage(t, fixture, { browser });
+
+    await openDraft(page, fixture, agent, name);
+    await page.getByRole("button", { name: "Edit Slack" }).click();
+    const drawer = page.getByRole("dialog", { name: "Edit Slack" });
+    await drawer.getByLabel("Slack app token", { exact: true }).fill("Create a new Secret");
+    await drawer.getByRole("option", { name: "Create new Secret...", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Create Slack app token Secret" });
+    const suggested = await dialog.getByLabel("Name", { exact: true }).inputValue();
+    // 159 leading characters, the ellipsis, and the last 40 characters of the suggestion.
+    assert.equal(
+      suggested,
+      `Long Slack Agent ${"n".repeat(142)}…${"n".repeat(24)} Slack app token`,
+    );
+    assert.equal(Array.from(suggested).length, 200);
+
+    // The API accepts the suggestion unchanged.
+    const created = page.waitForResponse(
+      (response) => response.request().method() === "POST" && response.url().endsWith("/secrets"),
+    );
+    await dialog.getByLabel("Value", { exact: true }).fill("long-name-app-token");
+    await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
+    const response = await created;
+    assert.equal(response.status(), 201, await response.text());
+    assert.equal((await response.json()).data.name, suggested);
+    await dialog.waitFor({ state: "hidden" });
+  });
 });

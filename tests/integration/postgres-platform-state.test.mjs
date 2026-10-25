@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { execFile } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { makeWorkDue } from "../helpers/postgres-worker-revision-support.mjs";
 import { promisify } from "node:util";
 import { Agent, request as httpRequest } from "node:http";
 import test from "node:test";
@@ -22,6 +22,7 @@ import {
   startController,
   verifyPlatformStateStoreContract,
 } from "../helpers/postgres-platform-state.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 async function ensureInstallation(state, name) {
   const existing = await state.loadInstallation();
@@ -413,10 +414,7 @@ test(
     );
     assert.deepEqual(requeued.rows, [{ state: "queued", completed_at: null, reason_code: null }]);
 
-    await pool.query(
-      "UPDATE occ.controller_work SET available_at = clock_timestamp() WHERE idempotency_key = $1",
-      [workId],
-    );
+    await makeWorkDue(pool, workId);
     const secondClaim = await claimProvisioningWork(pool, workId);
     const settledBeforeFailure = await state.transact((unit) =>
       unit.provisioning.settleEffect(workId, {
@@ -482,10 +480,7 @@ test(
     );
     assert.deepEqual(retryWork.rows, [{ state: "queued", completed_at: null, reason_code: null }]);
 
-    await pool.query(
-      "UPDATE occ.controller_work SET available_at = clock_timestamp() WHERE idempotency_key = $1",
-      [workId],
-    );
+    await makeWorkDue(pool, workId);
     const terminalClaim = await claimProvisioningWork(pool, workId);
     const cancelled = await state.transact((unit) =>
       unit.provisioning.cancel(terminalClaim, {
@@ -2003,8 +1998,7 @@ test(
 
     // The compiled CLI consumes the same supported metadata/error variants over
     // the shipped API's real HTTP listener. A retired saved enum is not a runtime.
-    const cliDirectory = await mkdtemp(join(tmpdir(), "oce-cli-browsing-"));
-    context.after(() => rm(cliDirectory, { recursive: true, force: true }));
+    const cliDirectory = await temporaryDirectory(context, "oce-cli-browsing-");
     const cli = join(cliDirectory, "occ");
     const execute = promisify(execFile);
     await execute("go", ["build", "-trimpath", "-o", cli, "./cmd/occ"]);

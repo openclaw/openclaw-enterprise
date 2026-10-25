@@ -77,7 +77,7 @@ Compute supplies gateway authentication; Presets replace the starter unchanged.
 then requests optional descriptions for visible refs. [Repository admission](../agent-repository-credentials.md) resolves the
 submitted `repositoryAccess`. Retained drafts keep selections through failed
 discovery; retries recheck current policy. Only `503 REPOSITORY_OPTIONS_UNAVAILABLE`
-permits creation without bindings, and only without retained selections; other
+or `meta.notConfigured` (no `repository` settings) permits creation without bindings, and only without retained selections; other
 failures block submission.
 
 ### 4. Submit provisioning or an ordinary draft
@@ -87,7 +87,11 @@ access, and Secret references to [provisioning](../agent-provisioning.md), even 
 a `503 REPOSITORY_OPTIONS_UNAVAILABLE` outage. The worker reauthorizes, creates resources and exact Secret grants,
 and deploys; Console polls and opens the saved version.
 
-`create.mts:renderAgentForm` checks draft values and plugins with
+Before any write, `create.mts:renderAgentForm` checks the Agent name with the API's Name rule
+(`namespaces.mts:namespaceNameProblem`) and each initial workspace file with the Workspace tab's
+`agents/workspace.mts:workspaceFileProblem`, which names the file; the check opens Advanced
+settings to it. It then checks draft values, plugins and the planned `harnessAuth`
+(only the method for a Secret it saves next; none for a credential source) with
 `POST /namespaces/:namespaceId/agents/validate`, then posts
 `{kind: "agent", values, secretBindings}` to `.../configurations` and submits its ID,
 plugins, `initialWorkspaceFiles`, and `workspaceDefaultsId` to `.../agents`.
@@ -98,6 +102,8 @@ stops the grant; **Retry credential access** reads the saved Agent again without
 An unrecognized success leaves the outcome unknown and blocks another create.
 For an uncertain Credential Source registration, **Check credential registration** reads
 the source for this request and confirms its type and Secret references before continuing.
+If the Console times out waiting for validation, it stops before the save step,
+keeps the form entries, and lets the caller select **Create Agent** to try again.
 Success opens `revision=draft`.
 OCC stages all four workspace textareas, including unchanged/empty values, outside
 Agent/Configuration for [workspace setup](../workspace-files.md).
@@ -138,5 +144,8 @@ Switching methods hides that feedback without changing the lookup or saved choic
 
 ## Changelog
 
+- 2026-10-25 00:55: Name "no Sandbox Driver selected" as the reason Dedicated OpenClaw is disabled when the Installation lists Embedded. (finding 2384)
+- 2026-10-25 00:30: Treat repository options with `meta.notConfigured` like the fixed-composition 503. (finding 2387)
+- 2026-10-24 19:00: Check the Agent name and initial workspace files with the API's rules before any write. (fix-2339-2341)
 - 2026-10-22 10:56: Confirm creation responses before granting access or continuing provisioning. (console-create-delivery-20261022 - eef3442ff)
 - 2026-10-20 05:00: Split from the platform console flow's step 3. (docs-split-1020)

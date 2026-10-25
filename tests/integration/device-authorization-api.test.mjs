@@ -13,6 +13,7 @@ import {
 } from "../helpers/device-credential-gateway.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { bindRole, grantRole } from "../helpers/iam-grants.mjs";
+import { jsonLineDestination } from "../helpers/json-lines.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 
 const plugin = {
@@ -581,17 +582,7 @@ test("a failed Refresh login start retains a manageable source and sanitizes the
   const logger = createOccLogger({
     component: "occ-api",
     level: "info",
-    destination: {
-      write(chunk) {
-        lines.push(
-          ...String(chunk)
-            .split("\n")
-            .filter(Boolean)
-            .map((line) => JSON.parse(line)),
-        );
-        return true;
-      },
-    },
+    destination: jsonLineDestination(lines),
   });
   const fixture = await createFixture(t, {
     logger,

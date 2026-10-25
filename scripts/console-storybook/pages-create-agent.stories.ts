@@ -55,6 +55,9 @@ export const CreateSecretRequiredFields = {
   name: "Create Secret required fields",
 };
 export const CreateSecretRefused = story("createSecretRefused");
+export const CreateSecretFieldsRefused = story("createSecretFieldsRefused");
+export const CreateAgentNameRefused = story("createAgentNameRefused");
+export const CreateWorkspaceFileRefused = story("createWorkspaceFileRefused");
 export const CreateModelSecretRequired = story("createModelSecretRequired");
 export const CreateSlackSecretStaged = {
   ...story("createSlackSecretStaged"),
@@ -104,6 +107,14 @@ export const CreateOpenclawWithoutNativeWorkers = {
 export const CreateOpenclawNoExecutionMode = {
   ...story("createOpenclawNoExecutionMode"),
   name: "OpenClaw with no usable execution mode",
+};
+export const CreateOpenclawSettingRefusal = {
+  ...story("createOpenclawSettingRefusal"),
+  name: "OpenClaw refused by Sandbox Driver settings",
+};
+export const CreateOpenclawSettingRefusalAnthropic = {
+  ...story("createOpenclawSettingRefusalAnthropic"),
+  name: "OpenClaw refused by Sandbox Driver settings, Anthropic",
 };
 export const CreateOpenclawSandboxDriverOutage = {
   ...story("createOpenclawSandboxDriverOutage"),
@@ -228,6 +239,10 @@ export const CreateRefusalReason = {
   ...story("createRefusalReason"),
   name: "Provisioning refusal with a reason",
 };
+export const CreatePreflightTimeout = {
+  ...story("createPreflightTimeout"),
+  name: "Configuration check timed out",
+};
 export const CreatePluginPreflightRefusal = {
   ...story("createPluginPreflightRefusal"),
   name: "Plugin refusal before anything is saved",
@@ -301,4 +316,9 @@ export const DefaultPresetDenied = story("createDefaultPresetDenied");
 export const ExistingFallbackPrimary = {
   ...story("createModelFallbackSelection"),
   name: "Choose an existing fallback as primary",
+};
+
+export const RosterModelPrimary = {
+  ...story("createRosterModelSelection"),
+  name: "Change a roster's shared primary model",
 };

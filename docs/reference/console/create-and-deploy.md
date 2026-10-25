@@ -23,7 +23,9 @@ Experimental Dedicated OpenClaw requires [native worker support](../harness-exec
 and full-facet Sandbox provisioning. The pinned runtime enables it. Compute
 initializes private workspace files before Sandbox handoff; the Harness verifies
 their completion marker. [Sandbox limits](../../flows/openshell-sandbox-provisioning.md#3-validate-and-serialize-the-sandbox)
-block direct Secret-backed model and environment projection.
+block direct Secret-backed model and environment projection. An Installation that
+lists only Embedded OpenClaw selects no Sandbox Driver, so Create Agent names that
+as the reason Dedicated OpenClaw is disabled.
 
 1. Sign in, select the intended Namespace, open **Agents**, and select
    **Create Agent**.
@@ -158,6 +160,8 @@ principal. It checks the saved Agent before granting access, without creating an
 A member without Installation administration gets no retry: open the saved Agent and
 ask an Installation administrator to grant it. If your permissions could not be checked,
 select **Retry permission check**.
+If the configuration check times out, your entries stay in the form. Select
+**Create Agent** again to repeat the check and continue.
 If a create response is missing or identifies a different resource, the write may still
 have succeeded. Check the displayed IDs and the Agents list before starting again.
 For an uncertain Credential Source, select **Check credential registration** to look up

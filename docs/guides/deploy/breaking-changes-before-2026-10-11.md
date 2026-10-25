@@ -2,8 +2,11 @@
 
 These [breaking-change notices](breaking-changes.md) are dated 2026-10-10;
 newer ones are on that page, in the
+[earlier notices from 2026-10-24](breaking-changes-earlier-2026-10-24.md), in the
+[notices before 2026-10-24](breaking-changes-before-2026-10-24.md), in the
+[notices before 2026-10-23](breaking-changes-before-2026-10-23.md), in the
 [notices before 2026-10-15](breaking-changes-before-2026-10-15.md), in the
-[earlier notices](breaking-changes-archive.md), in the
+[notices from 2026-10-13](breaking-changes-archive.md), in the
 [notices before 2026-10-13](breaking-changes-before-2026-10-13.md) and in the
 [notices before 2026-10-12](breaking-changes-before-2026-10-12.md), and older ones are in the
 [notices before 2026-10-10](breaking-changes-before-2026-10-10.md). They still

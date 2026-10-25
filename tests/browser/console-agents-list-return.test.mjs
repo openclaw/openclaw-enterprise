@@ -638,6 +638,25 @@ test("A list held by a refocus while its rows wait to fill paints no earlier ans
   await page.getByText(READING).first().waitFor({ state: "detached" });
 });
 
+// A retained view keeps the reader's place: from a list scrolled down, Back from the Agent it
+// opened lands where it was, not at the top. The last Agent is in view at full scroll, so opening
+// it scrolls nothing and the retained position is exactly the one measured.
+test("Back to a scrolled Agents list restores its scroll position", async (t) => {
+  const { agents, page } = await openTeamList(t, "Team scroll return");
+  await page.setViewportSize({ width: 1280, height: 480 });
+  await tagView(page);
+  await page.evaluate(() =>
+    globalThis.scrollTo({ top: globalThis.document.body.scrollHeight, left: 0 }),
+  );
+  const scrolled = await page.evaluate(() => globalThis.scrollY);
+  assert.ok(scrolled > 0, "the list scrolls at this height");
+  await openAgent(page, agents.at(-1));
+  await page.goBack();
+  await page.locator(settledView).getByRole("table", { name: "Agents" }).waitFor();
+  assert.equal(await viewTag(page), "kept", "the retained list was reused");
+  assert.equal(await page.evaluate(() => globalThis.scrollY), scrolled);
+});
+
 // A list left again before its rows' rereads land is reused on the next return too: rows read
 // again whenever the list resumes, so unfinished ones don't count against it (finding 1663).
 // No row shows the answer it had, or an aborted read's failure, as current.
@@ -680,7 +699,7 @@ test("A list left again during its rows' rereads is reused on the next return an
 // On a phone the Agents table scrolled sideways: 5 columns, the deployment one a fixed 14 rem, so
 // 2.5 columns showed and IDs broke after every character (UX plan C5). Under 760 px each Agent is
 // a stacked row: name and ID, then each cell beside its column's name. A dozen Agents with
-// 60-character names fit 390 and 360 px, every column name shows, IDs break only after a hyphen
+// 60-character names fit down to 320 px, every column name shows, IDs break only after a hyphen
 // or underscore, and the row still opens its Agent. At 1440 the table is unchanged.
 // Two names are the longest allowed with no break in them (200 characters, one joined by no-break
 // spaces): each wraps inside its row at every width, and above 760 px within its ID's 310 px, so
@@ -732,7 +751,7 @@ test("On a phone the Agents list stacks each row, fits the screen and still open
     "Created",
     "Actions",
   ];
-  for (const width of [390, 360, 600, 760, 761, 1024, 1440]) {
+  for (const width of [390, 360, 320, 600, 760, 761, 1024, 1440]) {
     const desktop = width > 760;
     const { page } = await newPage(t, fixture, {
       browser,
@@ -917,7 +936,8 @@ test("On a phone the Agents list stacks each row, fits the screen and still open
       for (const character of row.breaks) {
         assert.match(character, /[-_]/, `${width}: row ${index} ID breaks inside a segment`);
       }
-      if (width === 360) {
+      // A whole ID can fit at 360 px. At 320 px it must wrap, exercising the break check above.
+      if (width === 320) {
         assert.ok(row.breaks.length > 0, `${width}: row ${index} ID fits one line`);
       }
       // The current version is a link like the Agent name, labelled by version rather than revision ID.

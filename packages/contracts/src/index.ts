@@ -345,9 +345,12 @@ export interface InstallationCapabilities {
   /**
    * The OpenClaw execution modes an Agent can deploy in; empty when none. sandboxDriverUnavailable
    * marks an empty list caused by a selected Sandbox Driver outage, not the Installation's shape.
+   * settingRefusals holds admission's refusal for a mode the Sandbox Driver could provision but
+   * its settings refuse, naming the setting.
    */
   readonly openclaw?: {
     readonly executionModes: readonly HarnessExecutionMode[];
+    readonly settingRefusals?: { readonly dedicated?: string };
     readonly sandboxDriverUnavailable?: true;
   };
 }
@@ -893,6 +896,34 @@ export function validPluginRevisionState(value: unknown): value is PluginRevisio
     return false;
   }
   return true;
+}
+
+/**
+ * The Harness a bundled Plugin Driver's runtime artifacts run in, or undefined when the pair
+ * is supported (or the Driver is not bundled). Compute refuses any other pair when it prepares
+ * a revision; OCC applies the same rule at Agent save, provisioning and deployment, before a
+ * dedicated deployment stops the running revision.
+ */
+export const OPENCLAW_PLUGIN_DRIVER_IMPLEMENTATION = "occ/openclaw-plugin";
+export const CODEX_PLUGIN_DRIVER_IMPLEMENTATION = "occ/codex-plugin";
+
+export function pluginRuntimeHarnessRequirement(
+  implementation: string,
+  harness: Readonly<Pick<RevisionHarnessDescriptor, "id" | "mode">>,
+): string | undefined {
+  if (implementation === CODEX_PLUGIN_DRIVER_IMPLEMENTATION) {
+    return (harness.id === "codex" && harness.mode === "dedicated") ||
+      (harness.id === "openclaw" && harness.mode === "embedded")
+      ? undefined
+      : "a dedicated Codex Harness or embedded OpenClaw Harness";
+  }
+  if (implementation === OPENCLAW_PLUGIN_DRIVER_IMPLEMENTATION) {
+    return harness.id === "openclaw" &&
+      (harness.mode === "embedded" || harness.mode === "dedicated")
+      ? undefined
+      : "an OpenClaw Harness";
+  }
+  return undefined;
 }
 
 export interface Configuration extends Scope {
@@ -1873,6 +1904,11 @@ export interface SandboxDriver extends Driver {
     harness: Readonly<RevisionHarnessDescriptor>,
     configuration: Readonly<OpenClawConfigurationDocument>,
   ): void;
+  /**
+   * The Agent Configuration this Driver admits for a dedicated Harness. Refusals that Driver
+   * settings alone decide throw ConfigurationHarnessError, also for an empty Configuration:
+   * the Installation's OpenClaw execution modes probe it that way.
+   */
   configureAgent?(
     configuration: Readonly<OpenClawConfigurationDocument>,
     harness: Readonly<RevisionHarnessDescriptor>,

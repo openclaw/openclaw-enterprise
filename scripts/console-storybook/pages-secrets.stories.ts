@@ -3,7 +3,7 @@ import { story } from "./story.ts";
 export default { title: "Pages/Secrets" };
 
 export const Populated = story("secrets");
-export const Mobile = story("secretsMobile");
+export const Mobile = story("secretsMobile", { frameHeight: "844px" });
 export const NoSearchMatches = story("secretsSearch");
 export const Empty = story("secretsEmpty");
 export const Loading = story("secretsLoading");

@@ -16,7 +16,7 @@ its environment variable; `--namespace=` does so for Installation-scoped
 | `--namespace`        | `OCC_NAMESPACE`        | Required for `configuration`, `secret`, `preset`, `credential-source`, `iam`, and `agent` commands. Supply the Namespace ID, not its name. |
 | `--ca-bundle`        | `OCC_CA_BUNDLE`        | Adds a PEM certificate-authority bundle to the system trust roots for HTTPS. TLS verification cannot be disabled.                          |
 | `--timeout-seconds`  | `OCC_TIMEOUT_SECONDS`  | Positive whole seconds for an HTTP request. Default: `30`.                                                                                 |
-| `--output`, `-o`     | —                      | Output format: `table` (default), `json`, or `yaml`.                                                                                       |
+| `--output`, `-o`     | —                      | Command-specific formats and defaults appear in `--help`. Unsupported explicit values fail before requests.                                |
 | `--help`, `-h`       | —                      | Prints help for the command.                                                                                                               |
 | `--version`, `-v`    | —                      | Prints the CLI version. Source builds report `dev`; published binaries report their OCE release version.                                   |
 

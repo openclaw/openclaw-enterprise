@@ -61,7 +61,7 @@ const disposeLimitsMs = {
   "worker stop": 30_000,
   "pool end": 15_000,
   // Waits for the CI state lock, which other files' test databases also take. The drop's lock
-  // wait shares this limit; its psql command has its own (scripts/ci/cleanup.mjs).
+  // wait shares this limit; the drop itself has its own (scripts/ci/cleanup.mjs).
   "drop database": 120_000,
 };
 
@@ -198,6 +198,11 @@ export function createWorkerRevisionFixtures(
           await run("worker stop", () => worker.stop());
         }
         for (const pool of pools) {
+          // pg-pool's end() resolves once its idle clients are removed, before their sessions
+          // close. The drop below can end a session still closing; the server's 57P01 then
+          // reaches the pool's idle listener, which re-emits it on the pool, and with no
+          // listener that throws in this test's teardown (finding 2379). The pool is done.
+          pool.on("error", () => {});
           // A pool already ending was ended by its worker's stop or by the test.
           if (!pool.ending) {
             await run("pool end", () => pool.end());
@@ -586,7 +591,7 @@ export function createWorkerRevisionFixtures(
             );
           await assert.rejects(
             plan({ ...auth, sourceId: "unselected" }),
-            /explicitly admitted source/,
+            /created or adopted under the Proxy/,
           );
           const egressPlan = await plan(auth);
           assert.deepEqual(egressPlan.harnessCredentialSource, auth);

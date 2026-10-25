@@ -1244,7 +1244,10 @@ test("an operator without administer sees status but no log text and is never re
     "operate",
   ]);
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   const requests = apiRequests(page, fixture.origin);
+  // A fake clock, so the 10 s status poll below runs without waiting it out in real time.
+  await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
   const url = detailUrl(fixture, namespace.id, agent.id, revisionId, "logs");
   await login(page, fixture, url, operator.credentials);
 
@@ -1265,13 +1268,14 @@ test("an operator without administer sees status but no log text and is never re
     1,
   );
   // Status keeps polling every 10 s; the denied log view is not requested again.
+  await page.clock.runFor(10_000);
   await waitForCondition(
     () =>
       requests.filter(({ path }) => path.endsWith(`/deployments/${revisionId}/runtime`)).length >=
       2,
     "the runtime strip refreshes",
-    15_000,
   );
+  await waitForIdleFetches(page);
   assert.equal(logRequests(requests, revisionId).length, denied);
 });
 
@@ -1673,6 +1677,44 @@ test("a source picked while a refresh reads clears the kept lines at once", asyn
   await waitForIdleFetches(page);
   assert.equal(await log.getByText("agent output").count(), 0);
   assert.match((await outputStatus.textContent()) ?? "", /^Showing gateway in /u);
+});
+
+test("a status refresh keeps Download disabled while a download is pending", async (t) => {
+  const logs = await logsFixture(t);
+  logs.computeDriver.state.lines = [line(1, "download stays pending")];
+  const { page, requests } = await openRetainedLogs(t, logs);
+  const log = page.getByRole("log", { name: "Runtime log output" });
+  await log.getByText("download stays pending").waitFor();
+  await waitForIdleFetches(page);
+  const download = page.getByRole("button", { name: "Download", exact: true });
+  const held = await holdRequests(
+    t,
+    page,
+    `**/deployments/${logs.revisionId}/runtime/logs?*download=true*`,
+    { once: true },
+  );
+  const statusPath = `/deployments/${logs.revisionId}/runtime`;
+  const statusReads = () => requests.filter(({ path }) => path.endsWith(statusPath)).length;
+  const before = statusReads();
+  await download.click();
+  try {
+    await held.requested;
+    assert.equal(await download.isDisabled(), true);
+    await page.clock.runFor(10_000);
+    await waitForCondition(() => statusReads() > before, "the runtime status refreshes");
+    assert.equal(await download.isDisabled(), true);
+    assert.equal(
+      requests.filter(({ path }) => path.includes("download=true")).length,
+      1,
+      "a second click must not start while the first download is pending",
+    );
+    await download.click({ force: true });
+    assert.equal(requests.filter(({ path }) => path.includes("download=true")).length, 1);
+  } finally {
+    held.release();
+  }
+  await waitForEnabled(download);
+  await waitForIdleFetches(page);
 });
 
 test("the Sandbox source shows redacted policy decisions without a Pod picker", async (t) => {

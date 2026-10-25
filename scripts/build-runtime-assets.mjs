@@ -15,6 +15,47 @@ import {
 } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, sep, resolve } from "node:path";
 
+// Every patch deploy/runtime/Dockerfile applies, in order, as provenance records it under
+// `patches` (finding 2290). runtime-assets.test.mjs checks this list against the Dockerfile.
+// `field` keeps the per-patch provenance names that existed before `patches`.
+const appliedPatches = [
+  {
+    file: "openclaw-codex-read-only-paths.patch",
+    sha256: "1d8b670e7029872262375a21da7222768c2fe2390ff7a159ed1616ee9c9de1ca",
+    field: "openclawBridgePatchSha256",
+  },
+  {
+    file: "openclaw-codex-preserve-on-request.patch",
+    sha256: "ef50d1e635be0a9afd970ee1ea95c3468c307759fedd3783180ac2a676fa015b",
+  },
+  {
+    file: "openclaw-connect-ephemeral-expired-setup.patch",
+    sha256: "906fd14d2d36b98c4308d4db65f30092f27b84a69e5509cf04de2041f6e975d2",
+    field: "openclawConnectPatchSha256",
+  },
+  {
+    file: "openclaw-codex-full-access-profile.patch",
+    sha256: "bf0e9cd6d1d2420f42a33af130d534e1de6d1fe17701517c676824f5e80ec931",
+  },
+  {
+    file: "stock-codex-0.163.0-alpha.2-dependency-pin.patch",
+    sha256: "7bb0ae29bf3259b245d7675b2c6a3abe521c8139095f75ce0c532188162de5e9",
+    field: "codexDependencyPinPatchSha256",
+  },
+  {
+    file: "openclaw-required-worker-authority.patch",
+    sha256: "d07be9735250a5fb8be69086a96d4959f02caaeec6dc31990c03eed959bd17d8",
+    field: "openclawRequiredWorkerAuthorityPatchSha256",
+  },
+  {
+    file: "openclaw-required-worker-authority-regression.patch",
+    sha256: "1998cdd2321a68f97afb96470dcfb989a1460484c831b113b3af22dcabbf6189",
+  },
+  {
+    file: "openclaw-control-ui-browser-reconnect.patch",
+    sha256: "964c500f981f343d8c131a213aad65ea47e2de4a9a5d11dbb57c3f30bead7065",
+  },
+];
 const [command, sourceRoot, output] = process.argv.slice(2);
 const root = await realpath(sourceRoot);
 const runtimePaths = [
@@ -292,14 +333,10 @@ if (command === "inputs") {
         source: "https://github.com/openclaw/openclaw",
         commit: process.env.GIT_COMMIT,
         sourceArchiveSha256: "ec38a23888430a6aae72fdacda05efbd36f0ddad86562c00017ba3a51df0a61d",
-        openclawBridgePatchSha256:
-          "1d8b670e7029872262375a21da7222768c2fe2390ff7a159ed1616ee9c9de1ca",
-        openclawConnectPatchSha256:
-          "906fd14d2d36b98c4308d4db65f30092f27b84a69e5509cf04de2041f6e975d2",
-        codexDependencyPinPatchSha256:
-          "7bb0ae29bf3259b245d7675b2c6a3abe521c8139095f75ce0c532188162de5e9",
-        openclawRequiredWorkerAuthorityPatchSha256:
-          "d07be9735250a5fb8be69086a96d4959f02caaeec6dc31990c03eed959bd17d8",
+        ...Object.fromEntries(
+          appliedPatches.flatMap(({ field, sha256 }) => (field ? [[field, sha256]] : [])),
+        ),
+        patches: Object.fromEntries(appliedPatches.map(({ file, sha256 }) => [file, sha256])),
         artifactKind: "assembled-runtime-root",
         runtimeContentsSha256: hash(contents),
         lockfileSha256: hash(await readFile(join(root, "pnpm-lock.yaml"))),

@@ -4,6 +4,7 @@ import test from "node:test";
 import pg from "pg";
 
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import {
   ConfigurationHarnessError,
@@ -39,10 +40,12 @@ import {
   ensureDevelopmentBootstrap,
   privateBootstrapDirectory,
 } from "../helpers/bootstrap-installation.mjs";
+import { assertApiError } from "../helpers/api-error.mjs";
 import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 import { withNamespaceLockHeld } from "../helpers/postgres-namespace-lock.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { expireWorkLease, makeWorkDue } from "../helpers/postgres-worker-revision-support.mjs";
 
 const adminEmail = "postgres-agent-provisioning-v2@example.test";
 const adminPassword = "postgres-agent-provisioning-password";
@@ -244,11 +247,7 @@ async function elapseConfigurationSettleWindow(fixture, workId) {
     [workId],
   );
   assert.equal(aged.rowCount, 1, "the pending Configuration create must record its start");
-  const woken = await fixture.pool.query(
-    `UPDATE occ.controller_work SET available_at = clock_timestamp()
-     WHERE idempotency_key = $1 AND state = 'queued'`,
-    [workId],
-  );
+  const woken = await makeWorkDue(fixture.pool, { key: workId, state: "queued" });
   assert.equal(woken.rowCount, 1, "the provisioning work must be queued");
 }
 
@@ -301,6 +300,17 @@ async function ensureProvisioningBootstrap(context, state) {
     });
   })();
   await bootstrapPromise;
+}
+
+/** The provisioning jobs and Agents a Namespace holds; a refused request stores neither. */
+async function storedProvisioningCounts(pool, namespaceId) {
+  const { rows } = await pool.query(
+    `SELECT
+     (SELECT count(*)::integer FROM occ.agent_provisioning_work WHERE namespace_id = $1) AS jobs,
+     (SELECT count(*)::integer FROM occ.agents WHERE namespace_id = $1) AS agents`,
+    [namespaceId],
+  );
+  return rows[0];
 }
 
 function installationDrivers({
@@ -1181,8 +1191,7 @@ test(
     const message =
       "The selected Compute Driver cannot deliver repository credentials to this Harness topology.";
     const retried = await fixture.request("POST", `${admitted.data.provisioning.url}/retry`);
-    assert.equal(retried.status, 409, JSON.stringify(retried.body));
-    assert.equal(retried.body.error.code, "RESOURCE_CONFLICT");
+    assertApiError(retried, 409, "RESOURCE_CONFLICT");
     assert.equal(retried.body.error.message, message);
   },
 );
@@ -1214,8 +1223,7 @@ for (const authMethod of ["api_key", "codex_pat"]) {
       const denied = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
         body: foreign,
       });
-      assert.equal(denied.status, 400, JSON.stringify(denied.body));
-      assert.equal(denied.body.error.code, "INVALID_REQUEST");
+      assertApiError(denied, 400, "INVALID_REQUEST");
       assert.equal(denied.body.error.message, "Secret references cannot cross Namespaces.");
       const jobs = await fixture.pool.query(
         "SELECT work_id FROM occ.agent_provisioning_work WHERE namespace_id = $1",
@@ -2791,8 +2799,7 @@ test(
       ["POST", `${admitted.data.provisioning.url}/retry`],
     ]) {
       const refused = await fixture.request(method, path);
-      assert.equal(refused.status, 409, `${method} ${JSON.stringify(refused.body)}`);
-      assert.equal(refused.body.error.code, "RESOURCE_CONFLICT");
+      assertApiError(refused, 409, "RESOURCE_CONFLICT", method);
       assert.equal(refused.body.error.message, gone);
     }
     const work = await fixture.pool.query(
@@ -3001,8 +3008,7 @@ test(
     // Retry would run the plan again, so it is still refused, naming the stored plugin
     // without a request-body detail, and queues nothing.
     const retried = await switched.request("POST", `${admitted.data.provisioning.url}/retry`);
-    assert.equal(retried.status, 400, JSON.stringify(retried.body));
-    assert.equal(retried.body.error.code, "INVALID_REQUEST");
+    assertApiError(retried, 400, "INVALID_REQUEST");
     assert.match(
       retried.body.error.message,
       new RegExp(
@@ -3128,13 +3134,91 @@ test(
       });
     }
     // The refusal stored nothing: no provisioning job or Agent.
-    const stored = await fixture.pool.query(
-      `SELECT
-       (SELECT count(*)::integer FROM occ.agent_provisioning_work WHERE namespace_id = $1) AS jobs,
-       (SELECT count(*)::integer FROM occ.agents WHERE namespace_id = $1) AS agents`,
-      [namespace.id],
+    assert.deepEqual(await storedProvisioningCounts(fixture.pool, namespace.id), {
+      jobs: 0,
+      agents: 0,
+    });
+  },
+);
+
+test(
+  "OpenShell refuses dedicated OpenClaw at provisioning admission unless user namespaces are off, and status reads still report stored work",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    // Native OpenClaw's private workspace preparation needs kubernetes.userNamespaces: false
+    // and runs only after a deploy stopped its predecessors (finding 2334). Provisioning admits
+    // the plan through the OpenShell Sandbox view, so a request is refused before it is stored.
+    let userNamespaces;
+    const fixture = await createFixture(context, {
+      computeDriver: createRuntimeComputeDriver(),
+      configurationDriver: createProvisioningConfigurationDriver({
+        id: "configuration-provisioning-openshell-openclaw",
+      }),
+      secretDriver: createTestSecretDriver({ id: "secret-provisioning" }),
+      sandboxDriver: {
+        id: "sandbox-provisioning",
+        capability: "sandbox",
+        implementation: "openshell",
+        facets: ["networking", "filesystem", "process"],
+        // OpenShell's own hook on a stand-in holding only the settings it reads, with the
+        // userNamespaces value this test changes (as workspace-setup-api does).
+        configureAgent(configuration, harness) {
+          return OpenShellSandboxDriver.prototype.configureAgent.call(
+            {
+              options: {
+                gateway: {},
+                kubernetes: { userNamespaces, sandboxDataMount: { mountPath: "/sandbox/data" } },
+              },
+            },
+            configuration,
+            harness,
+          );
+        },
+        async provisionHarness() {
+          assert.fail("this case ends at provisioning handoff");
+        },
+        async cleanup() {},
+      },
+    });
+    const namespace = await fixture.bootstrapNamespace();
+    const secrets = await createProvisioningSecrets(fixture, namespace.id);
+    const openClawBody = () => {
+      const body = provisioningBody(namespace.id, secrets);
+      body.configuration.values.agents.defaults = {
+        model: "openai/gpt-5",
+        models: { "openai/gpt-5": { agentRuntime: { id: "openclaw" } } },
+      };
+      return body;
+    };
+    const provision = (body) =>
+      fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, { body });
+
+    const refused = await provision(openClawBody());
+    assert.equal(refused.status, 400, JSON.stringify(refused.body));
+    assert.deepEqual(refused.body.error, {
+      code: "INVALID_REQUEST",
+      message:
+        "Dedicated OpenClaw needs kubernetes.userNamespaces: false in the OpenShell Sandbox Driver configuration. Select Codex, or ask an operator to set it.",
+    });
+    assert.deepEqual(await storedProvisioningCounts(fixture.pool, namespace.id), {
+      jobs: 0,
+      agents: 0,
+    });
+
+    // Admitted while the setting is off. After an operator turns it back on, a status read
+    // still reports the stored work; only writes go through the Sandbox view again.
+    userNamespaces = false;
+    const admitted = await provision(openClawBody());
+    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    // No worker runs here; a later test's worker must not run this job with its Drivers.
+    fixture.cancelQueuedWorkAtTeardown(
+      admitted.data.provisioning.workId,
+      "OpenShell admission case ends at the status read",
     );
-    assert.deepEqual(stored.rows[0], { jobs: 0, agents: 0 });
+    userNamespaces = true;
+    const status = await fixture.request("GET", admitted.data.provisioning.url);
+    assert.equal(status.status, 200, JSON.stringify(status.body));
+    assert.equal(status.data.workId, admitted.data.provisioning.workId);
   },
 );
 
@@ -3428,6 +3512,7 @@ test(
         // Installation's Compute Driver starts refusing the stored plan (no gateway routing).
         const unrouted = createTestKubernetesComputeDriver("compute-provisioning-unrouted", {
           repositoryCredentials: true,
+          routed: false,
         });
         computeDriver.validateAgentProvisioning = (input) =>
           unrouted.validateAgentProvisioning(input);
@@ -3514,6 +3599,7 @@ test(
         // the fence of the transaction that would record the Configuration rejects the work.
         const unrouted = createTestKubernetesComputeDriver("compute-provisioning-unrouted", {
           repositoryCredentials: true,
+          routed: false,
         });
         computeDriver.validateAgentProvisioning = (input) =>
           unrouted.validateAgentProvisioning(input);
@@ -3638,6 +3724,7 @@ test(
       // attempt's fence and every later one reject the work, and `/retry` would refuse too.
       const unrouted = createTestKubernetesComputeDriver("compute-provisioning-unrouted", {
         repositoryCredentials: true,
+        routed: false,
       });
       computeDriver.validateAgentProvisioning = (input) =>
         unrouted.validateAgentProvisioning(input);
@@ -3653,11 +3740,7 @@ test(
         // The worker stalls before its delete until its database lease has run out, as a
         // stopped or partitioned worker would, and the delete never reaches the Driver.
         stalled = true;
-        await fixture.pool.query(
-          `UPDATE occ.controller_work SET lease_expires_at = clock_timestamp() - interval '1 second'
-           WHERE idempotency_key = $1 AND state = 'claimed'`,
-          [workId],
-        );
+        await expireWorkLease(fixture.pool, { key: workId, state: "claimed" });
         throw new Error("synthetic worker stall before the Configuration delete");
       }
       deleted.push(reference.id);
@@ -3836,6 +3919,7 @@ test(
     // would refuse it the same way, so the worker fails it on the first one and says why.
     const unrouted = createTestKubernetesComputeDriver("compute-provisioning-unrouted", {
       repositoryCredentials: true,
+      routed: false,
     });
     computeDriver.validateAgentProvisioning = (input) => unrouted.validateAgentProvisioning(input);
     await fixture.startWorker();
@@ -3876,8 +3960,7 @@ test(
     assert.deepEqual(status.data.error, failed.progress.error);
     // Retry runs the plan again, so it is refused as a conflict; the driver's text stays local.
     const retried = await fixture.request("POST", `${admitted.data.provisioning.url}/retry`);
-    assert.equal(retried.status, 409, JSON.stringify(retried.body));
-    assert.equal(retried.body.error.code, "RESOURCE_CONFLICT");
+    assertApiError(retried, 409, "RESOURCE_CONFLICT");
     assert.equal(retried.body.error.message, message);
     assert.doesNotMatch(JSON.stringify(retried.body), /node enrollment/);
 
@@ -4069,8 +4152,7 @@ test(
     };
     await fixture.revokeCurrentPrincipal();
     const denied = await fixture.request("POST", provisionPath, { body });
-    assert.equal(denied.status, 403, JSON.stringify(denied.body));
-    assert.equal(denied.body.error.code, "FORBIDDEN");
+    assertApiError(denied, 403, "FORBIDDEN");
     assert.doesNotMatch(JSON.stringify(denied.body), /models\.providers/);
   },
 );
@@ -4148,8 +4230,7 @@ async function provisioningConfigurationId(pool, workId) {
 async function assertConfigurationDeletionRefused(fixture, namespaceId, configurationId, message) {
   const path = `/namespaces/${namespaceId}/configurations/${configurationId}`;
   const refused = await fixture.request("DELETE", path);
-  assert.equal(refused.status, 409, JSON.stringify(refused.body));
-  assert.equal(refused.body.error.code, "RESOURCE_CONFLICT");
+  assertApiError(refused, 409, "RESOURCE_CONFLICT");
   assert.match(refused.body.error.message, message);
   const kept = await fixture.request("GET", path);
   assert.equal(kept.status, 200, JSON.stringify(kept.body));
@@ -4249,8 +4330,7 @@ test(
       ["POST", `${provisioningUrl}/retry`],
     ]) {
       const answered = await fixture.request(method, path);
-      assert.equal(answered.status, 409, `${method} ${JSON.stringify(answered.body)}`);
-      assert.equal(answered.body.error.code, "RESOURCE_CONFLICT");
+      assertApiError(answered, 409, "RESOURCE_CONFLICT", method);
       assert.equal(answered.body.error.message, gone);
     }
     assert.deepEqual(await workState(), failedWork, "a refused retry queues nothing");

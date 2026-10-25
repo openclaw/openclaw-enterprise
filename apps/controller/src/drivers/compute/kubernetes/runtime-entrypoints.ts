@@ -211,6 +211,12 @@ function serveHeldRuntimeFailureToTransportPeer(check, code, cause) {
 }
 `;
 
+// pluginTimerMs reads a Harness timer setting as whole milliseconds from 1 to 2147483647, the
+// longest delay a Node.js timer honours (MAX_TIMER_DELAY_MS in @openclaw-enterprise/utils, which
+// this script cannot import). The request timeout feeds AbortSignal.timeout, where Number() read
+// "12abc" as NaN, "" as 0 and 3e9 as a timer that fires after 1 ms (finding 2312); the install
+// deadline shares the bound. Whole-line comments here cost nothing at runtime: nodeProgramArguments
+// drops them before the dedicated Harness command is measured against the exec string budget.
 export const PLUGIN_RUNTIME_HELPERS = String.raw`
 const pluginRuntimeTranslator = (${PLUGIN_RUNTIME_TRANSLATOR_SOURCE})();
 const {
@@ -235,8 +241,15 @@ const { spawnSync: pluginSpawnSync } = require("node:child_process");
 const { createServer: pluginCreateServer, get: pluginHttpGet } = require("node:http");
 const { isDeepStrictEqual: pluginDeepEqual } = require("node:util");
 
-const CODEX_PLUGIN_RUNTIME_REQUEST_TIMEOUT_MS = Number(process.env.OPENCLAW_PLUGIN_RUNTIME_REQUEST_TIMEOUT_MS ?? "10000");
-const CODEX_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS = Number(process.env.OPENCLAW_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS ?? "60000");
+function pluginTimerMs(name, fallback) {
+  const value = Number(process.env[name] ?? fallback);
+  if (!/^\d+$/.test(process.env[name] ?? fallback) || value < 1 || value > 2147483647) {
+    throw new Error(name + " must be 1 to 2147483647 ms.");
+  }
+  return value;
+}
+const CODEX_PLUGIN_RUNTIME_REQUEST_TIMEOUT_MS = pluginTimerMs("OPENCLAW_PLUGIN_RUNTIME_REQUEST_TIMEOUT_MS", "10000");
+const CODEX_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS = pluginTimerMs("OPENCLAW_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS", "60000");
 const PLUGIN_STATUS_PATH = "/openclaw/plugin-runtime/status";
 const REMOTE_PLUGIN_STATUS_PATH = "/openclaw/plugin-runtime/remote-status";
 ${RUNTIME_STATUS_CONSTANTS_HELPER}
@@ -3440,6 +3453,19 @@ ${CODEX_STDERR_FILTER_HELPER}
 ${HARNESS_EGRESS_ENROLLMENT_HELPER}
 ${startupPhaseHelper("agent")}
 
+// codex is the npm launcher: a timeout's SIGKILL ended only it and left its native child
+// running (finding 2274). Login and the model check run that native binary instead.
+function codexExecutable() {
+  for (const directory of (process.env.PATH ?? "").split(":")) {
+    let root;
+    try { root = require("node:fs").realpathSync(directory + "/codex"); } catch { continue; }
+    if (!root.endsWith("/@openai/codex/bin/codex.js")) return "codex";
+    try { root = require("node:module").createRequire(root).resolve("@openai/codex-linux-" + process.arch + "/package.json"); } catch {}
+    return root.slice(0, -12) + "vendor/" + (process.arch === "arm64" ? "aarch64" : "x86_64") + "-unknown-linux-musl/bin/codex";
+  }
+  return "codex";
+}
+
 function agentRuntimeReady() {
   if (
     process.env.OPENCLAW_PLUGIN_READY_MARKER !== undefined &&
@@ -3629,7 +3655,7 @@ if (noInference) {
   const loginDeadline = performance.now() + 90000;
   for (let attempt = 1; ; attempt++) {
     const attemptStartedAt = performance.now();
-    login = spawnSync("codex", loginArguments, {
+    login = spawnSync(codexExecutable(), loginArguments, {
       input: loginMode === "api_key" ? apiKey : accessToken,
       env: codexChildEnvironment(),
       encoding: "utf8",
@@ -3758,7 +3784,7 @@ function probeCodexAuthentication(timeout) {
       "sleep_tool", "goals", "workspace_dependencies", "skill_search",
       "skill_mcp_dependency_install", "tool_suggest", "recommended_plugins", "request_permissions_tool",
     ];
-    result = spawnSync("codex", [
+    result = spawnSync(codexExecutable(), [
 ${disableUnboundedConnectionRetries ? '      "--disable", "unbounded_connection_retries",\n' : ""}      ...disabled.flatMap((feature) => ["--disable", feature]),
       "-a", "never", "exec", "--ephemeral", "--ignore-user-config", "--ignore-rules",
       "--skip-git-repo-check", "--json", "--sandbox", "read-only", "--cd", directory,

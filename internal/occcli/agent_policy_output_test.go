@@ -36,7 +36,7 @@ func TestAgentPolicyCommandsDefaultToStructuredOutput(t *testing.T) {
 		{"editing", "PATCH", "/editing", `{"id":"` + agent + `","namespaceId":"` + namespace + `","name":"Synthetic Agent","configurationId":"cfg_1","backendId":null,"servicePrincipalId":"spn_1","executionMode":"embedded","status":"active","desiredRuntimeState":"running","sandboxPolicyEditing":true,"createdAt":"2026-10-21T00:00:00Z"}`, []string{"--enabled=true"}},
 		{"recommendations", "GET", "/recommendations", `{"recommendations":[],"truncated":false}`, []string{"--revision", revision}},
 	} {
-		for _, output := range []string{"default", "json", "yaml"} {
+		for _, output := range []string{"default", "json", "yaml", "table", "text"} {
 			t.Run(operation.name+"/"+output, func(t *testing.T) {
 				calls := 0
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -63,14 +63,21 @@ func TestAgentPolicyCommandsDefaultToStructuredOutput(t *testing.T) {
 				var out, diagnostic strings.Builder
 				command := New(&out, &diagnostic)
 				command.SetArgs(args)
-				if err := command.Execute(); err != nil {
+				err := command.Execute()
+				if output == "table" || output == "text" {
+					// Unsupported explicit formats must stop before a read or mutation.
+					if err == nil || !strings.Contains(err.Error(), "invalid output format") || calls != 0 || out.Len() != 0 {
+						t.Fatalf("unsupported %s: requests=%d, output=%q, error=%v", output, calls, out.String(), err)
+					}
+					return
+				}
+				if err != nil {
 					t.Fatalf("policy request applied %d time(s), then CLI failed: %v; stderr=%s", calls, err, diagnostic.String())
 				}
 				if calls != 1 {
 					t.Fatalf("requests = %d; want one", calls)
 				}
 				var result map[string]any
-				var err error
 				if output == "yaml" {
 					err = yaml.Unmarshal([]byte(out.String()), &result)
 				} else {

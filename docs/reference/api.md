@@ -1320,8 +1320,10 @@ Get the singleton Installation
 | `data.capabilities.nativeWorkers` | `object` | No | Present only when dedicated native OpenClaw can be admitted, and says where its native worker support comes from. |
 | `data.capabilities.nativeWorkers.support` | `"pinned-runtime" or "custom-image"` | Yes | — |
 | `data.capabilities.openclaw` | `object` | No | — |
-| `data.capabilities.openclaw.executionModes` | `array<"embedded" or "dedicated">` | Yes | max items: 2; The OpenClaw execution modes this Installation's Sandbox Driver and runtime let an Agent deploy. Agent save also refuses Embedded with a selected Sandbox Driver, but saves Dedicated without one that can provision it; deploy refuses that. Empty when no mode can deploy: a selected Sandbox Driver refuses Embedded execution, Dedicated needs one that can provision dedicated OpenClaw, and a selected Sandbox Driver that is unavailable admits neither. |
+| `data.capabilities.openclaw.executionModes` | `array<"embedded" or "dedicated">` | Yes | max items: 2; The OpenClaw execution modes this Installation's Sandbox Driver and runtime let an Agent deploy. Agent save refuses Embedded with a selected Sandbox Driver, and Dedicated when the Sandbox Driver's settings refuse it (settingRefusals); it saves Dedicated without a Sandbox Driver that can provision it, which deploy refuses. Empty when no mode can deploy: a selected Sandbox Driver refuses Embedded execution, Dedicated needs one that can provision dedicated OpenClaw with settings that allow it, and a selected Sandbox Driver that is unavailable admits neither. |
 | `data.capabilities.openclaw.sandboxDriverUnavailable` | `true` | No | Present while the selected Sandbox Driver is unavailable. executionModes is then empty until it returns, and Agent save and deploy answer 503 DEPENDENCY_UNAVAILABLE. |
+| `data.capabilities.openclaw.settingRefusals` | `object` | No | Present when the selected Sandbox Driver can provision a mode missing from executionModes but its settings refuse it. Each value is the message Agent save and deploy return for that mode, naming the setting an operator changes. Absent for other reasons a mode is missing. |
+| `data.capabilities.openclaw.settingRefusals.dedicated` | `string` | No | min length: 1 |
 | `data.capabilities.pluginDiscovery` | `object` | No | — |
 | `data.capabilities.pluginDiscovery.credential` | `"required" or "none"` | Yes | — |
 | `data.capabilities.pluginPolicies` | `object` | No | — |
@@ -1415,8 +1417,10 @@ Bootstrap the singleton Installation
 | `data.capabilities.nativeWorkers` | `object` | No | Present only when dedicated native OpenClaw can be admitted, and says where its native worker support comes from. |
 | `data.capabilities.nativeWorkers.support` | `"pinned-runtime" or "custom-image"` | Yes | — |
 | `data.capabilities.openclaw` | `object` | No | — |
-| `data.capabilities.openclaw.executionModes` | `array<"embedded" or "dedicated">` | Yes | max items: 2; The OpenClaw execution modes this Installation's Sandbox Driver and runtime let an Agent deploy. Agent save also refuses Embedded with a selected Sandbox Driver, but saves Dedicated without one that can provision it; deploy refuses that. Empty when no mode can deploy: a selected Sandbox Driver refuses Embedded execution, Dedicated needs one that can provision dedicated OpenClaw, and a selected Sandbox Driver that is unavailable admits neither. |
+| `data.capabilities.openclaw.executionModes` | `array<"embedded" or "dedicated">` | Yes | max items: 2; The OpenClaw execution modes this Installation's Sandbox Driver and runtime let an Agent deploy. Agent save refuses Embedded with a selected Sandbox Driver, and Dedicated when the Sandbox Driver's settings refuse it (settingRefusals); it saves Dedicated without a Sandbox Driver that can provision it, which deploy refuses. Empty when no mode can deploy: a selected Sandbox Driver refuses Embedded execution, Dedicated needs one that can provision dedicated OpenClaw with settings that allow it, and a selected Sandbox Driver that is unavailable admits neither. |
 | `data.capabilities.openclaw.sandboxDriverUnavailable` | `true` | No | Present while the selected Sandbox Driver is unavailable. executionModes is then empty until it returns, and Agent save and deploy answer 503 DEPENDENCY_UNAVAILABLE. |
+| `data.capabilities.openclaw.settingRefusals` | `object` | No | Present when the selected Sandbox Driver can provision a mode missing from executionModes but its settings refuse it. Each value is the message Agent save and deploy return for that mode, naming the setting an operator changes. Absent for other reasons a mode is missing. |
+| `data.capabilities.openclaw.settingRefusals.dedicated` | `string` | No | min length: 1 |
 | `data.capabilities.pluginDiscovery` | `object` | No | — |
 | `data.capabilities.pluginDiscovery.credential` | `"required" or "none"` | Yes | — |
 | `data.capabilities.pluginPolicies` | `object` | No | — |
@@ -1837,7 +1841,7 @@ Report advisory primary IAM permissions on a readable Namespace, not authorizati
 | [`GET /namespaces/{namespaceId}/agents/provision/{workId}`](#get-namespacesnamespaceidagentsprovisionworkid) | Get first-time provisioning status for one exact work item |
 | [`POST /namespaces/{namespaceId}/agents/provision/{workId}/retry`](#post-namespacesnamespaceidagentsprovisionworkidretry) | Retry failed first-time provisioning for one exact work item |
 | [`GET /namespaces/{namespaceId}/agents/repository-options`](#get-namespacesnamespaceidagentsrepositoryoptions) | List approved repository choices for Agent creation in one Namespace |
-| [`POST /namespaces/{namespaceId}/agents/validate`](#post-namespacesnamespaceidagentsvalidate) | Check an unsaved Agent Configuration, plugin selections and initial workspace files as Configuration and Agent create would, without saving anything |
+| [`POST /namespaces/{namespaceId}/agents/validate`](#post-namespacesnamespaceidagentsvalidate) | Check an unsaved Agent Configuration, plugin selections, initial workspace files and Harness authentication as Configuration and Agent create would, without saving anything |
 | [`DELETE /namespaces/{namespaceId}/agents/{agentId}`](#delete-namespacesnamespaceidagentsagentid) | Begin or retry deletion of the requested Agent and its Agent revisions |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}`](#get-namespacesnamespaceidagentsagentid) | Get an exact Namespace-owned Agent |
 | [`PATCH /namespaces/{namespaceId}/agents/{agentId}`](#patch-namespacesnamespaceidagentsagentid) | Replace an exact Namespace-owned Agent's editable draft |
@@ -2662,7 +2666,7 @@ List approved repository choices for Agent creation in one Namespace
 | `404` | Not Found |
 | `409` | Conflict |
 | `500` | Internal Server Error |
-| `503` | Check `error.code`: `REPOSITORY_OPTIONS_UNAVAILABLE` means optional repository discovery is unavailable after Namespace lifecycle and Agent create authorization checks. Creation without repository bindings remains available subject to fresh authorization. `DEPENDENCY_UNAVAILABLE` includes IAM and other required dependency failures and does not permit proceeding. Successful discovery returns a data array, including an empty array when no repositories are approved. |
+| `503` | Check `error.code`: `REPOSITORY_OPTIONS_UNAVAILABLE` means optional repository discovery is unavailable after Namespace lifecycle and Agent create authorization checks, because the selected Compute or Sandbox Driver cannot support repository credentials or the selected repository Driver is unavailable. Without repository settings the answer is 200 with `meta.notConfigured` instead. Creation without repository bindings remains available subject to fresh authorization. `DEPENDENCY_UNAVAILABLE` includes IAM and other required dependency failures and does not permit proceeding. Successful discovery returns a data array, including an empty array when no repositories are approved. |
 
 **`200` response body:** `application/json`
 
@@ -2674,13 +2678,14 @@ List approved repository choices for Agent creation in one Namespace
 | `data[].displayName` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `data[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `meta` | `object` | Yes | — |
+| `meta.notConfigured` | `true` | No | Present when the Installation has no repository settings, so no repository credential Driver is selected. `data` is then empty, and Agent save refuses repository bindings with 409 RESOURCE_CONFLICT. |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
 #### `POST /namespaces/{namespaceId}/agents/validate`
 
 <span id="post-namespacesnamespaceidagentsvalidate"></span>
 
-Check an unsaved Agent Configuration, plugin selections and initial workspace files as Configuration and Agent create would, without saving anything
+Check an unsaved Agent Configuration, plugin selections, initial workspace files and Harness authentication as Configuration and Agent create would, without saving anything
 
 **Operation ID:** `validateAgentCreate`
 
@@ -2708,6 +2713,7 @@ Check an unsaved Agent Configuration, plugin selections and initial workspace fi
 | `configuration.kind` | `"agent"` | Yes | — |
 | `configuration.values` | `object<string, SafeJsonValue>` | Yes | A native OpenClaw configuration document. |
 | `executionMode` | `"embedded" or "dedicated"` | No | — |
+| `harnessAuth` | `object or object or object or object or object or null` | No | The Harness authentication Agent create will name, so Agent save's check of it against the execution mode and Compute settings runs here too. For a Secret the caller saves next, send only its `method`. The Secret and credential source are not read; omitted or null skips this check. |
 | `initialWorkspaceFiles` | `object` | No | — |
 | `initialWorkspaceFiles.AGENTS.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
 | `initialWorkspaceFiles.IDENTITY.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
@@ -3926,6 +3932,7 @@ List approved repository choices for updating one Agent
 | `data[].displayName` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `data[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `meta` | `object` | Yes | — |
+| `meta.notConfigured` | `true` | No | Present when the Installation has no repository settings, so no repository credential Driver is selected. `data` is then empty, and Agent save refuses repository bindings with 409 RESOURCE_CONFLICT. |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
 #### `GET /namespaces/{namespaceId}/agents/{agentId}/revisions/{revisionId}/sandbox-policy/{facet}/recommendations`

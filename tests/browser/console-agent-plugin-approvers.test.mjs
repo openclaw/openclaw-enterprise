@@ -697,3 +697,63 @@ test("Codex Agents offer only default plugin approvers", async (t) => {
   assert.equal(await pluginDialog.getByLabel(`${pluginId} plugin approvers mode`).count(), 0);
   assert.equal(await toolRow.getByLabel(`${toolId} tool approvers mode`).count(), 0);
 });
+
+test("No Slack approvers does not ask the operator to select hidden people", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, "/console");
+  await page.locator(settledView).waitFor();
+  const hints = await page.evaluate(async () => {
+    const { createSlackApproverField } = await import("/console/agents/slack-approvers.mjs");
+    let value = [];
+    const field = createSlackApproverField({
+      context: {
+        namespaceId: "ns_1",
+        request() {
+          return Promise.resolve({ candidates: [], truncated: false });
+        },
+        isCurrent() {
+          return true;
+        },
+        onExpired() {},
+      },
+      label: "Approvers",
+      allowInherit: false,
+      getSecretId() {
+        return "sec_1";
+      },
+      getValue() {
+        return value;
+      },
+      onChange(next) {
+        value = next;
+      },
+    });
+    globalThis.document.body.append(field);
+    const helper = field.querySelector("p.hint");
+    const picker = field.querySelector(".slack-directory-field");
+    const select = field.querySelector("select");
+    const none = { hint: helper.textContent, pickerHidden: picker.hidden };
+    select.value = "chosen";
+    select.dispatchEvent(new Event("change"));
+    const chosen = { hint: helper.textContent, pickerHidden: picker.hidden };
+    value = [{ channel: "teams", id: "person-1" }];
+    select.value = "none";
+    select.dispatchEvent(new Event("change"));
+    return {
+      none,
+      chosen,
+      preserved: { hint: helper.textContent, pickerHidden: picker.hidden },
+    };
+  });
+  assert.equal(hints.none.hint, "No Slack user can approve.");
+  assert.equal(hints.none.pickerHidden, true);
+  assert.equal(hints.chosen.hint, "No Slack user can approve until people are selected.");
+  assert.equal(hints.chosen.pickerHidden, false);
+  assert.equal(
+    hints.preserved.hint,
+    "No Slack user can approve. 1 other channel entries are preserved.",
+  );
+  assert.equal(hints.preserved.pickerHidden, true);
+});

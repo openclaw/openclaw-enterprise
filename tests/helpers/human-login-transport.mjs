@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import { createHumanLogin } from "../../apps/controller/src/auth/github.ts";
 import { createOccLogger, emitOccLogEvent } from "../../apps/controller/src/logging.ts";
 import { idTokenSigner, rsaSigningKey } from "./id-token.mjs";
+import { jsonChunkDestination } from "./json-lines.mjs";
 import { listen } from "./listen.mjs";
 import { waitUntil } from "./wait-for.mjs";
 
@@ -37,7 +38,7 @@ export function createLoginFixture({
   const logger = createOccLogger({
     component: "occ-api",
     level: "info",
-    destination: { write: (chunk) => operationalLines.push(JSON.parse(chunk)) },
+    destination: jsonChunkDestination(operationalLines),
   });
   const state = {
     // State's clock is deliberately ahead of the controller's: cookie lifetimes must

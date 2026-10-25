@@ -286,6 +286,55 @@ test("A failed older version raises no recovery while the current version is hid
   assert.equal(await summary.getByText("May be offline").count(), 0);
 });
 
+// The Versions list reads only the latest version's deployment record. A failed version lost
+// its mark once a newer version was deployed, so after a recovery every earlier failure looked
+// like an ordinary version (finding 2383). A failed record is final, so the mark stays.
+test("The Versions list keeps an earlier failed version's mark after a newer deploy", async (t) => {
+  const { fixture, namespace, agent, page } = await agentPage(t, "Failed then", "Failed then");
+  const first = await fixture.deployAgent(namespace.id, agent.id);
+  await routeFailedRecord(page, fixture, namespace, agent, first);
+
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  const rail = page.getByRole("toolbar", { name: "Versions" });
+  await rail.getByRole("button", { name: "View version v1, deployment failed" }).waitFor();
+  // A second deploy makes v2 the latest version, whose record is the one the list reads.
+  await fixture.deployAgent(namespace.id, agent.id);
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await rail.getByRole("button", { name: /^View version v2/ }).waitFor();
+  await rail.getByRole("button", { name: "View version v1, deployment failed" }).waitFor();
+  assert.equal(
+    await rail
+      .getByRole("button", { name: "View version v1, deployment failed" })
+      .locator(".version-outcome")
+      .textContent(),
+    "Failed",
+  );
+});
+
+// A first deployment that failed leaves the Agent requested to run with no version selected
+// (finding 2385). Stop would change nothing, so the danger zone disables it and says why,
+// instead of offering to stop "the running version".
+test("Stop is disabled with its reason when a failed first deployment left nothing running", async (t) => {
+  const { fixture, namespace, agent, page } = await agentPage(t, "Failed first", "Failed first");
+  const failed = await fixture.deployAgent(namespace.id, agent.id);
+  await routeFailedRecord(page, fixture, namespace, agent, failed);
+
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  const summary = page.locator(".agent-current-summary");
+  await summary.getByText("v1 · Failed", { exact: true }).waitFor();
+  const stopRegion = page.getByRole("region", { name: "Stop Agent", exact: true });
+  await stopRegion
+    .getByText(
+      "No version is running, so there is nothing to stop. Deploy a new version to start this Agent.",
+      { exact: true },
+    )
+    .waitFor();
+  assert.equal(
+    await stopRegion.getByRole("button", { name: "Stop Agent", exact: true }).isDisabled(),
+    true,
+  );
+});
+
 // Nothing restarts a lost Sandbox (finding 2152): after a node restart the current version's
 // Sandbox can stay stopped while the Agent still reads active and its gateway refuses requests.
 // Live serving says so with the next step. Its note line is reserved from the first paint, so a
@@ -321,27 +370,38 @@ test("Live serving shows a lost Sandbox and its next step without moving the pag
     await page.route(deploymentRecordUrl(fixture, namespace.id, agent.id, revision.id), (route) =>
       route.fulfill(deploymentStatusResponse(revision, { status: "succeeded" })),
     );
+    await trackSettledFetches(page);
     await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
     await page.getByRole("link", { name: "Lost Sandbox" }).waitFor();
-    await page.waitForLoadState("networkidle");
-    // The Agents list reads no Sandbox: a list costs no Sandbox Driver call per Agent.
+    await waitForIdleFetches(page);
+    // The Agents list reads no Sandbox: a list costs no Sandbox Driver call per Agent. A read it
+    // started later would still count against the one read per page checked below.
     assert.deepEqual(harnessReads, []);
-    // The Sandbox read lands after the page shows, as on a gateway that takes a moment.
-    await page.route(`${fixture.origin}/namespaces/**/harness-status`, async (route) => {
-      await new Promise((resolve) => setTimeout(resolve, 700));
-      if (statusFailure) {
-        await route.fulfill({
-          status: 503,
-          json: { error: { code: "DEPENDENCY_UNAVAILABLE", message: "Unavailable." } },
-        });
-        return;
-      }
-      await route.fallback().catch(() => {});
-    });
+    // The Sandbox read lands after the page shows, as on a gateway that takes a moment: it is
+    // held until the page shows Live serving's note waiting for it.
+    const sandboxRead = await holdRequests(
+      t,
+      page,
+      `${fixture.origin}/namespaces/**/harness-status`,
+      {
+        fulfill: statusFailure
+          ? {
+              status: 503,
+              json: { error: { code: "DEPENDENCY_UNAVAILABLE", message: "Unavailable." } },
+            }
+          : null,
+      },
+    );
     await page.addInitScript(recordLayoutShifts);
-    await trackSettledFetches(page);
     // A full load, so no recent input excuses a shift.
     await page.goto(detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").href);
+    await liveServing(page).locator(".stat-help", { hasText: "Checking Sandbox…" }).waitFor();
+    await sandboxRead.requested;
+    await nextFrames(page);
+    sandboxRead.release();
+    // The answer renders before any click below, which would excuse a shift it causes.
+    await waitForSettledFetches(page, new URL(harnessReads[0]).pathname, 1);
+    await nextFrames(page);
     await expectDeploymentOutcome(page, "Completed");
     return { page, harnessReads };
   }
@@ -743,6 +803,9 @@ test("A replaced current version still says who can check the logs once Logs is 
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
   const recovery = page.getByRole("region", { name: "Deployment needs attention" });
   await recovery.getByRole("heading", { name: "This Agent may be offline" }).waitFor();
+  // Over a line about serving, the label names the failed version.
+  assert.equal(await recovery.locator(".status-label").textContent(), "Deployment failed · v2");
+  assert.equal(await recovery.locator(".status-label").isVisible(), true);
   await recovery.getByRole("link", { name: "Open v2 Logs" }).click();
   await page
     .getByText("Log text requires Agent read_logs (or administer) and read access.")
@@ -912,11 +975,13 @@ for (const c of [
         await recovery.getByText("before deploying a new version", { exact: false }).count(),
         0,
       );
-      // A danger status block (spec 3.4): the label names the failed version, the code ends the
-      // message's first sentence, and the page's one primary is Deploy again where the message
-      // says to deploy again, else the failed version's Logs; the other actions are secondary.
+      // A danger status block (spec 3.4): the title names the failed version (with nothing else
+      // selected, no label above it repeats that, finding 2368), the code ends the message's
+      // first sentence, and the page's one primary is Deploy again where the message says to
+      // deploy again, else the failed version's Logs; the other actions are secondary.
       assert.equal(await recovery.getAttribute("data-tone"), "danger");
-      assert.equal(await recovery.locator(".status-label").textContent(), "Deployment failed · v1");
+      await recovery.getByRole("heading", { name: "v1 deployment failed", exact: true }).waitFor();
+      assert.equal(await recovery.locator(".status-label").isVisible(), false);
       assert.equal(await recovery.locator(".status-body code").textContent(), c.code);
       const actions = await recovery.locator(".status-actions a").evaluateAll((links) =>
         links.map((link) => {
@@ -1904,6 +1969,14 @@ for (const viewport of [
       (await logs.boundingBox()).y + 40 < viewport.height,
       "the card's action is above the fold",
     );
+    // The version's Configuration tab shows its deployment record too: it names the outcome and
+    // points at the card rather than repeating the error (finding 2368).
+    await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+    const versionRecord = await expectVersionRecord(page, "Failed");
+    await versionRecord
+      .getByText("The error and its next step are at the top of this page.", { exact: true })
+      .waitFor();
+    assert.equal((await layout()).errorShown, 1, "the error shows once with the record in view");
     // Folded once, the details stay open when the reader opens them.
     await openDeploymentActivity(page);
     assert.equal(await deploymentDetailsOpen(page), true);

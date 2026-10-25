@@ -79,8 +79,8 @@ Use **Dedicated** for Slack on the same Agent; follow the
 [same-Agent Console sequence](../reference/console/repository-access.md#use-repositories-and-slack-on-the-same-agent)
 for channels, credentials and deployment. Repository profiles and model
 authentication are separate. If repository discovery fails, **Create Agent**
-stays blocked until discovery succeeds. The exception is
-`503 REPOSITORY_OPTIONS_UNAVAILABLE` with no repositories selected: you can save
+stays blocked until discovery succeeds. The exception is an Installation without
+repository access or `503 REPOSITORY_OPTIONS_UNAVAILABLE`, with no repositories selected: you can save
 an ordinary draft, but cannot start guided provisioning. Other errors still
 block creation. Creation and deployment recheck Namespace repository policy;
 see [repository discovery](../reference/console/repository-access.md#discover-and-select-repositories).
@@ -162,6 +162,11 @@ kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
 ```
 
 The gateway retains its model credential; the TUI client unsets its copy.
+
+`user.name` and `user.email` identify the commit author; they do not change the
+managed GitHub App identity used to authorize a push. A successful authenticated
+clone does not configure these values; set them before committing, as shown below.
+
 The dedicated Agent works in its workspace without manual session-opening:
 
 ```sh

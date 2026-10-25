@@ -14,7 +14,7 @@ import type { createDraftStore } from "../drafts.mjs";
 import {
   DELETE_CONFIRMATION,
   STOP_CONFIRMATION,
-  keptResourcesText,
+  keptResources,
 } from "./lifecycle-confirmation.mjs";
 import {
   type AgentNavigation,
@@ -565,15 +565,16 @@ export function renderAgentList(context: AgentListContext) {
 
   function confirmAction(item: AgentRead, kind: RowAction, invoker: HTMLButtonElement) {
     const stopping = kind === "stop";
-    const descriptions = stopping
-      ? [STOP_CONFIRMATION]
-      : [DELETE_CONFIRMATION, keptResourcesText(item)];
+    const description = element(
+      "p",
+      { id: "agent-row-confirm-description", "aria-live": "polite" },
+      stopping ? STOP_CONFIRMATION : DELETE_CONFIRMATION,
+    );
+    const kept = stopping ? null : keptResources(item);
     const dialog = element("dialog", {
       className: stopping ? "dialog agent-stop-dialog" : "dialog agent-delete-dialog",
       "aria-labelledby": "agent-row-confirm-title",
-      "aria-describedby": descriptions
-        .map((_, index) => `agent-row-confirm-description-${index}`)
-        .join(" "),
+      "aria-describedby": kept ? `${description.id} ${kept.summary.id}` : description.id,
     });
     let pending = false;
     let submitted = false;
@@ -598,13 +599,6 @@ export function renderAgentList(context: AgentListContext) {
       },
       { className: "danger" },
     );
-    const descriptionNodes = descriptions.map((text, index) =>
-      element(
-        "p",
-        { id: `agent-row-confirm-description-${index}`, "aria-live": index ? "off" : "polite" },
-        text,
-      ),
-    );
     // A refusal that arrives while the dialog is open disables confirmation, as on Agent
     // detail. A late answer cannot recall a request already sent.
     const restrict: RestrictDialog = (id, answer) => {
@@ -612,7 +606,7 @@ export function renderAgentList(context: AgentListContext) {
         return;
       }
       confirm.disabled = true;
-      descriptionNodes[0]!.textContent = stopping
+      description.textContent = stopping
         ? "Your access does not include stopping this Agent."
         : "Your access does not include deleting this Agent.";
       cancel.focus();
@@ -624,7 +618,8 @@ export function renderAgentList(context: AgentListContext) {
         { id: "agent-row-confirm-title" },
         `${stopping ? "Stop" : "Delete"} ${item.name}?`,
       ),
-      ...descriptionNodes,
+      description,
+      ...(kept ? [kept.summary, kept.commands] : []),
       element("div", { className: "dialog-actions" }, cancel, confirm),
     );
     dialog.addEventListener("cancel", (event) => {

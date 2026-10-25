@@ -49,7 +49,11 @@ import {
   retryKubectlRead,
   withinDiagnosticDeadline,
 } from "../helpers/kubernetes-real.mjs";
-import { observeSandboxProbe } from "../helpers/k3d-failure-diagnostics.mjs";
+import {
+  observeSandboxProbe,
+  tokenEchoDigest,
+  tokenEchoReply,
+} from "../helpers/k3d-failure-diagnostics.mjs";
 import {
   createEnvoyWorkspaceGatewayPlan,
   ensureEnvoyGatewayControllers,
@@ -3570,16 +3574,7 @@ async function assertRefreshCredentialSources(topology) {
     // Output that is not the echo's JSON (finding 1883) is kept, redacted and bounded, so a
     // failed check shows what the command printed. It has no `placeholder` or `jwt`, so every
     // check below treats it as a missing token.
-    const echoed = (source) => {
-      const echo = commands.find(({ command }) => String(command).includes(source.url));
-      assert.ok(echo, `the Harness must call ${source.url}`);
-      const output = String(echo.aggregatedOutput ?? "").trim();
-      try {
-        return JSON.parse(output);
-      } catch {
-        return { unparsed: redactLogLine(output, secrets, 1_000) };
-      }
-    };
+    const echoed = (source) => tokenEchoReply(commands, source.url, secrets);
     return { cc: echoed(clientCredentials), rt: echoed(refreshToken) };
   };
   // The Sandbox supervisor picks up a re-minted token on its provider poll, every 10 seconds by
@@ -3599,11 +3594,13 @@ async function assertRefreshCredentialSources(topology) {
     assert.equal(
       observed?.placeholder,
       false,
-      observed?.unparsed === undefined
-        ? `${source.type} must arrive substituted`
-        : `${source.type} must arrive substituted; the echo call printed ${JSON.stringify(observed.unparsed)}`,
+      `${source.type} must arrive substituted: ${observed?.shown}`,
     );
-    assert.equal(observed?.jwt?.valid, true, `${source.type} must carry a valid Keycloak token`);
+    assert.equal(
+      observed?.jwt?.valid,
+      true,
+      `${source.type} must carry a valid Keycloak token: ${observed?.shown}`,
+    );
     assert.equal(observed.jwt.iss, keycloak.issuer);
     assert.equal(observed.jwt.azp, source.clientId);
   };
@@ -3727,12 +3724,7 @@ async function assertRefreshCredentialSources(topology) {
 
 /** Reports why another Agent's revision did not activate, before the fixture removes it. */
 async function diagnoseAdditionalAgent(topology, agentId, revisionId, deploymentPath) {
-  const secrets = failureSecrets([
-    process.env,
-    Object.fromEntries(
-      (topology.toolSources ?? []).map(({ token }, index) => [`TOOL_TOKEN_${index}`, token]),
-    ),
-  ]);
+  const secrets = turnFailureSecrets(topology);
   const write = (label, value) =>
     process.stderr.write(
       `OpenShell second Agent ${label}: ${redactLogLine(JSON.stringify(value), secrets, 4000)}\n`,
@@ -3851,6 +3843,7 @@ async function deployAdditionalCredentialAgent(topology, modelSourceId, toolSour
 async function assertNonModelCredentialSource(topology) {
   const { request, namespaceId, toolSources, observerPool } = topology;
   const [toolA, toolB] = toolSources;
+  const secrets = turnFailureSecrets(topology);
   const agentId = topology.agent.id;
   const current = await request("GET", `/namespaces/${namespaceId}/agents/${agentId}`);
   assert.equal(current.status, 200, JSON.stringify(current.error));
@@ -3887,21 +3880,20 @@ async function assertNonModelCredentialSource(topology) {
       .filter((item) => item?.type === "commandExecution");
     const environment = commands.find(({ command }) => String(command).includes("cut -c1-9"));
     assert.ok(environment, "the Harness must read its tool placeholder");
-    const digest = (tool) => {
-      const echo = commands.find(({ command }) => String(command).includes(tool.url));
-      assert.ok(echo, `the Harness must call ${tool.url}`);
-      try {
-        return JSON.parse(String(echo.aggregatedOutput ?? "").trim()).digest;
-      } catch {
-        return undefined;
-      }
-    };
+    // Each tool's echo reply carries `shown`: the command, its exit code and what it printed,
+    // redacted, so a failed check names its cause (finding 2281).
     return {
       placeholder: String(environment.aggregatedOutput ?? "").trim(),
-      a: digest(toolA),
-      b: digest(toolB),
+      a: tokenEchoReply(commands, toolA.url, secrets),
+      b: tokenEchoReply(commands, toolB.url, secrets),
     };
   };
+  // Digests are compared, never shown; `shown` says what the command printed instead. A checked
+  // call whose output is not JSON fails in tokenEchoDigest.
+  const assertDelivered = (observed, tool, message) =>
+    assert.equal(tokenEchoDigest(observed) === tool.digest, true, `${message}: ${observed.shown}`);
+  const assertWithheld = (observed, tool, message) =>
+    assert.equal(tokenEchoDigest(observed) === tool.digest, false, `${message}: ${observed.shown}`);
   const withdrawalPath = (tool) =>
     `/namespaces/${namespaceId}/agents/${agentId}/credential-sources/${tool.id}`;
   const readWithdrawal = async (tool) => {
@@ -3914,8 +3906,8 @@ async function assertNonModelCredentialSource(topology) {
   const before = await call();
   // A real token starts with oce-tool-; only a placeholder starts with the OpenShell prefix.
   assert.equal(before.placeholder, "openshell");
-  assert.equal(before.a, toolA.digest, "OpenShell must substitute tool A's token");
-  assert.equal(before.b, toolB.digest, "OpenShell must substitute tool B's token");
+  assertDelivered(before.a, toolA, "OpenShell must substitute tool A's token");
+  assertDelivered(before.b, toolB, "OpenShell must substitute tool B's token");
 
   // A second Agent authenticates with its own model source and attaches tool A only. OpenShell
   // gives it tool A's token, and tool B's endpoint receives no token from it, because only
@@ -3952,8 +3944,8 @@ async function assertNonModelCredentialSource(topology) {
   );
   const secondBefore = await call(second.agent.id);
   assert.equal(secondBefore.placeholder, "openshell");
-  assert.equal(secondBefore.a, toolA.digest, "the second Agent must receive tool A's token");
-  assert.notEqual(secondBefore.b, toolB.digest, "an unattached source must not be delivered");
+  assertDelivered(secondBefore.a, toolA, "the second Agent must receive tool A's token");
+  assertWithheld(secondBefore.b, toolB, "an unattached source must not be delivered");
 
   // Two requesters withdraw different sources from the running revision, sharing one worker
   // claim. The second, operator B, held the actor's grants when the withdrawal was recorded
@@ -4014,16 +4006,16 @@ async function assertNonModelCredentialSource(topology) {
   // In the same running Harness, the gateway no longer delivers tool A's token, still
   // delivers tool B's, and model turns succeed.
   const after = await call();
-  assert.notEqual(after.a, toolA.digest, "a withdrawn token must not be delivered");
-  assert.equal(after.b, toolB.digest, "a denied withdrawal must not detach its source");
+  assertWithheld(after.a, toolA, "a withdrawn token must not be delivered");
+  assertDelivered(after.b, toolB, "a denied withdrawal must not detach its source");
   const unchanged = await request("GET", `/namespaces/${namespaceId}/agents/${agentId}`);
   assert.equal(unchanged.data.activeRevisionId, revision.id, "withdrawal must not redeploy");
   // The withdrawal detaches tool A from the first Agent's Sandbox only. The provider and the
   // second Agent's attachment stay, so its running Harness still receives the token.
   const secondAfter = await call(second.agent.id);
-  assert.equal(
+  assertDelivered(
     secondAfter.a,
-    toolA.digest,
+    toolA,
     "another Agent's withdrawal must not detach the source from this Agent",
   );
   const secondWithdrawal = await request(
@@ -4033,8 +4025,8 @@ async function assertNonModelCredentialSource(topology) {
   assert.equal(secondWithdrawal.status, 404, JSON.stringify(secondWithdrawal.data));
   // Whether each echo endpoint received the source's real token; digests compared, never shown.
   const delivered = (observedCall) => ({
-    toolA: observedCall.a === toolA.digest,
-    toolB: observedCall.b === toolB.digest,
+    toolA: observedCall.a.digest === toolA.digest,
+    toolB: observedCall.b.digest === toolB.digest,
   });
   process.stderr.write(
     `OpenShell integration: tool token delivery ${JSON.stringify({
@@ -4615,6 +4607,9 @@ function turnFailureSecrets(topology, gatewayPassword) {
       GATEWAY_PASSWORD: gatewayPassword,
       APP_SERVER_TOKEN: topology.appServerToken,
     },
+    Object.fromEntries(
+      (topology.toolSources ?? []).map(({ token }, index) => [`TOOL_TOKEN_${index}`, token]),
+    ),
   ]);
 }
 

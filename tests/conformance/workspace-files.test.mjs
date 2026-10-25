@@ -452,8 +452,8 @@ test("Agent workspace file routes map provider file states without leaking conte
         }
         return { status: "unavailable" };
       },
-      async write() {
-        return { status: "unavailable" };
+      async write(write) {
+        return { status: write.filename === "SOUL.md" ? "missing" : "unavailable" };
       },
     },
   });
@@ -489,6 +489,14 @@ test("Agent workspace file routes map provider file states without leaking conte
   assert.equal(writeUnavailable.response.status, 503);
   assert.equal(writeUnavailable.payload.error.code, "DEPENDENCY_UNAVAILABLE");
 
+  const writeMissing = await put(
+    fixture.app,
+    `/namespaces/${namespace.id}/agents/${agent.id}/workspace/files/SOUL.md`,
+    { content: "secret-ish soul\n" },
+  );
+  assert.equal(writeMissing.response.status, 404);
+  assert.equal(writeMissing.payload.error.code, "NOT_FOUND");
+
   const audits = fileAudits(fixture);
   assert.equal(JSON.stringify(audits).includes("secret-ish"), false);
   assert.deepEqual(
@@ -498,8 +506,76 @@ test("Agent workspace file routes map provider file states without leaking conte
       reasonCode,
       details.workspaceFileName,
     ]),
-    [["openclaw.agents.workspace.files.write", "failure", "DEPENDENCY_UNAVAILABLE", "USER.md"]],
+    [
+      ["openclaw.agents.workspace.files.write", "failure", "DEPENDENCY_UNAVAILABLE", "USER.md"],
+      ["openclaw.agents.workspace.files.write", "failure", "FILE_MISSING", "SOUL.md"],
+    ],
   );
+});
+
+test("Agent workspace file reads refuse provider content OCC would not accept in a write", async () => {
+  let content;
+  const fixture = await createFixture({
+    workspaceFilesAccess: {
+      async read(read) {
+        return { status: "ok", file: { name: read.filename, content } };
+      },
+      async write() {
+        throw new Error("not used");
+      },
+    },
+  });
+  const namespace = await createNamespace(fixture, "Unstorable read tenant");
+  const { agent } = await createAgent(fixture, namespace, "Unstorable read Agent");
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}/workspace/files/AGENTS.md`;
+  for (const refused of ["before\u0000after", "lone \ud800 surrogate"]) {
+    content = refused;
+    const result = await request(fixture.app, path);
+    assert.equal(result.response.status, 503, JSON.stringify(refused));
+    assert.equal(result.payload.error.code, "DEPENDENCY_UNAVAILABLE");
+  }
+  content = "paired \ud83d\ude00 emoji\n";
+  const accepted = await request(fixture.app, path);
+  assert.equal(accepted.response.status, 200);
+  assert.equal(accepted.payload.data.content, content);
+});
+
+test("Agent workspace file writes report an unknown outcome when the success audit fails", async (context) => {
+  const writes = [];
+  const fixture = await createFixture({
+    workspaceFilesAccess: {
+      async read() {
+        throw new Error("not used");
+      },
+      async write(write) {
+        writes.push(write);
+        return { status: "ok" };
+      },
+    },
+  });
+  const namespace = await createNamespace(fixture, "Unaudited write tenant");
+  const { agent } = await createAgent(fixture, namespace, "Unaudited write Agent");
+  const append = fixture.auditSink.append.bind(fixture.auditSink);
+  replaceForCase(context, fixture.auditSink, "append", async (event) => {
+    if (event.action === "openclaw.agents.workspace.files.write") {
+      throw new Error("audit store unavailable");
+    }
+    await append(event);
+  });
+
+  const result = await put(
+    fixture.app,
+    `/namespaces/${namespace.id}/agents/${agent.id}/workspace/files/USER.md`,
+    { content: "written once\n" },
+  );
+  // The provider wrote the file, but without its audit record OCC cannot report success.
+  assert.equal(result.response.status, 503);
+  assert.equal(result.payload.error.code, "UNKNOWN_OUTCOME");
+  assert.equal(
+    result.payload.error.message,
+    "The workspace file was written, but its final audit outcome could not be persisted.",
+  );
+  assert.equal(writes.length, 1);
 });
 
 // Exercise an uncertain write together with a stalled audit sink. The provider is

@@ -334,6 +334,10 @@
                       {
                         "page": "reference/drivers/openshell-sandbox",
                         "label": "OpenShell"
+                      },
+                      {
+                        "page": "reference/drivers/openshell-sandbox/harness-providers",
+                        "label": "OpenShell Harness Providers"
                       }
                     ]
                   },
@@ -499,6 +503,18 @@
                   {
                     "page": "guides/deploy/breaking-changes",
                     "label": "Breaking Changes"
+                  },
+                  {
+                    "page": "guides/deploy/breaking-changes-earlier-2026-10-24",
+                    "label": "Earlier Breaking Changes 2026-10-24"
+                  },
+                  {
+                    "page": "guides/deploy/breaking-changes-before-2026-10-24",
+                    "label": "Breaking Changes Before 2026-10-24"
+                  },
+                  {
+                    "page": "guides/deploy/breaking-changes-before-2026-10-23",
+                    "label": "Breaking Changes Before 2026-10-23"
                   },
                   {
                     "page": "guides/deploy/breaking-changes-before-2026-10-15",

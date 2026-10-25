@@ -1494,24 +1494,46 @@ test("signed supervisor instance and UUIDv7 creation horizon refuse old callers 
 
 test(
   "sustained sequential operations outlive replay capacity without waiting for JWT expiry",
-  { timeout: 180_000 },
+  { timeout: 30_000 },
   async (t) => {
+    // A fixed base keeps real time out of the advanced clock, so the horizon margin below holds
+    // on a runner of any speed.
+    const start = Date.now();
     let elapsed = 0;
-    const f = await staticEgressFixture(t, { now: () => new Date(Date.now() + elapsed) });
+    // Configured bounds, validated like an Installation's requestCapacity, release through the
+    // same registry code as the defaults, so the loop needs only about a hundred operations.
+    const capacity = {
+      operations: 16,
+      authenticatingOperations: 4,
+      sandboxOperations: 4,
+      requestIds: 256,
+      sandboxRequestIds: 64,
+    };
+    const f = await staticEgressFixture(t, {
+      now: () => new Date(start + elapsed),
+      credentialProxyCapacity: capacity,
+    });
+    assert.deepEqual(
+      f.controller.createCredentialProxy({}).capacity,
+      capacity,
+      "the controller builds the exchange's proxy with the configured bounds",
+    );
     const peer = f.metadata({ exp: Math.floor(Date.now() / 1000) + 3600 });
     // Advance the controller's supported clock while keeping genuine signed identity, IAM,
     // Secret SDK, authority transport and HTTPS provider. Completion must release active capacity;
     // fixed operation horizons must release replay capacity during the same long-lived JWT.
-    // One Sandbox at 40 requests/s holds about 1200 replay entries per 30 s horizon, under its
-    // share. Its share is the first replay bound it meets, so each operation past the share
-    // needs an expired entry released. Operation slots must also return on completion, or the
-    // loop stops at the operation share or capacity. "one Sandbox's replay share bounds it
-    // without refusing other Sandboxes" covers the installation-wide table's expiry.
-    const step = 25;
-    const operations = REPLAY_SANDBOX_SHARE + 64;
-    assert.ok(30_000 / step < REPLAY_SANDBOX_SHARE);
-    assert.ok(REPLAY_SANDBOX_SHARE < REPLAY_TABLE_CAPACITY);
-    assert.ok(OPERATION_CAPACITY < operations);
+    // One Sandbox at one request per 800 ms holds about 38 replay entries per 30 s horizon,
+    // under its share of 64; a horizon twice as long would reach it. Its share is the first
+    // replay bound it meets, so each operation past the share needs an expired entry released.
+    // Operation slots must also return on completion, or the loop stops at the operation share
+    // or capacity. "one Sandbox's replay share bounds it without refusing other Sandboxes"
+    // covers the installation-wide table's expiry.
+    const step = 800;
+    const operations = capacity.sandboxRequestIds + 64;
+    assert.ok(30_000 / step < capacity.sandboxRequestIds);
+    assert.ok(60_000 / step > capacity.sandboxRequestIds);
+    assert.ok(capacity.sandboxRequestIds < capacity.requestIds);
+    assert.ok(capacity.operations < operations);
     for (let i = 0; i < operations; i += 1) {
       elapsed += step;
       const captured = f.capture();

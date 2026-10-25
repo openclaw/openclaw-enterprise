@@ -327,10 +327,14 @@ These lanes are excluded from `ci`, `full`, and Full Integration dispatch:
 - `repository-credentials-installed`: temporarily refused pending safe remote cleanup. See [installed Agent qualification](repository-credentials.md#qualify-an-installed-agent-against-github).
 - `postgres-azure-workload-identity`: see [Azure PostgreSQL tests](postgresql.md#azure-workload-identity-connections).
 - `ssh-host`: requires a disposable Linux/systemd host. Its optional model selector adds provider execution. See [SSH tests](ssh.md).
+- `plugin-model`: requires a disposable cluster, an authorized Codex account, an immutable Agent image and three distinct scenario databases. See [plugin tests](plugins.md#native-runtime-prerequisites).
+- `k3d-two-cluster`: requires two separately prepared clusters, a private configuration file and an OpenAI API key. See [two-cluster validation](kubernetes.md#two-cluster-validation).
+- `openshell-oauth`: requires a prepared OpenShell OAuth gateway, trust files, tokens and a Kubernetes context. See [OpenShell OAuth tests](openshell-oauth.md).
+- `image-pair-qualification`: requires staged old and new controller and broker images. See [image-pair qualification](docker.md#repository-image-pair-qualification).
 
 ### Results and cleanup
 
-Selected lanes reject missing/skipped/TODO cases, failures, and cleanup errors. Results prove only selected coverage: inspect outcomes, source, cleanup and image digests. Retries have attempt-specific artifacts and replace the current result. Kubernetes preparation failures retain sanitized diagnostics when collection succeeds. Missing state or empty inventory does not prove cleanup.
+Selected lanes reject missing/skipped/TODO cases (skipped suites and Go tests too), failures, and cleanup errors. Results prove only selected coverage: inspect outcomes, source, cleanup and image digests. Retries have attempt-specific artifacts and replace the current result. Kubernetes preparation failures retain sanitized diagnostics when collection succeeds. Missing state or empty inventory does not prove cleanup.
 
 Prepare infrastructure on a disposable host. Keep the private state file until cleanup completes:
 

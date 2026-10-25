@@ -5,7 +5,6 @@ import { randomUUID } from "node:crypto";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import pg from "pg";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
@@ -26,6 +25,7 @@ import {
   validateExplicitK3dLoopbackContext,
 } from "../helpers/kubernetes-real.mjs";
 import { kubectlGetJson } from "../helpers/kubernetes-api-read.mjs";
+import { waitForResult } from "../helpers/wait-for.mjs";
 
 export const execute = promisify(execFile);
 export const kubeconfigPath = process.env.OCC_TEST_KUBERNETES_KUBECONFIG;
@@ -106,57 +106,17 @@ export async function missing(kind, name, namespace) {
   }
 }
 
-export async function waitFor(description, operation, timeoutMs = 120_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const result = await operation();
-    if (result !== undefined && result !== false) {
-      return result;
-    }
-    await delay(500);
-  }
-  assert.fail(`Timed out waiting for ${description}.`);
+export function waitFor(description, operation, timeoutMs = 120_000) {
+  return waitForResult(description, operation, { timeoutMs, intervalMs: 500 });
 }
 
 // Test cleanup deletes its randomly named namespaces without waiting: no later step reads
 // them, and each deletion waits out namespace-controller passes (5 s each, longer while Pods
-// terminate). local-path removes a deleted claim's host directory with a helper Pod, which
-// lane cleanup cannot do itself, so a file registers `after(waitForDeletedVolumes)` to wait
-// once, at its end, for those volumes to be deleted. It reads only volumes claimed from the
-// file's own namespaces, so a file sharing the cluster does not delay it.
-export function createNamespaceReaper() {
-  const deletedNamespaces = new Set();
-  return {
-    deleteNamespaces(...names) {
-      for (const name of names) {
-        deletedNamespaces.add(name);
-      }
-      return kubectl("delete", "namespace", ...names, "--ignore-not-found=true", "--wait=false");
-    },
-    async waitForDeletedVolumes() {
-      if (deletedNamespaces.size === 0) {
-        return;
-      }
-      let remaining = [];
-      try {
-        await waitFor(
-          "local-path volumes of deleted namespaces to be removed",
-          async () => {
-            const volumes = JSON.parse(await kubectlRead("get", "persistentvolumes", "-o", "json"));
-            remaining = volumes.items
-              .filter(({ spec }) => deletedNamespaces.has(spec.claimRef?.namespace))
-              .map(({ metadata, status }) => `${metadata.name} (${status?.phase ?? "unknown"})`);
-            return remaining.length === 0;
-          },
-          180_000,
-        );
-      } catch (error) {
-        // Bound means a namespace is stuck; Released or Failed means local-path's helper failed.
-        error.message = `${error.message} Remaining: ${remaining.join(", ")}`;
-        throw error;
-      }
-    },
-  };
+// terminate). local-path removes a deleted claim's volume directory with a helper Pod, maybe
+// after the file ends; lane cleanup removes whatever such volumes leave in the shared storage
+// (scripts/ci/cleanup.mjs), so no file waits for them.
+export function deleteNamespaces(...names) {
+  return kubectl("delete", "namespace", ...names, "--ignore-not-found=true", "--wait=false");
 }
 
 export function provisioningRequestBody({

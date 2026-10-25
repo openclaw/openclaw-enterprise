@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -56,6 +55,7 @@ import {
   nativeAdminValues,
   waitForLiveControls,
 } from "./console-agents-test-support.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 // The Console Browser lane runs the two Agent detail test files in parallel.
 
@@ -83,15 +83,33 @@ test("Agent delete confirmation can be canceled without sending a write request"
   const dialog = page.getByRole("dialog", { name: "Delete Cancel Candidate?" });
   await dialog.getByText(/Agent, its version history, and its workspace data/i).waitFor();
   // Deletion keeps the Agent's Configuration and model credential Secret, which the console
-  // cannot list or delete, so the dialog gives the commands that remove them by ID.
+  // names up front. Exact commands are available separately, without confirming the deletion.
   assert.equal(agent.harnessAuth.method, "api_key");
-  await dialog
-    .getByText(
-      `Its Configuration and model credential Secret are kept, even if they were created with this Agent. Once nothing else uses them, delete them with occ configuration delete ${agent.configurationId} and occ secret delete ${agent.harnessAuth.source.id}.`,
-    )
-    .waitFor();
   const cancel = dialog.getByRole("button", { name: "Cancel" });
   assert.equal(await cancel.evaluate((node) => node.ownerDocument.activeElement === node), true);
+  await dialog
+    .getByText("The Configuration and model credential Secret stay in this Namespace.")
+    .waitFor();
+  const cli = `occ --namespace ${namespace.id}`;
+  const configuration = `${cli} configuration delete ${agent.configurationId}`;
+  const secret = `${cli} secret delete ${agent.harnessAuth.source.id}`;
+  assert.equal(await dialog.getByText(configuration, { exact: true }).isVisible(), false);
+  assert.equal(await dialog.getByText(secret, { exact: true }).isVisible(), false);
+  await dialog.getByText("View separate cleanup commands").press("Enter");
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+  for (const [kind, command] of [
+    ["Configuration", configuration],
+    ["Secret", secret],
+  ]) {
+    const row = dialog.locator(".agent-kept-command").filter({ hasText: command });
+    await row.getByText(command, { exact: true }).waitFor();
+    await row.getByRole("button", { name: `Copy ${kind} command` }).press("Enter");
+    await row
+      .getByRole("status")
+      .filter({ hasText: /^Command copied\.$/ })
+      .waitFor();
+    assert.equal(await page.evaluate(() => globalThis.navigator.clipboard.readText()), command);
+  }
   // Attach the rejection check when the timed wait starts: on a loaded runner the click can
   // outlast the 300 ms window, and a wait that times out with no handler fails the test as an
   // unhandled rejection (finding 1986). This only catches a DELETE sent soon after Cancel; the
@@ -189,7 +207,7 @@ test("Agent delete confirmation sends the real delete API and leaves visible que
     .waitFor();
 });
 
-test("Agent deletion says access ended when the deleter can no longer read the Agent", (t) =>
+test("A deletion status denial closes an open repeat confirmation without sending it", (t) =>
   checkScopedDeletionEnd(t, { moveFocusDuringPoll: false }));
 
 test("A deletion status poll that ends scoped access respects focus moved during the read", (t) =>
@@ -263,14 +281,22 @@ async function checkScopedDeletionEnd(t, { moveFocusDuringPoll }) {
   });
   await page.getByRole("status").getByText("Deletion was requested").waitFor();
 
-  // Finishing the deletion removes the bindings that target the Agent, so the next read is a
-  // real 403 for this member (an administrator would get 404 and return to the list).
+  // An administrator removes the member’s grant while cleanup is still pending. In the dialog
+  // case the member has opened the repeat confirmation, but has not confirmed a second request.
+  const repeatDialog = page.getByRole("dialog", {
+    name: "Request deletion again for Scoped Candidate?",
+  });
+  if (moveFocusDuringPoll) {
+    await page.getByRole("button", { name: "Refresh deletion status" }).focus();
+  } else {
+    await page.getByRole("button", { name: "Request deletion again", exact: true }).click();
+    await repeatDialog.getByRole("button", { name: "Cancel", exact: true }).waitFor();
+  }
   const removed = await fixture.request(
     "DELETE",
     `${policyPath}/access-bindings/${agentBinding.id}`,
   );
   assert.ok([200, 204].includes(removed.status), `binding removal answered ${removed.status}`);
-  await page.getByRole("button", { name: "Refresh deletion status" }).focus();
   const denied = await holdNextStatusResponse(page, `${fixture.origin}${agentPath}`);
   await page.clock.runFor(DELETION_POLL_MS);
   const status = await denied.status;
@@ -282,12 +308,19 @@ async function checkScopedDeletionEnd(t, { moveFocusDuringPoll }) {
   }
   denied.release();
   assert.equal(status, 403);
+  // Wait for the page to handle the denial, even if a stale modal still makes the page inert.
   await page
-    .getByRole("status")
     .getByText(
-      "Deletion was accepted. Your access to this Agent ended with it, so this page cannot follow the cleanup.",
+      "You can no longer read this Agent’s status, so this page cannot tell whether cleanup has finished.",
+      { exact: false },
     )
-    .waitFor();
+    .waitFor({ state: "attached" });
+  assert.equal(await repeatDialog.isVisible(), false, "the stale deletion confirmation must close");
+  assert.equal(
+    agentDeleteRequests(requests, namespace.id, agent.id).length,
+    1,
+    "only the original deletion was requested",
+  );
   assert.equal(await page.getByRole("alert").count(), 0);
   assert.equal(await page.getByRole("button", { name: "Refresh deletion status" }).count(), 0);
   assert.equal(await expectedFocus.evaluate((node) => node.matches(":focus")), true);
@@ -410,6 +443,7 @@ test("Repeat deletion preserves bounded retry ownership feedback and ordinary de
   const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
   assert.equal((await fixture.request("DELETE", path)).status, 202);
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   await page.clock.install();
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id));
   const ownership =
@@ -438,7 +472,9 @@ test("Repeat deletion preserves bounded retry ownership feedback and ordinary de
   };
   await confirm();
   await page.getByRole("alert").getByText(ownership, { exact: true }).waitFor();
-  await expectNoText(page, "Ask an administrator for Agent delete access");
+  await expectNoText(page, "Ask an administrator for Agent delete access", () =>
+    waitForIdleFetches(page),
+  );
   assert.equal(writes, 1);
   await page.clock.fastForward(DELETION_POLL_MS * 2);
   await page.getByRole("alert").getByText(ownership, { exact: true }).waitFor();
@@ -635,7 +671,7 @@ async function checkRepeatDuringRead(t, { endsAccess, readFails = false }) {
     await page
       .getByRole("status")
       .getByText(
-        "Deletion was accepted. Your access to this Agent ended with it, so this page cannot follow the cleanup.",
+        "Deletion was accepted. You can no longer read this Agent’s status, so this page cannot tell whether cleanup has finished.",
       )
       .waitFor();
     assert.equal(
@@ -764,6 +800,7 @@ test("Agent link without a Namespace opens the Agent in the Namespace that holds
   const holder = await fixture.createNamespace("Z link holder", { ready: true });
   const agent = await fixture.createAgent(holder.id, "Linked Agent", nativeValues("link"));
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   const missed = page.waitForResponse(
     (response) =>
       response.url() === `${fixture.origin}/namespaces/${selected.id}/agents/${agent.id}` &&
@@ -778,7 +815,7 @@ test("Agent link without a Namespace opens the Agent in the Namespace that holds
       url.searchParams.get("namespace") === holder.id,
   );
   await page.getByRole("heading", { name: "Linked Agent" }).first().waitFor();
-  await expectNoText(page, "may have been deleted");
+  await expectNoText(page, "may have been deleted", () => waitForIdleFetches(page));
 });
 
 test("Agent link without a Namespace says when no readable Namespace has the Agent", async (t) => {
@@ -812,6 +849,7 @@ test("Agent link without a Namespace offers switching when the lookup is uncerta
   const other = await fixture.createNamespace("Z uncertain other", { ready: true });
   const agentId = `agt_${randomUUID()}`;
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   await page.route(`${fixture.origin}/namespaces/${other.id}/agents/${agentId}`, (route) =>
     route.fulfill({
       status: 503,
@@ -826,7 +864,7 @@ test("Agent link without a Namespace offers switching when the lookup is uncerta
   await login(page, fixture, `/console/agents/${agentId}`);
   await page.getByRole("heading", { name: "Agent not in this Namespace" }).waitFor();
   await page.getByText("not in the A uncertain default Namespace", { exact: false }).waitFor();
-  await expectNoText(page, "may have been deleted");
+  await expectNoText(page, "may have been deleted", () => waitForIdleFetches(page));
   await page.getByRole("button", { name: "Switch Namespace" }).click();
   assert.equal(
     await page
@@ -1376,6 +1414,39 @@ for (const [dmPolicy, groupPolicy, enterpriseOrgInstall] of [
   });
 }
 
+// The Configuration card's Model row reads agents.defaults.model in both shapes the native
+// Configuration accepts: a model reference, or an object that names the primary model.
+test("The Configuration card names the model given as a reference or as a primary model", async (t) => {
+  const fixture = await detailApp(t);
+  const namespace = await fixture.createNamespace("Model summary", { ready: true });
+  const { page } = await newPage(t, fixture);
+  const values = nativeValues("model-summary");
+  const reference = values.agents.defaults.model;
+  assert.equal(typeof reference, "string");
+  const shapes = [
+    ["reference", reference],
+    ["primary model", { primary: reference }],
+  ];
+  for (const [index, [shape, model]] of shapes.entries()) {
+    const agent = await fixture.createAgent(namespace.id, `Model ${shape} Agent`, {
+      ...values,
+      agents: { ...values.agents, defaults: { ...values.agents.defaults, model } },
+    });
+    const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
+    if (index === 0) {
+      await login(page, fixture, url);
+    } else {
+      await page.goto(String(url));
+    }
+    await page.getByRole("heading", { name: "Configuration draft", exact: true }).waitFor();
+    assert.equal(
+      await page.locator('.configuration-summary dt:text-is("Model") + dd').textContent(),
+      reference,
+      `Model row for a ${shape}`,
+    );
+  }
+});
+
 test("Agent detail refocus checks access once without reloading an unfinished revision edit", async (t) => {
   const fixture = await detailApp(t);
   const namespace = await fixture.createNamespace("Revision refocus", { ready: true });
@@ -1518,6 +1589,7 @@ for (const kind of ["agent", "configuration", "namespace"]) {
     });
     const agent = await fixture.createAgent(namespace.id, "Revoked revision Agent");
     const { page } = await newPage(t, fixture);
+    await trackSettledFetches(page);
     const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
     await login(page, fixture, url);
     await page.getByRole("heading", { name: "Configuration draft", exact: true }).waitFor();
@@ -1539,7 +1611,9 @@ for (const kind of ["agent", "configuration", "namespace"]) {
         exact: true,
       })
       .waitFor();
-    await expectNoText(page, /Configuration draft|Create new version|Revoked revision Agent/);
+    await expectNoText(page, /Configuration draft|Create new version|Revoked revision Agent/, () =>
+      waitForIdleFetches(page),
+    );
   });
 }
 
@@ -1549,6 +1623,7 @@ test("Agent detail refocus clears a revision after session expiry", async (t) =>
   const namespace = await fixture.createNamespace("Revision session expired", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Expired revision Agent");
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
   await login(page, fixture, url);
   await page.getByRole("heading", { name: "Configuration draft", exact: true }).waitFor();
@@ -1557,7 +1632,9 @@ test("Agent detail refocus clears a revision after session expiry", async (t) =>
   await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
   await page.getByText("Your session has expired").waitFor();
   await page.getByRole("button", { name: "Sign in", exact: true }).waitFor();
-  await expectNoText(page, /Configuration draft|Create new version|Expired revision Agent/);
+  await expectNoText(page, /Configuration draft|Create new version|Expired revision Agent/, () =>
+    waitForIdleFetches(page),
+  );
 });
 
 // Agent detail rechecks in place, so a mounted form must not suppress the refocus check.
@@ -1577,6 +1654,7 @@ for (const variant of ["credentials", "workspace", "sharing"]) {
     }
     const tab = variant === "sharing" ? "access" : variant;
     const { page } = await newPage(t, fixture);
+    await trackSettledFetches(page);
     const url = detailUrl(fixture, namespace.id, agent.id, revision, tab);
     await login(page, fixture, url);
     await page.getByRole("heading", { name: `Refocus ${variant} Agent` }).waitFor();
@@ -1590,7 +1668,9 @@ for (const variant of ["credentials", "workspace", "sharing"]) {
 
     await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
     await page.getByText("Your session has expired").waitFor();
-    await expectNoText(page, new RegExp(`Refocus ${variant} Agent`));
+    await expectNoText(page, new RegExp(`Refocus ${variant} Agent`), () =>
+      waitForIdleFetches(page),
+    );
   });
 }
 
@@ -2306,6 +2386,20 @@ test("a read-only viewer is denied saved settings and native admin once per tab,
   await waitForSettledFetches(page, configurationPath, 1);
   assert.equal(reads(configurationPath), 2);
   assert.equal(denials("openclaw.configurations.read"), 2);
+
+  // The tab keeps denials for one session owner. Signing in again after the session expired
+  // starts another session, even for the same person, so its first view asks again.
+  expireSessions(fixture);
+  await page.reload();
+  await page.getByText("Your session has expired").waitFor();
+  await login(page, fixture, detail, viewer.credentials);
+  await unavailable.waitFor();
+  await waitForSettledFetches(page, configurationPath, 1);
+  await waitForSettledFetches(page, nativeAdminPath, 1);
+  assert.equal(reads(configurationPath), 3);
+  assert.equal(reads(nativeAdminPath), 2);
+  assert.equal(denials("openclaw.configurations.read"), 3);
+  assert.equal(denials("openclaw.agents.native_admin.read"), 2);
 });
 
 test("a failed native admin status read keeps the card, its error and Refresh access", async (t) => {
@@ -2753,8 +2847,7 @@ async function waitForWorkspaceEditors(page, names) {
 }
 
 test("live workspace drafts survive navigation, stay Agent-scoped, and clear on explicit reload or save", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "console-workspace-drafts-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await temporaryDirectory(t, "console-workspace-drafts-");
   // Exercise the real Console, Fastify, and IAM paths with disk-backed file transport.
   // This checks UI navigation and file requests, not a live Agent gateway.
   const fixture = await createConsoleAppFixture(t, {
@@ -2885,6 +2978,7 @@ test("a deployment finishing on the poll keeps a typing reader's Workspace edito
   const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const second = await fixture.deployAgent(namespace.id, agent.id);
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   const requests = apiRequests(page, fixture.origin);
   let status = "running";
   await page.route(deploymentRecordUrl(fixture, namespace.id, agent.id, second.id), (route) =>
@@ -2978,7 +3072,9 @@ test("a deployment finishing on the poll keeps a typing reader's Workspace edito
   const answered = page.waitForResponse((response) => response.url().endsWith(userPath));
   userReread.release();
   await answered;
-  await expectNoText(page, "USER.md reloaded with its current contents.");
+  await expectNoText(page, "USER.md reloaded with its current contents.", () =>
+    waitForIdleFetches(page),
+  );
   assert.equal(await user.inputValue(), "# Typed during the reread\n");
   assert.equal(
     requests.filter((r) => r.method === "PUT" && r.path.includes("/workspace/files/")).length,
@@ -3434,8 +3530,7 @@ test("an Agent read answered after deletion was requested leaves the Workspace f
 });
 
 test("explicit missing-file readback settles an uncertain workspace create without replaying it", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "console-workspace-missing-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await temporaryDirectory(t, "console-workspace-missing-");
   let unavailable = false;
   const fixture = await createConsoleAppFixture(t, {
     publicOrigin: true,

@@ -12,6 +12,7 @@ import {
 } from "../../packages/occ/src/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
+import { jsonLineDestination } from "../helpers/json-lines.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 
 const GENERIC = "A required platform dependency is unavailable.";
@@ -25,17 +26,7 @@ function capturedLogger() {
   const logger = createOccLogger({
     component: "occ-api",
     level: "info",
-    destination: {
-      write(chunk) {
-        lines.push(
-          ...String(chunk)
-            .split("\n")
-            .filter(Boolean)
-            .map((line) => JSON.parse(line)),
-        );
-        return true;
-      },
-    },
+    destination: jsonLineDestination(lines),
   });
   return { lines, logger };
 }

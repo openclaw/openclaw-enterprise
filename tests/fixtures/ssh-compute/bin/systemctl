@@ -25,8 +25,21 @@ case "$operation" in
 esac
 pidfile="$OCC_SSH_FIXTURE_STATE/$unit.pid"
 enabled="$OCC_SSH_FIXTURE_STATE/$unit.enabled"
+# The unit directory is outside systemd's search path, so a unit loads only through the
+# symlink that link or enable (given the unit file's path) creates, and disable removes every
+# such link. A running unit stays loaded until it stops.
+linked="$OCC_SSH_FIXTURE_STATE/$unit.linked"
 active() {
   [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null
+}
+loaded() {
+  [ -f "$linked" ] || active
+}
+# systemctl's refusal (exit 5) for a unit it cannot load: stop says "not loaded", start and
+# restart "not found". enable by name refuses on its own (exit 1).
+unloadable() {
+  printf 'Failed to %s %s: Unit %s %s.\n' "$operation" "$unit" "$unit" "$1" >&2
+  exit 5
 }
 stop() {
   if active; then kill "$(cat "$pidfile")" 2>/dev/null || :; fi
@@ -35,14 +48,25 @@ stop() {
 case "$operation" in
   --version) printf '%s\n' 'systemd SSH conformance fixture' ;;
   daemon-reload) : ;;
-  link) : ;;
-  enable) : > "$enabled" ;;
-  disable) rm -f "$enabled" ;;
+  link) : > "$linked" ;;
+  enable)
+    if [ "$unit" != "${1:-}" ]; then : > "$linked"; fi
+    if ! loaded; then
+      printf 'Failed to enable unit: Unit file %s does not exist.\n' "$unit" >&2
+      exit 1
+    fi
+    : > "$enabled"
+    ;;
+  disable) rm -f "$enabled" "$linked" ;;
   is-enabled) [ -f "$enabled" ] ;;
-  stop) stop ;;
+  stop)
+    loaded || unloadable 'not loaded'
+    stop
+    ;;
   is-active) active ;;
   show) if active; then printf '%s\n' active; else printf '%s\n' inactive; fi ;;
   restart|start)
+    loaded || unloadable 'not found'
     if [ "$operation" = start ] && active; then exit 0; fi
     stop
     # The unit process only has to stay alive: the conformance test owns the gateway port

@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { KubernetesConfigurationDriver } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
+import { ConfigurationHarnessError } from "../../packages/occ/src/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -747,12 +748,12 @@ test("Without a provisioning Sandbox Driver, Create Agent withholds Dedicated Op
   assert.equal(await mode.inputValue(), "embedded");
   assert.equal(
     await page.locator("#execution-mode-hint").textContent(),
-    "Codex uses Dedicated execution. Dedicated OpenClaw is unavailable because this installation has no Sandbox Driver that can provision it, or its OpenClaw runtime lacks native worker support. Embedded OpenClaw works only when the installation selects no Sandbox Driver. Slack requires Codex.",
+    "Codex uses Dedicated execution. Dedicated OpenClaw is unavailable because this installation selects no Sandbox Driver. Slack requires Codex.",
   );
   // The harness hint states this Agent's outcome; Runtime details keep the conditions (finding 1904).
   assert.equal(
     await page.locator("#agent-harness-hint").textContent(),
-    "This Agent will run OpenClaw with Embedded execution. Choose Codex for Dedicated execution.",
+    "This Agent will run OpenClaw with Embedded execution. This installation selects no Sandbox Driver, so choose Codex for Dedicated execution.",
   );
   // Anthropic hides Codex, so the hint names only why this Agent runs Embedded.
   await page.getByLabel("Provider", { exact: true }).selectOption("anthropic");
@@ -769,8 +770,8 @@ test("Without a provisioning Sandbox Driver, Create Agent withholds Dedicated Op
     "This Agent will run Codex with Dedicated execution.",
   );
 
-  // A saved Dedicated OpenClaw Preset keeps its mode and is blocked; the alert names Codex first,
-  // Embedded only with its condition, and the administrator's fix.
+  // A saved Dedicated OpenClaw Preset keeps its mode and is blocked. The Installation lists
+  // Embedded, so it selects no Sandbox Driver, and the alert says exactly that (finding 2384).
   const secret = await fixture.createSecret(namespace.id, "OpenAI model key", "no-sandbox-key");
   const presetId = await savePreset(
     fixture,
@@ -790,7 +791,7 @@ test("Without a provisioning Sandbox Driver, Create Agent withholds Dedicated Op
   await alert.waitFor();
   assert.equal(
     await alert.textContent(),
-    "Dedicated OpenClaw is unavailable: this installation has no Sandbox Driver that can provision it, or its OpenClaw runtime lacks native worker support. Choose the Codex harness, or Embedded execution if the installation selects no Sandbox Driver. Otherwise an administrator must select a Sandbox Driver that can provision dedicated OpenClaw, or a runtime with native worker support.",
+    "Dedicated OpenClaw is unavailable: this installation selects no Sandbox Driver. Choose the Codex harness or Embedded execution, or ask an administrator to select a Sandbox Driver that can provision dedicated OpenClaw.",
   );
   assert.equal(await presetPage.getByLabel("Execution mode").inputValue(), "dedicated");
   assert.match(
@@ -946,6 +947,98 @@ test("With a selected Sandbox Driver that admits no OpenClaw mode, Create Agent 
   assert.notEqual((await createStatus.innerText()).trim(), "");
 });
 
+// A Sandbox Driver that provisions dedicated OpenClaw can still refuse it on its settings alone,
+// as OpenShell does without kubernetes.userNamespaces: false. Create Agent shows admission's own
+// refusal, which names the setting, instead of asking for another Sandbox Driver (finding 2373).
+test("When the Sandbox Driver's settings refuse Dedicated OpenClaw, Create Agent names the setting", async (t) => {
+  const settingRefusal =
+    "Dedicated OpenClaw needs example.setting: false in the Sandbox Driver configuration. Select Codex, or ask an operator to set it.";
+  const sandboxDriver = {
+    ...nativeSandboxDriver(),
+    configureAgent(values, harness) {
+      if (harness.id === "openclaw") {
+        throw new ConfigurationHarnessError(settingRefusal);
+      }
+      return values;
+    },
+  };
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Setting refusal", {
+    filesystemConfiguration: true,
+    sandboxDriver,
+  });
+  const installation = await fixture.request("GET", "/installation");
+  assert.deepEqual(installation.data.capabilities?.openclaw, {
+    executionModes: [],
+    settingRefusals: { dedicated: settingRefusal },
+  });
+  const { page, writesSinceFill } = await fillOpenClawDraft(t, fixture, namespace, "Setting");
+  const alert = page.getByRole("alert").filter({ hasText: /^OpenClaw is unavailable / });
+  await alert.waitFor();
+  assert.equal(
+    await alert.textContent(),
+    `OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and its settings refuse Dedicated OpenClaw. ${settingRefusal}`,
+  );
+  assert.equal(
+    await page.locator("#agent-harness-hint").textContent(),
+    "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and its settings refuse Dedicated OpenClaw.",
+  );
+  assert.equal(
+    await page.getByRole("button", { name: "Create Agent", exact: true }).isDisabled(),
+    true,
+  );
+  // Anthropic hides Codex, so the refusal keeps the setting and names the provider switch instead
+  // of "Select Codex" (finding 2392).
+  await page.getByLabel("Provider", { exact: true }).selectOption("anthropic");
+  await alert
+    .filter({ hasText: /Choose OpenAI with the Codex harness, or ask an operator/ })
+    .waitFor();
+  assert.equal(
+    await alert.textContent(),
+    "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and its settings refuse Dedicated OpenClaw. Dedicated OpenClaw needs example.setting: false in the Sandbox Driver configuration. Choose OpenAI with the Codex harness, or ask an operator to change that setting.",
+  );
+  assert.deepEqual(writesSinceFill(), []);
+
+  // A Preset bound to a saved Anthropic Secret locks the provider too, so the refusal offers
+  // only the operator.
+  const secret = await fixture.createSecret(namespace.id, "Anthropic model key", "anthropic-key");
+  const primary = "anthropic/claude-bound-model";
+  const values = nativeValues("bound-anthropic");
+  values.agents.defaults.model = primary;
+  values.agents.defaults.models = { [primary]: { agentRuntime: { id: "openclaw" } } };
+  values.models = {
+    ...values.models,
+    providers: {
+      anthropic: {
+        baseUrl: "https://api.anthropic.com",
+        api: "anthropic-messages",
+        models: [{ id: "claude-bound-model", name: "claude-bound-model" }],
+      },
+    },
+  };
+  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: {
+      name: "Bound Anthropic credential",
+      template: {
+        agent: {
+          name: "Bound Anthropic Agent",
+          executionMode: "embedded",
+          harnessAuth: { method: "api_key", source: secret.ref },
+        },
+        configuration: { values },
+      },
+    },
+  });
+  assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  const bound = await openPreset(t, fixture, namespace, preset.data.id);
+  const boundAlert = bound.getByRole("alert").filter({ hasText: /^OpenClaw is unavailable / });
+  await boundAlert.waitFor();
+  assert.equal(await bound.getByLabel("Provider", { exact: true }).isDisabled(), true);
+  assert.equal(
+    await boundAlert.textContent(),
+    "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and its settings refuse Dedicated OpenClaw. Dedicated OpenClaw needs example.setting: false in the Sandbox Driver configuration. Ask an operator to change that setting.",
+  );
+});
+
 const SANDBOX_DRIVER_OUTAGE =
   "Agents cannot be created right now: this installation's Sandbox Driver is unavailable. Reload this page to check again, or ask an administrator if it persists.";
 
@@ -1064,7 +1157,7 @@ test("Create Agent's harness hint holds while Create is pending and drops the Co
   });
   const agentsPath = `${fixture.origin}/namespaces/${namespace.id}/agents`;
   const choosable =
-    "This Agent will run OpenClaw with Embedded execution. Choose Codex for Dedicated execution.";
+    "This Agent will run OpenClaw with Embedded execution. This installation selects no Sandbox Driver, so choose Codex for Dedicated execution.";
   const locked = "This Agent will run OpenClaw with Embedded execution.";
 
   await t.test("pending, then saved", async (t) => {
@@ -1257,6 +1350,18 @@ test("Operator-managed Preset credentials name the Preset when the Installation 
     [
       { executionModes: [] },
       "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and it cannot run Dedicated OpenClaw. This Preset's operator-managed credentials require OpenClaw. Ask an administrator, or start without a Preset.",
+    ],
+    // A setting refusal names the setting as the API words it (finding 2373), but not its "Select
+    // Codex" advice: the Preset locks the harness to OpenClaw (finding 2392).
+    [
+      {
+        executionModes: [],
+        settingRefusals: {
+          dedicated:
+            "Dedicated OpenClaw needs example.setting: false in the Sandbox Driver configuration. Select Codex, or ask an operator to set it.",
+        },
+      },
+      "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and its settings refuse Dedicated OpenClaw. Dedicated OpenClaw needs example.setting: false in the Sandbox Driver configuration. This Preset's operator-managed credentials require OpenClaw. Ask an administrator, or start without a Preset.",
     ],
     [
       { executionModes: ["dedicated"] },

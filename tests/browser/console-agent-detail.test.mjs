@@ -38,6 +38,7 @@ import {
   waitForInputValue,
   waitForSettledFetches,
   statusTone,
+  isMaskedSecretValue,
 } from "./console-agents-browser-helpers.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import {
@@ -133,6 +134,8 @@ test("Agent detail separates the current version, viewed version, and latest dep
   await overview.nth(0).getByText("v1", { exact: true }).waitFor();
   await overview.nth(1).getByText("v2 · Queued").waitFor();
   await overview.nth(2).getByText("Not verified").waitFor();
+  // A running version's unverified serving says why (finding 2367).
+  await overview.nth(2).getByText("OCC sends no test request.", { exact: true }).waitFor();
   const activity = await expectDeploymentOutcome(page, "Queued");
   await activity.getByText("Most recent visible deployment · v2").waitFor();
   await activity.getByText("Waiting for a worker claim.").waitFor();
@@ -1015,6 +1018,7 @@ test("Agent detail preserves admitted revision history while draft edits change 
   );
   assert.equal(draft.generation, 3);
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   const requests = apiRequests(page, fixture.origin);
 
   await login(
@@ -1029,13 +1033,17 @@ test("Agent detail preserves admitted revision history while draft edits change 
   await page.getByLabel("Available versions").selectOption(first.revision.id);
   await revealNativeConfiguration(page, "View admitted native configuration");
   await page.getByText('"marker": "rev-one"').waitFor();
-  await expectNoText(page, /"marker": "rev-two"|"marker": "draft-current"/);
+  await expectNoText(page, /"marker": "rev-two"|"marker": "draft-current"/, () =>
+    waitForIdleFetches(page),
+  );
 
   await page.getByRole("button", { name: "View version v2" }).click();
   await page.waitForURL((url) => url.searchParams.get("revision") === second.revision.id);
   await revealNativeConfiguration(page, "View admitted native configuration");
   await page.getByText('"marker": "rev-two"').waitFor();
-  await expectNoText(page, /"marker": "rev-one"|"marker": "draft-current"/);
+  await expectNoText(page, /"marker": "rev-one"|"marker": "draft-current"/, () =>
+    waitForIdleFetches(page),
+  );
   assertRevisionUrl(page, second.revision.id);
 
   await page.getByRole("button", { name: "View version v1" }).click();
@@ -1048,7 +1056,9 @@ test("Agent detail preserves admitted revision history while draft edits change 
   await page.waitForURL((url) => url.searchParams.get("revision") === "draft");
   await revealNativeConfiguration(page, "View native Configuration");
   await page.getByText('"marker": "draft-current"').waitFor();
-  await expectNoText(page, /"marker": "rev-one"|"marker": "rev-two"/);
+  await expectNoText(page, /"marker": "rev-one"|"marker": "rev-two"/, () =>
+    waitForIdleFetches(page),
+  );
   assertRevisionUrl(page, "draft");
 
   await page.getByRole("button", { name: "Edit Configuration" }).click();
@@ -1147,7 +1157,9 @@ test("Agent detail preserves admitted revision history while draft edits change 
   await page.getByLabel("Available versions").selectOption(first.revision.id);
   await revealNativeConfiguration(page, "View admitted native configuration");
   await page.getByText('"marker": "rev-one"').waitFor();
-  await expectNoText(page, /"marker": "draft-edited"|"marker": "stale-server"/);
+  await expectNoText(page, /"marker": "draft-edited"|"marker": "stale-server"/, () =>
+    waitForIdleFetches(page),
+  );
   await page.getByRole("button", { name: "Edit current Configuration" }).click();
   await page.waitForURL((url) => url.searchParams.get("revision") === "draft");
   // Edit current Configuration opens the draft's editor on the saved document (finding 2061).
@@ -2360,7 +2372,7 @@ test("Agent credential Secret picker searches, validates, and preserves duplicat
     await dialog.getByLabel("Name", { exact: true }).inputValue(),
     "Combobox Agent harness authentication",
   );
-  assert.equal(await dialog.getByLabel("Value", { exact: true }).getAttribute("type"), "password");
+  assert.equal(await isMaskedSecretValue(dialog.getByLabel("Value", { exact: true })), true);
   await dialog.getByLabel("Name", { exact: true }).fill(duplicateNameSecret.name);
   await dialog.getByLabel("Value", { exact: true }).fill("synthetic-duplicate-value");
   const duplicate = page.waitForResponse(
@@ -2689,6 +2701,97 @@ test("Agent credentials name the administrator step for a member's harness Secre
       .filter(({ subjectId }) => subjectId === ungranted.servicePrincipalId)
       .map(({ resourceKind, resourceId }) => [resourceKind, resourceId]),
     [["secret", replacementSecret.id]],
+  );
+});
+
+// The IAM read can finish after the administrator has left Credentials. Deploy already waits,
+// and the parked form must still explain Save authentication source when they come back.
+test("a harness grant found while Credentials is parked is shown on return", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Parked harness grant", { ready: true });
+  const secret = await fixture.createSecret(namespace.id, "Parked harness Secret", "hidden");
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Parked Grant Agent",
+    nativeValues("parked-grant"),
+  );
+  await fixture.updateAgent(namespace.id, agent.id, {
+    configurationId: agent.configurationId,
+    harnessAuth: { method: "api_key", source: secret.ref },
+  });
+  const { page } = await newPage(t, fixture);
+  const held = await holdRequests(t, page, `**/namespaces/${namespace.id}/iam/**`);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
+  await page.getByRole("heading", { name: "Parked Grant Agent" }).waitFor();
+  await held.requested;
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await page.getByRole("button", { name: "Edit Configuration" }).waitFor();
+  held.release();
+  await page
+    .getByText("Confirm authentication and Secret access in Credentials before deploying.")
+    .waitFor();
+  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
+  await page.getByRole("tab", { name: "Credentials", exact: true }).click();
+  await page.getByText(HARNESS_GRANT_MISSING, { exact: true }).waitFor();
+  assert.equal(await page.getByLabel("Authentication source").isDisabled(), false);
+});
+
+// The missing-grant warning names the Secret Save would grant. Selecting another Secret
+// clears it, and selecting the saved Secret again restores it (review of PR 3476).
+test("a missing harness grant warning follows the selected Secret", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Selected harness grant", { ready: true });
+  const savedSecret = await fixture.createSecret(namespace.id, "Saved harness Secret", "hidden-a");
+  const otherSecret = await fixture.createSecret(namespace.id, "Other harness Secret", "hidden-b");
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Selected Grant Agent",
+    nativeValues("selected-grant"),
+  );
+  await fixture.updateAgent(namespace.id, agent.id, {
+    configurationId: agent.configurationId,
+    harnessAuth: { method: "api_key", source: savedSecret.ref },
+  });
+  const { page } = await newPage(t, fixture);
+  const held = await holdRequests(t, page, `**/namespaces/${namespace.id}/iam/**`);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
+  await page.getByRole("heading", { name: "Selected Grant Agent" }).waitFor();
+  await held.requested;
+  await waitForInputValue(
+    page.getByLabel("API key Secret", { exact: true }),
+    secretOptionLabel(savedSecret),
+  );
+  await selectSecret(page, "API key Secret", otherSecret);
+  held.release();
+  await page
+    .getByText("Confirm authentication and Secret access in Credentials before deploying.")
+    .waitFor();
+  await expectNoText(page, HARNESS_GRANT_MISSING, () =>
+    page
+      .getByText("Confirm authentication and Secret access in Credentials before deploying.")
+      .waitFor(),
+  );
+  assert.equal(
+    await page.getByLabel("API key Secret", { exact: true }).inputValue(),
+    secretOptionLabel(otherSecret),
+  );
+
+  await selectSecret(page, "API key Secret", savedSecret);
+  await page.getByText(HARNESS_GRANT_MISSING, { exact: true }).waitFor();
+  assert.equal(
+    await page.getByLabel("API key Secret", { exact: true }).inputValue(),
+    secretOptionLabel(savedSecret),
+  );
+
+  await selectSecret(page, "API key Secret", otherSecret);
+  await expectNoText(page, HARNESS_GRANT_MISSING, () =>
+    page.getByLabel("API key Secret", { exact: true }).inputValue(),
+  );
+  assert.equal(
+    await page.getByLabel("API key Secret", { exact: true }).inputValue(),
+    secretOptionLabel(otherSecret),
   );
 });
 

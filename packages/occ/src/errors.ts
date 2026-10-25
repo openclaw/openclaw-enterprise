@@ -308,6 +308,21 @@ export class AgentCredentialSourceBindingError extends ScopeViolationError {
 }
 
 /**
+ * An Agent's repository bindings combine Installation-wide access with another binding.
+ * Raised only after the Repository Driver approved every requested binding, and the rule
+ * depends only on the request, so HTTP reports it as an invalid request instead of hiding
+ * it as a scope miss. Agent save and deploy admission share it (finding 2316).
+ */
+export class RepositoryBindingSelectionError extends ScopeViolationError {
+  constructor() {
+    super(
+      "Installation-wide repository access (profile github-installation) must be the Agent's only repository selection. Remove the other entries from repositoryBindings or repositoryAccess.repositories, or select each repository with its own profile instead.",
+    );
+    this.name = "RepositoryBindingSelectionError";
+  }
+}
+
+/**
  * A request names an invalid Secret binding: Agent provisioning or a Configuration write
  * with a reserved or invalid environment destination or an unsupported binding shape
  * (including missing, runtime or credential-source Harness authentication in Agent
@@ -567,12 +582,47 @@ export class ProtectedExecutionNetworkPolicyError extends ResourceStateConflictE
 export class RepositoryGitSenderUnqualifiedError extends ResourceStateConflictError {
   static readonly code = "REPOSITORY_GIT_SENDER_UNQUALIFIED";
   static readonly description =
-    "The selected Credential Proxy cannot enforce the Agent's git-write repository binding: no OpenShell release is qualified for it. Use native prepared Git or a qualified installed sender, or remove the binding, then deploy again.";
+    "The selected Credential Proxy cannot enforce the Agent's git-write repository binding: no OpenShell release is qualified for it. Remove the binding, select a qualified installed sender, or use native prepared Git without a Sandbox, then deploy again.";
   readonly code = RepositoryGitSenderUnqualifiedError.code;
 
   constructor() {
     super(RepositoryGitSenderUnqualifiedError.description);
     this.name = "RepositoryGitSenderUnqualifiedError";
+  }
+}
+
+/**
+ * Finding 2360: with repository.openShell, the bundled OpenShell Credential Proxy's only
+ * registration is the request-phase Git service, which never advertises the execution profile.
+ * It delivers repository Git, so a Proxy-owned credential source (static, prepared or
+ * credential-free metadata) or an Agent without a repository binding can never be admitted.
+ * Source creation answered a generic 503 for this permanent configuration and such a deploy a
+ * 503 or a bare 404; both now name the Installation settings.
+ */
+export class CredentialProxyRepositoryOnlyError extends ResourceStateConflictError {
+  static readonly description =
+    "With repository.openShell the Credential Proxy serves only repository Git, not a Proxy-owned credential source or an Agent without a repository binding. An admin can drop repository.openShell and drivers.credential_proxy, losing protected Git.";
+
+  constructor() {
+    super(CredentialProxyRepositoryOnlyError.description);
+    this.name = "CredentialProxyRepositoryOnlyError";
+  }
+}
+
+/**
+ * Finding 2360: a protected revision admits only credential sources the Proxy admitted
+ * (created or adopted while it is selected), and beside repository Git only the Agent's ready
+ * Gateway Harness source. Deploy refused any other
+ * binding, such as a Gateway source registered before the Proxy was selected, as a bare 404;
+ * the caller already holds deploy on the Agent, whose bindings it can read.
+ */
+export class CredentialSourceUnprotectedError extends ResourceStateConflictError {
+  static readonly description =
+    "With drivers.credential_proxy selected, a revision can use only credential sources created or adopted under the Proxy, and beside repository Git its ready Gateway Harness source. Replace the other bindings, then deploy again.";
+
+  constructor() {
+    super(CredentialSourceUnprotectedError.description);
+    this.name = "CredentialSourceUnprotectedError";
   }
 }
 
@@ -589,7 +639,7 @@ export class RepositoryGitSenderUnqualifiedError extends ResourceStateConflictEr
 export class RepositoryGitProfileUnsupportedError extends ResourceStateConflictError {
   static readonly code = "REPOSITORY_GIT_PROFILE_UNSUPPORTED";
   static readonly description =
-    "A Credential Proxy delivers repository Git only for one binding with the git-write or github-installation profile, so this Agent's repository access can never start. Use one such binding or native prepared Git, or remove the bindings, then deploy again.";
+    "A Credential Proxy delivers repository Git only for one git-write or github-installation binding, so this Agent's repository access cannot start. Keep one such binding, remove them, or use native prepared Git without a Sandbox or Proxy, then deploy again.";
   readonly code = RepositoryGitProfileUnsupportedError.code;
 
   constructor() {
@@ -1226,6 +1276,23 @@ export class CredentialSourceTypeNotOfferedError extends ResourceStateConflictEr
       "The selected Credential Gateway does not offer this credential source type. An administrator must enable it, for example toolBinaries for OpenShell bearer-token; see https://docs-enterprise.openclaw.org/reference/drivers/openshell-credential-gateway/",
     );
     this.name = "CredentialSourceTypeNotOfferedError";
+  }
+}
+
+/**
+ * Finding 2362: the Installation selects no repository credential Driver (it has no
+ * `repository` settings), so an Agent cannot bind repositories. Save answered a generic 503
+ * for this permanent configuration state; it now names the setting, as
+ * CredentialSourceTypeNotOfferedError does for sources. An Installation property, raised only
+ * after the caller's Agent grant.
+ */
+export class RepositoryDriverNotConfiguredError extends ResourceStateConflictError {
+  static readonly description =
+    "This Installation has no repository settings, so no repository credential Driver is selected and an Agent cannot bind repositories. Remove the repository bindings, or ask an administrator to configure repository in the Installation.";
+
+  constructor() {
+    super(RepositoryDriverNotConfiguredError.description);
+    this.name = "RepositoryDriverNotConfiguredError";
   }
 }
 

@@ -128,7 +128,7 @@ runs:
     - name: Check Go CLI
       if: inputs.lane == 'checks-baseline-1'
       shell: bash
-      run: pnpm cli:check && pnpm cli:test
+      run: pnpm cli:check && node scripts/ci/go-test.mjs
     - name: Typecheck and build workspace output
       # This one compiler run builds the workspace (some part 2 tests read
       # apps/controller/dist) and checks TypeScript tests without emitting them.

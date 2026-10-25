@@ -1,16 +1,14 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { once } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:https";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { Duplex } from "node:stream";
 import test from "node:test";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { getCACertificates, setDefaultCACertificates } from "node:tls";
 import { proxyNativeAdminWebSocket } from "../../apps/controller/src/gateway/native-admin-proxy.ts";
 import { selfSigned } from "../helpers/certificates.mjs";
+import { listen } from "../helpers/listen.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 // Drives proxyNativeAdminWebSocket in this process against a loopback HTTPS gateway, with a
 // browser socket whose writes complete only when the test says so, as writes do behind a full
@@ -33,35 +31,23 @@ function bound(promise, what, ms = WAIT_MS) {
 
 // A gateway that answers the upgrade with 101, sends `reply` and closes its side.
 async function startGateway(t, reply) {
-  const directory = await mkdtemp(join(tmpdir(), "openclaw-native-admin-relay-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "openclaw-native-admin-relay-");
   const { key, cert } = await selfSigned(directory);
   const previous = getCACertificates("default");
   setDefaultCACertificates([...previous, cert]);
   t.after(() => setDefaultCACertificates(previous));
 
-  const sockets = new Set();
   const server = createServer({ key, cert }, (_request, response) => {
     response.writeHead(404).end();
   });
   server.on("upgrade", (_request, socket) => {
-    sockets.add(socket);
     socket.on("error", () => {});
-    socket.once("close", () => sockets.delete(socket));
     socket.write(
       "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n",
     );
     socket.end(reply);
   });
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  t.after(() => {
-    for (const socket of sockets) {
-      socket.destroy();
-    }
-    server.close();
-  });
-  return server.address().port;
+  return listen(t, server);
 }
 
 // A browser socket whose writes complete only when the test releases them, relayed to a gateway

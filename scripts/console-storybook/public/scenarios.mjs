@@ -23,6 +23,9 @@ const runtimeLogsPage = {
 };
 const refuseLogRead = { suffix: "/runtime/logs", status: 403, code: "FORBIDDEN" };
 const form = [click("Start with default Preset")];
+// The OpenShell Sandbox Driver's refusal of Dedicated OpenClaw on its settings alone.
+const openShellUserNamespacesRefusal =
+  "Dedicated OpenClaw needs kubernetes.userNamespaces: false in the OpenShell Sandbox Driver configuration. Select Codex, or ask an operator to set it.";
 const oauthForm = [...form, { selector: "#agent-auth-method", value: "credential_source" }];
 const startOAuthLogin = [...oauthForm, click("Sign in with OAuth")];
 const reservedConfigurationWrite = {
@@ -294,6 +297,12 @@ pluginApproverOverrides["codex-plugin:calendar@openai-curated-remote"].approvers
 pluginApproverOverrides["codex-plugin:calendar@openai-curated-remote"].tools[
   "app_calendar/create_event"
 ].approvers = [{ channel: "slack", id: "team:TDEMO123:user:UDEMO124" }];
+const pluginApproverNoneHints = JSON.parse(pluginSelections);
+pluginApproverNoneHints["codex-plugin:calendar@openai-curated-remote"].approvers = [];
+const pluginApproverPreservedHints = JSON.parse(pluginSelections);
+pluginApproverPreservedHints["codex-plugin:calendar@openai-curated-remote"].approvers = [
+  { channel: "teams", id: "person-1" },
+];
 const pluginPreviewGap =
   "Catalog entries, local placeholder logos, and Driver capabilities are passed directly to the production component as Storybook fixtures. These previews do not verify PAT access, plugin availability, or runtime policy enforcement.";
 const pluginDiscovery = {
@@ -429,7 +438,13 @@ export const scenarios = {
     name: "Mobile",
     path: "/console/secrets",
     mobile: true,
-    description: "The Secret list and dialogs at phone width. Simulated UI proof.",
+    actions: [{ selector: "#secret-search", value: "sec_demo_model" }],
+    description:
+      "Compare the same 390 × 844 page with one search result, then with a list that scrolls.",
+    steps: [
+      "Open the one Secret, then Replace value. The top bar, dimmed page and sheet reach the right edge, with no empty strip. Press Escape without entering a value.",
+      "Clear Search Secrets, scroll to the last Secret and open it. The sheet reaches the available edge: beside a classic scrollbar, or under an overlay scrollbar. Escape returns focus to that Secret.",
+    ],
   },
   secretsSearch: {
     group: "Pages/Secrets",
@@ -1118,8 +1133,9 @@ export const scenarios = {
     deployed: true,
     actions: [{ selector: '[aria-label="Delete Research assistant"]', click: true }],
     description:
-      "The row's Delete icon opens the permanent-deletion confirmation, including the commands that remove the kept Configuration and model Secret.",
+      "The confirmation says what deletion removes and what stays in the Namespace. Separate cleanup commands are available on request.",
     steps: [
+      "Open View separate cleanup commands. Copying a command leaves the confirmation open.",
       "Select Permanently delete Agent. The row shows Deleting and both icons are disabled.",
       "Select Refresh: the row still shows Deleting, because the list keeps an Agent until its cleanup finishes.",
     ],
@@ -1198,6 +1214,14 @@ export const scenarios = {
     name: "Namespace unavailable",
     path: "/console/agents?namespace=ns_missing",
     description: "A stale Namespace link asks the reader to switch scope.",
+  },
+  namespaceMissingNoneReadable: {
+    group: "Pages/Agents",
+    name: "Namespace unavailable, none readable",
+    emptyNamespaces: true,
+    path: "/console/agents?namespace=ns_missing",
+    description:
+      "A stale Namespace link for a reader with no readable Namespace points at the header's Refresh, with no Switch Namespace button.",
   },
   agentsCreateRestricted: {
     group: "Pages/Agents",
@@ -2459,6 +2483,47 @@ export const scenarios = {
     description:
       "Create Secret on a Namespace that is not ready: the refusal shows in the dialog and takes focus there, not on the page behind it.",
   },
+  createSecretFieldsRefused: {
+    group: "Pages/Create Agent",
+    name: "Create Secret fields the API would refuse",
+    path: create,
+    actions: [
+      ...form,
+      { selector: "#agent-name", value: "Research assistant" },
+      { selector: "#provider-credential-secret", value: "__openclaw_create_secret__" },
+      { selector: "#create-provider-credential-secret-name", value: "model\tkey" },
+      { selector: "#create-provider-credential-secret-value", value: "to\u0000ken" },
+      click("Create Secret"),
+    ],
+    description:
+      "Create Secret with a tab in the name and a NUL in the value: each field names the API's rule under the control before any request; Name takes focus. Value is a masked multiline box, so a multiline credential is kept exactly.",
+  },
+  createAgentNameRefused: {
+    group: "Pages/Create Agent",
+    name: "Agent name the API would refuse",
+    path: create,
+    actions: [
+      ...readyForm,
+      { selector: "#agent-name", value: "Research\u2028assistant" },
+      click("Create Agent"),
+    ],
+    description:
+      "Create Agent with a line separator in the name: Agent name shows the API's Name rule and takes focus before anything is saved.",
+  },
+  createWorkspaceFileRefused: {
+    group: "Pages/Create Agent",
+    name: "Initial workspace file the API would refuse",
+    path: create,
+    actions: [
+      ...readyForm,
+      { selector: ".launch-advanced summary", click: true },
+      { selector: "#workspace-AGENTS-md", value: "a".repeat(16_385) },
+      { selector: ".launch-advanced summary", click: true },
+      click("Create Agent"),
+    ],
+    description:
+      "Create Agent with an AGENTS.md over 16 KiB: the check opens Advanced settings and AGENTS.md names itself and the rule under the field, with focus, before anything is saved.",
+  },
   createModelSecretRequired: {
     group: "Pages/Create Agent",
     name: "Model credential Secret required",
@@ -2701,6 +2766,44 @@ export const scenarios = {
     steps: [
       "Look for “Execution mode unavailable” in Runtime details. Both modes and Create Agent are disabled; there is no “saved as drafts” message.",
       "Select Codex and confirm the alert clears and Dedicated remains available.",
+    ],
+  },
+  createOpenclawSettingRefusal: {
+    group: "Pages/Create Agent",
+    name: "OpenClaw refused by Sandbox Driver settings",
+    path: create,
+    nativeWorkerSupport: false,
+    openclawExecutionModes: [],
+    openclawSettingRefusal: openShellUserNamespacesRefusal,
+    actions: [
+      ...form,
+      { selector: "#agent-harness", value: "openclaw" },
+      { selector: ".launch-runtime summary", click: true },
+    ],
+    description:
+      "This simulated Sandbox Driver refuses Embedded OpenClaw, and its settings refuse Dedicated OpenClaw. The alert quotes the refusal, which names the setting and suggests Codex, because Codex can still be selected.",
+    steps: [
+      "Confirm the alert names kubernetes.userNamespaces and ends with “Select Codex, or ask an operator to set it.”",
+      "Select Codex and confirm the alert clears.",
+    ],
+  },
+  createOpenclawSettingRefusalAnthropic: {
+    group: "Pages/Create Agent",
+    name: "OpenClaw refused by Sandbox Driver settings, Anthropic",
+    path: create,
+    nativeWorkerSupport: false,
+    openclawExecutionModes: [],
+    openclawSettingRefusal: openShellUserNamespacesRefusal,
+    actions: [
+      ...form,
+      { selector: "#agent-harness", value: "openclaw" },
+      { selector: "#model-provider", value: "anthropic" },
+      { selector: ".launch-runtime summary", click: true },
+    ],
+    description:
+      "As above, with Anthropic, which hides Codex. The alert keeps the setting requirement but drops “Select Codex”, and names the switch to OpenAI instead.",
+    steps: [
+      "Confirm the alert names kubernetes.userNamespaces, does not say “Select Codex”, and ends with “Choose OpenAI with the Codex harness, or ask an operator to change that setting.”",
     ],
   },
   createOpenclawSandboxDriverOutage: {
@@ -3075,6 +3178,24 @@ export const scenarios = {
     ],
     description:
       "A rejected save retains its Configuration. Reload clears stale choices; retry requires a current repository and access level. Starting a new draft explicitly leaves repository-scoped recovery.",
+  },
+  createRosterModelSelection: {
+    group: "Pages/Create Agent",
+    name: "Change a roster's shared primary model",
+    path: create,
+    modelFallbackSelection: true,
+    modelRosterSelection: true,
+    actions: [
+      { selector: "#agent-preset", value: "pre_00000000-0000-4000-8000-000000000001" },
+      click("Use Preset"),
+    ],
+    description:
+      "Model ID changes the shared primary in defaults and matching explicit roster entries, preserving local policies and ordered fallbacks. Inherited model selections stay omitted. Simulated UI proof; no deployment or model request occurs.",
+    steps: [
+      "Change Model ID from primary-model to replacement-model, then leave the field.",
+      "Open Advanced settings. Configuration JSON has the new primary in defaults, main and assistant; inherited has no model field.",
+      "Clear Model ID and enter another-model. Local aliases, parameters and ordered fallbacks remain, and unreferenced old provider rows are retired.",
+    ],
   },
   createModelFallbackSelection: {
     group: "Pages/Create Agent",
@@ -3662,6 +3783,19 @@ export const scenarios = {
       "Choose Codex, or Embedded execution if the installation selects no Sandbox Driver, then create the Agent again.",
     ],
   },
+  createPreflightTimeout: {
+    group: "Pages/Create Agent",
+    name: "Configuration check timed out",
+    path: create,
+    unsupportedProvisioning: true,
+    rules: [{ suffix: "/agents/validate", method: "POST", hold: true, once: true }],
+    actions: readyForm,
+    description: "The first configuration check stays pending until the Console stops waiting.",
+    steps: [
+      "Select Create Agent. After 15 seconds, the timeout message takes focus and the button is available again.",
+      "Select Create Agent again to check the same entries and continue creating the draft.",
+    ],
+  },
   createPluginPreflightRefusal: {
     group: "Pages/Create Agent",
     name: "Plugin refusal before anything is saved",
@@ -4213,6 +4347,55 @@ export const scenarios = {
     steps: [
       "Change Calendar to Inherit Agent default approvers and inspect Plugin selections JSON.",
       "Search Create event tool approvers people to distinguish the two Alex Chen results by their handles.",
+      "Open No Slack approvers hints and Preserved non-Slack approver for the hidden no-approvers sentences.",
+    ],
+    gap: overrideApproverGap,
+  },
+  pluginApproversNoneHints: {
+    group: "Pages/Agent detail",
+    name: "No Slack approvers hints",
+    path: draft,
+    slack: true,
+    auth: "codex_pat",
+    agentPlugins: pluginApproverNoneHints,
+    agentPluginApprovers: [{ channel: "slack", id: "team:TDEMO123:user:UDEMO123" }],
+    pluginCapabilities: overrideApproverCapabilities,
+    pluginDiscovery,
+    actions: [
+      click("Plugins"),
+      click("Configure plugins"),
+      { selector: 'button[aria-label="Calendar"]', click: true },
+    ],
+    description:
+      "Calendar starts with an empty approver list on No Slack approvers. The hint says no Slack user can approve and the people picker is hidden. Selected Slack users with that empty list asks for people and shows the picker.",
+    steps: [
+      "Read Calendar plugin approvers: No Slack user can approve. The people picker is hidden.",
+      "Change Calendar plugin approvers to Selected Slack users and leave the list empty. The hint asks you to select people, and the picker is visible.",
+      "Change it back to No Slack approvers. The first sentence returns and the picker hides again.",
+    ],
+    gap: overrideApproverGap,
+  },
+  pluginApproversPreservedChannel: {
+    group: "Pages/Agent detail",
+    name: "Preserved non-Slack approver",
+    path: draft,
+    slack: true,
+    auth: "codex_pat",
+    agentPlugins: pluginApproverPreservedHints,
+    agentPluginApprovers: [{ channel: "slack", id: "team:TDEMO123:user:UDEMO123" }],
+    pluginCapabilities: overrideApproverCapabilities,
+    pluginDiscovery,
+    actions: [
+      click("Plugins"),
+      click("Configure plugins"),
+      { selector: 'button[aria-label="Calendar"]', click: true },
+    ],
+    description:
+      "Calendar has no Slack approvers and keeps one simulated non-Slack entry. No Slack approvers says no Slack user can approve, names that preserved entry, and hides the people picker. Selected Slack users still counts zero Slack approvers while that entry remains.",
+    steps: [
+      "Read Calendar plugin approvers: No Slack user can approve. 1 other channel entries are preserved. The people picker is hidden.",
+      "Change Calendar plugin approvers to Selected Slack users. The picker is shown, and the hint stays 0 Slack approvers selected because the simulated non-Slack entry remains.",
+      "Change it back to No Slack approvers. The preserved-entry sentence returns and the picker hides again. The teams / person-1 entry is fixture data, not a real channel.",
     ],
     gap: overrideApproverGap,
   },
@@ -4399,13 +4582,9 @@ export const scenarios = {
       repositories: [{ repositoryRef: "application" }],
     },
     repositoryBindings: [{ repositoryRef: "application", profile: "git-full" }],
-    rules: [
-      {
-        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/repository-options",
-        status: 503,
-        code: "REPOSITORY_OPTIONS_UNAVAILABLE",
-      },
-    ],
+    // Without repository settings, discovery answers 200 with no options and meta.notConfigured.
+    repositoryOptions: [],
+    repositoryNotConfigured: true,
     description:
       "The Installation has no Repo Driver: the tab names the setup step, links the runbook, offers no Retry, and keeps Save repository access disabled.",
     gap: "Simulated UI proof only; this preview does not configure a Repo Driver.",
@@ -6749,6 +6928,30 @@ export const scenarios = {
       "Select Save authentication source. The grant is written, the tab rebuilds without the warning, and Deploy new version is available; do not deploy.",
     ],
   },
+  authSecretGrantParked: {
+    group: "Components/Credentials",
+    name: "Parked authentication grant",
+    path: `${draft}&tab=credentials`,
+    harnessGrantMissing: true,
+    rules: [
+      { suffix: "/iam/roles", delayMs: 4000 },
+      { suffix: "/iam/access-bindings", delayMs: 4000 },
+    ],
+    actions: [
+      { selector: "#harness-auth-method" },
+      click("Configuration"),
+      click("Set up credentials"),
+      { selector: 'p.status[data-tone="warning"][role="alert"]' },
+    ],
+    description:
+      "An Installation administrator opens Credentials while Namespace IAM is still answering, switches to Configuration, and returns after the read finds no operate grant. The warning is written on the parked form, so Credentials still names Save authentication source. Deploy stays disabled.",
+    steps: [
+      "Credentials shows the saved API-key Secret with Save authentication source enabled. The missing-grant warning is absent while Namespace IAM is delayed.",
+      "The story selects Configuration before that read finishes. Deploy new version becomes disabled and says to confirm authentication and Secret access in Credentials.",
+      "Set up credentials returns to the same form. The warning says deploying would be refused and names Save authentication source. The authentication source control stays enabled.",
+    ],
+    gap: "The IAM delay is simulated. The browser test holds the controller's real Namespace IAM read across the same tab change.",
+  },
   authSecretGrantMemberUnverified: {
     group: "Components/Credentials",
     name: "Member authentication saved, access not verified",
@@ -7007,7 +7210,55 @@ export const scenarios = {
     description:
       "The Agent permission answer denies operate: the files load read-only, and each Save stays in the Tab order, looks disabled and is described by the note naming Agent operate.",
     steps: ["Tab to Save AGENTS.md and press Enter. Nothing is sent and the file is unchanged."],
-    gap: "Simulated files and permission answer; the API still refuses the write.",
+    gap: "Simulated files and the first permission answer only. Operate answer on return covers a later grant and revocation while this editor stays mounted. The API still refuses the write.",
+  },
+  workspaceOperateRestored: {
+    group: "Components/Workspace",
+    name: "Operate answer on return",
+    path: `${revision}&tab=workspace`,
+    deployed: true,
+    agentPermissionSummary: { update: true, deploy: true, operate: false, delete: true },
+    rules: [
+      { suffix: "/runtime", status: 403 },
+      {
+        suffix: "/agents/agt_00000000-0000-4000-8000-000000000001/permissions",
+        skip: 1,
+        once: true,
+        data: { update: true, deploy: true, operate: true, delete: true },
+      },
+    ],
+    actions: [
+      { selector: "#workspace-operate-denied" },
+      { selector: '[id="workspace-AGENTS.md"][readonly]' },
+      click("Logs"),
+      { text: "Runtime status requires Agent operate" },
+      click("Workspace files"),
+      { selector: "#workspace-operate-denied" },
+      click("Logs"),
+      { text: "Runtime status requires Agent operate" },
+      click("Workspace files"),
+      { selector: "#agent-stop-title" },
+      click("Configuration"),
+      { selector: ".version-diagnostics .deployment-heading button:not(:disabled)" },
+      click("Workspace files"),
+      {
+        selector: 'textarea[id="workspace-AGENTS.md"]:not([readonly])',
+        value: "kept across the revocation",
+      },
+      click("Logs"),
+      { text: "Runtime status requires Agent operate" },
+      click("Workspace files"),
+      { selector: '[id="workspace-AGENTS.md"][readonly]', matches: "kept across the revocation" },
+    ],
+    description:
+      "Workspace files stay parked while Logs reads a newer Agent operate answer. A grant makes them editable on return, shows the Stop row and enables Run diagnostics. A revocation makes them read-only again, keeps unsaved text, hides Stop and disables Run diagnostics.",
+    steps: [
+      "Workspace files open read-only, with the note that saving needs Agent operate. The Danger zone has no Stop row.",
+      "Logs records the runtime-status refusal. Returning to Workspace files keeps that note.",
+      "The next Logs visit reads an operate grant. Returning hides the note, AGENTS.md is editable, the Stop row appears, and Configuration offers Run diagnostics.",
+      "After the edit, the following Logs visit reads a revocation. Returning keeps the unsaved text and makes AGENTS.md read-only; Stop hides and Run diagnostics is disabled with its reason.",
+    ],
+    gap: "The permission changes and runtime refusal are simulated. The preview checks Stop and Run diagnostics after the grant only; the browser test also checks them after the revocation, changing the controller's real IAM policy across the same tab visits. A failed permission read is not shown; the page keeps the previous answer. The controller still authorizes every write.",
   },
   workspaceMissing: {
     group: "Components/Workspace",
@@ -7193,7 +7444,7 @@ export const scenarios = {
     path: draft,
     actions: [click("Delete Agent")],
     description:
-      "A focused confirmation dialog describes irreversible Agent, revision, and workspace deletion. Namespace Configurations and Secrets remain.",
+      "The confirmation names what will be permanently deleted and what stays in the Namespace. Open View separate cleanup commands to find the full resource IDs.",
   },
   deleting: {
     group: "Components/Deletion",
@@ -7216,7 +7467,21 @@ export const scenarios = {
     deleting: true,
     actions: [click("Request deletion again")],
     description:
-      "A manual repeated deletion requires confirmation. Queued or running cleanup remains unchanged.",
+      "A manual repeated deletion requires confirmation. Queued or running cleanup remains unchanged, and separate cleanup commands stay collapsed until opened.",
+  },
+  deletionRetryAccessEnded: {
+    group: "Components/Deletion",
+    name: "Status access ends during repeat confirmation",
+    path: draft,
+    deleting: true,
+    rules: [{ suffix: "/agents/agt_00000000-0000-4000-8000-000000000001", skip: 1, status: 403 }],
+    actions: [click("Request deletion again")],
+    description:
+      "The Agent was already marked for deletion. The next status check is refused while the repeat confirmation is open.",
+    steps: [
+      "Leave the confirmation open. It closes when the status check returns, without sending another deletion request.",
+      "Focus returns to Delete Agent. The notice says you can no longer check whether cleanup finished.",
+    ],
   },
   deletionRetryUnknown: {
     group: "Components/Deletion",
@@ -7661,6 +7926,16 @@ export const scenarios = {
     description:
       "An absent selected version does not establish candidate cleanup. Explicit repeated Stop remains available; history is readable.",
   },
+  stopFirstDeploymentFailed: {
+    group: "Components/Stop Agent",
+    name: "Failed first deployment",
+    path: draft,
+    deployed: true,
+    firstDeploymentFailed: true,
+    description:
+      "A failed first deployment leaves the Agent requested to run with no selected version, so Stop is disabled and says there is nothing to stop.",
+    gap: "Simulated UI proof only; this preview does not run a deployment.",
+  },
   stopNeverDeployed: {
     group: "Components/Stop Agent",
     name: "Never deployed",
@@ -7732,6 +8007,7 @@ export const scenarios = {
       "Interactive deletion through the actual console controls, with simulated asynchronous cleanup.",
     steps: [
       "Scroll to Delete Agent and open its confirmation dialog.",
+      "Read what stays in the Namespace. Open View separate cleanup commands to copy a command without running it.",
       "Cancel once to inspect the safe exit, then reopen and confirm Permanently delete Agent.",
       "The page marks deletion requested, removes edit/deploy controls, and keeps confirmed manual recovery available.",
       "Click Refresh deletion status. The fixture now reports completion and the console returns to the Agent list.",
@@ -7742,6 +8018,7 @@ export const scenarios = {
 
 for (const [id, state, name] of [
   ["policyDenials", "ready", "Policy denials and reviewed network additions"],
+  ["policyUnicodeExecutable", "unicode", "Unicode executable path remains complete"],
   [
     "policyConfigurationAlternate",
     "alternate",
@@ -7811,6 +8088,18 @@ for (const [id, state, name] of [
       "Disable policy editing and confirm approved grants remain visible. Check the empty, denied, unsupported, missing metadata, and unconfirmed stories.",
     ],
     gap: "Simulated UI proof only. These fixtures do not prove authorization, persistence, enforcement, or provider policy activation.",
+    ...(state === "unicode"
+      ? {
+          description:
+            "A normalized executable path has 281 Unicode code points and 551 UTF-16 code units, within the API schema's 512-code-point limit.",
+          steps: [
+            "Copy the full executable path from Installation delegation ceiling. Choose Review suggestion, then paste the copied path into Executable path. Confirm the value still ends with /tool.",
+            "Choose Review changes. Confirm the complete executable path, including /tool, appears in Proposed rules. Choose Save and confirm policy v2 keeps that same path while the current revision stays unchanged.",
+            "Reset the story to repeat. The six directory components each contain 45 Deseret letters (U+10400); the path is 1091 UTF-8 bytes.",
+          ],
+          gap: "Simulated UI proof only. This story does not validate a real executable, save to OCC, apply OpenShell policy or start a workload.",
+        }
+      : {}),
     ...(state === "refreshRace"
       ? {
           description:

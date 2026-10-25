@@ -251,6 +251,9 @@ export function renderAgentLogs(
     size: "sm",
     disabled: true,
   });
+  // Status refreshes rebuild the picker enabled-state. A download still in flight
+  // must stay disabled across those refreshes (issue 3387).
+  let downloadPending = false;
   const hiddenLevels = new Set<string>();
   const levelChips = LEVELS.map((level) =>
     button(
@@ -558,7 +561,7 @@ export function renderAgentLogs(
     sourceSelect.disabled = logsDenied || description.sources.length === 0;
     includeDebug.disabled = logsDenied || description.sources.length === 0;
     refreshButton.disabled = !readable;
-    downloadButton.disabled = !readable;
+    downloadButton.disabled = downloadPending || !readable;
     followButton.disabled = !readable || previous.checked;
   }
 
@@ -755,11 +758,12 @@ export function renderAgentLogs(
   async function download() {
     const source = selectedSource();
     const pod = selectedPod();
-    if (!current() || logsDenied || !source || !readableSelection(source)) {
+    if (downloadPending || !current() || logsDenied || !source || !readableSelection(source)) {
       return;
     }
     const query = logQuery(source, pod);
     query.set("download", "true");
+    downloadPending = true;
     downloadButton.disabled = true;
     try {
       const text = await read(`${base}/logs?${query}`, { responseType: "text" });
@@ -799,6 +803,7 @@ export function renderAgentLogs(
       }
       showLogReadError(error, source, { manualRead: true });
     } finally {
+      downloadPending = false;
       downloadButton.disabled = logsDenied || !readableSelection();
     }
   }
