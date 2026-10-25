@@ -1722,8 +1722,8 @@ for (const computeImplementation of ["occ/kubernetes", "kubernetes-local"]) {
     }
     // A `${` the runtime does not substitute (a lowercase name, `-` without `:`) would reach
     // Teams as written, so it is refused even with every binding (finding 2477). That text may be
-    // the password itself: the message shows only a plain `${name}` or the name before `-`, and
-    // never the rest of the value.
+    // the password itself: the message shows only a lowercase `${name}` or the name before `-`,
+    // and never the rest of the value.
     const secretText = "9f3c2a7b1d8e4f60a5b6c7d8e9f01234";
     for (const [appPassword, message] of [
       [
@@ -1747,6 +1747,16 @@ for (const computeImplementation of ["occ/kubernetes", "kubernetes-local"]) {
         { label: appPassword, sentinel: secretText },
       );
     }
+    // A token shaped like a name is shown only when it is lowercase, as a mistyped name is: a
+    // mixed-case one may be the password (finding 2485).
+    const identifierToken = "Zr9kq2LmP4xT7vB1nW3c";
+    assertRefused(
+      await request(context.app, "PATCH", `${collection}/${saved.body.data.id}`, {
+        body: { values: withAppPassword(`\${${identifierToken}}`), secretBindings: allBindings },
+      }),
+      unsubstitutedChannelText("channels.msteams.appPassword"),
+      { label: identifierToken, sentinel: identifierToken },
+    );
     for (const appPassword of [
       "${MSTEAMS_APP_PASSWORD}$${MSTEAMS_TENANT_SECRET}",
       "$MSTEAMS_APP_PASSWORD",

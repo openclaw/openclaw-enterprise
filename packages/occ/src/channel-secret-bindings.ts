@@ -91,10 +91,11 @@ const unboundRequirement = (name: string): string => {
 };
 
 // The text the runtime keeps as written may be the credential itself, so the refusal shows it only
-// when it is a plain `${name}`, or only the name of `${NAME-text}`; otherwise it names the form.
+// when it is a lowercase `${name}`, the realistic mistake (finding 2485: a mixed-case token such
+// as `${Zr9k…}` is never shown), or only the name of `${NAME-text}`; otherwise it names the form.
 function unsubstitutedRequirement(literal: string): string {
   const bind = "bound to a Secret in secretBindings";
-  if (/^\$\{[A-Za-z_][A-Za-z0-9_]{0,28}\}$/.test(literal)) {
+  if (/^\$\{[a-z_][a-z0-9_]{0,28}\}$/.test(literal)) {
     return `contains ${literal}, which the runtime does not substitute: use an uppercase \${NAME} ${bind}, or escape literal text as $\${NAME}`;
   }
   const name = /^\$\{([A-Z_][A-Z0-9_]{0,28})-/.exec(literal)?.[1];

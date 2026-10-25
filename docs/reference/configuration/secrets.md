@@ -148,7 +148,7 @@ A channel secret-input field (Slack `appToken`, `botToken`, `signingSecret`,
   a binding too.
 - OpenClaw substitutes only uppercase names, so any other `${`, such as
   `${slack_bot}` or `${NAME-text}`, is refused: OpenClaw would send that text
-  as the credential. The message quotes no other text of the value than a plain
+  as the credential. The message quotes no other text of the value than a lowercase
   `${name}` or the name before `-`.
 
 Configuration create and update refuse these values with `400 INVALID_REQUEST`,

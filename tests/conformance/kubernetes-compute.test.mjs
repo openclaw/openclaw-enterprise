@@ -10378,6 +10378,9 @@ test("native channel providers require Secret bindings and project them only to 
     ],
     [`\${${token}}`, tokenForm],
     [`\${${token}`, tokenForm],
+    // An identifier-shaped token: only a lowercase name is shown (finding 2485).
+    ["${Zr9kq2LmP4xT7vB1nW3c}", tokenForm],
+    ["${Zr9kq2LmP4xT7vB1n1234567890}", tokenForm],
   ]) {
     assert.throws(
       () =>
