@@ -394,6 +394,12 @@ const NAMED_DEPLOYMENT_WAITS = new Set([
 // save and deploy answer 503 for every harness until the selected Sandbox Driver returns.
 const SANDBOX_DRIVER_OUTAGE =
   "Agents cannot be created right now: this installation's Sandbox Driver is unavailable. Reload this page to check again, or ask an administrator if it persists.";
+// Without native worker support the Installation does not say why (finding 1612), unless it
+// lists Embedded: then it selects no Sandbox Driver, and the reason is exact (finding 2384).
+const NATIVE_WORKERS_UNAVAILABLE =
+  "Dedicated OpenClaw is unavailable: this installation has no Sandbox Driver that can provision it, or its OpenClaw runtime lacks native worker support. Choose the Codex harness, or Embedded execution if the installation selects no Sandbox Driver. Otherwise an administrator must select a Sandbox Driver that can provision dedicated OpenClaw, or a runtime with native worker support.";
+const NO_SANDBOX_DRIVER_DEDICATED =
+  "Dedicated OpenClaw is unavailable: this installation selects no Sandbox Driver. Choose the Codex harness or Embedded execution, or ask an administrator to select a Sandbox Driver that can provision dedicated OpenClaw.";
 // The deployment read was refused (401, 403 or 404): the reader can't see its waits now.
 const DEPLOYMENT_UNREADABLE = Symbol("deployment unreadable");
 
@@ -846,13 +852,9 @@ function renderAgentForm(
   // the runtime supports native workers and a Sandbox Driver can provision them (finding 1608).
   // Its absence does not say whether Embedded remains: any selected Sandbox Driver refuses
   // Embedded execution, so the copy names Codex and the condition (finding 1612).
-  const nativeWorkersUnavailable = statusBlock(
-    "danger",
-    null,
-    "Dedicated OpenClaw is unavailable: this installation has no Sandbox Driver that can provision it, or its OpenClaw runtime lacks native worker support. Choose the Codex harness, or Embedded execution if the installation selects no Sandbox Driver. Otherwise an administrator must select a Sandbox Driver that can provision dedicated OpenClaw, or a runtime with native worker support.",
-    [],
-    { hidden: true },
-  );
+  const nativeWorkersUnavailable = statusBlock("danger", null, NATIVE_WORKERS_UNAVAILABLE, [], {
+    hidden: true,
+  });
   // The Installation lists the OpenClaw execution modes admission accepts (#2670). When the
   // selected mode is not one of them, say so here and keep Create disabled, before any write.
   const openclawModeUnavailable = statusBlock("danger", null, null, [], { hidden: true });
@@ -2368,10 +2370,20 @@ function renderAgentForm(
     const openclawEmbeddedRefused = embeddedRefused && harness.value === "openclaw";
     const noOpenClawMode = nativeRefused && openclawEmbeddedRefused;
     const sandboxDriverOutage = capabilityDiscoveryDone && sandboxDriverUnavailable;
+    // A selected Sandbox Driver refuses Embedded execution, so an Installation that lists Embedded
+    // selects none, and that is exactly why Dedicated OpenClaw is refused (finding 2384).
+    const noSandboxDriver =
+      nativeRefused && !sandboxDriverOutage && openclawExecutionModes?.has("embedded") === true;
     dedicatedOption.disabled = nativeRefused;
     embeddedOption.disabled = embeddedRefused;
     nativeWorkersUnavailable.hidden =
       !nativeRefused || noOpenClawMode || mode.value !== "dedicated";
+    const nativeWorkersReason = noSandboxDriver
+      ? NO_SANDBOX_DRIVER_DEDICATED
+      : NATIVE_WORKERS_UNAVAILABLE;
+    if (nativeWorkersUnavailable.textContent !== nativeWorkersReason) {
+      nativeWorkersUnavailable.textContent = nativeWorkersReason;
+    }
     // A setting refusal names the setting to change, not another Sandbox Driver (finding 2373).
     const dedicatedRefusalReason = dedicatedSettingRefusal
       ? `its settings refuse Dedicated OpenClaw. ${dedicatedSettingRefusal}`
@@ -2403,11 +2415,13 @@ function renderAgentForm(
         ? "Codex and OpenClaw are unavailable while this installation's Sandbox Driver is unavailable."
         : embeddedRefused && dedicatedRefused
           ? "Codex uses Dedicated execution. OpenClaw is unavailable on this installation. Slack requires Codex."
-          : nativeRefused
-            ? "Codex uses Dedicated execution. Dedicated OpenClaw is unavailable because this installation has no Sandbox Driver that can provision it, or its OpenClaw runtime lacks native worker support. Embedded OpenClaw works only when the installation selects no Sandbox Driver. Slack requires Codex."
-            : embeddedRefused
-              ? "Codex uses Dedicated execution. This installation selects a Sandbox Driver, so OpenClaw uses Dedicated execution too. Slack requires Dedicated execution."
-              : "Codex uses Dedicated execution. OpenClaw uses Dedicated execution with a Sandbox Driver that provisions it, and Embedded execution without a Sandbox Driver. Slack requires Dedicated execution.";
+          : noSandboxDriver
+            ? "Codex uses Dedicated execution. Dedicated OpenClaw is unavailable because this installation selects no Sandbox Driver. Slack requires Codex."
+            : nativeRefused
+              ? "Codex uses Dedicated execution. Dedicated OpenClaw is unavailable because this installation has no Sandbox Driver that can provision it, or its OpenClaw runtime lacks native worker support. Embedded OpenClaw works only when the installation selects no Sandbox Driver. Slack requires Codex."
+              : embeddedRefused
+                ? "Codex uses Dedicated execution. This installation selects a Sandbox Driver, so OpenClaw uses Dedicated execution too. Slack requires Dedicated execution."
+                : "Codex uses Dedicated execution. OpenClaw uses Dedicated execution with a Sandbox Driver that provisions it, and Embedded execution without a Sandbox Driver. Slack requires Dedicated execution.";
     }
     if (capabilitiesSettled()) {
       let nextStatus = "";
@@ -2464,7 +2478,9 @@ function renderAgentForm(
       const reason = anthropic
         ? " Anthropic requires Embedded OpenClaw."
         : nativeRefused && !harnessChoiceLocked
-          ? " Choose Codex for Dedicated execution."
+          ? noSandboxDriver
+            ? " This installation selects no Sandbox Driver, so choose Codex for Dedicated execution."
+            : " Choose Codex for Dedicated execution."
           : "";
       return `This Agent will run OpenClaw with ${runtime}.${reason}`;
     };
