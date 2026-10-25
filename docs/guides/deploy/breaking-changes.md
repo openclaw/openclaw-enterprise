@@ -38,9 +38,12 @@ and Agents whose stored Configuration has an unbound channel reference.
 
 **How to tell.** The message names the setting and the binding, for example
 `channels.slack.botToken references SLACK_BOT_TOKEN`, or the text, for example
-`channels.slack.botToken contains ${slack_bot}`. Before you upgrade, read each
-Agent's Configuration (`GET /namespaces/{namespaceId}/configurations/{configurationId}`)
-and look for `${` or a whole `$NAME` in its `channels` values.
+`channels.slack.botToken contains ${slack_bot}`. Before you upgrade, list each
+Namespace's Agents (`GET /namespaces/{namespaceId}/agents`), read the Configuration
+each names in `configurationId`
+(`GET /namespaces/{namespaceId}/configurations/{configurationId}`), and look for
+`${` or a whole `$NAME` in its `channels` values. A plain `${NAME}` is affected only
+when the response's `secretBindings` has no `NAME`.
 
 **Steps.** Send the values and their `secretBindings` in one request. For a
 stored Configuration, save both Slack Secrets on the Agent's **Credentials**
