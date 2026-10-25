@@ -186,6 +186,15 @@ test("Policy denials reads the Sandbox log of a version a Sandbox Driver provisi
     "the Sandbox log is read",
   );
   assert.equal(await page.getByText(/runs without a Sandbox/).count(), 0);
+  // Its denial window keeps its controls (finding 2497 hides them only without a Sandbox).
+  const tab = page.locator(".sandbox-policy");
+  for (const control of [
+    tab.getByRole("button", { name: "Refresh denials" }),
+    tab.getByRole("checkbox", { name: "Follow policy denials" }),
+    tab.getByRole("searchbox", { name: "Filter loaded denials" }),
+  ]) {
+    assert.equal(await control.isVisible(), true);
+  }
 });
 
 // A member whose grants do not include the Agent's SandboxPolicy gets a refusal; Retry would only
