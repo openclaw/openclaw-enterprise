@@ -82,7 +82,7 @@ function forwarder(identity, target) {
   });
 }
 
-async function sharedApp(withCompute, withConfiguration) {
+async function sharedApp(withCompute, withConfiguration, computeImplementation) {
   const authFixture = await (administrator ??= createTestAuthPrincipal({
     name: "Configuration Integration Administrator",
   }));
@@ -130,7 +130,7 @@ async function sharedApp(withCompute, withConfiguration) {
             {
               id: "compute-configuration-integration",
               capability: "compute",
-              implementation: "integration-compute-substrate",
+              implementation: computeImplementation,
             },
             () => running.computeDriver,
           ),
@@ -174,12 +174,18 @@ async function fixture({
   permissions,
   configurationDriver = createConfigurationBackend(),
   computeDriver,
+  // The Compute identity OCC sees. OCC applies the bundled Kubernetes Compute's channel binding
+  // rule only for its implementations (finding 2319).
+  computeImplementation = "integration-compute-substrate",
   auditSink = new InMemoryAuditSink(),
 } = {}) {
   Object.assign(running, { configurationDriver, computeDriver, auditSink });
-  const shape = `${computeDriver !== undefined}/${configurationDriver !== null}`;
+  const shape = `${computeDriver !== undefined}/${configurationDriver !== null}/${computeImplementation}`;
   if (!apps.has(shape)) {
-    apps.set(shape, sharedApp(computeDriver !== undefined, configurationDriver !== null));
+    apps.set(
+      shape,
+      sharedApp(computeDriver !== undefined, configurationDriver !== null, computeImplementation),
+    );
   }
   const { grant, ...context } = await apps.get(shape);
   grant(permissions);
@@ -1370,8 +1376,7 @@ test("Configuration save and Kubernetes deployment refuse caller-owned credentia
   assert.equal(deployed.body.error.message, apiKeyRefusal);
   await storeAsOlderRelease(valid);
   // Agent save checks what depends on the Agent: an embedded Agent cannot serve a channel. The
-  // Installation's channel runtime waits for deployment. Configuration save already refuses the
-  // unbound token reference (finding 2319), so the row is one an older release stored.
+  // Installation's channel runtime and the channel's Secret bindings wait for deployment.
   const slack = {
     ...valid,
     channels: {
@@ -1382,11 +1387,10 @@ test("Configuration save and Kubernetes deployment refuse caller-owned credentia
       },
     },
   };
-  assertRefused(
-    await request(context.app, "PATCH", item, { body: { values: slack } }),
-    unboundChannelReference("channels.slack.appToken", "SLACK_APP_TOKEN"),
+  assert.equal(
+    (await request(context.app, "PATCH", item, { body: { values: slack } })).status,
+    200,
   );
-  await storeAsOlderRelease(slack);
   const embeddedSlack = setting(
     "channels.slack",
     "is enabled, but channels require a dedicated Agent workload",
@@ -1417,13 +1421,15 @@ test("Configuration save and Kubernetes deployment refuse caller-owned credentia
 });
 
 test("Configuration create, update and Agent create's check refuse a channel credential reference without a Secret binding (finding 2319)", async () => {
-  // Kubernetes Compute delivers channel credentials only from Configuration Secret bindings.
-  // Deployment refused an unbound reference; create and update carry values and bindings in one
-  // request, so they refuse it where it is written, with the setting and the missing name.
+  // The bundled Kubernetes Compute delivers channel credentials only from Configuration Secret
+  // bindings. Deployment refused an unbound reference; create and update carry values and
+  // bindings in one request, so OCC refuses it where it is written, with the setting and the
+  // missing name.
   const configurationDriver = createConfigurationBackend();
   const { namespace, collection, ...context } = await fixture({
     configurationDriver,
     computeDriver: kubernetesRules("compute-channel-bindings", ...configurationRules),
+    computeImplementation: "kubernetes-local",
   });
   const valid = runtimeSelected;
   const { created, configurationId, item } = await deployableAgent(context, namespace, {
@@ -1560,6 +1566,30 @@ test("Configuration create, update and Agent create's check refuse a channel cre
     const checked = await validate(configuration);
     assert.equal(checked.status, 204, JSON.stringify(checked.body));
   }
+});
+
+// Another Compute may resolve channel credentials without OCC Secret bindings (SSH Compute reads
+// the host's operator-owned environment file), so OCC applies the binding rule only on the
+// bundled Kubernetes Compute (finding 2319).
+test("Configuration save keeps an unbound channel credential reference on a Compute other than the bundled Kubernetes one", async () => {
+  const { collection, ...context } = await fixture({
+    computeDriver: kubernetesRules("compute-other-channel-bindings", ...configurationRules),
+  });
+  const slack = {
+    ...runtimeSelected,
+    channels: {
+      slack: {
+        enabled: true,
+        mode: "socket",
+        appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+        botToken: "${SLACK_BOT_TOKEN}",
+      },
+    },
+  };
+  const saved = await request(context.app, "POST", collection, {
+    body: { kind: "agent", values: slack },
+  });
+  assert.equal(saved.status, 201, JSON.stringify(saved.body));
 });
 
 test("Configuration save refuses a model selection or apiKey off the primary model's provider, naming the setting", async (t) => {

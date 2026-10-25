@@ -157,6 +157,7 @@ import {
   keyedSettingPath,
   KubernetesSecretWriteForbiddenError,
   provisionsDedicatedOpenClaw,
+  requireChannelSecretBindings,
   requireOpenClawRoster,
   resolveConfiguredHarnessId,
   ResourceConflictError,
@@ -193,7 +194,6 @@ import { validateCodexApprovalPolicySetting } from "../../../gateway/codex-appro
 import {
   enabledChannelProviders,
   OPENCLAW_GATEWAY_PASSWORD,
-  requireChannelSecretBindings,
   requireChannelTopology,
   type KubernetesHarnessTopology,
   kubernetesHarnessAuthMethods,
@@ -4495,8 +4495,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
   ): void {
     // Agent save passes null bindings and checks only what depends on the Agent. What the
     // Installation provides (a Sandbox Driver for dedicated OpenClaw, the channel runtime) waits
-    // for deployment; Configuration save already refused unbound channel references
-    // (validateConfiguration), and deployment repeats that for a row stored before the rule.
+    // for deployment, and so do the Configuration's channel bindings: OCC's Configuration save
+    // runs the same rule (requireChannelSecretBindings), and deployment repeats it for a row
+    // stored before that.
     const agentSave = secretBindings === null;
     if (!agentSave) {
       requireNativeWorkerSandbox(harness, this.sandboxDriver);
@@ -4677,13 +4678,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
   validateConfiguration(
     configuration: Readonly<OpenClawConfigurationDocument>,
     options?: ConfigurationValidationOptions,
-    secretBindings?: SecretBindings,
   ): void {
     this.validateConfigurationContent(configuration, options);
     requireConfiguredModelProviders(configuration, options);
-    if (secretBindings !== undefined) {
-      this.validateChannelSecretBindings(configuration, secretBindings);
-    }
   }
 
   // validateHarnessAuth runs these first and the model provider rules in its own order.
@@ -14475,8 +14472,8 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     );
   }
 
-  // Configuration save and deployment admission: requireChannelSecretBindings, against the
-  // Configuration's bindings, read only once a channel holds a reference.
+  // Deployment admission: requireChannelSecretBindings, the rule OCC's Configuration save runs,
+  // against the Configuration's bindings, read only once a channel holds a reference.
   private validateChannelSecretBindings(
     configuration: Readonly<OpenClawConfigurationDocument>,
     secretBindings: SecretBindings | undefined,

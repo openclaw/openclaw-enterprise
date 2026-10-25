@@ -48,6 +48,9 @@ function computeDriver({
   agentProvisioning = false,
   sandboxDriver,
   credentialGatewayDriver,
+  // OCC applies the bundled Kubernetes Compute's own save rules (channel credentials only from
+  // Secret bindings, finding 2319) only under its implementation, such as `kubernetes-local`.
+  implementation = "test-memory-lifecycle",
 } = {}) {
   const driver = createTestKubernetesComputeDriver("console-compute", {
     repositoryCredentials,
@@ -58,7 +61,7 @@ function computeDriver({
   });
 
   return Object.assign(driver, {
-    implementation: "test-memory-lifecycle",
+    implementation,
     // A channel runtime needs runtime storage, whose Agent runtime credentials this fixture
     // does not provision unless repository credentials ask for them.
     ...(channelRuntime && !repositoryCredentials
@@ -420,6 +423,7 @@ export async function createConsoleAppFixture(t, options = {}) {
         agentProvisioning: options.agentProvisioning,
         sandboxDriver: options.sandboxDriver,
         credentialGatewayDriver: options.credentialGatewayDriver,
+        implementation: options.computeImplementation,
       }),
     configurationDriver:
       configurationDriver ?? createTestConfigurationDriver({ id: "console-configuration" }),

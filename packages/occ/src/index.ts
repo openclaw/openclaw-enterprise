@@ -270,6 +270,7 @@ import {
   ComputeProvisioningRefusedError,
   ConfigurationGenerationConflictError,
   ConfigurationHarnessError,
+  configurationSettingMessage,
   CredentialGatewayNotConfiguredError,
   CredentialProxyRepositoryOnlyError,
   CredentialSourceDriverError,
@@ -310,6 +311,7 @@ import {
   SecretValueError,
 } from "./errors.ts";
 import { validateConfigurationSettings } from "./configuration-settings.ts";
+import { enabledChannelEntries, requireChannelSecretBindings } from "./channel-secret-bindings.ts";
 import { validateModelProviderSettings } from "./model-provider-settings.ts";
 import {
   readRuntimeLogPage,
@@ -557,6 +559,7 @@ export {
   urlHoldsUserinfo,
 } from "./model-provider-settings.ts";
 export { requireOpenClawRoster } from "./openclaw-roster.ts";
+export { enabledChannelEntries, requireChannelSecretBindings } from "./channel-secret-bindings.ts";
 export {
   CODEX_APPROVAL_POLICY_SETTING,
   codexApprovalPolicy,
@@ -1045,6 +1048,12 @@ interface RegisteredDriver {
 type DriverFor<Capability extends DriverCapability> = DriverByCapability[Capability];
 
 /** Bounds each synchronous Credential Gateway call made while serving an API request. */
+// The bundled Kubernetes Compute Driver's implementations: the Installation default and the
+// Driver's own default.
+const BUNDLED_KUBERNETES_COMPUTE: ReadonlySet<string> = new Set([
+  "occ/kubernetes",
+  "kubernetes-local",
+]);
 const CREDENTIAL_GATEWAY_TIMEOUT_MS = 30_000;
 const MAX_AGENT_CREDENTIAL_SOURCES = 8;
 /** Overall deadline for one runtime status or log request, Driver calls included. */
@@ -4474,10 +4483,7 @@ export class OpenClawController {
             "Existing namespace adoption requires the bundled Kubernetes Compute Driver.",
           );
         }
-        if (
-          compute.implementation !== "occ/kubernetes" &&
-          compute.implementation !== "kubernetes-local"
-        ) {
+        if (!BUNDLED_KUBERNETES_COMPUTE.has(compute.implementation)) {
           throw new ResourceStateConflictError(
             "Existing namespace adoption requires the bundled Kubernetes Compute Driver.",
           );
@@ -5013,8 +5019,9 @@ export class OpenClawController {
    * locating its unfilled variables. The model provider settings; the Codex approval policy and
    * a literal Gateway password; the agents shape, fallback provider and Gateway roster rules
    * (findings 1305 and 1308); then the selected Compute Driver's rules. A write that saves Secret
-   * bindings with the values passes them, so the Compute Driver also refuses a channel
-   * credential reference without one (finding 2319).
+   * bindings with the values passes them: on the bundled Kubernetes Compute, which delivers
+   * channel credentials only from bindings, a channel credential reference without one is then
+   * refused with the rule its deployment admission applies (finding 2319).
    */
   private validateConfigurationContent(
     values: OpenClawConfigurationDocument,
@@ -5024,7 +5031,23 @@ export class OpenClawController {
     validateModelProviderSettings(values, options);
     validateConfigurationSettings(values, options);
     requireDeployableRoster(values, options);
-    this.validateComputeConfiguration(values, options, secretBindings);
+    this.validateComputeConfiguration(values, options);
+    if (secretBindings !== undefined && this.bundledKubernetesCompute()) {
+      requireChannelSecretBindings(
+        values,
+        enabledChannelEntries(values),
+        (name) => Object.hasOwn(secretBindings, name),
+        (setting, requirement) =>
+          new ConfigurationHarnessError(configurationSettingMessage(setting, requirement)),
+      );
+    }
+  }
+
+  // The bundled Kubernetes Compute Driver: OCC applies its documented facts that no Driver member
+  // carries (existing namespace adoption, channel credentials delivered only from bindings).
+  private bundledKubernetesCompute(): boolean {
+    const implementation = this.selections.get("compute")?.driver.implementation;
+    return implementation !== undefined && BUNDLED_KUBERNETES_COMPUTE.has(implementation);
   }
 
   // Configuration content every topology of the selected Compute Driver refuses is refused
@@ -5034,10 +5057,9 @@ export class OpenClawController {
   private validateComputeConfiguration(
     values: Readonly<OpenClawConfigurationDocument>,
     options?: ConfigurationValidationOptions,
-    secretBindings?: SecretBindings,
   ): void {
     const compute = this.selections.get("compute")?.driver as ComputeDriver | undefined;
-    compute?.validateConfiguration?.(values, options, secretBindings);
+    compute?.validateConfiguration?.(values, options);
   }
 
   async createSecret(

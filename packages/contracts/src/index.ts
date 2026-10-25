@@ -2331,13 +2331,6 @@ export interface ComputeDriver extends Driver {
   validateConfiguration?(
     configuration: Readonly<OpenClawConfigurationDocument>,
     options?: ConfigurationValidationOptions,
-    /**
-     * The Secret bindings saved with these values: Configuration create and update, Agent
-     * provisioning, and Agent create's check when its caller sends them. Rules that pair values
-     * with bindings, such as a channel credential reference without a binding, run only when
-     * present; Preset saves pass none.
-     */
-    secretBindings?: SecretBindings,
   ): void;
   /**
    * Side-effect-free check that the first deployment of an Agent with initial workspace files
@@ -2358,9 +2351,8 @@ export interface ComputeDriver extends Driver {
     configuration: OpenClawConfigurationDocument,
     /**
      * The Configuration's Secret bindings. Agent save passes `null` and expects only the rules
-     * that depend on the Agent: Configuration save already paired its values with its bindings
-     * (validateConfiguration), and Installation-wide facts about the Configuration wait for
-     * deployment.
+     * that depend on the Agent: a Configuration may stage its bindings after its values, and
+     * Installation-wide facts about the Configuration wait for deployment.
      */
     secretBindings?: SecretBindings | null,
     /** Catalog entry for a `credential_source` binding; absent for every other method. */

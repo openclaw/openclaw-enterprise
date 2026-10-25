@@ -795,7 +795,7 @@ export const ValidateAgentCreateBody = Type.Object(
       {
         additionalProperties: false,
         description:
-          "The Agent Configuration the caller will save, not yet saved. With `secretBindings`, a channel credential reference without a binding is refused as Configuration create refuses it; the bound Secrets are not read. Without them, that check is skipped.",
+          "The Agent Configuration the caller will save, not yet saved. With `secretBindings`, a channel credential reference without a binding is refused where Configuration create refuses it (the bundled Kubernetes Compute); the bound Secrets are not read. Without them, that check is skipped.",
       },
     ),
     executionMode: Type.Optional(HarnessExecutionModeSchema),

@@ -23,7 +23,7 @@ real Installation.
 
 ## 2026-10-25: Configuration save refuses an unbound channel credential reference
 
-**What breaks.** On Kubernetes Compute, Configuration create and update,
+**What breaks.** On the bundled Kubernetes Compute, Configuration create and update,
 provisioning, and `POST .../agents/validate` with `configuration.secretBindings`
 answer `400 INVALID_REQUEST` when an enabled channel has a `${NAME}` reference
 or environment SecretRef without a binding of that name. Earlier builds refused

@@ -235,7 +235,10 @@ test("saving a Configuration with negative zero confirms the value sent as JSON"
 // JSON editor, which cannot bind Secrets, shows the API's refusal, naming the setting and the
 // binding, under the Configuration JSON.
 test("an unbound Slack token is refused at save, under its picker and under the Configuration JSON", async (t) => {
-  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Unbound Slack");
+  // The bundled Kubernetes Compute's implementation, under which OCC applies the rule.
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Unbound Slack", {
+    computeImplementation: "kubernetes-local",
+  });
   const app = await fixture.createSecret(namespace.id, "Unbound Slack app token", "xapp-unbound");
   const values = nativeValues("unbound", { harnessId: "codex" });
   const agent = await fixture.createAgent(namespace.id, "Unbound Slack", values, {

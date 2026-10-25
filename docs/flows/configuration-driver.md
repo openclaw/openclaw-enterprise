@@ -134,8 +134,8 @@ root-object JSON document; omitted or unknown kinds and malformed request
 shapes fail with `400`. Updates require the complete replacement `values`
 document and accept optional `secretBindings` and `expectedGeneration`, refusing
 a stale one under the row lock with an `/expectedGeneration` `409` detail.
-Writes pass the bindings they save to `validateConfiguration`, so Kubernetes
-refuses an enabled channel's unbound credential reference.
+On the bundled Kubernetes Compute, writes refuse an enabled channel's unbound
+credential reference with deployment's rule (`requireChannelSecretBindings`).
 `kind`, `generation`, and ownership are server-owned. OCC preserves nested values
 and SecretRefs unchanged. Malformed,
 generation-mismatched, or ownership-invalid persisted ConfigMaps fail with

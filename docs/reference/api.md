@@ -2711,7 +2711,7 @@ Check an unsaved Agent Configuration, plugin selections, initial workspace files
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `configuration` | `object` | Yes | The Agent Configuration the caller will save, not yet saved. With `secretBindings`, a channel credential reference without a binding is refused as Configuration create refuses it; the bound Secrets are not read. Without them, that check is skipped. |
+| `configuration` | `object` | Yes | The Agent Configuration the caller will save, not yet saved. With `secretBindings`, a channel credential reference without a binding is refused where Configuration create refuses it (the bundled Kubernetes Compute); the bound Secrets are not read. Without them, that check is skipped. |
 | `configuration.kind` | `"agent"` | Yes | — |
 | `configuration.secretBindings` | `object<string, object>` | No | Optional Secret binding map. Keys are destination environment variable names; at most 64 bindings are accepted. Each value must contain `source.kind`, `source.namespaceId`, and `source.id`, and may contain `delivery.type: "env"`. Admission rejects reserved or process-control destinations such as `OPENCLAW_*`, `CODEX_*`, `OPENAI_*`, `ANTHROPIC_*`, `OCC_*`, `KUBERNETES_*`, `PATH`, `HOME`, and proxy variables. Model authentication belongs to Agent.harnessAuth. |
 | `configuration.values` | `object<string, SafeJsonValue>` | Yes | A native OpenClaw configuration document. |

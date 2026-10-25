@@ -10201,7 +10201,7 @@ test("native channel providers require Secret bindings and project them only to 
         "Configuration setting channels.slack.botToken references SLACK_BOT_TOKEN without a Configuration Secret binding: bind SLACK_BOT_TOKEN in secretBindings to an environment-backed Secret, or remove the reference.",
     },
   );
-  // Agent save passes null bindings: Configuration save paired the values with their bindings.
+  // Agent save passes null bindings: OCC's Configuration save runs the channel binding rule.
   driver.validateHarnessAuth(
     revision.harness,
     revision.harnessAuth,
@@ -10216,9 +10216,9 @@ test("native channel providers require Secret bindings and project them only to 
     },
     null,
   );
-  // Configuration save passes the bindings saved with the values. A binding name is an own key
-  // (an inherited one such as "constructor" binds nothing), and an env SecretRef id that is not
-  // a plain name is quoted and shortened, so the message keeps its 256-character cap.
+  // A binding name is an own key (an inherited one such as "constructor" binds nothing), and an
+  // env SecretRef id that is not a plain name is quoted and shortened, so the message keeps its
+  // 256-character cap.
   const unboundId = `constructor ${"x".repeat(300)}`;
   for (const [id, shown] of [
     ["constructor", "constructor"],
@@ -10230,9 +10230,9 @@ test("native channel providers require Secret bindings and project them only to 
         msteams: { accounts: [{ appPassword: { source: "env", provider: "default", id } }] },
       },
     };
-    driver.validateConfiguration(values);
+    driver.validateHarnessAuth(revision.harness, revision.harnessAuth, values, null);
     assert.throws(
-      () => driver.validateConfiguration(values, undefined, {}),
+      () => driver.validateHarnessAuth(revision.harness, revision.harnessAuth, values, {}),
       (error) => {
         assert.equal(error.name, "ConfigurationHarnessError");
         // A long name shortens the setting path to fit the cap.
