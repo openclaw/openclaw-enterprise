@@ -6758,6 +6758,7 @@ export const scenarios = {
       deploy: true,
       operate: true,
       delete: true,
+      administer: true,
       configurationUpdate: true,
       configurationSecretsOperate: true,
       agentSourcesOperate: false,

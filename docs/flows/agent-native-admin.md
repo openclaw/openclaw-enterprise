@@ -24,7 +24,9 @@ The console checks exact-Agent `administer` access and returns a stable native a
 graph TD
   L["Local first-Agent selects Control UI"] --> L2["Create Agent, derive exact origin,<br/>and save Configuration generation 2"]
   L2 --> A
-  A["Console opens Agent detail tab"] --> B["GET exact Agent native-admin status"]
+  A["Console opens Agent detail tab"] --> P{"Agent permission answer denies administer?"}
+  P -->|yes| PH["Hide the card without a request"]
+  P -->|"no or unknown"| B["GET exact Agent native-admin status"]
   B --> C["Resolve OCC session and exact Agent administrator principal"]
   C --> D{"Exact Agent exists?"}
   D -->|no| E["Return protected-route error"]
@@ -80,7 +82,9 @@ An existing helper-owned name cannot change this selection.
 
 `apps/controller/src/console/agents/native-admin.mjs:renderNativeAdminAccess`
 
-Agent detail reads `${path}/native-admin`. Disabled or denied access stays hidden;
+Agent detail reads `${path}/native-admin` only when the advisory Agent permission
+answer allows `administer` or is unknown; a `false` answer hides the card without
+a request. Disabled or denied access stays hidden;
 other refusals explain why. Only `available` shows **Open admin console**, opening
 with `noopener noreferrer`. An audited `403` in the session owner’s tab
 `sessionStorage` suppresses reads until logout, sign-in, or a new tab. Changes to
@@ -231,6 +235,8 @@ admin Configuration remains Pod-local.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-25 12:00: The console skips the native admin status read when the Agent permission answer denies `administer`.
 
 - 2026-10-24 23:25: Documented the authenticated browser 403 Agents link.
 
