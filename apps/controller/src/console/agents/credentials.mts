@@ -361,6 +361,7 @@ export function createChannelSecretsPanel({
   outstandingGrants = null,
   checkGrants = false,
   canGrant = true,
+  readOnly = () => false,
   isCurrent = () => true,
   onOutstandingGrants,
   onConfigurationChange,
@@ -381,6 +382,9 @@ export function createChannelSecretsPanel({
   checkGrants?: boolean;
   // False when this session is known not to administer the Installation, so it cannot grant.
   canGrant?: boolean;
+  // True when the caller may not update this Configuration: the bindings are shown, not edited
+  // (finding 2432). The page's permission answer can land after the panel is built.
+  readOnly?(): boolean;
   // Whether this panel is still the page's own, for answers that arrive late.
   isCurrent?(): boolean;
   onConfigurationChange?(configuration: Configuration): void;
@@ -435,6 +439,7 @@ export function createChannelSecretsPanel({
 
   function canEnterChannelCredentials() {
     return (
+      !readOnly() &&
       revisionsLoaded &&
       !state.saving &&
       !state.outcomeUnknown &&
@@ -599,6 +604,11 @@ export function createChannelSecretsPanel({
       { type: "submit", form: formId, className: "button button--primary" },
       "Save channel Secrets",
     );
+    const readOnlyNote = element(
+      "p",
+      { className: "hint" },
+      "Your access does not include editing this Configuration, so its channel Secrets are read-only.",
+    );
     shown.status = status;
     shown.save = save;
     function createTokenPicker(binding: (typeof SLACK_SECRET_BINDINGS)[number]) {
@@ -661,13 +671,16 @@ export function createChannelSecretsPanel({
           ? "Retry Secret access"
           : "Save channel Secrets";
       save.disabled = !canSaveChannelSecrets();
-      // A session that cannot grant gets no Retry the API would refuse (finding 2263).
-      save.hidden = !state.unsavedSecrets && unverifiedGrants();
+      // A session that cannot grant gets no Retry the API would refuse (finding 2263). A reader
+      // gets no Save the API would refuse either (finding 2432).
+      readOnlyNote.hidden = !readOnly();
+      save.hidden = readOnly() || (!state.unsavedSecrets && unverifiedGrants());
     };
     shown.updateControls = updateControls;
     const form = element(
       "form",
       { id: formId, className: "credential-form", novalidate: "" },
+      readOnlyNote,
       ...SLACK_SECRET_BINDINGS.map((binding) => createTokenPicker(binding)),
       status,
       element("div", { className: "form-actions" }, save),
@@ -1008,6 +1021,10 @@ export function createChannelSecretsPanel({
     credentialsReady,
     deployGateMessage,
     isSaving: () => state.saving,
+    // The permission answer changed what this caller may edit: update the form in place.
+    applyAccess() {
+      shown.updateControls?.();
+    },
     mutationPending: () => state.saving || state.outcomeUnknown || state.reloadRequired,
   };
 }

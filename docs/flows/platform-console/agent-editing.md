@@ -113,7 +113,8 @@ Saves preserve scroll, focus and admitted snapshots. Rejected edits stay in the 
 an uncertain save requires readback. Unsaved edits block deployment; pending saves block tab and version changes.
 A refused write lists required grants without guessing which; a refused preflight read names read
 access, a Workspace file save Agent `operate`. Lacking Agent `update` disables plugin, repository
-and authentication editors; Configuration saves get no such hint.
+and authentication editors. Lacking Configuration `update` makes Configuration, Channels and
+channel Secrets read-only; lacking both, the draft says so and, without deploy, has no checklist.
 
 `agents/plugin-fields.mts:createPluginFields` renders **Plugins**.
 `agents/plugins.mts:savePlugins` rereads the Agent before PATCH. If the Agent,
@@ -285,9 +286,6 @@ read-only, shows that explanation, and keeps unsaved text. A failed permission
 read keeps the previous answer. The controller still authorizes every write; the
 editor is not that boundary. Stop and each version's **Run diagnostics** follow
 the same answer.
-
-Without Agent and Configuration update the draft is read-only: saved JSON, no
-**Edit Configuration**, read-only Channels and, without deploy, no checklist.
 
 On the first read or an explicit **Reload**, only a `404` with code `NOT_FOUND`
 and message `The requested workspace file was not found.` confirms the file is

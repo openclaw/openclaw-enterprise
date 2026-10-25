@@ -329,11 +329,11 @@ function nativeDocument(values: OpenClawConfigurationDocument, label: string) {
   );
 }
 
-// A save's reread or its PATCH found a newer Configuration generation than the page's.
 // A draft the caller can read but neither change nor save (finding 2421).
 const READ_ONLY_DRAFT_NOTICE =
   "Version draft · read-only with your access. The next deployment uses it as saved.";
 const CONFIGURATION_READ_ONLY = "Your access does not include editing this Configuration.";
+// A save's reread or its PATCH found a newer Configuration generation than the page's.
 const CONFIGURATION_CHANGED =
   "The saved Configuration changed while you were editing. Reload this draft before saving.";
 
@@ -572,12 +572,33 @@ export async function renderAgentDetail(
   // says so instead of addressing an editor (finding 2421). An unknown answer keeps the editor.
   const configurationReadOnly = () => callerPermissions?.configurationUpdate === false;
   const draftReadOnly = () => callerPermissions?.update === false && configurationReadOnly();
-  // Draft views drawn before the first answer, redrawn once it lands; nothing waits for it.
-  const permissionRerenders = new Set<() => void>();
-  function afterFirstPermissions(rerender: () => void) {
-    if (!callerPermissionsSettled) {
-      permissionRerenders.add(rerender);
+  // Draft views that follow Configuration update. Nothing waits for an answer: a view drawn
+  // before the first answer, or before a reread that changes the bit, is redrawn when it lands.
+  // Each view redraws only while shown and only when its access differs from the answer's.
+  const configurationAccessViews = new Set<() => void>();
+  function followConfigurationAccess(rerender: () => void) {
+    configurationAccessViews.add(rerender);
+  }
+  function redrawConfigurationAccessViews() {
+    for (const rerender of configurationAccessViews) {
+      rerender();
     }
+  }
+  // Applies the newest permission answer to the draft's labels and views (findings 2421, 2432).
+  function applyDraftAccess() {
+    if (headerNewVersion) {
+      // This opens the draft; Configuration update and Agent deploy are independent grants.
+      headerNewVersion.textContent =
+        callerPermissions?.update === false ? "Open version draft" : "Create new version";
+    }
+    labelDraftEntry();
+    renderVersionNotice();
+    activeCredentials?.applyAccess();
+    // A draft refresh rebuilds the shown tab and then redraws what its answer changed.
+    if (!refreshingDraft) {
+      redrawConfigurationAccessViews();
+    }
+    refreshDeployControls();
   }
   let deleting = agent.status === "deleting";
   let currentRevisionId = agent.activeRevisionId;
@@ -1735,7 +1756,7 @@ export async function renderAgentDetail(
     }
   }
   // The Versions list's draft entry and chooser option. Without Agent update they do not call the
-  // Configuration editable (finding 2405); without Configuration update either, it is read-only
+  // Configuration editable (finding 2405); without Configuration update, it is read-only
   // (finding 2421). The permission answer can land after the list is built, so its callback
   // labels them again.
   function labelDraftEntry() {
@@ -1747,12 +1768,19 @@ export async function renderAgentDetail(
             "View version draft",
             "Version draft",
           ]
-        : [
-            "New version",
-            "Editable Configuration",
-            "View new version, editable Configuration",
-            "New version · editable Configuration",
-          ];
+        : configurationReadOnly()
+          ? [
+              "New version",
+              "Read-only Configuration",
+              "View new version, read-only Configuration",
+              "New version · read-only Configuration",
+            ]
+          : [
+              "New version",
+              "Editable Configuration",
+              "View new version, editable Configuration",
+              "New version · editable Configuration",
+            ];
     const entry = selector.querySelector(".revision-create");
     entry?.setAttribute("aria-label", name);
     entry?.replaceChildren(element("strong", {}, title), element("small", {}, detail));
@@ -2391,19 +2419,7 @@ export async function renderAgentDetail(
     if (!permissions) {
       return;
     }
-    if (permissions.update === false) {
-      // This opens the draft; Configuration update and Agent deploy are independent grants.
-      if (headerNewVersion) {
-        headerNewVersion.textContent = "Open version draft";
-      }
-      labelDraftEntry();
-    }
-    renderVersionNotice();
-    for (const rerender of permissionRerenders) {
-      rerender();
-    }
-    permissionRerenders.clear();
-    refreshDeployControls();
+    applyDraftAccess();
   });
 
   const snapshotPath =
@@ -2545,6 +2561,8 @@ export async function renderAgentDetail(
           // Only an Installation administrator may read the IAM policy that shows a grant.
           checkGrants: context.installationAdmin === true,
           canGrant: context.installationAdmin !== false,
+          // Binding Secrets saves the Configuration (finding 2432).
+          readOnly: configurationReadOnly,
           isCurrent: () => panelNumber === channelPanelCount,
           onChange() {
             updateNavigationControls();
@@ -2656,7 +2674,9 @@ export async function renderAgentDetail(
       const retainedConfiguration = retainedConfigurationState();
       deploy.disabled = deployIsDisabled();
       if (setupCredentials) {
+        // A reader's card offers no editor's action; the status says why (finding 2421).
         setupCredentials.hidden =
+          draftReadOnly() ||
           selectedTab === "credentials" ||
           revisionResult.status !== "fulfilled" ||
           channelCredentialBlockReason(values) !== null ||
@@ -2724,11 +2744,15 @@ export async function renderAgentDetail(
           // blocking. It never reads "Ready to deploy.": deploying again does not fix it.
           const rejected =
             "The last deployment's model credential was rejected; update or replace it in Credentials before deploying again.";
-          deployStatus.textContent = !credentialRejected()
+          const status = !credentialRejected()
             ? gate
             : gate === "Ready to deploy."
               ? rejected
               : `${gate} ${rejected}`;
+          deployStatus.textContent =
+            draftReadOnly() && status !== "Ready to deploy."
+              ? `${status} Your access does not include changing this version draft.`
+              : status;
         }
       }
       updateChecklist();
@@ -3146,6 +3170,8 @@ export async function renderAgentDetail(
           if (latestDeploymentStatus === "failed" && !deleting) {
             renderLatestDeployment();
           }
+          // A grant or revocation since the last answer relabels the draft (finding 2421).
+          applyDraftAccess();
         }
         // An older reread still applies when no newer one has answered: a newer read that
         // fails resolves to this answer, which the controls would otherwise never see.
@@ -3207,6 +3233,8 @@ export async function renderAgentDetail(
     if (!context.isCurrent()) {
       return;
     }
+    // The permission reread can land after the rebuilt tab was drawn.
+    redrawConfigurationAccessViews();
     const shrunk = versionLayout.getBoundingClientRect().bottom - bottomBefore;
     if (anchorBelow && shrunk < 0) {
       globalThis.scrollBy({ top: shrunk, behavior: "instant" });
@@ -3767,10 +3795,11 @@ export async function renderAgentDetail(
         channels,
         navigationFeedback,
       );
-      // Drawn editable before the answer landed: redraw read-only (finding 2421).
+      // An answer that lands after this view changes whether it is read-only (finding 2421).
       if (draft) {
-        afterFirstPermissions(() => {
-          if (context.isCurrent() && configurationReadOnly()) {
+        const shownReadOnly = configurationReadOnly();
+        followConfigurationAccess(() => {
+          if (context.isCurrent() && configurationReadOnly() !== shownReadOnly) {
             void renderTab();
           }
         });
@@ -4800,8 +4829,10 @@ export async function renderAgentDetail(
       }
     }
 
+    let shownReadOnly = false;
     function render() {
-      if (!editing && configurationReadOnly()) {
+      shownReadOnly = !editing && configurationReadOnly();
+      if (shownReadOnly) {
         // A reader views the saved JSON; no editor whose Save would answer 403 (finding 2421).
         container.replaceChildren(
           element("p", { className: "hint" }, CONFIGURATION_READ_ONLY),
@@ -4858,9 +4889,9 @@ export async function renderAgentDetail(
     }
 
     render();
-    // An answer that lands after this view turns it read-only (finding 2421).
-    afterFirstPermissions(() => {
-      if (context.isCurrent() && !editing && configurationReadOnly()) {
+    // An answer that lands after this view changes whether it is read-only (finding 2421).
+    followConfigurationAccess(() => {
+      if (context.isCurrent() && !editing && configurationReadOnly() !== shownReadOnly) {
         render();
       }
     });
