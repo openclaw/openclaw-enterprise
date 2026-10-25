@@ -6992,9 +6992,12 @@ export class OpenClawController {
   }
 
   /**
-   * The Secrets a Configuration binds now, from its record alone. Each save of the Configuration
-   * authorizes Secret operate on every Secret it binds, so the caller-permissions answer checks
-   * these. Requires Configuration read, which already shows the bindings.
+   * The distinct Secrets a Configuration binds now, from its record alone. Each save of the
+   * Configuration authorizes Secret operate on every Secret it binds, so the caller-permissions
+   * answer checks these. Requires Configuration read. Unlike getConfiguration it skips the
+   * provisioning guard, so it also answers before provisioning has written the Configuration.
+   * That is safe: saves are refused while the Agent is provisioning, so the answer enables no
+   * save, and the guard's 409 would fail the whole caller-permissions answer.
    */
   async getConfigurationSecretSources(
     principalId: string,
@@ -7013,9 +7016,12 @@ export class OpenClawController {
       if (!metadata) {
         throw new ScopeViolationError("The Configuration does not belong to the exact Namespace.");
       }
-      return Object.freeze(
-        Object.values(this.bindings(metadata.secretBindings)).map(({ source }) => source),
-      );
+      // A Secret bound to several names is one authorization decision.
+      const sources = new Map<string, Readonly<ResourceRef>>();
+      for (const { source } of Object.values(this.bindings(metadata.secretBindings))) {
+        sources.set(source.id, source);
+      }
+      return Object.freeze([...sources.values()]);
     });
   }
 
