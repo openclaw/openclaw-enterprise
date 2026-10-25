@@ -110,11 +110,12 @@ Success focuses **Edit Configuration**, unless the reader moved focus elsewhere 
 `OPENCLAW_GATEWAY_PASSWORD`, changing nothing else; **Cancel** discards it. Kubernetes
 `gatewayConfiguration` recognizes the reference; `deployment` supplies the password.
 
-Saves preserve scroll, focus and admitted snapshots. Rejected edits stay in the editor;
+Saves preserve scroll, focus and admitted snapshots. Rejected edits stay;
 an uncertain save requires readback. Unsaved edits block deployment; pending saves block tab and version changes.
 A refused write lists required grants without guessing which; a refused preflight read names read
-access, a Workspace file save Agent `operate`. Plugin, repository and authentication editors are
-disabled without Agent `update`, Configuration `read`, or `operate` on each bound source.
+access, a Workspace file save Agent `operate`. Without Agent `update`, plugins and repository
+access read as summaries; authentication is disabled without it, Configuration `read`, or
+bound-source `operate`. Reads the answer refuses are skipped.
 Lacking Configuration `update` or `operate` on a bound Secret makes
 Configuration, Channels and channel Secrets read-only; lacking that and an Agent-side grant, the
 draft says so and, without deploy, has no checklist.
@@ -286,9 +287,8 @@ Returning to these parked editors applies the newest Agent operate answer the pa
 has already read. Logs can observe a newer answer while they are parked. A grant
 makes the files editable and hides the explanation. A revocation makes them
 read-only, shows that explanation, and keeps unsaved text. A failed permission
-read keeps the previous answer. The controller still authorizes every write; the
-editor is not that boundary. Stop and each version's **Run diagnostics** follow
-the same answer.
+read keeps the previous answer. The controller still authorizes every write. Stop and
+each version's **Run diagnostics** follow the same answer.
 
 On the first read or an explicit **Reload**, only a `404` with code `NOT_FOUND`
 and message `The requested workspace file was not found.` confirms the file is
