@@ -307,8 +307,8 @@ export function createSecretReferenceField({
   // 2453). An unknown answer marks none, and a Secret it does not list stays choosable.
   let operateDenied: ReadonlySet<string> = new Set();
   let operateRead: Promise<void> | null = null;
-  function readOperateAnswer() {
-    const read = (context.secretsOperateDenied?.() ?? Promise.resolve(undefined)).then(
+  function readOperateAnswer(options?: { fresh?: boolean }) {
+    const read = (context.secretsOperateDenied?.(options) ?? Promise.resolve(undefined)).then(
       (denied) => {
         if (!isCurrent() || read !== operateRead) {
           return;
@@ -768,6 +768,14 @@ export function createSecretReferenceField({
         const createdSecret = secretMetadata(result, namespaceId, secretName);
         if (!createdSecret) {
           throw new Error("The create response did not identify the requested Secret.");
+        }
+        // The operate answer read when the list opened predates this Secret, so it never names
+        // it: read the answer again, dropping the page's cached copy, before binding it. A Secret
+        // the caller may create but not operate is then refused here, not by the save's 403
+        // (finding 2486).
+        await readOperateAnswer({ fresh: true });
+        if (!dialog.open || !isCurrent()) {
+          return;
         }
         await bindSecret(createdSecret);
         if (!dialog.open || !isCurrent()) {

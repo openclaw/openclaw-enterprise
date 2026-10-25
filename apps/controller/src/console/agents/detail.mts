@@ -89,6 +89,7 @@ import {
   askInstallationAdministrator,
   credentialOperateGrants,
   ensureCredentialOperateBinding,
+  type SecretsOperateDenied,
 } from "./credential-access.mjs";
 import {
   createDeploymentStatusPanel,
@@ -571,16 +572,21 @@ export async function renderAgentDetail(
   }
   // The readable Secrets this caller may not operate: each Secret field lists them disabled and
   // never stages one, since the save would answer 403 (finding 2453). Read when a field first
-  // needs it, and again after a permission reread. A failed read is unknown and marks none.
+  // needs it, and again after a permission reread or an inline Secret create. A failed read is
+  // unknown and marks none.
   let secretsOperateRead: Promise<ReadonlySet<string> | undefined> | null = null;
-  const secretsOperateDenied = () =>
-    (secretsOperateRead ??= (
+  const secretsOperateDenied: SecretsOperateDenied = ({ fresh = false } = {}) => {
+    if (fresh) {
+      secretsOperateRead = null;
+    }
+    return (secretsOperateRead ??= (
       request(`${path}/permissions/secrets`) as Promise<SecretPermissions>
     ).then(
       (answer) =>
         Array.isArray(answer?.operateDenied) ? new Set(answer.operateDenied) : undefined,
       () => undefined,
     ));
+  };
   context.setTitle(agent.name);
   // A missing summary leaves each control on its usual path, except failed-version
   // recovery, which waits for a positive answer before offering a draft link.

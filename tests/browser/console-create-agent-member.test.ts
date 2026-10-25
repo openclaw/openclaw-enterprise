@@ -13,11 +13,13 @@ import type {
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
+  grantSecretOperate,
   holdRequests,
   login,
   MEMBER_WRITE,
   newPage,
   operateDeniedSecretOption,
+  revokeMemberGrant,
   selectSecret,
   waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
@@ -528,22 +530,9 @@ async function operateSomeSetup(t: TestContext) {
     namespace.id,
     MEMBER_WRITE.filter(([action, kind]) => !(action === "operate" && kind === "secret")),
   );
-  fixture.policy.roles.push({
-    id: "role-operate-team-key",
-    namespaceId: namespace.id,
-    permissions: [{ action: "operate", resourceKind: "secret" }],
-  });
-  fixture.policy.bindings.push({
-    id: "binding-operate-team-key",
-    namespaceId: namespace.id,
-    subjectKind: "identity",
-    subjectId: member.principal.id,
-    roleId: "role-operate-team-key",
-    resourceKind: "secret",
-    resourceId: secret.id,
-  });
+  const operate = grantSecretOperate(fixture, namespace.id, member.principal, [secret.id]);
   const answerPath = `/namespaces/${namespace.id}/permissions/secrets`;
-  return { fixture, namespace, secret, spare, member, answerPath };
+  return { fixture, namespace, secret, spare, member, operate, answerPath };
 }
 
 test("Create Agent's Secret fields refuse a readable Secret the member cannot operate", async (t) => {
@@ -650,22 +639,14 @@ test("a Preset's existing Secret choice refuses a Secret the member cannot opera
 // A refused create can follow a revoked grant, so the form reads the Secret answer again when a
 // field next opens, as the Agent page does after a refused save.
 test("a refused Create reads the Secret answer again", async (t) => {
-  const { fixture, namespace, secret, member, answerPath } = await operateSomeSetup(t);
+  const { fixture, namespace, secret, member, operate, answerPath } = await operateSomeSetup(t);
   const { page } = await newPage(t, fixture);
   const answers = apiResponses(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`, member.credentials);
   await fillDefaultPreset(page, secret, "Refused member Agent");
   // Configuration create and operate on the chosen key are revoked after it is staged.
-  const role = fixture.policy.roles.find((item) => item.id === "role-member-operate-some");
-  assert.ok(role);
-  role.permissions = role.permissions.filter(
-    (permission) =>
-      !(permission.action === "create" && permission.resourceKind === "configuration"),
-  );
-  fixture.policy.bindings.splice(
-    fixture.policy.bindings.findIndex((binding) => binding.id === "binding-operate-team-key"),
-    1,
-  );
+  revokeMemberGrant(fixture, "member-operate-some", ["create", "configuration"]);
+  operate.revoke(secret.id);
   const refused = page.waitForResponse(
     (response) =>
       response.url() === `${fixture.origin}/namespaces/${namespace.id}/configurations` &&
@@ -678,5 +659,49 @@ test("a refused Create reads the Secret answer again", async (t) => {
   assert.deepEqual(
     answers.filter((answer) => answer.includes(answerPath)),
     [`GET ${answerPath} 200`, `GET ${answerPath} 200`],
+  );
+});
+
+// Creating a Secret does not grant operate on it. The field read the operate answer when its list
+// opened, before the new Secret existed, so it staged the Secret and Agent create answered 403
+// (finding 2486). After an inline create the field reads the answer again and refuses the new
+// Secret in place, keeping the key it had.
+test("a Secret created inline that the member cannot operate is not staged", async (t) => {
+  const { fixture, namespace, secret, member, answerPath } = await operateSomeSetup(t);
+  const { page } = await newPage(t, fixture);
+  const answers = apiResponses(page, fixture.origin);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`, member.credentials);
+  await page.getByRole("button", { name: "Start with default Preset", exact: true }).click();
+  await page.getByLabel("Agent name", { exact: true }).fill("Inline member Agent");
+  await selectSecret(page, "API key Secret", secret);
+  const staged = page.getByText("Secret selected. Create Agent binds it.");
+  await staged.waitFor();
+  const field = page.getByLabel("API key Secret", { exact: true });
+  await field.fill("no matching Secret");
+  await page.getByRole("option", { name: "Create new Secret...", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Create model credential Secret" });
+  await dialog.getByLabel("Name", { exact: true }).fill("Inline member key");
+  await dialog.getByLabel("Value", { exact: true }).fill("sk-inline-member");
+  await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
+  await dialog.waitFor({ state: "detached" });
+  await page
+    .getByText(`Inline member key cannot be chosen. ${SECRET_OPERATE_DENIED}`, { exact: true })
+    .waitFor();
+  assert.equal(await field.inputValue(), secret.name);
+  // The answer was read when the list opened and again after the create.
+  assert.deepEqual(
+    answers.filter((answer) => answer.includes(answerPath)),
+    [`GET ${answerPath} 200`, `GET ${answerPath} 200`],
+  );
+  // The new Secret is listed disabled with the reason.
+  const list = await fixture.request("GET", `/namespaces/${namespace.id}/secrets`);
+  const created = (list.data as SecretWire[]).find((item) => item.name === "Inline member key");
+  assert.ok(created);
+  await operateDeniedSecretOption(page, "API key Secret", created);
+  await field.press("Escape");
+  // The only write is the Secret create.
+  assert.deepEqual(
+    answers.filter((answer) => !answer.startsWith("GET ") && !answer.includes("/auth/")),
+    [`POST /namespaces/${namespace.id}/secrets 201`],
   );
 });

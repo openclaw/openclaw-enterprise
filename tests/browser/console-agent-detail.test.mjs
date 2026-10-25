@@ -72,6 +72,7 @@ import {
   CONFIGURATION_SAVE_DENIED,
   READ_UNAVAILABLE,
   SAVED_CONFIGURATION_CHANGED,
+  SECRET_OPERATE_DENIED,
   WORKSPACE_FILES_UNAVAILABLE,
   secretOperateRefused,
 } from "../helpers/refusal-text.mjs";
@@ -4824,6 +4825,80 @@ test("Secret fields refuse a readable Secret the editor cannot operate", async (
   assert.equal(
     await alert.getByText(secretOperateRefused(other.name), { exact: false }).count(),
     0,
+  );
+});
+
+// Creating a Secret does not grant operate on it. The picker read the operate answer when its list
+// opened, before the Secret existed, so a member who may create and read Secrets but operate only
+// the bound one saw the new Secret staged and the save refused with an audited 403 (finding 2486).
+// After an inline create the picker reads the answer again and refuses the new Secret in place.
+test("a Secret created inline that the member cannot operate is not staged", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Inline operate", { ready: true });
+  const bound = await fixture.createSecret(namespace.id, "Bound harness key", "sk-bound-value");
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Inline operate Agent",
+    nativeValues("inline-operate", { harnessId: "codex" }),
+    { harnessAuth: { method: "api_key", source: bound.ref }, executionMode: "dedicated" },
+  );
+  const member = await fixture.createNamespaceMember(
+    "inline-operate-member",
+    namespace.id,
+    MEMBER_WRITE.filter(([action, kind]) => !(action === "operate" && kind === "secret")),
+  );
+  grantSecretOperate(fixture, namespace.id, member.principal, [bound.id]);
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  const answers = [];
+  page.on("response", (response) => {
+    if (response.url() === `${fixture.origin}${path}/permissions/secrets`) {
+      answers.push(response.status());
+    }
+  });
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"),
+    member.credentials,
+  );
+  const picker = page.getByLabel("API key Secret", { exact: true });
+  await waitForInputValue(picker, bound.name);
+  await waitForEnabled(picker);
+  await picker.fill("no matching Secret");
+  await page.getByRole("option", { name: "Create new Secret...", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Create harness authentication Secret" });
+  await dialog.getByLabel("Name", { exact: true }).fill("Inline new key");
+  await dialog.getByLabel("Value", { exact: true }).fill("sk-inline-new-value");
+  await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
+  await dialog.waitFor({ state: "detached" });
+  // The Secret exists, but the field keeps the bound Secret and names why the new one is refused.
+  await page
+    .getByText(`Inline new key cannot be chosen. ${SECRET_OPERATE_DENIED}`, { exact: true })
+    .waitFor();
+  assert.equal(await picker.inputValue(), bound.name);
+  assert.equal(await page.getByText("Secret binding staged. Save changes to apply it.").count(), 0);
+  assert.equal(
+    await page.getByRole("button", { name: "Save authentication source" }).isDisabled(),
+    true,
+  );
+  // The answer was read once when the list opened and again after the create.
+  assert.deepEqual(answers, [200, 200]);
+  // The new Secret is listed disabled with the reason.
+  const created = (await fixture.request("GET", `/namespaces/${namespace.id}/secrets`)).data.find(
+    (secret) => secret.name === "Inline new key",
+  );
+  assert.ok(created);
+  await operateDeniedSecretOption(page, "API key Secret", created);
+  await picker.press("Escape");
+  // The only write is the Secret create: no save was sent, so no denial was audited.
+  assert.deepEqual(
+    nonAuthWriteRequests(requests).map(
+      ({ method, path: requestPath }) => `${method} ${requestPath}`,
+    ),
+    [`POST /namespaces/${namespace.id}/secrets`],
   );
 });
 

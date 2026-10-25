@@ -16,13 +16,14 @@ import {
   validatePresetTemplate,
 } from "../preset-variables.mjs";
 import { message, namespacePath } from "./list.mjs";
+import type { SecretsOperateDenied } from "./credential-access.mjs";
 import { SECRET_OPERATE_DENIED } from "./secret-picker.mjs";
 
 type PresetContext = Pick<NamespacePageContext, "request" | "isCurrent" | "onExpired"> & {
   namespaceId: string;
   drafts: ReturnType<ReturnType<typeof createDraftStore>["scope"]>;
   // The readable Secrets the caller may not operate; undefined when the answer is unknown.
-  secretsOperateDenied?: (() => Promise<ReadonlySet<string> | undefined>) | undefined;
+  secretsOperateDenied?: SecretsOperateDenied | undefined;
 };
 
 interface VariableField {

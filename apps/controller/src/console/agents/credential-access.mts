@@ -15,8 +15,14 @@ export type AgentAccessContext = Pick<
   namespaceId: string;
   // The IDs of readable Secrets the caller may not operate, which binding one to the Agent needs
   // (finding 2453); undefined when the answer is unknown. Secret fields mark and refuse them.
-  secretsOperateDenied?: (() => Promise<ReadonlySet<string> | undefined>) | undefined;
+  secretsOperateDenied?: SecretsOperateDenied | undefined;
 };
+
+// Reads the Secret operate answer, which pages cache. `fresh` drops the cached answer first: a
+// Secret created since it was read is not in it (finding 2486).
+export type SecretsOperateDenied = (options?: {
+  fresh?: boolean;
+}) => Promise<ReadonlySet<string> | undefined>;
 
 type CredentialReference = SecretReference | CredentialSourceReference;
 

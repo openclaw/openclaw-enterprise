@@ -5,6 +5,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { responseFields } from "../api-client.mjs";
 import type { createDraftStore } from "../drafts.mjs";
+import type { SecretsOperateDenied } from "../agents/credential-access.mjs";
 import type { SlackDirectoryContext } from "../agents/slack-directory.mjs";
 import {
   element,
@@ -54,7 +55,7 @@ export interface ChannelDrawerContext extends SlackDirectoryContext {
   // The Namespace permission answer's secrets.create, for the token fields' inline Create Secret.
   secretsCreateAllowed?: (() => Promise<boolean | undefined>) | undefined;
   // Readable Secrets the caller may not operate, which the token fields refuse (finding 2453).
-  secretsOperateDenied?: (() => Promise<ReadonlySet<string> | undefined>) | undefined;
+  secretsOperateDenied?: SecretsOperateDenied | undefined;
 }
 
 type BindingUpdate = { secretBindings?: SecretBindings; changedSecrets?: SecretMetadata[] };

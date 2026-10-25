@@ -37,7 +37,7 @@ import { WORKSPACE_DEFAULTS, WORKSPACE_DEFAULTS_ID } from "../workspace-defaults
 import { configuredHarnessId, harnessAuthDescription } from "./harness-auth.mjs";
 import { type DeviceLogin, createDeviceLogin } from "./device-login.mjs";
 import { createRepositoryFields } from "./repositories.mjs";
-import { ensureCredentialOperateBinding } from "./credential-access.mjs";
+import { ensureCredentialOperateBinding, type SecretsOperateDenied } from "./credential-access.mjs";
 import { createSecretReferenceField, secretMetadata } from "./secret-picker.mjs";
 import { workspaceFileProblem } from "./workspace.mjs";
 import { namespaceNameProblem } from "../namespaces.mjs";
@@ -721,19 +721,25 @@ const CONFIGURATION_CREATE_REFUSAL =
 // The readable Secrets this caller may not operate: each Create Agent Secret field, the Preset's
 // existing Secret included, lists them disabled and never stages one, since Agent create, or a
 // directory search, would answer 403 (finding 2469). Read when a field first needs it, and again
-// after a permission reread or a refused create. A failed read is unknown and marks none.
+// after a permission reread, a refused create or an inline Secret create. A failed read is unknown
+// and marks none.
 function secretOperateAnswer(context: CreateAgentContext) {
   let answer: Promise<ReadonlySet<string> | undefined> | null = null;
+  const read: SecretsOperateDenied = ({ fresh = false } = {}) => {
+    if (fresh) {
+      answer = null;
+    }
+    return (answer ??= (
+      context.request(
+        `${namespacePath(context.namespaceId)}/permissions/secrets`,
+      ) as Promise<SecretPermissions>
+    ).then(
+      (value) => (Array.isArray(value?.operateDenied) ? new Set(value.operateDenied) : undefined),
+      () => undefined,
+    ));
+  };
   return {
-    read: () =>
-      (answer ??= (
-        context.request(
-          `${namespacePath(context.namespaceId)}/permissions/secrets`,
-        ) as Promise<SecretPermissions>
-      ).then(
-        (value) => (Array.isArray(value?.operateDenied) ? new Set(value.operateDenied) : undefined),
-        () => undefined,
-      )),
+    read,
     reset: () => {
       answer = null;
     },
