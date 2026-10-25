@@ -3543,20 +3543,18 @@ for (const outcome of ["ready", "quarantined"]) {
         { revision: { repositoryCredentials: repository.snapshot } },
       );
       const checked = [];
+      let published = 0;
       let waiting;
       await fixture.start(fixture.compute, {
         async repositoryGitMaterial(revisionId) {
           checked.push(revisionId);
-          // Like the owner, nothing is issued before the pointer is published; then let one
-          // more pass record the wait before GitHub answers.
+          // Like the owner, nothing is issued before the pointer is published. The first check
+          // after it records the wait; GitHub answers before the next one.
           const pointer = (await fixture.activePointer(owner)).rows[0]?.active_revision_id;
-          if (pointer !== candidate.id) {
+          if (pointer !== candidate.id || published++ === 0) {
             return "pending";
           }
-          if (waiting === undefined) {
-            waiting = await fixture.deploymentStatus(owner, candidate);
-            return "pending";
-          }
+          waiting ??= await fixture.deploymentStatus(owner, candidate);
           return outcome;
         },
       });

@@ -295,6 +295,15 @@ Maintenance uses 30 seconds, the selected native sender interval or a shorter Co
 interval. A missing known session is invalidated, never reminted after restart.
 Users may deploy another version during cleanup.
 
+Prepared native Git issues a version's first token only after activation publishes it.
+The deployment's own Work then runs
+`apps/controller/src/worker.ts:ControllerWorker.assertRepositoryGitMaterial`, which reads
+`PreparedRepositoryGitStore.revisionMaterial` through the worker's prepared owner. It defers at
+`REPOSITORY_GIT_MATERIAL_PENDING` until each open session has a committed token and fails with
+`REPOSITORY_GIT_TOKEN_QUARANTINED` when one holds a quarantined attempt, which is never
+prepared again. The runtime stays; maintenance skips this check
+([reference](../reference/repository-credentials/prepared-native-git.md#deployment-and-the-first-token)).
+
 If standing Git evidence is missing, the worker keeps Git closed and observes the existing
 Harness without preparing or activating it. It checks again within five seconds, rechecking
 model authority, withdrawal, stop and replacement each pass. Harness readiness is not Git
@@ -334,7 +343,7 @@ remains retryable after partial failure; service restart cannot prove remote tok
 Compare `occ agent get AGENT_ID --output json` with the admitted `activeRevisionId`.
 Inspect worker events for
 `REPOSITORY_BINDING_CHANGED`, `REPOSITORY_CREDENTIAL_DEADLINE_EXCEEDED`,
-`REPOSITORY_SESSION_RECOVERY_UNSAFE`, `REPOSITORY_CLEANUP_PENDING` or
+`REPOSITORY_SESSION_RECOVERY_UNSAFE`, `REPOSITORY_GIT_TOKEN_QUARANTINED`, `REPOSITORY_CLEANUP_PENDING` or
 `REPOSITORY_CLEANUP_COMPLETE`. Check registry identity and deadline before retry.
 A cleanup that stays pending logs `worker.repository-cleanup-warning` with its
 `cause` once.
@@ -367,6 +376,8 @@ denied before reaching the provider, and chat continues.
 
 ## Changelog
 
+- 2026-10-25 07:00: Hold a native deployment until its first GitHub token commits and fail one whose preparation is quarantined. (finding 2415)
+
 - 2026-10-25 00:30: Answer repository options without a repository Driver with no options and `meta.notConfigured`. (finding 2387)
 
 - 2026-10-24 22:30: Name the missing repository Driver. (fix-2361-2362 - 476c1b350)
@@ -382,18 +393,3 @@ denied before reaching the provider, and chat continues.
 - 2026-10-22 04:11: Trace selected registered delivery reconciliation. (authoring-run/13ded5bb-8707-46f5-8aa3-7a334529d124 - f4a2ca6139625059f1f8c58855f6343864ee7528)
 
 - 2026-10-22 02:32: Require prepared authority at native OPEN, durable receipt and release; reject legacy controller selection. (authoring-run/b8149a96-d1dc-4681-8930-7d5434fbf1e3 - 2fca4e18d905f7bf760d0da70cb916f20186169e)
-
-- 2026-10-21 22:49: Separate repository policy, protected composition and explicit native session ownership. (authoring-run/fb0df3aa-3a65-40ec-9da0-20de1db91b2f - 41137910011b9c4fc1a713b234a92c87a6717e3f)
-
-- 2026-10-21 22:10: Document standing Git supervision with the accompanying uncommitted worker change. (authoring-run/5f4d0dab-1a03-4fa9-a469-a8778c8ad3d4 - 390a3627b97535f4d21107001efda8af6152355d)
-
-- 2026-10-17 06:00: Keep joiners in words and emoji and the three subdivision flags in repository descriptions. (lows-1017h - 49397a014)
-
-- 2026-10-17 05:00: Replace invisible and bidi characters in repository descriptions; escape them in the picker. (lows-1017g - 3a02bef00)
-
-- 2026-10-17 00:15: Preserve Unicode repository descriptions across truncation and discovery. (authoring-run/f538c999-f9bf-4549-ba36-19dca6101420 - 42fb0a90337209e28318765c1b537bc4f3623506)
-
-- 2026-10-16 21:13: Restrict prepared Git draft body input to explicit text; bind prepared Git session origins to the Helm-owned broker Service before ingress admission. (authoring-run/97826393-386f-4988-ace7-afc669f1922f - dac53babe; authoring-run/c21f74f4-95aa-4ba6-878d-84586bd6ecb7 - d2200df9a)
-- 2026-10-12 07:39: Recovery fences a reserved receipt whose fence did not commit. (authoring-run/aee1dd2c-5ac0-4499-aaf6-a4c36928423e - b195e54e9b0ce98ead2b2306015a5209325e837b)
-
-- 2026-10-03 16:30: Log a stuck repository cleanup's cause once and slow its rechecks with age. (fix-repo-cleanup-backoff)
