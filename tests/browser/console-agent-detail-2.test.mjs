@@ -15,6 +15,7 @@ import { createConsoleAppFixture, fileConsoleApp } from "../helpers/console-app.
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
+  AGENT_READ,
   apiRequests,
   detailUrl,
   expectNoText,
@@ -890,25 +891,11 @@ test("Agent delete denial keeps the Agent visible with permission feedback", asy
   const fixture = await detailApp(t);
   const namespace = await fixture.createNamespace("Delete denial", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Denied Candidate", nativeValues("stay"));
-  const limited = await fixture.createAccountWithPolicy("agent-delete-denied", (principal) => {
-    fixture.policy.roles.push({
-      id: "role-console-agent-delete-denied",
-      namespaceId: namespace.id,
-      permissions: [
-        { action: "read", resourceKind: "namespace" },
-        { action: "read", resourceKind: "agent" },
-        { action: "read", resourceKind: "configuration" },
-        { action: "read", resourceKind: "agent_revision" },
-      ],
-    });
-    fixture.policy.bindings.push({
-      id: "binding-console-agent-delete-denied",
-      namespaceId: namespace.id,
-      subjectKind: "identity",
-      subjectId: principal.id,
-      roleId: "role-console-agent-delete-denied",
-    });
-  });
+  const limited = await fixture.createNamespaceMember(
+    "agent-delete-denied",
+    namespace.id,
+    AGENT_READ,
+  );
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
 
@@ -2338,23 +2325,10 @@ test("a read-only viewer is denied saved settings and native admin once per tab,
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Read-only detail");
   const agent = await fixture.createAgent(namespace.id, "Viewed Agent", nativeValues("viewed"));
-  const viewer = await fixture.createAccountWithPolicy("agent-viewer", (principal) => {
-    fixture.policy.roles.push({
-      id: "role-console-agent-viewer",
-      namespaceId: namespace.id,
-      permissions: [
-        { action: "read", resourceKind: "namespace" },
-        { action: "read", resourceKind: "agent" },
-      ],
-    });
-    fixture.policy.bindings.push({
-      id: "binding-console-agent-viewer",
-      namespaceId: namespace.id,
-      subjectKind: "identity",
-      subjectId: principal.id,
-      roleId: "role-console-agent-viewer",
-    });
-  });
+  const viewer = await fixture.createNamespaceMember("agent-viewer", namespace.id, [
+    ["read", "namespace"],
+    ["read", "agent"],
+  ]);
   const denials = (action) =>
     auditSink
       .list()
@@ -2478,11 +2452,8 @@ test("an Agent reader meets no refused read on Repositories, Policy denials or L
   });
   const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const reader = await fixture.createNamespaceMember("tab-reader", namespace.id, [
-    ["read", "namespace"],
-    ["read", "agent"],
+    ...AGENT_READ,
     ["read_logs", "agent"],
-    ["read", "agent_revision"],
-    ["read", "configuration"],
   ]);
   const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
   const { page } = await newPage(t, fixture);

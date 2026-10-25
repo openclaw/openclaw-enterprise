@@ -4,11 +4,12 @@ import test, { type TestContext } from "node:test";
 import type { Page } from "playwright";
 
 import type { AgentWire, NamespaceWire } from "../../packages/contracts/src/api/resources.ts";
-import type { Principal, Restriction } from "../../packages/contracts/src/index.ts";
+import type { Restriction } from "../../packages/contracts/src/index.ts";
 import type { PlatformUnitOfWork } from "../../packages/occ/src/state/platform-state.ts";
 
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
+  AGENT_READ,
   apiRequests,
   detailUrl,
   fileBrowser,
@@ -20,7 +21,9 @@ import {
   nonAuthWriteRequests,
   pathRequests,
   waitForEnabled,
+  grantMember,
   grantStaleConfigurationUpdate,
+  revokeMemberGrant,
 } from "./console-agents-browser-helpers.mjs";
 import {
   createRepositoryLaunchFixture,
@@ -52,29 +55,12 @@ const READ_REFUSAL =
   "You do not have permission to read this Agent's saved settings. Ask an administrator for Agent read and Configuration read access.";
 
 // A member who can read the Namespace's Agents and Configurations but change nothing.
+const READER = "save-refusal-reader";
 function createReader(
   fixture: Awaited<ReturnType<typeof createConsoleAppFixture>>,
   namespace: Pick<NamespaceWire, "id">,
 ) {
-  return fixture.createAccountWithPolicy(
-    "save-refusal-reader",
-    (principal: Pick<Principal, "id">) => {
-      fixture.policy.roles.push({
-        id: "role-save-refusal-reader",
-        namespaceId: namespace.id,
-        permissions: (["namespace", "agent", "agent_revision", "configuration"] as const).map(
-          (resourceKind) => ({ action: "read", resourceKind }),
-        ),
-      });
-      fixture.policy.bindings.push({
-        id: "binding-save-refusal-reader",
-        namespaceId: namespace.id,
-        subjectKind: "identity",
-        subjectId: principal.id,
-        roleId: "role-save-refusal-reader",
-      });
-    },
-  );
+  return fixture.createNamespaceMember(READER, namespace.id, AGENT_READ);
 }
 
 async function readOnlyMember(t: TestContext, name: string) {
@@ -258,9 +244,7 @@ test("a member without Agent update sees the Agent-side saves and fields disable
 // but no Secret operate was offered these saves, and each answered 403 (finding 2441).
 test("an Agent editor without operate on the bound Secrets sees the Agent-side saves disabled", async (t) => {
   const member = await readOnlyMember(t, "Agent Sources Off");
-  const reader = member.fixture.policy.roles.find((role) => role.id === "role-save-refusal-reader");
-  assert.ok(reader, "the read-only role exists");
-  reader.permissions.push({ action: "update", resourceKind: "agent" });
+  grantMember(member.fixture, READER, [["update", "agent"]]);
   // As on Plugins, repository access reads as a summary with the note: no save could keep an
   // edit, so the editor and its choices read are not offered.
   await assertAgentSavesDisabled(member, AGENT_SOURCES_DENIED, agentSaves());
@@ -308,12 +292,10 @@ test("an Agent editor without read on the Harness ServiceAccount is told about i
     },
   );
   assert.equal(switched.status, 200);
-  const reader = fixture.policy.roles.find((role) => role.id === "role-save-refusal-reader");
-  assert.ok(reader, "the read-only role exists");
-  reader.permissions.push(
-    { action: "update", resourceKind: "agent" },
-    { action: "operate", resourceKind: "secret" },
-  );
+  grantMember(fixture, READER, [
+    ["update", "agent"],
+    ["operate", "secret"],
+  ]);
   await login(
     page,
     fixture,
@@ -333,12 +315,10 @@ test("an Agent editor without read on the Harness ServiceAccount is told about i
 // arrives after the editors are drawn.
 test("an Agent editor whose Configuration read was revoked is told to ask for it", async (t) => {
   const { fixture, namespace, agent, member, page } = await readOnlyMember(t, "Read Revoked");
-  const reader = fixture.policy.roles.find((role) => role.id === "role-save-refusal-reader");
-  assert.ok(reader, "the read-only role exists");
-  reader.permissions.push(
-    { action: "update", resourceKind: "agent" },
-    { action: "operate", resourceKind: "secret" },
-  );
+  grantMember(fixture, READER, [
+    ["update", "agent"],
+    ["operate", "secret"],
+  ]);
   const answer = await holdRequests(
     t,
     page,
@@ -354,9 +334,7 @@ test("an Agent editor whose Configuration read was revoked is told to ask for it
   await answer.requested;
   const save = page.getByRole("button", { name: "Save authentication source", exact: true });
   await save.waitFor();
-  reader.permissions = reader.permissions.filter(
-    (permission) => !(permission.action === "read" && permission.resourceKind === "configuration"),
-  );
+  revokeMemberGrant(fixture, READER, ["read", "configuration"]);
   answer.release();
   await page.getByRole("status").filter({ hasText: AGENT_CONFIGURATION_READ_DENIED }).waitFor();
   assert.equal(await page.getByRole("status").filter({ hasText: AGENT_SOURCES_DENIED }).count(), 0);
@@ -459,9 +437,7 @@ test("a granted Agent update enables the Agent-side save on the next draft refre
   const note = page.getByRole("status").filter({ hasText: AGENT_UPDATE_DENIED });
   await note.waitFor();
   assert.equal(await save.isDisabled(), true);
-  const reader = fixture.policy.roles.find((role) => role.id === "role-save-refusal-reader");
-  assert.ok(reader, "the read-only role exists");
-  reader.permissions.push({ action: "update", resourceKind: "agent" });
+  grantMember(fixture, READER, [["update", "agent"]]);
   await page.getByRole("button", { name: "Reload authentication source", exact: true }).click();
   await note.waitFor({ state: "detached" });
   // Each Agent update also checks operate on the Secrets the Agent and its Configuration bind,
@@ -469,7 +445,7 @@ test("a granted Agent update enables the Agent-side save on the next draft refre
   const sourcesNote = page.getByRole("status").filter({ hasText: AGENT_SOURCES_DENIED });
   await sourcesNote.waitFor();
   assert.equal(await save.isDisabled(), true);
-  reader.permissions.push({ action: "operate", resourceKind: "secret" });
+  grantMember(fixture, READER, [["operate", "secret"]]);
   await page.getByRole("button", { name: "Reload authentication source", exact: true }).click();
   await sourcesNote.waitFor({ state: "detached" });
   await page
@@ -484,13 +460,11 @@ test("a granted Agent update enables the Agent-side save on the next draft refre
 // shows the Agent as read, so it drops the kept edit and Deploy no longer waits for it.
 test("a plugin edit kept across a revoked Agent update no longer holds Deploy", async (t) => {
   const { fixture, namespace, agent, member, page } = await readOnlyMember(t, "Plugin Draft");
-  const reader = fixture.policy.roles.find((role) => role.id === "role-save-refusal-reader");
-  assert.ok(reader, "the read-only role exists");
-  reader.permissions.push(
-    { action: "update", resourceKind: "agent" },
-    { action: "deploy", resourceKind: "agent" },
-    { action: "operate", resourceKind: "secret" },
-  );
+  grantMember(fixture, READER, [
+    ["update", "agent"],
+    ["deploy", "agent"],
+    ["operate", "secret"],
+  ]);
   await login(
     page,
     fixture,
@@ -509,9 +483,7 @@ test("a plugin edit kept across a revoked Agent update no longer holds Deploy", 
   // Leaving the tab keeps the edit. Agent update is revoked, and Reload authentication source
   // rereads the permission answer.
   await page.getByRole("tab", { name: "Credentials", exact: true }).click();
-  reader.permissions = reader.permissions.filter(
-    (permission) => !(permission.action === "update" && permission.resourceKind === "agent"),
-  );
+  revokeMemberGrant(fixture, READER, ["update", "agent"]);
   await page.getByRole("button", { name: "Reload authentication source", exact: true }).click();
   await page.getByRole("status").filter({ hasText: AGENT_UPDATE_DENIED }).waitFor();
   await held.waitFor();
