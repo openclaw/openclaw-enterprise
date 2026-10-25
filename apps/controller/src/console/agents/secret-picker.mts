@@ -322,6 +322,9 @@ export function createSecretReferenceField({
         if (listboxOpen) {
           renderListbox();
         }
+        if (listedHint && !staged) {
+          status.textContent = listedStatus();
+        }
       },
       () => {},
     );
@@ -329,6 +332,12 @@ export function createSecretReferenceField({
     return read;
   }
   const secretOperateDenied = (secret: SecretMetadata) => operateDenied.has(secret.id);
+  // Why the inline create action is disabled, if it is. A caller denied operate on a listed
+  // Secret holds Secret operate per Secret, so a new Secret would get none and could not be
+  // chosen: the action is disabled before the Secret is created, as the Preset's Create new Secret
+  // choice is (finding 2500). An empty answer cannot tell, so the create is checked afterwards.
+  const newSecretDenied = () =>
+    createDenied ? SECRET_CREATE_DENIED : operateDenied.size ? NEW_SECRET_OPERATE_DENIED : null;
   function readCreateAnswer() {
     void context.secretsCreateAllowed?.().then((allowed) => {
       if (!isCurrent() || createDenied === (allowed === false)) {
@@ -467,8 +476,8 @@ export function createSecretReferenceField({
           (option.kind === "secret" && option.secret.id === selectedSecretId) ||
           (option.kind === "current" && selectedSecretId !== null);
         const reason =
-          option.kind === "create" && createDenied
-            ? SECRET_CREATE_DENIED
+          option.kind === "create"
+            ? newSecretDenied()
             : option.kind === "secret" && secretOperateDenied(option.secret)
               ? SECRET_OPERATE_DENIED
               : null;
@@ -563,6 +572,9 @@ export function createSecretReferenceField({
         ? `Choose an existing Secret. ${SECRET_CREATE_DENIED}`
         : `No Secrets you can read in this Namespace. ${SECRET_CREATE_DENIED} Ask an administrator for read access to an existing one.`;
     }
+    if (operateDenied.size) {
+      return `Choose an existing Secret. ${NEW_SECRET_OPERATE_DENIED}`;
+    }
     return secrets.length
       ? "Choose an existing Secret or create a new one."
       : context.installationAdmin === false
@@ -626,7 +638,7 @@ export function createSecretReferenceField({
 
   function selectOption(option: SecretOption) {
     if (option.kind === "create") {
-      if (createDenied) {
+      if (newSecretDenied()) {
         return;
       }
       closeListbox({ restoreSelection: true });

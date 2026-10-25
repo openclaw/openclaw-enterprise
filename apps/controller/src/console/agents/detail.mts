@@ -6,7 +6,6 @@ import type {
   AgentRead,
   AgentRevision,
   AgentRevisionRead,
-  AgentSecretPermissionsResponse,
   Configuration,
   HarnessAuthBinding,
   OpenClawConfigurationDocument,
@@ -89,7 +88,7 @@ import {
   askInstallationAdministrator,
   credentialOperateGrants,
   ensureCredentialOperateBinding,
-  type SecretsOperateDenied,
+  secretOperateAnswer,
 } from "./credential-access.mjs";
 import {
   createDeploymentStatusPanel,
@@ -101,7 +100,6 @@ import { createDeploymentRecovery } from "./deployment-recovery.mjs";
 
 type DetailContext = ConsolePageContext & { namespaceId: string; agentId: string };
 type Permissions = Static<typeof AgentCallerPermissionsResponse>["data"];
-type SecretPermissions = Static<typeof AgentSecretPermissionsResponse>["data"];
 type RevisionPage = Awaited<ReturnType<typeof readRevisionPage>>;
 type Revision = RevisionPage["revisions"][number];
 type RevisionResult = PromiseSettledResult<RevisionPage>;
@@ -572,21 +570,10 @@ export async function renderAgentDetail(
   }
   // The readable Secrets this caller may not operate: each Secret field lists them disabled and
   // never stages one, since the save would answer 403 (finding 2453). Read when a field first
-  // needs it, and again after a permission reread or an inline Secret create. A failed read is
-  // unknown and marks none.
-  let secretsOperateRead: Promise<ReadonlySet<string> | undefined> | null = null;
-  const secretsOperateDenied: SecretsOperateDenied = ({ fresh = false } = {}) => {
-    if (fresh) {
-      secretsOperateRead = null;
-    }
-    return (secretsOperateRead ??= (
-      request(`${path}/permissions/secrets`) as Promise<SecretPermissions>
-    ).then(
-      (answer) =>
-        Array.isArray(answer?.operateDenied) ? new Set(answer.operateDenied) : undefined,
-      () => undefined,
-    ));
-  };
+  // needs it, and again after a permission reread or an inline Secret create. A failed read keeps
+  // the last answer; before any answer it marks none.
+  const secretsOperateAnswer = secretOperateAnswer(() => request(`${path}/permissions/secrets`));
+  const secretsOperateDenied = secretsOperateAnswer.read;
   context.setTitle(agent.name);
   // A missing summary leaves each control on its usual path, except failed-version
   // recovery, which waits for a positive answer before offering a draft link.
@@ -3269,12 +3256,13 @@ export async function renderAgentDetail(
   // each one the caller may not operate (finding 2453). It is named only when the permission
   // answer, read again too, allows the save's own grants: update on the Configuration for a
   // Configuration save; update, Configuration read and the bound sources for an Agent save.
-  // Otherwise, or when either read fails, the save's usual refusal names every grant it needs.
+  // Otherwise the save's usual refusal names every grant it needs: so it does when the permission
+  // read fails, or when the Secret read fails before any answer (a failed reread keeps the last).
   async function refusedSecretBinding(
     save: "configuration" | "agent",
     secrets: readonly Pick<SecretMetadata, "id" | "name">[],
   ) {
-    secretsOperateRead = null;
+    secretsOperateAnswer.reset();
     const [permissions, denied] = await Promise.all([
       readPermissions().catch(() => null),
       secretsOperateDenied(),
@@ -3291,7 +3279,7 @@ export async function renderAgentDetail(
 
   // Reads the caller's permission answer again; a failed read keeps the last answer.
   function rereadPermissions() {
-    secretsOperateRead = null;
+    secretsOperateAnswer.reset();
     const previous = latestPermissionsRead;
     const reread = ++permissionsRereads;
     const read = readPermissions().then(

@@ -431,6 +431,19 @@ export async function operateDeniedSecretOption(scope, label, secret) {
   return option;
 }
 
+// Lists the Secret field `label`'s inline Create new Secret action and returns it, checking that
+// it is disabled with `reason` in its accessible name.
+export async function deniedCreateSecretOption(scope, label, reason) {
+  await scope.getByLabel(label, { exact: true }).fill("no matching Secret");
+  const option = scope.getByRole("option", {
+    name: `Create new Secret... ${reason}`,
+    exact: true,
+  });
+  await option.waitFor();
+  assert.equal(await option.getAttribute("aria-disabled"), "true");
+  return option;
+}
+
 // Expires every session the app holds, as time passing would: the API then refuses each one.
 // Better Auth's memory adapter stores session expiry as Date values.
 export function expireSessions(fixture) {

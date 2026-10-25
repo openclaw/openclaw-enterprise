@@ -10,7 +10,6 @@ import type {
   InstallationCapabilities,
   Namespace,
   NamespaceCallerPermissionsResponse,
-  NamespaceSecretPermissionsResponse,
   PluginApprovers,
   PresetLaunchSettings,
   SecretBindings,
@@ -37,7 +36,7 @@ import { WORKSPACE_DEFAULTS, WORKSPACE_DEFAULTS_ID } from "../workspace-defaults
 import { configuredHarnessId, harnessAuthDescription } from "./harness-auth.mjs";
 import { type DeviceLogin, createDeviceLogin } from "./device-login.mjs";
 import { createRepositoryFields } from "./repositories.mjs";
-import { ensureCredentialOperateBinding, type SecretsOperateDenied } from "./credential-access.mjs";
+import { ensureCredentialOperateBinding, secretOperateAnswer } from "./credential-access.mjs";
 import {
   createSecretReferenceField,
   NEW_SECRET_OPERATE_DENIED,
@@ -67,7 +66,6 @@ import {
 type ApplyPreset = Parameters<typeof createPresetFields>[1];
 type PresetOptions = Partial<Parameters<ApplyPreset>[1]>;
 type Permissions = Static<typeof NamespaceCallerPermissionsResponse>["data"];
-type SecretPermissions = Static<typeof NamespaceSecretPermissionsResponse>["data"];
 type CreateRequest = (
   path: string,
   options?: RequestOptions & { revalidate?: false; rereadOnResume?: true; readOnly?: true },
@@ -653,7 +651,7 @@ export function renderCreateAgent(context: CreateAgentContext, restored?: unknow
   }
   // Starting the form replaces the launch view, and with it the control that started it. Give
   // focus to the page heading instead of dropping it to the document (finding 1446).
-  const operateAnswer = secretOperateAnswer(context);
+  const operateAnswer = namespaceSecretOperateAnswer(context);
   const startForm = (
     rendered: PresetLaunchSettings,
     options: PresetOptions,
@@ -727,29 +725,12 @@ const NEW_SECRET_REFUSAL = `${NEW_SECRET_OPERATE_DENIED} Select Start over and u
 // The readable Secrets this caller may not operate: each Create Agent Secret field, the Preset's
 // existing Secret included, lists them disabled and never stages one, since Agent create, or a
 // directory search, would answer 403 (finding 2469). Read when a field first needs it, and again
-// after a permission reread, a refused create or an inline Secret create. A failed read is unknown
-// and marks none.
-function secretOperateAnswer(context: CreateAgentContext) {
-  let answer: Promise<ReadonlySet<string> | undefined> | null = null;
-  const read: SecretsOperateDenied = ({ fresh = false } = {}) => {
-    if (fresh) {
-      answer = null;
-    }
-    return (answer ??= (
-      context.request(
-        `${namespacePath(context.namespaceId)}/permissions/secrets`,
-      ) as Promise<SecretPermissions>
-    ).then(
-      (value) => (Array.isArray(value?.operateDenied) ? new Set(value.operateDenied) : undefined),
-      () => undefined,
-    ));
-  };
-  return {
-    read,
-    reset: () => {
-      answer = null;
-    },
-  };
+// after a permission reread, a refused create or an inline Secret create. A failed read keeps the
+// last answer; before any answer it marks none.
+function namespaceSecretOperateAnswer(context: CreateAgentContext) {
+  return secretOperateAnswer(() =>
+    context.request(`${namespacePath(context.namespaceId)}/permissions/secrets`),
+  );
 }
 
 // What Create Agent knows of its Namespace: missing from a list the form read (kept for Start
@@ -780,7 +761,7 @@ function renderAgentForm(
   rendered: PresetLaunchSettings,
   presetOptions: PresetOptions = {},
   draft: Partial<CreateAgentDraft> = {},
-  operateAnswer = secretOperateAnswer(context),
+  operateAnswer = namespaceSecretOperateAnswer(context),
 ) {
   const { view, request, namespaceId } = context;
   const secretsOperateDenied = operateAnswer.read;

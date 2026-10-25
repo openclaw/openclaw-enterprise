@@ -313,17 +313,23 @@ function credentialReferenceField(
   return picker;
 }
 
-// A hint that offers Secret create, worded choose-only when the Namespace permission answer
-// denies Secret create, as the token fields themselves are (finding 2483). An unknown answer
-// keeps the create wording, as the fields keep their create action.
+// A hint that offers Secret create, worded choose-only when the token fields disable their create
+// action: the Namespace permission answer denies Secret create (finding 2483), or the Secret
+// operate answer denies a readable Secret, so a new one could not be chosen (finding 2500). An
+// unknown answer keeps the create wording, as the fields keep their create action.
 function secretHint(context: ChannelDrawerContext, withCreate: string, chooseOnly: string) {
   const hint = element("p", { className: "hint" }, withCreate);
+  const chooseOnlyWhen = (denied: boolean) => {
+    if (denied) {
+      hint.textContent = chooseOnly;
+    }
+  };
   void context.secretsCreateAllowed?.().then(
-    (allowed) => {
-      if (allowed === false) {
-        hint.textContent = chooseOnly;
-      }
-    },
+    (allowed) => chooseOnlyWhen(allowed === false),
+    () => {},
+  );
+  void context.secretsOperateDenied?.().then(
+    (denied) => chooseOnlyWhen(Boolean(denied?.size)),
     () => {},
   );
   return hint;

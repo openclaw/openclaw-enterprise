@@ -24,6 +24,49 @@ export type SecretsOperateDenied = (options?: {
   fresh?: boolean;
 }) => Promise<ReadonlySet<string> | undefined>;
 
+/**
+ * A page's cached Secret operate answer, which `read` fetches (the Agent's or the Namespace's
+ * `permissions/secrets`). `reset` drops the cached answer, as `fresh` does, so the next read asks
+ * again. A failed read answers the last answer read, or undefined before any read succeeded, and
+ * is not cached: the next read asks again. Forgetting a known answer on one failed reread made
+ * every Secret it denied choosable until a reload (finding 2501).
+ */
+export function secretOperateAnswer(read: () => Promise<unknown>) {
+  let answer: Promise<ReadonlySet<string> | undefined> | null = null;
+  let known: ReadonlySet<string> | undefined;
+  const denied: SecretsOperateDenied = ({ fresh = false } = {}) => {
+    if (fresh) {
+      answer = null;
+    }
+    if (answer) {
+      return answer;
+    }
+    const current = read()
+      .then((value) => {
+        const { operateDenied } = responseFields(value);
+        if (!Array.isArray(operateDenied)) {
+          throw new Error("Invalid Secret permission answer");
+        }
+        known = new Set(operateDenied);
+        return known;
+      })
+      .catch(() => {
+        if (answer === current) {
+          answer = null;
+        }
+        return known;
+      });
+    answer = current;
+    return current;
+  };
+  return {
+    read: denied,
+    reset: () => {
+      answer = null;
+    },
+  };
+}
+
 type CredentialReference = SecretReference | CredentialSourceReference;
 
 // Granting access writes Namespace IAM policy, which only Installation administration may do (UX
