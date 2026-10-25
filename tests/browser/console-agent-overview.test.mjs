@@ -13,12 +13,14 @@ import {
   createRuntimeLogComputeDriver,
 } from "../helpers/runtime-logs.mjs";
 import {
+  AGENT_READ,
   apiRequests,
   asksBeforeUnload,
   consoleViewports,
   deploymentStatusResponse,
   detailUrl,
   fileBrowser,
+  grantSecretOperate,
   holdRequests,
   login,
   nativeValues,
@@ -724,11 +726,8 @@ test("Recovery offers Open Credentials only when an Agent update would pass its 
   assert.equal(agent.harnessAuth.method, "api_key");
   const failed = await fixture.deployAgent(namespace.id, agent.id);
   const member = await fixture.createNamespaceMember("credentials-recovery", namespace.id, [
-    ["read", "namespace"],
-    ["read", "agent"],
+    ...AGENT_READ,
     ["update", "agent"],
-    ["read", "agent_revision"],
-    ["read", "configuration"],
   ]);
   const { page } = await newPage(t, fixture, { browser });
   await routeFailedRecord(page, fixture, namespace, agent, failed, "RUNTIME_AUTHENTICATION_FAILED");
@@ -779,29 +778,12 @@ test("Recovery's Open Configuration follows whether the caller may edit the Conf
   // Configuration read and update, and operate on the one Secret the Configuration binds, so a
   // Configuration save would pass; an Agent update would fail on the Harness API key Secret.
   const member = await fixture.createNamespaceMember("configuration-recovery", namespace.id, [
-    ["read", "namespace"],
-    ["read", "agent"],
+    ...AGENT_READ,
     ["update", "agent"],
-    ["read", "agent_revision"],
-    ["read", "configuration"],
     ["update", "configuration"],
   ]);
   const role = fixture.policy.roles.find(({ id }) => id === "role-configuration-recovery");
-  fixture.policy.roles.push({
-    id: "role-configuration-recovery-operate",
-    namespaceId: namespace.id,
-    permissions: [{ action: "operate", resourceKind: "secret" }],
-  });
-  const boundOperate = {
-    id: "binding-configuration-recovery-operate",
-    namespaceId: namespace.id,
-    subjectKind: "identity",
-    subjectId: member.principal.id,
-    roleId: "role-configuration-recovery-operate",
-    resourceKind: "secret",
-    resourceId: bound.id,
-  };
-  fixture.policy.bindings.push(boundOperate);
+  const boundOperate = grantSecretOperate(fixture, namespace.id, member.principal, [bound.id]);
   const { page } = await newPage(t, fixture, { browser });
   await routeFailedRecord(page, fixture, namespace, agent, failed);
   await trackSettledFetches(page);
@@ -851,7 +833,7 @@ test("Recovery's Open Configuration follows whether the caller may edit the Conf
 
   // Without operate on the bound Secret every Configuration save is refused, so the editor is
   // read-only: recovery offers the draft to read and deploy.
-  fixture.policy.bindings.splice(fixture.policy.bindings.indexOf(boundOperate), 1);
+  boundOperate.revoke(bound.id);
   answer = await shown();
   assert.equal(answer.configurationUpdate, true);
   assert.equal(answer.configurationSecretsOperate, false);

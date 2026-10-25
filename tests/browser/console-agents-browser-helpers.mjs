@@ -37,6 +37,83 @@ export const MEMBER_WRITE = [
   ["read", "preset"],
 ];
 
+// What a member who reads an Agent holds in one Namespace: the Namespace, the Agent, its
+// versions and its Configuration. Tests add the grants their persona needs to it.
+/** @type {typeof MEMBER_WRITE} */
+export const AGENT_READ = [
+  ["read", "namespace"],
+  ["read", "agent"],
+  ["read", "agent_revision"],
+  ["read", "configuration"],
+];
+
+// The Role that fixture.createNamespaceMember made for `label`. Tests change it in place to
+// grant or revoke after sign-in: State reads the policy on each request.
+function memberRole(fixture, label) {
+  const role = fixture.policy.roles.find(({ id }) => id === `role-${label}`);
+  assert.ok(role, `member ${label} has a Role`);
+  return role;
+}
+
+/** Adds `grants`, as [action, resourceKind] pairs, to member `label`'s Role. */
+export function grantMember(fixture, label, grants) {
+  memberRole(fixture, label).permissions.push(
+    ...grants.map(([action, resourceKind]) => ({ action, resourceKind })),
+  );
+}
+
+/**
+ * Removes one [action, resourceKind] grant from member `label`'s Role, which must hold it.
+ * Returns a function that restores the grants the Role held before.
+ */
+export function revokeMemberGrant(fixture, label, [action, resourceKind]) {
+  const role = memberRole(fixture, label);
+  const before = role.permissions;
+  role.permissions = before.filter(
+    (grant) => grant.action !== action || grant.resourceKind !== resourceKind,
+  );
+  assert.notEqual(
+    role.permissions.length,
+    before.length,
+    `${label} holds ${action} ${resourceKind}`,
+  );
+  return () => {
+    role.permissions = before;
+  };
+}
+
+// Secret operate on exactly `secretIds`, as an administrator grants it per Secret: one Role
+// holding Secret operate, bound to `principal` once for each Secret. `revoke(secretId)` removes
+// that Secret's binding.
+export function grantSecretOperate(fixture, namespaceId, principal, secretIds) {
+  const roleId = `secret-operate-${principal.id}`;
+  if (!fixture.policy.roles.some(({ id }) => id === roleId)) {
+    fixture.policy.roles.push({
+      id: roleId,
+      namespaceId,
+      permissions: [{ action: "operate", resourceKind: "secret" }],
+    });
+  }
+  for (const secretId of secretIds) {
+    fixture.policy.bindings.push({
+      id: `${roleId}-${secretId}`,
+      namespaceId,
+      subjectKind: "identity",
+      subjectId: principal.id,
+      roleId,
+      resourceKind: "secret",
+      resourceId: secretId,
+    });
+  }
+  return {
+    revoke(secretId) {
+      const index = fixture.policy.bindings.findIndex(({ id }) => id === `${roleId}-${secretId}`);
+      assert.notEqual(index, -1, `Secret operate on ${secretId} is granted`);
+      fixture.policy.bindings.splice(index, 1);
+    },
+  };
+}
+
 // The in-memory fixture has no worker records. A test that supplies a failed deployment
 // record builds its error with the API's own code, so the console shows the exact code,
 // message and data that the API and occ return for that failure.
