@@ -190,6 +190,9 @@ without calling the Secret Driver. Shared `agents/secret-picker.mjs:createSecret
 filters names/IDs in a combobox. Arrows navigate, Enter selects, and Escape
 restores the binding. Typing stages nothing; selection stages a reference,
 Cancel discards it. A false Namespace `secrets.create` disables creation, with its reason.
+On the Agent page, `GET .../agents/:agentId/permissions/secrets` lists readable Secrets the
+caller may not `operate`; each is disabled with its reason and never staged. A refused binding
+save rereads it to name such a Secret.
 
 `apps/controller/src/console/agents/secret-picker.mjs:openCreateSecretDialog` shows
 an editable Agent-prefixed Name, the Secrets page's `secretValueControl` (CRLF becomes LF),

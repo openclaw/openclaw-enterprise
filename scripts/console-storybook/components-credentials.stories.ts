@@ -29,6 +29,10 @@ export const CredentialsSlackReplaceDenied = {
   ...story("credentialsSlackReplaceDenied"),
   name: "Slack tokens, editor must replace the bot token Secret",
 };
+export const CredentialsSlackOperateDenied = {
+  ...story("credentialsSlackOperateDenied"),
+  name: "Slack tokens, editor cannot operate one readable Secret",
+};
 export const CredentialsSlackStored = {
   ...story("credentialsSlackStored"),
   name: "Slack tokens stored",

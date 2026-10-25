@@ -75,6 +75,7 @@
 - [`getAgentRuntimeImages`](../api.md#get-namespacesnamespaceidagentsagentidruntimeimages): Read observed images and source commits for an Agent's active runtime.
 - [`getAgentSandboxPolicy`](../api.md#get-namespacesnamespaceidagentsagentidsandboxpolicyfacet): Read one Agent sandbox policy and delegation ceiling.
 - [`getAgentSandboxRecommendations`](../api.md#get-namespacesnamespaceidagentsagentidrevisionsrevisionidsandboxpolicyfacetrecommendations): Read policy suggestions for the requested Agent revision.
+- [`getAgentSecretPermissions`](../api.md#get-namespacesnamespaceidagentsagentidpermissionssecrets): Report the readable Secrets that the caller may not bind to a readable Agent, not authorization for a later operation.
 - [`getSavedAgentPluginPolicyCapabilities`](../api.md#get-namespacesnamespaceidagentsagentidpluginscapabilities): Read selected Plugin Driver policy capabilities for an active Agent with caller Agent read/update permission.
 - [`resolveAgentNativeAdminReturn`](../api.md#get-nativeadminreturnagentkey): Resolve an authorized Agent from a copied native chat link.
 - [`createAgent`](../api.md#post-namespacesnamespaceidagents): Create a Namespace-owned Agent.

@@ -9,6 +9,7 @@ import { chromium, request as playwrightRequest } from "playwright";
 import { watchBrowserContext } from "../helpers/browser-failure-diagnostics.mjs";
 import { keepRequestInterceptionEnabled } from "../helpers/browser-request-interception.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { SECRET_OPERATE_DENIED } from "../helpers/refusal-text.mjs";
 import { waitUntil } from "../helpers/wait-for.mjs";
 import {
   deploymentErrorForWork,
@@ -338,6 +339,19 @@ export async function selectSecret(scope, label, secret, options = {}) {
   const field = scope.getByLabel(label, { exact: true });
   await field.fill(options.query ?? secret.name);
   await scope.getByRole("option", { name: secretOptionLabel(secret), exact: true }).click();
+}
+
+// Lists `secret` in the Secret field `label` and returns its option, which carries the reason in
+// its accessible name when the caller may read the Secret but not operate it (finding 2453).
+export async function operateDeniedSecretOption(scope, label, secret) {
+  await scope.getByLabel(label, { exact: true }).fill(secret.name);
+  const option = scope.getByRole("option", {
+    name: `${secretOptionLabel(secret)} ${SECRET_OPERATE_DENIED}`,
+    exact: true,
+  });
+  await option.waitFor();
+  assert.equal(await option.getAttribute("aria-disabled"), "true");
+  return option;
 }
 
 // Expires every session the app holds, as time passing would: the API then refuses each one.

@@ -11,7 +11,12 @@ import { namespacePath } from "./list.mjs";
 export type AgentAccessContext = Pick<
   NamespacePageContext,
   "request" | "isCurrent" | "onExpired"
-> & { namespaceId: string };
+> & {
+  namespaceId: string;
+  // The IDs of readable Secrets the caller may not operate, which binding one to the Agent needs
+  // (finding 2453); undefined when the answer is unknown. Secret fields mark and refuse them.
+  secretsOperateDenied?: (() => Promise<ReadonlySet<string> | undefined>) | undefined;
+};
 
 type CredentialReference = SecretReference | CredentialSourceReference;
 

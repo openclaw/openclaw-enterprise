@@ -53,6 +53,8 @@ export interface ChannelDrawerContext extends SlackDirectoryContext {
   draftChangedSecrets?: Record<string, SecretMetadata> | undefined;
   // The Namespace permission answer's secrets.create, for the token fields' inline Create Secret.
   secretsCreateAllowed?: (() => Promise<boolean | undefined>) | undefined;
+  // Readable Secrets the caller may not operate, which the token fields refuse (finding 2453).
+  secretsOperateDenied?: (() => Promise<ReadonlySet<string> | undefined>) | undefined;
 }
 
 type BindingUpdate = { secretBindings?: SecretBindings; changedSecrets?: SecretMetadata[] };

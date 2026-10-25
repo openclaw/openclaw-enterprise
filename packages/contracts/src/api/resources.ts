@@ -758,6 +758,24 @@ export const AgentCallerPermissionsResponse = Type.Object(
   { additionalProperties: false },
 );
 
+// Kept apart from the Agent answer, which list pages read for each row: this one reads every
+// readable Secret in the Namespace.
+export const AgentSecretPermissionsResponse = Type.Object(
+  {
+    data: Type.Object(
+      {
+        operateDenied: Type.Array(Type.String({ minLength: 1 }), {
+          description:
+            "The IDs of the Namespace's Secrets that the caller may read but the selected IAM Driver does not allow Secret operate on now, sorted. Binding a Secret to this Agent's Configuration or as its Harness authentication source needs Secret operate on it. Empty when it is not reported: reported only to a caller with read on the Namespace and on the Agent's Configuration, and update on the Agent or its Configuration. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
+        }),
+      },
+      { additionalProperties: false },
+    ),
+    meta: Meta,
+  },
+  { additionalProperties: false },
+);
+
 export const NamespaceCallerPermissionsResponse = Type.Object(
   {
     data: Type.Object(

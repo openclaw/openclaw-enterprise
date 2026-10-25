@@ -31,6 +31,10 @@ type SecretContext = Partial<AgentAccessContext> & {
 // on the Secrets page (finding 2442).
 export const SECRET_CREATE_DENIED =
   "Your access does not include creating Secrets in this Namespace.";
+// Shown on a listed Secret the caller may read but not operate: a save that binds it would be
+// refused (finding 2453).
+export const SECRET_OPERATE_DENIED =
+  "Binding it needs Secret operate, which your access does not include.";
 
 // The API's Name length for Secrets, in code points: the Name rule namespaces.mts mirrors.
 export const SECRET_NAME_MAX_CHARACTERS = NAME_MAX_CHARACTERS;
@@ -298,6 +302,28 @@ export function createSecretReferenceField({
   // disabled with the reason, so no dialog is filled in only to be refused (finding 2442). An
   // unknown answer keeps the action.
   let createDenied = false;
+  // Listed Secrets the permission answer says the caller may not operate. They stay listed,
+  // disabled with the reason, and are never staged: a save binding one answers 403 (finding
+  // 2453). An unknown answer marks none, and a Secret it does not list stays choosable.
+  let operateDenied: ReadonlySet<string> = new Set();
+  let operateRead: Promise<void> | null = null;
+  function readOperateAnswer() {
+    const read = (context.secretsOperateDenied?.() ?? Promise.resolve(undefined)).then(
+      (denied) => {
+        if (!isCurrent() || read !== operateRead) {
+          return;
+        }
+        operateDenied = denied ?? new Set();
+        if (listboxOpen) {
+          renderListbox();
+        }
+      },
+      () => {},
+    );
+    operateRead = read;
+    return read;
+  }
+  const secretOperateDenied = (secret: SecretMetadata) => operateDenied.has(secret.id);
   function readCreateAnswer() {
     void context.secretsCreateAllowed?.().then((allowed) => {
       if (!isCurrent() || createDenied === (allowed === false)) {
@@ -435,7 +461,12 @@ export function createSecretReferenceField({
         const selected =
           (option.kind === "secret" && option.secret.id === selectedSecretId) ||
           (option.kind === "current" && selectedSecretId !== null);
-        const createOff = option.kind === "create" && createDenied;
+        const reason =
+          option.kind === "create" && createDenied
+            ? SECRET_CREATE_DENIED
+            : option.kind === "secret" && secretOperateDenied(option.secret)
+              ? SECRET_OPERATE_DENIED
+              : null;
         const node = element(
           "div",
           {
@@ -443,12 +474,12 @@ export function createSecretReferenceField({
             role: "option",
             className: option.kind === "create" ? "secret-typeahead-create" : "",
             "aria-selected": selected ? "true" : "false",
-            ...(createOff ? { "aria-disabled": "true" } : {}),
+            ...(reason ? { "aria-disabled": "true" } : {}),
           },
           option.label,
           // The space keeps the reason a separate sentence in the option's accessible name.
-          createOff ? " " : null,
-          createOff ? element("small", {}, SECRET_CREATE_DENIED) : null,
+          reason ? " " : null,
+          reason ? element("small", {}, reason) : null,
         );
         node.addEventListener("pointerdown", (event) => event.preventDefault());
         node.addEventListener("click", () => selectOption(option));
@@ -471,6 +502,7 @@ export function createSecretReferenceField({
     // load, so there it applies after a page reload.
     if (!listboxOpen) {
       readCreateAnswer();
+      void readOperateAnswer();
     }
     listboxOpen = true;
     listbox.hidden = false;
@@ -544,6 +576,22 @@ export function createSecretReferenceField({
     closeListbox({ restoreSelection: false });
     setStatusTone(status, null);
     try {
+      // A choice made before the answer arrived waits for it, so no refused binding is staged.
+      await (operateRead ?? readOperateAnswer());
+      if (!isCurrent()) {
+        return;
+      }
+      if (secretOperateDenied(secret)) {
+        // A Secret created here is listed, disabled, until the list is read again.
+        if (!secrets.some((item) => item.id === secret.id)) {
+          secrets.push(secret);
+        }
+        input.value = currentSecretLabel();
+        setStatusTone(status, "danger");
+        status.textContent = `${secret.name} cannot be chosen. ${SECRET_OPERATE_DENIED}`;
+        listedHint = false;
+        return;
+      }
       await onSecretSelected(secret);
       if (!isCurrent()) {
         return;
@@ -563,7 +611,9 @@ export function createSecretReferenceField({
   // unique in a Namespace. Anything else still restores the current binding.
   function typedSecret() {
     const query = searchQuery.trim();
-    return query === "" ? undefined : secrets.find((secret) => secret.name === query);
+    return query === ""
+      ? undefined
+      : secrets.find((secret) => secret.name === query && !secretOperateDenied(secret));
   }
 
   type SecretOption =
@@ -579,6 +629,9 @@ export function createSecretReferenceField({
       return;
     }
     if (option.kind === "secret") {
+      if (secretOperateDenied(option.secret)) {
+        return;
+      }
       closeListbox({ restoreSelection: true });
       void bindSecret(option.secret);
       return;
@@ -720,7 +773,9 @@ export function createSecretReferenceField({
         if (!dialog.open || !isCurrent()) {
           return;
         }
-        if (currentSecretId() === createdSecret.id) {
+        // A created Secret the answer says the caller may not operate is kept but not chosen;
+        // the field says why (finding 2453).
+        if (currentSecretId() === createdSecret.id || secretOperateDenied(createdSecret)) {
           dismiss();
           return;
         }

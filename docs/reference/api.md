@@ -68,7 +68,7 @@ the paths.
 | [Backends](#backends) | 1 operation |
 | [Installation](#installation) | 5 operations |
 | [Namespaces](#namespaces) | 5 operations |
-| [Agents](#agents) | 47 operations |
+| [Agents](#agents) | 48 operations |
 | [Agent deployments](#agent-deployments) | 4 operations |
 | [Agent revisions](#agent-revisions) | 2 operations |
 | [Configurations](#configurations) | 4 operations |
@@ -1857,6 +1857,7 @@ Report advisory primary IAM permissions on a readable Namespace, not authorizati
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/harness-status`](#get-namespacesnamespaceidagentsagentidharnessstatus) | Read the Sandbox Driver's record of a running Agent's dedicated Harness Sandbox |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/native-admin`](#get-namespacesnamespaceidagentsagentidnativeadmin) | Resolve native admin UI launch availability for one Agent |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/permissions`](#get-namespacesnamespaceidagentsagentidpermissions) | Report advisory primary IAM permissions on a readable Agent, not authorization for a later operation |
+| [`GET /namespaces/{namespaceId}/agents/{agentId}/permissions/secrets`](#get-namespacesnamespaceidagentsagentidpermissionssecrets) | Report the readable Secrets that the caller may not bind to a readable Agent, not authorization for a later operation |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/plugins`](#post-namespacesnamespaceidagentsagentidplugins) | List or search plugins for an active Agent; caller needs Agent read/update. Curated discovery needs no Secret; hosted discovery needs the Agent's bound Service Accounts Secret with caller and Agent Secret operate grants |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/plugins/capabilities`](#get-namespacesnamespaceidagentsagentidpluginscapabilities) | Read selected Plugin Driver policy capabilities for an active Agent with caller Agent read/update permission |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/plugins/details`](#post-namespacesnamespaceidagentsagentidpluginsdetails) | Read plugin details for an active Agent; caller needs Agent read/update. Curated discovery needs no Secret; hosted discovery needs the Agent's bound Service Accounts Secret with caller and Agent Secret operate grants |
@@ -3531,6 +3532,48 @@ Report advisory primary IAM permissions on a readable Agent, not authorization f
 | `data.operate` | `boolean` | Yes | Whether the selected IAM Driver allows Agent operate (used for Stop) now. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation. |
 | `data.sandboxPolicyRead` | `boolean` | Yes | Whether the selected IAM Driver allows read now on the Agent's sandbox policy, which reading its network policy and policy suggestions needs. Advisory only: other required permissions, Sandbox Driver support, or a later authorization decision can still prevent the read. |
 | `data.update` | `boolean` | Yes | Whether the selected IAM Driver allows Agent update now. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation. |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+#### `GET /namespaces/{namespaceId}/agents/{agentId}/permissions/secrets`
+
+<span id="get-namespacesnamespaceidagentsagentidpermissionssecrets"></span>
+
+Report the readable Secrets that the caller may not bind to a readable Agent, not authorization for a later operation
+
+**Operation ID:** `getAgentSecretPermissions`
+
+**Permissions:** Requires read permission on the requested Agent.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `read` | `agent` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints |
+| --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | Bad Request |
+| `401` | Unauthorized |
+| `403` | Forbidden |
+| `404` | Not Found |
+| `500` | Internal Server Error |
+| `503` | Service Unavailable |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.operateDenied` | `array<string>` | Yes | The IDs of the Namespace's Secrets that the caller may read but the selected IAM Driver does not allow Secret operate on now, sorted. Binding a Secret to this Agent's Configuration or as its Harness authentication source needs Secret operate on it. Empty when it is not reported: reported only to a caller with read on the Namespace and on the Agent's Configuration, and update on the Agent or its Configuration. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation. |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 

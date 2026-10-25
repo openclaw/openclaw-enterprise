@@ -1782,6 +1782,9 @@ export function installFixture(scenario, evidence) {
             },
           );
         }
+        if (suffix === "/permissions/secrets" && method === "GET") {
+          return response({ operateDenied: scenario.secretOperateDenied ?? [] });
+        }
         if (suffix === "/stop" && method === "POST") {
           saved.desiredRuntimeState = "stopped";
           if (scenario.clearRevisionOnStopReadback) {

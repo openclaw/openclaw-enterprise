@@ -5157,6 +5157,33 @@ export class OpenClawController {
     });
   }
 
+  /**
+   * The IDs of the Namespace's Secrets the principal may read but not operate, sorted: an
+   * advisory answer for clients that bind Secrets, which needs operate on each (finding 2453).
+   * Each decision is the one binding makes. One read unit makes them all, so the selected IAM
+   * Driver reads its policy once, not once per Secret; a false decision is an answer, not an
+   * audited attempt. The caller checks Namespace read first.
+   */
+  async listSecretsOperateDenied(
+    principalId: string,
+    namespaceId: string,
+  ): Promise<readonly string[]> {
+    const namespace = await this.getNamespace(principalId, namespaceId);
+    return this.read(async (state) => {
+      const denied: string[] = [];
+      for (const secret of await state.secrets.listSecrets(namespace.id)) {
+        const resource: ResourceRef = { kind: "secret", id: secret.id, namespaceId: namespace.id };
+        if (
+          (await this.canRead(principalId, resource)) &&
+          !(await this.authorizationDecision(principalId, "operate", resource)).decision.allowed
+        ) {
+          denied.push(secret.id);
+        }
+      }
+      return Object.freeze(denied.sort());
+    });
+  }
+
   async updateSecret(
     principalId: string,
     input: UpdateSecretInput,
