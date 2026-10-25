@@ -610,6 +610,20 @@ test("Agent save refuses a dedicated Harness the Kubernetes Compute settings can
         view.provisioning.findByRequest(f.namespace.id, actorId, requestId),
       );
       assert.equal(job, undefined);
+      // The placement check answers only setting refusals. Any other Driver refusal, such as a
+      // Dedicated OpenClaw plan on a provider other than OpenAI, keeps admission's 409 rather
+      // than escaping as a server error.
+      const gemini = await storeConfiguration(f, "openclaw", "google/gemini-2.5-pro");
+      const otherProvider = await f.request("POST", `${f.path}/provision`, {
+        body: {
+          requestId: `req_${crypto.randomUUID()}`,
+          name: "Provisioned OpenClaw",
+          executionMode: "dedicated",
+          configuration: { kind: "agent", values: gemini.data.values },
+          harnessAuth,
+        },
+      });
+      assertApiError(otherProvider, 409, "RESOURCE_CONFLICT");
     }
     const dedicated = await f.create("Codex", {
       configurationId: codex.data.id,
@@ -644,5 +658,38 @@ test("Agent save refuses a dedicated Harness the Kubernetes Compute settings can
       ["Draft", "dedicated"],
       ["Embedded", "embedded"],
     ]);
+  }
+});
+
+// Create Agent's preflight builds the planned binding's snapshot without reading a Secret, so it
+// must still refuse what Agent save refuses. A Secret in another Namespace is refused before any
+// lookup, with one message whether or not that Secret exists, so the preflight reveals nothing
+// about another Namespace. A method the Agent's topology cannot use is refused by name, the
+// operator-managed runtime included.
+test("Create Agent's preflight refuses a planned Harness authentication that Agent save refuses", async (t) => {
+  const f = await setup(t, { channelRuntime: true, routed: true });
+  const openclaw = await storeConfiguration(f, "openclaw", "openai/gpt-4.1");
+  const other = await f.createNamespace("Other workspace", { ready: true });
+  const foreign = await f.createSecret(other.id, "foreign-model-key", "test-api-key");
+  const missing = { ...foreign.ref, id: `sec_${crypto.randomUUID()}` };
+  const crossNamespace = "Secret references cannot cross Namespaces.";
+  const embeddedMethod =
+    "Agent setting harnessAuth.method must be api_key for embedded OpenClaw on Kubernetes Compute: change harnessAuth or executionMode.";
+  for (const [harnessAuth, message] of [
+    [{ method: "api_key" }, undefined],
+    [{ method: "codex_pat" }, embeddedMethod],
+    [{ method: "runtime" }, embeddedMethod],
+    [{ method: "api_key", source: foreign.ref }, crossNamespace],
+    [{ method: "api_key", source: missing }, crossNamespace],
+  ]) {
+    const response = await f.request("POST", `${f.path}/validate`, {
+      body: { configuration: { kind: "agent", values: openclaw.data.values }, harnessAuth },
+    });
+    if (message === undefined) {
+      assert.equal(response.status, 204, JSON.stringify([harnessAuth, response.body]));
+      continue;
+    }
+    assertApiError(response, 400, "INVALID_REQUEST", JSON.stringify(harnessAuth));
+    assert.equal(response.body.error.message, message);
   }
 });
