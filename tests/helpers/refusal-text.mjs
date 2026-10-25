@@ -16,6 +16,8 @@ export const AGENT_NAME_CONFLICT =
   "An Agent with this name already exists in this Namespace. Choose a different name.";
 export const SECRET_NAME_CONFLICT =
   "A Secret with this name already exists in this Namespace. Choose a different name.";
+export const NAMESPACE_NAME_CONFLICT =
+  "A Namespace with this name already exists. Choose a different name.";
 // Create Agent and the Agents list for a caller without Agent create, which Namespace Roles cannot
 // grant people (findings 2496, 2508).
 export const AGENT_CREATE_DENIED =

@@ -5,6 +5,7 @@ import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { grantRole } from "../helpers/iam-grants.mjs";
+import { NAMESPACE_NAME_CONFLICT } from "../helpers/refusal-text.mjs";
 import {
   apiRequests,
   expectWriteAsksBeforeUnload,
@@ -128,10 +129,8 @@ test("a Namespace name conflict keeps the form editable for correction", async (
   const name = dialog.getByLabel("Namespace name");
   await name.fill("Existing team");
   await dialog.getByRole("button", { name: "Create Namespace", exact: true }).click();
-  await dialog
-    .getByRole("alert")
-    .filter({ hasText: /Choose a different name/ })
-    .waitFor();
+  // The API's own sentence: a live Namespace has the name (not one a deleted Namespace keeps).
+  await dialog.getByRole("alert").filter({ hasText: NAMESPACE_NAME_CONFLICT }).waitFor();
   // A taken name is the reader's to fix: no request ID beside it (finding 2102).
   assert.equal(await dialog.getByText(/Request ID/).count(), 0);
   assert.equal(await name.inputValue(), "Existing team");
