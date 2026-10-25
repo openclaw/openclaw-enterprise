@@ -4683,7 +4683,7 @@ async function replaceSecretFixture(t, label, { agentUpdate = false } = {}) {
     operated.push(data.harnessAuth.source.id);
   }
   fixture.policy.roles.push({
-    id: `role-${slug}`,
+    id: `role-${slug}-secret-operator`,
     namespaceId: namespace.id,
     permissions: [{ action: "operate", resourceKind: "secret" }],
   });
@@ -4693,7 +4693,7 @@ async function replaceSecretFixture(t, label, { agentUpdate = false } = {}) {
       namespaceId: namespace.id,
       subjectKind: "identity",
       subjectId: member.principal.id,
-      roleId: `role-${slug}`,
+      roleId: `role-${slug}-secret-operator`,
       resourceKind: "secret",
       resourceId: secretId,
     });
@@ -4874,6 +4874,38 @@ test("a channel save that rebinds a denied Secret makes the Agent-side tabs edit
   await page.getByRole("tab", { name: "Repositories", exact: true }).click();
   // The editor's selection, not the read-only summary with the sources note.
   await page.locator("#repository-selection-title").waitFor();
+  await expectNoText(page, AGENT_SOURCES_DENIED);
+});
+
+// A tab drawn after the save but before the page's reread answers shows the old denial; the
+// answer rebuilds it while it is shown (finding 2470).
+test("a Plugins tab shown before the reread answers becomes editable when it lands", async (t) => {
+  const { fixture, namespace, agent, member, own, path, configurationPath } =
+    await replaceSecretFixture(t, "Held reread editor", { agentUpdate: true });
+  const { page } = await newPage(t, fixture);
+  const permissions = page.waitForResponse((r) => r.url().endsWith(path + "/permissions"));
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"),
+    member.credentials,
+  );
+  await permissions;
+  await selectSecret(page, "Slack bot token", own);
+  const reread = await holdRequests(t, page, `${fixture.origin}${path}/permissions`, {
+    afterServer: true,
+    once: true,
+  });
+  const saving = page.waitForResponse(
+    (r) => r.request().method() === "PATCH" && r.url().endsWith(configurationPath),
+  );
+  await page.getByRole("button", { name: "Save channel Secrets" }).click();
+  assert.equal((await saving).status(), 200);
+  await reread.requested;
+  await page.getByRole("tab", { name: "Plugins", exact: true }).click();
+  await page.getByText(PLUGINS_READ_ONLY, { exact: true }).waitFor();
+  reread.release();
+  await page.getByRole("button", { name: "Save plugin selections" }).waitFor();
   await expectNoText(page, AGENT_SOURCES_DENIED);
 });
 
