@@ -6992,18 +6992,19 @@ export class OpenClawController {
   }
 
   /**
-   * The distinct Secrets a Configuration binds now, from its record alone. Each save of the
-   * Configuration authorizes Secret operate on every Secret it binds, so the caller-permissions
-   * answer checks these. Requires Configuration read. Unlike getConfiguration it skips the
-   * provisioning guard, so it also answers before provisioning has written the Configuration.
-   * That is safe: saves are refused while the Agent is provisioning, so the answer enables no
-   * save, and the guard's 409 would fail the whole caller-permissions answer.
+   * The Secret each binding name of a Configuration binds now, from its record alone. Each save
+   * of the Configuration authorizes Secret operate on every Secret it submits, or on every bound
+   * Secret when it submits no bindings, so the caller-permissions answer checks these. Requires
+   * Configuration read. Unlike getConfiguration it skips the provisioning guard, so it also
+   * answers before provisioning has written the Configuration. That is safe: saves are refused
+   * while the Agent is provisioning, so the answer enables no save, and the guard's 409 would
+   * fail the whole caller-permissions answer.
    */
-  async getConfigurationSecretSources(
+  async getConfigurationSecretBindingSources(
     principalId: string,
     namespaceId: string,
     configurationId: string,
-  ): Promise<readonly Readonly<ResourceRef>[]> {
+  ): Promise<Readonly<Record<string, Readonly<ResourceRef>>>> {
     this.configurationIdentity(namespaceId, configurationId);
     await this.authorize(principalId, "read", {
       kind: "configuration",
@@ -7016,12 +7017,14 @@ export class OpenClawController {
       if (!metadata) {
         throw new ScopeViolationError("The Configuration does not belong to the exact Namespace.");
       }
-      // A Secret bound to several names is one authorization decision.
-      const sources = new Map<string, Readonly<ResourceRef>>();
-      for (const { source } of Object.values(this.bindings(metadata.secretBindings))) {
-        sources.set(source.id, source);
-      }
-      return Object.freeze([...sources.values()]);
+      return Object.freeze(
+        Object.fromEntries(
+          Object.entries(this.bindings(metadata.secretBindings)).map(([name, { source }]) => [
+            name,
+            source,
+          ]),
+        ),
+      );
     });
   }
 

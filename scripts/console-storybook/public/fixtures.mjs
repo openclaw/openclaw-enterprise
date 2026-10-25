@@ -1776,6 +1776,7 @@ export function installFixture(scenario, evidence) {
               configurationUpdate: allowed,
               configurationRead: true,
               configurationSecretsOperate: allowed,
+              configurationSecretsOperateDeniedBindings: [],
               agentSourcesOperate: allowed,
             },
           );

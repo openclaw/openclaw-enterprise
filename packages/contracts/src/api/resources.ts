@@ -735,7 +735,12 @@ export const AgentCallerPermissionsResponse = Type.Object(
         }),
         configurationSecretsOperate: Type.Boolean({
           description:
-            "Whether the selected IAM Driver allows Secret operate now on every Secret that the Agent's Configuration binds. Each Configuration save needs it for the Secrets it binds. `true` when the Configuration binds no Secret. Reported only to a caller with Configuration read and update; otherwise `false`. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
+            "Whether the selected IAM Driver allows Secret operate now on every Secret that the Agent's Configuration binds. Each Configuration save needs it for the Secrets it binds: the Secrets in its `secretBindings`, or every bound Secret when it omits them. `true` when the Configuration binds no Secret. Reported only to a caller with Configuration read and update; otherwise `false`. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
+        }),
+        configurationSecretsOperateDeniedBindings: Type.Array(Type.String({ minLength: 1 }), {
+          maxItems: 64,
+          description:
+            "The names of the Agent's Configuration Secret bindings whose bound Secret the selected IAM Driver does not allow Secret operate on now, sorted. A Configuration save that submits `secretBindings` needs Secret operate only on the Secrets it submits, so a save that binds each listed name to another Secret does not need it on the Secrets they bind now. A save that omits `secretBindings` keeps every binding. Empty when `configurationSecretsOperate` is `true`, and when it is not reported: reported only to a caller with Configuration read and update. Advisory only: other required permissions, lifecycle state, the Secrets a save binds, or a later authorization decision can still prevent the operation.",
         }),
         agentSourcesOperate: Type.Boolean({
           description:

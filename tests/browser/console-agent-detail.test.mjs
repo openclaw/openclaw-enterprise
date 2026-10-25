@@ -4070,6 +4070,7 @@ test("a version editor without Agent update can recover a failed deployment from
     configurationUpdate: true,
     configurationRead: true,
     configurationSecretsOperate: true,
+    configurationSecretsOperateDeniedBindings: [],
     agentSourcesOperate: false,
   });
 
@@ -4181,6 +4182,7 @@ test("a reader without update views the version draft read-only", async (t) => {
     configurationUpdate: false,
     configurationRead: true,
     configurationSecretsOperate: false,
+    configurationSecretsOperateDeniedBindings: [],
     agentSourcesOperate: false,
   });
   await page.getByText(CONFIGURATION_READ_ONLY, { exact: true }).waitFor();
@@ -4316,6 +4318,7 @@ test("an Agent editor without Configuration update sees the Configuration read-o
     configurationUpdate: false,
     configurationRead: true,
     configurationSecretsOperate: false,
+    configurationSecretsOperateDeniedBindings: [],
     agentSourcesOperate: true,
   });
   await page.getByText(CONFIGURATION_READ_ONLY, { exact: true }).waitFor();
@@ -4388,6 +4391,7 @@ test("an editor without operate on a bound Secret views the version draft read-o
     configurationUpdate: true,
     configurationRead: true,
     configurationSecretsOperate: false,
+    configurationSecretsOperateDeniedBindings: ["EXTERNAL_API_TOKEN"],
     agentSourcesOperate: false,
   });
   await page.getByText(READ_ONLY_DRAFT_NOTICE, { exact: true }).waitFor();
@@ -4791,6 +4795,7 @@ test("a negative permission answer reaching an open Stop or Delete dialog preven
           configurationUpdate: false,
           configurationRead: true,
           configurationSecretsOperate: false,
+          configurationSecretsOperateDeniedBindings: [],
           agentSourcesOperate: false,
         },
       },
