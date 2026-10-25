@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import {
   appendFileSync,
   chmodSync,
+  constants,
   copyFileSync,
   existsSync,
   mkdirSync,
@@ -13,7 +14,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, open, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -62,13 +63,13 @@ const shimTools = {
 
 // A started process's status and output, like spawnSync's, without blocking the other
 // fixtures' commands while it runs.
-function spawnResult(command, args, options) {
+function spawnResult(command, args, options, stderrFd = "pipe") {
   return new Promise((resolve) => {
-    const child = spawn(command, args, { ...options, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(command, args, { ...options, stdio: ["ignore", "pipe", stderrFd] });
     let stdout = "";
     let stderr = "";
     child.stdout.setEncoding("utf8").on("data", (chunk) => (stdout += chunk));
-    child.stderr.setEncoding("utf8").on("data", (chunk) => (stderr += chunk));
+    child.stderr?.setEncoding("utf8").on("data", (chunk) => (stderr += chunk));
     child.on("error", (error) => resolve({ status: null, stdout, stderr: stderr + error.message }));
     child.on("close", (status) => resolve({ status, stdout, stderr }));
   });
@@ -1205,11 +1206,8 @@ async function fixture(
     executionReads: api?.executionReads ?? [],
     accessReviews: api?.reviews ?? [],
     run: (...extra) => execute(script, [...args, ...extra], { cwd: repository, env }),
-    runWithStderr: (destination) =>
-      execute("bash", ["-c", 'exec "$@" 2>"$0"', destination, script, ...args], {
-        cwd: repository,
-        env,
-      }),
+    runWithStderr: (fd) =>
+      spawnResult("/bin/bash", ["--", script, ...args], { cwd: repository, env }, fd),
     // Close the read end before launch; subprocess restores the CLI's default SIGPIPE.
     runWithBrokenPipe: () =>
       execute(
@@ -1254,6 +1252,17 @@ test("resume reads an accepted Secret write before Helm and preserves its other 
   assert.equal(state.worker, 1);
 });
 
+// Open again after resume so a replaced receipt is checked at its published path.
+async function assertPrivateReceipt(path, expected) {
+  const file = await open(path, "r");
+  try {
+    assert.equal((await file.stat()).mode & 0o777, 0o600);
+    assert.equal(await file.readFile("utf8"), expected);
+  } finally {
+    await file.close();
+  }
+}
+
 test("resume recognizes a committed Helm release without rerunning its migration", async (t) => {
   for (const [fault, operation, component] of [
     ["lost-helm-response", "helm-upgrade", "release"],
@@ -1270,8 +1279,7 @@ test("resume recognizes a committed Helm release without rerunning its migration
       });
       const receipt = `${operation}\t${component}\t9\n`;
       const path = join(f.evidence, "native-command-failures.tsv");
-      assert.equal(await readFile(path, "utf8"), receipt);
-      assert.equal(statSync(path).mode & 0o777, 0o600);
+      await assertPrivateReceipt(path, receipt);
       // The native failure says nothing about acceptance: Helm committed in
       // every case, and a readback must recover without another migration.
       const state = await f.state();
@@ -1281,7 +1289,7 @@ test("resume recognizes a committed Helm release without rerunning its migration
       assert.equal(state.worker, 1);
       assert.equal(await readFile(join(f.evidence, "helm-started"), "utf8"), "");
       await f.run("--resume");
-      assert.equal(await readFile(path, "utf8"), receipt);
+      await assertPrivateReceipt(path, receipt);
       assert.equal((await f.events()).filter((event) => event === "migration").length, 1);
     });
   }
@@ -1315,9 +1323,18 @@ test("native failure status survives failed diagnostics and receipt writes", asy
     ["pipe", true],
   ]) {
     await t.test(`${stderr ?? "normal stderr"}, blocked receipt: ${blockedReceipt}`, async (t) => {
-      if (stderr === "/dev/full" && !existsSync(stderr)) {
-        t.skip("requires /dev/full (Linux)");
-        return;
+      let sink;
+      if (stderr === "/dev/full") {
+        try {
+          sink = await open("/dev/full", constants.O_WRONLY);
+        } catch (error) {
+          if (error.code !== "ENOENT") {
+            throw error;
+          }
+          t.skip("requires /dev/full (Linux)");
+          return;
+        }
+        t.after(() => sink.close());
       }
       const f = await fixture(t);
       await f.failNext("fail-scale-worker");
@@ -1325,20 +1342,16 @@ test("native failure status survives failed diagnostics and receipt writes", asy
       if (blockedReceipt) {
         await f.failNext("block-failure-receipt");
       }
-      let run = f.run;
-      if (stderr === "pipe") {
-        run = f.runWithBrokenPipe;
-      } else if (stderr) {
-        run = () => f.runWithStderr(stderr);
-      }
-      const failure = await run().then(
-        () => assert.fail("worker scale must fail"),
-        (error) => error,
-      );
+      const status = sink
+        ? (await f.runWithStderr(sink.fd)).status
+        : await (stderr === "pipe" ? f.runWithBrokenPipe() : f.run()).then(
+            () => assert.fail("worker scale must fail"),
+            (error) => error.code,
+          );
       const path = join(f.evidence, "native-command-failures.tsv");
       const events = await f.events();
-      t.diagnostic(JSON.stringify({ status: failure.code, events }));
-      assert.equal(failure.code, 9);
+      t.diagnostic(JSON.stringify({ status, events }));
+      assert.equal(status, 9);
       assert.equal((await f.state()).api, 0);
       assert.equal((await f.state()).worker, 1);
       assert.equal(existsSync(join(f.evidence, "helm-started")), false);
@@ -1346,8 +1359,7 @@ test("native failure status survives failed diagnostics and receipt writes", asy
       if (blockedReceipt) {
         assert.deepEqual(await readdir(path), []);
       } else {
-        assert.equal(await readFile(path, "utf8"), "quiescence-scale\tworker\t9\n");
-        assert.equal(statSync(path).mode & 0o777, 0o600);
+        await assertPrivateReceipt(path, "quiescence-scale\tworker\t9\n");
       }
     });
   }
