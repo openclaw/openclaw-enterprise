@@ -37,7 +37,8 @@ exact IDs still work. Channel access and direct-message access are independent:
 channel people edit the selected channels' `users`. Switching to **Open** writes
 `allowFrom: ["*"]`, Pairing or Allowlist write the listed people to `allowFrom`, and Disabled
 keeps the saved list. Save channel edits before changing
-credentials on the Credentials tab.
+credentials on the Credentials tab. A save keeps each Secret binding it does not change, so it
+needs Secret `operate` on that Secret, as described in [Channel Secrets](#channel-secrets).
 See [Slack setup](../integrations/slack.md) for credentials and policy details.
 
 In any Secret picker, typing a Secret's exact name selects it when you press
@@ -110,7 +111,10 @@ First-deployment credential generation requires Agent `read` and `operate` when
 generated credentials are missing; deployment also requires `deploy`.
 Saving channel Secrets additionally requires Secret,
 Configuration, and Namespace IAM permissions. Every Configuration save needs Secret `operate`
-on each Secret the Configuration binds; without it, the pickers are read-only and say so. These are multiple writes, so a
+on each Secret it keeps bound, and **Save channel Secrets** keeps every binding it does not change.
+When the Secret you cannot operate is a Slack token, the panel names it: choose another Secret for
+it, or the console refuses the save before sending it. When it is bound under another key, the
+pickers are read-only and name that key. These are multiple writes, so a
 failure can leave partial progress. Granting the Agent a Secret needs Installation
 `administer`: when a member saves a token, the Configuration saves, but the member's session
 sends no grant, so it does not verify the Agent's access. The console asks an Installation
