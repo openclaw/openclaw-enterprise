@@ -124,9 +124,13 @@ jobs:
       # 32vcpu (8 CPUs). Its kernel enforces the NetworkPolicy proofs: with
       # K3s policy enforcement disabled, production-network-access fails
       # every deny case there. It ran these lanes about a minute faster than
-      # ubuntu-22.04 (4 CPUs). The Image Runtime Startup lanes use 32vcpu
+      # ubuntu-22.04 (4 CPUs). Image Runtime Startup and Startup 2 use 32vcpu
       # too: their preparation is faster there, and Startup 2 runs its four
-      # files at once. Image Model Probes stays on 16vcpu: its one case waits
+      # files at once. Startup 3 (Docker only, no k3d) uses 16vcpu: its three
+      # files run their cases two at a time and took 45 s on 32vcpu, and
+      # 16vcpu jobs do not queue when 32vcpu jobs do (10-24: 21 % of 32vcpu
+      # jobs waited over 60 s for a runner, p90 268 s; no 16vcpu job over
+      # 12 s). Image Model Probes stays on 16vcpu: its one case waits
       # out the 110 s model probe cap at 500m on any runner. PostgreSQL
       # Application uses 32vcpu too: it runs up to eight of its twelve files at
       # once, one per CPU (16vcpu caps it at four). Checks and Conformance 1
@@ -163,7 +167,7 @@ jobs:
               {"lane": "images-model-probes", "title": "Image Model Probes", "profile": "images", "timeout": 25, "runner": "blacksmith-16vcpu-ubuntu-2404"},
               {"lane": "images-runtime-startup", "title": "Image Runtime Startup", "profile": "full", "timeout": 30, "runner": "blacksmith-32vcpu-ubuntu-2404"},
               {"lane": "images-runtime-startup-2", "title": "Image Runtime Startup 2", "profile": "images", "timeout": 30, "runner": "blacksmith-32vcpu-ubuntu-2404"},
-              {"lane": "images-runtime-startup-3", "title": "Image Runtime Startup 3", "profile": "images", "timeout": 30, "runner": "blacksmith-32vcpu-ubuntu-2404"},
+              {"lane": "images-runtime-startup-3", "title": "Image Runtime Startup 3", "profile": "images", "timeout": 30, "runner": "blacksmith-16vcpu-ubuntu-2404"},
               {"lane": "k3d-fixture-configuration", "title": "k3d Fixture and Configuration", "profile": "k3d", "timeout": 45, "runner": "blacksmith-32vcpu-ubuntu-2404"},
               {"lane": "k3d-fixture-state", "title": "k3d State and Lifecycle", "profile": "k3d", "timeout": 45, "runner": "blacksmith-32vcpu-ubuntu-2404"},
               {"lane": "k3d-fixture-plugins", "title": "k3d Plugin Status", "profile": "k3d", "timeout": 45, "runner": "blacksmith-32vcpu-ubuntu-2404"},

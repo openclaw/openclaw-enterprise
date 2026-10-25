@@ -1882,6 +1882,29 @@ test("Create Agent's preflight refuses what Configuration and Agent create would
     listed.data.map(({ id }) => id),
     [taken.id],
   );
+
+  // The check answers what the store's unique name would: in this Namespace only, case as typed,
+  // an Agent being deleted included. Another Namespace's names stay private to it.
+  const other = await createNamespace(controller, "agent-preflight-other");
+  const elsewhere = await controller.request("POST", `/namespaces/${other.id}/agents/validate`, {
+    body: { configuration: { kind: "agent", values: {} }, name: "taken-agent" },
+  });
+  assert.equal(elsewhere.status, 204, JSON.stringify(elsewhere.body));
+  const recased = await validate({}, { name: "Taken-Agent" });
+  assert.equal(recased.status, 204, JSON.stringify(recased.body));
+  const leaving = await createAgent(controller, namespace.id, "leaving-agent");
+  const deletion = await controller.request(
+    "DELETE",
+    `/namespaces/${namespace.id}/agents/${leaving.id}`,
+  );
+  assert.equal(deletion.status, 202, JSON.stringify(deletion.body));
+  assertApiError(await validate({}, { name: "leaving-agent" }), 409, "RESOURCE_CONFLICT");
+  // The name check comes last, so a taken name with a content refusal gets the content refusal.
+  const both = await validate(
+    { gateway: { auth: { password: "literal-password" } } },
+    { name: "taken-agent" },
+  );
+  assert.equal(both.status, 400, JSON.stringify(both.body));
 });
 
 test("Namespace IAM reports invalid policy input as 400 with the field and refuses inert Permissions", async () => {

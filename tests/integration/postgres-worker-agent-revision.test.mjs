@@ -1002,6 +1002,28 @@ test(
         [older.id, "failed", "REVISION_SUPERSEDED"],
       ],
     );
+    // A page that stops before the last revision carries the same outcomes.
+    const outcomes = (page) =>
+      page.revisions.map(({ id, deploymentStatus, deploymentErrorCode }) => [
+        id,
+        deploymentStatus,
+        deploymentErrorCode,
+      ]);
+    const first = await fixture.controller.listRevisions(
+      fixture.actor.id,
+      fixture.namespace.id,
+      owner.id,
+      { limit: 1 },
+    );
+    assert.deepEqual(outcomes(first), [[newer.id, "succeeded", null]]);
+    assert.equal(first.nextBefore, newer.revision);
+    const second = await fixture.controller.listRevisions(
+      fixture.actor.id,
+      fixture.namespace.id,
+      owner.id,
+      { limit: 1, before: first.nextBefore },
+    );
+    assert.deepEqual(outcomes(second), [[older.id, "failed", "REVISION_SUPERSEDED"]]);
   },
 );
 
