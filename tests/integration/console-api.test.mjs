@@ -332,19 +332,10 @@ test("caller permission summaries report primary IAM decisions without authorizi
   assert.equal(policyRead.status, 200);
   // An IAM failure on this decision is not a denial: the whole answer is unavailable, so the
   // console keeps reading the policy instead of hiding it.
-  const authorizeSandboxPolicy = fixture.iamDriver.authorize;
-  fixture.iamDriver.authorize = async (request) => {
-    if (request.resource.kind === "sandbox_policy") {
-      throw new Error("IAM outage");
-    }
-    return authorizeSandboxPolicy.call(fixture.iamDriver, request);
-  };
-  let policyOutage;
-  try {
-    policyOutage = await fixture.request("GET", permissionsPath, { session });
-  } finally {
-    fixture.iamDriver.authorize = authorizeSandboxPolicy;
-  }
+  const policyOutage = await fixture.withIamOutage(
+    (request) => request.resource.kind === "sandbox_policy",
+    () => fixture.request("GET", permissionsPath, { session }),
+  );
   assertApiError(policyOutage, 503, "DEPENDENCY_UNAVAILABLE");
   // Configuration update on the Agent's Configuration is its own grant (finding 2421).
   fixture.policy.roles.push({
@@ -1511,6 +1502,34 @@ test("the Agent administer answer matches what native admin access checks", asyn
     ["openclaw.agents.native_admin.read"],
   );
 
+  // Administer granted on this Agent alone: the answer probes this exact Agent, as the probe
+  // does, so it is true here and stays false for another Agent the member can read.
+  const other = await fixture.createAgent(namespace.id, "Other administered agent");
+  fixture.policy.roles.push({
+    id: "role-administer-exact",
+    namespaceId: namespace.id,
+    permissions: [{ action: "administer", resourceKind: "agent" }],
+  });
+  fixture.policy.bindings.push({
+    id: "binding-administer-exact",
+    namespaceId: namespace.id,
+    subjectKind: "identity",
+    subjectId: member.principal.id,
+    roleId: "role-administer-exact",
+    resourceKind: "agent",
+    resourceId: agent.id,
+  });
+  assert.equal(await answer(), true);
+  const otherPath = `/namespaces/${namespace.id}/agents/${other.id}`;
+  const otherSummary = await fixture.request("GET", `${otherPath}/permissions`, { session });
+  assert.equal(otherSummary.status, 200);
+  assert.equal(otherSummary.data.administer, false);
+  assertApiError(
+    await fixture.request("GET", `${otherPath}/native-admin`, { session }),
+    403,
+    "FORBIDDEN",
+  );
+
   fixture.policy.roles
     .find((role) => role.id === "role-administer-answer")
     .permissions.push({ action: "administer", resourceKind: "agent" });
@@ -1519,4 +1538,71 @@ test("the Agent administer answer matches what native admin access checks", asyn
   const allowed = await probe();
   assert.equal(allowed.status, 200);
   assert.deepEqual(allowed.data, { status: "disabled" });
+});
+
+// The console reads a false answer as "this caller may not", and disables or skips the matching
+// action. An IAM failure is not a denial: each decision behind an answer fails the whole answer
+// with 503, so the console keeps its usual rule instead of hiding an action the caller may take.
+test("an IAM failure on any caller permission decision fails the whole answer instead of reading as a denial", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Answer outages", { ready: true });
+  const bound = await fixture.createSecret(namespace.id, "Bound token", "bound-token-value");
+  // The fixture binds a Harness authentication Secret besides the Configuration's bound one, so
+  // the Configuration Secrets answers and the Agent sources answer probe different Secrets.
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Outage agent",
+    {},
+    { secretBindings: { EXTERNAL_API_TOKEN: { source: bound.ref, delivery: { type: "env" } } } },
+  );
+  assert.equal(agent.harnessAuth.method, "api_key");
+  assert.notEqual(agent.harnessAuth.source.id, bound.id);
+  const agentPermissions = `/namespaces/${namespace.id}/agents/${agent.id}/permissions`;
+  const namespacePermissions = `/namespaces/${namespace.id}/permissions`;
+  const outage = (path, failing, session) =>
+    fixture.withIamOutage(failing, () => fixture.request("GET", path, { session }));
+  // One exact decision: an action on one resource.
+  const decision = (action, kind, id) => (request) =>
+    request.action === action && request.resource.kind === kind && request.resource.id === id;
+
+  // The administrator's answers probe every decision; each one fails alone.
+  for (const [label, failing] of [
+    ["administer", decision("administer", "agent", agent.id)],
+    ["configurationUpdate", decision("update", "configuration", agent.configurationId)],
+    ["configurationRead", decision("read", "configuration", agent.configurationId)],
+    ["agentSourcesOperate", decision("operate", "secret", agent.harnessAuth.source.id)],
+  ]) {
+    assertApiError(await outage(agentPermissions, failing), 503, "DEPENDENCY_UNAVAILABLE", label);
+  }
+  for (const [label, failing] of [
+    ["agents.create", decision("create", "agent", namespace.id)],
+    ["secrets.create", decision("create", "secret", namespace.id)],
+  ]) {
+    assertApiError(
+      await outage(namespacePermissions, failing),
+      503,
+      "DEPENDENCY_UNAVAILABLE",
+      label,
+    );
+  }
+
+  // Without Agent update the Agent sources answer is false before any Secret decision, so the
+  // bound Secret's operate decision is probed only for the Configuration Secrets answers.
+  const member = await fixture.createNamespaceMember("answer-outage", namespace.id, [
+    ["read", "namespace"],
+    ["read", "agent"],
+    ["read", "configuration"],
+    ["update", "configuration"],
+  ]);
+  const session = await fixture.signIn(member.credentials);
+  const answer = await fixture.request("GET", agentPermissions, { session });
+  assert.equal(answer.status, 200);
+  assert.equal(answer.data.update, false);
+  assert.deepEqual(answer.data.configurationSecretsOperateDeniedBindings, ["EXTERNAL_API_TOKEN"]);
+  assertApiError(
+    await outage(agentPermissions, decision("operate", "secret", bound.id), session),
+    503,
+    "DEPENDENCY_UNAVAILABLE",
+  );
 });

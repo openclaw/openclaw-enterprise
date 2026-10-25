@@ -1969,6 +1969,13 @@ test(
     const detail = await request(api, "GET", agentPath);
     assert.equal(detail.status, 200);
     assert.deepEqual(detail.data, degradedAgent);
+    // An Agent update checks the sources its saved settings bind, which this Agent's unreadable
+    // settings do not show: the sources answer stays false, even for a caller with every grant.
+    const permissions = await request(api, "GET", `${agentPath}/permissions`);
+    assert.equal(permissions.status, 200);
+    assert.equal(permissions.data.update, true);
+    assert.equal(permissions.data.configurationRead, true);
+    assert.equal(permissions.data.agentSourcesOperate, false);
 
     // The list carries summaries, newest first. It never decodes a snapshot, so the
     // unreadable revision lists like any other; its exact read reports the error.

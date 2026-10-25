@@ -1177,6 +1177,59 @@ revisionTest(
 );
 
 revisionTest(
+  "revision cleanup status reads queued until claimed, running between attempts and its result once recorded",
+  async (fixture) => {
+    const { owner, candidate } = await fixture.admitInitialRevision("cleanup-status");
+    const queue = new fixture.PostgresWorkQueue(fixture.observerPool);
+    const readStatus = () => fixture.deploymentStatus(owner, candidate);
+
+    // The deployment records evidence, then its preparation fails permanently. As the worker
+    // does, the failing claim registers the revision's cleanup and then fails the deployment.
+    const deferredDeploy = await queue.claim();
+    assert.equal(deferredDeploy.idempotencyKey, candidate.idempotencyKey);
+    await queue.defer(deferredDeploy, { code: "REVISION_INCOMPLETE" }, { delayMs: 60_000 });
+    await makeWorkDue(fixture.observerPool, candidate.idempotencyKey);
+    const deploy = await queue.claim();
+    assert.equal(deploy.idempotencyKey, candidate.idempotencyKey);
+    await queue.enqueueRepositoryCleanup(
+      deploy,
+      { namespaceId: fixture.namespace.id, agentId: owner.id, revisionId: candidate.id },
+      "failed-preparation",
+    );
+    await queue.fail(deploy, { code: "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED" });
+
+    // No worker has claimed the cleanup yet: it waits, whatever its deployment recorded
+    // (findings 2456, 2466 apply only to started work).
+    const waiting = await readStatus();
+    assert.equal(waiting.status, "failed");
+    assert.equal(waiting.cleanup.status, "queued");
+    assert.equal(typeof waiting.cleanup.nextAttemptAt, "string");
+
+    // A claimed cleanup runs and has no next attempt; it has recorded no result.
+    const claim = await queue.claim();
+    assert.match(claim.idempotencyKey, /^agent_revision:[^:]+:repository_cleanup:retire:/);
+    assert.equal(claim.revisionId, candidate.id);
+    assert.deepEqual((await readStatus()).cleanup, { status: "running", nextAttemptAt: null });
+
+    // A retry counts the attempt and queues the cleanup again. It stays running between
+    // attempts and still reports no result.
+    await queue.retry(claim, { code: "DEPENDENCY_UNAVAILABLE" });
+    assert.equal((await queue.findWork(claim.idempotencyKey)).attemptCount, 1);
+    const retrying = await readStatus();
+    assert.equal(retrying.cleanup.status, "running");
+    assert.equal(typeof retrying.cleanup.nextAttemptAt, "string");
+
+    // Only the recorded result completes it.
+    await makeWorkDue(fixture.observerPool, claim.idempotencyKey);
+    const last = await queue.claim();
+    assert.equal(last.idempotencyKey, claim.idempotencyKey);
+    assert.equal((await readStatus()).cleanup.status, "running");
+    await queue.complete(last, { code: "REPOSITORY_CLEANUP_COMPLETE" });
+    assert.deepEqual((await readStatus()).cleanup, { status: "succeeded", nextAttemptAt: null });
+  },
+);
+
+revisionTest(
   "real PostgreSQL preserves the failure budget while an Agent runtime converges",
   async (fixture) => {
     const { owner, candidate } = await fixture.admitInitialRevision("slow-runtime");

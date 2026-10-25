@@ -846,6 +846,29 @@ export async function createConsoleAppFixture(t, options = {}) {
   }
 
   /**
+   * Runs `run` while the real IAM Driver throws on each authorization request `failing` selects,
+   * as an IAM outage on those decisions would, and restores the Driver afterwards.
+   * @template T
+   * @param {(request: { action: string, resource: { kind: string, id: string } }) => boolean} failing
+   * @param {() => Promise<T>} run
+   * @returns {Promise<T>}
+   */
+  async function withIamOutage(failing, run) {
+    const authorize = iamDriver.authorize;
+    iamDriver.authorize = async (request) => {
+      if (failing(request)) {
+        throw new Error("IAM outage");
+      }
+      return authorize.call(iamDriver, request);
+    };
+    try {
+      return await run();
+    } finally {
+      iamDriver.authorize = authorize;
+    }
+  }
+
+  /**
    * A Namespace member: an account whose one Role in `namespaceId` holds exactly `grants`, as
    * [action, resourceKind] pairs. It has no Installation access.
    * @param {string} label
@@ -881,6 +904,7 @@ export async function createConsoleAppFixture(t, options = {}) {
     policy,
     // The real Native IAM Driver, for tests that simulate an IAM outage at its boundary.
     iamDriver,
+    withIamOutage,
     rawRequest,
     request,
     signIn,

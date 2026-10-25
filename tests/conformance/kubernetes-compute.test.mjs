@@ -10281,12 +10281,14 @@ test("native channel providers require Secret bindings and project them only to 
     null,
   );
   // A binding name is an own key (an inherited one such as "constructor" binds nothing), and an
-  // env SecretRef id that is not a plain name is quoted and shortened, so the message keeps its
-  // 256-character cap.
+  // env SecretRef id that is not a plain name, or is longer than 32 characters, is quoted and
+  // shortened, so the message keeps its 256-character cap.
   const unboundId = `constructor ${"x".repeat(300)}`;
   for (const [id, shown] of [
     ["constructor", "constructor"],
     [unboundId, `"constructor ${"x".repeat(19)}…"`],
+    ["slack-bot", '"slack-bot"'],
+    ["SLACK_BOT_TOKEN_FOR_THE_WORKSPACE_ACCOUNT", '"SLACK_BOT_TOKEN_FOR_THE_WORKSPA…"'],
   ]) {
     const values = {
       agents: { defaults: { model: "codex/gpt-5" } },
