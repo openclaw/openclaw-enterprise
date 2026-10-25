@@ -794,7 +794,7 @@ test("a Secret created inline that the member cannot operate is not staged", asy
 // (finding 2492). Its operate is per Secret (one readable Secret is denied), so the choice is
 // listed disabled with the reason, and a typed key is refused before any write.
 test("a member whose Secret operate covers only some Secrets cannot save a typed model key", async (t) => {
-  const { fixture, namespace, member, answerPath } = await operateSomeSetup(t);
+  const { fixture, namespace, spare, member, answerPath } = await operateSomeSetup(t);
   const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
     body: JSON.parse(
       await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
@@ -843,19 +843,38 @@ test("a member whose Secret operate covers only some Secrets cannot save a typed
   assert.deepEqual(writes(), []);
 
   // A retry whose fresh read fails (an IAM outage answers 503) keeps the last answer and is
-  // refused too. The failed read used to stand for an unknown answer, so the key was saved and
-  // Agent create answered 403 (finding 2501).
-  await page.route(`${fixture.origin}${answerPath}`, unavailable, { times: 1 });
-  const failedRead = page.waitForResponse((response) => response.url().endsWith(answerPath));
+  // refused too. The failed read used to stand for an unknown answer for the whole page, so the
+  // key was saved and Agent create answered 403, and every field forgot its marks (finding 2501).
+  const answerUrl = `${fixture.origin}${answerPath}`;
+  await page.route(answerUrl, unavailable);
+  const failedRead = page.waitForResponse((response) => response.url() === answerUrl);
   await waitForEnabled(submit);
   await submit.click();
   assert.equal((await failedRead).status(), 503);
   await refusal.waitFor();
   assert.deepEqual(writes(), []);
+  // While reads still fail, a Slack token field keeps the last answer's marks, and asks again
+  // rather than reusing the failed read.
+  const failedReads = () => answers.filter((answer) => answer === `GET ${answerPath} 503`).length;
+  await page.getByRole("button", { name: "Configure Slack" }).click();
+  const dialog = page.getByRole("dialog", { name: "Configure Slack" });
+  const botToken = dialog.getByLabel("Slack bot token", { exact: true });
+  await operateDeniedSecretOption(dialog, "Slack bot token", spare);
+  await deniedCreateSecretOption(dialog, "Slack bot token", NEW_SECRET_OPERATE_DENIED);
+  await waitForCondition(async () => failedReads() >= 2, "the field reads the answer again");
+  await botToken.press("Escape");
 
   // An administrator grants Secret operate across the Namespace, which covers a new Secret too.
-  // The retry reads the answer again, saves the key as a Secret, and Agent create binds it.
+  // The next answer read replaces the marks: the spare key is choosable again.
+  await page.unroute(answerUrl, unavailable);
   grantMember(fixture, "member-operate-some", [["operate", "secret"]]);
+  await botToken.fill(spare.name);
+  const spareOption = dialog.getByRole("option", { name: spare.name, exact: true });
+  await spareOption.waitFor();
+  assert.equal(await spareOption.getAttribute("aria-disabled"), null);
+  await botToken.press("Escape");
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  // The retry reads the answer again, saves the key as a Secret, and Agent create binds it.
   const createdResponse = page.waitForResponse(
     (response) =>
       response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents` &&
