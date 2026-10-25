@@ -10314,6 +10314,46 @@ test("native channel providers require Secret bindings and project them only to 
       },
     );
   }
+  // Admission reads a string as the runtime substitutes it (finding 2475): a reference anywhere
+  // in the text, or with a `:-fallback`, still needs a binding, since the fallback would replace
+  // the unset name. The `$${NAME}` escape is literal text.
+  const slackToken = (botToken) => ({
+    agents: { defaults: { model: "codex/gpt-5" } },
+    channels: {
+      slack: {
+        appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+        botToken,
+      },
+    },
+  });
+  const appBinding = { SLACK_APP_TOKEN: secretBindings.SLACK_APP_TOKEN };
+  for (const botToken of [
+    "xoxb-${SLACK_BOT_TOKEN}",
+    "${SLACK_BOT_TOKEN:-}",
+    "${SLACK_APP_TOKEN}${SLACK_BOT_TOKEN:-xoxb-fallback}",
+  ]) {
+    assert.throws(
+      () =>
+        driver.validateHarnessAuth(
+          revision.harness,
+          revision.harnessAuth,
+          slackToken(botToken),
+          appBinding,
+        ),
+      {
+        name: "ConfigurationHarnessError",
+        message:
+          "Configuration setting channels.slack.botToken references SLACK_BOT_TOKEN without a Configuration Secret binding: bind SLACK_BOT_TOKEN in secretBindings to an environment-backed Secret, or remove the reference.",
+      },
+      botToken,
+    );
+  }
+  driver.validateHarnessAuth(
+    revision.harness,
+    revision.harnessAuth,
+    slackToken("xoxb-$${SLACK_BOT_TOKEN}"),
+    appBinding,
+  );
 
   const ipv6 = createKubernetesComputeDriver(
     options({

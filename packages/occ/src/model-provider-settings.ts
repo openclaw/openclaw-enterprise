@@ -44,9 +44,14 @@ const pointer = (...segments: readonly (string | number)[]): string =>
 // (`src/config/env-substitution.ts`).
 export const environmentReference = /\$(\$)?\{[A-Z_][A-Z0-9_]*(?::-([^${}]*))?\}/g;
 
+/** The variable names the runtime substitutes in `text`, in order: an escape names none. */
+export const environmentReferenceNames = (text: string): string[] =>
+  [...text.matchAll(environmentReference)]
+    .filter(([, escaped]) => escaped === undefined)
+    .map(([reference]) => reference.slice(2, reference.search(/[:}]/)));
+
 const holdsEnvironmentReference = (value: unknown): boolean =>
-  typeof value === "string" &&
-  [...value.matchAll(environmentReference)].some(([, escaped]) => escaped === undefined);
+  typeof value === "string" && environmentReferenceNames(value).length > 0;
 
 // Text its writer fills in later: `unresolved` locates an unfilled Preset variable's text.
 type Unresolved = NonNullable<ConfigurationValidationOptions["unresolved"]>;

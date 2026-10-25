@@ -1,6 +1,7 @@
 import type { OpenClawConfigurationDocument } from "@openclaw-enterprise/contracts";
 import { asRecord } from "@openclaw-enterprise/utils";
 import { keyedSettingPath, quotedSettingKey } from "./errors.ts";
+import { environmentReferenceNames } from "./model-provider-settings.ts";
 
 type SettingError = (setting: string, requirement: string) => Error;
 
@@ -23,11 +24,14 @@ export function enabledChannelEntries(
 }
 
 /**
- * Each listed channel's credential references (`${NAME}`, or an env SecretRef with that `id`)
- * need a Configuration Secret binding of that name where the Compute delivers channel
- * credentials only from bindings, as Kubernetes Compute does. Refuses the first reference
- * without one, naming its setting and the binding. Configuration save, provisioning and Agent
- * create's check (OCC) and Kubernetes deployment admission share this rule (finding 2319).
+ * Each listed channel's credential references need a Configuration Secret binding of that name
+ * where the Compute delivers channel credentials only from bindings, as Kubernetes Compute does.
+ * A reference is an env SecretRef's `id`, or each `${NAME}` the runtime substitutes in a string
+ * (`environmentReferenceNames`): anywhere in the text and also with a `:-fallback`, since an
+ * unbound name is never set there and the fallback, often empty, always replaces it (finding
+ * 2475). Refuses the first reference without one, naming its setting and the binding.
+ * Configuration save, provisioning and Agent create's check (OCC) and Kubernetes deployment
+ * admission share this rule (finding 2319).
  */
 export function requireChannelSecretBindings(
   configuration: Readonly<OpenClawConfigurationDocument>,
@@ -63,8 +67,8 @@ function unboundChannelReference(
   bound: (name: string) => boolean,
 ): { readonly path: string; readonly name: string } | undefined {
   if (typeof value === "string") {
-    const name = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/.exec(value)?.[1];
-    return name === undefined || bound(name) ? undefined : { path, name };
+    const name = environmentReferenceNames(value).find((reference) => !bound(reference));
+    return name === undefined ? undefined : { path, name };
   }
   if (Array.isArray(value)) {
     for (const [index, item] of value.entries()) {

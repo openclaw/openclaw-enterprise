@@ -1529,7 +1529,10 @@ test("Configuration create, update and Agent create's check refuse a channel cre
   // A binding is an own key: an inherited name such as `constructor` binds nothing.
   assertRefused(
     await request(context.app, "PATCH", item, {
-      body: { values: slackWith({ botToken: "${constructor}" }), secretBindings: bothBindings },
+      body: {
+        values: slackWith({ botToken: { source: "env", provider: "default", id: "constructor" } }),
+        secretBindings: bothBindings,
+      },
     }),
     unboundChannelReference("channels.slack.botToken", "constructor"),
     { label: "inherited name" },
@@ -1670,11 +1673,40 @@ for (const computeImplementation of ["occ/kubernetes", "kubernetes-local"]) {
       await create(slackBindings),
       unboundChannelReference("channels.msteams.appPassword", "MSTEAMS_APP_PASSWORD"),
     );
-    const saved = await create({
+    const allBindings = {
       ...slackBindings,
       MSTEAMS_APP_PASSWORD: await binding("msteams-password"),
-    });
+    };
+    const saved = await create(allBindings);
     assert.equal(saved.status, 201, JSON.stringify(saved.body));
+    // The runtime substitutes a reference anywhere in a value, and with a `:-fallback` too: an
+    // unbound name is never set, so the fallback (here empty) would replace it. Each needs a
+    // binding, and the first unbound one is named (finding 2475). `$${NAME}` is the runtime's
+    // escape for literal text, not a reference.
+    const withAppPassword = (appPassword) => ({
+      ...values,
+      channels: { ...values.channels, msteams: { enabled: true, appPassword } },
+    });
+    for (const appPassword of [
+      "secret-${MSTEAMS_TENANT_SECRET}",
+      "${MSTEAMS_TENANT_SECRET:-}",
+      "${MSTEAMS_APP_PASSWORD}-${MSTEAMS_TENANT_SECRET:-fallback}",
+    ]) {
+      assertRefused(
+        await request(context.app, "PATCH", `${collection}/${saved.body.data.id}`, {
+          body: { values: withAppPassword(appPassword), secretBindings: allBindings },
+        }),
+        unboundChannelReference("channels.msteams.appPassword", "MSTEAMS_TENANT_SECRET"),
+        { label: appPassword },
+      );
+    }
+    const escaped = await request(context.app, "PATCH", `${collection}/${saved.body.data.id}`, {
+      body: {
+        values: withAppPassword("${MSTEAMS_APP_PASSWORD}$${MSTEAMS_TENANT_SECRET}"),
+        secretBindings: allBindings,
+      },
+    });
+    assert.equal(escaped.status, 200, JSON.stringify(escaped.body));
     // A Preset carries no Secret bindings, so its defaults are not checked against any: the
     // Configuration created from it is checked with its own bindings.
     const preset = await savePreset(context, { configuration: { values } }, "Channels");
