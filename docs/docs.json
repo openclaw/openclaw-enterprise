@@ -505,6 +505,10 @@
                     "label": "Breaking Changes"
                   },
                   {
+                    "page": "guides/deploy/breaking-changes-earlier-2026-10-24",
+                    "label": "Earlier Breaking Changes 2026-10-24"
+                  },
+                  {
                     "page": "guides/deploy/breaking-changes-before-2026-10-24",
                     "label": "Breaking Changes Before 2026-10-24"
                   },
