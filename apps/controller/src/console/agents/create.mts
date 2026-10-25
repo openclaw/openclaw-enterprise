@@ -10,6 +10,7 @@ import type {
   InstallationCapabilities,
   Namespace,
   NamespaceCallerPermissionsResponse,
+  NamespaceSecretPermissionsResponse,
   PluginApprovers,
   PresetLaunchSettings,
   SecretBindings,
@@ -62,6 +63,7 @@ import {
 type ApplyPreset = Parameters<typeof createPresetFields>[1];
 type PresetOptions = Partial<Parameters<ApplyPreset>[1]>;
 type Permissions = Static<typeof NamespaceCallerPermissionsResponse>["data"];
+type SecretPermissions = Static<typeof NamespaceSecretPermissionsResponse>["data"];
 type CreateRequest = (
   path: string,
   options?: RequestOptions & { revalidate?: false; rereadOnResume?: true; readOnly?: true },
@@ -742,6 +744,20 @@ function renderAgentForm(
   draft: Partial<CreateAgentDraft> = {},
 ) {
   const { view, request, namespaceId } = context;
+  // The readable Secrets this caller may not operate: each Secret field lists them disabled and
+  // never stages one, since Agent create, or a directory search, would answer 403 (finding
+  // 2469). Read when a field first needs it, and again after a permission reread. A failed read
+  // is unknown and marks none.
+  let secretsOperateRead: Promise<ReadonlySet<string> | undefined> | null = null;
+  const secretsOperateDenied = () =>
+    (secretsOperateRead ??= (
+      request(`${namespacePath(namespaceId)}/permissions/secrets`) as Promise<SecretPermissions>
+    ).then(
+      (answer) =>
+        Array.isArray(answer?.operateDenied) ? new Set(answer.operateDenied) : undefined,
+      () => undefined,
+    ));
+  const secretContext = { ...context, secretsOperateDenied };
   // A recheck replaces it once the Namespace becomes ready (finding 2012).
   let notReady = createNamespaceState(context);
   let notReadyNote = notReady ? namespaceNote(notReady) : null;
@@ -1042,7 +1058,7 @@ function renderAgentForm(
     });
   }
   const modelCredentialPicker = createSecretReferenceField({
-    context,
+    context: secretContext,
     id: "provider-credential-secret",
     label: "Model credential Secret",
     getCurrentSource: () => modelCredentialSource,
@@ -1566,7 +1582,7 @@ function renderAgentForm(
     Object.hasOwn(draft, "pluginApprovers") ? draft.pluginApprovers : agent.pluginApprovers,
   );
   const directorySecret = createSecretReferenceField({
-    context,
+    context: secretContext,
     id: "approver-directory-secret",
     label: "Slack bot token Secret for people search",
     getCurrentSource: getDirectorySecretSource,
@@ -2192,6 +2208,7 @@ function renderAgentForm(
         isCurrent: context.isCurrent,
         onExpired: context.onExpired,
         secretsCreateAllowed: context.secretsCreateAllowed,
+        secretsOperateDenied,
       },
       copy: {
         editableDescription:
@@ -2918,6 +2935,7 @@ function renderAgentForm(
     capabilityStatus.textContent = permissionsUnknown ? PERMISSIONS_UNREAD : INSTALLATION_REFUSAL;
   }
   async function rereadPermissions() {
+    secretsOperateRead = null;
     permissionsReading = true;
     capabilityStatus.textContent = "Checking your permissions in this Namespace…";
     updateControls();
