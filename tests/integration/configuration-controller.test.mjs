@@ -15,6 +15,7 @@ import {
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
@@ -1604,6 +1605,115 @@ test("Configuration save keeps an unbound channel credential reference on a Comp
   });
   assert.equal(saved.status, 201, JSON.stringify(saved.body));
 });
+
+// The bundled Kubernetes Compute has two implementations: the Installation default
+// (`occ/kubernetes`) and the Driver's own default (`kubernetes-local`). Under either, OCC checks
+// every enabled channel, not only the first, and Agent provisioning checks the bindings it
+// creates the Configuration with, none when the request sends none (finding 2319).
+for (const computeImplementation of ["occ/kubernetes", "kubernetes-local"]) {
+  test(`Configuration create and Agent provisioning check every channel's credential references on ${computeImplementation}`, async () => {
+    const backend = createConfigurationBackend();
+    const { namespace, collection, ...context } = await fixture({
+      // Agent provisioning requires exact create and inspect; the refusal comes first.
+      configurationDriver: {
+        ...backend,
+        createExact: (configuration) => backend.create(configuration),
+        inspectExact: async () => undefined,
+      },
+      computeDriver: Object.assign(
+        kubernetesRules(`compute-channels-${computeImplementation}`, ...configurationRules),
+        {
+          agentProvisioning: { executionModes: ["dedicated"] },
+          validateAgentProvisioning() {},
+          async provisionAgentRuntimeCredentials() {
+            return { transportConfigured: true };
+          },
+          async getAgentRuntimeCredentialStatus() {
+            return { transportConfigured: false };
+          },
+        },
+      ),
+      computeImplementation,
+    });
+    await context.controller.transact((state) =>
+      state.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+    );
+    const binding = async (name) => {
+      const secret = await context.controller.createSecret(context.principal.id, {
+        namespaceId: namespace.id,
+        name,
+        value: `synthetic-${name}`,
+      });
+      return { source: secret.ref, delivery: { type: "env" } };
+    };
+    const slackBindings = {
+      SLACK_APP_TOKEN: await binding("slack-app"),
+      SLACK_BOT_TOKEN: await binding("slack-bot"),
+    };
+    const values = {
+      ...runtimeSelected,
+      channels: {
+        slack: {
+          enabled: true,
+          mode: "socket",
+          appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+          botToken: "${SLACK_BOT_TOKEN}",
+        },
+        msteams: { enabled: true, appPassword: "${MSTEAMS_APP_PASSWORD}" },
+      },
+    };
+    const create = (secretBindings) =>
+      request(context.app, "POST", collection, { body: { kind: "agent", values, secretBindings } });
+
+    // The first channel's references are bound; the second channel's is not.
+    assertRefused(
+      await create(slackBindings),
+      unboundChannelReference("channels.msteams.appPassword", "MSTEAMS_APP_PASSWORD"),
+    );
+    const saved = await create({
+      ...slackBindings,
+      MSTEAMS_APP_PASSWORD: await binding("msteams-password"),
+    });
+    assert.equal(saved.status, 201, JSON.stringify(saved.body));
+    // A Preset carries no Secret bindings, so its defaults are not checked against any: the
+    // Configuration created from it is checked with its own bindings.
+    const preset = await savePreset(context, { configuration: { values } }, "Channels");
+    assert.equal(preset.status, 201, JSON.stringify(preset.body));
+
+    // Provisioning without bindings is checked against none: the first reference is refused
+    // before the Configuration is created.
+    const harnessSecret = await context.controller.createSecret(context.principal.id, {
+      namespaceId: namespace.id,
+      name: "channels-agent-key",
+      value: "synthetic-configuration-key",
+    });
+    await assert.rejects(
+      context.controller.provisionAgent(context.principal.id, {
+        namespaceId: namespace.id,
+        requestId: "channels-agent",
+        name: "Channels",
+        executionMode: "dedicated",
+        // Channels need a dedicated OpenClaw, which lists its native model catalog.
+        configuration: {
+          kind: "agent",
+          values: {
+            ...createHarnessConfiguration("openclaw", "gpt-4.1"),
+            channels: values.channels,
+          },
+        },
+        harnessAuth: { method: "api_key", source: harnessSecret.ref },
+      }),
+      {
+        name: "ConfigurationHarnessError",
+        message: unboundChannelReference("channels.slack.appToken", "SLACK_APP_TOKEN"),
+      },
+    );
+    assert.deepEqual(
+      backend.storedConfigurations().map(({ id }) => id),
+      [saved.body.data.id],
+    );
+  });
+}
 
 test("Configuration save refuses a model selection or apiKey off the primary model's provider, naming the setting", async (t) => {
   // Findings 1298 and 1299: these saved and failed only at deployment, which named no setting
