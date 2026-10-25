@@ -482,6 +482,9 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
    * GitHub token. Background maintenance issues the first token only after the revision's active
    * pointer is published, and a family with a quarantined attempt is never prepared again, so a
    * deployment reads this before it reports success (finding 2415). Reads no material.
+   * An unfinished (`issuing`) attempt stays `pending` even after the dispatch window: its run
+   * measures its budget on the monotonic clock, so after a suspended worker host it can still
+   * commit, and a false quarantine would fail a version about to get its token.
    */
   async revisionMaterial(revisionId: string): Promise<PreparedRepositoryGitMaterialState> {
     if (this.proxy) {
