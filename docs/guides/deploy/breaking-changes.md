@@ -29,7 +29,7 @@ this Installation's Kubernetes Compute configuration`, as Agent save does, when
 the Kubernetes Compute configuration sets `runtime` without `gatewayRouting` or
 `runtime.gatewayNodeSelector`. Earlier builds answered `409 RESOURCE_CONFLICT`
 with fixed text. Create Agent now runs its preflight before it saves the model
-Secret for provisioning, so no stray Secret is left.
+Secret or registers a Credential Source for provisioning, so neither is left.
 
 **Who is affected.** API clients and alerts that match that `409`.
 

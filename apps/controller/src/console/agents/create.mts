@@ -2993,17 +2993,22 @@ function renderAgentForm(
   }
   // The Harness authentication Agent create will name, as far as it is known before anything is
   // saved, so the preflight also runs Agent save's check of it against the execution mode and the
-  // Compute settings (finding 2391). A Secret this form saves next is sent as its method alone. A
-  // credential source (ChatGPT sign-in, or one this form registers) is not sent: save cannot check
-  // it either.
+  // Compute settings (finding 2391). A Secret this form saves next is sent as its method alone.
+  // ChatGPT sign-in is not sent: save cannot check a credential source. On an Installation with a
+  // Credential Gateway this form registers the model Secret as a credential source and binds that,
+  // so it sends the source type's login mode, the method it selected, alone (finding 2406).
   function plannedHarnessAuth(
     usesOAuth: boolean,
   ): HarnessAuthBinding | { method: "api_key" | "codex_pat" } | undefined {
+    if (usesOAuth) {
+      return undefined;
+    }
+    if (credentialSourceTypes !== undefined) {
+      const method = binding?.method ?? authMethod.value;
+      return method === "api_key" || method === "codex_pat" ? { method } : undefined;
+    }
     if (binding) {
       return binding;
-    }
-    if (usesOAuth || credentialSourceTypes !== undefined) {
-      return undefined;
     }
     const source = passwordAuth ? savedSecret?.ref : modelCredentialSource;
     if (source?.kind === "secret") {
@@ -3138,15 +3143,18 @@ function renderAgentForm(
     // whole form editable, the Configuration included, instead of a saved Configuration this
     // form can no longer change (finding 1863). Provisioning admits its plan in one request
     // before it saves a Configuration, with its own rules, so it needs no preflight, except
-    // before this form saves the model Secret the plan names: then the preflight checks that
-    // binding, so an Installation that cannot place a Dedicated Agent refuses it before the
-    // Secret exists (finding 2395).
+    // before this form saves the model Secret or registers the Credential Source the plan names:
+    // then the preflight checks that binding, so an Installation that cannot place a Dedicated
+    // Agent refuses it before either exists (findings 2395, 2406).
     const plannedAuth = plannedHarnessAuth(usesOAuth);
-    const savesSecretFirst = passwordAuth && !usesOAuth && !savedSecret;
+    const savesFirst =
+      !usesOAuth &&
+      ((passwordAuth && !savedSecret) ||
+        (credentialSourceTypes !== undefined && !savedCredentialSource));
     if (
       !savedConfiguration &&
       !savedAgent &&
-      (!shouldProvision() || (savesSecretFirst && plannedAuth !== undefined))
+      (!shouldProvision() || (savesFirst && plannedAuth !== undefined))
     ) {
       try {
         await request(`${namespacePath(namespaceId)}/agents/validate`, {

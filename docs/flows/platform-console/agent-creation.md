@@ -1,7 +1,7 @@
 ---
 created: 2026-10-20
-updated: 2026-10-20
-last_updated_session: fix-1020c
+updated: 2026-10-25
+last_updated_session: fix-postland-1025c
 ---
 
 # Console Agent creation
@@ -84,16 +84,17 @@ failures block submission.
 
 Supported Dedicated runtimes submit inline Configuration, optional repository
 access, and Secret references to [provisioning](../agent-provisioning.md), even after
-a `503 REPOSITORY_OPTIONS_UNAVAILABLE` outage. Before it saves a model Secret for the request, the
-form runs the preflight below with that binding. The worker reauthorizes, creates resources and exact Secret grants,
-and deploys; Console polls and opens the saved version. Where the form cannot follow a placement
+a `503 REPOSITORY_OPTIONS_UNAVAILABLE` outage. Before it saves a model Secret or registers a
+Credential Source for the request, the form runs the preflight below with the planned method.
+The worker reauthorizes, creates resources and exact Secret grants, and deploys; Console polls and opens the saved version. Where the form cannot follow a placement
 refusal's advice to select Embedded OpenClaw, it shows only the missing setting.
 
 Before any write, `create.mts:renderAgentForm` checks the Agent name with the API's Name rule
 (`namespaces.mts:namespaceNameProblem`) and each initial workspace file with the Workspace tab's
 `agents/workspace.mts:workspaceFileProblem`, which names the file; the check opens Advanced
 settings to it. It then checks draft values, plugins and the planned `harnessAuth`
-(only the method for a Secret it saves next; none for a credential source) with
+(only the method for a Secret it saves next or registers with a Credential Gateway; none for
+ChatGPT sign-in) with
 `POST /namespaces/:namespaceId/agents/validate`, then posts
 `{kind: "agent", values, secretBindings}` to `.../configurations` and submits its ID,
 plugins, `initialWorkspaceFiles`, and `workspaceDefaultsId` to `.../agents`.
@@ -146,6 +147,7 @@ Switching methods hides that feedback without changing the lookup or saved choic
 
 ## Changelog
 
+- 2026-10-25 04:30: Run the preflight before a Credential Gateway registration too (finding 2406). (fix-postland-1025c - 44eebaad38)
 - 2026-10-25 03:30: Run the preflight before provisioning saves the model Secret; trim placement advice the form cannot follow. (fix-postland-1025b - 2b1f510594)
 - 2026-10-25 00:55: Name "no Sandbox Driver selected" as the reason Dedicated OpenClaw is disabled when the Installation lists Embedded. (finding 2384)
 - 2026-10-25 00:30: Treat repository options with `meta.notConfigured` like the fixed-composition 503. (finding 2387)

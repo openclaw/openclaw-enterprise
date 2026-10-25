@@ -63,14 +63,14 @@ function provisioningDrivers(compute = {}) {
   return { computeDriver, configurationDriver };
 }
 
-async function modelSourceFixture(t, options = {}, gatewayMethods = {}) {
-  const drivers = provisioningDrivers();
+// `compute` holds the Kubernetes Compute fixture's options; the rest are console app options.
+// Composition pairs Kubernetes Compute with the selected Sandbox Driver, which takes initial
+// workspace files as OpenShell's does, so Create Agent's preflight admits the form's files.
+async function modelSourceFixture(t, { compute, ...options } = {}, gatewayMethods = {}) {
+  const sandboxDriver = { ...nativeSandboxDriver(), validateWorkspaceSetup() {} };
+  const drivers = provisioningDrivers({ ...compute, sandboxDriver });
   drivers.computeDriver.resolveSandboxNamespace = async (namespace) => namespace;
-  const fixture = await createConsoleAppFixture(t, {
-    ...drivers,
-    sandboxDriver: nativeSandboxDriver(),
-    ...options,
-  });
+  const fixture = await createConsoleAppFixture(t, { ...drivers, sandboxDriver, ...options });
   await fixture.bootstrap();
   const calls = [];
   const removals = [];
@@ -1113,6 +1113,73 @@ test("Provisioning names the placement setting a Codex-bound Preset cannot work 
   // The Preset's token was the only Secret; the refused request saved nothing.
   assert.equal(pathRequests(requests, "POST", `/namespaces/${namespace.id}/secrets`).length, 0);
   assert.equal(agentProvisionPostRequests(requests, namespace.id).length, 1);
+});
+
+// The same unplaceable Installation with a Credential Gateway. Create Agent registers the model
+// Secret as a Credential Source and binds that, which provisioning does not check before its plan,
+// so the preflight did not run: the form saved the Preset's model Secret and registered the source,
+// then provisioning answered the fixed 409 and left both behind (finding 2406). The preflight now
+// names the source type's login mode and refuses before either write, for a Secret the Preset
+// saves and for a Secret the form only registers.
+async function assertGatewayPreflightRefusal({ page, origin, namespace, calls }) {
+  const requests = apiRequests(page, origin);
+  const root = `${origin}/namespaces/${namespace.id}`;
+  // The first answer: the preflight's, or (without it) the Secret save's or registration's.
+  const first = page.waitForResponse(
+    (response) =>
+      [`${root}/agents/validate`, `${root}/secrets`, `${root}/credential-sources`].includes(
+        response.url(),
+      ) && response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  const response = await first;
+  assert.equal(response.url(), `${root}/agents/validate`);
+  assert.equal(response.status(), 400);
+  assert.deepEqual(response.request().postDataJSON().harnessAuth, { method: "api_key" });
+  const alert = page.getByRole("alert").filter({ hasText: "Dedicated Agents need" });
+  await alert.waitFor();
+  assert.match(
+    await alert.textContent(),
+    /^Dedicated Agents need gateway routing and node enrollment in this Installation's Kubernetes Compute configuration\./,
+  );
+  await page.getByRole("button", { name: "Create Agent", disabled: false }).waitFor();
+  assert.equal(pathRequests(requests, "POST", `/namespaces/${namespace.id}/secrets`).length, 0);
+  assert.equal(
+    pathRequests(requests, "POST", `/namespaces/${namespace.id}/credential-sources`).length,
+    0,
+  );
+  assert.equal(agentProvisionPostRequests(requests, namespace.id).length, 0);
+  assert.equal(calls.length, 0);
+}
+
+test("Create Agent refuses an unplaceable Dedicated Agent before a Credential Gateway write", async (t) => {
+  const unplaceable = { compute: { channelRuntime: true, routed: false } };
+  await t.test("Preset model Secret", async (t) => {
+    const { fixture, calls } = await modelSourceFixture(t, unplaceable);
+    const namespace = await fixture.createNamespace("Gateway Preset unplaceable", { ready: true });
+    const standard = JSON.parse(
+      await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
+    );
+    const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+      body: { name: "Gateway Codex", template: standard.template },
+    });
+    assert.equal(preset.status, 201, JSON.stringify(preset.body));
+    const { page } = await newPage(t, fixture, { browser });
+    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+    await page.getByLabel("Preset template").selectOption({ label: "Gateway Codex" });
+    await page.getByLabel("Name", { exact: true }).fill("gateway-codex");
+    await page.getByLabel("Model", { exact: true }).fill("gpt-4.1");
+    await page.getByLabel("Model Secret", { exact: true }).fill("synthetic-model-key");
+    await page.getByRole("button", { name: "Use Preset" }).click();
+    await assertGatewayPreflightRefusal({ page, origin: fixture.origin, namespace, calls });
+  });
+  await t.test("selected Secret", async (t) => {
+    const { fixture, calls } = await modelSourceFixture(t, unplaceable);
+    const namespace = await fixture.createNamespace("Gateway Secret unplaceable", { ready: true });
+    // The form's Secret dialog saved the model Secret; only the registration would follow.
+    const { page } = await openModelSourceForm(t, fixture, namespace);
+    await assertGatewayPreflightRefusal({ page, origin: fixture.origin, namespace, calls });
+  });
 });
 
 const SANDBOX_DRIVER_OUTAGE =
