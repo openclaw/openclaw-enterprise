@@ -133,7 +133,11 @@ gateway-only credential values:
 | `msteams` | `MSTEAMS_APP_PASSWORD`                                                                                    |
 
 On the bundled Kubernetes Compute, every `${NAME}` reference and environment SecretRef in
-an enabled native channel needs a matching `secretBindings` entry. Configuration
+an enabled native channel needs a matching `secretBindings` entry. This includes a
+reference inside other text (`xoxb-${NAME}`) and one with a fallback
+(`${NAME:-text}`): this Compute sets only bound names, so the fallback would
+always replace the reference. OpenClaw substitutes only uppercase names, and
+`$${NAME}` is literal text, not a reference. Configuration
 create and update refuse a reference without one with `400 INVALID_REQUEST`,
 naming the setting and the binding, so send the values and their bindings in
 one request. Deployment refuses a stored Configuration that predates this rule

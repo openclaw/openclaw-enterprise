@@ -89,8 +89,8 @@ Agent that fails a check still reads; its next update must fix the pair.
 This Compute delivers channel credentials only from Configuration Secret
 bindings. OCC, not a Driver member, refuses at Configuration create and update,
 provisioning, and `/agents/validate` with `configuration.secretBindings` a
-`${NAME}` reference or environment SecretRef in an enabled channel without a
-binding of that name, under the bundled implementations (`occ/kubernetes`,
+`${NAME}` reference (also inside other text or with a fallback) or environment
+SecretRef in an enabled channel without a binding of that name, under the bundled implementations (`occ/kubernetes`,
 `kubernetes-local`). It shares `requireChannelSecretBindings` with deployment
 admission; the message names the setting and the binding.
 

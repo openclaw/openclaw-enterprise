@@ -7,6 +7,28 @@ apply when you upgrade from a source commit older than their date. Entries are
 newest first. Steps marked _untested_ have not been run against a real
 Installation.
 
+## 2026-10-24: chart NetworkPolicy peers are checked at render
+
+**What breaks.** `helm install` and `helm upgrade` refuse a
+`gatewayRouting.sandbox.ingressPeers` or `openshellGit.clients` entry that the
+Kubernetes API would refuse or that has fields a NetworkPolicy peer lacks: an
+invalid `ipBlock.cidr` or `except` CIDR (including leading-zero octets such as
+`010.0.0.0/8`), `ipBlock` together with selectors, a
+`matchExpressions` entry with an invalid key, an operator other than `In`,
+`NotIn`, `Exists` or `DoesNotExist`, or values that do not fit the operator,
+invalid `openshellGit.clients` label keys or values, and unknown keys such as
+`podSelectors`. Earlier builds rendered these and failed when Helm applied the
+NetworkPolicy, after other objects of the release had changed.
+
+**Who is affected.** Releases that set one of these peers by hand with such a
+value.
+
+**How to tell.** Helm fails before applying anything, naming the entry, for
+example `gatewayRouting.sandbox.ingressPeers[0].ipBlock.cidr requires an IPv4 or
+IPv6 CIDR`.
+
+**Steps.** Correct or remove the named field, then run the upgrade again.
+
 ## 2026-10-24: OpenShell refuses OpenClaw Agents without user namespaces off
 
 **What breaks.** With the OpenShell Sandbox Driver, Agent save and deployment

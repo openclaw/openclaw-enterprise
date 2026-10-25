@@ -26,9 +26,10 @@ real Installation.
 **What breaks.** On the bundled Kubernetes Compute, Configuration create and update,
 provisioning, and `POST .../agents/validate` with `configuration.secretBindings`
 answer `400 INVALID_REQUEST` when an enabled channel has a `${NAME}` reference
-or environment SecretRef without a binding of that name. Earlier builds refused
-only at deployment. An update of a stored Configuration in this state is
-refused until it adds the bindings.
+or environment SecretRef without a binding of that name. Builds from later that
+day also refuse one inside other text or with a `:-fallback`, which deployment
+admitted. Earlier builds refused only at deployment. An update of a stored
+Configuration in this state is refused until it adds the bindings.
 
 **Who is affected.** Clients that save channel values before their bindings,
 and Agents whose stored Configuration has an unbound channel reference.
@@ -328,25 +329,3 @@ without ports blocked every Agent.
 an empty key, and give each endpoint at least one port; then restart the
 controller. Unquoting `false`
 turns user namespaces off for Codex Sandboxes too, as the setting says.
-
-## 2026-10-24: chart NetworkPolicy peers are checked at render
-
-**What breaks.** `helm install` and `helm upgrade` refuse a
-`gatewayRouting.sandbox.ingressPeers` or `openshellGit.clients` entry that the
-Kubernetes API would refuse or that has fields a NetworkPolicy peer lacks: an
-invalid `ipBlock.cidr` or `except` CIDR (including leading-zero octets such as
-`010.0.0.0/8`), `ipBlock` together with selectors, a
-`matchExpressions` entry with an invalid key, an operator other than `In`,
-`NotIn`, `Exists` or `DoesNotExist`, or values that do not fit the operator,
-invalid `openshellGit.clients` label keys or values, and unknown keys such as
-`podSelectors`. Earlier builds rendered these and failed when Helm applied the
-NetworkPolicy, after other objects of the release had changed.
-
-**Who is affected.** Releases that set one of these peers by hand with such a
-value.
-
-**How to tell.** Helm fails before applying anything, naming the entry, for
-example `gatewayRouting.sandbox.ingressPeers[0].ipBlock.cidr requires an IPv4 or
-IPv6 CIDR`.
-
-**Steps.** Correct or remove the named field, then run the upgrade again.
