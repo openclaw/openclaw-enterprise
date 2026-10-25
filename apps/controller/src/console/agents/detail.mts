@@ -3554,11 +3554,23 @@ export async function renderAgentDetail(
           ? rereadPermissions().then((fresh) => fresh?.sandboxPolicyRead)
           : permissions?.sandboxPolicyRead,
       );
+      // The version's snapshot says whether it runs in a Sandbox, whose log alone records
+      // policy denials; without one the tab reads no log (finding 2484). The draft reads none.
+      let sandboxLogSource: Promise<boolean | undefined> | undefined;
+      if (selected !== "draft") {
+        details ??= loadDetails();
+        sandboxLogSource = details.then((result) =>
+          result && "draft" in result && !result.draft
+            ? result.snapshot.sandboxDriverId !== undefined
+            : undefined,
+        );
+      }
       content.append(
         renderAgentDriverConfigurations(tabContext, {
           agent,
           revisionId: selected,
           policyReadAllowed,
+          ...(sandboxLogSource ? { sandboxLogSource } : {}),
         }),
       );
       state.loading = false;

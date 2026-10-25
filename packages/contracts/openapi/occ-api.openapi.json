@@ -18644,6 +18644,11 @@
                           "type": "object"
                         },
                         "revision": { "minimum": 1, "type": "integer" },
+                        "sandboxDriverId": {
+                          "description": "The Sandbox Driver that provisions this version. Absent when the version runs without a Sandbox, so it has no Sandbox log source and records no policy denials.",
+                          "minLength": 1,
+                          "type": "string"
+                        },
                         "secretBindings": {
                           "additionalProperties": {
                             "additionalProperties": false,
@@ -23429,6 +23434,11 @@
                               "type": "object"
                             },
                             "revision": { "minimum": 1, "type": "integer" },
+                            "sandboxDriverId": {
+                              "description": "The Sandbox Driver that provisions this version. Absent when the version runs without a Sandbox, so it has no Sandbox log source and records no policy denials.",
+                              "minLength": 1,
+                              "type": "string"
+                            },
                             "secretBindings": {
                               "additionalProperties": {
                                 "additionalProperties": false,
