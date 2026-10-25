@@ -2187,6 +2187,7 @@ function renderAgentForm(
         secretBindings: configurationSecretBindings,
         isCurrent: context.isCurrent,
         onExpired: context.onExpired,
+        secretsCreateAllowed: context.secretsCreateAllowed,
       },
       copy: {
         editableDescription:

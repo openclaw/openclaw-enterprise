@@ -3644,6 +3644,7 @@ export async function renderAgentDetail(
           secretBindings: snapshot.secretBindings,
           isCurrent: context.isCurrent,
           onExpired: context.onExpired,
+          secretsCreateAllowed: context.secretsCreateAllowed,
           credentialsHref: context.pageUrl(
             `agents/${agent.id}?revision=draft&tab=credentials`,
             namespaceId,

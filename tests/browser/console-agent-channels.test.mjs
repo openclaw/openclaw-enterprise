@@ -1323,6 +1323,43 @@ describe("Agent channels", { concurrency: 3 }, () => {
     });
   }
 
+  // The Edit Slack drawer's token fields share the Secret picker; without Secret create in the
+  // Namespace their inline Create Secret is disabled with the reason (finding 2442).
+  test("the Edit Slack drawer's inline Create Secret follows the Secret create answer", async (t) => {
+    const { fixture, namespace } = await readyNamespace(t, "Drawer Secret create");
+    const { agent } = await createSlackAgent(fixture, namespace, {
+      name: "Drawer Create Agent",
+      slug: "drawer-create",
+    });
+    const writer = await fixture.createNamespaceMember(
+      "drawer-no-secret-create",
+      namespace.id,
+      MEMBER_WRITE.filter(([action, kind]) => !(action === "create" && kind === "secret")),
+    );
+    const { page } = await newPage(t, fixture, { browser });
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, "draft", "channels"),
+      writer.credentials,
+    );
+    await page.getByRole("button", { name: "Edit Slack" }).click();
+    const drawer = page.getByRole("dialog", { name: "Edit Slack" });
+    await drawer.getByLabel("Slack app token", { exact: true }).fill("Create a new Secret");
+    const action = drawer.getByRole("option", {
+      name: "Create new Secret... Your access does not include creating Secrets in this Namespace.",
+      exact: true,
+    });
+    await action.waitFor();
+    assert.equal(await action.getAttribute("aria-disabled"), "true");
+    // A forced click skips the disabled check: choosing the action still opens nothing.
+    await action.click({ force: true });
+    assert.equal(
+      await page.getByRole("dialog", { name: "Create Slack app token Secret" }).count(),
+      0,
+    );
+  });
+
   test("a long Agent name's suggested Slack Secret name stays within the Name rule", async (t) => {
     const { fixture, namespace } = await readyNamespace(t, "Long Agent names");
     // An Agent name may use all 200 characters, so "<Agent name> Slack app token" cannot be
