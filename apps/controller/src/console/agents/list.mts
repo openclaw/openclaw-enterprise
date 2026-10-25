@@ -335,6 +335,62 @@ export function rejectionMessage(cause: unknown, mutation = false): string {
     : message(cause, mutation);
 }
 
+// The API's answer to a request that does not match its schema. It names a JSON path, which
+// helps where the reader typed the value, but the console sent everything else itself.
+const CONTRACT_MISMATCH = "The request does not match the operation contract";
+
+// How long a rate-limited reader waits: the API's Retry-After when it sent one.
+export function tooManyRequests(cause: unknown) {
+  const seconds = requestFailure(cause).retryAfterSeconds;
+  return seconds === undefined
+    ? "Too many requests. Wait before trying again."
+    : `Too many requests. Try again in ${seconds} ${seconds === 1 ? "second" : "seconds"}.`;
+}
+
+// One description of a failed request for the views that once showed a bare message()
+// (finding 2538). The API's 400 and typed 409 sentences name the rule or the state that
+// refused the request, and the API never puts a secret value in one, so they show as written
+// (views set them as textContent). `next` follows a 409: the step that recovers in this view,
+// such as a refresh ("" when the view adds its own); `conflict` replaces the generic sentence for a 409 the API does not explain.
+// `form` says the reader entered the values sent, so a 400 the API does not explain asks to check
+// them; without a form it never mentions entered values. Denials, missing resources and
+// unanswered requests keep message()'s text.
+export function describeFailure(
+  cause: unknown,
+  {
+    mutation = false,
+    form = false,
+    next,
+    conflict = "The request conflicts with the current state.",
+  }: { mutation?: boolean; form?: boolean; next?: string; conflict?: string } = {},
+): string {
+  const error = requestFailure(cause);
+  const then = next ? ` ${next}` : "";
+  if (error.status === 400) {
+    if (
+      error.serverMessage !== undefined &&
+      (form || !error.serverMessage.startsWith(CONTRACT_MISMATCH))
+    ) {
+      return error.serverMessage;
+    }
+    return form
+      ? message(cause, mutation)
+      : "The API refused this request as malformed. Refresh the page and try again. If it happens again, report it with the request ID.";
+  }
+  if (error.status === 409) {
+    if (error.code === "NAMESPACE_NOT_READY") {
+      return NAMESPACE_NOT_READY_MESSAGE;
+    }
+    return error.serverMessage !== undefined && error.serverMessage !== GENERIC_CONFLICT
+      ? `${error.serverMessage}${then}`
+      : `${conflict}${next === undefined ? " Refresh, then try again." : then}`;
+  }
+  if (error.status === 429) {
+    return tooManyRequests(cause);
+  }
+  return message(cause, mutation);
+}
+
 // A channel credential value that Configuration save or provisioning refuses: a reference without
 // a Secret binding, a `${` the runtime does not substitute, or a value the setting "holds" that is
 // not one whole reference or a SecretRef it accepts, an inline credential included (findings 2319,
