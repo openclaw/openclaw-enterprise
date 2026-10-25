@@ -256,27 +256,26 @@ The [split-layout export fallback](../guides/deploy/split-layout-upgrade.md#expo
 begins with the read-only `scripts/split-layout-tenants.mjs export --out FILE`.
 Its `createOccApi.expect` requires a data envelope for each successful resource
 response before `exportTenants` assembles the bundle. Malformed JSON, an empty
-body, or a missing data envelope stops export with a nonzero exit before `main`
-writes the bundle; an actual empty collection remains valid. The next owner is
-the operator, who retries the read after restoring the API response path and
-checks the exported inventory before following the recovery procedure. Empty
+body, or a missing data envelope causes export to exit nonzero before `main`
+writes the bundle; an actual empty collection remains valid. After restoring
+the API response path, the operator retries the read and checks the exported
+inventory before proceeding with recovery. Empty
 204 deletes and explicitly accepted 404 responses retain their existing meaning.
 
 ## Debugging and Verification
 
-- Inspect `server-dry-run.txt` for chart or admission failures before mutation,
-  and `preflight-<api|worker>.log` and `-status.json` for a rejected candidate.
-- For native scale, Helm upgrade, and rollout status failures, inspect
-  `native-command-failures.tsv` as described in [upgrade recovery](../guides/deploy/production-upgrade-recovery.md).
-- For runtime failures, inspect `dispatch/*.error`, version history, and
-  `status/*.json` before retrying anything. Doctor failures are recorded in
-  `status/*.doctor.json` and `status/*.doctor.error`.
+- For chart or admission failures before mutation, inspect `server-dry-run.txt`;
+  for rejected candidates, inspect `preflight-<api|worker>.log` and `-status.json`.
+- For native scale, Helm upgrade, or rollout status failures, inspect
+  `native-command-failures.tsv`; see [upgrade recovery](../guides/deploy/production-upgrade-recovery.md).
+- Before retrying runtime failures, inspect `dispatch/*.error`, version history,
+  and `status/*.json`. Doctor failures: `status/*.doctor.json` and `status/*.doctor.error`.
 - Compare `before-workloads.json` and `after-workloads.json` for unexpected
-  workload changes. The controller-only helper requests no Agent deployments;
-  one same-image Pod template rollout per affected Agent is expected. Separately
-  check repository-bound versions affected by broker restart.
-  Runtime proof should show the intended replacements.
-- Use the credentialed production Kubernetes integration with distinct baseline
+  changes. The controller-only helper requests no Agent deployments; expect one
+  same-image Pod template rollout per affected Agent. Separately check
+  repository-bound versions affected by broker restart.
+  Runtime proof should show intended replacements.
+- Use credentialed production Kubernetes integration with distinct baseline
   and candidate images for end-to-end proof. Mocked commands prove only script
   control flow.
 
@@ -296,7 +295,7 @@ checks the exported inventory before following the recovery procedure. Empty
 
 ## Changelog
 
-- 2026-10-25 11:53: Record native scale, Helm upgrade, and rollout failures without changing recovery. (authoring-run/f03f716e-ea13-48ab-ad6e-e179b342d585 - 87784a3230964bd8a7a1763f8350c1fd2b4284e0)
+- 2026-10-25 11:53: Record native scale, Helm upgrade, and rollout failures; preserve recovery. (authoring-run/f03f716e-ea13-48ab-ad6e-e179b342d585 - 87784a3230964bd8a7a1763f8350c1fd2b4284e0)
 
 - 2026-10-25 09:19: Keep preflight kubectl errors in private evidence. (authoring-run/6fccb13c-5ec3-44d5-aded-c3c3e9c1da81 - aaabca1fec6b28fbbb674f48f11f015242f86b59)
 - 2026-10-25 06:51: Identify temporary preflight resources by UID before cleanup. (authoring-run/d15969fb-1113-416f-9573-e045dd683b66 - dd36945fec0ec3de38cd15b971537eb10a90d0e4)
