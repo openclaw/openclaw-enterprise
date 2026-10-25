@@ -2878,6 +2878,13 @@ export class OpenClawController {
     );
     if (replay === undefined) {
       // A replay is checked against the current Installation by authorizeProvisioningRecord.
+      this.requireSavedHarnessAuth(
+        input.namespaceId,
+        compute,
+        executionMode,
+        harnessAuth,
+        configurationInput.values,
+      );
       validateComputeAgentProvisioning(compute, executionMode, configurationInput.values);
       // Reject foreign references before channel validation can report them as a scope miss.
       rejectCrossNamespaceSecretSources(
@@ -13571,6 +13578,46 @@ export class OpenClawController {
         ? { method: "api_key", source }
         : { method: "codex_pat", source },
     );
+  }
+
+  // Agent save's Harness authentication check for a provisioning request, ahead of the Compute
+  // Driver's plan check. A refusal that names a setting, such as an Installation that cannot
+  // place a dedicated Harness (finding 2395), then answers with save's and Create Agent's
+  // preflight's 400 instead of the plan check's fixed 409. It uses the preflight's snapshot, which
+  // needs no read, so it covers a Secret binding only. Admission repeats the full check with the
+  // plan's Secret bindings, so every other binding, and a refusal that names nothing, gets
+  // admission's answer in admission's order.
+  private requireSavedHarnessAuth(
+    namespaceId: string,
+    compute: ComputeDriver,
+    executionMode: HarnessExecutionMode,
+    harnessAuth: HarnessAuthBinding,
+    values: Readonly<OpenClawConfigurationDocument>,
+  ): void {
+    const auth = this.plannedHarnessAuthSnapshot(namespaceId, harnessAuth);
+    if (auth === undefined || compute.validateHarnessAuth === undefined) {
+      return;
+    }
+    let harnessId: string;
+    try {
+      harnessId = resolveConfiguredHarnessId(values);
+    } catch {
+      // A model selection that names no supported Harness: admission refuses it below.
+      return;
+    }
+    const harness = { id: harnessId, version: "provisioning", mode: executionMode };
+    try {
+      compute.validateHarnessAuth(
+        harness,
+        auth,
+        this.agentRuntimeConfiguration(values, harness, compute, this.sandboxDriver()),
+        null,
+      );
+    } catch (error) {
+      if (error instanceof ConfigurationHarnessError) {
+        throw error;
+      }
+    }
   }
 
   // A Secret binding's snapshot as the selected Secret Driver holds it.

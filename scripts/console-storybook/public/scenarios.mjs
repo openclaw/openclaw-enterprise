@@ -4586,7 +4586,10 @@ export const scenarios = {
     repositoryOptions: [],
     repositoryNotConfigured: true,
     description:
-      "The Installation has no Repo Driver: the tab names the setup step, links the runbook, offers no Retry, and keeps Save repository access disabled.",
+      "The Installation has no Repo Driver: the tab names the setup step, links the runbook and offers no Retry. Save repository access stays hidden while the stale binding remains.",
+    steps: [
+      "Remove application. Save repository access appears, and the status says to save to continue without repository access.",
+    ],
     gap: "Simulated UI proof only; this preview does not configure a Repo Driver.",
   },
   repositoryEditorLoading: {

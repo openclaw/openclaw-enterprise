@@ -367,7 +367,10 @@ test("Agent repository access preserves inheritance, custom overrides, and expli
   assert.deepEqual(await statusTone(gone), { className: "status", tone: "danger", role: null });
 });
 
-test("Agent repository tab offers no Save for an existing binding while repository access is not set up", async (t) => {
+// Repository settings removed while a Create Agent draft keeps a selection: discovery answers
+// meta.notConfigured, so the selection cannot be kept. Removing it must let the draft continue
+// without repository access, as the API accepts (finding 2397); before, only Start over did.
+test("Create Agent lets a draft drop retained repositories once repository access is not set up", async (t) => {
   const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId) => [
     {
       repositoryRef: "application",
@@ -376,12 +379,71 @@ test("Agent repository tab offers no Save for an existing binding while reposito
       namespaces: [{ namespaceId, profiles: ["git-read", "git-full"] }],
     },
   ]);
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await repositoryCheckbox(page, "example/application").click();
+  await page.getByLabel("Agent name").fill("Retained repository Agent");
+  await enterManualModel(page, "retained-repository-model-key", "gpt-5.1");
+  // The operator removes the repository settings: discovery now answers as it does without them.
+  await page.route(`**/namespaces/${namespace.id}/agents/repository-options`, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data: [], meta: { requestId: "req_options", notConfigured: true } }),
+    }),
+  );
+  // Returning to the kept draft reads repository choices again.
+  await page.getByRole("link", { name: "← Agents" }).click();
+  await page.waitForURL(/\/console\/agents(\?|$)/);
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  const status = page.getByRole("status").filter({
+    hasText: "Repository access is not available in this Installation's configuration.",
+  });
+  await status.waitFor();
+  assert.match(
+    await status.innerText(),
+    /Remove the selected repositories to continue without repository access\./,
+  );
+  const create = page.getByRole("button", { name: "Create Agent", exact: true });
+  assert.equal(await create.isDisabled(), true);
+  assert.equal(await page.getByRole("button", { name: "Retry repository choices" }).count(), 0);
+  // The choice is no longer listed, so the card names its reference.
+  await page.getByRole("button", { name: "Remove application" }).click();
+  await page.getByText("You can continue without repository access.", { exact: false }).waitFor();
+  await waitForEnabled(create);
+  const created = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents` &&
+      response.request().method() === "POST",
+  );
+  await create.click();
+  const response = await created;
+  assert.equal(response.status(), 201);
+  const agent: AgentResponse = await response.json();
+  assert.deepEqual(agent.data.repositoryAccess?.repositories ?? [], []);
+  assert.equal(agentPostRequests(requests, namespace.id).length, 1);
+});
+
+test("Agent repository tab offers Save only to drop every binding while repository access is not set up", async (t) => {
+  const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId) =>
+    ["application", "documentation"].map((repositoryRef, index) => ({
+      repositoryRef,
+      repositoryId: String(789 + index),
+      repository: `example/${repositoryRef}`,
+      namespaces: [{ namespaceId, profiles: ["git-read", "git-full"] }],
+    })),
+  );
   const configured = await fixture.createAgent(namespace.id, "Configured", nativeValues("bound"));
   const created = await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
     body: {
       name: "Bound Agent",
       configurationId: configured.configurationId,
-      repositoryBindings: [{ repositoryRef: "application", profile: "git-read" }],
+      repositoryBindings: [
+        { repositoryRef: "application", profile: "git-read" },
+        { repositoryRef: "documentation", profile: "git-read" },
+      ],
     },
   });
   assert.equal(created.status, 201);
@@ -408,32 +470,43 @@ test("Agent repository tab offers no Save for an existing binding while reposito
     fixture,
     `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=repositories`,
   );
-  await page
-    .getByText(
-      "You can’t save repository changes on this page until an operator sets up repository access.",
-      { exact: false },
-    )
-    .waitFor();
+  const status = page.getByRole("status").filter({
+    hasText: "Repository access is not available in this Installation's configuration.",
+  });
+  await status.waitFor();
+  assert.match(
+    await status.innerText(),
+    /Remove the selected repositories and save to continue without repository access\./,
+  );
   await page
     .getByText(
       "Repository availability cannot be verified because repository access is not available in this Installation's configuration.",
       { exact: true },
     )
+    .first()
     .waitFor();
   assert.equal(await page.getByRole("button", { name: "Retry repository choices" }).count(), 0);
-  // No save can succeed on this page, so Save is not offered (finding 2386).
+  // Bindings that need repository access cannot be saved, so Save is not offered (finding 2386).
   const save = page.getByRole("button", { name: "Save repository access" });
   const cancel = page.locator(".agent-card").getByRole("button", { name: "Cancel", exact: true });
   assert.equal(await save.count(), 0);
   assert.equal(await cancel.count(), 0);
-  // Removing the binding makes the form dirty: Save stays hidden, and Cancel undoes the edit.
+  // Removing one binding leaves one that still cannot be saved: Save stays hidden, Cancel undoes
+  // the edit, and the guidance does not ask for a Save the tab does not offer (finding 2398).
   const remove = page.getByRole("button", { name: /^Remove / });
+  assert.equal(await remove.count(), 2);
+  await remove.first().click();
   assert.equal(await remove.count(), 1);
-  await remove.click();
-  assert.equal(await remove.count(), 0);
   assert.equal(await save.count(), 0);
+  const feedback = page
+    .locator(".agent-card")
+    .getByText(
+      "Remove every repository and save, or cancel repository changes, before deploying.",
+      { exact: true },
+    );
+  await feedback.waitFor();
   await cancel.click();
-  await remove.waitFor();
+  await remove.nth(1).waitFor();
   // The rebuilt editor offers Cancel only until its repository read settles.
   await cancel.waitFor({ state: "hidden" });
   // The hidden Cancel cannot keep focus; the Repositories tab takes it.
@@ -442,6 +515,29 @@ test("Agent repository tab offers no Save for an existing binding while reposito
     await page.evaluate(() => document.activeElement?.textContent?.trim()),
     "Repositories",
   );
+  // The API accepts an empty binding list without repository access, so removing every binding
+  // offers Save, and saving drops the stale bindings (finding 2398).
+  await remove.first().click();
+  await remove.first().click();
+  assert.equal(await remove.count(), 0);
+  await waitForEnabled(save);
+  assert.match(await status.innerText(), /Save to continue without repository access\./);
+  await page
+    .locator(".agent-card")
+    .getByText("Save or cancel repository changes before deploying.", { exact: true })
+    .waitFor();
+  const saved = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}` &&
+      response.request().method() === "PATCH",
+  );
+  await save.click();
+  assert.equal((await saved).status(), 200);
+  await page.getByText("Repository access saved.", { exact: false }).waitFor();
+  const stored = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
+  assert.deepEqual((stored.data as AgentWire).repositoryBindings ?? [], []);
+  // Nothing is left to save, so no dead Save is offered.
+  await save.waitFor({ state: "hidden" });
 });
 
 test("Agent repository tab without a Repo Driver names the setup step and offers no Retry", async (t) => {
