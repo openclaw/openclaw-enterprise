@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
   jointCondition,
+  jointOwnerEvidence,
   jointSourcePolicy,
   liveJointFence,
   jointSuccessor,
@@ -578,35 +579,12 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
               if (row.identity !== id || !row.receipt || detached.includes(row.receipt)) {
                 return;
               }
-              const result = await client.getSandboxProviderStatus(
-                workspace,
-                name,
-                leg.provider_name,
-                signal,
-                row.receipt,
-              );
-              const receipt = result.receipt;
-              const desired = receipt?.desired;
-              const from = receipt?.detachedFrom;
-              if (
-                !receipt ||
-                receipt.receiptId !== row.receipt ||
-                receipt.provider !== leg.provider_name ||
-                receipt.workspace !== workspace ||
-                receipt.kind !== "PROVIDER_MUTATION_KIND_DETACH" ||
-                from?.providerId !== leg.provider_id ||
-                from.sandboxId !== old.sandboxId ||
-                from.attachmentEpoch !== epoch ||
-                !desired ||
-                desired.sandboxId !== old.sandboxId ||
-                desired.attachmentEpoch === epoch ||
-                !desired.attachmentEpoch ||
-                desired.attachmentEpoch !== receipt.mutationId
-              ) {
+              const nextEpoch = await this.detachedEpoch(observed, leg, epoch, row.receipt, signal);
+              if (!nextEpoch) {
                 return;
               }
               detached.push(row.receipt);
-              epoch = desired.attachmentEpoch;
+              epoch = nextEpoch;
               expectedProviders.splice(expectedProviders.indexOf(leg.provider_name), 1);
             }
             if (existing.spec?.provider_attachment_epoch !== epoch) {
@@ -681,9 +659,8 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
             undefined,
             context.signal,
           );
-          const outcome = jointSuccessor(reply, request, observed.existing, observed.status);
           const journal = context.policyEffects;
-          if (!outcome || !journal) {
+          if (!journal) {
             return undefined;
           }
           const prefix = request.operationId + ":";
@@ -696,14 +673,28 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
             return undefined;
           }
           const receipts: string[] = [];
+          let epoch: string | undefined;
           if (!request.retained.repositoryGit) {
-            for (const index of [0, 1]) {
+            const j = jointOwnerEvidence(request.expected.enforcement);
+            if (!j) {
+              return undefined;
+            }
+            epoch = j.recipients[0]!.attachment_epoch;
+            for (const [index, leg] of j.recipients.entries()) {
               const step = await journal.read(prefix + "detach-" + index);
               if (!step?.receipt) {
                 return undefined;
               }
+              epoch = await this.detachedEpoch(observed, leg, epoch, step.receipt, context.signal);
+              if (!epoch) {
+                return undefined;
+              }
               receipts.push(step.receipt);
             }
+          }
+          const outcome = jointSuccessor(reply, request, observed.existing, observed.status, epoch);
+          if (!outcome) {
+            return undefined;
           }
           const { challenge: _challenge, ...body } = original;
           const dispatched = {
@@ -1000,6 +991,40 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       );
     }
     return isDeepStrictEqual(await observed?.enforcement(), installation.enforcement);
+  }
+
+  private async detachedEpoch(
+    observed: NonNullable<Awaited<ReturnType<OpenShellCredentialProxyDriver["loadedPolicy"]>>>,
+    leg: { readonly provider_name: string; readonly provider_id: string },
+    epoch: string,
+    receiptId: string,
+    signal: AbortSignal,
+  ) {
+    const { client, workspace, name, sandboxId } = observed;
+    const { receipt } = await client.getSandboxProviderStatus(
+      workspace,
+      name,
+      leg.provider_name,
+      signal,
+      receiptId,
+    );
+    const desired = receipt?.desired;
+    const from = receipt?.detachedFrom;
+    if (
+      receipt?.receiptId === receiptId &&
+      receipt.provider === leg.provider_name &&
+      receipt.workspace === workspace &&
+      receipt.kind === "PROVIDER_MUTATION_KIND_DETACH" &&
+      from?.providerId === leg.provider_id &&
+      from.sandboxId === sandboxId &&
+      from.attachmentEpoch === epoch &&
+      desired?.sandboxId === sandboxId &&
+      desired.attachmentEpoch &&
+      desired.attachmentEpoch !== epoch &&
+      desired.attachmentEpoch === receipt.mutationId
+    ) {
+      return desired.attachmentEpoch;
+    }
   }
 
   private async jointEnforcement(

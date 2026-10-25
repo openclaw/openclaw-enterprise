@@ -1179,7 +1179,7 @@ test("bundled workspace registration admits the five native routes and refuses s
     annotations: {},
     labels: {},
     mainProcessInstanceId: "process",
-    spec: { providers: [runtimeProvider] },
+    spec: { providers: [runtimeProvider], provider_attachment_epoch: "detached" },
   };
   if (databaseUrl) {
     // Close the writer, then recover the original pending operation through a fresh
@@ -1230,11 +1230,12 @@ test("bundled workspace registration admits the five native routes and refuses s
     revision: { version: 2, status: 2, policy: retainedSource },
   };
   assert.equal(
-    jointSuccessor(reply, op, sandbox, { ...finalPolicyStatus, active_version: 1 }),
+    jointSuccessor(reply, op, sandbox, { ...finalPolicyStatus, active_version: 1 }, "detached"),
     undefined,
   );
   assert.equal(
-    jointSuccessor(reply, op, sandbox, finalPolicyStatus)?.installation.enforcement.peerKeyId,
+    jointSuccessor(reply, op, sandbox, finalPolicyStatus, "detached")?.installation.enforcement
+      .peerKeyId,
     nextKey.toString("base64url"),
   );
   // A genuine historical result can be presented unchanged after the Gateway's current
@@ -1254,7 +1255,7 @@ test("bundled workspace registration admits the five native routes and refuses s
       current: { ...current, model_grant: { ...modelGrant, [field]: "other" } },
     })),
   ]) {
-    assert.equal(jointSuccessor(invalid, op, sandbox, finalPolicyStatus), undefined);
+    assert.equal(jointSuccessor(invalid, op, sandbox, finalPolicyStatus, "detached"), undefined);
   }
   assert.equal(
     jointSuccessor(
@@ -1262,6 +1263,7 @@ test("bundled workspace registration admits the five native routes and refuses s
       op,
       { ...sandbox, mainProcessInstanceId: "replacement" },
       finalPolicyStatus,
+      "detached",
     ),
     undefined,
   );
@@ -1372,6 +1374,7 @@ test("bundled workspace registration admits the five native routes and refuses s
           priorActive = await jointPolicyJourney({
             controller: f.controller,
             reads: () => f.secretReads,
+            originRequests: () => calls.length,
             state: f.state,
             context: f.context,
             plan: jointPlan,
@@ -1387,6 +1390,7 @@ test("bundled workspace registration admits the five native routes and refuses s
       await jointPolicyJourney({
         controller: f.controller,
         reads: () => f.secretReads,
+        originRequests: () => calls.length,
         state: f.state,
         context: f.context,
         plan: jointPlan,

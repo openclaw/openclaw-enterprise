@@ -82,8 +82,14 @@ function hasJointProviders(
   plan: ProxyPlan,
   runtime: string | undefined,
   legs: Joint["recipients"],
+  detachedEpoch: unknown,
 ) {
+  const epoch = sandbox.spec?.provider_attachment_epoch;
   return (
+    nonempty(epoch) &&
+    (plan.repositoryGit
+      ? legs.every((leg) => leg.attachment_epoch === epoch)
+      : detachedEpoch === epoch) &&
     nonempty(runtime) &&
     same(sandbox.spec?.providers, [
       runtime,
@@ -92,7 +98,7 @@ function hasJointProviders(
   );
 }
 
-function ownerEvidence(enforcement: EgressInstallation["enforcement"]) {
+export function jointOwnerEvidence(enforcement: EgressInstallation["enforcement"]) {
   const j = enforcement.joint;
   const o = j?.ownerEvidence;
   if (
@@ -151,6 +157,7 @@ function withdrawalReceipts(reply: Fields | undefined) {
     operationId: f.operation_id,
     action: c.action,
     predecessorKey: rawKey(f.public_key),
+    appliedResultHash: sha256Hex(JSON.stringify(wirePolicy(last))),
     fenceReceipt: Buffer.from(fence.receipt).toString("base64url"),
     detachReceiptIds: c.detach_receipt_ids ?? [],
   };
@@ -285,7 +292,7 @@ export function readJointEnforcement(
   const stored = previous?.enforcement.joint;
   const runtime =
     provision?.runtimeProvider ??
-    (previous && ownerEvidence(previous.enforcement)?.runtimeProvider);
+    (previous && jointOwnerEvidence(previous.enforcement)?.runtimeProvider);
   if (
     !previous &&
     (!provision ||
@@ -330,7 +337,13 @@ export function readJointEnforcement(
   };
   const derivedSource = jointSourcePolicy(effective, legs, runtime);
   if (
-    !hasJointProviders(existing, context.plan, runtime, legs) ||
+    !hasJointProviders(
+      existing,
+      context.plan,
+      runtime,
+      legs,
+      stored?.ownerEvidence.detachedAttachmentEpoch,
+    ) ||
     !derivedSource ||
     !asRecord(revision.policy) ||
     !policyEqual(derivedSource, revision.policy)
@@ -338,7 +351,7 @@ export function readJointEnforcement(
     return;
   }
   if (previous) {
-    const recorded = previous.enforcement.joint?.ownerEvidence.withdrawal;
+    const recorded = asRecord(stored?.ownerEvidence.withdrawal);
     if (
       context.plan.generation === 1
         ? response?.fence !== undefined
@@ -347,13 +360,16 @@ export function readJointEnforcement(
       return;
     }
     if (
-      !same(joint, ownerEvidence(previous.enforcement)) ||
+      !same(joint, jointOwnerEvidence(previous.enforcement)) ||
       e.policy_hash !== previous.enforcement.policyHash ||
       e.instance_id !== previous.enforcement.instanceId ||
       !policyEqual(effective, previous.enforcement.joint?.ownerEvidence.effectivePolicy) ||
       (context.plan.routes.length
         ? response?.credential_installed !== true || previous.enforcement.peerKeyId !== key
-        : response?.credential_installed === true || previous.enforcement.peerKeyId !== undefined)
+        : response?.credential_installed === true ||
+          previous.enforcement.peerKeyId !== undefined ||
+          !key ||
+          key !== recorded?.predecessorKey)
     ) {
       return;
     }
@@ -474,7 +490,7 @@ export function jointCondition(
   old: EgressInstallation,
   next: ProxyPlan,
 ): JointPolicyCondition | undefined {
-  const joint = ownerEvidence(old.enforcement);
+  const joint = jointOwnerEvidence(old.enforcement);
   const key = old.enforcement.peerKeyId;
   if (
     !joint ||
@@ -516,7 +532,7 @@ export function jointCondition(
 }
 
 export function sameJointPredecessor(current: Fields, old: EgressInstallation) {
-  const j = ownerEvidence(old.enforcement);
+  const j = jointOwnerEvidence(old.enforcement);
   const e = asRecord(current.enforcement);
   const p = asRecord(current.policy);
   return (
@@ -545,9 +561,10 @@ export function jointSuccessor(
   request: CredentialPolicyReduction,
   sandbox: OpenShellSandboxResponse,
   status: Fields,
+  detachedEpoch: string | undefined,
 ): CredentialPolicyObservation | undefined {
   const { expected: old, retained, condition } = request;
-  const j = ownerEvidence(old.enforcement);
+  const j = jointOwnerEvidence(old.enforcement);
   const current = asRecord(reply?.current);
   const fence = asRecord(reply?.fence);
   const f = asRecord(fence?.command);
@@ -584,7 +601,7 @@ export function jointSuccessor(
     fence?.applied !== true ||
     sandbox.id !== old.sandboxId ||
     sandbox.mainProcessInstanceId !== j.processInstanceId ||
-    !hasJointProviders(sandbox, retained, j.runtimeProvider, j.recipients) ||
+    !hasJointProviders(sandbox, retained, j.runtimeProvider, j.recipients, detachedEpoch) ||
     f.operation_id !== request.operationId ||
     command.operation_id !== request.operationId ||
     f.action !== (model ? "fence-git" : "fence-model") ||
@@ -644,7 +661,10 @@ export function jointSuccessor(
         receipts.length !== 2 ||
         !receipts.every(nonempty) ||
         new Set(receipts).size !== 2
-      : reply?.credential_installed === true || receipts.length !== 0)
+      : reply?.credential_installed === true ||
+        key !== old.enforcement.peerKeyId ||
+        e.provider_env_revision !== j.providerEnvRevision ||
+        receipts.length !== 0)
   ) {
     return;
   }
@@ -672,6 +692,7 @@ export function jointSuccessor(
           ownerEvidence: {
             ...old.enforcement.joint!.ownerEvidence,
             withdrawal: withdrawalReceipts(reply),
+            ...(model && { detachedAttachmentEpoch: detachedEpoch }),
             effectivePolicy: condition.remainingPolicy,
             configRevision: e.config_revision,
             providerEnvRevision: e.provider_env_revision,
@@ -688,7 +709,7 @@ export function liveJointFence(reply: Fields | undefined, request: CredentialPol
   const f = asRecord(reply?.fence);
   const cmd = asRecord(f?.command);
   const old = request.expected;
-  const j = ownerEvidence(old.enforcement);
+  const j = jointOwnerEvidence(old.enforcement);
   const condition = request.condition;
   if (
     !j ||

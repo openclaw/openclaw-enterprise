@@ -44,6 +44,7 @@ const digest = (v: string) => createHash("sha256").update(v).digest("hex");
 export async function jointPolicyJourney(input: {
   controller: OpenClawController;
   reads: () => number;
+  originRequests: () => number;
   state: PostgresPlatformState;
   context: ProxyRevisionContext;
   plan: ProxyPlan;
@@ -97,6 +98,12 @@ export async function jointPolicyJourney(input: {
     remove === "git"
       ? [...providers, legs[0]!.provider_name]
       : providers.filter((p) => p !== legs[1]!.provider_name);
+  type Conflict = "session key" | "provider revision" | "attachment epoch";
+  let conflict: Conflict | undefined;
+  const conflicts: Conflict[] =
+    remove === "git"
+      ? ["attachment epoch"]
+      : ["session key", "provider revision", "attachment epoch"];
   let resource = 1;
   let epoch = "initial";
   let version = 1;
@@ -153,7 +160,10 @@ export async function jointPolicyJourney(input: {
         },
         labels: {},
         serviceUrls: {},
-        spec: { providers: reportedProviders ?? providers, provider_attachment_epoch: epoch },
+        spec: {
+          providers: reportedProviders ?? providers,
+          provider_attachment_epoch: conflict === "attachment epoch" ? "other-epoch" : epoch,
+        },
       };
     },
     async getSandboxPolicyStatus() {
@@ -161,6 +171,20 @@ export async function jointPolicyJourney(input: {
     },
     async advanceJointReduction(_w, _n, cmd) {
       if (!cmd) {
+        const current = asRecord(reply.current);
+        if (current && conflict === "session key") {
+          return { ...reply, current: { ...current, public_key: successorKey } };
+        }
+        if (current && conflict === "provider revision") {
+          const last = asRecord(reply.last_result)!;
+          const command = asRecord(last.command)!;
+          const enforcement = { ...asRecord(current.enforcement), provider_env_revision: "123" };
+          return {
+            ...reply,
+            current: { ...current, enforcement },
+            last_result: { ...last, command: { ...command, enforcement } },
+          };
+        }
         return reply;
       }
       effects.push(String(cmd.action));
@@ -529,6 +553,23 @@ export async function jointPolicyJourney(input: {
     assert.equal(reductions[0]!.observed, undefined);
   });
   reportedProviders = undefined;
+  for (conflict of conflicts) {
+    assert.equal(await reduce(), "pending", "conflicting " + conflict + " cannot settle");
+    await state.read(async (u) => {
+      const saved = await u.credentialSources.findRevisionEgressInstallation(
+        namespaceId,
+        revisionId,
+      );
+      assert.equal(saved?.plan.generation, 1);
+      const [operation] = await u.credentialSources.listCredentialPolicyReductions(
+        namespaceId,
+        revisionId,
+      );
+      assert.ok(operation);
+      assert.equal(operation.observed, undefined);
+    });
+  }
+  conflict = undefined;
   assert.equal(await reduce(), "withdrawn");
   assert.deepEqual(effects, expectedEffects, "a cold observer must not repeat a mutation");
   const saved = await state.read((u) =>
@@ -539,6 +580,18 @@ export async function jointPolicyJourney(input: {
   const check = () =>
     owner.require("credential_proxy").verifyInstallation({ ...ctx, plan: saved.plan }, saved);
   assert.equal(await check(), true);
+  for (conflict of conflicts) {
+    assert.equal(await check(), false, "ordinary use must reject a conflicting " + conflict);
+    assert.equal(
+      await reduce(),
+      "pending",
+      "a cold observer must reject a conflicting " + conflict,
+    );
+  }
+  conflict = undefined;
+  assert.equal(await check(), true);
+  assert.equal(await reduce(), "withdrawn");
+  assert.deepEqual(effects, expectedEffects);
   const app = new OpenClawController(input.controller.installation, {
     state,
     driverConfigurations: [
@@ -603,38 +656,56 @@ export async function jointPolicyJourney(input: {
     verifiedExecutionPolicyHash: saved.enforcement.policyHash,
   });
   if (remove === "git") {
-    const req = request();
-    const resolved = await exchange.resolve(peerToken, boxId, req, ctx.signal);
-    assert.ok(
-      resolved.kind === "ready",
-      "the retained model turn must obtain a new credential: " +
-        JSON.stringify(resolved.kind === "refused" ? resolved.error : resolved.kind),
-    );
-    const allowed = await exchange.authorizeSend(
-      peerToken,
-      boxId,
-      req.id,
-      resolved.handle,
-      resolved.evidence,
-      resolved.injectionDigest,
-      req.deadlineAt,
-      ctx.signal,
-    );
-    assert.ok(allowed.kind === "allow", JSON.stringify(allowed));
-    const response = await new Promise<Buffer>((resolve, reject) => {
-      const post = httpsRequest(
-        req.url,
-        { method: "POST", headers: Object.fromEntries([...req.headers, ...resolved.headers]) },
-        async (r) => {
-          try {
-            resolve(await buffer(r));
-          } catch (e) {
-            reject(e);
-          }
-        },
+    const resolve = async (req: ReturnType<typeof request>) => {
+      const result = await exchange.resolve(peerToken, boxId, req, ctx.signal);
+      assert.ok(result.kind === "ready", "the retained model turn must obtain a fresh credential");
+      return result;
+    };
+    const send = async (
+      req: ReturnType<typeof request>,
+      resolved: Awaited<ReturnType<typeof resolve>>,
+    ) => {
+      const decision = await exchange.authorizeSend(
+        peerToken,
+        boxId,
+        req.id,
+        resolved.handle,
+        resolved.evidence,
+        resolved.injectionDigest,
+        req.deadlineAt,
+        ctx.signal,
       );
-      post.on("error", reject).end(req.body);
-    });
+      if (decision.kind === "refused") {
+        return undefined;
+      }
+      return new Promise<Buffer>((resolve, reject) => {
+        const post = httpsRequest(
+          req.url,
+          { method: "POST", headers: Object.fromEntries([...req.headers, ...resolved.headers]) },
+          async (r) => {
+            try {
+              resolve(await buffer(r));
+            } catch (e) {
+              reject(e);
+            }
+          },
+        );
+        post.on("error", reject).end(req.body);
+      });
+    };
+    const before = input.originRequests();
+    const interrupted = request();
+    const ready = await resolve(interrupted);
+    conflict = "attachment epoch";
+    assert.equal((await exchange.resolve(peerToken, boxId, request(), ctx.signal)).kind, "refused");
+    assert.equal(await send(interrupted, ready), undefined);
+    assert.equal(input.originRequests(), before);
+    conflict = undefined;
+    const req = request();
+    const resolved = await resolve(req);
+    const response = await send(req, resolved);
+    assert.ok(response);
+    assert.equal(input.originRequests(), before + 1);
     assert.equal(await exchange.beginResponse(peerToken, boxId, req.id), resolved.handle);
     assert.equal(
       (
