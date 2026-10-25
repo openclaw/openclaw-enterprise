@@ -451,9 +451,8 @@ test("saving and reloading the authentication source update the Agent page in pl
     await page.getByRole("status").filter({ hasText: "Authentication source saved." }).waitFor();
     await waitForInputValue(secretField, secretOptionLabel(secret));
     assert.deepEqual(await kept(), { marker: "kept", reloadedText: [] });
-    // Save is disabled with nothing left to save, so the saved status takes focus (finding
-    // 2402), as on the Plugins tab.
-    assert.equal(await focusedText(page), "Authentication source saved.");
+    assert.equal(await focusedText(page), "Save authentication source");
+    assert.equal(await focusedDescription(page), "Authentication source saved.");
     // The staged-Secret hint is gone after the save, so the page may end one line shorter.
     const scrollAfter = await scrollY(page);
     assert.ok(
@@ -482,20 +481,15 @@ test("saving and reloading the authentication source update the Agent page in pl
   await page.getByRole("tab", { name: "Credentials", exact: true }).click();
   await waitForInputValue(secretField, secretOptionLabel(first));
   await saveAuthentication.waitFor();
-  await waitForEnabled(reload);
-  // Nothing changed, so Save waits for an edit (finding 2402); the controls are not left off.
-  assert.equal(await saveAuthentication.isDisabled(), true);
-  await selectSecret(page, "API key Secret", second);
   await waitForEnabled(saveAuthentication);
+  await waitForEnabled(reload);
 });
 
-// The Credentials tab's heading touched its first label, and Save authentication source was
-// primary and enabled with nothing changed. The Repositories tab without repository access
-// nested the picker's card inside the tab's card (finding 2402).
-test("the Credentials and Repositories tabs are one card each and Save waits for a change", async (t) => {
+// The Credentials tab's heading touched its first label, and the Repositories tab without
+// repository access nested the picker's card inside the tab's card (finding 2402).
+test("the Credentials and Repositories tabs are one card each with a heading gap", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "One card");
   const first = await fixture.createSecret(namespace.id, "First harness Secret", "hidden-first");
-  const second = await fixture.createSecret(namespace.id, "Second harness Secret", "hidden-second");
   const agent = await fixture.createAgent(
     namespace.id,
     "One Card",
@@ -513,16 +507,6 @@ test("the Credentials and Repositories tabs are one card each and Save waits for
         fieldset.querySelector("legend")!.getBoundingClientRect().bottom,
     );
   assert.ok(gap >= 8, `the heading sits ${gap}px above the first label`);
-  const save = page.getByRole("button", { name: "Save authentication source" });
-  assert.equal(await save.isDisabled(), true);
-  await selectSecret(page, "API key Secret", second);
-  await waitForEnabled(save);
-  // Choosing the saved Secret again leaves nothing to save.
-  await selectSecret(page, "API key Secret", first);
-  await page
-    .locator("form.agent-card button.button--primary:disabled")
-    .filter({ hasText: "Save authentication source" })
-    .waitFor();
 
   // This Installation has no repository settings: the tab shows one card, without the picker's
   // own border and background inside it, and no empty band below its last block.
