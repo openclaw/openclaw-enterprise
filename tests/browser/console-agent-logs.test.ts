@@ -2156,7 +2156,8 @@ test("a member's Back reuses a followed Logs view, and not once log access is re
   );
   const pane = page.getByRole("log", { name: "Runtime log output" });
   await pane.getByText("member before leaving").waitFor();
-  // The member is refused runtime status and native administration, and the view says so.
+  // The member is refused runtime status, and the view says so. The permission answer already
+  // says the member lacks Agent administer, so native administration is never asked.
   await page.getByText(/Runtime status requires Agent operate/).waitFor();
   await page.getByRole("button", { name: "Follow" }).click();
   computeDriver.state.lines = [...computeDriver.state.lines, line(2, "member first poll")];
@@ -2166,7 +2167,7 @@ test("a member's Back reuses a followed Logs view, and not once log access is re
   const panel = await pane.elementHandle();
   const nativeAdminReads = () =>
     requests.filter(({ path }) => path.endsWith(`/agents/${agent.id}/native-admin`)).length;
-  assert.equal(nativeAdminReads(), 1);
+  assert.equal(nativeAdminReads(), 0);
   const logPaths = () =>
     requests.filter(({ path }) => path.includes("/runtime/logs")).map(({ path }) => path);
 
@@ -2192,8 +2193,8 @@ test("a member's Back reuses a followed Logs view, and not once log access is re
     readAfterBack.filter((path) => readBeforeLeaving.has(path) || path.includes("tailLines")),
     [],
   );
-  // The remembered refusal is not asked again (each one is an audited denial).
-  assert.equal(nativeAdminReads(), 1);
+  // Back does not ask native administration either (each refusal would be an audited denial).
+  assert.equal(nativeAdminReads(), 0);
 
   // Log access is revoked while the member is away: Back must not paint the cached output.
   await leave();
