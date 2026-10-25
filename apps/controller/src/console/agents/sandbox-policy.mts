@@ -20,6 +20,9 @@ import { namespacePath, rejectionMessage } from "./list.mjs";
 import { recordRow, visibleText } from "./logs-view.mjs";
 
 type Policy = SandboxPolicyViewWire["policy"];
+
+const POLICY_READ_DENIED =
+  "Your access does not include reading this Agent’s network policy or its suggestions.";
 type LogLine = Extract<RuntimeLogRecord, { type: "line" }>;
 
 function errorText(cause: unknown, subject: string) {
@@ -124,10 +127,13 @@ export function renderAgentSandboxPolicy(
     agent,
     revisionId,
     descriptor,
+    policyReadAllowed,
   }: {
     agent: Pick<Agent, "id" | "namespaceId" | "activeRevisionId" | "desiredRuntimeState">;
     revisionId: string;
     descriptor?: DriverConfigurationDescriptor;
+    // The caller's advisory sandbox policy read answer; undefined when it is unknown.
+    policyReadAllowed?: Promise<boolean | undefined>;
   },
 ) {
   const path = `${namespacePath(agent.namespaceId)}/agents/${encodeURIComponent(agent.id)}`;
@@ -172,6 +178,9 @@ export function renderAgentSandboxPolicy(
   let suggestionsReading = false;
   // A permission refusal is not retried from here: the same request gets the same answer.
   let suggestionsDenied = false;
+  // Set when the caller's permission answer denies sandbox policy read: the policy and its
+  // suggestions are not read, so a reader meets no 403 and no refusal block (finding 2454).
+  let policyReadDenied = false;
   // The first policy read says whether the Sandbox Driver supports per-Agent network policy.
   // Without it there is no Sandbox log source and no suggestions, so the tab says so once instead
   // of reading both, showing their refusals and offering an editor (finding 2060). A refused or
@@ -367,11 +376,19 @@ export function renderAgentSandboxPolicy(
       return;
     }
     if (revisionId === "draft") {
-      suggestionStatus.textContent = "Deploy an Agent to collect provider suggestions.";
+      suggestionStatus.textContent = agent.activeRevisionId
+        ? "Suggestions come from deployed versions. Open the current version to see them."
+        : "Deploy an Agent to collect provider suggestions.";
       renderSuggestions();
       return;
     }
     if (!(await policySupported()) || suggestionsReading) {
+      return;
+    }
+    if (policyReadDenied) {
+      suggestionsDenied = true;
+      suggestionStatus.textContent = POLICY_READ_DENIED;
+      renderSuggestions();
       return;
     }
     clearTimeout(suggestionTimer);
@@ -458,6 +475,13 @@ export function renderAgentSandboxPolicy(
   }
 
   function renderPolicy() {
+    if (policyReadDenied) {
+      policyPanel.replaceChildren(
+        element("h2", {}, "Agent network policy"),
+        element("p", { className: "muted" }, POLICY_READ_DENIED),
+      );
+      return;
+    }
     policyPanel.replaceChildren(
       element("h2", {}, "Agent network policy"),
       feedback,
@@ -968,9 +992,22 @@ export function renderAgentSandboxPolicy(
     policyPanel,
   );
   renderPolicy();
-  const firstPolicyRead = loadPolicy();
+  // A caller whose permission answer denies sandbox policy read is not sent the policy read; an
+  // unknown answer still reads it.
+  const firstPolicyRead = Promise.resolve(policyReadAllowed).then((allowed) => {
+    if (allowed !== false) {
+      return loadPolicy();
+    }
+    if (current()) {
+      policyReadDenied = true;
+      renderPolicy();
+    }
+  });
   if (revisionId === "draft") {
-    logStatus.textContent = "Deploy an Agent to load Sandbox policy decisions.";
+    // The draft has no deployment of its own; a deployed Agent's denials are on its versions.
+    logStatus.textContent = agent.activeRevisionId
+      ? "Policy denials come from deployed versions. Open the current version to see them."
+      : "Deploy an Agent to load Sandbox policy decisions.";
   } else {
     void readLogs(true);
   }

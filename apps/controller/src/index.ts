@@ -2437,14 +2437,31 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       };
       // Native admin UI access authorizes Agent administer on the exact Agent, so the console
       // skips its audited probe for a caller without it.
-      const [update, deploy, operate, remove, administer, configurationUpdate, configurationRead] =
-        await Promise.all([
-          ...(["update", "deploy", "operate", "delete", "administer"] as const).map((action) =>
-            callerMay(context.actorId, action, target),
-          ),
-          callerMay(context.actorId, "update", configuration),
-          callerMay(context.actorId, "read", configuration),
-        ]);
+      // The Agent's network policy and its suggestions authorize read on the Agent's own
+      // sandbox_policy resource, which no other answer covers; the console skips both reads
+      // for a caller without it (finding 2454).
+      const sandboxPolicy: ResourceRef = {
+        kind: "sandbox_policy",
+        id: `sbp_${agentId.slice(4)}`,
+        namespaceId,
+      };
+      const [
+        update,
+        deploy,
+        operate,
+        remove,
+        administer,
+        configurationUpdate,
+        configurationRead,
+        sandboxPolicyRead,
+      ] = await Promise.all([
+        ...(["update", "deploy", "operate", "delete", "administer"] as const).map((action) =>
+          callerMay(context.actorId, action, target),
+        ),
+        callerMay(context.actorId, "update", configuration),
+        callerMay(context.actorId, "read", configuration),
+        callerMay(context.actorId, "read", sandboxPolicy),
+      ]);
       // One IAM call per distinct grant, shared by the two answers below.
       const decisions = new Map<string, Promise<boolean>>();
       const callerMayAll = async (grants: readonly [PermissionAction, ResourceRef][]) => {
@@ -2496,6 +2513,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           configurationRead,
           configurationSecretsOperate,
           agentSourcesOperate,
+          sandboxPolicyRead,
         },
         meta: { requestId: request.id },
       });

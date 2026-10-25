@@ -52,6 +52,7 @@ import {
   agentSaveDenial,
   message,
   rejectionMessage,
+  AGENT_UPDATE_DENIED,
   assertReadableConfiguration,
   isStaleGeneration,
   configurationConflictMessage,
@@ -1585,7 +1586,10 @@ export async function renderAgentDetail(
   function versionNotice() {
     return selected === "draft"
       ? selectedTab === "plugins"
-        ? "Plugin changes to this Agent appear in the next deployment. Existing versions stay unchanged."
+        ? // Plugin selections are Agent settings: a caller who may not save them reads them.
+          agentReadOnly()
+          ? READ_ONLY_DRAFT_NOTICE
+          : "Plugin changes to this Agent appear in the next deployment. Existing versions stay unchanged."
         : draftReadOnly()
           ? READ_ONLY_DRAFT_NOTICE
           : "New version. Changes affect future deployments using this Configuration. Admitted versions stay unchanged."
@@ -3452,7 +3456,15 @@ export async function renderAgentDetail(
     }
     if (tab === "policy") {
       state.reusable = false;
-      content.append(renderAgentDriverConfigurations(tabContext, { agent, revisionId: selected }));
+      content.append(
+        renderAgentDriverConfigurations(tabContext, {
+          agent,
+          revisionId: selected,
+          policyReadAllowed: latestPermissionsRead.then(
+            (permissions) => permissions?.sandboxPolicyRead,
+          ),
+        }),
+      );
       state.loading = false;
       content.style.minHeight = "";
       return;
@@ -3569,7 +3581,7 @@ export async function renderAgentDetail(
       statusBlock("info", null, versionNotice(), [], { className: "version-selection-notice" }),
     );
     if (selectedTab === "repositories" && draft) {
-      content.append(renderRepositoryEditor(context, data));
+      content.append(renderRepositoryTab(context, data));
     } else if (selectedTab === "plugins") {
       const plugins = renderAgentPlugins(context, {
         agent: { ...agent, harnessAuth: agent.harnessAuth ?? null },
@@ -4308,6 +4320,57 @@ export async function renderAgentDetail(
         ),
       );
     }
+  }
+
+  // The repository choices read needs Agent update, so a caller whose permission answer denies it
+  // reads the saved repository access instead of a refused editor, and is not sent a read that
+  // answers 403 (finding 2454). An unknown answer keeps the editor.
+  function renderRepositoryTab(context: DetailContext, data: DraftDetails) {
+    const holder = element("div", {});
+    void latestPermissionsRead.then((permissions) => {
+      if (!context.isCurrent() || !holder.parentNode) {
+        return;
+      }
+      holder.replaceWith(
+        permissions?.update === false
+          ? repositoryAccessSummary()
+          : renderRepositoryEditor(context, data),
+      );
+    });
+    return holder;
+  }
+
+  function repositoryAccessSummary() {
+    const bindings = agent.repositoryBindings ?? [];
+    return element(
+      "section",
+      { className: "agent-card repository-selection" },
+      element("h2", {}, "Repository access"),
+      element(
+        "p",
+        { className: "muted", role: "status" },
+        bindings.length
+          ? "These are the version draft’s repository selections, read-only with your access. The next deployment uses them as saved."
+          : "The version draft selects no repositories. The Agent runs without repository access.",
+      ),
+      bindings.length
+        ? element(
+            "ul",
+            { className: "repository-access-summary" },
+            ...bindings.map((binding) =>
+              element(
+                "li",
+                {},
+                `${binding.repositoryRef} · ${repositoryProfile(binding.profile)?.label ?? "Unknown access level"}`,
+              ),
+            ),
+          )
+        : null,
+      bindings.some((binding) => repositoryProfile(binding.profile)?.writes)
+        ? element("p", { className: "hint repository-write-access" }, repositoryWriteAccessHelp)
+        : null,
+      element("p", { className: "muted" }, AGENT_UPDATE_DENIED),
+    );
   }
 
   function renderRepositoryEditor(context: DetailContext, data: DraftDetails) {
