@@ -22,6 +22,7 @@ import {
   resources,
   missing,
   waitFor,
+  waitForDeletedClaim,
   assertKubernetesFixtureAvailable,
   namespace,
   agentName,
@@ -1541,7 +1542,7 @@ test(
       deletedClaims.push(`gateway-state-${hash(adoptedTenant.id)}`);
     }
     for (const name of deletedClaims) {
-      assert.equal(await missing("persistentvolumeclaim", name, existingName), true);
+      await waitForDeletedClaim(name, existingName);
     }
     assert.equal(await missing("deployment", gatewayName(adoptedTenant.id), existingName), true);
     assert.equal(await missing("service", gatewayName(adoptedTenant.id), existingName), true);
