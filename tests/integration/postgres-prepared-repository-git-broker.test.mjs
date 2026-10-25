@@ -84,11 +84,14 @@ async function startBroker(
   });
   const service = createCredentialService({ config, factory, clock });
   t.after(() => service.shutdown(5000));
+  // The production composition writes each refusal record to the broker's log (finding 2411).
+  const logs = [];
   const server = await startListeners({
     service,
     factory,
     clock,
     tls,
+    log: (record) => logs.push(record),
     config: { ...config, gateway: { ...config.gateway, listen: "127.0.0.1:0" } },
     upstreamCa: tls.ca,
     trustedUpstreamOrigins: factory.trustedUpstreamOrigins,
@@ -156,6 +159,12 @@ async function startBroker(
     address,
     origin,
     observed,
+    logs,
+    identity: {
+      sessionId: opened.session.sessionId,
+      namespaceId,
+      repositoryRef: binding.repositoryRef,
+    },
     opened,
     openSession,
     env,
@@ -223,7 +232,29 @@ test(
         )
       ).rows[0].n;
 
-    assert.equal((await b.http(discovery)).status, 503);
+    // Finding 2411: each refused authenticated request logs exactly one record with the code
+    // the Agent received, where it was refused, the operation once known, and the session.
+    const refusedOnce = (response, reason, operation) => {
+      assert.ok(response.status >= 400, response.text);
+      assert.deepEqual(b.logs.splice(0), [
+        {
+          event: "repository-credentials.denied",
+          status: response.status,
+          reasonCode: JSON.parse(response.text).error.code,
+          reason,
+          ...(operation === undefined ? {} : { operation }),
+          ...b.identity,
+        },
+      ]);
+    };
+    const logged = [];
+    const keep = () => logged.push(...b.logs);
+
+    // No prepared material yet: the owner cannot authorize the send, so nothing is sent.
+    const cold = await b.http(discovery);
+    assert.equal(cold.status, 503);
+    keep();
+    refusedOnce(cold, "not_dispatched", "git-discovery");
     assert.equal(f.gh.issuesOfTokens.length, 0);
     await prepare(f);
     assert.equal((await b.http(discovery)).status, 200);
@@ -238,19 +269,27 @@ test(
       body: line(b.pushRef) + line("refs/heads/main") + "0000",
     });
     assert.equal(mixed.status, 400);
+    keep();
+    refusedOnce(mixed, "input_refused", "git-push");
+    // Another repository, GitHub REST and GraphQL are outside the Git-only route.
     for (const path of [
       discovery.replace(b.repository, "wrong/other"),
       "/repos/" + b.repository,
       "/graphql",
     ]) {
-      assert.ok((await b.http(path)).status >= 400);
+      const response = await b.http(path);
+      keep();
+      refusedOnce(response, "request_refused");
     }
     assert.equal(await useCount(), before);
     assert.equal(b.observed.length, beforeOrigin);
 
     // The owner commits a use, TLS completes, but no HTTP request crosses an expired send window.
     b.slow(true);
-    assert.equal((await b.http(discovery)).status, 503);
+    const late = await b.http(discovery);
+    assert.equal(late.status, 503);
+    keep();
+    refusedOnce(late, "not_dispatched", "git-discovery");
     b.slow(false);
     assert.equal(await useCount(), before + 1);
     assert.equal(b.observed.length, beforeOrigin);
@@ -303,6 +342,8 @@ test(
     assert.equal(pushes(), count + 1);
 
     assert.equal((await b.http(discovery)).status, 200);
+    // Successful Git requests and an uncertain push are not refusals.
+    assert.deepEqual(b.logs, []);
     const sent = b.observed.length;
     const used = await useCount();
     // The production listener deliberately serves only one request per TLS connection.
@@ -324,7 +365,17 @@ test(
     });
     assert.equal(withdrawn, true);
     assert.equal(revoked.status, 503);
-    assert.equal((await b.http(discovery)).status, 503);
+    keep();
+    refusedOnce(revoked, "not_dispatched", "git-fetch");
+    const after = await b.http(discovery);
+    assert.equal(after.status, 503);
+    keep();
+    refusedOnce(after, "not_dispatched", "git-discovery");
+    // Records name the session, never its bearer, the token, a ref or the repository.
+    const text = JSON.stringify(logged);
+    for (const secret of [b.opened.bearer, b.pushRef, b.repository]) {
+      assert.ok(!text.includes(secret));
+    }
     assert.equal(b.observed.length, sent);
     assert.equal(await useCount(), used);
     assert.equal(f.gh.issuesOfTokens.length, 1);

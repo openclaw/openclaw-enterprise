@@ -70,6 +70,7 @@ async function startTransport(t, onRequest, limits = {}) {
     token,
     trustedEndpoints: { apiOrigin: github.origin, gitOrigin: origin, ca: tls.ca },
   });
+  const logs = [];
   const { service, listeners } = await startServiceListeners(resources, {
     config,
     factory,
@@ -77,9 +78,21 @@ async function startTransport(t, onRequest, limits = {}) {
     tls,
     // Pass the caller's original set so production owns the security-relevant copy.
     trustedUpstreamOrigins: trustedOrigins,
+    log: (record) => logs.push(record),
   });
   const opened = service.open({ durationSeconds: 300, profile: "git-write" });
-  return { config, tls, service, listeners, opened, github, received, resources, trustedOrigins };
+  return {
+    config,
+    tls,
+    service,
+    listeners,
+    opened,
+    github,
+    received,
+    resources,
+    trustedOrigins,
+    logs,
+  };
 }
 
 function startRequest(
@@ -387,8 +400,18 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
       heldClients[0].outgoing.end();
       await eventually(() => delivered[0] === 4);
 
-      // One total slot is still free: this refusal belongs to the session bound.
+      // One total slot is still free: this refusal belongs to the session bound. Its log
+      // record names the session, so an operator can tell it from a withdrawal (finding 2411).
       assertRefused(await readDiscovery(fixture, { opened: first }));
+      assert.deepEqual(fixture.logs.splice(0), [
+        {
+          event: "repository-credentials.denied",
+          status: 503,
+          reasonCode: "exchange-capacity",
+          reason: "capacity",
+          sessionId: first.session.sessionId,
+        },
+      ]);
       assert.equal(fixture.service.status(first.session.sessionId).activeUses, 1);
       assert.equal(fixture.github.issuesOfTokens.length, 0);
       assert.equal(fixture.received.length, 1);

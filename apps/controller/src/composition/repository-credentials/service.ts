@@ -46,7 +46,13 @@ export async function runService(
   });
   let listeners: BoundListeners;
   try {
-    listeners = await startListeners({ ...loaded, service, clock });
+    // One JSON line per refused request (finding 2411), next to this process's other events.
+    listeners = await startListeners({
+      ...loaded,
+      service,
+      clock,
+      log: (record) => process.stderr.write(`${JSON.stringify(record)}\n`),
+    });
   } catch {
     await service.shutdown(loaded.config.limits.shutdownGraceMs);
     loaded.close();
