@@ -35,6 +35,7 @@ import {
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
 import {
+  AGENT_NAME_CONFLICT,
   CODEX_PLACEMENT_REFUSAL,
   DEDICATED_PLACEMENT_REQUIREMENT,
   DEPENDENCY_UNAVAILABLE,
@@ -247,10 +248,7 @@ test("Dedicated Agent provisioning refuses a taken Agent name at admission and m
   assert.equal(response.status(), 409);
   const { error, meta } = await response.json();
   assert.equal(error.code, "RESOURCE_CONFLICT");
-  assert.equal(
-    error.message,
-    "An Agent with this name already exists in this Namespace. Choose a different name.",
-  );
+  assert.equal(error.message, AGENT_NAME_CONFLICT);
   const feedback = page.getByRole("alert").filter({ hasText: meta.requestId });
   await feedback.waitFor();
   assert.equal(await feedback.textContent(), `${error.message} Request ID: ${meta.requestId}`);

@@ -30,6 +30,7 @@ import {
   routeInstallationWithoutProvisioning,
 } from "./console-agents-test-support.mjs";
 import {
+  AGENT_NAME_CONFLICT,
   CHANNEL_SECRETS_CONFIGURATION_CHANGED,
   REPOSITORY_EDITS_PENDING,
   RESOURCE_NOT_FOUND,
@@ -152,9 +153,7 @@ test("a refused Create stays a draft for a reload and a return, and the retry re
   );
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   assert.equal((await conflict).status(), 409);
-  await page
-    .getByText("An Agent with this name already exists in this Namespace. Choose a different name.")
-    .waitFor();
+  await page.getByText(AGENT_NAME_CONFLICT).waitFor();
   // The form is still the reader's to fix, so a reload asks first (finding 1934).
   assert.equal(await asksBeforeUnload(page), true);
 

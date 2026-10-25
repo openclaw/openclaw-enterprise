@@ -7,6 +7,7 @@ import { WORKSPACE_DEFAULTS_ID } from "../../packages/contracts/src/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { grantRole } from "../helpers/iam-grants.mjs";
 import { assertWriteAuthorizationDenial } from "../helpers/partial-write-authorization.mjs";
+import { GENERIC_DENIAL } from "../helpers/refusal-text.mjs";
 
 // The real controller over HTTP: OCC, Native IAM, the bundled OpenClaw Plugin Driver and the
 // fixture's test Kubernetes Compute Driver, whose workspace rule Agent create applies.
@@ -159,7 +160,7 @@ test("Agent create preflight refuses a caller without Agent create as Agent crea
     // The same refusal as Agent create: the deny-all pair is never evaluated for this caller.
     assert.deepEqual(refused.body.error, {
       code: "FORBIDDEN",
-      message: "The exact platform operation was not authorized.",
+      message: GENERIC_DENIAL,
     });
     assertWriteAuthorizationDenial(
       f.audit.events.slice(auditStart),

@@ -20,6 +20,7 @@ import {
   login,
   loginThroughForm,
   newPage,
+  nonAuthWriteRequests,
   settledFetches,
   settledView,
   settlePageRequests,
@@ -441,10 +442,7 @@ test("console browser flow keeps Namespace URL state across global pages and log
     { local: {}, session: {} },
   );
 
-  const writeRequests = requests.filter(
-    (request) => request.method !== "GET" && !request.path.startsWith("/api/auth/sign-"),
-  );
-  assert.deepEqual(writeRequests, []);
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
   // List rows read revision history for Latest deployment and advisory permissions for their
   // Stop and Delete icons. Browsing these draft Agents must not read their detail or invoke any
   // deployment operation. The request log also includes the shell's deployment modules.

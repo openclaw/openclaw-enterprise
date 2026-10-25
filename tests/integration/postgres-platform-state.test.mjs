@@ -23,7 +23,7 @@ import {
   verifyPlatformStateStoreContract,
 } from "../helpers/postgres-platform-state.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
-import { GENERIC_DENIAL } from "../helpers/refusal-text.mjs";
+import { AGENT_NAME_CONFLICT, GENERIC_DENIAL } from "../helpers/refusal-text.mjs";
 
 async function ensureInstallation(state, name) {
   const existing = await state.loadInstallation();
@@ -603,8 +603,7 @@ test(
       ),
       {
         name: "ResourceStateConflictError",
-        message:
-          "An Agent with this name already exists in this Namespace. Choose a different name.",
+        message: AGENT_NAME_CONFLICT,
       },
     );
 

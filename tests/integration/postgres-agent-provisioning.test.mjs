@@ -46,7 +46,7 @@ import { waitFor } from "../helpers/wait-for.mjs";
 import { withNamespaceLockHeld } from "../helpers/postgres-namespace-lock.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 import { expireWorkLease, makeWorkDue } from "../helpers/postgres-worker-revision-support.mjs";
-import { DEPENDENCY_UNAVAILABLE } from "../helpers/refusal-text.mjs";
+import { AGENT_NAME_CONFLICT, DEPENDENCY_UNAVAILABLE } from "../helpers/refusal-text.mjs";
 
 const adminEmail = "postgres-agent-provisioning-v2@example.test";
 const adminPassword = "postgres-agent-provisioning-password";
@@ -2631,12 +2631,13 @@ test(
     // before either job creates its Agent reach the worker's Agent insert, where the unique
     // name constraint refuses the later one. That job must report the cause instead of the
     // generic failure text.
+    const bodies = [];
     const admitted = [];
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      const response = await fixture.request("POST", provisionPath, {
-        body: provisioningBody(namespace.id, secrets, { name }),
-      });
+      const body = provisioningBody(namespace.id, secrets, { name });
+      const response = await fixture.request("POST", provisionPath, { body });
       assert.equal(response.status, 202, JSON.stringify(response.body));
+      bodies.push(body);
       admitted.push(response);
     }
     await fixture.startWorker();
@@ -2663,8 +2664,15 @@ test(
     assert.equal(failed.data.status, "failed");
     assert.deepEqual(failed.data.error, {
       code: "PROVISIONING_REJECTED",
-      message: "An Agent with this name already exists in this Namespace. Choose a different name.",
+      message: AGENT_NAME_CONFLICT,
     });
+
+    // A resend of the admitted request returns its job before the name check, even though
+    // that job's Agent now holds the name: a console whose first response was lost reads a
+    // name 409 on retry as "never admitted" and would offer a fresh request for its own name.
+    const resent = await fixture.request("POST", provisionPath, { body: bodies[winner] });
+    assert.equal(resent.status, 202, JSON.stringify(resent.body));
+    assert.equal(resent.data.provisioning.workId, admitted[winner].data.provisioning.workId);
 
     // Now that the Agent exists, admission answers Agent create's 409 and queues no job.
     const refused = await fixture.request("POST", provisionPath, {
@@ -2672,10 +2680,7 @@ test(
     });
     assert.equal(refused.status, 409, JSON.stringify(refused.body));
     assert.equal(refused.body.error.code, "RESOURCE_CONFLICT");
-    assert.equal(
-      refused.body.error.message,
-      "An Agent with this name already exists in this Namespace. Choose a different name.",
-    );
+    assert.equal(refused.body.error.message, AGENT_NAME_CONFLICT);
     // The name check comes last, as in the preflight and Agent create: a taken name with a
     // Secret binding that names no Secret gets the binding's refusal, so a rename does not
     // uncover a second refusal.
