@@ -498,6 +498,15 @@ export function createChannelSecretsPanel({
   };
   applyCarriedSecrets(state, carried);
   const section = element("section", { className: "agent-card channel-secrets" });
+  // The page's answer describes the bindings this panel was built with. A name this panel has
+  // since saved to another Secret needs no replacing until the page reads the answer again.
+  const answeredBindings = configuration.secretBindings;
+  const toReplace = () =>
+    bindingsToReplace()?.filter(
+      (key) =>
+        secretIdForBinding(state.configuration.secretBindings?.[key]) ===
+        secretIdForBinding(answeredBindings?.[key]),
+    ) ?? null;
 
   function saveErrorText() {
     const { saveError, saveGrantWarning } = state;
@@ -756,9 +765,9 @@ export function createChannelSecretsPanel({
       // gets no Save the API would refuse either (finding 2432).
       readOnlyNote.hidden = !readOnly();
       readOnlyNote.textContent = readOnlyReason();
-      const replace = readOnly() ? null : bindingsToReplace();
-      replaceNote.hidden = !replace;
-      replaceNote.textContent = replace ? channelReplaceHint(replace) : "";
+      const replace = readOnly() ? [] : (toReplace() ?? []);
+      replaceNote.hidden = replace.length === 0;
+      replaceNote.textContent = replace.length ? channelReplaceHint(replace) : "";
       save.hidden = readOnly() || (!state.unsavedSecrets && unverifiedGrants());
     };
     shown.updateControls = updateControls;
@@ -788,7 +797,7 @@ export function createChannelSecretsPanel({
       const refusal = retry
         ? null
         : channelReplaceRefusal(
-            bindingsToReplace(),
+            toReplace(),
             state.configuration.secretBindings,
             draft.secretBindings,
           );

@@ -4742,6 +4742,15 @@ test("a channel Secrets save may replace a bound Secret the member cannot operat
     SLACK_APP_TOKEN: { source: app.ref, delivery: { type: "env" } },
     SLACK_BOT_TOKEN: { source: own.ref, delivery: { type: "env" } },
   });
+  // The bot token now binds the member's own Secret: nothing is left to replace, so the next
+  // save is not refused.
+  await page.getByText(REPLACE_BOT_TOKEN, { exact: true }).waitFor({ state: "detached" });
+  await selectSecret(page, "Slack app token", own);
+  const resaving = page.waitForResponse(
+    (r) => r.request().method() === "PATCH" && r.url().endsWith(configurationPath),
+  );
+  await page.getByRole("button", { name: "Save channel Secrets" }).click();
+  assert.equal((await resaving).status(), 200);
 });
 
 // The Channels drawer saves the same bindings. While the administrator's bot token Secret stays
