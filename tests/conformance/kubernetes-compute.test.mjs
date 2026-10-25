@@ -10428,12 +10428,9 @@ test("native channel providers require Secret bindings and project them only to 
   );
   // Outside a secret-input field the runtime keeps `$NAME` and other `${` text as written, and a
   // `:-fallback` fills an unset name, so none of them needs a binding.
-  driver.validateHarnessAuth(
-    revision.harness,
-    revision.harnessAuth,
-    slackAccount({ name: "$OPS ${x} ${OPS_NAME:-ops}" }),
-    {},
-  );
+  for (const name of ["$OPS", "${x}", "${OPS_NAME:-ops}"]) {
+    driver.validateHarnessAuth(revision.harness, revision.harnessAuth, slackAccount({ name }), {});
+  }
 
   const ipv6 = createKubernetesComputeDriver(
     options({
