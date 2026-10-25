@@ -43,10 +43,13 @@ die() {
 # Append so a later resume cannot erase an earlier unknown outcome.
 native_command_failed() {
   local status=$1 operation=$2 component=$3
+  # The operation has returned; failed pipe or file writes must not replace its status.
+  trap '' PIPE XFSZ
   printf '%s\t%s\t%s\n' "$operation" "$component" "$status" \
     >>"$evidence_dir/native-command-failures.tsv" ||
-    warn "could not append native-command-failures.tsv in the evidence directory."
-  die "$operation for $component exited $status; inspect native-command-failures.tsv and reconcile live state before resuming." "$status"
+    warn "could not append native-command-failures.tsv in the evidence directory." || true
+  warn "$operation for $component exited $status; inspect native-command-failures.tsv and reconcile live state before resuming." || true
+  exit "$status"
 }
 
 require_command() {

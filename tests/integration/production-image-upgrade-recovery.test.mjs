@@ -13,7 +13,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -482,6 +482,9 @@ async function fakeCommand(root, { command: tool, args, cwd }, io) {
         .split("-")
         .at(-1);
       if (component === "worker" && take("fail-scale-worker")) {
+        if (take("block-failure-receipt")) {
+          mkdirSync(join(root, "evidence", "native-command-failures.tsv"));
+        }
         return fail(9);
       }
       state[component] = 0;
@@ -1202,6 +1205,23 @@ async function fixture(
     executionReads: api?.executionReads ?? [],
     accessReviews: api?.reviews ?? [],
     run: (...extra) => execute(script, [...args, ...extra], { cwd: repository, env }),
+    runWithStderr: (destination) =>
+      execute("bash", ["-c", 'exec "$@" 2>"$0"', destination, script, ...args], {
+        cwd: repository,
+        env,
+      }),
+    // Close the read end before launch; subprocess restores the CLI's default SIGPIPE.
+    runWithBrokenPipe: () =>
+      execute(
+        "python3",
+        [
+          "-c",
+          "import os, subprocess, sys; r, w = os.pipe(); os.close(r); p = subprocess.run(sys.argv[1:], stderr=w); sys.exit(p.returncode if p.returncode >= 0 else 128 - p.returncode)",
+          script,
+          ...args,
+        ],
+        { cwd: repository, env },
+      ),
     state: async () => JSON.parse(await readFile(join(directory, "state.json"), "utf8")),
     events: async () =>
       (await readFile(join(directory, "events"), "utf8")).trim().split("\n").filter(Boolean),
@@ -1285,6 +1305,52 @@ test("an interrupted quiescence never starts migration while the worker still ru
   await f.run("--resume");
   assert.equal(await readFile(path, "utf8"), receipt + receipt);
   assert.equal((await f.events()).filter((event) => event === "migration").length, 1);
+});
+
+test("native failure status survives failed diagnostics and receipt writes", async (t) => {
+  for (const [stderr, blockedReceipt] of [
+    ["/dev/full", false],
+    [null, true],
+    ["/dev/full", true],
+    ["pipe", true],
+  ]) {
+    await t.test(`${stderr ?? "normal stderr"}, blocked receipt: ${blockedReceipt}`, async (t) => {
+      if (stderr === "/dev/full" && !existsSync(stderr)) {
+        t.skip("requires /dev/full (Linux)");
+        return;
+      }
+      const f = await fixture(t);
+      await f.failNext("fail-scale-worker");
+      // A directory denies receipt append even when the test runs as root.
+      if (blockedReceipt) {
+        await f.failNext("block-failure-receipt");
+      }
+      let run = f.run;
+      if (stderr === "pipe") {
+        run = f.runWithBrokenPipe;
+      } else if (stderr) {
+        run = () => f.runWithStderr(stderr);
+      }
+      const failure = await run().then(
+        () => assert.fail("worker scale must fail"),
+        (error) => error,
+      );
+      const path = join(f.evidence, "native-command-failures.tsv");
+      const events = await f.events();
+      t.diagnostic(JSON.stringify({ status: failure.code, events }));
+      assert.equal(failure.code, 9);
+      assert.equal((await f.state()).api, 0);
+      assert.equal((await f.state()).worker, 1);
+      assert.equal(existsSync(join(f.evidence, "helm-started")), false);
+      assert.deepEqual(events, ["scale-api"]);
+      if (blockedReceipt) {
+        assert.deepEqual(await readdir(path), []);
+      } else {
+        assert.equal(await readFile(path, "utf8"), "quiescence-scale\tworker\t9\n");
+        assert.equal(statSync(path).mode & 0o777, 0o600);
+      }
+    });
+  }
 });
 
 test("failed Helm migration keeps old writers stopped and requires checked history and a terminal Job", async (t) => {
