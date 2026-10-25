@@ -3776,6 +3776,21 @@ select:not([multiple])[size="1"] {
 #create-agent-form ~ .form-actions {
   max-width: 960px;
 }
+/* A Preset fills a form taller than the window, so Create Agent stays in view at its foot
+   instead of two screens down (finding 2098). */
+#create-agent-form ~ .form-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  padding-block: var(--space-3);
+  border-top: 1px solid var(--color-border);
+  background: var(--color-canvas);
+}
+/* Keyboard focus scrolls a control into view above that row, not under it. Two rows of buttons
+   fit on a phone. */
+html:has(#create-agent-form) {
+  scroll-padding-bottom: calc(2 * var(--control-h) + 2 * var(--space-3) + var(--space-4));
+}
 .repository-customize .repository-option {
   margin-top: var(--space-4);
 }
