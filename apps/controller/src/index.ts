@@ -2397,15 +2397,22 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     if (operation.operationId === "getAgentCallerPermissions") {
       // Route authorization already required Agent read; the read also proves the Agent
       // exists before the mutating actions are probed.
-      await controller.getAgentForBrowsing(context.actorId, namespaceId, agentId);
+      const agent = await controller.getAgentForBrowsing(context.actorId, namespaceId, agentId);
       const target: ResourceRef = { kind: "agent", id: agentId, namespaceId };
-      const [update, deploy, operate, remove] = await Promise.all(
-        (["update", "deploy", "operate", "delete"] as const).map((action) =>
+      // The Agent read names its Configuration, so its update bit discloses nothing new.
+      const configuration: ResourceRef = {
+        kind: "configuration",
+        id: agent.configurationId,
+        namespaceId,
+      };
+      const [update, deploy, operate, remove, configurationUpdate] = await Promise.all([
+        ...(["update", "deploy", "operate", "delete"] as const).map((action) =>
           callerMay(context.actorId, action, target),
         ),
-      );
+        callerMay(context.actorId, "update", configuration),
+      ]);
       reply.send({
-        data: { update, deploy, operate, delete: remove },
+        data: { update, deploy, operate, delete: remove, configurationUpdate },
         meta: { requestId: request.id },
       });
       return;

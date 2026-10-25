@@ -20,6 +20,7 @@ export const GatewayPasswordSaveDenied = story("gatewayPasswordSaveDenied");
 export const GatewayPasswordSaving = story("gatewayPasswordSaving");
 export const PluginsDraft = story("pluginsDraft");
 export const PluginsUpdateDenied = story("pluginsUpdateDenied");
+export const DraftReader = story("draftReader");
 export const PluginsToolRefusal = story("pluginsToolRefusal");
 export const PluginApproversInherited = story("pluginApproversInherited");
 export const PluginApproversOverrides = story("pluginApproversOverrides");

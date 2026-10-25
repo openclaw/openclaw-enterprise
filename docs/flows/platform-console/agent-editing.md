@@ -229,19 +229,17 @@ grants the Agent service principal exact Secret (`api_key` or imported `codex_pa
 or CredentialSource `operate` through the actor's IAM authority. Managed
 ServiceAccount PATs and runtime authentication skip this grant.
 
-Grant failure preserves saved authentication and freezes controls.
+Grant failure preserves saved authentication and freezes controls;
 `apps/controller/src/console/agents/credentials.mjs:grantWarning` words it as the
 Slack Secret path does. A session known not to administer the Installation sends
 no grant: the warning says access was not verified, names the Installation
-administrator, and offers no retry. A refused or unconfirmed grant request offers
-**Retry credential access**, which checks that the Agent still has the same service principal and
-authentication binding as the saved response, then retries only the grant;
-rereading bindings recovers lost responses. An uncertain PATCH requires
-**Reload authentication source** before saving or granting. Pending access
-survives navigation and blocks deployment until confirmed or reloaded. An administrator's
-Credentials tab blocks deployment once Namespace IAM shows no grant. Admission
-remains authoritative; preflight/authorization errors stay separate from credential
-metadata. Confirmed access does not prove provider readiness.
+administrator, and offers no retry. A refused or unconfirmed grant offers
+**Retry credential access**, which retries only the grant once the Agent's service
+principal and authentication binding still match; rereading bindings recovers lost
+responses. An uncertain PATCH requires **Reload authentication source** before saving
+or granting. Pending access survives navigation and blocks deployment until confirmed
+or reloaded, as does an administrator's Credentials tab once Namespace IAM shows no
+grant. Admission remains authoritative; confirmed access does not prove provider readiness.
 
 `apps/controller/src/console/agents/credentials.mjs:createChannelSecretsPanel`
 
@@ -262,10 +260,9 @@ On explicit submission, the browser rereads Agent and Configuration; a changed
 ID or generation requires reload. It then PATCHes selected Secret references with
 `expectedGeneration`, preserving other bindings, then calls `ensureCredentialOperateBinding` for changed
 and pending Secrets. A post-PATCH grant failure leaves bindings saved and blocks
-deployment in the current view. Subsequent saves retry still-referenced pending
-grants. Picker edits and rejected PATCHes preserve that warning; only a confirmed
-grant or confirmed removal of its reference clears the pending Secret. Explicit
-refresh resets local outcome tracking; the API always enforces Secret access.
+deployment in the current view; later saves retry still-referenced pending grants.
+Only a confirmed grant or confirmed removal of its reference clears the pending Secret.
+Explicit refresh resets local outcome tracking; the API always enforces Secret access.
 Pickers switch references; rotating shared Secret values is separate.
 
 ### 6. Read and replace live workspace files
@@ -288,6 +285,9 @@ read-only, shows that explanation, and keeps unsaved text. A failed permission
 read keeps the previous answer. The controller still authorizes every write; the
 editor is not that boundary. Stop and each version's **Run diagnostics** follow
 the same answer.
+
+Without Agent and Configuration update the draft is read-only: saved JSON, no
+**Edit Configuration**, read-only Channels and, without deploy, no checklist.
 
 On the first read or an explicit **Reload**, only a `404` with code `NOT_FOUND`
 and message `The requested workspace file was not found.` confirms the file is
@@ -328,11 +328,9 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
   exact Secret `read`. Saving bindings also requires caller `operate` on those
   Secrets, Configuration update, and Namespace IAM authority to grant Agent use.
 - After a partial save, inspect Configuration, Secret metadata, and Agent IAM
-  bindings before retrying. Storage and binding do not prove runtime delivery;
-  deploy and verify the consuming Agent.
-- Compare saved `Agent.plugins` with the viewed version's plugin snapshot after
-  a plugin edit. A successful Agent update does not install or activate plugins;
-  deploy and inspect startup status separately.
+  bindings before retrying; storage and binding do not prove runtime delivery.
+- After a plugin edit, compare saved `Agent.plugins` with the version's plugin
+  snapshot; an Agent update installs or activates no plugin until a deployment.
 - See [console failures](../../reference/console.md#failures-and-logout) for
   session, permission, and network recovery.
 
@@ -351,6 +349,7 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 
 ## Changelog
 
+- 2026-10-25: Readers see the draft read-only. (finding 2421)
 - 2026-10-24: Restoring parked Workspace files applies the latest observed Agent operate answer. (pr-3474)
 - 2026-10-24 17:30: Stop and Run diagnostics follow the latest observed operate answer. (fix-2328)
 

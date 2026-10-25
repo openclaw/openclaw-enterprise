@@ -4012,6 +4012,7 @@ test("a version editor without Agent update can recover a failed deployment from
     deploy: true,
     operate: false,
     delete: false,
+    configurationUpdate: true,
   });
 
   // The header label confirms the page applied the permission answer before recovery is used.
@@ -4077,6 +4078,71 @@ test("a version editor without Agent update can recover a failed deployment from
   assert.equal(
     requests.filter((request) => request.method === "PATCH" && request.path === path).length,
     0,
+  );
+});
+
+// A member who can only read the Agent views its draft: the saved JSON with no editor whose
+// Save answers 403, and no editor's copy or checklist (finding 2421).
+test("a reader without update views the version draft read-only", async (t) => {
+  const { fixture, namespace } = await createRuntimeAuthFixture(t, "Draft reader");
+  const agent = await fixture.createAgent(namespace.id, "Draft reader Agent", nativeValues("v1"), {
+    harnessAuth: { method: "runtime" },
+  });
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const reader = await fixture.createNamespaceMember("draft-reader", namespace.id, [
+    ["read", "namespace"],
+    ["read", "agent"],
+    ["read", "agent_revision"],
+    ["read", "configuration"],
+  ]);
+  const path = "/namespaces/" + namespace.id + "/agents/" + agent.id;
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  const permissions = page.waitForResponse((r) => r.url().endsWith(path + "/permissions"));
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
+    reader.credentials,
+  );
+  assert.deepEqual((await (await permissions).json()).data, {
+    update: false,
+    deploy: false,
+    operate: false,
+    delete: false,
+    configurationUpdate: false,
+  });
+  await page
+    .getByText("Your access does not include editing this Configuration.", { exact: true })
+    .waitFor();
+  await page.getByText("View native Configuration", { exact: true }).waitFor();
+  assert.equal(await page.getByRole("button", { name: "Edit Configuration" }).count(), 0);
+  assert.equal(
+    await page.getByRole("button", { name: "Enable gateway password access" }).count(),
+    0,
+  );
+  await page
+    .getByText(
+      "Version draft · read-only with your access. The next deployment uses it as saved.",
+      { exact: true },
+    )
+    .waitFor();
+  assert.equal(await page.getByText(/New version\. Changes affect/).count(), 0);
+  // The draft card names the draft; Deploy says why it is disabled, with no editor's steps.
+  await page.getByRole("heading", { name: "Version draft", exact: true }).waitFor();
+  assert.equal(await page.getByRole("heading", { name: "Prepare this version" }).count(), 0);
+  assert.equal(
+    await page.getByText("Edit and save Configuration, plugins, or Channels").isVisible(),
+    false,
+  );
+  await page.getByText("Your access does not include deploying this Agent.").waitFor();
+  const entry = page.getByRole("button", { name: "View version draft", exact: true });
+  await entry.getByText("Read-only Configuration", { exact: true }).waitFor();
+  assert.deepEqual(
+    requests
+      .filter(({ method, path }) => method !== "GET" && path.startsWith("/namespaces/"))
+      .map(({ path }) => path),
+    [],
   );
 });
 

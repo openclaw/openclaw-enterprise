@@ -330,6 +330,10 @@ function nativeDocument(values: OpenClawConfigurationDocument, label: string) {
 }
 
 // A save's reread or its PATCH found a newer Configuration generation than the page's.
+// A draft the caller can read but neither change nor save (finding 2421).
+const READ_ONLY_DRAFT_NOTICE =
+  "Version draft · read-only with your access. The next deployment uses it as saved.";
+const CONFIGURATION_READ_ONLY = "Your access does not include editing this Configuration.";
 const CONFIGURATION_CHANGED =
   "The saved Configuration changed while you were editing. Reload this draft before saving.";
 
@@ -550,7 +554,7 @@ export async function renderAgentDetail(
       callerPermissionsSettled = true;
     });
   // Agent-side saves (plugins, authentication source, repository access) are Agent updates;
-  // Configuration saves have no bit in this answer and stay enabled (finding 1530). A draft
+  // Configuration saves need Configuration update, its own bit (findings 1530, 2421). A draft
   // refresh reads the answer again, so a grant applies without a page Refresh (finding 1538).
   let agentUpdateAllowed = callerPermissionsRead.then((permissions) => permissions?.update);
   // Only the latest reread's answer replaces the summary.
@@ -564,6 +568,10 @@ export async function renderAgentDetail(
   void callerPermissionsRead.then(() => {
     permissionsReadSettled = latestPermissionsRead === callerPermissionsRead;
   });
+  // A caller who may neither update the Agent nor its Configuration reads the draft; the page
+  // says so instead of addressing an editor (finding 2421). An unknown answer keeps the editor.
+  const configurationReadOnly = () => callerPermissions?.configurationUpdate === false;
+  const draftReadOnly = () => callerPermissions?.update === false && configurationReadOnly();
   let deleting = agent.status === "deleting";
   let currentRevisionId = agent.activeRevisionId;
   // The Agent as last read; Stop and finished deployments update it in place.
@@ -1518,7 +1526,9 @@ export async function renderAgentDetail(
     return selected === "draft"
       ? selectedTab === "plugins"
         ? "Plugin changes to this Agent appear in the next deployment. Existing versions stay unchanged."
-        : "New version. Changes affect future deployments using this Configuration. Admitted versions stay unchanged."
+        : draftReadOnly()
+          ? READ_ONLY_DRAFT_NOTICE
+          : "New version. Changes affect future deployments using this Configuration. Admitted versions stay unchanged."
       : selected === currentRevisionId
         ? "Current version · read-only admitted snapshot."
         : deployingRevision()?.id === selected
@@ -1718,13 +1728,18 @@ export async function renderAgentDetail(
     }
   }
   // The Versions list's draft entry and chooser option. Without Agent update they do not call the
-  // Configuration editable (finding 2405), nor read-only: Configuration update is a separate
-  // grant this page does not read. The permission answer can land after the list is built, so its
-  // callback labels them again.
+  // Configuration editable (finding 2405); without Configuration update either, it is read-only
+  // (finding 2421). The permission answer can land after the list is built, so its callback
+  // labels them again.
   function labelDraftEntry() {
     const [title, detail, name, option] =
       callerPermissions?.update === false
-        ? ["Version draft", "Configuration draft", "View version draft", "Version draft"]
+        ? [
+            "Version draft",
+            configurationReadOnly() ? "Read-only Configuration" : "Configuration draft",
+            "View version draft",
+            "Version draft",
+          ]
         : [
             "New version",
             "Editable Configuration",
@@ -2376,6 +2391,7 @@ export async function renderAgentDetail(
       }
       labelDraftEntry();
     }
+    renderVersionNotice();
     refreshDeployControls();
   });
 
@@ -2410,6 +2426,8 @@ export async function renderAgentDetail(
     const results = await Promise.allSettled([
       revisionsPromise,
       selected === "draft" && agent.configurationReadError ? Promise.resolve(null) : readSnapshot(),
+      // A draft's editors follow the caller's permissions, read alongside (finding 2421).
+      selected === "draft" ? callerPermissionsRead : null,
     ]);
     if (!context.isCurrent() || deleting) {
       return;
@@ -2739,6 +2757,7 @@ export async function renderAgentDetail(
       { className: "checklist", role: "list" },
       ...checklistSteps.map((step) => step.item),
     );
+    const draftActionsHeading = element("h2", {}, "Prepare this version");
     function setStep(
       step: (typeof checklistSteps)[number] | undefined,
       done: boolean,
@@ -2755,6 +2774,11 @@ export async function renderAgentDetail(
       setText(step.detail, detail);
     }
     function updateChecklist() {
+      // A caller who can change nothing here and cannot deploy gets no editor's checklist
+      // (finding 2421); Deploy says why it is disabled.
+      const reader = draftReadOnly() && callerPermissions?.deploy === false;
+      checklist.hidden = reader;
+      setText(draftActionsHeading, reader ? "Version draft" : "Prepare this version");
       const retainedConfiguration = retainedConfigurationState();
       const saving = draftEditorState.saving || pluginEditorState.saving;
       const reload =
@@ -2934,7 +2958,7 @@ export async function renderAgentDetail(
     const draftActions = element(
       "section",
       { className: "card agent-draft-actions" },
-      element("h2", {}, "Prepare this version"),
+      draftActionsHeading,
       checklist,
       // The status follows Deploy in reading order; on a wide screen it shows to its left.
       element("div", { className: "card-actions" }, setupCredentials, deploy, deployStatus),
@@ -3514,11 +3538,17 @@ export async function renderAgentDetail(
       const channels = renderChannels({
         values,
         executionMode,
-        readOnly: !draft,
+        readOnly: !draft || configurationReadOnly(),
         // Every deployment needs a model authentication source, so the drawer asks for one only
         // while the Agent has none; a deployed Agent with its key bound was told to set
         // credentials "before first deploy" (finding 2063).
         copy: {
+          ...(draft && configurationReadOnly()
+            ? {
+                readOnlyDescription: `These are the version draft’s channel settings. ${CONFIGURATION_READ_ONLY}`,
+                readOnlyCardMessage: "Read-only with your access.",
+              }
+            : {}),
           drawerNotice: `New version. Changes affect future deployments using this Configuration.${
             agent.harnessAuth
               ? ""
@@ -4754,6 +4784,15 @@ export async function renderAgentDetail(
     }
 
     function render() {
+      if (!editing && configurationReadOnly()) {
+        // A reader views the saved JSON; no editor whose Save would answer 403 (finding 2421).
+        container.replaceChildren(
+          element("p", { className: "hint" }, CONFIGURATION_READ_ONLY),
+          nativeDocument(values, "View native Configuration"),
+          ...(feedback.textContent ? [feedback] : []),
+        );
+        return;
+      }
       if (!editing) {
         container.replaceChildren(
           element(

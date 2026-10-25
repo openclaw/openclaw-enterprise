@@ -4275,6 +4275,21 @@ export const scenarios = {
       "The permission answer denies Agent update, so Save plugin selections and the plugin fields are disabled, the saved selections stay in view, and the note names the grant to ask for. The API still decides.",
     gap: "The permission answer is simulated; the API still authorizes every save.",
   },
+  draftReader: {
+    group: "Pages/Agent detail",
+    name: "Version draft, viewer can only read",
+    path: `${draft}&tab=configuration`,
+    deployed: true,
+    readOnlyPermissionSummary: true,
+    description:
+      "The permission answer denies Agent and Configuration update and deploy. The draft says it is read-only with this access, the Configuration tab shows the saved JSON with no editor, and the draft card has no editor's checklist. The API still decides.",
+    steps: [
+      "Read the notice: Version draft · read-only with your access.",
+      "Find no Edit Configuration button; View native Configuration opens the saved JSON.",
+      "The draft card reads Version draft, with Deploy disabled and its reason, and no Prepare this version steps.",
+    ],
+    gap: "The permission answer is simulated; the API still authorizes every save.",
+  },
   pluginsToolRefusal: {
     group: "Pages/Agent detail",
     name: "Plugin selections refused by the Configuration",
@@ -5238,7 +5253,13 @@ export const scenarios = {
     deployed: true,
     candidateDeploymentStatus: "failed",
     candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "format" },
-    agentPermissionSummary: { update: false, deploy: true, operate: false, delete: false },
+    agentPermissionSummary: {
+      update: false,
+      deploy: true,
+      operate: false,
+      delete: false,
+      configurationUpdate: true,
+    },
     description:
       "Recovery offers Open version draft when the viewer may deploy but cannot update the Agent. Configuration access is separate.",
     steps: [
@@ -5291,7 +5312,13 @@ export const scenarios = {
     deployed: true,
     candidateDeploymentStatus: "failed",
     candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "format" },
-    agentPermissionSummary: { update: false, deploy: true, operate: false, delete: false },
+    agentPermissionSummary: {
+      update: false,
+      deploy: true,
+      operate: false,
+      delete: false,
+      configurationUpdate: true,
+    },
     rules: [
       {
         path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",

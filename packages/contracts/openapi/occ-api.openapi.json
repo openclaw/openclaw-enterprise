@@ -21543,6 +21543,10 @@
                     "data": {
                       "additionalProperties": false,
                       "properties": {
+                        "configurationUpdate": {
+                          "description": "Whether the selected IAM Driver allows update of the Agent's Configuration now, which saving its draft Configuration needs. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
+                          "type": "boolean"
+                        },
                         "delete": {
                           "description": "Whether the selected IAM Driver allows Agent delete now. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
                           "type": "boolean"
@@ -21560,7 +21564,7 @@
                           "type": "boolean"
                         }
                       },
-                      "required": ["update", "deploy", "operate", "delete"],
+                      "required": ["update", "deploy", "operate", "delete", "configurationUpdate"],
                       "type": "object"
                     },
                     "meta": {

@@ -3516,6 +3516,7 @@ Report advisory primary IAM permissions on a readable Agent, not authorization f
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
+| `data.configurationUpdate` | `boolean` | Yes | Whether the selected IAM Driver allows update of the Agent's Configuration now, which saving its draft Configuration needs. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation. |
 | `data.delete` | `boolean` | Yes | Whether the selected IAM Driver allows Agent delete now. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation. |
 | `data.deploy` | `boolean` | Yes | Whether the selected IAM Driver allows Agent deploy now. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation. |
 | `data.operate` | `boolean` | Yes | Whether the selected IAM Driver allows Agent operate (used for Stop) now. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation. |

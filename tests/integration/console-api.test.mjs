@@ -191,7 +191,13 @@ test("caller permission summaries report primary IAM decisions without authorizi
 
   const admin = await fixture.request("GET", permissionsPath);
   assert.equal(admin.status, 200);
-  assert.deepEqual(admin.data, { update: true, deploy: true, operate: true, delete: true });
+  assert.deepEqual(admin.data, {
+    update: true,
+    deploy: true,
+    operate: true,
+    delete: true,
+    configurationUpdate: true,
+  });
   const adminNamespace = await fixture.request("GET", namespacePath);
   assert.equal(adminNamespace.status, 200);
   assert.deepEqual(adminNamespace.data, { agents: { create: true } });
@@ -235,7 +241,32 @@ test("caller permission summaries report primary IAM decisions without authorizi
   const session = await fixture.signIn(limited.credentials);
   const summary = await fixture.request("GET", permissionsPath, { session });
   assert.equal(summary.status, 200);
-  assert.deepEqual(summary.data, { update: false, deploy: true, operate: false, delete: false });
+  assert.deepEqual(summary.data, {
+    update: false,
+    deploy: true,
+    operate: false,
+    delete: false,
+    configurationUpdate: false,
+  });
+  // Configuration update on the Agent's Configuration is its own grant (finding 2421).
+  fixture.policy.roles.push({
+    id: "role-permission-summary-configuration",
+    namespaceId: namespace.id,
+    permissions: [{ action: "update", resourceKind: "configuration" }],
+  });
+  fixture.policy.bindings.push({
+    id: "binding-permission-summary-configuration",
+    namespaceId: namespace.id,
+    subjectKind: "identity",
+    subjectId: limited.principal.id,
+    roleId: "role-permission-summary-configuration",
+    resourceKind: "configuration",
+    resourceId: agent.configurationId,
+  });
+  const configurationSummary = await fixture.request("GET", permissionsPath, { session });
+  assert.equal(configurationSummary.status, 200);
+  assert.equal(configurationSummary.data.configurationUpdate, true);
+  assert.equal(configurationSummary.data.update, false);
   const namespaceSummary = await fixture.request("GET", namespacePath, { session });
   assert.equal(namespaceSummary.status, 200);
   assert.deepEqual(namespaceSummary.data, { agents: { create: false } });
