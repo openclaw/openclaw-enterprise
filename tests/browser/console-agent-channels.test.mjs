@@ -68,6 +68,25 @@ async function createSlackAgent(fixture, namespace, { name, slug, slack: extra, 
   return { agent, slack };
 }
 
+// Bound Secrets for the named Slack tokens (`app`, `bot`). Configuration save refuses an enabled
+// channel's token reference without a binding (finding 2319), so a drawer save that changes one
+// token needs the other bound already.
+async function slackTokenBindings(fixture, namespace, label, tokens = ["app", "bot"]) {
+  const bindings = {};
+  for (const token of tokens) {
+    const secret = await fixture.createSecret(
+      namespace.id,
+      `${label} Slack ${token} token`,
+      `hidden-${token}-token`,
+    );
+    bindings[`SLACK_${token.toUpperCase()}_TOKEN`] = {
+      source: secret.ref,
+      delivery: { type: "env" },
+    };
+  }
+  return bindings;
+}
+
 // Signs in at the Agent's draft `tab` and waits for its `heading`.
 async function openDraft(page, fixture, agent, heading, tab = "channels") {
   await login(page, fixture, detailUrl(fixture, agent.namespaceId, agent.id, "draft", tab));
@@ -518,6 +537,7 @@ describe("Agent channels", { concurrency: 3 }, () => {
       name: "Final Slack Grant Agent",
       slug: "final-slack-grant",
       slack: { channels: { CFINAL123: { requireMention: true } } },
+      secretBindings: await slackTokenBindings(fixture, namespace, "Final grant", ["bot"]),
     });
     const { page } = await newPage(t, fixture, { browser });
     const requests = apiRequests(page, fixture.origin);
@@ -587,6 +607,7 @@ describe("Agent channels", { concurrency: 3 }, () => {
     );
     const secretBindings = {
       SLACK_APP_TOKEN: { source: originalSecret.ref, delivery: { type: "env" } },
+      ...(await slackTokenBindings(fixture, namespace, "Original grant", ["bot"])),
     };
     const { agent } = await createSlackAgent(fixture, namespace, {
       name: "Original Slack Grant Agent",
@@ -621,10 +642,12 @@ describe("Agent channels", { concurrency: 3 }, () => {
       "Rejected save Slack app token",
       "hidden-rejected-save",
     );
+    const botBinding = await slackTokenBindings(fixture, namespace, "Rejected save", ["bot"]);
     const { agent } = await createSlackAgent(fixture, namespace, {
       name: "Rejected Slack Save Agent",
       slug: "rejected-slack-save",
       slack: { channels: { CREJECT123: { requireMention: true } } },
+      secretBindings: botBinding,
     });
     const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
     const { page } = await newPage(t, fixture, { browser });
@@ -658,7 +681,7 @@ describe("Agent channels", { concurrency: 3 }, () => {
 
     const configuration = await fixture.request("GET", configurationPath);
     assert.equal(configuration.status, 200);
-    assert.deepEqual(configuration.data.secretBindings ?? {}, {});
+    assert.deepEqual(configuration.data.secretBindings, botBinding);
     assert.deepEqual(accessBindingPostRequests(requests, namespace.id), []);
   });
 
@@ -673,6 +696,7 @@ describe("Agent channels", { concurrency: 3 }, () => {
         allowFrom: ["UDM123"],
         channels: { CEVERY123: { requireMention: true, users: ["*"], allowBots: "mentions" } },
       },
+      secretBindings: await slackTokenBindings(fixture, namespace, "Everyone"),
     });
     const { page } = await newPage(t, fixture, { browser });
 
@@ -738,17 +762,22 @@ describe("Agent channels", { concurrency: 3 }, () => {
     const values = nativeValues("embedded-slack");
     const agent = await fixture.createAgent(namespace.id, "Embedded Slack Agent", values);
     assert.equal(agent.executionMode, "embedded");
-    await fixture.updateConfiguration(namespace.id, agent.configurationId, {
-      ...values,
-      channels: {
-        slack: {
-          enabled: true,
-          mode: "socket",
-          appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
-          botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+    await fixture.updateConfiguration(
+      namespace.id,
+      agent.configurationId,
+      {
+        ...values,
+        channels: {
+          slack: {
+            enabled: true,
+            mode: "socket",
+            appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+            botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+          },
         },
       },
-    });
+      { secretBindings: await slackTokenBindings(fixture, namespace, "Embedded") },
+    );
     const { page } = await newPage(t, fixture, { browser });
     const requests = apiRequests(page, fixture.origin);
 
@@ -780,6 +809,7 @@ describe("Agent channels", { concurrency: 3 }, () => {
       name: "Partial Slack Grant Agent",
       slug: "partial-slack-grant",
       slack: { channels: { CPARTIAL123: { requireMention: true } } },
+      secretBindings: await slackTokenBindings(fixture, namespace, "Partial grant", ["bot"]),
     });
     const { page } = await newPage(t, fixture, { browser });
     const requests = apiRequests(page, fixture.origin);
@@ -836,14 +866,11 @@ describe("Agent channels", { concurrency: 3 }, () => {
     assert.equal(await appToken.evaluate((node) => node.tagName), "INPUT");
     await waitForInputValue(appToken, secretOptionLabel(slackAppSecret));
     // The reloaded page no longer knows of the failed grant, but an Installation administrator's
-    // console reads the IAM policy: the saved app token is not plainly Bound (finding 1920). The
-    // bot token is still missing, so nothing can be saved or retried yet.
+    // console reads the IAM policy: the saved app token is not plainly Bound (finding 1920), and
+    // its grant can be retried.
     await page.getByText("Bound · Agent access not confirmed", { exact: true }).waitFor();
     await page.getByText(GRANT_MISSING, { exact: true }).waitFor();
-    assert.equal(
-      await page.getByRole("button", { name: "Retry Secret access" }).isDisabled(),
-      true,
-    );
+    await waitForEnabled(page.getByRole("button", { name: "Retry Secret access" }));
   });
 
   // A member cannot write IAM policy, and the session already knows it (finding 2109), so a Slack
