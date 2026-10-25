@@ -73,7 +73,7 @@ interface PluginEditorOptions {
 }
 
 // A caller who may not update the Agent reads its plugin selections (finding 2436).
-export const PLUGINS_READ_ONLY =
+const PLUGINS_READ_ONLY =
   "These are the version draft's plugin selections, read-only with your access. The next deployment uses them as saved.";
 
 export const API_KEY_PLUGIN_MESSAGE =
