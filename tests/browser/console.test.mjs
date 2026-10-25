@@ -705,8 +705,8 @@ test("Agents with no readable Namespace names it once and keeps one Refresh", as
     // The compact selector shows its whole selection, not "Namespace una…" (finding 2423).
     assert.ok(
       await selector.evaluate((select) => {
-        const style = getComputedStyle(select);
-        const context = document.createElement("canvas").getContext("2d");
+        const style = globalThis.getComputedStyle(select);
+        const context = globalThis.document.createElement("canvas").getContext("2d");
         context.font = style.font;
         const text = context.measureText(select.selectedOptions[0].textContent).width;
         const room =
