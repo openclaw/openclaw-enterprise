@@ -591,6 +591,43 @@ test("a Preset's Secret source follows the member's Secret create answer", async
     .waitFor();
 });
 
+// A failed permission read leaves the Secret create answer unknown, not refused: the Preset keeps
+// Create new Secret as its source, and the API decides when the Agent is created. Only a known
+// denial, as above, limits the field to existing Secrets.
+test("an unknown Secret create answer keeps a Preset's Create new Secret", async (t) => {
+  const { fixture, namespace } = await setup(t);
+  const preset = await createStandardPreset(fixture, namespace.id);
+  const { page } = await newPage(t, fixture);
+  // An administrator's form reads the Installation, so it goes on without the permission answer.
+  const permissionsUrl = `${fixture.origin}/namespaces/${namespace.id}/permissions`;
+  await page.route(permissionsUrl, unavailable);
+  const answered = page.waitForResponse(permissionsUrl);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  assert.equal((await answered).status(), 503);
+  await page.getByLabel("Preset template").selectOption(preset.data.id);
+  const status = page.locator("#preset-variable-modelSecret-existing-secret-hint");
+  await waitForCondition(
+    async () => (await status.textContent()) !== "Loading existing Secrets…",
+    "the Preset's Secret list loads",
+    10_000,
+  );
+  assert.equal(
+    await status.textContent(),
+    "Existing Secrets in this Namespace are available. Secret values are never shown.",
+  );
+  const source = page.getByLabel("Secret source for Model Secret", { exact: true });
+  assert.equal(await source.inputValue(), "new");
+  const createNew = source.locator('option[value="new"]');
+  assert.equal(await createNew.isDisabled(), false);
+  assert.equal(await createNew.textContent(), "Create new Secret");
+  // The typed key reaches the form's API key field.
+  await page.getByLabel("Name", { exact: true }).fill("Unknown answer Agent");
+  await page.getByLabel("Model", { exact: true }).fill("gpt-5.1");
+  await page.getByLabel("Model Secret", { exact: true }).fill("sk-unknown-answer");
+  await page.getByRole("button", { name: "Use Preset" }).click();
+  assert.equal(await page.getByLabel("API key", { exact: true }).inputValue(), "sk-unknown-answer");
+});
+
 // Agent create needs Secret operate on its Harness authentication Secret and on each Secret its
 // Configuration binds. A member with operate on only some readable Secrets was offered the others
 // in Create Agent and met a 403 after the click (finding 2469). Each Create Agent Secret field
