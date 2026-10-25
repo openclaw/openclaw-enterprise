@@ -7,7 +7,7 @@ import type {
 import type { Static } from "typebox";
 import { requestFailure } from "../api-client.mjs";
 import { element, setHidden, setText } from "../dom.mjs";
-import { namespacePath } from "./list.mjs";
+import { agentSaveDenial, namespacePath } from "./list.mjs";
 import { logTextDenied } from "./logs.mjs";
 
 type RecoveryTab = "credentials" | "configuration" | "logs";
@@ -219,12 +219,16 @@ export function createDeploymentRecovery(
       code && Object.hasOwn(DEPLOYMENT_FAILURE_LINKS, code)
         ? DEPLOYMENT_FAILURE_LINKS[code]
         : undefined;
-    // Without update, the draft's only step is Deploy new version, which it builds only from a
+    // Agent-side saves need Agent update and the source grants each update also checks; the draft
+    // page disables its editors without them (finding 2441).
+    const agentEditable =
+      permissions?.update === true && agentSaveDenial(permissions) === undefined;
+    // Without them, the draft's only step is Deploy new version, which it builds only from a
     // readable Configuration, so "Open version draft" waits for the same read (finding 1944).
     const openDraftAllowed =
       guidance === "configuration" &&
       configurationAvailable &&
-      permissions?.update !== true &&
+      !agentEditable &&
       permissions?.deploy === true;
     if ((deployAgainAllowed || openDraftAllowed) && readableConfigurationId !== configurationId) {
       checkConfigurationReadable(configurationId);
@@ -232,16 +236,15 @@ export function createDeploymentRecovery(
     const canOpenConfiguration =
       guidance === "configuration" &&
       configurationAvailable &&
-      (permissions?.update === true ||
-        (openDraftAllowed && readableConfigurationId === configurationId));
+      (agentEditable || (openDraftAllowed && readableConfigurationId === configurationId));
     const canOpenCredentials =
       guidance === "credentials" &&
-      permissions?.update === true &&
+      agentEditable &&
       (!("harnessAuth" in agent) || agent.harnessAuth?.method !== "runtime");
     const tab = canOpenConfiguration || canOpenCredentials ? guidance : null;
     const nextLabel =
       tab &&
-      (canOpenConfiguration && permissions?.update !== true
+      (canOpenConfiguration && !agentEditable
         ? "Open version draft"
         : DEPLOYMENT_FAILURE_LINK_LABELS[tab]);
     const actionsFor = `${latest.id}/${tab}/${nextLabel}/${logsAllowed}/${deployAgain}`;

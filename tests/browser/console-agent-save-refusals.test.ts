@@ -42,6 +42,8 @@ const AGENT_UPDATE_DENIED =
   "Your access does not include updating this Agent. Ask an administrator for Agent update access to save these settings.";
 const AGENT_SOURCES_DENIED =
   "Saving these settings needs operate on each Secret and credential source this Agent and its Configuration bind, which your access does not include. Ask an administrator for that access.";
+const AGENT_CONFIGURATION_READ_DENIED =
+  "Saving these settings needs read access to this Agent's Configuration, which your access does not include. Ask an administrator for Configuration read access.";
 const READ_REFUSAL =
   "You do not have permission to read this Agent's saved settings. Ask an administrator for Agent read and Configuration read access.";
 
@@ -267,6 +269,42 @@ test("an Agent editor without operate on the bound Secrets sees the Agent-side s
   );
   assert.equal(answer.data.update, true);
   assert.equal(answer.data.agentSourcesOperate, false);
+});
+
+// Each Agent update also needs Configuration read. When that read is the missing grant, the note
+// names it instead of source operate, which this member has. The permission answer is held until
+// the draft has read the Configuration, and the read is revoked meanwhile, so the real answer
+// arrives after the editors are drawn.
+test("an Agent editor whose Configuration read was revoked is told to ask for it", async (t) => {
+  const { fixture, namespace, agent, member, page } = await readOnlyMember(t, "Read Revoked");
+  const reader = fixture.policy.roles.find((role) => role.id === "role-save-refusal-reader");
+  assert.ok(reader, "the read-only role exists");
+  reader.permissions.push(
+    { action: "update", resourceKind: "agent" },
+    { action: "operate", resourceKind: "secret" },
+  );
+  const answer = await holdRequests(
+    t,
+    page,
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/permissions`,
+    { once: true },
+  );
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "credentials").href,
+    member.credentials,
+  );
+  await answer.requested;
+  const save = page.getByRole("button", { name: "Save authentication source", exact: true });
+  await save.waitFor();
+  reader.permissions = reader.permissions.filter(
+    (permission) => !(permission.action === "read" && permission.resourceKind === "configuration"),
+  );
+  answer.release();
+  await page.getByRole("status").filter({ hasText: AGENT_CONFIGURATION_READ_DENIED }).waitFor();
+  assert.equal(await page.getByRole("status").filter({ hasText: AGENT_SOURCES_DENIED }).count(), 0);
+  assert.equal(await save.isDisabled(), true);
 });
 
 test("a member without Agent update cannot edit repository access", async (t) => {

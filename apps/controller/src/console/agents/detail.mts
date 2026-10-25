@@ -49,8 +49,7 @@ import {
   shortId,
   namespacePath,
   refusedSave,
-  AGENT_SOURCES_DENIED,
-  AGENT_UPDATE_DENIED,
+  agentSaveDenial,
   message,
   rejectionMessage,
   assertReadableConfiguration,
@@ -340,15 +339,6 @@ const CONFIGURATION_READ_ONLY = "Your access does not include editing this Confi
 // Saving a Configuration also needs Secret operate on every Secret it binds (finding 2437).
 const CONFIGURATION_SECRETS_READ_ONLY =
   "Saving this Configuration needs Secret operate on each Secret it binds, which your access does not include.";
-// Why the permission answer says an Agent-side save would be refused, or undefined when it allows
-// the save or is unknown. Each Agent update also checks the caller's grant on every source the
-// Agent and its Configuration bind (finding 2441).
-function agentSaveDenial(permissions: Permissions | null): string | undefined {
-  if (permissions?.update === false) {
-    return AGENT_UPDATE_DENIED;
-  }
-  return permissions?.agentSourcesOperate === false ? AGENT_SOURCES_DENIED : undefined;
-}
 // A save's reread or its PATCH found a newer Configuration generation than the page's.
 const CONFIGURATION_CHANGED =
   "The saved Configuration changed while you were editing. Reload this draft before saving.";
@@ -609,7 +599,10 @@ export async function renderAgentDetail(
     callerPermissions?.configurationUpdate === false
       ? CONFIGURATION_READ_ONLY
       : CONFIGURATION_SECRETS_READ_ONLY;
-  const draftReadOnly = () => callerPermissions?.update === false && configurationReadOnly();
+  // Agent-side saves (plugins, authentication source, repository access) would be refused: the
+  // answer denies Agent update or a grant each Agent update also checks (finding 2441).
+  const agentReadOnly = () => agentSaveDenial(callerPermissions) !== undefined;
+  const draftReadOnly = () => agentReadOnly() && configurationReadOnly();
   // Draft views that follow Configuration update. Nothing waits for an answer: a view drawn
   // before the first answer, or before a reread that changes the bit, is redrawn when it lands.
   // Each view redraws only while shown and only when its access differs from the answer's.
@@ -626,8 +619,7 @@ export async function renderAgentDetail(
   function applyDraftAccess() {
     if (headerNewVersion) {
       // This opens the draft; Configuration update and Agent deploy are independent grants.
-      headerNewVersion.textContent =
-        callerPermissions?.update === false ? "Open version draft" : "Create new version";
+      headerNewVersion.textContent = agentReadOnly() ? "Open version draft" : "Create new version";
     }
     labelDraftEntry();
     renderVersionNotice();
@@ -1793,32 +1785,31 @@ export async function renderAgentDetail(
       }
     }
   }
-  // The Versions list's draft entry and chooser option. Without Agent update they do not call the
-  // Configuration editable (finding 2405); without Configuration update, it is read-only
-  // (finding 2421). The permission answer can land after the list is built, so its callback
-  // labels them again.
+  // The Versions list's draft entry and chooser option. When Agent-side saves would be refused
+  // they do not call the draft a new version (findings 2405, 2441); without Configuration update,
+  // the Configuration is read-only (finding 2421). The permission answer can land after the list
+  // is built, so its callback labels them again.
   function labelDraftEntry() {
-    const [title, detail, name, option] =
-      callerPermissions?.update === false
+    const [title, detail, name, option] = agentReadOnly()
+      ? [
+          "Version draft",
+          configurationReadOnly() ? "Read-only Configuration" : "Configuration draft",
+          "View version draft",
+          "Version draft",
+        ]
+      : configurationReadOnly()
         ? [
-            "Version draft",
-            configurationReadOnly() ? "Read-only Configuration" : "Configuration draft",
-            "View version draft",
-            "Version draft",
+            "New version",
+            "Read-only Configuration",
+            "View new version, read-only Configuration",
+            "New version · read-only Configuration",
           ]
-        : configurationReadOnly()
-          ? [
-              "New version",
-              "Read-only Configuration",
-              "View new version, read-only Configuration",
-              "New version · read-only Configuration",
-            ]
-          : [
-              "New version",
-              "Editable Configuration",
-              "View new version, editable Configuration",
-              "New version · editable Configuration",
-            ];
+        : [
+            "New version",
+            "Editable Configuration",
+            "View new version, editable Configuration",
+            "New version · editable Configuration",
+          ];
     const entry = selector.querySelector(".revision-create");
     entry?.setAttribute("aria-label", name);
     entry?.replaceChildren(element("strong", {}, title), element("small", {}, detail));
