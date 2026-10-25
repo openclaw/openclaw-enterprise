@@ -10,6 +10,8 @@ import {
   CredentialSourceResponse,
   ErrorDetail as ErrorDetailSchema,
   ErrorResponse,
+  isSecretHarnessAuth,
+  isServiceAccountHarnessAuth,
   JsonValue,
   occApiRoutes,
   PluginApproversSchema,
@@ -20,6 +22,7 @@ import {
   PluginToolPolicySchema,
   PRESET_JSON_MAX_BYTES,
   SecretResponse,
+  type Agent,
   type AgentRuntimeLogsQuery,
   type AuditEvent,
   type AuditEventKind,
@@ -369,6 +372,33 @@ function validAuthorizationEvidence(value: unknown): value is AuthorizationEvide
     candidate.roleIds,
     candidate.restrictionIds,
   ].every((entries) => Array.isArray(entries) && entries.every(isNonEmptyString));
+}
+
+/**
+ * The grants each Agent update checks on the sources the Agent binds now, besides its
+ * Configuration's Secret bindings (`updateAgent`, finding 2441): operate on each listed
+ * credential source and on a Secret or credential source Harness authentication, read on a
+ * ServiceAccount one.
+ */
+function agentBoundSourceGrants(
+  namespaceId: string,
+  agent: Pick<Agent, "harnessAuth" | "credentialSources">,
+): [PermissionAction, ResourceRef][] {
+  const grants: [PermissionAction, ResourceRef][] = (agent.credentialSources ?? []).map(
+    ({ sourceId }) => ["operate", { kind: "credential_source", namespaceId, id: sourceId }],
+  );
+  const harnessAuth = agent.harnessAuth;
+  if (harnessAuth?.method === "credential_source") {
+    grants.push([
+      "operate",
+      { kind: "credential_source", namespaceId, id: harnessAuth.sourceId },
+    ]);
+  } else if (isSecretHarnessAuth(harnessAuth)) {
+    grants.push(["operate", { kind: "secret", namespaceId, id: harnessAuth.source.id }]);
+  } else if (isServiceAccountHarnessAuth(harnessAuth)) {
+    grants.push(["read", { kind: "service_account", namespaceId, id: harnessAuth.source.id }]);
+  }
+  return grants;
 }
 
 function validateConfiguration(value: unknown, depth = 0, path = ""): void {
@@ -2413,22 +2443,46 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           callerMay(context.actorId, "update", configuration),
           callerMay(context.actorId, "read", configuration),
         ]);
-      // Each Configuration save authorizes Secret operate on every Secret it binds, so
-      // Configuration update alone does not say a save can succeed (finding 2437). Only a caller
-      // who may read and update the Configuration gets the answer: the bindings are visible to
-      // them, and a save would report the same decision.
-      let configurationSecretsOperate = false;
-      if (configurationUpdate && configurationRead) {
-        const sources = await controller.getConfigurationSecretSources(
-          context.actorId,
-          namespaceId,
-          agent.configurationId,
-        );
+      // One IAM call per distinct grant, shared by the two answers below.
+      const decisions = new Map<string, Promise<boolean>>();
+      const callerMayAll = async (grants: readonly [PermissionAction, ResourceRef][]) => {
         const allowed = await Promise.all(
-          sources.map((source) => callerMay(context.actorId, "operate", source)),
+          grants.map(([action, resource]) => {
+            const key = JSON.stringify([action, resource.kind, resource.namespaceId, resource.id]);
+            let decision = decisions.get(key);
+            if (decision === undefined) {
+              decision = callerMay(context.actorId, action, resource);
+              decisions.set(key, decision);
+            }
+            return decision;
+          }),
         );
-        configurationSecretsOperate = allowed.every(Boolean);
-      }
+        return allowed.every(Boolean);
+      };
+      // Each Configuration save authorizes Secret operate on every Secret it binds, so
+      // Configuration update alone does not say a save can succeed (finding 2437); each Agent
+      // update checks them too (finding 2441). Only a caller who may read the Configuration and
+      // update it or the Agent gets an answer: the bindings are visible to them, and a save
+      // would report the same decision.
+      const bindingGrants: [PermissionAction, ResourceRef][] =
+        configurationRead && (configurationUpdate || update)
+          ? (
+              await controller.getConfigurationSecretSources(
+                context.actorId,
+                namespaceId,
+                agent.configurationId,
+              )
+            ).map((source) => ["operate", source])
+          : [];
+      const configurationSecretsOperate =
+        configurationUpdate && configurationRead && (await callerMayAll(bindingGrants));
+      // An Agent update needs Configuration read and checks the sources the Agent binds now,
+      // which the Agent read shows. Unreadable saved settings leave it unanswered.
+      const agentSourcesOperate =
+        update &&
+        configurationRead &&
+        !("configurationReadError" in agent) &&
+        (await callerMayAll([...bindingGrants, ...agentBoundSourceGrants(namespaceId, agent)]));
       reply.send({
         data: {
           update,
@@ -2437,6 +2491,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           delete: remove,
           configurationUpdate,
           configurationSecretsOperate,
+          agentSourcesOperate,
         },
         meta: { requestId: request.id },
       });

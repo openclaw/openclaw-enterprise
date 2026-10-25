@@ -225,6 +225,10 @@ export const SAVE_REFUSALS = Object.freeze({
 // Gating only: an unknown answer keeps the controls, and the API still decides.
 export const AGENT_UPDATE_DENIED =
   "Your access does not include updating this Agent. Ask an administrator for Agent update access to save these settings.";
+// Shown instead when the answer allows Agent update but not the source grants each Agent update
+// also checks on what the Agent and its Configuration bind (finding 2441).
+export const AGENT_SOURCES_DENIED =
+  "Saving these settings needs operate on each Secret and credential source this Agent and its Configuration bind, which your access does not include. Ask an administrator for that access.";
 
 // Marks a 403 from a save so message() names the grants it needs: the save's own when the
 // write itself was refused (`written`), read access when a read before it was (finding 1540).

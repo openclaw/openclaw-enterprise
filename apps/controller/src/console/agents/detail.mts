@@ -49,6 +49,7 @@ import {
   shortId,
   namespacePath,
   refusedSave,
+  AGENT_SOURCES_DENIED,
   AGENT_UPDATE_DENIED,
   message,
   rejectionMessage,
@@ -339,6 +340,15 @@ const CONFIGURATION_READ_ONLY = "Your access does not include editing this Confi
 // Saving a Configuration also needs Secret operate on every Secret it binds (finding 2437).
 const CONFIGURATION_SECRETS_READ_ONLY =
   "Saving this Configuration needs Secret operate on each Secret it binds, which your access does not include.";
+// Why the permission answer says an Agent-side save would be refused, or undefined when it allows
+// the save or is unknown. Each Agent update also checks the caller's grant on every source the
+// Agent and its Configuration bind (finding 2441).
+function agentSaveDenial(permissions: Permissions | null): string | undefined {
+  if (permissions?.update === false) {
+    return AGENT_UPDATE_DENIED;
+  }
+  return permissions?.agentSourcesOperate === false ? AGENT_SOURCES_DENIED : undefined;
+}
 // A save's reread or its PATCH found a newer Configuration generation than the page's.
 const CONFIGURATION_CHANGED =
   "The saved Configuration changed while you were editing. Reload this draft before saving.";
@@ -576,7 +586,7 @@ export async function renderAgentDetail(
   // Agent-side saves (plugins, authentication source, repository access) are Agent updates;
   // Configuration saves need Configuration update, its own bit (findings 1530, 2421). A draft
   // refresh reads the answer again, so a grant applies without a page Refresh (finding 1538).
-  let agentUpdateAllowed = callerPermissionsRead.then((permissions) => permissions?.update);
+  let agentSaveDenied = callerPermissionsRead.then(agentSaveDenial);
   // Only the latest reread's answer replaces the summary.
   let permissionsRereads = 0;
   // The newest reread whose operate answer the page's controls show.
@@ -3230,7 +3240,7 @@ export async function renderAgentDetail(
       updateCurrentAgent(freshAgent, latestRevisionResult, viewedSnapshot);
     }
     // The rebuilt editors take the fresh answer.
-    agentUpdateAllowed = rereadPermissions().then((permissions) => permissions?.update);
+    agentSaveDenied = rereadPermissions().then(agentSaveDenial);
     const next = loadDetails();
     const data = await next;
     if (!context.isCurrent() || deleting || !data) {
@@ -3579,7 +3589,7 @@ export async function renderAgentDetail(
           }
         },
         savedNotice,
-        updateAllowed: agentUpdateAllowed,
+        saveDenied: agentSaveDenied,
         // Saves and reloads rebuild the tab in place (finding 1445's rest).
         onSaved: (savedAgent) => {
           if (!data.draft || agent.configurationReadError) {
@@ -3912,14 +3922,14 @@ export async function renderAgentDetail(
       let pending = false;
       // Set when the caller's permission answer denies Agent update (finding 1530).
       let updateDenied = false;
-      void agentUpdateAllowed.then((allowed) => {
-        if (allowed === false && context.isCurrent()) {
+      void agentSaveDenied.then((reason) => {
+        if (reason !== undefined && context.isCurrent()) {
           // Retry credential access only rechecks the Secret grant; it is not an Agent update.
           if (savedAuthentication) {
             return;
           }
           updateDenied = true;
-          updateNote.textContent = AGENT_UPDATE_DENIED;
+          updateNote.textContent = reason;
           updateNote.hidden = false;
           save.disabled = true;
           // An edit that cannot be saved would only block Deploy (finding 1539).
@@ -4483,10 +4493,10 @@ export async function renderAgentDetail(
       }
     }
     update();
-    void agentUpdateAllowed.then((allowed) => {
-      if (allowed === false && context.isCurrent()) {
+    void agentSaveDenied.then((reason) => {
+      if (reason !== undefined && context.isCurrent()) {
         updateDenied = true;
-        updateNote.textContent = AGENT_UPDATE_DENIED;
+        updateNote.textContent = reason;
         updateNote.hidden = false;
         update();
       }
