@@ -15,7 +15,7 @@ regions.
 
 1. **Needs you.** Tasks in `needs_person` or `review` that the viewer can update, oldest first. Each row shows the
    reason in words ("asks: which branch should the fix target?", "stalled for 42 min", "delivery uncertain",
-   "report ready"), the Agent, the age and one primary action: reply, decide, redeliver or review. This region is
+   "report ready"), the Agent, the age and one primary action: reply, choose, redeliver or review. This region is
    empty most of the time; when it is empty it says so in one line.
 2. **Board.** Columns for `queued`, `running`, `review` and recently finished (`done`, `failed`, `cancelled` in the
    last 24 hours). A card shows the title, the Agent, the age in the current state, the first line of the latest
@@ -33,10 +33,10 @@ The page polls every 10 seconds while visible, using the list and Agent-feed cur
 
 - A header with title, state, Agent, creator, deadline and parent Task, and the actions the viewer may take.
 - The brief, collapsed after its first screen.
-- The **timeline**: every event in order. People's messages, questions, decisions and reports are full width;
+- The **timeline**: every event in order. People's messages, questions and reports are full width;
   `progress` events are grouped into a collapsible run ("12 updates over 18 minutes") with the latest one visible.
 - The **result**: the latest report, its outcome and its artifacts, pinned above the timeline once present.
-- A reply box. Replying to an open question or decision attaches the answer to that event.
+- A reply box. Replying to an open question attaches the answer to it; a question with choices shows them as buttons.
 
 The page never shows tool output or the full transcript. A person with `administer` on the Agent can follow a link
 to the native admin UI, where the session is named after the Task ID; others see the Task feed only.
@@ -49,7 +49,7 @@ per-Agent feed route. The Agent list gains one column, "Working on", with the cu
 ## States to cover
 
 Storybook stories and screenshots must cover: no Tasks; a Namespace without any Agent the viewer can invoke; a
-queued Task waiting behind another; running with progress; a question; a decision; stalled; delivery uncertain;
+queued Task waiting behind another; running with progress; a question; a question with choices; stalled; delivery uncertain;
 interrupted by a redeploy; review with a pull request artifact; done; failed by deadline; cancelled; the event limit
 reached; the viewer without `task:update` (read-only, no actions); loading; and an API error. Storybook proves the
 presentation only. Slice 1's integration tests prove the API behavior behind it.
