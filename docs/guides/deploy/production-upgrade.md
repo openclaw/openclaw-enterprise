@@ -196,8 +196,9 @@ baseline files, and candidate files you intend to deploy. The helper checks the
 baseline, renders the chart, runs a Helm server dry run, and runs one-shot API
 and worker startup checks. Repository-enabled releases also check the image pair.
 
-The helper creates temporary Pods, a Secret, and a NetworkPolicy in the release
-namespace. The serving OCC writers keep running. Cleanup is best effort; inspect
+The helper creates temporary Pods and a Secret in the release namespace. It
+creates a NetworkPolicy when the rendered egress policies require one. The
+serving OCC writers keep running. Cleanup is best effort; inspect
 the evidence and remove any leftovers using the command below. Keep the evidence
 private because it contains configuration and diagnostics.
 
