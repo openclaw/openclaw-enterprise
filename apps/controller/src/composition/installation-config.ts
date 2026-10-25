@@ -1,5 +1,6 @@
 import {
   openShellProxyConfiguration,
+  openShellRepositoryConfiguration,
   validateOpenShellRepositoryTransport,
 } from "../drivers/egress-proxy/openshell-configuration.ts";
 import {
@@ -62,6 +63,7 @@ import {
   type CredentialProxyCapacity,
   type NativeWorkerSupport,
   resolveCredentialProxyCapacity,
+  repositoryApprovalFingerprint,
   type OpenClawController,
   DriverConfigurationRegistry,
   type PostgresPlatformState,
@@ -685,6 +687,7 @@ export async function loadInstallationConfiguration(options: {
   const repositoryConfiguration = githubRepositoryConfiguration(
     configuration.repository,
     options.mode,
+    openShellRepositoryConfiguration,
   );
   const repoSelection =
     repositoryConfiguration &&
@@ -1127,6 +1130,7 @@ export async function loadInstallationConfiguration(options: {
                 configuration: { ...repoSelection.configuration, ...nativeRepositorySelection },
               }
             : repoSelection,
+          fingerprint: repositoryApprovalFingerprint,
           protectedGit: repositoryDeliveryMode === "protected",
           configuration: repositoryConfiguration,
         });

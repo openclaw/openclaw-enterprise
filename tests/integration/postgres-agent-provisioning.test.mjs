@@ -7,6 +7,7 @@ import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compu
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import {
+  repositoryApprovalFingerprint,
   ConfigurationHarnessError,
   PostgresPlatformState,
   ProvisioningSecretDriverError,
@@ -955,6 +956,7 @@ test(
         ],
       },
       { sessionDurationSeconds: 600 },
+      repositoryApprovalFingerprint,
     );
     // Reuse the established runtime fixture, but exercise real repository policy and
     // Kubernetes topology admission without contacting either external system.
@@ -1142,6 +1144,7 @@ test(
         ],
       },
       { sessionDurationSeconds: 600 },
+      repositoryApprovalFingerprint,
     );
     const topology = createTestKubernetesComputeDriver("provisioning-topology-change", {
       repositoryCredentials: true,

@@ -1,3 +1,4 @@
+import { repositoryApprovalFingerprint } from "../../packages/occ/src/index.ts";
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID, createHash } from "node:crypto";
 import test from "node:test";
@@ -82,7 +83,7 @@ for (const outcome of ["unsent", "lost-reply"] as const) {
             registrationName: "oce-prepared-git",
             authority: {} as EgressAuthorityConfiguration,
           },
-          createGitHubRepositoryDeliveryResolver(registry),
+          createGitHubRepositoryDeliveryResolver(registry, repositoryApprovalFingerprint),
         );
         runtime["routes"] = routes;
         runtime["owner"] = {
@@ -406,7 +407,7 @@ test(
     const runtime = () => {
       const value = new OpenShellGitRuntime(
         { registrationName: peer.registrationName, authority: {} as EgressAuthorityConfiguration },
-        createGitHubRepositoryDeliveryResolver(registry),
+        createGitHubRepositoryDeliveryResolver(registry, repositoryApprovalFingerprint),
       );
       value["routes"] = routes;
       value["owner"] = peer.prepared;
@@ -520,7 +521,7 @@ for (const fault of ["before write", "after commit", "during worker replacement"
       const statuses: unknown[] = [];
       const runtime = new OpenShellGitRuntime(
         { registrationName: "preview", authority: {} as EgressAuthorityConfiguration },
-        createGitHubRepositoryDeliveryResolver(registry),
+        createGitHubRepositoryDeliveryResolver(registry, repositoryApprovalFingerprint),
       );
       runtime["routes"] = routes;
       runtime["emit"] = (event: Readonly<Record<string, unknown>>) => {

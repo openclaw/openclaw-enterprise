@@ -1,3 +1,4 @@
+import { repositoryApprovalFingerprint } from "../../packages/occ/src/index.ts";
 import assert from "node:assert/strict";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
@@ -416,7 +417,10 @@ export async function jointWorker(
       exchangeAuthority: authority,
     },
     repository: {
-      resolveDelivery: createGitHubRepositoryDeliveryResolver(registry),
+      resolveDelivery: createGitHubRepositoryDeliveryResolver(
+        registry,
+        repositoryApprovalFingerprint,
+      ),
       configuration: {
         registrationName: repositoryMiddlewareName,
         tokenEndpoint: endpoint,

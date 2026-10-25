@@ -73,6 +73,7 @@ export async function standingExecutionFixture(
     },
     registry,
     { sessionDurationSeconds: 120 },
+    repositoryApprovalFingerprint,
   );
   const owner = await f.agent("execution-fence", {
     executionMode: "dedicated",

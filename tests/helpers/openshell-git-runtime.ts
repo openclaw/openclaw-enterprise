@@ -1,3 +1,4 @@
+import { repositoryApprovalFingerprint } from "../../packages/occ/src/index.ts";
 import type { AgentRevision } from "../../packages/contracts/src/index.ts";
 import { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import {
@@ -129,7 +130,7 @@ const future = () => new Date(Date.now() + 600_000).toISOString();
 export function openShellGitRuntimeFixture({
   store,
   world,
-  resolveDelivery = createGitHubRepositoryDeliveryResolver(registry),
+  resolveDelivery = createGitHubRepositoryDeliveryResolver(registry, repositoryApprovalFingerprint),
 }: {
   store?: ReturnType<typeof routeStore>;
   world?: World;
@@ -344,7 +345,10 @@ export function openShellGitRuntimeFixture({
     client: client as unknown as Entry["client"],
     provider: provider as unknown as Entry["provider"],
     bindingId: "binding_0123456789abcdefghijklmn",
-    authorization: createGitHubRepositoryDeliveryResolver(registry)(revision),
+    authorization: createGitHubRepositoryDeliveryResolver(
+      registry,
+      repositoryApprovalFingerprint,
+    )(revision),
     otherProviders: ["openai"],
     binding: {
       workspace: sandbox.workspace,

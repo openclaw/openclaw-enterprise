@@ -67,6 +67,7 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
     backend: Backend<unknown>,
     registry: GitHubRepositoryRegistry,
     options: { readonly sessionDurationSeconds: number },
+    fingerprint: typeof import("@openclaw-enterprise/occ").repositoryApprovalFingerprint,
   ) {
     const id = backend.drivers.repo;
     if (typeof id !== "string" || !id || Buffer.byteLength(id) > 512 || hasControlCharacter(id)) {
@@ -74,7 +75,7 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
     }
     this.id = id;
     this.#registry = validateGitHubRepositoryRegistry(registry, backend.id);
-    this.resolveDelivery = createGitHubRepositoryDeliveryResolver(this.#registry);
+    this.resolveDelivery = createGitHubRepositoryDeliveryResolver(this.#registry, fingerprint);
     if (
       !Number.isSafeInteger(options.sessionDurationSeconds) ||
       options.sessionDurationSeconds < 1 ||

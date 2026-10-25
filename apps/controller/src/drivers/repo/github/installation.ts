@@ -1,19 +1,18 @@
 import { createHash } from "node:crypto";
 import { SandboxRepositoryRecipientUnverifiedError } from "@openclaw-enterprise/occ";
 import type { GitHubRepositoryCredentialBackendDefinition } from "@openclaw-enterprise/contracts";
-import {
-  closed,
-  nonempty,
-  object,
-  openShellRepositoryConfiguration,
-} from "../../../composition/installation-fields.ts";
+import { closed, nonempty, object } from "../../../composition/installation-fields.ts";
 import type { SelectedDriverConfiguration } from "../../../composition/installation-config.ts";
 import type { PreparedRepositoryGitConfiguration } from "../../../backends/repository-credentials/prepared-git-owner.ts";
 import { preparedGitHubConfiguration } from "./credentials/prepared-configuration.ts";
 import type { GitHubRepositoryRegistry } from "./credentials/registry.ts";
 
 /** Interpret the existing public GitHub selection at its Repo owner. */
-export function githubRepositoryConfiguration(input: unknown, mode: "development" | "production") {
+export function githubRepositoryConfiguration(
+  input: unknown,
+  mode: "development" | "production",
+  parseTransport: typeof import("../../egress-proxy/openshell-configuration.ts").openShellRepositoryConfiguration,
+) {
   if (input === undefined) {
     return undefined;
   }
@@ -45,7 +44,7 @@ export function githubRepositoryConfiguration(input: unknown, mode: "development
             selection.preparedGitHub,
             true,
           ) as PreparedRepositoryGitConfiguration),
-    transport: openShellRepositoryConfiguration(selection.openShell, mode),
+    transport: parseTransport(selection.openShell, mode),
   };
 }
 

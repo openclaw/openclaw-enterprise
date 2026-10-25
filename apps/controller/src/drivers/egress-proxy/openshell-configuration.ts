@@ -4,14 +4,23 @@ import {
   nonempty,
   object,
   egressAuthorityConfiguration,
+  openShellRepositoryConfiguration as parseRepositoryFields,
   InstallationFieldError,
   type InstallationFieldDetail,
 } from "../../composition/installation-fields.ts";
+import { validateKubernetesAuthentication } from "../kubernetes/authentication.ts";
 import { preparedGitHubConfiguration } from "../repo/github/credentials/prepared-configuration.ts";
 import { jointWorkspaceProfile } from "./openshell-exchange-capabilities.ts";
 import type { OpenShellGitRuntimeConfiguration } from "./openshell-git-runtime.ts";
 
-export { openShellRepositoryConfiguration } from "../../composition/installation-fields.ts";
+export function openShellRepositoryConfiguration(
+  input: unknown,
+  mode: "development" | "production",
+) {
+  return parseRepositoryFields(input, mode, (auth) =>
+    validateKubernetesAuthentication(auth, (reason) => new Error(reason)),
+  );
+}
 
 /** The adapter selects its discovery profile from its own repository transport configuration. */
 export function openShellProxyConfiguration(

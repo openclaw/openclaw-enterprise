@@ -1,4 +1,4 @@
-import { repositoryApprovalFingerprint } from "@openclaw-enterprise/occ";
+import type { repositoryApprovalFingerprint } from "@openclaw-enterprise/occ";
 import type { RepositoryGitDeliveryResolver } from "../../credentials/delivery.ts";
 import { isDeepStrictEqual } from "node:util";
 import { createHash } from "node:crypto";
@@ -499,6 +499,7 @@ function standingApprovalScope(
 /** Repo owns the policy ceiling; OCC still owns approval validity and withdrawal. */
 export function createGitHubRepositoryDeliveryResolver(
   registry: GitHubRepositoryRegistry,
+  fingerprint: typeof repositoryApprovalFingerprint,
 ): RepositoryGitDeliveryResolver {
   return (revision) => {
     const state = revision.repositoryCredentials;
@@ -540,7 +541,7 @@ export function createGitHubRepositoryDeliveryResolver(
               !scope ||
               !state.standingApprovalGeneration ||
               !state.standingApprovalScopeFingerprint ||
-              repositoryApprovalFingerprint({
+              fingerprint({
                 namespaceId: revision.namespaceId,
                 agentId: revision.agentId,
                 binding,

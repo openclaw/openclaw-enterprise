@@ -3,10 +3,7 @@
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { isAbsolute } from "node:path";
 import type { JointGitIssuerTrust } from "../drivers/credential-gateway/openshell-joint-git-issuer.ts";
-import {
-  validateKubernetesAuthentication,
-  type KubernetesAuthentication,
-} from "../drivers/kubernetes/authentication.ts";
+import type { KubernetesAuthentication } from "../drivers/kubernetes/authentication.ts";
 
 export type ConfigurationRecord = Readonly<Record<string, unknown>>;
 
@@ -297,6 +294,7 @@ export function requireChartListener(
 export function openShellRepositoryConfiguration(
   input: unknown,
   mode: "development" | "production",
+  parseAuthentication: (value: ConfigurationRecord) => KubernetesAuthentication,
 ) {
   if (input === undefined) {
     return undefined;
@@ -366,15 +364,7 @@ export function openShellRepositoryConfiguration(
         throw new Error("Invalid supervisor image digest.");
       }
       const auth = object(trust.authentication, "repository.openShell.tokenTrust.authentication");
-      validateKubernetesAuthentication(auth, (reason) => new Error(reason));
-      const authentication: KubernetesAuthentication =
-        auth.mode === "inCluster"
-          ? { mode: "inCluster" }
-          : {
-              mode: "kubeconfig",
-              context: nonempty(auth.context, "context"),
-              kubeconfigPath: nonempty(auth.kubeconfigPath, "kubeconfigPath"),
-            };
+      const authentication = parseAuthentication(auth);
       tokenTrust = {
         assertionSource: trust.assertionSource,
         clusterIssuer,

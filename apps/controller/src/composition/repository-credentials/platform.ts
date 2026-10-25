@@ -25,6 +25,7 @@ export async function composeRepositoryAccess(input: {
   readonly backend: GitHubRepositoryCredentialBackendDefinition;
   readonly selection: SelectedDriverConfiguration;
   readonly protectedGit: boolean;
+  readonly fingerprint: typeof import("@openclaw-enterprise/occ").repositoryApprovalFingerprint;
   readonly configuration?: ReturnType<typeof githubRepositoryConfiguration>;
 }): Promise<
   Readonly<{
@@ -77,9 +78,14 @@ export async function composeRepositoryAccess(input: {
     drivers: Object.freeze({ repo: selection.id }),
     client,
   });
-  const repositoryPolicy = new GitHubRepositoryPolicy(backend, registry, {
-    sessionDurationSeconds: configuration.sessionDurationSeconds,
-  });
+  const repositoryPolicy = new GitHubRepositoryPolicy(
+    backend,
+    registry,
+    {
+      sessionDurationSeconds: configuration.sessionDurationSeconds,
+    },
+    input.fingerprint,
+  );
   return Object.freeze({
     authorityIdentity: githubRepositoryAuthorityIdentity(
       selection,

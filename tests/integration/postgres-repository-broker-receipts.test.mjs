@@ -9,6 +9,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import pg from "pg";
 import {
+  repositoryApprovalFingerprint,
   InMemoryPlatformState,
   PostgresPlatformState,
   DependencyUnavailableError,
@@ -185,9 +186,14 @@ test(
     });
     const backend = { id: fixture.backendId, client, drivers: { repo: "repository-credentials" } };
     const driver = new GitHubNativeRepositorySender(backend, { publicCa: fixture.tls.ca });
-    const policy = new GitHubRepositoryPolicy(backend, fixture.registry, {
-      sessionDurationSeconds: 3600,
-    });
+    const policy = new GitHubRepositoryPolicy(
+      backend,
+      fixture.registry,
+      {
+        sessionDurationSeconds: 3600,
+      },
+      repositoryApprovalFingerprint,
+    );
     const binding = policy.resolve({
       namespaceId,
       bindings: [{ repositoryRef: "repo-a", profile: "git-write" }],
