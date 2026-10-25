@@ -7941,10 +7941,13 @@ export const scenarios = {
         path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001",
         method: "DELETE",
         status: 409,
+        code: "RESOURCE_CONFLICT",
+        message: "The Agent lifecycle changed during deletion.",
       },
     ],
     actions: [click("Delete Agent"), click("Permanently delete Agent")],
-    description: "Refresh status before retrying deletion after a conflict.",
+    description:
+      "The API's conflict reason shows with the step that recovers: refresh deletion status before retrying.",
   },
   deletionUnknown: {
     group: "Components/Deletion",
