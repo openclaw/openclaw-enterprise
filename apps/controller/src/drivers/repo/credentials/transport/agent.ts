@@ -20,10 +20,10 @@ function* slices(body: Buffer): Generator<Buffer> {
 }
 
 /**
- * Where a request with credentials was refused (finding 2411): its credential for the route, the
- * session, the session's exchange capacity, the request target, its body, the send (the owner
- * refused or could not authorize it, or the provider connection failed before any write), the
- * spent draft allowance, or an internal failure.
+ * Where a request with credentials was refused (finding 2411): its credential for the route,
+ * the session, the session's exchange capacity, the request head or target, its body, the send
+ * (the owner refused or could not authorize it, or the provider connection failed before any
+ * write), the spent draft allowance, or an internal failure.
  */
 export type RefusalReason =
   | "credential_refused"
@@ -74,6 +74,15 @@ function presentedToken(authorization: string): string | undefined {
   }
 }
 
+/** Writes one refusal record to the operator log. */
+function writeRefusal(log: AgentHandlerOptions["log"], fields: Omit<RefusalRecord, "event">): void {
+  try {
+    log?.(Object.freeze({ event: "repository-credentials.denied", ...fields }));
+  } catch {
+    // Logging cannot change the answer.
+  }
+}
+
 export interface AgentHandlerOptions {
   readonly config: ServiceConfig;
   /** Receives each refusal record; the process composition writes them to its log. */
@@ -101,6 +110,23 @@ export function createAgentHandler(
       targetBytes: limits.targetBytes,
     });
     if (parsed.kind === "denied") {
+      // A head refused after its fields were checked (wrong Host, bad framing) is logged only
+      // when its one Authorization field names an open session, so unauthenticated traffic
+      // stays silent (finding 2429). Earlier refusals (bad start line, field syntax, sizes,
+      // repeated fields) carry no single credential to attribute and are not logged.
+      const token =
+        options.log && parsed.authorization !== undefined
+          ? presentedToken(parsed.authorization)
+          : undefined;
+      const identity = token === undefined ? undefined : service.identify(token);
+      if (identity !== undefined) {
+        writeRefusal(options.log, {
+          status: parsed.status,
+          reasonCode: parsed.code,
+          reason: "request_refused",
+          ...identity,
+        });
+      }
       sendError(response, parsed.status, parsed.code);
       return;
     }
@@ -131,22 +157,14 @@ export function createAgentHandler(
         : presentedToken(parsed.authorization);
     const identity = token === undefined ? undefined : service.identify(token);
     let operation: string | undefined;
-    const report = (status: number, code: string, reason: RefusalReason) => {
-      try {
-        options.log?.(
-          Object.freeze({
-            event: "repository-credentials.denied",
-            status,
-            reasonCode: code,
-            reason,
-            ...(operation === undefined ? {} : { operation }),
-            ...identity,
-          }),
-        );
-      } catch {
-        // Logging cannot change the answer.
-      }
-    };
+    const report = (status: number, code: string, reason: RefusalReason) =>
+      writeRefusal(options.log, {
+        status,
+        reasonCode: code,
+        reason,
+        ...(operation === undefined ? {} : { operation }),
+        ...identity,
+      });
     if (typeof bearer !== "string") {
       report(bearer.status, bearer.code, "credential_refused");
       sendError(response, bearer.status, bearer.code);
@@ -298,9 +316,14 @@ export function createAgentHandler(
       });
       const outcome = await service.execute(exchange, sender, digest?.digest("hex"));
       if (outcome.kind === "recorded") {
+        // A receipt is a refusal when GitHub received nothing: the spent allowance, or a
+        // create the broker settled as not sent before any write, including its replay
+        // (finding 2429). Created and unknown outcomes are not refusals.
         const recorded = outcome.body as { error?: unknown } | null;
         if (recorded?.error === "operation_conflict") {
           report(outcome.status, "operation_conflict", "operation_conflict");
+        } else if (recorded?.error === "not-submitted") {
+          report(outcome.status, "not-submitted", "not_dispatched");
         }
         response.writeHead(outcome.status, {
           "content-type": "application/json",

@@ -20,7 +20,7 @@ const REMOVED = new Set([
   "content-encoding",
 ]);
 export type HeadInspection =
-  | Denied
+  | (Denied & Readonly<{ authorization?: string }>)
   | Readonly<{
       kind: "parsed";
       head: RequestHead;
@@ -81,32 +81,38 @@ export function inspectRequestHead(
     }
     all.set(key, value);
   }
+  // Past this point the fields are valid and unique, so a refusal can carry the one
+  // Authorization field for log attribution (finding 2429); the Agent sees only the denial.
+  const refuse = (status = 400): HeadInspection => {
+    const authorization = all.get("authorization");
+    return authorization === undefined ? deny(status) : { ...deny(status), authorization };
+  };
   const host = all.get("host")?.toLowerCase();
   const authority = options.authority.toLowerCase();
   if (host !== authority && !(authority.indexOf(":") === -1 && host === `${authority}:443`)) {
-    return deny();
+    return refuse();
   }
   const connection = all.get("connection")?.toLowerCase();
   if (connection !== undefined && connection !== "close" && connection !== "keep-alive") {
-    return deny();
+    return refuse();
   }
   if (all.has("upgrade") || all.has("trailer") || all.has("te")) {
-    return deny();
+    return refuse();
   }
   const length = all.get("content-length");
   const transfer = all.get("transfer-encoding");
   if (length !== undefined && transfer !== undefined) {
-    return deny();
+    return refuse();
   }
   let framing: RequestHead["framing"] = Object.freeze({ kind: "none", bytes: undefined });
   if (length !== undefined) {
     if (!/^(0|[1-9][0-9]*)$/.test(length) || !Number.isSafeInteger(Number(length))) {
-      return deny();
+      return refuse();
     }
     framing = Object.freeze({ kind: "length", bytes: Number(length) });
   } else if (transfer !== undefined) {
     if (transfer.toLowerCase() !== "chunked") {
-      return deny();
+      return refuse();
     }
     framing = Object.freeze({ kind: "chunked", bytes: undefined });
   }
@@ -114,18 +120,18 @@ export function inspectRequestHead(
     (method === "GET" || method === "HEAD") &&
     (framing.kind === "chunked" || (framing.bytes ?? 0) !== 0)
   ) {
-    return deny();
+    return refuse();
   }
   const encoding = all.get("content-encoding") ?? "identity";
   if (encoding !== "identity" && encoding !== "gzip") {
-    return deny(415);
+    return refuse(415);
   }
   const expect = all.get("expect");
   if (
     expect !== undefined &&
     (expect.toLowerCase() !== "100-continue" || framing.kind === "none")
   ) {
-    return deny(417);
+    return refuse(417);
   }
   const headers = Object.create(null) as Record<string, string>;
   for (const [name, value] of all) {
