@@ -23,8 +23,13 @@ interface Recipient {
   readonly resourceVersion: string;
   readonly profile: OpenShellProviderProfile;
 }
+export class JointGitRecipientChangedError extends Error {
+  constructor() {
+    super("OpenShell joint Git recipient is not current.");
+  }
+}
 function refuse(): never {
-  throw new Error("OpenShell joint Git recipient is not current.");
+  throw new JointGitRecipientChangedError();
 }
 
 // A 256-bit digest fits in 50 base-36 digits; the provider name is only a lookup key.
@@ -128,22 +133,25 @@ export async function verifyJointProfile(
 
 /** This owner provisions no stored credential or workload alias. A failed write is retained
  * by the caller's fenced bootstrap, including loss of either provider's acknowledgement. */
-export async function provisionJointGit(input: {
-  client: OpenShellGatewayClient;
-  workspace: string;
-  workspaceId: string;
-  sandbox: string;
-  revisionId: string;
-  bindingId: string;
-  installationId: string;
-  grant: Grant;
-  tokenEndpoint: string;
-  projectedAssertion?: boolean;
-  binaries: readonly string[];
-  restore?: readonly Omit<Recipient, "profile">[];
-  beforeWrite: () => Promise<void>;
-  signal: AbortSignal;
-}) {
+export async function provisionJointGit(
+  input: {
+    client: OpenShellGatewayClient;
+    workspace: string;
+    workspaceId: string;
+    sandbox: string;
+    revisionId: string;
+    bindingId: string;
+    installationId: string;
+    grant: Grant;
+    tokenEndpoint: string;
+    projectedAssertion?: boolean;
+    binaries: readonly string[];
+    signal: AbortSignal;
+  } & (
+    | { restore: readonly Omit<Recipient, "profile">[]; beforeWrite?: never }
+    | { restore?: never; beforeWrite: () => Promise<void> }
+  ),
+) {
   const {
     client,
     workspace,

@@ -3527,7 +3527,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
   }
 
   private async jointSupervisorPod(
-    context: SandboxHarnessContext,
+    context: SandboxNamespaceContext,
     id: string,
     signal: AbortSignal,
   ) {
@@ -3643,16 +3643,27 @@ export class OpenShellSandboxDriver implements SandboxDriver {
   /** The existing launch and Pod identities for a read-only standing execution check. */
   standingGitExecution(context: SandboxNamespaceContext & { revision: Readonly<AgentRevision> }) {
     this.requireOperatorWorkspaceMode("observe standing repository execution");
-    const continuity = this.gitContinuity(context);
-    if (continuity) {
-      const sandbox = this.sandboxRef(context);
+    if (
+      context.revision.namespaceId !== context.namespace.id ||
+      context.revision.sandboxDriverId !== this.id
+    ) {
+      return;
+    }
+    const sandbox = this.sandboxRef(context);
+    const location = {
+      client: this.gatewayClientForNamespace(sandbox.namespaceName),
+      workspace: workspaceName(context.namespace),
+      sandbox: sandbox.resourceName,
+    };
+    if (context.revision.egressPlan?.policyReductionVersion === 3) {
       return {
-        continuity,
-        client: this.gatewayClientForNamespace(sandbox.namespaceName),
-        workspace: workspaceName(context.namespace),
-        sandbox: sandbox.resourceName,
+        ...location,
+        supervisor: (id: string, signal: AbortSignal) =>
+          this.jointSupervisorPod(context, id, signal),
       };
     }
+    const continuity = this.gitContinuity(context);
+    return continuity && { ...location, continuity };
   }
 
   async observeHeldRepositoryGitPreview(

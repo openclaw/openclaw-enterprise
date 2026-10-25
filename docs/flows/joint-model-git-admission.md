@@ -1,7 +1,7 @@
 ---
 created: "2026-10-25"
 updated: "2026-10-25"
-last_updated_session: authoring-run/da4d124b-c438-4a32-95f3-4a1ab3d6b047
+last_updated_session: authoring-run/d2e1da3e-5682-4bdb-8a84-29daf4a9a044
 ---
 
 # Joint model and Git admission flow
@@ -43,6 +43,8 @@ The Sandbox reserves delivery before creating the providers. One dynamic provide
 
 The worker compares current grants and the source policy with the supervisor's complete effective policy, including the provider rules. Each Git rule permits its one host on port 443. The worker reserves the admission in `credential_policy_effects` before sending it. A later observation must match the original session, signer, process and applied command. An uncertain response does not permit another admission.
 
+For a standing Git approval, the worker calls the Sandbox's `verifyExecution` before recording the execution. Only the original route holder can supply the first witness. The Sandbox checks the released signer and policy, both provider and profile versions, the attachment epoch, and the supervisor Pod UID against the live installation. After a worker restart, the same checks must match the earlier standing record. Verification does not take the route fence or issue a credential.
+
 ### 3. Redeem a single authorized request
 
 `apps/controller/src/drivers/credential-gateway/openshell-joint-git-issuer.ts:OpenShellJointGitIssuer`
@@ -71,5 +73,6 @@ Check the committed admission effect, current source policy, effective policy an
 
 ## Changelog
 
+- 2026-10-25 02:15: Trace standing execution capture and confirmation after restart. (authoring-run/d2e1da3e-5682-4bdb-8a84-29daf4a9a044 - 0410827fc5b1e3b05bcca3c651bcf8ad7fa4af33)
 - 2026-10-25 01:44: Verify retained session identity and the Sandbox attachment epoch at settlement and use. (authoring-run/da4d124b-c438-4a32-95f3-4a1ab3d6b047 - 87770ae401b31f17f74ab2b94b31ccbdcf80e8fe)
 - 2026-10-25 01:12: Trace conditional admission, current provider attachments and withdrawal settlement. (authoring-run/dc2d71d4-a1eb-49f1-bc25-d30f68141aa8 - 3726e252f3cdfe9d8188ef1772faed9f9c9bcae9)

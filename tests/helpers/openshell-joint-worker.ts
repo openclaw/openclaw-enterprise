@@ -276,6 +276,7 @@ export async function jointWorker(
     profile: "github-installation",
   });
   const repositoryGit = {
+    ...database?.revision.repositoryCredentials,
     driver: database?.revision.repositoryCredentials?.driver ?? {
       id: "repo",
       implementation: "github",
@@ -368,7 +369,7 @@ export async function jointWorker(
     keyId: "gateway-key",
   };
   let runtime: OpenShellGitRuntime | undefined;
-  const capabilities = createOpenShellCapabilities({
+  const registration: Parameters<typeof createOpenShellCapabilities>[0] = {
     sandbox: {
       id: sandboxId,
       implementation: "openshell",
@@ -427,7 +428,9 @@ export async function jointWorker(
         authority,
       },
     },
-  });
+  };
+  const register = () => createOpenShellCapabilities(registration);
+  const capabilities = register();
   t.after(() => capabilities.close());
   assert.ok(runtime);
   const { requirements } = launchRequirements(launchCompute(), seed);
@@ -476,8 +479,13 @@ export async function jointWorker(
       };
     },
   });
+  const context = (revision: AgentRevision) => ({
+    ...sandboxContext(revision, requirements),
+    kubernetes,
+    signal: t.signal,
+  });
   const provision = ({ revision, plan } = initial) => {
-    const ctx = sandboxContext(revision, requirements);
+    const ctx = context(revision);
     const configuration = openShellEgressConfiguration(plan, egress);
     const environment = ctx.requirements.environment.filter(
       (x) => x.name !== "OPENAI_API_KEY" && x.name !== "APP_SERVER_PORT",
@@ -497,8 +505,6 @@ export async function jointWorker(
     );
     return capabilities.sandbox.provisionHarness!({
       ...ctx,
-      kubernetes,
-      signal: t.signal,
       requirements: {
         ...ctx.requirements,
         environment,
@@ -516,6 +522,8 @@ export async function jointWorker(
     authority,
     endpoint,
     pod,
+    context,
+    register,
     provision,
     peer,
     ...initial,

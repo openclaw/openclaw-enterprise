@@ -94,7 +94,19 @@ type JointRecovery = {
     recipients: Omit<PreparedJointGit["recipients"][number], "profile">[];
   };
 };
+type JointStanding = JointRecovery & {
+  workspace: string;
+  sandbox: string;
+  worker: string;
+  original: EgressInstallation;
+  installation: EgressInstallation;
+  executionFingerprint: string | null;
+};
+const currentJointInstallation = `COALESCE((SELECT d.policy_observed FROM occ.credential_delivery_reductions d
+  WHERE d.revision_id=r.revision_id AND d.policy_observed IS NOT NULL
+  ORDER BY (d.policy_observed#>>'{plan,generation}')::bigint DESC LIMIT 1),p.installation)`;
 export interface OpenShellGitRouteStore {
+  standingJoint?(revision: Readonly<AgentRevision>): Promise<JointStanding | undefined>;
   /** Records a route this worker is about to bootstrap: fence 1, bootstrap write pending. */
   open(route: OpenShellGitRouteIdentity, workerInstance: string): Promise<void>;
   /**
@@ -378,9 +390,7 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
   ): Promise<JointRecovery | undefined> {
     return this.query(async (c) => {
       const { rows } = await c.query(
-        `SELECT r.fence,r.observed,r.desired,r.binding_id,r.worker_instance,COALESCE((
-        SELECT d.policy_observed FROM occ.credential_delivery_reductions d WHERE d.revision_id=r.revision_id AND d.policy_observed IS NOT NULL
-        ORDER BY (d.policy_observed#>>'{plan,generation}')::bigint DESC LIMIT 1),p.installation) AS installation
+        `SELECT r.fence,r.observed,r.desired,r.binding_id,r.worker_instance,${currentJointInstallation} AS installation
         FROM occ.credential_deliveries r JOIN occ.egress_installations p ON ${releasedJointGit} WHERE r.revision_id=$1 AND r.live_revision_id=r.revision_id
         AND r.blocked IS NULL AND r.write_pending IS NULL FOR UPDATE OF r`,
         [revisionId],
@@ -419,8 +429,7 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
   ): Promise<EgressInstallation | undefined> {
     return this.query(async (c) => {
       const { rows } = await c.query(
-        `SELECT COALESCE((SELECT d.policy_observed FROM occ.credential_delivery_reductions d
-       WHERE d.revision_id=r.revision_id AND d.policy_observed IS NOT NULL ORDER BY (d.policy_observed#>>'{plan,generation}')::bigint DESC LIMIT 1),p.installation) AS installation
+        `SELECT ${currentJointInstallation} AS installation
        FROM occ.credential_deliveries r JOIN occ.egress_installations p ON ${releasedJointGit}
        WHERE r.revision_id=$1 AND r.live_revision_id=r.revision_id AND r.blocked IS NULL AND r.fence=$3 AND r.observed=$2::jsonb`,
         [revisionId, JSON.stringify(observation), fence],
@@ -445,6 +454,41 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
     return this.held(entry.revisionId, (state, key) =>
       state.record(key, 1, { desired, ...(observed && { observed: { ...observed } }) }),
     );
+  }
+
+  async standingJoint(revision: Readonly<AgentRevision>): Promise<JointStanding | undefined> {
+    if (!revision.repositoryCredentials?.standingApprovalId) {
+      return;
+    }
+    return this.query(async (c) => {
+      const { rows } = await c.query(
+        `SELECT r.target->>'workspace' AS workspace,r.target->>'sandbox' AS sandbox,
+          r.worker_instance AS worker,r.fence,r.desired,r.observed,p.installation AS original,
+          ${currentJointInstallation} AS installation,e.fingerprint AS "executionFingerprint"
+         FROM occ.credential_deliveries r JOIN occ.egress_installations p ON ${releasedJointGit}
+         JOIN occ.agent_revisions v ON (v.namespace_id,v.agent_id,v.id)=(r.namespace_id,r.agent_id,r.live_revision_id)
+         JOIN occ.agents a ON (a.namespace_id,a.id,a.active_revision_id)=(v.namespace_id,v.agent_id,v.id)
+         JOIN occ.namespaces n ON n.id=v.namespace_id
+         LEFT JOIN occ.repository_standing_executions e ON e.revision_id=r.revision_id
+         WHERE (r.revision_id,r.namespace_id,r.agent_id)=($1,$2,$3) AND r.live_revision_id=r.revision_id
+           AND r.blocked IS NULL AND r.settlement='snapshot' AND r.observed->>'podUid' IS NOT NULL
+           AND n.status='ready' AND n.deleted_at IS NULL AND a.status='active' AND a.desired_runtime_state='running'
+           AND v.admitted_spec->'egress_plan'=$4::jsonb AND p.installation->'plan'=$4::jsonb
+           AND v.admitted_spec->'repository_credentials'=$5::jsonb
+           AND occ.repository_standing_approval_is_current($5::jsonb,$2,$3)
+           AND ((e.revision_id IS NULL AND ($5::jsonb->>'deadlineWallMs')::bigint > extract(epoch FROM clock_timestamp())*1000)
+             OR (e.execution_id=r.revision_id AND occ.repository_standing_execution_is_current($5::jsonb,$2,$3,$1)))`,
+        [
+          revision.id,
+          revision.namespaceId,
+          revision.agentId,
+          JSON.stringify(revision.egressPlan),
+          JSON.stringify(revision.repositoryCredentials),
+        ],
+      );
+      const row = rows[0] as JointStanding | undefined;
+      return rows.length === 1 && row ? { ...row, fence: Number(row.fence) } : undefined;
+    });
   }
 
   async standing(revision: Readonly<AgentRevision>) {

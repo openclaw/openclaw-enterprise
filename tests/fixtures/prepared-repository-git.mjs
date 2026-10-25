@@ -84,7 +84,12 @@ export async function fixture(
       installationAccess: {
         repositoryRef: "team-install",
         namespaces: [
-          { namespaceId, accessMode: "installation", ...(grantGeneration && { grantGeneration }) },
+          {
+            namespaceId,
+            accessMode: "installation",
+            ...(grantGeneration && { grantGeneration }),
+            ...(standingApproval && { allowStandingApproval: true }),
+          },
         ],
       },
     }),
@@ -108,10 +113,11 @@ export async function fixture(
       },
     ],
   });
+  const standingInstallation = standingApproval && installationAccess;
   const binding = resolveGitHubRepositoryBinding(registry, {
     namespaceId,
-    repositoryRef,
-    profile: "git-write",
+    repositoryRef: standingInstallation ? registry.installationAccess.repositoryRef : repositoryRef,
+    profile: standingInstallation ? "github-installation" : "git-write",
   });
   const driver = { id: driverId, implementation: "github" };
   await ensurePostgresAgentBootstrap(t, {
@@ -174,7 +180,7 @@ export async function fixture(
     await state.transact((u) => u.revisions.createRevision(revision));
   }
   const attempt = sessionAttempt(revision, {
-    repositoryRef,
+    repositoryRef: binding.repositoryRef,
     durationSeconds: 3600,
     brokerProtocol: 3,
   });

@@ -849,13 +849,20 @@ function gate() {
   return { promise, open };
 }
 
-for (const host of ["github.com", "api.github.com"] as const) {
+for (const host of ["github.com", "api.github.com", "standing"] as const) {
   test(
-    "the registered worker refuses held Git material after observing a replaced supervisor: " +
-      host,
+    host === "standing"
+      ? "the registered joint Sandbox captures its standing execution and a cold worker can only confirm it"
+      : "the registered worker refuses held Git material after observing a replaced supervisor: " +
+          host,
     requiresPostgres,
     async (t) => {
-      const f = await fixture(t, { installationAccess: true, grantGeneration: 7 });
+      const standingApproval = host === "standing";
+      const f = await fixture(t, {
+        installationAccess: true,
+        standingApproval,
+        grantGeneration: standingApproval ? undefined : 7,
+      });
       await disposeNativeSession(f);
       const driver = {
         id: "sandbox-compat",
@@ -968,8 +975,9 @@ for (const host of ["github.com", "api.github.com"] as const) {
       assert.ok(w.capabilities.repositoryTransport && w.capabilities.proxy);
       // The supplier is a controlled peer in this worker test; the worker itself installs its
       // production PostgreSQL route, authorization, Pod and material callbacks.
+      let signerCurrent = true;
       w.capabilities.proxy.verifyInstallation = async (_ctx, installation) =>
-        installation.sandboxId === w.peer.sandboxId;
+        signerCurrent && installation.sandboxId === w.peer.sandboxId;
       await w.capabilities.repositoryTransport.bind(custody, f.pool);
       async function releaseInstallation(
         version: ReturnType<typeof w.version>,
@@ -985,18 +993,14 @@ for (const host of ["github.com", "api.github.com"] as const) {
           providerName: name,
           attachmentEpoch: w.peer.epoch,
         }));
-        const git = {
-          id: binding.grant.grantId,
-          scope: binding.grant.grantId.split(":").at(-1)!,
-          generation: "7",
-          recipient: "git",
-        };
+        const git = { ...wiring.jointGit.grant, recipient: "git" };
         const installation = {
           plan: version.plan,
           sandboxId: w.peer.sandboxId,
           sender: { id: driver.id, generation: 1 },
           installedAt: new Date().toISOString(),
           enforcement: {
+            peerKeyId: "fixture-admitted-signer",
             instanceId: "fixture-supervisor",
             configurationId: "fixture-config",
             policyHash: "b".repeat(64),
@@ -1025,14 +1029,78 @@ for (const host of ["github.com", "api.github.com"] as const) {
           },
         };
         await f.state.transact((u) => u.credentialSources.recordEgressInstallation(installation));
-        await owner.maintain();
+        if (expectedIssues) {
+          await owner.maintain();
+        }
         assert.equal(
           f.gh.issuesOfTokens.length,
           expectedIssues,
           "the released execution has prepared installation custody",
         );
       }
-      await releaseInstallation(w, 1);
+      await releaseInstallation(w, standingApproval ? 0 : 1);
+      if (host === "standing") {
+        const { revision } = w;
+        const ctx = w.context(revision);
+        const delivery = async () =>
+          (
+            await f.pool.query(
+              "SELECT to_jsonb(r) AS route FROM occ.credential_deliveries r WHERE revision_id = $1",
+              [revision.id],
+            )
+          ).rows[0].route;
+        const original = await delivery();
+        signerCurrent = false;
+        assert.equal(
+          await w.capabilities.sandbox.repositoryAccess!.verifyExecution(ctx),
+          undefined,
+          "a matching delivery and Pod alone cannot witness a changed installation",
+        );
+        signerCurrent = true;
+        const identity = await w.capabilities.sandbox.repositoryAccess!.verifyExecution(ctx);
+        assert.ok(identity, "the admitting worker can capture the released joint execution");
+        assert.equal(identity.executionId, revision.id);
+
+        // Stop the admitting worker before starting a fresh registration on its listener ports.
+        // The Gateway and the observed Sandbox, supervisor Pod and recipients all stay in place.
+        await w.capabilities.close();
+        const cold = w.register();
+        t.after(() => cold.close());
+        cold.proxy!.verifyInstallation = w.capabilities.proxy.verifyInstallation;
+        await cold.repositoryTransport!.bind(custody, f.pool);
+        const verify = () => cold.sandbox.repositoryAccess!.verifyExecution(ctx);
+        assert.equal(await verify(), undefined, "a cold worker cannot establish the first witness");
+        const ref = {
+          namespaceId: revision.namespaceId,
+          agentId: revision.agentId,
+          revisionId: revision.id,
+        };
+        await f.state.transact((u) => u.repositorySessions.recordStandingExecution(ref, identity));
+        const recipient = w.peer.providers.get(original.desired.recipients[0].providerName)!;
+        const version = recipient.metadata.resource_version;
+        recipient.metadata.resource_version = version + "0";
+        assert.equal(
+          await verify(),
+          undefined,
+          "cold verification rejects a changed provider version",
+        );
+        recipient.metadata.resource_version = version;
+        assert.deepEqual(await verify(), identity, "the cold worker confirms the saved execution");
+        w.pod.uid = randomUUID();
+        assert.equal(
+          await verify(),
+          undefined,
+          "a replacement Pod cannot inherit standing approval",
+        );
+        assert.deepEqual(
+          await delivery(),
+          original,
+          "verification neither takes the fence nor changes custody",
+        );
+        assert.equal(reads, 0, "no material read for execution verification");
+        assert.equal(f.gh.issuesOfTokens.length, 0, "no issuance for execution verification");
+        return;
+      }
       const rpc = connectJointMiddleware(t, w);
       const decision = async (id: string, bindingId = w.execution.executionId) => {
         const result = await invoke(
