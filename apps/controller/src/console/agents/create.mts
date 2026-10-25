@@ -3059,16 +3059,20 @@ function renderAgentForm(
       }
       focusFeedbackLine(feedback);
       // Admission refuses a taken name; a job admitted alongside another with it fails with it.
+      const admissionNameTaken =
+        error.status === 409 && error.serverMessage === AGENT_NAME_CONFLICT;
       if (
-        (error.status === 409 && error.serverMessage === AGENT_NAME_CONFLICT) ||
+        admissionNameTaken ||
         (terminal?.failed && !terminal.job.agentId && error.message === AGENT_NAME_CONFLICT)
       ) {
         markNameTaken();
       }
-      // A 400 to an unacknowledged request means the API never admitted it: a resend of
-      // an admitted request returns that job before validation.
+      // A 400 or a taken-name 409 to an unacknowledged request means the API never admitted it:
+      // a resend of an admitted request returns that job before validation and the name check.
       requestAdmitted =
-        attempt.acknowledged || outcomeUnknown || (requestAdmitted && error.status !== 400);
+        attempt.acknowledged ||
+        outcomeUnknown ||
+        (requestAdmitted && error.status !== 400 && !admissionNameTaken);
       if (!outcomeUnknown && !terminal?.canRetry) {
         provisioningAttempt = null;
         if (terminal?.failed || retryRefused) {

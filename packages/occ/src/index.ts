@@ -2945,10 +2945,6 @@ export class OpenClawController {
         id: namespace.id,
         namespaceId: namespace.id,
       });
-      // The worker's Agent create refuses a taken name; refuse it here instead of accepting work
-      // that can only fail (finding 2420). Under the Namespace lock that Agent create also takes.
-      // A request admitted alongside with the same name still fails in its job.
-      await this.refuseTakenAgentName(state, namespace.id, input.name);
       this.validatePluginPolicies(plugins, pluginApprovers);
       this.validatePluginConfiguration(plugins, configurationInput.values);
       await this.authorizeProvisioningSources(
@@ -2996,6 +2992,12 @@ export class OpenClawController {
           mode: executionMode,
         });
       }
+      // The worker's Agent create refuses a taken name; refuse it here instead of accepting work
+      // that can only fail (finding 2420). Under the Namespace lock that Agent create also takes.
+      // Like the preflight and Agent create, the 409 comes after the plan's other checks, so a
+      // rename never uncovers a different refusal. A request admitted alongside with the same
+      // name still fails in its job.
+      await this.refuseTakenAgentName(state, namespace.id, input.name);
       const record = await state.provisioning.create({
         workId,
         namespaceId: namespace.id,
@@ -8969,7 +8971,7 @@ export class OpenClawController {
     namespaceId: string,
     name: string,
   ): Promise<void> {
-    if ((await state.agents.listAgents(namespaceId)).some((agent) => agent.name === name)) {
+    if (await state.agents.hasAgentNamed(namespaceId, name)) {
       throw new ResourceStateConflictError(AGENT_NAME_CONFLICT);
     }
   }

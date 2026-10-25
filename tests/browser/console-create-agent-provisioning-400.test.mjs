@@ -254,6 +254,63 @@ test("Dedicated Agent provisioning refuses a taken Agent name at admission and m
   assert.equal(await page.getByLabel("Agent name").getAttribute("aria-invalid"), null);
 });
 
+// A request lost in transit leaves its outcome unknown, so the form locks the plan: the API may
+// have admitted it. A resend of an admitted request returns its job before the name check, so a
+// name 409 to the resend proves nothing was admitted, and the name field unlocks for a new name
+// as it does after a 400 (finding 2420).
+test("A taken-name refusal after an unknown provisioning outcome unlocks the name field", async (t) => {
+  const { computeDriver } = provisioningDrivers();
+  const configurationDriver = createTestConfigurationDriver({
+    id: "console-provisioning-configuration",
+    exact: true,
+  });
+  const fixture = await createConsoleAppFixture(t, { computeDriver, configurationDriver });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Provision lost then taken", { ready: true });
+  await fixture.createAgent(namespace.id, "Taken after loss");
+  const { page } = await newPage(t, fixture, { browser });
+  const provisionUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/provision`;
+  // Only the first admission request is lost before it reaches the API.
+  let lost = false;
+  await page.route(provisionUrl, async (route) => {
+    if (!lost && route.request().method() === "POST") {
+      lost = true;
+      await route.abort("failed");
+      return;
+    }
+    await route.fallback();
+  });
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  const name = page.getByLabel("Agent name");
+  await name.fill("Taken after loss");
+  await pickCodexCredential(page);
+  await page.getByRole("button", { name: "Create Agent" }).click();
+  await page
+    .getByText(/^Outcome unknown\. Retry resubmits the same request ID and saved references\./)
+    .waitFor();
+  assert.equal(await name.isDisabled(), true);
+
+  const refused = page.waitForResponse(
+    (response) => response.url() === provisionUrl && response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Retry provisioning request" }).click();
+  assert.equal((await refused).status(), 409);
+  await waitForEnabled(name);
+  await assertAgentNameTaken(page);
+  // The API admitted nothing under this request ID, so a new name is a plan it accepts. This
+  // fixture has no transactional provisioning queue, so an accepted plan ends at its 503 (as in
+  // the pinned-runtime test below), not at a taken-name or different-plan 409.
+  await name.fill("Free after loss");
+  const resent = page.waitForResponse(
+    (response) => response.url() === provisionUrl && response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Create Agent" }).click();
+  const accepted = await resent;
+  assert.equal(accepted.status(), 503);
+  assert.equal((await accepted.json()).error.code, "DEPENDENCY_UNAVAILABLE");
+});
+
 test("The pinned runtime lets the Console request dedicated OpenClaw provisioning", async (t) => {
   const fixture = await createConsoleAppFixture(t, {
     ...provisioningDrivers(),

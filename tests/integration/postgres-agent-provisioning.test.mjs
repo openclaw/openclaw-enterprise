@@ -2662,6 +2662,17 @@ test(
       refused.body.error.message,
       "An Agent with this name already exists in this Namespace. Choose a different name.",
     );
+    // The name check comes last, as in the preflight and Agent create: a taken name with a
+    // Secret binding that names no Secret gets the binding's refusal, so a rename does not
+    // uncover a second refusal.
+    const unboundBody = provisioningBody(namespace.id, secrets, { name });
+    unboundBody.configuration.secretBindings.EXTERNAL_SERVICE_TOKEN.source = secretRef(
+      namespace.id,
+      `sec_${randomUUID()}`,
+    );
+    const unbound = await fixture.request("POST", provisionPath, { body: unboundBody });
+    assert.equal(unbound.status, 404, JSON.stringify(unbound.body));
+    assert.equal(unbound.body.error.code, "NOT_FOUND");
     const jobs = await fixture.pool.query(
       "SELECT count(*)::int AS count FROM occ.agent_provisioning_work WHERE namespace_id = $1",
       [namespace.id],
