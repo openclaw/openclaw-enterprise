@@ -1996,22 +1996,25 @@ test("Agent creation names the Configuration field that holds an inline model cr
     providers: { ...edited.models?.providers, openai: { apiKey: sentinel } },
   };
   await configuration.fill(JSON.stringify(edited, null, 2));
+  // The preflight checks the selected model credential Secret against the Configuration as Agent
+  // save would (finding 2391), so it refuses the inline key before the Configuration is saved.
   const rejected = page.waitForResponse(
     (response) =>
-      response.url() === `${fixture.origin}/namespaces/${namespace.id}/configurations` &&
+      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/validate` &&
       response.request().method() === "POST",
   );
   await page.getByRole("button", { name: "Create Agent" }).click();
   assert.equal((await rejected).status(), 400);
   const feedback = page.getByRole("alert").filter({
     hasText:
-      "Configuration field /models/providers/openai/apiKey holds a credential value inline, where a reference is required. Store the key as a Secret and select it as the Agent's model credential instead.",
+      "Configuration setting models.providers.openai.apiKey must be unset: Dedicated Codex receives model credentials from the Agent's Harness authentication binding.",
   });
   await feedback.waitFor();
   // Only the editor holds the key; the explanation never repeats it.
   const explanation = await feedback.textContent();
   assert.ok(explanation, "expected the explanation of the credential field");
   assert.equal(explanation.includes(sentinel), false);
+  assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
   assert.equal(agentPostRequests(requests, namespace.id).length, 0);
   await waitForEnabled(configuration);
 });

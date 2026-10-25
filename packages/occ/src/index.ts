@@ -815,6 +815,16 @@ export interface ValidateAgentCreateInput {
   readonly executionMode?: HarnessExecutionMode;
   readonly plugins?: PluginDesiredState;
   readonly pluginApprovers?: PluginApprovers;
+  /**
+   * The binding Agent create will name, or only the method of a Secret binding whose Secret the
+   * caller saves next. Absent or null: Harness authentication is not checked.
+   */
+  readonly harnessAuth?: HarnessAuthBinding | PlannedSecretHarnessAuth | null;
+}
+
+/** A Secret-backed Harness authentication method whose Secret is not saved yet. */
+export interface PlannedSecretHarnessAuth {
+  readonly method: "api_key" | "codex_pat";
 }
 
 interface RemoveStandingApprovalInput {
@@ -8802,9 +8812,8 @@ export class OpenClawController {
         state,
         resolveHarness,
         {
-          namespaceId: namespace.id,
           executionMode,
-          harnessAuth,
+          harnessAuth: () => this.savedHarnessAuthSnapshot(state, namespace.id, harnessAuth),
           repositoryBindings,
           workspaceSetup: initialWorkspaceFiles !== undefined,
           plugins,
@@ -8851,8 +8860,10 @@ export class OpenClawController {
    * content rules, then createAgent's checks of plugin selections and initial workspace files
    * against those values, with their messages, under createAgent's `agent:create` check. A
    * refusal is reported before the caller saves its Secret or Configuration. It writes nothing.
-   * Checks that need saved resources (Secret bindings, Harness authentication and credential
-   * sources) or live repository policy stay with those writes.
+   * With `harnessAuth`, Agent save's Harness authentication check against the Compute Driver runs
+   * too, so a refusal that depends only on the Agent's topology (finding 2391) is reported here.
+   * Checks that need saved resources (Secret bindings, the Harness authentication source and
+   * credential sources) or live repository policy stay with those writes.
    * `resolveHarness` as in createAgent.
    */
   async validateAgentCreate(
@@ -8872,6 +8883,7 @@ export class OpenClawController {
     }
     const plugins = normalizeAgentPlugins(input.plugins);
     const pluginApprovers = normalizeAgentPluginApprovers(input.pluginApprovers);
+    const harnessAuth = this.plannedHarnessAuth(input.harnessAuth ?? null);
     this.namespaceIdentity(input.namespaceId);
     await this.authorize(principalId, "create", {
       kind: "agent",
@@ -8903,13 +8915,17 @@ export class OpenClawController {
           createdAt: this.timestamp(),
         });
       await this.validateSavedPluginConfiguration(plugins, configuration);
+      rejectCrossNamespaceSecretSources(
+        namespace.id,
+        undefined,
+        harnessAuth === null || "source" in harnessAuth ? harnessAuth : null,
+      );
       await this.validateSavedAgentTopology(
         state,
         resolveHarness,
         {
-          namespaceId: namespace.id,
           executionMode,
-          harnessAuth: null,
+          harnessAuth: async () => this.plannedHarnessAuthSnapshot(namespace.id, harnessAuth),
           repositoryBindings: undefined,
           workspaceSetup: initialWorkspaceFiles !== undefined,
           plugins,
@@ -9155,9 +9171,13 @@ export class OpenClawController {
         state,
         resolveHarness,
         {
-          namespaceId: namespace.id,
           executionMode: input.executionMode ?? agent.executionMode,
-          harnessAuth: requestedAuth === undefined ? previousAuth : requestedAuth,
+          harnessAuth: () =>
+            this.savedHarnessAuthSnapshot(
+              state,
+              namespace.id,
+              requestedAuth === undefined ? previousAuth : requestedAuth,
+            ),
           repositoryBindings: repositoryBindings ?? agent.repositoryBindings,
           workspaceSetup:
             workspaceSetup !== undefined && (!workspaceSetup.completed || topologyChanged),
@@ -11297,10 +11317,9 @@ export class OpenClawController {
     if (record.agentId !== undefined && agent === undefined) {
       throw new ScopeViolationError("The provisioning Agent is unavailable.");
     }
-    const secretDriver = isSecretHarnessAuth(binding) ? this.secretDriver() : undefined;
     let auth: HarnessAuthSnapshot;
     if (isSecretHarnessAuth(binding)) {
-      auth = { ...binding, secretDriverId: secretDriver!.id };
+      auth = this.secretHarnessAuthSnapshot(binding);
     } else if (agent !== undefined) {
       auth = await this.admitHarnessAuth(state, principalId, { ...agent, harnessAuth: binding });
     } else if (binding.method === "credential_source") {
@@ -13432,9 +13451,9 @@ export class OpenClawController {
     state: PlatformReadView,
     resolveHarness: HarnessResolver | undefined,
     agent: {
-      readonly namespaceId: string;
       readonly executionMode: HarnessExecutionMode;
-      readonly harnessAuth: HarnessAuthBinding | null;
+      /** The admission snapshot of the Agent's binding, if save can build one. */
+      readonly harnessAuth: () => Promise<HarnessAuthSnapshot | undefined>;
       readonly repositoryBindings: readonly RepositoryBindingSelection[] | undefined;
       readonly workspaceSetup: boolean;
       readonly plugins: PluginDesiredState | undefined;
@@ -13471,9 +13490,7 @@ export class OpenClawController {
     const values = this.agentRuntimeConfiguration(configuration.values, harness, compute, sandbox);
     // A Configuration that selects no model yet is a draft: the binding has nothing to deliver
     // to, so deployment refuses that pair and save does not.
-    const auth = selectsModel(configuration.values)
-      ? await this.savedHarnessAuthSnapshot(state, agent.namespaceId, agent.harnessAuth)
-      : undefined;
+    const auth = selectsModel(configuration.values) ? await agent.harnessAuth() : undefined;
     if (auth !== undefined && compute.validateHarnessAuth !== undefined) {
       validateAgentHarnessAuth(compute, harness, auth, values, null);
     }
@@ -13507,6 +13524,55 @@ export class OpenClawController {
     return source === undefined
       ? undefined
       : immutableCopy({ ...binding, secretDriverId: source.driverId });
+  }
+
+  private plannedHarnessAuth(value: unknown): HarnessAuthBinding | PlannedSecretHarnessAuth | null {
+    const planned = asRecord(value);
+    if (
+      planned !== undefined &&
+      Object.keys(planned).length === 1 &&
+      (planned.method === "api_key" || planned.method === "codex_pat")
+    ) {
+      return Object.freeze({ method: planned.method });
+    }
+    return this.harnessAuthBinding(value);
+  }
+
+  // Create Agent's preflight snapshot: the operator-managed runtime as save takes it, and a Secret
+  // binding as the selected Secret Driver would hold it, as provisioning builds it, without
+  // reading the Secret (the preflight does not authorize its source). A Secret the caller saves
+  // next has no ID yet; Agent save's checks read only its method and Secret Driver. Undefined
+  // for every binding save cannot snapshot either.
+  private plannedHarnessAuthSnapshot(
+    namespaceId: string,
+    binding: HarnessAuthBinding | PlannedSecretHarnessAuth | null,
+  ): HarnessAuthSnapshot | undefined {
+    if (binding?.method === "runtime") {
+      return binding;
+    }
+    if (binding === null || binding.method === "credential_source") {
+      return undefined;
+    }
+    if ("source" in binding) {
+      return isSecretHarnessAuth(binding) ? this.secretHarnessAuthSnapshot(binding) : undefined;
+    }
+    const source: SecretReference = {
+      kind: "secret",
+      id: "sec_00000000-0000-4000-8000-000000000000",
+      namespaceId,
+    };
+    return this.secretHarnessAuthSnapshot(
+      binding.method === "api_key"
+        ? { method: "api_key", source }
+        : { method: "codex_pat", source },
+    );
+  }
+
+  // A Secret binding's snapshot as the selected Secret Driver holds it.
+  private secretHarnessAuthSnapshot(
+    binding: Extract<HarnessAuthBinding, { readonly source: SecretReference }>,
+  ): HarnessAuthSnapshot {
+    return immutableCopy({ ...binding, secretDriverId: this.secretDriver().id });
   }
 
   // The Configuration values a deployment admits for this Harness: the Sandbox Driver's view,
