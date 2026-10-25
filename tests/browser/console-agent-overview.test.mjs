@@ -761,6 +761,95 @@ test("Recovery offers Open Credentials only when an Agent update would pass its 
   await recovery.getByRole("link", { name: "Open Credentials", exact: true }).waitFor();
 });
 
+// Open Configuration leads to the Configuration editor. A Configuration save needs Configuration
+// update and Secret operate on each Secret the Configuration binds, not an Agent update or the
+// Harness authentication Secret it checks, so recovery follows the Configuration's own answer
+// (finding 2450). Its label says "Open version draft" only when that editor is read-only.
+test("Recovery's Open Configuration follows whether the caller may edit the Configuration", async (t) => {
+  const { fixture, namespace } = await readyNamespace(t, "Configuration recovery", runtimeLogs());
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Configuration Recovery",
+    nativeValues("v1"),
+  );
+  assert.equal(agent.harnessAuth.method, "api_key");
+  const failed = await fixture.deployAgent(namespace.id, agent.id);
+  // Configuration read and update, but no Secret operate: the Configuration binds no Secret, so
+  // its save would pass, while an Agent update would fail on the Harness API key Secret.
+  const member = await fixture.createNamespaceMember("configuration-recovery", namespace.id, [
+    ["read", "namespace"],
+    ["read", "agent"],
+    ["update", "agent"],
+    ["read", "agent_revision"],
+    ["read", "configuration"],
+    ["update", "configuration"],
+  ]);
+  const role = fixture.policy.roles.find(({ id }) => id === "role-configuration-recovery");
+  const { page } = await newPage(t, fixture, { browser });
+  await routeFailedRecord(page, fixture, namespace, agent, failed);
+  await trackSettledFetches(page);
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const recovery = page.getByRole("region", { name: "Deployment needs attention" });
+  // Signs in the first time, then reloads, so each step reads the policy as changed.
+  let signedIn = false;
+  const shown = async () => {
+    const permissions = page.waitForResponse((r) => r.url().endsWith(`${path}/permissions`));
+    if (!signedIn) {
+      signedIn = true;
+      await login(
+        page,
+        fixture,
+        detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
+        member.credentials,
+      );
+    } else {
+      await page.reload();
+    }
+    const answer = (await (await permissions).json()).data;
+    await recovery
+      .getByText("v1 failed its startup model check (RUNTIME_MODEL_PROBE_FAILED).", {
+        exact: false,
+      })
+      .waitFor();
+    await waitForIdleFetches(page);
+    return answer;
+  };
+  const links = () => recovery.getByRole("link").allTextContents();
+
+  let answer = await shown();
+  assert.equal(answer.configurationUpdate, true);
+  assert.equal(answer.configurationSecretsOperate, true);
+  assert.equal(answer.agentSourcesOperate, false);
+  assert.equal(answer.deploy, false);
+  assert.deepEqual(await links(), ["Open v1 Logs", "Open Configuration"]);
+  // Deploy does not turn an editable Configuration into a draft to read.
+  role.permissions.push({ action: "deploy", resourceKind: "agent" });
+  answer = await shown();
+  assert.equal(answer.deploy, true);
+  assert.deepEqual(await links(), ["Open v1 Logs", "Open Configuration"]);
+
+  // The inverse: an Agent editor whose Agent update would pass but who may not update the
+  // Configuration reads it, so recovery offers it as a draft to read and deploy, and without
+  // deploy offers nothing there.
+  role.permissions = [
+    ...role.permissions.filter(
+      ({ action, resourceKind }) => action !== "update" || resourceKind !== "configuration",
+    ),
+    { action: "operate", resourceKind: "secret" },
+  ];
+  answer = await shown();
+  assert.equal(answer.configurationUpdate, false);
+  assert.equal(answer.agentSourcesOperate, true);
+  await recovery.getByRole("link", { name: "Open version draft", exact: true }).waitFor();
+  assert.deepEqual(await links(), ["Open v1 Logs", "Open version draft"]);
+  role.permissions = role.permissions.filter(
+    ({ action, resourceKind }) => action !== "deploy" || resourceKind !== "agent",
+  );
+  answer = await shown();
+  assert.equal(answer.deploy, false);
+  assert.deepEqual(await links(), ["Open v1 Logs"]);
+});
+
 // One readable version per history page: the first page lists the newest readable version.
 // `olderRead`, when given, is told of each older-page request and answers when it resolves.
 function routeOneVersionPerPage(page, fixture, namespace, agent, olderRead) {
@@ -1120,16 +1209,8 @@ test("Recovery waits for the caller's permission answer before offering the draf
     t,
     page,
     `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/permissions`,
-    {
-      fulfill: {
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          data: { update: true, deploy: true, operate: true, delete: true },
-          meta: { requestId: "req_test_recovery_pending" },
-        }),
-      },
-    },
+    // The administrator's real answer, held until released.
+    { afterServer: true },
   );
 
   await page.clock.install();

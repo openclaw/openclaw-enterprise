@@ -220,15 +220,21 @@ export function createDeploymentRecovery(
         ? DEPLOYMENT_FAILURE_LINKS[code]
         : undefined;
     // Agent-side saves need Agent update and the source grants each update also checks; the draft
-    // page disables its editors without them (finding 2441).
+    // page disables its editors without them (finding 2441). Open Credentials leads to one.
     const agentEditable =
       permissions?.update === true && agentSaveDenial(permissions) === undefined;
+    // Open Configuration leads to the Configuration editor, which saves with Configuration update
+    // and Secret operate on each Secret the Configuration binds, not with an Agent update
+    // (finding 2450). A positive answer is required, as before.
+    const configurationEditable =
+      permissions?.configurationUpdate === true &&
+      permissions.configurationSecretsOperate !== false;
     // Without them, the draft's only step is Deploy new version, which it builds only from a
     // readable Configuration, so "Open version draft" waits for the same read (finding 1944).
     const openDraftAllowed =
       guidance === "configuration" &&
       configurationAvailable &&
-      !agentEditable &&
+      !configurationEditable &&
       permissions?.deploy === true;
     if ((deployAgainAllowed || openDraftAllowed) && readableConfigurationId !== configurationId) {
       checkConfigurationReadable(configurationId);
@@ -236,7 +242,7 @@ export function createDeploymentRecovery(
     const canOpenConfiguration =
       guidance === "configuration" &&
       configurationAvailable &&
-      (agentEditable || (openDraftAllowed && readableConfigurationId === configurationId));
+      (configurationEditable || (openDraftAllowed && readableConfigurationId === configurationId));
     const canOpenCredentials =
       guidance === "credentials" &&
       agentEditable &&
@@ -244,7 +250,7 @@ export function createDeploymentRecovery(
     const tab = canOpenConfiguration || canOpenCredentials ? guidance : null;
     const nextLabel =
       tab &&
-      (canOpenConfiguration && !agentEditable
+      (canOpenConfiguration && !configurationEditable
         ? "Open version draft"
         : DEPLOYMENT_FAILURE_LINK_LABELS[tab]);
     const actionsFor = `${latest.id}/${tab}/${nextLabel}/${logsAllowed}/${deployAgain}`;

@@ -4,6 +4,7 @@ import test from "node:test";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
+import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -1501,17 +1502,12 @@ test("Agent detail saves plugin changes for the next revision without changing a
         return;
       }
       const status = rejectedStatuses.shift();
-      await route.fulfill({
-        status,
-        contentType: "application/json",
-        body: JSON.stringify({
-          error:
-            status === 501
-              ? { code: "NOT_IMPLEMENTED", message: "No selected Plugin Driver" }
-              : { code: "ACCESS_DENIED", message: "Agent update denied" },
-          meta: { requestId: "req_00000000-0000-4000-8000-000000000434" },
-        }),
-      });
+      const requestId = "req_00000000-0000-4000-8000-000000000434";
+      await route.fulfill(
+        status === 501
+          ? apiErrorResponse(501, "NOT_IMPLEMENTED", "No selected Plugin Driver", { requestId })
+          : apiErrorResponse(403, "FORBIDDEN", "Agent update denied", { requestId }),
+      );
     },
   );
   const unavailableResponse = page.waitForResponse(
@@ -2570,14 +2566,11 @@ test("Agent credentials report partial harness Secret grant failure", async (t) 
       await route.continue();
       return;
     }
-    await route.fulfill({
-      status: 403,
-      contentType: "application/json",
-      body: JSON.stringify({
-        error: { code: "ACCESS_DENIED", message: "masked IAM denial" },
-        meta: { requestId: "req_00000000-0000-4000-8000-000000000633" },
+    await route.fulfill(
+      apiErrorResponse(403, "FORBIDDEN", "masked IAM denial", {
+        requestId: "req_00000000-0000-4000-8000-000000000633",
       }),
-    });
+    );
   });
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "credentials");
 

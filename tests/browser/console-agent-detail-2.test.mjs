@@ -10,6 +10,7 @@ import { createOpenShellBackend } from "../../apps/controller/src/backends/opens
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { WORKSPACE_DEFAULTS } from "../../packages/contracts/src/workspace-defaults.mjs";
+import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture, fileConsoleApp } from "../helpers/console-app.mjs";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -545,13 +546,17 @@ test("failed repeat deletion preserves feedback when a poll was rearmed during i
         writes += 1;
         entered();
         await gate;
-        await route.fulfill({
-          status,
-          contentType: "application/json",
-          body: JSON.stringify({
-            error: { code: "INVALID_REQUEST", message: "Controlled repeat refusal" },
-          }),
-        });
+        // The Agent DELETE route sends 400 and 409 itself; it has no 429, which comes from a
+        // rate limit in front of the API.
+        await route.fulfill(
+          status === 429
+            ? proxyErrorResponse(429)
+            : apiErrorResponse(
+                status,
+                status === 409 ? "RESOURCE_CONFLICT" : "INVALID_REQUEST",
+                "Controlled repeat refusal",
+              ),
+        );
       });
       await login(page, fixture, detailUrl(fixture, namespace.id, agent.id));
       const repeat = page.getByRole("button", { name: "Request deletion again", exact: true });
