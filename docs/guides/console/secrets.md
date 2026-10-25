@@ -4,6 +4,8 @@ Open **Secrets** in the sidebar and select a Namespace. Search by name or ID,
 or select **Refresh** to reload metadata. The list contains only Secrets you may
 read. Values are never returned. A ready Namespace is required to create or
 replace a value; ask an administrator for the exact operation permissions.
+Without Secret `create` in the Namespace, **Create Secret** is disabled and a
+note under it says so.
 
 ## Create and use a Secret
 

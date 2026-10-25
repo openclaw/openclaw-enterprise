@@ -178,6 +178,48 @@ test("console collection APIs keep exact Namespace and Agent IAM boundaries", as
   );
 });
 
+// The Secrets page disables Create Secret on a false answer (finding 2365), so the answer must be
+// the decision createSecret makes: Secret create on the Namespace collection, not Secret read and
+// not Agent create. Each step proves the answer against the same real POST.
+test("the Namespace Secret create answer matches what Secret creation checks", async (t) => {
+  const auditSink = new InMemoryAuditSink();
+  const fixture = await createConsoleAppFixture(t, { auditSink });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Secret create answer", { ready: true });
+  const permissionsPath = `/namespaces/${namespace.id}/permissions`;
+  const secretsPath = `/namespaces/${namespace.id}/secrets`;
+  // Namespace read lets the member ask; Secret read and Agent create are other decisions.
+  const member = await fixture.createNamespaceMember("secret-create-answer", namespace.id, [
+    ["read", "namespace"],
+    ["read", "secret"],
+    ["create", "agent"],
+  ]);
+  const session = await fixture.signIn(member.credentials);
+  const answer = async () => {
+    const summary = await fixture.request("GET", permissionsPath, { session });
+    assert.equal(summary.status, 200);
+    return summary.data;
+  };
+  const create = (name) =>
+    fixture.request("POST", secretsPath, { session, body: { name, value: "synthetic-value" } });
+
+  assert.deepEqual(await answer(), { agents: { create: true }, secrets: { create: false } });
+  // A false answer is not an attempted operation: only the real POST is audited as denied.
+  const denials = () => auditSink.list().filter((event) => event.kind === "authorization_denial");
+  assert.equal(denials().length, 0);
+  assertApiError(await create("Refused token"), 403, "FORBIDDEN");
+  assert.deepEqual(
+    denials().map((event) => event.action),
+    ["openclaw.secrets.create"],
+  );
+
+  fixture.policy.roles
+    .find((role) => role.id === "role-secret-create-answer")
+    .permissions.push({ action: "create", resourceKind: "secret" });
+  assert.deepEqual((await answer()).secrets, { create: true });
+  assert.equal((await create("Created token")).status, 201);
+});
+
 test("caller permission summaries report primary IAM decisions without authorizing a later operation", async (t) => {
   const auditSink = new InMemoryAuditSink();
   const fixture = await createConsoleAppFixture(t, { auditSink });
@@ -201,7 +243,7 @@ test("caller permission summaries report primary IAM decisions without authorizi
   });
   const adminNamespace = await fixture.request("GET", namespacePath);
   assert.equal(adminNamespace.status, 200);
-  assert.deepEqual(adminNamespace.data, { agents: { create: true } });
+  assert.deepEqual(adminNamespace.data, { agents: { create: true }, secrets: { create: true } });
 
   // Namespace read plus exact read and deploy on one Agent: only deploy is reported.
   const limited = await fixture.createAccountWithPolicy("permission-summary", (principal) => {
@@ -271,7 +313,10 @@ test("caller permission summaries report primary IAM decisions without authorizi
   assert.equal(configurationSummary.data.update, false);
   const namespaceSummary = await fixture.request("GET", namespacePath, { session });
   assert.equal(namespaceSummary.status, 200);
-  assert.deepEqual(namespaceSummary.data, { agents: { create: false } });
+  assert.deepEqual(namespaceSummary.data, {
+    agents: { create: false },
+    secrets: { create: false },
+  });
   // A false flag is an answer, not an attempted operation, so nothing is audited as denied.
   const denials = () => auditSink.list().filter((event) => event.kind === "authorization_denial");
   assert.equal(denials().length, 0);

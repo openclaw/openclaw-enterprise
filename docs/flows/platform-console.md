@@ -212,7 +212,8 @@ missing wiring or failed dependencies return errors.
 the exact Secret's `consumers` before showing actions. Agent IDs link to their
 pages; hidden counts and truncation remain visible. Known references disable
 Delete; the server rechecks references on submission. Create and replacement
-wait for Namespace readiness. Each mutation uses the tracked request client and
+wait for Namespace readiness. The page paints with `GET /namespaces/{namespaceId}/permissions`:
+false `secrets.create` disables Create Secret and names why; a failed read keeps it. Each mutation uses the tracked request client and
 the existing Secret API; no browser code calls a Driver directly.
 
 `secrets.mjs:editValue` masks new input, preserves whitespace (CRLF becomes LF),

@@ -965,7 +965,7 @@ export function installFixture(scenario, evidence) {
       const [, ns, resource] = match;
       if (ns !== namespaceId) {
         if (resource === "permissions" && namespaces.some((item) => item.id === ns)) {
-          return response({ agents: { create: true } });
+          return response({ agents: { create: true }, secrets: { create: true } });
         }
         return response([]);
       }
@@ -1233,7 +1233,10 @@ export function installFixture(scenario, evidence) {
         }
       }
       if (resource === "permissions" && method === "GET") {
-        return response({ agents: { create: !scenario.readOnlyPermissionSummary } });
+        return response({
+          agents: { create: !scenario.readOnlyPermissionSummary },
+          secrets: { create: !scenario.secretCreateNotPermitted },
+        });
       }
       if (resource === "agents") {
         if (method === "GET") {

@@ -321,6 +321,18 @@ test("console Secret writes honor read-only access, revocation and a new Agent r
   await grant("read", "secret", secret.id);
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, secretsUrl(namespace), member.credentials);
+  // Without Secret create the page never offers creation that the API would refuse after the
+  // dialog is filled in (finding 2365): Create Secret is disabled and the note names why.
+  const createSecret = page.getByRole("button", { name: "Create Secret", exact: true });
+  const createReason = page
+    .getByRole("status")
+    .filter({ hasText: "Your access does not include creating Secrets in this Namespace." });
+  await createReason.waitFor();
+  assert.equal(await createSecret.isDisabled(), true);
+  assert.equal(
+    await createSecret.getAttribute("aria-describedby"),
+    await createReason.getAttribute("id"),
+  );
   await page.getByRole("button", { name: privateSecret.name, exact: true }).click();
   const privateDetail = dialog(page, privateSecret.name);
   await privateDetail.getByText(/1 additional consumer/).waitFor();
@@ -389,7 +401,18 @@ test("console Secret writes honor read-only access, revocation and a new Agent r
     }
     await close.click();
   }
-  await page.getByRole("button", { name: "Create Secret", exact: true }).click();
+  // A page that read the permission answer before a revocation still offers creation, as the
+  // API's answer to a creator does; the API refuses the POST.
+  await page.route(`**/namespaces/${namespace.id}/permissions`, async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    await route.fulfill({
+      response,
+      json: { ...body, data: { ...body.data, secrets: { create: true } } },
+    });
+  });
+  await page.reload();
+  await createSecret.click();
   await form.getByLabel("Secret name").fill("Reader cannot create this");
   await value.fill("synthetic-denied-create");
   await expectDenied("Create Secret", "POST", "create");
