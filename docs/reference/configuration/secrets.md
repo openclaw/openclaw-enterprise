@@ -150,14 +150,16 @@ A channel secret-input field (Slack `appToken`, `botToken`, `signingSecret`,
   `${slack_bot}` or `${NAME-text}`, is refused: OpenClaw would send that text
   as the credential. The message quotes no other text of the value than a lowercase
   `${name}` or the name before `-`.
-- The Configuration Driver accepts a credential field only as one whole
+- The Configuration Driver accepts a credential field only as exactly one
   `${NAME}` or a SecretRef, so even with a binding it refuses a fallback, a
-  `$NAME` value or text around a reference, naming the form.
+  `$NAME` value, or a reference with other text, spaces or references. The
+  message names the form.
 
-Configuration create and update refuse these values with `400 INVALID_REQUEST`,
-naming the setting and the binding, so send the values and their bindings in
-one request. Deployment refuses a stored Configuration that predates this rule
-with the same message. Disabled channel provider blocks do not require
+Configuration create and update and Agent provisioning refuse these values with
+`400 INVALID_REQUEST`. The message names the setting, and also the binding when
+one is missing, so send the values and their bindings in one request.
+Deployment refuses a stored Configuration that predates this rule with the same
+message. Disabled channel provider blocks do not require
 bindings.
 
 Add a native default Slack account with environment SecretRefs:

@@ -55,16 +55,14 @@ import {
 } from "./console-agents-test-support.mjs";
 import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
 import {
+  CHANNEL_BINDING_CONSOLE_REMEDY,
   CHANNEL_SECRETS_CONFIGURATION_CHANGED,
+  referenceFormRefusal,
   RELOAD_DRAFT_BEFORE_SAVING,
   REPOSITORY_ACCESS_CHANGED,
   RESOURCE_CONFLICT,
   SAVED_CONFIGURATION_CHANGED,
 } from "../helpers/refusal-text.mjs";
-
-// The Agent page's line under a channel refusal that asks for a Secret binding (finding 2494).
-const CHANNEL_BINDING_CONSOLE_REMEDY =
-  "This editor does not save Secret bindings: bind SLACK_APP_TOKEN and SLACK_BOT_TOKEN on the Credentials tab or in the Slack editor on the Channels tab, and other names through the Configuration API.";
 
 // Saves and reloads on the Agent page's tabs, and every Reload draft, re-navigated to the same
 // URL: the page collapsed to its summary, reread the session, versions, permissions and
@@ -361,20 +359,13 @@ test("a bound Slack token reference that is not the whole value is refused under
     await page.getByRole("button", { name: "Save Configuration", exact: true }).click();
     return (await patched).status();
   };
-  const field = "Configuration field /channels/slack/botToken holds";
+  const form = (name: string) => referenceFormRefusal("channels.slack.botToken", name);
   for (const [botToken, refusal] of [
-    [
-      "$SLACK_BOT_TOKEN",
-      `${field} a $NAME value, where a credential reference is required. Write it as one \${NAME} reference, or a SecretRef.`,
-    ],
-    [
-      "${SLACK_BOT_TOKEN:-}",
-      `${field} a \${NAME:-…} fallback, which would replace a missing credential. Make the value one \${NAME} reference without a fallback, or a SecretRef.`,
-    ],
-    [
-      "xoxb-${SLACK_BOT_TOKEN}",
-      `${field} text around a \${NAME} reference, where a credential reference must be the whole value. Make the value one \${NAME} reference alone, or a SecretRef.`,
-    ],
+    ["$SLACK_BOT_TOKEN", form("shorthand")],
+    ["${SLACK_BOT_TOKEN:-}", form("fallback")],
+    ["xoxb-${SLACK_BOT_TOKEN}", form("otherText")],
+    // A trailing space is not text around the reference (finding 2503).
+    ["${SLACK_BOT_TOKEN} ", form("otherText")],
   ] as const) {
     assert.equal(await saveWith(botToken), 400, botToken);
     await page.locator("#configuration-json-error").getByText(refusal, { exact: true }).waitFor();

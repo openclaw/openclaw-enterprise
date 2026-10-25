@@ -25,6 +25,7 @@ import {
 } from "../helpers/auth-session.mjs";
 import { bindRole } from "../helpers/iam-grants.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
+import { referenceFormRefusal } from "../helpers/refusal-text.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 function createConfigurationBackend() {
@@ -4278,21 +4279,21 @@ test("a credential reference that is not the whole value is refused with a messa
   assert.equal(created.status, 201, JSON.stringify(created.body));
   const item = `${context.collection}/${created.body.data.id}`;
   const sentinel = `synthetic-${randomUUID()}`;
-  const field = (path) => `Configuration field ${path} holds`;
-  const shorthand = (path) =>
-    `${field(path)} a $NAME value, where a credential reference is required. Write it as one \${NAME} reference, or a SecretRef.`;
-  const fallback = (path) =>
-    `${field(path)} a \${NAME:-…} fallback, which would replace a missing credential. Make the value one \${NAME} reference without a fallback, or a SecretRef.`;
-  const around = (path) =>
-    `${field(path)} text around a \${NAME} reference, where a credential reference must be the whole value. Make the value one \${NAME} reference alone, or a SecretRef.`;
+  // The message names the setting as the channel binding rules do (finding 2503).
+  const shorthand = (path) => referenceFormRefusal(path, "shorthand");
+  const fallback = (path) => referenceFormRefusal(path, "fallback");
+  const otherText = (path) => referenceFormRefusal(path, "otherText");
   const slack = (botToken) => ({ channels: { slack: { enabled: true, botToken } } });
-  const bot = "/channels/slack/botToken";
+  const bot = "channels.slack.botToken";
   for (const [values, message] of [
     [slack("$SLACK_BOT_TOKEN"), shorthand(bot)],
     [slack("${SLACK_BOT_TOKEN:-}"), fallback(bot)],
     [slack(`\${SLACK_BOT_TOKEN:-${sentinel}}`), fallback(bot)],
-    [slack(`${sentinel}-\${SLACK_BOT_TOKEN}`), around(bot)],
-    [slack("xoxb-${SLACK_BOT_TOKEN}"), around(bot)],
+    [slack(`${sentinel}-\${SLACK_BOT_TOKEN}`), otherText(bot)],
+    [slack("xoxb-${SLACK_BOT_TOKEN}"), otherText(bot)],
+    // A line break or a second reference is not text, but still not the whole value (finding 2503).
+    [slack("${SLACK_BOT_TOKEN}\n"), otherText(bot)],
+    [slack("${SLACK_BOT_TOKEN}${SLACK_APP_TOKEN}"), otherText(bot)],
     // Any key slot: a plugin's API key and the Gateway's remote token.
     [
       {
@@ -4300,11 +4301,11 @@ test("a credential reference that is not the whole value is refused with a messa
           entries: { brave: { config: { webSearch: { apiKey: "Bearer ${BRAVE_KEY}" } } } },
         },
       },
-      around("/plugins/entries/brave/config/webSearch/apiKey"),
+      otherText("plugins.entries.brave.config.webSearch.apiKey"),
     ],
-    [{ gateway: { remote: { token: "$REMOTE_TOKEN" } } }, shorthand("/gateway/remote/token")],
+    [{ gateway: { remote: { token: "$REMOTE_TOKEN" } } }, shorthand("gateway.remote.token")],
     // An escape renders literal text, so it is a literal credential, with that message.
-    [slack("$${SLACK_BOT_TOKEN}"), literalKey(bot)],
+    [slack("$${SLACK_BOT_TOKEN}"), literalKey("/channels/slack/botToken")],
   ]) {
     await refusedOnSave(context, values, message, { item, sentinel });
   }

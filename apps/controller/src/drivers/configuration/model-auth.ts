@@ -3,10 +3,12 @@ import type {
   OpenClawConfigurationDocument,
 } from "@openclaw-enterprise/contracts";
 import {
+  configurationSettingMessage,
   environmentReference,
   invalidHeaderNameRequirement,
   isAdmittedHeaderName,
   isCredentialHeaderName,
+  keyedSettingPath,
   ModelCredentialValueError,
   refuseLiteralGatewayPassword,
   secretInputShorthandName,
@@ -83,29 +85,36 @@ const credentialHeaderMessage = (path: string): string =>
 const credentialKeyMessage = (path: string): string =>
   `Configuration field ${path} holds a credential value inline, where a reference is required. Make the value a \${NAME} reference or a SecretRef.`;
 // A key slot's value that holds a reference the runtime substitutes, but not as the whole value:
-// the `$NAME` form, a `${NAME:-fallback}` or text around a `${NAME}` (finding 2493). The message
-// names the form and never the text, which may hold the credential; any other value keeps
-// credentialKeyMessage.
+// the `$NAME` form, a `${NAME:-fallback}`, or a `${NAME}` with other text, spaces or references
+// (findings 2493, 2503). The message names the form and never the text, which may hold the
+// credential, and names the setting as Configuration save's channel rules do
+// (`channels.slack.botToken`); any other value keeps credentialKeyMessage.
 function referenceFormMessage(value: unknown): ((path: string) => string) | undefined {
   if (typeof value !== "string") {
     return undefined;
   }
-  if (secretInputShorthandName(value) !== undefined) {
-    return (path) =>
-      `Configuration field ${path} holds a $NAME value, where a credential reference is required. Write it as one \${NAME} reference, or a SecretRef.`;
-  }
   const references = [...value.matchAll(environmentReference)].filter(
     ([, escaped]) => escaped === undefined,
   );
-  if (references.some(([, , fallback]) => fallback !== undefined)) {
-    return (path) =>
-      `Configuration field ${path} holds a \${NAME:-…} fallback, which would replace a missing credential. Make the value one \${NAME} reference without a fallback, or a SecretRef.`;
-  }
-  if (references.length > 0) {
-    return (path) =>
-      `Configuration field ${path} holds text around a \${NAME} reference, where a credential reference must be the whole value. Make the value one \${NAME} reference alone, or a SecretRef.`;
-  }
-  return undefined;
+  const requirement =
+    secretInputShorthandName(value) !== undefined
+      ? "holds a $NAME value, where a credential reference is required. Write it as one ${NAME} reference, or a SecretRef"
+      : references.some(([, , fallback]) => fallback !== undefined)
+        ? "holds a ${NAME:-…} fallback, which would replace a missing credential. Make the value one ${NAME} reference without a fallback, or a SecretRef"
+        : references.length > 0
+          ? "holds a ${NAME} reference with other text, spaces or references. Make the value exactly one ${NAME} reference, or a SecretRef"
+          : undefined;
+  return requirement === undefined
+    ? undefined
+    : (path) => configurationSettingMessage(settingPath(path), requirement);
+}
+// The Configuration setting a JSON pointer names, such as `channels.slack.botToken`.
+function settingPath(path: string): string {
+  const [first = "", ...keys] = path
+    .slice(1)
+    .split("/")
+    .map((segment) => segment.replaceAll("~1", "/").replaceAll("~0", "~"));
+  return keys.reduce((parent, key) => keyedSettingPath(parent, key), first);
 }
 // A media query option that counts tokens rather than carrying one.
 const TOKEN_COUNT_OPTION =

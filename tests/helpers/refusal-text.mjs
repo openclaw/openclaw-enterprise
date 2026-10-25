@@ -59,3 +59,23 @@ export const CHANNEL_SECRETS_CONFIGURATION_CHANGED =
 export const REPOSITORY_EDITS_PENDING =
   "Save or cancel repository changes before leaving this tab.";
 export const CONFIGURATION_EDITS_PENDING = "Save or cancel Configuration edits before deploying.";
+
+// The Configuration Drivers' refusal of a credential slot that holds a reference the runtime
+// substitutes, but not as the whole value, naming the setting (findings 2493, 2503).
+const REFERENCE_FORMS = {
+  shorthand:
+    "holds a $NAME value, where a credential reference is required. Write it as one ${NAME} reference, or a SecretRef",
+  fallback:
+    "holds a ${NAME:-…} fallback, which would replace a missing credential. Make the value one ${NAME} reference without a fallback, or a SecretRef",
+  otherText:
+    "holds a ${NAME} reference with other text, spaces or references. Make the value exactly one ${NAME} reference, or a SecretRef",
+};
+export const referenceFormRefusal = (setting, form) =>
+  `Configuration setting ${setting} ${REFERENCE_FORMS[form]}.`;
+// Where the console says to add a Secret binding that a channel refusal asks for: the Agent
+// page's Configuration JSON editor saves none (finding 2494), and Create Agent binds only Slack's
+// standard names (finding 2506).
+export const CHANNEL_BINDING_CONSOLE_REMEDY =
+  "This editor does not save Secret bindings: bind SLACK_APP_TOKEN and SLACK_BOT_TOKEN on the Credentials tab or in the Slack editor on the Channels tab, and other names through the Configuration API.";
+export const CHANNEL_BINDING_FORM_REMEDY =
+  "On this form, the Slack channel settings bind SLACK_APP_TOKEN and SLACK_BOT_TOKEN to the Secrets you select there; bind other names through the Configuration API after the Agent exists.";

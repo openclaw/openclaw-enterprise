@@ -331,21 +331,17 @@ export function rejectionMessage(cause: unknown, mutation = false): string {
     : message(cause, mutation);
 }
 
-// Configuration save's refusal of a channel credential reference without a Secret binding
-// (finding 2319), of a channel credential `${` the runtime does not substitute (finding 2477), or
-// of a channel credential reference that is not the whole value (`$NAME`, a fallback or text
-// around it, finding 2493), or undefined. It names the Configuration setting, so a form shows it under the
-// field that holds the Configuration.
+// A channel credential reference that Configuration save or provisioning refuses: one without a
+// Secret binding, a `${` the runtime does not substitute, or one that is not the whole value
+// (findings 2319, 2477, 2493); otherwise undefined. The message names the setting, so a form shows
+// it under the field that holds the Configuration.
+const CHANNEL_REFERENCE_REFUSAL =
+  / (?:without a Configuration Secret binding|the runtime does not substitute): | holds (?:a \$NAME value|a \$\{NAME:-…\} fallback|a \$\{NAME\} reference with other text)/;
 export function channelBindingRefusal(cause: unknown): string | undefined {
   const { status, serverMessage } = requestFailure(cause);
   return status === 400 &&
-    serverMessage !== undefined &&
-    ((serverMessage.startsWith("Configuration setting channels.") &&
-      (serverMessage.includes(" without a Configuration Secret binding: ") ||
-        serverMessage.includes(" the runtime does not substitute: "))) ||
-      /^Configuration field \/channels\/.*? holds (?:a \$NAME value|a \$\{NAME:-…\} fallback|text around a \$\{NAME\} reference), /.test(
-        serverMessage,
-      ))
+    serverMessage?.startsWith("Configuration setting channels.") &&
+    CHANNEL_REFERENCE_REFUSAL.test(serverMessage)
     ? serverMessage
     : undefined;
 }

@@ -2906,6 +2906,26 @@ export class OpenClawController {
     const requestFingerprintHex = createHash("sha256")
       .update(canonicalProvisioningJson(acceptedInput))
       .digest("hex");
+    // The Configuration rules Configuration save applies, for the plan's values and bindings.
+    const validateContent = async () => {
+      await configurationDriver.validateSize?.(configurationInput.values);
+      this.validateConfigurationContent(
+        configurationInput.values,
+        undefined,
+        configurationInput.secretBindings ?? {},
+      );
+      await configurationDriver.validate({
+        id: "cfg_00000000-0000-4000-8000-000000000000",
+        namespaceId: input.namespaceId,
+        kind: "agent",
+        generation: 1,
+        values: configurationInput.values,
+        ...(configurationInput.secretBindings === undefined
+          ? {}
+          : { secretBindings: configurationInput.secretBindings }),
+        createdAt: this.timestamp(),
+      });
+    };
     const replay = await this.read((state) =>
       state.provisioning.findByRequest(input.namespaceId, principalId, requestId),
     );
@@ -2925,6 +2945,10 @@ export class OpenClawController {
         configurationInput.secretBindings,
         harnessAuth,
       );
+      // Before the Channel Driver, which reads only an env SecretRef: it would answer a channel
+      // credential reference form these rules name (an unbound name, `$NAME`, a fallback, other
+      // text) with its generic binding refusal (finding 2506). Admission repeats them below.
+      await validateContent();
       await this.validateChannelCredentials(
         principalId,
         input.namespaceId,
@@ -2985,23 +3009,7 @@ export class OpenClawController {
         configurationInput.secretBindings,
         harnessAuth,
       );
-      await configurationDriver.validateSize?.(configurationInput.values);
-      this.validateConfigurationContent(
-        configurationInput.values,
-        undefined,
-        configurationInput.secretBindings ?? {},
-      );
-      await configurationDriver.validate({
-        id: "cfg_00000000-0000-4000-8000-000000000000",
-        namespaceId: namespace.id,
-        kind: "agent",
-        generation: 1,
-        values: configurationInput.values,
-        ...(configurationInput.secretBindings === undefined
-          ? {}
-          : { secretBindings: configurationInput.secretBindings }),
-        createdAt: this.timestamp(),
-      });
+      await validateContent();
       const { repositoryBindings, repositoryAccess } = this.repositorySettings(namespace.id, input);
       // Refuse repository bindings the topology cannot deliver, with Agent create's 409, before
       // queueing work the worker's admission would refuse (finding 1145). Unlike Agent save, a
