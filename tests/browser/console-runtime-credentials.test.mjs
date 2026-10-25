@@ -5,6 +5,7 @@ import test from "node:test";
 
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
   accessBindingPostRequests,
@@ -543,6 +544,101 @@ test("Slack credential gate reads whole ${NAME} tokens beside named accounts", a
     "Missing",
   ]);
   assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
+});
+
+// Without named accounts the default account reads the keys its tokens name, as save and the
+// Slack Channel Driver do. The tab asked for SLACK_APP_TOKEN and SLACK_BOT_TOKEN instead and held
+// Deploy for a Configuration OCC deploys (finding 2526). Its form binds only that pair, so it
+// lists these keys and points at the Configuration API.
+test("Slack credential gate reads the keys the default account's tokens name", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Default Slack token gate", { ready: true });
+  const [appSecret, botSecret] = await existingSlackSecrets(fixture, namespace.id);
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Default Slack Token Agent",
+    nativeValues("default-slack-tokens", {
+      harnessId: "codex",
+      channels: {
+        slack: { ...slack, appToken: "${ACME_SLACK_APP}", botToken: "${ACME_SLACK_BOT}" },
+      },
+    }),
+    {
+      executionMode: "dedicated",
+      secretBindings: {
+        ACME_SLACK_APP: envBinding(appSecret),
+        ACME_SLACK_BOT: envBinding(botSecret),
+      },
+    },
+  );
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
+  await page
+    .getByText(
+      "The Slack tokens use the keys listed above, not the SLACK_APP_TOKEN and SLACK_BOT_TOKEN pair this form binds. Bind them through the Configuration API.",
+    )
+    .waitFor();
+  const rows = page.locator("section.channel-secrets .credential-status-list");
+  assert.deepEqual(await rows.locator("dt").allTextContents(), [
+    "ACME_SLACK_APP",
+    "ACME_SLACK_BOT",
+  ]);
+  assert.deepEqual(await rows.locator("dd").allTextContents(), ["Bound", "Bound"]);
+  assert.equal(await page.getByRole("button", { name: "Save channel Secrets" }).count(), 0);
+  await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
+});
+
+// A stored Configuration can hold a Slack token form that save now refuses (breaking-changes
+// 2026-10-25). Saving channel Secrets resends the stored values, so the API refuses that save and
+// names the setting. The tab said "Check the selected Secrets and reload this Agent.", which no
+// Secret choice or reload fixes (finding 2529); it now shows the API's sentence and where to fix it.
+test("a channel Secret save refused for a stored Slack token form names the setting", async (t) => {
+  // The bundled Kubernetes Compute's rule refuses the form; the storage Driver keeps the row an
+  // earlier build saved, which this test writes through the Driver as that build did.
+  const configurationDriver = createTestConfigurationDriver({ id: "console-configuration" });
+  const fixture = await createConsoleAppFixture(t, {
+    computeImplementation: "kubernetes-local",
+    configurationDriver,
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Stored Slack form", { ready: true });
+  const [appSecret, botSecret] = await existingSlackSecrets(fixture, namespace.id);
+  const replacement = await fixture.createSecret(namespace.id, "Replacement bot", "xoxb-new");
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Stored Slack Form Agent",
+    nativeValues("stored-slack-form", { harnessId: "codex", channels: { slack } }),
+    {
+      executionMode: "dedicated",
+      secretBindings: {
+        SLACK_APP_TOKEN: envBinding(appSecret),
+        SLACK_BOT_TOKEN: envBinding(botSecret),
+      },
+    },
+  );
+  const reference = { namespaceId: namespace.id, id: agent.configurationId };
+  const stored = configurationDriver.stored(reference);
+  stored.values.channels.slack.botToken = { source: "file", provider: "default", id: "/run/bot" };
+  await configurationDriver.update(stored);
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
+  await page.getByRole("heading", { name: "Channel Secrets" }).waitFor();
+  await waitForInputValue(page.getByLabel("Slack bot token"), secretOptionLabel(botSecret));
+  await selectSecret(page, "Slack bot token", replacement);
+  const saved = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/configurations/${agent.configurationId}`) &&
+      response.request().method() === "PATCH",
+  );
+  await page.getByRole("button", { name: "Save channel Secrets" }).click();
+  assert.equal((await saved).status(), 400);
+  const refusal = `Configuration setting channels.slack.botToken holds a SecretRef the Slack Channel Driver cannot read: use an env SecretRef with provider default, or one whole \${NAME}, bound in secretBindings. Fix that setting in the Configuration JSON on the Configuration tab: this tab saves only the SLACK_APP_TOKEN and SLACK_BOT_TOKEN bindings.`;
+  const alert = page.locator("section.channel-secrets .status[role=alert]");
+  await alert.filter({ hasText: refusal }).waitFor();
+  await expectNoText(page, "Check the selected Secrets and reload this Agent.");
+  // Nothing saved: the stored bindings and the refused form stay as they were.
+  assert.deepEqual(configurationDriver.stored(reference), stored);
 });
 
 test("Teams-enabled drafts keep console deploy blocked", async (t) => {

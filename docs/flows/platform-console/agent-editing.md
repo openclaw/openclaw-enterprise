@@ -222,6 +222,10 @@ IAM. A failed grant leaves Configuration saved; a 403 is a known refusal that na
 Installation administrator, who selects **Retry Secret access**; a timeout or 5xx stays unknown. A member's
 session sends no grant and says access was not verified until **Reload draft**. An administrator's console
 also reads Namespace IAM to mark a bound Slack Secret without an Agent grant.
+`apps/controller/src/console/agents/credentials.mjs:missingChannelCredentialGroups` reads each
+token's key as the Slack Channel Driver does; keys other than the standard pair get no pickers.
+A 400 that `apps/controller/src/console/agents/list.mjs:channelBindingRefusal` matches shows the
+API's message.
 An uncertain PATCH blocks another
 channel write until Refresh. Disabling a draft channel changes Configuration
 but does not stop a running Agent.
@@ -310,6 +314,7 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 
 ## Changelog
 
+- 2026-10-25: Credentials reads the default Slack account's token keys and shows a channel setting's save refusal. (findings 2526, 2529)
 - 2026-10-25: Move step 6 (workspace files) to [its own trace](agent-workspace-files.md); move older entries to history. (finding 2488)
 
 [Console Agent editing documentation history](agent-editing/history.md) preserves the older dated entries.

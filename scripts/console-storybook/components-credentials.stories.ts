@@ -17,6 +17,10 @@ export const CredentialsServiceAccountReadDenied = {
   name: "Model authentication, editor may lack read on the ChatGPT service account",
 };
 export const CredentialsSlack = { ...story("credentialsSlack"), name: "Slack tokens missing" };
+export const CredentialsSlackOtherKeys = {
+  ...story("credentialsSlackOtherKeys"),
+  name: "Slack tokens on other keys",
+};
 export const CredentialsSlackReader = {
   ...story("credentialsSlackReader"),
   name: "Slack tokens, viewer can only read",
@@ -52,6 +56,10 @@ export const CredentialsSlackCarried = {
 export const CredentialsSaveProvisioningReserved = {
   ...story("credentialsSaveProvisioningReserved"),
   name: "Secret choices after a refused save",
+};
+export const CredentialsSaveChannelRefused = {
+  ...story("credentialsSaveChannelRefused"),
+  name: "Channel Secret save refused for a channel setting",
 };
 export const CredentialsSaveConflict = {
   ...story("credentialsSaveConflict"),

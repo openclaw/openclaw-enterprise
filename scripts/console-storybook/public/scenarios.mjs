@@ -6973,6 +6973,17 @@ export const scenarios = {
     description:
       "Both Slack token bindings are empty and required before a Slack-enabled draft can deploy.",
   },
+  credentialsSlackOtherKeys: {
+    group: "Components/Credentials",
+    name: "Slack tokens on other keys",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    slackMode: "http",
+    slackTokens: { botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" } },
+    slackBindings: ["SLACK_BOT_TOKEN"],
+    description:
+      "HTTP mode reads no app token, so the tab lists only SLACK_BOT_TOKEN, offers no token pickers, and Deploy is available once it is bound.",
+  },
   credentialsSlackReader: {
     group: "Components/Credentials",
     name: "Slack tokens, viewer can only read",
@@ -7093,6 +7104,29 @@ export const scenarios = {
     steps: [
       "Press Save channel Secrets. The Console explains why the Configuration cannot be saved.",
       "The unsaved choice stays selected and Deploy stays disabled. Choose the saved Slack app token again to make Deploy available; no retry or reload is needed.",
+    ],
+  },
+  credentialsSaveChannelRefused: {
+    group: "Components/Credentials",
+    name: "Channel Secret save refused for a channel setting",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
+        method: "PATCH",
+        status: 400,
+        code: "INVALID_REQUEST",
+        message:
+          "Configuration setting channels.slack.botToken holds a SecretRef the Slack Channel Driver cannot read: use an env SecretRef with provider default, or one whole ${NAME}, bound in secretBindings.",
+      },
+    ],
+    actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
+    description:
+      "The stored Configuration holds a Slack token form that save now refuses, so saving channel Secrets, which resends the stored values, is refused for that setting.",
+    gap: "The refusal is simulated; the API refuses the stored form on the bundled Kubernetes Compute.",
+    steps: [
+      "Press Save channel Secrets. The Console shows the API's message, which names the setting, and says to fix it in the Configuration JSON on the Configuration tab.",
     ],
   },
   credentialsSaveConflict: {

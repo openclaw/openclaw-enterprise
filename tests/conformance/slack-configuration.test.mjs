@@ -107,3 +107,61 @@ test("the deploy gate requires a named Slack account's own keys, not the default
     [],
   );
 });
+
+// With no named accounts, the gate lists the keys the default account's tokens name, as
+// Configuration save and the Slack Channel Driver read them, and no app token in HTTP mode. It
+// asked for SLACK_APP_TOKEN and SLACK_BOT_TOKEN instead and held Deploy for a Configuration OCC
+// deploys (finding 2526).
+test("the deploy gate requires the keys the default Slack account's tokens name", () => {
+  const bound = (...keys) => ({
+    secretBindings: Object.fromEntries(
+      keys.map((key) => [
+        key,
+        { source: { kind: "secret", namespaceId: "ns_1", id: `sec_${key}` } },
+      ]),
+    ),
+  });
+  const slackWith = (slack) => ({ channels: { slack: { enabled: true, ...slack } } });
+  const acme = slackWith({ appToken: "${ACME_SLACK_APP}", botToken: "${ACME_SLACK_BOT}" });
+  assert.deepEqual(
+    missingChannelCredentialGroups(acme, bound("ACME_SLACK_APP", "ACME_SLACK_BOT")),
+    [],
+  );
+  // The standard names do not stand in for the keys the tokens name.
+  assert.deepEqual(
+    missingChannelCredentialGroups(
+      acme,
+      bound("SLACK_APP_TOKEN", "SLACK_BOT_TOKEN", "ACME_SLACK_APP"),
+    ),
+    ["Slack Secret bindings (ACME_SLACK_BOT)"],
+  );
+  // An env SecretRef names its key too; a token with no key keeps the standard name.
+  const mixed = slackWith({
+    botToken: { source: "env", provider: "default", id: "ACME_SLACK_BOT" },
+  });
+  assert.deepEqual(missingChannelCredentialGroups(mixed, bound("ACME_SLACK_BOT")), [
+    "Slack Secret bindings (SLACK_APP_TOKEN)",
+  ]);
+  // HTTP mode reads no app token.
+  const http = slackWith({
+    mode: "http",
+    botToken: "${SLACK_BOT_TOKEN}",
+    signingSecret: "${SLACK_SIGNING_SECRET}",
+  });
+  assert.deepEqual(
+    missingChannelCredentialGroups(http, bound("SLACK_BOT_TOKEN", "SLACK_SIGNING_SECRET")),
+    [],
+  );
+  assert.deepEqual(missingChannelCredentialGroups(http, bound("SLACK_SIGNING_SECRET")), [
+    "Slack Secret bindings (SLACK_BOT_TOKEN)",
+  ]);
+  // Save still requires a binding for an app token HTTP mode keeps, so the gate lists it.
+  const httpWithApp = slackWith({
+    mode: "http",
+    appToken: "${ACME_SLACK_APP}",
+    botToken: "${SLACK_BOT_TOKEN}",
+  });
+  assert.deepEqual(missingChannelCredentialGroups(httpWithApp, bound("SLACK_BOT_TOKEN")), [
+    "Slack Secret bindings (ACME_SLACK_APP)",
+  ]);
+});
