@@ -323,8 +323,10 @@ export function createDeploymentStatusPanel(
   let record: Deployment | null = null;
   let error: unknown = null;
   let overviewUnavailable = false;
-  // Tallest the details have been since a deploy was seen pending; see render().
+  // Tallest the details have been since a deploy was seen pending; see reserveHeight().
   let reservedHeight: number | null = null;
+  const heightObserver =
+    typeof ResizeObserver === "function" ? new ResizeObserver(() => holdHeight()) : null;
   let pollTimer: number | undefined;
   // The last record read. A transient read failure (a network error, a timeout, a 5xx) does not
   // end a pending deploy, so polling goes on from it (finding 2085).
@@ -429,8 +431,6 @@ export function createDeploymentStatusPanel(
           transientFailure: error !== null && transientReadError(error),
           overviewUnavailable,
         });
-        // The first load renders this panel before the page places it; measure it once shown.
-        reserveHeight(false);
         if (
           refreshQueued ||
           (poll &&
@@ -537,7 +537,7 @@ export function createDeploymentStatusPanel(
       );
       previousEvidence = evidence;
     }
-    const changed = patchChildren(content, [
+    patchChildren(content, [
       element(
         "p",
         { className: "muted" },
@@ -554,32 +554,39 @@ export function createDeploymentStatusPanel(
           ]
         : []),
     ]);
-    reserveHeight(changed);
+    reserveHeight();
   }
 
   // A deploy's details grow and shrink as its attempts are recorded, and each change moved the
   // cards below, Share Agent then among them (finding 1598). While a deploy is seen pending, the
   // details keep the tallest height they have shown. Once it settles the space is given back in
   // the same render as the outcome, so a finished deploy leaves no empty card (finding 2369).
-  // A panel not yet placed or with its details folded measures 0, so an unchanged render measures
-  // again until it has a height: measured only on a change, the first Queued height was lost and
-  // the details shrank for In progress (finding 2456).
-  function reserveHeight(changed: boolean) {
+  function reserveHeight() {
     const pending = deploymentPending(record?.status) || deploymentPending(record?.cleanup?.status);
     if (pending) {
-      reservedHeight ??= 0;
+      if (reservedHeight === null) {
+        reservedHeight = 0;
+        heightObserver?.observe(content);
+      }
+      holdHeight();
     } else if (reservedHeight !== null) {
       reservedHeight = null;
+      heightObserver?.disconnect();
       content.style.removeProperty("min-height");
+    }
+  }
+
+  // The first load renders the panel before the page shows it, where it measures 0, so a height
+  // taken only on a render lost the first Queued height and the details shrank for In progress
+  // (finding 2456). The observer also measures once the panel is shown, before that frame paints.
+  function holdHeight() {
+    if (reservedHeight === null) {
       return;
     }
-    if (reservedHeight === null || (!changed && reservedHeight > 0)) {
-      return;
-    }
-    content.style.removeProperty("min-height");
-    reservedHeight = Math.max(reservedHeight, content.getBoundingClientRect().height);
-    if (reservedHeight > 0) {
-      content.style.minHeight = `${reservedHeight}px`;
+    const height = content.getBoundingClientRect().height;
+    if (height > reservedHeight) {
+      reservedHeight = height;
+      content.style.minHeight = `${height}px`;
     }
   }
 

@@ -317,7 +317,7 @@ test("Agent detail separates the current version, viewed version, and latest dep
   // button again.
   assert.equal(await runDiagnostics.getAttribute("aria-describedby"), null);
   await expectVersionRecord(page, "Completed");
-  await expectDeploymentOutcome(page, "Queued", { folded: false });
+  await expectDeploymentOutcome(page, "In progress", { folded: false });
   assert.ok(pathRequests(requests, "GET", deploymentPath).length >= 1);
   assert.ok(
     pathRequests(
