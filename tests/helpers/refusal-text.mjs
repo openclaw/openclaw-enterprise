@@ -82,6 +82,11 @@ const REFERENCE_FORMS = {
 };
 export const referenceFormRefusal = (setting, form) =>
   `Configuration setting ${setting} ${REFERENCE_FORMS[form]}.`;
+// The Slack token rule's refusal of an object the Slack Channel Driver cannot read: a SecretRef it
+// does not read, or another object (findings 2514, 2518, 2527).
+const SLACK_TOKEN_OBJECTS = { secretRef: "a SecretRef", object: "an object" };
+export const unreadableSlackTokenRefusal = (setting, held) =>
+  `Configuration setting ${setting} holds ${SLACK_TOKEN_OBJECTS[held]} the Slack Channel Driver cannot read: use an env SecretRef with provider default, or one whole \${NAME}, bound in secretBindings.`;
 // Where the console says to add a Secret binding that a channel refusal asks for: the Agent
 // page's Configuration JSON editor saves none (finding 2494), and Create Agent binds only Slack's
 // standard names (finding 2506).

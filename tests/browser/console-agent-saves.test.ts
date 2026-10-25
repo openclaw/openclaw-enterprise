@@ -58,6 +58,7 @@ import {
   CHANNEL_BINDING_CONSOLE_REMEDY,
   CHANNEL_SECRETS_CONFIGURATION_CHANGED,
   referenceFormRefusal,
+  unreadableSlackTokenRefusal,
   RELOAD_DRAFT_BEFORE_SAVING,
   REPOSITORY_ACCESS_CHANGED,
   RESOURCE_CONFLICT,
@@ -350,7 +351,7 @@ test("a bound Slack token reference that is not the whole value is refused under
   await openAdvancedSettings(page);
   const editor = page.getByLabel("Configuration JSON");
   const url = fixture.origin + configurationPath(c);
-  const saveWith = async (botToken: string) => {
+  const saveWith = async (botToken: unknown) => {
     const slack = { ...values.channels.slack, botToken };
     await editor.fill(JSON.stringify({ ...values, channels: { slack } }, null, 2));
     const patched = page.waitForResponse(
@@ -368,13 +369,27 @@ test("a bound Slack token reference that is not the whole value is refused under
     ["${SLACK_BOT_TOKEN} ", form("otherText")],
     // A token pasted as the value names the setting the same way (finding 2517).
     ["xoxb-pasted-token-value", form("inline")],
+    // An object the Slack Channel Driver cannot read is refused by the Slack token rule, whose
+    // message asks for a binding, so the editor adds where the console makes one. The console's
+    // matcher must cover these as well as the string forms (findings 2514, 2518, 2528).
+    [
+      { source: "file", provider: "default", id: "/run/slack/bot" },
+      `${unreadableSlackTokenRefusal("channels.slack.botToken", "secretRef")} ${CHANNEL_BINDING_CONSOLE_REMEDY}`,
+    ],
+    [
+      { value: "xoxb-object-token-value" },
+      `${unreadableSlackTokenRefusal("channels.slack.botToken", "object")} ${CHANNEL_BINDING_CONSOLE_REMEDY}`,
+    ],
   ] as const) {
-    assert.equal(await saveWith(botToken), 400, botToken);
+    const label = JSON.stringify(botToken);
+    assert.equal(await saveWith(botToken), 400, label);
     await page.locator("#configuration-json-error").getByText(refusal, { exact: true }).waitFor();
-    assert.equal(await editor.getAttribute("aria-invalid"), "true", botToken);
-    assert.equal(await page.getByText(refusal).count(), 1, botToken);
+    assert.equal(await editor.getAttribute("aria-invalid"), "true", label);
+    assert.equal(await page.getByText(refusal).count(), 1, label);
     assert.equal(await page.locator("#configuration-editor-feedback").textContent(), "");
   }
+  // No refusal shows the token value.
+  await expectNoText(page, /xoxb-object-token-value|xoxb-pasted-token-value/);
   assert.equal(await saveWith("${SLACK_BOT_TOKEN}"), 200);
   await page.getByText("Configuration saved.", { exact: true }).waitFor();
   const stored = (await fixture.request("GET", configurationPath(c))).data;
