@@ -458,8 +458,8 @@ test("Open version draft waits for the Configuration read to succeed", async (t)
 // finished (finding 2065). Its notice says it is deploying until it becomes current. `record`
 // drives the newest deployment's answer: its status, or an error while `fail` holds an HTTP
 // status (503, 403); `agentFail` answers the Agent read with a 503. `recordReads` counts the
-// newest deployment's reads, and `warnings` are its startup warnings. With `older`, a version admitted before the deploying one is
-// neither current nor deploying.
+// newest deployment's reads, and `warnings` are its startup warnings. With `older`, a version
+// admitted before the deploying one is neither current nor deploying.
 const failure = (status) => ({
   status,
   contentType: "application/json",
