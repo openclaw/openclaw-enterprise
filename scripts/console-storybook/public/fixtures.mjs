@@ -1771,6 +1771,7 @@ export function installFixture(scenario, evidence) {
               delete: allowed,
               configurationUpdate: allowed,
               configurationSecretsOperate: allowed,
+              agentSourcesOperate: allowed,
             },
           );
         }

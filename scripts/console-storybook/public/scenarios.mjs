@@ -5323,6 +5323,7 @@ export const scenarios = {
       delete: false,
       configurationUpdate: true,
       configurationSecretsOperate: true,
+      agentSourcesOperate: false,
     },
     description:
       "Recovery offers Open version draft when the viewer may deploy but cannot update the Agent. Configuration access is separate.",
@@ -5383,6 +5384,7 @@ export const scenarios = {
       delete: false,
       configurationUpdate: true,
       configurationSecretsOperate: true,
+      agentSourcesOperate: false,
     },
     rules: [
       {
@@ -6745,6 +6747,23 @@ export const scenarios = {
       "The permission answer denies Agent update, so Save authentication source and its fields are disabled, and the note names the grant to ask for.",
     gap: "The permission answer is simulated; the API still authorizes every save.",
   },
+  credentialsSourcesOperateDenied: {
+    group: "Components/Credentials",
+    name: "Model authentication, editor cannot operate a bound source",
+    path: `${draft}&tab=credentials`,
+    agentPermissionSummary: {
+      update: true,
+      deploy: true,
+      operate: true,
+      delete: true,
+      configurationUpdate: true,
+      configurationSecretsOperate: true,
+      agentSourcesOperate: false,
+    },
+    description:
+      "The permission answer allows Agent update but not operate on every Secret and credential source the Agent and its Configuration bind, which each Agent update checks. Save authentication source and its fields are disabled, and the note names the missing grant. Plugins and repository access saves show the same note.",
+    gap: "The permission answer is simulated; the API still authorizes every save.",
+  },
   credentialsSlack: {
     group: "Components/Credentials",
     name: "Slack tokens missing",
@@ -6777,9 +6796,10 @@ export const scenarios = {
       delete: true,
       configurationUpdate: true,
       configurationSecretsOperate: false,
+      agentSourcesOperate: false,
     },
     description:
-      "The permission answer allows Configuration update but not Secret operate on every Secret the Configuration binds, which each Configuration save needs. The Slack token pickers are disabled, Save channel Secrets is not offered, and a note names the missing grant.",
+      "The permission answer allows Configuration update but not Secret operate on every Secret the Configuration binds, which each Configuration save needs. The Slack token pickers are disabled, Save channel Secrets is not offered, and a note names the missing grant. Each Agent update checks the same Secrets, so Save authentication source is disabled too.",
     gap: "The permission answer is simulated; the API still authorizes every save.",
   },
   credentialsSlackStored: {

@@ -20,12 +20,7 @@ import {
 import { type PluginDiscoveryContext, createPluginDiscovery } from "./plugin-discovery.mjs";
 import { isPluginSelections } from "./plugin-fields.mjs";
 import { createSlackApproverField } from "./slack-approvers.mjs";
-import {
-  SAVE_REFUSALS,
-  assertReadableConfiguration,
-  message,
-  rejectionMessage,
-} from "./list.mjs";
+import { SAVE_REFUSALS, assertReadableConfiguration, message, rejectionMessage } from "./list.mjs";
 import { configuredHarnessId } from "./harness-auth.mjs";
 
 type PluginAgent = Pick<

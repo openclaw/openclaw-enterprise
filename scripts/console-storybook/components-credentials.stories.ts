@@ -4,6 +4,10 @@ export default { title: "Components/Credentials" };
 
 export const Credentials = { ...story("credentials"), name: "Model authentication" };
 export const CredentialsUpdateDenied = story("credentialsUpdateDenied");
+export const CredentialsSourcesOperateDenied = {
+  ...story("credentialsSourcesOperateDenied"),
+  name: "Model authentication, editor cannot operate a bound source",
+};
 export const CredentialsSlack = { ...story("credentialsSlack"), name: "Slack tokens missing" };
 export const CredentialsSlackReader = {
   ...story("credentialsSlackReader"),

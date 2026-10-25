@@ -389,10 +389,7 @@ function agentBoundSourceGrants(
   );
   const harnessAuth = agent.harnessAuth;
   if (harnessAuth?.method === "credential_source") {
-    grants.push([
-      "operate",
-      { kind: "credential_source", namespaceId, id: harnessAuth.sourceId },
-    ]);
+    grants.push(["operate", { kind: "credential_source", namespaceId, id: harnessAuth.sourceId }]);
   } else if (isSecretHarnessAuth(harnessAuth)) {
     grants.push(["operate", { kind: "secret", namespaceId, id: harnessAuth.source.id }]);
   } else if (isServiceAccountHarnessAuth(harnessAuth)) {
