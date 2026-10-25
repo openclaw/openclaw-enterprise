@@ -116,7 +116,8 @@ With `runtime` set, `validateHarnessAuth` refuses `dedicated` without
 naming the setting, at Agent save too: the execution mode is the Agent's.
 Create Agent's preflight (`POST .../agents/validate`) runs the same check when
 it names the planned `harnessAuth`, before the caller saves a Secret or
-Configuration. A save that skips `validateHarnessAuth` (no model selected, or
+Configuration. Agent provisioning runs it for a Secret binding before its plan
+check (`validateAgentProvisioning`), so it answers the same `400`. A save that skips `validateHarnessAuth` (no model selected, or
 another binding, such as a credential source) leaves it to deployment.
 
 [SSH Compute](ssh-compute.md) runs only embedded OpenClaw (other topologies get

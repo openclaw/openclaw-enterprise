@@ -263,25 +263,37 @@ test("Create Agent refuses a plugin pair before saving anything and keeps the fo
 // The preflight passed, so the form saved its Secret and Configuration before Agent create
 // refused, and the saved Configuration locked the harness (finding 2391). The preflight now
 // names the binding Agent create will use (only the method of the Secret the Preset saves next)
-// and refuses first.
+// and refuses first. Kubernetes Compute offers Agent provisioning for every Dedicated Agent, which
+// skipped the preflight and saved the Secret before provisioning refused (finding 2395), so this
+// fixture keeps provisioning.
 test("Create Agent refuses a Dedicated Agent the Installation cannot place before saving anything", async (t) => {
   const form = await filledCreateForm(
     t,
     "Unplaceable Codex",
     {},
-    { selected: "{}", harness: "codex", options: { channelRuntime: true, routed: false } },
+    {
+      selected: "{}",
+      harness: "codex",
+      options: { channelRuntime: true, routed: false, agentProvisioning: true },
+    },
   );
-  const { page, configuration, isPreflight } = form;
+  const { fixture, namespace, page, configuration, isPreflight } = form;
+  const installation = await fixture.request("GET", "/installation");
+  assert.deepEqual(installation.data.capabilities.agentProvisioning, {
+    executionModes: ["dedicated"],
+  });
   const refused = page.waitForResponse(isPreflight);
   await submitWithKeyboard(page);
   const response = await refused;
   assert.equal(response.status(), 400);
   assert.deepEqual(response.request().postDataJSON().harnessAuth, { method: "api_key" });
+  const placement =
+    "Dedicated Agents need gateway routing and node enrollment in this Installation's Kubernetes Compute configuration.";
   const alert = page.getByRole("alert").filter({ hasText: "Dedicated Agents need" });
   await alert.waitFor();
   assert.ok(
     (await alert.textContent()).startsWith(
-      "Dedicated Agents need gateway routing and node enrollment in this Installation's Kubernetes Compute configuration. Codex runs only as a Dedicated Agent: select Embedded OpenClaw, or ask an operator to configure it.",
+      `${placement} Codex runs only as a Dedicated Agent: select Embedded OpenClaw, or ask an operator to configure it.`,
     ),
   );
   await page.getByRole("button", { name: "Create Agent", disabled: false }).waitFor();
@@ -289,6 +301,43 @@ test("Create Agent refuses a Dedicated Agent the Installation cannot place befor
   // Nothing is saved, so the form can still follow that advice.
   assert.equal(await configuration.isDisabled(), false);
   assert.equal(await page.getByLabel("Harness", { exact: true }).isDisabled(), false);
+
+  // A Preset bound to a saved service account token fixes the harness to Codex, so the form
+  // cannot follow the advice to select Embedded OpenClaw: it quotes only the requirement and
+  // the operator (finding 2396).
+  const codex = JSON.parse(
+    await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
+  );
+  const { modelSecret: _secretVariable, ...variables } = codex.template.variables;
+  const token = await fixture.createSecret(namespace.id, "Codex token", "synthetic-codex-token");
+  const bound = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: {
+      name: "Bound Codex token",
+      template: {
+        ...codex.template,
+        variables,
+        agent: { ...codex.template.agent, harnessAuth: { method: "codex_pat", source: token.ref } },
+      },
+    },
+  });
+  assert.equal(bound.status, 201, JSON.stringify(bound.body));
+  const { page: boundPage } = await newPage(t, fixture, { browser });
+  await login(boundPage, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await boundPage.getByLabel("Preset template").selectOption({ label: "Bound Codex token" });
+  await boundPage.getByLabel("Name", { exact: true }).fill("bound-codex");
+  await boundPage.getByLabel("Model", { exact: true }).fill("gpt-4.1");
+  await boundPage.getByRole("button", { name: "Use Preset" }).click();
+  const boundRefused = boundPage.waitForResponse(isPreflight);
+  await submitWithKeyboard(boundPage);
+  const boundResponse = await boundRefused;
+  assert.equal(boundResponse.status(), 400);
+  const boundAlert = boundPage.getByRole("alert").filter({ hasText: "Dedicated Agents need" });
+  await boundAlert.waitFor();
+  assert.equal(
+    await boundAlert.textContent(),
+    `${placement} Ask an operator to configure it. Request ID: ${(await boundResponse.json()).meta.requestId}`,
+  );
+  assert.equal(await boundPage.getByLabel("Harness", { exact: true }).isDisabled(), true);
 });
 
 // With several roster entries, deselecting the plugin only led to the next refusal: initial

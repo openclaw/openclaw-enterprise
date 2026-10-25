@@ -2381,7 +2381,8 @@ function renderAgentForm(
       binding?.method === "runtime";
     // Why the harness choice is locked, without the request in flight: the hint must not change
     // while Create is pending, or it shifts the refusal the form just scrolled into view.
-    const harnessChoiceLocked = saved || outcomeUnknown || requestAdmitted || credentialLocksHarness();
+    const harnessChoiceLocked =
+      saved || outcomeUnknown || requestAdmitted || credentialLocksHarness();
     harness.disabled ||= pending || harnessChoiceLocked;
     const dedicatedRefused = capabilityDiscoveryDone && !openclawModeUsable("dedicated");
     const nativeRefused = dedicatedRefused && harness.value === "openclaw";
