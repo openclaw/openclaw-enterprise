@@ -238,6 +238,7 @@ test("caller permission summaries report primary IAM decisions without authorizi
     deploy: true,
     operate: true,
     delete: true,
+    administer: true,
     configurationUpdate: true,
     configurationRead: true,
     configurationSecretsOperate: true,
@@ -291,6 +292,7 @@ test("caller permission summaries report primary IAM decisions without authorizi
     deploy: true,
     operate: false,
     delete: false,
+    administer: false,
     configurationUpdate: false,
     configurationRead: false,
     configurationSecretsOperate: false,
@@ -1001,4 +1003,51 @@ test("public Agent revisions return the selected binding without private credent
   });
   const historical = await fixture.request("GET", `${path}/${revision.id}`);
   assert.deepEqual(historical.data.harnessAuth, agent.harnessAuth);
+});
+
+// The Agent page skips its native admin status probe when this answer is false (review of
+// #3600), so the answer must be the decision that probe makes: Agent administer on the exact
+// Agent, not any other Agent action. Each step proves the answer against the real probe.
+test("the Agent administer answer matches what native admin access checks", async (t) => {
+  const auditSink = new InMemoryAuditSink();
+  const fixture = await createConsoleAppFixture(t, { auditSink });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Administer answer", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Administered agent");
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  // Every other Agent action, so an answer that reports any of them instead is caught.
+  const member = await fixture.createNamespaceMember("administer-answer", namespace.id, [
+    ["read", "namespace"],
+    ["read", "agent"],
+    ["update", "agent"],
+    ["deploy", "agent"],
+    ["operate", "agent"],
+    ["delete", "agent"],
+  ]);
+  const session = await fixture.signIn(member.credentials);
+  const answer = async () => {
+    const summary = await fixture.request("GET", `${agentPath}/permissions`, { session });
+    assert.equal(summary.status, 200);
+    return summary.data.administer;
+  };
+  const probe = () => fixture.request("GET", `${agentPath}/native-admin`, { session });
+  const denials = () => auditSink.list().filter((event) => event.kind === "authorization_denial");
+
+  assert.equal(await answer(), false);
+  // The answer is not an attempted operation: only the real probe is audited as denied.
+  assert.equal(denials().length, 0);
+  assertApiError(await probe(), 403, "FORBIDDEN");
+  assert.deepEqual(
+    denials().map((event) => event.action),
+    ["openclaw.agents.native_admin.read"],
+  );
+
+  fixture.policy.roles
+    .find((role) => role.id === "role-administer-answer")
+    .permissions.push({ action: "administer", resourceKind: "agent" });
+  assert.equal(await answer(), true);
+  // This fixture does not enable native admin UI, so an authorized probe reports it disabled.
+  const allowed = await probe();
+  assert.equal(allowed.status, 200);
+  assert.deepEqual(allowed.data, { status: "disabled" });
 });

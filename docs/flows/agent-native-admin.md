@@ -24,7 +24,9 @@ The console checks exact-Agent `administer` access and returns a stable native a
 graph TD
   L["Local first-Agent selects Control UI"] --> L2["Create Agent, derive exact origin,<br/>and save Configuration generation 2"]
   L2 --> A
-  A["Console opens Agent detail tab"] --> B["GET exact Agent native-admin status"]
+  A["Console opens Agent detail tab"] --> P{"administer answer false?"}
+  P -->|yes| PH["Hide card, no request"]
+  P -->|"no or unknown"| B["GET exact Agent native-admin status"]
   B --> C["Resolve OCC session and exact Agent administrator principal"]
   C --> D{"Exact Agent exists?"}
   D -->|no| E["Return protected-route error"]
@@ -80,7 +82,8 @@ An existing helper-owned name cannot change this selection.
 
 `apps/controller/src/console/agents/native-admin.mjs:renderNativeAdminAccess`
 
-Agent detail reads `${path}/native-admin`. Disabled or denied access stays hidden;
+Agent detail reads `${path}/native-admin` only when the Agent permission answer
+allows `administer` or is unknown. Disabled or denied access stays hidden;
 other refusals explain why. Only `available` shows **Open admin console**, opening
 with `noopener noreferrer`. An audited `403` in the session owner’s tab
 `sessionStorage` suppresses reads until logout, sign-in, or a new tab. Changes to
@@ -109,7 +112,7 @@ admission remains in `apps/controller/src/index.ts`.
 
 After the authorization and existence checks above, enabled access requires a public origin/domain and `getAdministerableActiveAgentRevision`.
 
-`ResourceConflictError` for an authorized stopped Agent without a selected version becomes only `status: "stopped"`, including new Agents and completed stops. `NoActiveAgentRevisionError` for a running Agent awaiting activation returns `unavailable`. Other dependencies, including IAM/State outages, remain `503` before gateway routing. The console offers deployment checks and refresh for the selected version, independently of the viewed snapshot. Denials remain `403` with the human IAM audit.
+`ResourceConflictError` for an authorized stopped Agent without a selected version becomes only `status: "stopped"`, including new Agents and completed stops. `NoActiveAgentRevisionError` for a running Agent awaiting activation returns `unavailable`. Other dependencies, including IAM/State outages, remain `503` before gateway routing. The console offers deployment checks and refresh for the selected version, independently of the viewed snapshot.
 
 With a selected version, OCC derives its native target. Non-running Agents return `stopped` with host/origin; a newer exclusive replacement returns `unavailable`. Unsupported trusted-proxy auth, admin scopes/device auto-approval, `controlUi.enabled`, exact `allowedOrigins`, or host-header/device-auth settings return `unsupported` with the target.
 
@@ -211,10 +214,10 @@ admin Configuration remains Pod-local.
 - `unavailable` means a desired-running Agent has no selected version, or a newer version on a Compute Driver with `requiresStoppedPredecessors` has stopped the active workload. If replacement fails, the old version remains selected without a workload.
 - `unsupported` means the selected Compute Driver, gateway endpoint, or native trusted-proxy/control UI configuration cannot support the selected version.
 - Wrong or unknown Agent hosts fail before gateway proxying. Check the derived host calculation, Agent lifecycle state, and `agentNativeAdmin.domain`.
-- Browser requests contain no native-admin exchange, callback, verifier, or Agent-specific session-cookie traffic. The native gateway must not receive the OCE cookie.
+- Browser requests contain no native-admin exchange, callback, verifier, or Agent-specific session-cookie traffic.
 - IAM denial audits should appear for attributable denied status checks, proxy admission, and WebSocket lease renewal, with the human principal and exact Agent target preserved.
 - A TCP reset during WebSocket admission leaves the API running and preserves a later authorization-denial audit without opening an upstream connection.
-- `openclaw.agents.native_admin.websocket.connect` audits should include `connectionId`; matching `openclaw.agents.native_admin.websocket.close` audits should reuse `connectionId` and include `closeReason` with one of the expected categories: lifecycle, revocation, dependency, client, upstream, or shutdown.
+- WebSocket connect and close audits share `connectionId`; close audits add a `closeReason` category from step 7.
 - Service-worker registration failure is expected: the HTTP proxy rejects `Service-Worker: script` requests and adds `worker-src 'none'` to proxied responses.
 - Browser tests cover panel visibility, warnings, availability, and URL opening. Integration proof covers shared-cookie admission, denied service keys and unknown hosts, assets, WebSocket leases and reconnects, and a reversible native edit.
 
@@ -231,6 +234,8 @@ admin Configuration remains Pod-local.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-25 12:00: Skip the status read when the permission answer denies `administer`.
 
 - 2026-10-24 23:25: Documented the authenticated browser 403 Agents link.
 

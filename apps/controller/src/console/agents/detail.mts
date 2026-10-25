@@ -1320,7 +1320,9 @@ export async function renderAgentDetail(
   tabs.addEventListener("scroll", fadeTabEdges, { passive: true });
   versionSummary.append(detailHeading, versionEvidence);
   detailPane.append(tabs, content);
-  const nativeAdmin = renderNativeAdminAccess(context, path);
+  const nativeAdmin = renderNativeAdminAccess(context, path, () =>
+    latestPermissionsRead.then((permissions) => permissions?.administer),
+  );
   const recovery = createDeploymentRecovery(context, {
     path,
     selected,

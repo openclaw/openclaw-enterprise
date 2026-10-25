@@ -2435,9 +2435,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         id: agent.configurationId,
         namespaceId,
       };
-      const [update, deploy, operate, remove, configurationUpdate, configurationRead] =
+      // Native admin UI access authorizes Agent administer on the exact Agent, so the console
+      // skips its audited probe for a caller without it.
+      const [update, deploy, operate, remove, administer, configurationUpdate, configurationRead] =
         await Promise.all([
-          ...(["update", "deploy", "operate", "delete"] as const).map((action) =>
+          ...(["update", "deploy", "operate", "delete", "administer"] as const).map((action) =>
             callerMay(context.actorId, action, target),
           ),
           callerMay(context.actorId, "update", configuration),
@@ -2489,6 +2491,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           deploy,
           operate,
           delete: remove,
+          administer,
           configurationUpdate,
           configurationRead,
           configurationSecretsOperate,

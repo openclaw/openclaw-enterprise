@@ -1772,6 +1772,7 @@ export function installFixture(scenario, evidence) {
               deploy: allowed,
               operate: allowed,
               delete: allowed,
+              administer: allowed,
               configurationUpdate: allowed,
               configurationRead: true,
               configurationSecretsOperate: allowed,

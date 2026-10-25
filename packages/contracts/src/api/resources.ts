@@ -721,6 +721,10 @@ export const AgentCallerPermissionsResponse = Type.Object(
           description:
             "Whether the selected IAM Driver allows Agent delete now. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
         }),
+        administer: Type.Boolean({
+          description:
+            "Whether the selected IAM Driver allows Agent administer now, which native admin UI access needs. Advisory only: other required permissions (native admin UI also needs a signed-in console session), lifecycle state, or a later authorization decision can still prevent the operation.",
+        }),
         configurationUpdate: Type.Boolean({
           description:
             "Whether the selected IAM Driver allows update of the Agent's Configuration now, which saving its draft Configuration needs. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
