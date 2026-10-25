@@ -28,6 +28,7 @@ import {
   holdRequests,
   login,
   newPage,
+  pathRequests,
   settledView,
 } from "./console-agents-browser-helpers.mjs";
 
@@ -168,10 +169,7 @@ test("unknown console Secret writes erase entered material and never replay muta
   await create.locator("form").evaluate((form: HTMLFormElement) => {
     form.requestSubmit();
   });
-  assert.equal(
-    requests.filter((item) => item.method === "POST" && item.path === secretPath(namespace)).length,
-    1,
-  );
+  assert.equal(pathRequests(requests, "POST", secretPath(namespace)).length, 1);
   await create.getByRole("button", { name: "Close" }).click();
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
   await page.getByRole("button", { name: "Uncertain Secret", exact: true }).click();
@@ -263,7 +261,7 @@ test("checking an uncertain deletion cannot mistake another Secret for the delet
   assert.match(await outcome.innerText(), /Could not confirm deletion/);
   assert.equal(await remove.getByText(other.id, { exact: false }).count(), 0);
   assert.equal(await confirm.count(), 0);
-  assert.equal(requests.filter((item) => item.method === "DELETE" && item.path === path).length, 1);
+  assert.equal(pathRequests(requests, "DELETE", path).length, 1);
 });
 
 test("console Secret writes honor read-only access, revocation and a new Agent reference", async (t) => {
@@ -563,10 +561,7 @@ test("Secret refusals keep their meaning, and incomplete consumers or a not-read
     .waitFor();
   assert.equal(await create.getByText(/Outcome unknown/).count(), 0);
   assert.equal(await submit.isDisabled(), true, "a 404 needs a fresh read");
-  assert.equal(
-    requests.filter((item) => item.method === "POST" && item.path === secretPath(namespace)).length,
-    2,
-  );
+  assert.equal(pathRequests(requests, "POST", secretPath(namespace)).length, 2);
   await create.getByRole("button", { name: "Close" }).click();
 
   // A truncated consumer list names no consumer, yet more references exist than it shows.
@@ -644,10 +639,7 @@ test("pending Secret creation blocks navigation and replay, then session loss cl
   await page.goBack();
   await page.waitForURL(new RegExp(`/console/secrets\\?namespace=${namespace.id}`));
   await create.getByText(/Wait for the current request/).waitFor();
-  assert.equal(
-    requests.filter((item) => item.method === "POST" && item.path === secretPath(namespace)).length,
-    1,
-  );
+  assert.equal(pathRequests(requests, "POST", secretPath(namespace)).length, 1);
   held.release();
   await dialog(page, "Secret created").getByRole("button", { name: "Close" }).click();
   await page.getByRole("button", { name: "Create Secret", exact: true }).click();

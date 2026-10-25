@@ -199,12 +199,7 @@ test("a member without Agent update sees the Agent-side saves and fields disable
     // Repository fields need a repository Driver; the next test covers them.
     { tab: "repositories", save: "Save repository access" },
   ];
-  const patches: string[] = [];
-  page.on("request", (request) => {
-    if (request.method() === "PATCH") {
-      patches.push(request.url());
-    }
-  });
+  const requests = apiRequests(page, fixture.origin);
   for (const [index, { tab, save, field, scope }] of tabs.entries()) {
     const url = detailUrl(fixture, namespace.id, agent.id, "draft", tab).href;
     if (index === 0) {
@@ -229,7 +224,10 @@ test("a member without Agent update sees the Agent-side saves and fields disable
       assert.equal(await json.isEditable(), false);
     }
   }
-  assert.deepEqual(patches, []);
+  assert.deepEqual(
+    requests.filter(({ method }) => method === "PATCH"),
+    [],
+  );
 });
 
 test("a member without Agent update cannot edit repository access", async (t) => {
@@ -349,12 +347,7 @@ for (const c of readRefusals) {
     const namespace = await fixture.createNamespace(`Read ${c.tab}`, { ready: true });
     const agent = await fixture.createAgent(namespace.id, `Read ${c.tab}`, nativeValues("read"));
     const { page } = await newPage(t, fixture, { browser });
-    const patches: string[] = [];
-    page.on("request", (request) => {
-      if (request.method() === "PATCH") {
-        patches.push(request.url());
-      }
-    });
+    const requests = apiRequests(page, fixture.origin);
     await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", c.tab).href);
     await c.edit(page);
     fixture.policy.restrictions.push({
@@ -365,7 +358,10 @@ for (const c of readRefusals) {
     });
     await c.save(page);
     await page.getByText(READ_REFUSAL, { exact: true }).waitFor();
-    assert.deepEqual(patches, []);
+    assert.deepEqual(
+      requests.filter(({ method }) => method === "PATCH"),
+      [],
+    );
   });
 }
 

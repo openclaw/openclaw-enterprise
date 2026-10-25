@@ -27,6 +27,7 @@ import {
   waitForEnabled,
   waitForIdleFetches,
   waitForSettledFetches,
+  writeRequests,
 } from "./console-agents-browser-helpers.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
@@ -139,10 +140,10 @@ test("a collection body disconnected after headers shows interruption and Retry 
   await page.screenshot({ path: join(artifacts, "response-body-interrupted.png") });
   await page.getByRole("heading", { name: "Request interrupted", exact: true }).waitFor();
   assert.equal(await page.getByText("Research assistant", { exact: true }).count(), 0);
-  const writesBeforeRetry = requests.filter((request) => request.method !== "GET").length;
+  const writesBeforeRetry = writeRequests(requests).length;
   await page.getByRole("button", { name: "Retry", exact: true }).click();
   await page.getByText("Research assistant", { exact: true }).waitFor();
-  assert.equal(requests.filter((request) => request.method !== "GET").length, writesBeforeRetry);
+  assert.equal(writeRequests(requests).length, writesBeforeRetry);
   assert.equal(
     await page.getByRole("combobox", { name: "Namespace", exact: true }).inputValue(),
     namespace.id,
@@ -2169,7 +2170,7 @@ for (const trigger of ["Refresh", "Back with a replacement session"]) {
         [],
       );
       assert.deepEqual(
-        requests.filter(({ method }) => method !== "GET").map(({ path }) => path),
+        writeRequests(requests).map(({ path }) => path),
         back ? [signIn] : [],
       );
     });
@@ -2781,7 +2782,7 @@ test("expiry on an active Agent page returns safely and rechecks denied access",
   assert.equal(new URL(page.url()).pathname + new URL(page.url()).search, target);
   await settlePageRequests(page);
   assert.deepEqual(
-    requests.filter(({ method }) => method !== "GET").map(({ method, path }) => ({ method, path })),
+    writeRequests(requests).map(({ method, path }) => ({ method, path })),
     [{ method: "POST", path: "/api/auth/sign-in/email" }],
   );
   assert.equal(await page.getByLabel("Password").count(), 0, "403 must not restart login");

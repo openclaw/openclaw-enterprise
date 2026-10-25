@@ -4074,10 +4074,7 @@ test("a version editor without Agent update can recover a failed deployment from
   const deployed = await deploying;
   assert.equal(deployed.status(), 202);
   assert.equal((await deployed.json()).data.agentId, agent.id);
-  assert.equal(
-    requests.filter((request) => request.method === "PATCH" && request.path === path).length,
-    0,
-  );
+  assert.equal(pathRequests(requests, "PATCH", path).length, 0);
 });
 
 test("a negative permission answer reaching an open Stop or Delete dialog prevents submission", async (t) => {

@@ -10,6 +10,7 @@ import {
   fileBrowser,
   login,
   newPage,
+  pathRequests,
   settledView,
   waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
@@ -19,8 +20,7 @@ const REFUSED =
   "Your access does not include creating Namespaces in this Installation. After an administrator grants access, select Refresh to try again.";
 const isPrimary = (locator) =>
   locator.evaluate((node) => node.classList.contains("button--primary"));
-const creates = (requests) =>
-  requests.filter(({ method, path }) => method === "POST" && path === "/namespaces");
+const creates = (requests) => pathRequests(requests, "POST", "/namespaces");
 // After the dialog closes and the list reloads, focus is on the new Create Namespace button
 // (finding 2045). Bounded, so a lost focus fails here rather than at the test timeout.
 const focusReturnsToOpener = (page) =>

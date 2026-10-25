@@ -285,11 +285,17 @@ export async function loginThroughForm(
   await page.waitForURL(signedInPath);
 }
 
+// Every request that is not a GET: the writes a "nothing was written" check expects none of.
+// The console's CSP limits fetches to its own origin, so apiRequests sees every API write.
+/** @param {ReturnType<typeof apiRequests>} requests */
+export function writeRequests(requests) {
+  return requests.filter((request) => request.method !== "GET");
+}
+
+// writeRequests without the sign-in and sign-out requests (/api/auth/sign-*).
 /** @param {ReturnType<typeof apiRequests>} requests */
 export function nonAuthWriteRequests(requests) {
-  return requests.filter(
-    (request) => request.method !== "GET" && !request.path.startsWith("/api/auth/sign-"),
-  );
+  return writeRequests(requests).filter((request) => !request.path.startsWith("/api/auth/sign-"));
 }
 
 // Whether a Secret value control hides what is typed: a password input, or the masked

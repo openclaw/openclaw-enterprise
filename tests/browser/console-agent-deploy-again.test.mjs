@@ -15,6 +15,7 @@ import {
   nativeValues,
   newPage,
   nextFrames,
+  pathRequests,
   persistedDeploymentError,
   routeFailedDeployment,
 } from "./console-agents-browser-helpers.mjs";
@@ -192,11 +193,7 @@ test("A failed Configuration read leaves Deploy again hidden and is not repeated
   await nextFrames(page);
   await nextFrames(page);
   const configurationPath = new URL(configurationUrl).pathname;
-  assert.equal(
-    requests.filter((request) => request.method === "GET" && request.path === configurationPath)
-      .length,
-    1,
-  );
+  assert.equal(pathRequests(requests, "GET", configurationPath).length, 1);
   assert.equal(await logs.getAttribute("class"), "button button--primary");
   assert.equal(await page.evaluate(() => globalThis.deployAgainSeen), false);
 });

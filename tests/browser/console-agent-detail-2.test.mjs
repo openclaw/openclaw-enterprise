@@ -3612,8 +3612,7 @@ test("explicit missing-file readback settles an uncertain workspace create witho
   await form.getByText("Outcome unknown.", { exact: false }).waitFor();
   assert.equal(await save.isDisabled(), true);
   assert.equal((await fixture.request("GET", path)).status, 404);
-  const writeRequests = () =>
-    requests.filter((request) => request.path === path && request.method === "PUT");
+  const writeRequests = () => pathRequests(requests, "PUT", path);
   assert.equal(writeRequests().length, 1);
   // A formal resource 404, unlike file absence, cannot settle this unknown write.
   await answerWithMissingAgent();

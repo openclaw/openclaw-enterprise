@@ -18,6 +18,7 @@ import {
   settlePageRequests,
   waitForCondition,
   waitForInputValue,
+  writeRequests,
 } from "./console-agents-browser-helpers.mjs";
 import {
   configurationPostRequests,
@@ -700,11 +701,7 @@ test("Back refused by unsaved repository changes preserves the previous Agent ta
   await page.getByRole("tab", { name: "Repositories", selected: true }).waitFor();
   assert.equal(page.url(), repositoriesUrl);
   await settlePageRequests(page);
-  assert.deepEqual(
-    requests.filter(({ method }) => method !== "GET"),
-    [],
-    "no repository write",
-  );
+  assert.deepEqual(writeRequests(requests), [], "no repository write");
 });
 
 test("an uncertain Configuration save holds ← Agents, but the sidebar may leave the kept draft", async (t) => {

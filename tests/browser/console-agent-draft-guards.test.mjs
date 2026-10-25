@@ -21,13 +21,14 @@ import {
   repositoryCheckbox,
   routeFailedDeployment,
   secretOptionLabel,
-  setSlackSelection,
   selectSecret,
+  setSlackSelection,
   settlePageRequests,
   stopFocusTrail,
   waitForCondition,
   waitForEnabled,
   waitForInputValue,
+  writeRequests,
 } from "./console-agents-browser-helpers.mjs";
 import {
   createRepositoryLaunchFixture,
@@ -1164,10 +1165,7 @@ test("A recovery link refused by unsaved repository changes preserves Back and F
   await page.getByRole("tab", { name: "Repositories", selected: true }).waitFor();
   assert.equal(page.url(), repositoriesUrl);
   await settlePageRequests(page);
-  assert.deepEqual(
-    requests.filter((request) => request.method !== "GET"),
-    [],
-  );
+  assert.deepEqual(writeRequests(requests), []);
 });
 
 for (const tab of ["configuration", "repositories"]) {
