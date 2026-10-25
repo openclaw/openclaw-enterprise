@@ -5,6 +5,7 @@ import test from "node:test";
 
 import { KubernetesConfigurationDriver } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
 import { ConfigurationHarnessError } from "../../packages/occ/src/index.ts";
+import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -243,14 +244,11 @@ test("Dedicated Agent provisioning refuses a taken Agent name at admission and m
   await page.route(
     provisionUrl,
     (route) =>
-      route.fulfill({
-        status: 409,
-        contentType: "application/json",
-        body: JSON.stringify({
-          error: { code: "RESOURCE_CONFLICT", message: RESOURCE_CONFLICT },
-          meta: { requestId: "req_00000000-0000-4000-8000-000000000409" },
+      route.fulfill(
+        apiErrorResponse(409, "RESOURCE_CONFLICT", RESOURCE_CONFLICT, {
+          requestId: "req_00000000-0000-4000-8000-000000000409",
         }),
-      }),
+      ),
     { times: 1 },
   );
   const conflicted = page.waitForResponse(provisionPost);

@@ -24,6 +24,7 @@ import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/inde
 import { WORKSPACE_DEFAULTS_ID } from "../../packages/contracts/src/workspace-defaults.mjs";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
+import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture as createBaseConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
@@ -2082,17 +2083,11 @@ test("Agent creation shows the API's duplicate-name conflict, a not-ready Namesp
   await page.route(
     `${agentsUrl}/validate`,
     (route) =>
-      route.fulfill({
-        status: 409,
-        contentType: "application/json",
-        body: JSON.stringify({
-          error: {
-            code: "RESOURCE_CONFLICT",
-            message: "The Namespace does not accept new Agents.",
-          },
-          meta: { requestId: "req_00000000-0000-4000-8000-000000000408" },
+      route.fulfill(
+        apiErrorResponse(409, "RESOURCE_CONFLICT", "The Namespace does not accept new Agents.", {
+          requestId: "req_00000000-0000-4000-8000-000000000408",
         }),
-      }),
+      ),
     { times: 1 },
   );
   await page.getByRole("button", { name: "Create Agent" }).click();
