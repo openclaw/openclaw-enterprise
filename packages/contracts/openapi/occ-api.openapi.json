@@ -21625,6 +21625,10 @@
                           "description": "Whether the selected IAM Driver allows Agent operate (used for Stop) now. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
                           "type": "boolean"
                         },
+                        "sandboxPolicyRead": {
+                          "description": "Whether the selected IAM Driver allows read now on the Agent's sandbox policy, which reading its network policy and policy suggestions needs. Advisory only: other required permissions, Sandbox Driver support, or a later authorization decision can still prevent the read.",
+                          "type": "boolean"
+                        },
                         "update": {
                           "description": "Whether the selected IAM Driver allows Agent update now. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
                           "type": "boolean"
@@ -21640,7 +21644,8 @@
                         "configurationRead",
                         "configurationSecretsOperate",
                         "configurationSecretsOperateDeniedBindings",
-                        "agentSourcesOperate"
+                        "agentSourcesOperate",
+                        "sandboxPolicyRead"
                       ],
                       "type": "object"
                     },

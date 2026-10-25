@@ -589,6 +589,20 @@ export function renderAgentLogs(
     // refusal) supersedes a read in flight.
     const ticket = ++statusRead;
     const superseded = () => ticket !== statusRead;
+    // A caller whose permission answer denies operate is not sent the status read: its 403 was
+    // an audited denial and a raw error on each first visit (finding 2454). The page's answer can
+    // predate an operate grant, so the remembered denial below compares it with a fresh answer
+    // once, which is not audited; an answer still in flight is that fresh answer. An unknown
+    // answer still asks for status.
+    if (!deniedStatusViews.has(statusKey) && !permissionsAsked) {
+      const operate = (await permissions())?.operate;
+      if (!current() || superseded()) {
+        return;
+      }
+      if (operate === false && !deniedStatusViews.has(statusKey)) {
+        deniedStatusViews.set(statusKey, false);
+      }
+    }
     if (deniedStatusViews.has(statusKey)) {
       // A rebuilt view compares the denial with a fresh answer, so an operate grant since
       // shows on the next visit to Logs (finding 1579). Back's check already compared a

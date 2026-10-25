@@ -261,7 +261,6 @@ export function renderAgentPlugins(
   );
   const feedback = element("p", { className: "hint", role: "status" });
   const capabilitiesStatus = element("p", { className: "hint", role: "status" });
-  const updateNote = element("p", { className: "muted", role: "status", hidden: true });
   const save = button("Save plugin selections", () => void savePlugins(), {
     tone: "primary",
   });
@@ -301,7 +300,6 @@ export function renderAgentPlugins(
       : []),
     discovery.fields.section,
     capabilitiesStatus,
-    updateNote,
     element("div", { className: "form-actions" }, save, discard, reload),
     feedback,
     saveError,
@@ -532,12 +530,26 @@ export function renderAgentPlugins(
       return;
     }
     updateDenied = true;
-    intro.textContent = PLUGINS_READ_ONLY;
-    updateNote.textContent = reason;
-    updateNote.hidden = false;
-    // The approver field waits for the capabilities read, which this caller is not sent, so the
-    // saved default approvers, which the next deployment also uses, show as text (finding 2447).
-    discovery.fields.section.insertBefore(
+    // An unsaved edit kept from an earlier visit can be neither saved nor discarded from the
+    // summary, and kept Deploy on "Save or discard plugin changes" (finding 2463): the summary
+    // shows the Agent as read, so the kept edit is dropped and the tab reports a clean state.
+    context.drafts.forget("plugins");
+    input.value = initialText;
+    pluginApprovers = structuredClone(initialApprovers);
+    outcomeUnknown = false;
+    reloadRequired = false;
+    updateState();
+    // The saved selections and default approvers show as a summary, like a version snapshot's:
+    // the editor's disabled Configure, Save and Discard controls and its instructions addressed
+    // an editor this caller is not (findings 2447, 2455). The approver field waits for the
+    // capabilities read, which this caller is not sent, so the approvers show as text too.
+    const selections = Object.keys(agent.plugins ?? {});
+    section.replaceChildren(
+      element("h2", {}, "Plugin selections"),
+      element("p", { className: "muted" }, PLUGINS_READ_ONLY),
+      selections.length
+        ? element("pre", { tabindex: "0" }, JSON.stringify(agent.plugins, null, 2))
+        : element("p", {}, "No plugins are selected."),
       element(
         "div",
         { className: "plugin-approvers-saved" },
@@ -547,12 +559,8 @@ export function renderAgentPlugins(
           listed: "The next deployment uses these Agent default approvers.",
         }),
       ),
-      defaultApprovers,
+      element("p", { className: "muted", role: "status" }, reason),
     );
-    // The selections stay in view while their fields are disabled.
-    input.closest("details")?.setAttribute("open", "");
-    updateState();
-    discovery.update();
   });
   return section;
 }

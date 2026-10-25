@@ -2465,6 +2465,108 @@ test("a viewer without Agent administer never asks for native admin status", asy
   );
 });
 
+// An Agent reader (read and read_logs, no update, operate or sandbox policy read) met 403s on the
+// Repositories, Policy denials and Logs tabs: a refused repository choices read with a danger
+// block, refused policy and suggestion reads, and a raw runtime status error with its Request ID
+// (finding 2454). Each read the permission answer says will be refused is now skipped, and the
+// tab says what the reader can see instead. The Policy denials draft view also stopped telling
+// the reader of a deployed Agent to deploy one.
+test("an Agent reader meets no refused read on Repositories, Policy denials or Logs", async (t) => {
+  const { fixture, namespace } = await createRuntimeAuthFixture(t, "Tab reader");
+  const agent = await fixture.createAgent(namespace.id, "Tab reader Agent", nativeValues("v1"), {
+    harnessAuth: { method: "runtime" },
+  });
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const reader = await fixture.createNamespaceMember("tab-reader", namespace.id, [
+    ["read", "namespace"],
+    ["read", "agent"],
+    ["read_logs", "agent"],
+    ["read", "agent_revision"],
+    ["read", "configuration"],
+  ]);
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await trackSettledFetches(page);
+  const answer = page.waitForResponse((r) => r.url().endsWith(`${agentPath}/permissions`));
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "repositories"),
+    reader.credentials,
+  );
+  const permissions = (await answer.then((response) => response.json())).data;
+  assert.equal(permissions.update, false);
+  assert.equal(permissions.operate, false);
+  assert.equal(permissions.sandboxPolicyRead, false);
+  const settle = async () => {
+    await settlePageRequests(page);
+    await waitForIdleFetches(page);
+  };
+
+  // Repositories: the saved selection, read-only, with no choices read and no Retry or Save.
+  await page
+    .getByText(
+      "The version draft selects no repositories. The Agent runs without repository access.",
+    )
+    .waitFor();
+  await settle();
+  await expectNoText(page, /Repository choices are denied/);
+  assert.equal(await page.getByRole("button", { name: "Retry repository choices" }).count(), 0);
+  assert.equal(await page.getByRole("button", { name: "Save repository access" }).count(), 0);
+
+  // Policy denials on the draft: the denials live on the deployed versions, and the policy and
+  // its suggestions are not read. The suggestions do not send the reader to the current
+  // version, which refuses them too.
+  await page.getByRole("tab", { name: "Policy denials", exact: true }).click();
+  await page
+    .getByText("Policy denials come from deployed versions. Open the current version to see them.")
+    .waitFor();
+  await page
+    .getByText(
+      "Your access does not include reading this Agent’s network policy or its suggestions.",
+    )
+    .first()
+    .waitFor();
+  await settle();
+  await expectNoText(
+    page,
+    /Deploy an Agent to load Sandbox policy decisions|permission to read|Suggestions come from/,
+  );
+
+  // Policy denials on the current version: still no policy or suggestions read.
+  await page.goto(detailUrl(fixture, namespace.id, agent.id, active.revision.id, "policy").href);
+  await page
+    .getByText(
+      "Your access does not include reading this Agent’s network policy or its suggestions.",
+    )
+    .first()
+    .waitFor();
+  await settle();
+  await expectNoText(page, /permission to read/);
+
+  // Logs: the runtime status read needs Agent operate; the strip says so without a refused read.
+  await page.getByRole("tab", { name: "Logs", exact: true }).click();
+  await page.getByText(/^Runtime status requires Agent operate/).waitFor();
+  await settle();
+  // The strip shows no refusal's Request ID. (This Compute Driver has no log text, a separate
+  // answer that is not about access.)
+  assert.doesNotMatch(
+    (await page.getByText(/^Runtime status requires Agent operate/).textContent()) ?? "",
+    /Request ID/,
+  );
+
+  const refused = [
+    `${agentPath}/repository-options`,
+    `${agentPath}/sandbox-policy/networking`,
+    `${agentPath}/revisions/${active.revision.id}/sandbox-policy/networking/recommendations`,
+    `${agentPath}/deployments/${active.revision.id}/runtime`,
+  ];
+  for (const path of refused) {
+    assert.deepEqual(pathRequests(requests, "GET", path), [], path);
+  }
+});
+
 test("a failed native admin status read keeps the card, its error and Refresh access", async (t) => {
   const fixture = await detailApp(t);
   const namespace = await fixture.createNamespace("Native admin outage", { ready: true });

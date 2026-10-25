@@ -1603,7 +1603,10 @@ export async function renderAgentDetail(
   function versionNotice() {
     return selected === "draft"
       ? selectedTab === "plugins"
-        ? "Plugin changes to this Agent appear in the next deployment. Existing versions stay unchanged."
+        ? // Plugin selections are Agent settings: a caller who may not save them reads them.
+          agentReadOnly()
+          ? READ_ONLY_DRAFT_NOTICE
+          : "Plugin changes to this Agent appear in the next deployment. Existing versions stay unchanged."
         : draftReadOnly()
           ? READ_ONLY_DRAFT_NOTICE
           : "New version. Changes affect future deployments using this Configuration. Admitted versions stay unchanged."
@@ -3477,7 +3480,21 @@ export async function renderAgentDetail(
     }
     if (tab === "policy") {
       state.reusable = false;
-      content.append(renderAgentDriverConfigurations(tabContext, { agent, revisionId: selected }));
+      // A remembered denial can predate a grant, so opening the tab compares it with a fresh
+      // answer, which is not audited; an answer still in flight is that fresh answer.
+      const settled = permissionsReadSettled;
+      const policyReadAllowed = latestPermissionsRead.then((permissions) =>
+        permissions?.sandboxPolicyRead === false && settled && tabContext.isCurrent()
+          ? rereadPermissions().then((fresh) => fresh?.sandboxPolicyRead)
+          : permissions?.sandboxPolicyRead,
+      );
+      content.append(
+        renderAgentDriverConfigurations(tabContext, {
+          agent,
+          revisionId: selected,
+          policyReadAllowed,
+        }),
+      );
       state.loading = false;
       content.style.minHeight = "";
       return;
@@ -3487,14 +3504,18 @@ export async function renderAgentDetail(
       details ??= loadDetails();
       // Polling views are rebuilt on every visit instead of being retained.
       state.reusable = false;
+      // An answer still in flight when this view opened is read after it, so it is fresh.
+      const openingRead = permissionsReadSettled ? null : latestPermissionsRead;
       const logs = renderAgentLogs(tabContext, {
         agent,
         revisionId: selected,
         shown: revealed,
         // A rebuilt view asks for a fresh answer when it remembers a status denial; a read
-        // still in flight is that answer.
+        // still in flight, or in flight when the view opened, is that answer.
         permissions: (options) =>
-          options?.fresh && permissionsReadSettled ? rereadPermissions() : latestPermissionsRead,
+          options?.fresh && permissionsReadSettled && latestPermissionsRead !== openingRead
+            ? rereadPermissions()
+            : latestPermissionsRead,
         // The failed-version recovery stops offering Logs as soon as they are denied.
         onLogsDenied: () => {
           if (tabContext.isCurrent() && !recovery.section.hidden) {
@@ -3594,7 +3615,7 @@ export async function renderAgentDetail(
       statusBlock("info", null, versionNotice(), [], { className: "version-selection-notice" }),
     );
     if (selectedTab === "repositories" && draft) {
-      content.append(renderRepositoryEditor(context, data));
+      content.append(renderRepositoryTab(context, data));
     } else if (selectedTab === "plugins") {
       const plugins = renderAgentPlugins(context, {
         agent: { ...agent, harnessAuth: agent.harnessAuth ?? null },
@@ -4352,11 +4373,63 @@ export async function renderAgentDetail(
     }
   }
 
+  // The repository choices read needs Agent update, so a caller whose permission answer denies it
+  // reads the saved repository access instead of a refused editor, and is not sent a read that
+  // answers 403 (finding 2454). As on Plugins, a caller missing only a grant that each Agent update
+  // also checks reads the summary too: no save could keep an edit. An unknown answer keeps the
+  // editor.
+  function renderRepositoryTab(context: DetailContext, data: DraftDetails) {
+    const holder = element("div", {});
+    void agentSaveDenied.then((reason) => {
+      if (!context.isCurrent() || !holder.parentNode) {
+        return;
+      }
+      holder.replaceWith(
+        reason === undefined
+          ? renderRepositoryEditor(context, data)
+          : repositoryAccessSummary(reason),
+      );
+    });
+    return holder;
+  }
+
+  function repositoryAccessSummary(reason: string) {
+    const bindings = agent.repositoryBindings ?? [];
+    return element(
+      "section",
+      { className: "agent-card" },
+      element("h2", {}, "Repository access"),
+      element(
+        "p",
+        { className: "muted" },
+        bindings.length
+          ? "These are the version draft’s repository selections, read-only with your access. The next deployment uses them as saved."
+          : "The version draft selects no repositories. The Agent runs without repository access.",
+      ),
+      bindings.length
+        ? element(
+            "ul",
+            { className: "repository-access-summary" },
+            ...bindings.map((binding) =>
+              element(
+                "li",
+                {},
+                `${binding.repositoryRef} · ${repositoryProfile(binding.profile)?.label ?? "Unknown access level"}`,
+              ),
+            ),
+          )
+        : null,
+      bindings.some((binding) => repositoryProfile(binding.profile)?.writes)
+        ? element("p", { className: "hint repository-write-access" }, repositoryWriteAccessHelp)
+        : null,
+      element("p", { className: "muted", role: "status" }, reason),
+    );
+  }
+
   function renderRepositoryEditor(context: DetailContext, data: DraftDetails) {
+    // Drawn only when the permission answer allows Agent saves or is unknown: a caller it denies
+    // reads the summary instead (renderRepositoryTab).
     let saveState = "idle";
-    // Set when the caller's permission answer denies Agent update (finding 1530).
-    let updateDenied = false;
-    const updateNote = element("p", { className: "muted", role: "status", hidden: true });
     const feedback = element("p", { className: "hint", role: "status" }, savedNotice);
     // A refused save is a danger block that takes focus; other notes stay a hint (finding 1966).
     const refuse = (text: string) => {
@@ -4403,8 +4476,7 @@ export async function renderAgentDetail(
       const reloadRequired = saveState === "conflict";
       const locked = saveState !== "idle";
       data.setDraftEditorState({ dirty, saving: pending, outcomeUnknown, reloadRequired });
-      save.disabled =
-        updateDenied || locked || !dirty || !fields?.isSettled() || fields.blocksCreate();
+      save.disabled = locked || !dirty || !fields?.isSettled() || fields.blocksCreate();
       if (save.getAttribute("aria-busy") !== String(pending)) {
         save.setAttribute("aria-busy", String(pending));
       }
@@ -4423,8 +4495,7 @@ export async function renderAgentDetail(
       hide(save, !saveOffered());
       hide(cancel, Boolean(fields?.notConfigured()) && !dirty);
       actions.hidden = save.hidden && cancel.hidden && reload.hidden;
-      // An edit that cannot be saved would only block leaving the tab (finding 1539).
-      fields?.setDisabled(locked || updateDenied);
+      fields?.setDisabled(locked);
     }
     const fields = createRepositoryFields(
       context,
@@ -4529,22 +4600,7 @@ export async function renderAgentDetail(
       }
     }
     update();
-    void agentSaveDenied.then((reason) => {
-      if (reason !== undefined && context.isCurrent()) {
-        updateDenied = true;
-        updateNote.textContent = reason;
-        updateNote.hidden = false;
-        update();
-      }
-    });
-    return element(
-      "section",
-      { className: "agent-card" },
-      fields.section,
-      updateNote,
-      actions,
-      feedback,
-    );
+    return element("section", { className: "agent-card" }, fields.section, actions, feedback);
   }
 
   // Edits carried through a save conflict, merged over the Configuration Reload draft reread
