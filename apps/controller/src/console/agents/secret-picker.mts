@@ -24,7 +24,7 @@ type SecretContext = Partial<AgentAccessContext> & {
   operatorId?: string;
   installationAdmin?: boolean | null;
   // The Namespace permission answer's secrets.create: undefined when it is unknown.
-  secretsCreateAllowed?: () => Promise<boolean | undefined>;
+  secretsCreateAllowed?: (() => Promise<boolean | undefined>) | undefined;
 };
 
 // Shown for the inline Create Secret action when the permission answer denies Secret create, as
