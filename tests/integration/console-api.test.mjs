@@ -512,8 +512,12 @@ test("the per-binding Secret answer names the bindings a Configuration save must
   };
   const denials = () => auditSink.list().filter((event) => event.kind === "authorization_denial");
 
-  // Without Configuration update the answer is not reported: no names, as with the boolean.
+  // Without Configuration update the answer is not reported: no names, as with the boolean. Agent
+  // update reads the bindings for its own answer, which does not report them either.
+  grant("per-binding-agent", [{ action: "update", resourceKind: "agent" }], "agent", agent.id);
   const unreported = await answer();
+  assert.equal(unreported.update, true);
+  assert.equal(unreported.agentSourcesOperate, false);
   assert.equal(unreported.configurationSecretsOperate, false);
   assert.deepEqual(unreported.configurationSecretsOperateDeniedBindings, []);
 

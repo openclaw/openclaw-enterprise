@@ -618,7 +618,8 @@ export async function renderAgentDetail(
   // Agent-side saves (plugins, authentication source, repository access) would be refused: the
   // answer denies Agent update or a grant each Agent update also checks (finding 2441).
   const agentReadOnly = () => agentSaveDenial(callerPermissions) !== undefined;
-  const draftReadOnly = () => agentReadOnly() && configurationReadOnly();
+  // Channel saves that replace a bound Secret keep the draft changeable (finding 2444).
+  const draftReadOnly = () => agentReadOnly() && channelsReadOnly();
   // Draft views that follow Configuration update. Nothing waits for an answer: a view drawn
   // before the first answer, or before a reread that changes the bit, is redrawn when it lands.
   // Each view redraws only while shown and only when its access differs from the answer's.
