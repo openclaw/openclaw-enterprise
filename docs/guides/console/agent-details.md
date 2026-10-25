@@ -137,7 +137,8 @@ The **Configuration**, **Plugins**, **Channels**, **Repositories**, **Credential
 **Workspace files**, **Policy denials**, **Logs**, and **Access** tabs change the panel below.
 Repositories and Credentials are available only on the new version draft; Logs only on a
 version; Access only to Installation administrators.
-**Repositories** edits the draft's repository selections and access levels; see
+**Repositories** edits the draft's repository selections and access levels; without the grants
+an Agent save needs, it lists them read-only. See
 [repository access](../../reference/console/repository-access.md).
 Browser Back and Forward restore the selected tab. Leaving a tab clears entered
 token values. The workspace remains live regardless of the viewed version.

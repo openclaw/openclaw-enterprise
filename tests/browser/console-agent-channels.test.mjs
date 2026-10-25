@@ -521,6 +521,25 @@ describe("Agent channels", { concurrency: 3 }, () => {
     assert.equal(pageText.includes(slackBotSecretValue), false);
   });
 
+  // A version snapshot cannot be edited, so its Slack card offers no setup step: a reader of a
+  // v1 without Slack was told to provide the tokens (finding 2455). The draft still asks.
+  test("A version snapshot's Slack card shows no setup hint", async (t) => {
+    const { fixture, namespace } = await readyNamespace(t, "Snapshot Slack hint");
+    const agent = await fixture.createAgent(
+      namespace.id,
+      "Snapshot Agent",
+      nativeValues("snapshot"),
+    );
+    const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+    const { page } = await newPage(t, fixture, { browser });
+    await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revision.id, "channels"));
+    const card = page.locator(".channel-card").filter({ hasText: "Slack" });
+    await card.getByText("Not configured").first().waitFor();
+    assert.equal(await card.getByText(SLACK_SETUP_HINT, { exact: true }).count(), 0);
+    await page.goto(detailUrl(fixture, namespace.id, agent.id, "draft", "channels").href);
+    await page.locator(".channel-card").getByText(SLACK_SETUP_HINT, { exact: true }).waitFor();
+  });
+
   test("Channel drawer grants only the final selected Slack Secret", async (t) => {
     const { fixture, namespace } = await readyNamespace(t, "Final Slack grant");
     const firstSecret = await fixture.createSecret(

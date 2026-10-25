@@ -4360,7 +4360,7 @@ export const scenarios = {
     pluginDiscovery,
     readOnlyPermissionSummary: true,
     description:
-      "The permission answer denies Agent update, so Save plugin selections and the plugin fields are disabled, the saved selections stay in view as read-only, and the note names the grant to ask for. The page does not read the plugin policy capabilities, which need Agent update, so the saved default plugin approvers show as text. The API still decides.",
+      "The permission answer denies Agent update, so the saved selections show as a read-only summary with no editor, Save or Discard, and the note names the grant to ask for. The page does not read the plugin policy capabilities, which need Agent update, so the saved default plugin approvers show as text. The API still decides.",
     steps: [
       "Under Default plugin approvers, read that the next deployment uses these Agent default approvers and find slack: team:TDEMO123:user:UDEMO123. No approver field is offered.",
     ],
@@ -4397,6 +4397,7 @@ export const scenarios = {
       configurationSecretsOperate: false,
       configurationSecretsOperateDeniedBindings: [],
       agentSourcesOperate: false,
+      sandboxPolicyRead: false,
     },
     description:
       "The permission answer allows Agent and Configuration update but not operate on a Secret the Configuration binds, which every save checks. Each editor is disabled, so the draft reads as read-only with this access, as for a viewer.",
@@ -4778,7 +4779,7 @@ export const scenarios = {
     repositoryBindings: [{ repositoryRef: "application", profile: "git-full" }],
     readOnlyPermissionSummary: true,
     description:
-      "The permission answer denies Agent update, so Save repository access and the repository fields are disabled (Cancel stays), and the note names the grant to ask for.",
+      "The permission answer denies Agent update, so the saved repository access shows as a read-only summary with no editor, and the note names the grant to ask for. The page does not read the repository choices, which need Agent update.",
     gap: "The permission answer is simulated; the API still authorizes every save.",
   },
   repositoryEditorSaveRefused: {
@@ -5380,6 +5381,7 @@ export const scenarios = {
       configurationSecretsOperate: false,
       configurationSecretsOperateDeniedBindings: [],
       agentSourcesOperate: false,
+      sandboxPolicyRead: false,
     },
     description:
       "Recovery offers Open version draft when the viewer may deploy but cannot edit the Configuration, so the draft is theirs to read and deploy.",
@@ -5406,6 +5408,7 @@ export const scenarios = {
       configurationSecretsOperate: true,
       configurationSecretsOperateDeniedBindings: [],
       agentSourcesOperate: false,
+      sandboxPolicyRead: false,
     },
     description:
       "The viewer may save the Configuration but not the Agent: an Agent update would also need operate on its Harness authentication Secret. Recovery follows the Configuration's own answer and offers Open Configuration.",
@@ -5471,6 +5474,7 @@ export const scenarios = {
       configurationSecretsOperate: false,
       configurationSecretsOperateDeniedBindings: [],
       agentSourcesOperate: false,
+      sandboxPolicyRead: false,
     },
     rules: [
       {
@@ -6874,6 +6878,7 @@ export const scenarios = {
       configurationSecretsOperate: true,
       configurationSecretsOperateDeniedBindings: [],
       agentSourcesOperate: false,
+      sandboxPolicyRead: false,
     },
     description:
       "The permission answer allows Agent update but not operate on every Secret and credential source the Agent and its Configuration bind, which each Agent update checks. Save authentication source and its fields are disabled, and the note names the missing grant. Plugins and repository access saves show the same note.",
@@ -6915,6 +6920,7 @@ export const scenarios = {
       configurationSecretsOperate: false,
       configurationSecretsOperateDeniedBindings: [],
       agentSourcesOperate: false,
+      sandboxPolicyRead: false,
     },
     description:
       "The permission answer allows Configuration update but not Secret operate on every Secret the Configuration binds, which each Configuration save needs. The Slack token pickers are disabled, Save channel Secrets is not offered, and a note names the missing grant. Each Agent update checks the same Secrets, so Save authentication source is disabled too.",
@@ -6936,6 +6942,7 @@ export const scenarios = {
       configurationSecretsOperate: false,
       configurationSecretsOperateDeniedBindings: ["SLACK_BOT_TOKEN"],
       agentSourcesOperate: false,
+      sandboxPolicyRead: true,
     },
     description:
       "The permission answer lists the bot token binding as the only one whose Secret the editor cannot operate. A save is checked on the Secrets it submits, so the Slack token pickers stay editable and a note says to choose another Secret for the bot token. A save that keeps it is refused before any request.",

@@ -4070,6 +4070,7 @@ test("a version editor without Agent update can recover a failed deployment from
     configurationSecretsOperate: true,
     configurationSecretsOperateDeniedBindings: [],
     agentSourcesOperate: false,
+    sandboxPolicyRead: false,
   });
 
   // The header label confirms the page applied the permission answer before recovery is used.
@@ -4206,6 +4207,7 @@ test("a reader without update views the version draft read-only", async (t) => {
     configurationSecretsOperate: false,
     configurationSecretsOperateDeniedBindings: [],
     agentSourcesOperate: false,
+    sandboxPolicyRead: false,
   });
   await page.getByText(CONFIGURATION_READ_ONLY, { exact: true }).waitFor();
   await page.getByText("View native Configuration", { exact: true }).waitFor();
@@ -4232,11 +4234,17 @@ test("a reader without update views the version draft read-only", async (t) => {
   // answer 403 (finding 2436).
   await page.getByRole("tab", { name: "Plugins", exact: true }).click();
   await page.getByText(PLUGINS_READ_ONLY, { exact: true }).waitFor();
-  assert.equal(
-    await page.getByLabel("Plugin selections JSON", { exact: true }).isEditable(),
-    false,
+  // The version notice addresses the reader too, not an editor whose changes reach the next
+  // deployment (finding 2455).
+  await page.getByText(READ_ONLY_DRAFT_NOTICE, { exact: true }).waitFor();
+  assert.equal(await page.getByText(/^Plugin changes to this Agent appear/).count(), 0);
+  // A read-only summary: no editor, no disabled Save or Discard, no instructions (finding 2455).
+  assert.equal(await page.getByLabel("Plugin selections JSON", { exact: true }).count(), 0);
+  assert.equal(await page.getByRole("button", { name: /Save plugin|Discard/ }).count(), 0);
+  await expectNoText(
+    page,
+    /remains editable|Save selections on this Agent|No plugin changes|Select plugins/,
   );
-  await expectNoText(page, /remains editable|Save selections on this Agent|No plugin changes/);
   assert.deepEqual(pathRequests(requests, "GET", `${path}/plugins/capabilities`), []);
 
   // The current version's Configuration opens the draft to read it; it offers no editor.
@@ -4342,6 +4350,7 @@ test("an Agent editor without Configuration update sees the Configuration read-o
     configurationSecretsOperate: false,
     configurationSecretsOperateDeniedBindings: [],
     agentSourcesOperate: true,
+    sandboxPolicyRead: false,
   });
   await page.getByText(CONFIGURATION_READ_ONLY, { exact: true }).waitFor();
   assert.equal(await page.getByRole("button", { name: "Edit Configuration" }).count(), 0);
@@ -4415,6 +4424,7 @@ test("an editor without operate on a bound Secret views the version draft read-o
     configurationSecretsOperate: false,
     configurationSecretsOperateDeniedBindings: ["EXTERNAL_API_TOKEN"],
     agentSourcesOperate: false,
+    sandboxPolicyRead: false,
   });
   await page.getByText(READ_ONLY_DRAFT_NOTICE, { exact: true }).waitFor();
   assert.equal(await page.getByText(/New version\. Changes affect/).count(), 0);
@@ -5018,6 +5028,7 @@ test("a negative permission answer reaching an open Stop or Delete dialog preven
           configurationSecretsOperate: false,
           configurationSecretsOperateDeniedBindings: [],
           agentSourcesOperate: false,
+          sandboxPolicyRead: false,
         },
       },
     );
