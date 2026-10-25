@@ -8,7 +8,10 @@ import { randomBytes } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
-import { cpuScaledImageTimeoutMs } from "../helpers/image-smoke-timeout.mjs";
+import {
+  cpuScaledImageTimeoutMs,
+  imageSmokeTimeoutMultiplier,
+} from "../helpers/image-smoke-timeout.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import {
@@ -207,18 +210,28 @@ test(
       const inspected = JSON.parse((await runDocker(["inspect", containerName])).stdout)[0];
       const address = inspected.NetworkSettings.Networks[network].IPAddress;
       assert.ok(address);
-      const remote = await runDocker([
-        "run",
-        "--rm",
-        "--pull=never",
-        "--network",
-        network,
-        "--entrypoint",
-        "node",
-        image,
-        "-e",
-        `Promise.all([8080,18791].map(async port=>{try{const r=await fetch("http://${address}:"+port+"/readyz",{signal:AbortSignal.timeout(3000)});return {port,status:r.status};}catch(e){return {port,error:e.cause?.code??e.name};}})).then(v=>console.log(JSON.stringify(v)));`,
-      ]);
+      // One container on the network polls both ports until the status listener
+      // answers 200 and the native port settles (200 or refused). The status
+      // readiness asks the native Gateway with 2 s limits, so on a CPU-starved
+      // runner it can answer 503 once just after the private probe saw 200
+      // (finding 2468); a Kubernetes readiness probe retries the same way.
+      const remoteBudgetMs = cpuScaledImageTimeoutMs(15_000);
+      const remote = await runDocker(
+        [
+          "run",
+          "--rm",
+          "--pull=never",
+          "--network",
+          network,
+          "--entrypoint",
+          "node",
+          image,
+          "-e",
+          `const deadline=Date.now()+Number(process.argv[1]);const probe=async port=>{try{const r=await fetch("http://${address}:"+port+"/readyz",{signal:AbortSignal.timeout(3000)});return {port,status:r.status};}catch(e){return {port,error:e.cause?.code??e.name};}};(async()=>{for(;;){const v=await Promise.all([8080,18791].map(probe));if((v[1].status===200&&(v[0].status===200||v[0].error==="ECONNREFUSED"))||Date.now()>=deadline){console.log(JSON.stringify(v));return;}await new Promise(r=>setTimeout(r,500));}})();`,
+          String(remoteBudgetMs),
+        ],
+        { timeout: remoteBudgetMs + 60_000 * imageSmokeTimeoutMultiplier },
+      );
       const [native, status] = JSON.parse(remote.stdout.trim());
       assert.equal(status.status, 200);
       if (reachable) {
