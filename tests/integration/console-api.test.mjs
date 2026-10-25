@@ -311,12 +311,18 @@ test("caller permission summaries report primary IAM decisions without authorizi
   // Secrets, and only for a caller who may read and update the Configuration.
   assert.equal(configurationSummary.data.configurationSecretsOperate, false);
   const bound = await fixture.createSecret(namespace.id, "Bound token", "bound-token-value");
+  const second = await fixture.createSecret(namespace.id, "Second token", "second-token-value");
+  // Two bound Secrets, one of them under two names: a save checks operate on each Secret.
   const boundAgent = await fixture.createAgent(
     namespace.id,
     "Bound agent",
     {},
     {
-      secretBindings: { EXTERNAL_API_TOKEN: { source: bound.ref, delivery: { type: "env" } } },
+      secretBindings: {
+        EXTERNAL_API_TOKEN: { source: bound.ref, delivery: { type: "env" } },
+        EXTERNAL_API_TOKEN_ALIAS: { source: bound.ref, delivery: { type: "env" } },
+        SECOND_API_TOKEN: { source: second.ref, delivery: { type: "env" } },
+      },
     },
   );
   const boundPermissions = `/namespaces/${namespace.id}/agents/${boundAgent.id}/permissions`;
@@ -366,17 +372,38 @@ test("caller permission summaries report primary IAM decisions without authorizi
   const withoutOperate = await fixture.request("GET", boundPermissions, { session });
   assert.equal(withoutOperate.data.configurationUpdate, true);
   assert.equal(withoutOperate.data.configurationSecretsOperate, false);
-  // Operate on that exact Secret completes what a save checks.
+  // Operate on only one of the two bound Secrets: a save still needs the other, so the answer
+  // stays false. It covers every bound Secret, not any of them.
   bindExact(
     "binding-bound-secret-operator",
     "role-permission-summary-secret-operator",
     "secret",
     bound.id,
   );
-  const withOperate = await fixture.request("GET", boundPermissions, { session });
-  assert.equal(withOperate.data.configurationSecretsOperate, true);
+  const partialOperate = await fixture.request("GET", boundPermissions, { session });
+  assert.equal(partialOperate.data.configurationSecretsOperate, false);
   // The probes are answers, not attempted operations.
   assert.equal(denials().at(-1).action, "openclaw.agents.deploy");
+  // The answer matches the real save: resaving the same values is refused now.
+  const boundConfigurationPath = `/namespaces/${namespace.id}/configurations/${boundAgent.configurationId}`;
+  const saved = await fixture.request("GET", boundConfigurationPath);
+  assert.equal(saved.status, 200);
+  const resave = () =>
+    fixture.request("PATCH", boundConfigurationPath, {
+      session,
+      body: { values: saved.data.values },
+    });
+  assertApiError(await resave(), 403, "FORBIDDEN");
+  // Operate on the other Secret completes what a save checks, and the same save succeeds.
+  bindExact(
+    "binding-bound-second-secret-operator",
+    "role-permission-summary-secret-operator",
+    "secret",
+    second.id,
+  );
+  const withOperate = await fixture.request("GET", boundPermissions, { session });
+  assert.equal(withOperate.data.configurationSecretsOperate, true);
+  assert.equal((await resave()).status, 200);
 });
 
 test("console static routes expose only public assets and preserve API JSON failures", async (t) => {
