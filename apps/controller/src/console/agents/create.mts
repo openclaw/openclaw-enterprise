@@ -2334,7 +2334,8 @@ function renderAgentForm(
   // <setting> …" and then advises Embedded OpenClaw (finding 2391). Where this form cannot select
   // it (a Preset's binding, a saved service account token or a saved Configuration fixes the
   // harness to Codex, or the installation's Sandbox Driver refuses Embedded execution), quote only
-  // the requirement, as for a Sandbox Driver's setting refusal (findings 2392, 2396).
+  // the requirement, as for a Sandbox Driver's setting refusal (findings 2392, 2396). A Compute
+  // Driver's refusal of an operator-managed binding names what an operator changes instead.
   const followableRefusal = (text: string) => {
     if (binding?.method === "runtime" && text.startsWith(HARNESS_AUTH_REFUSAL)) {
       return runtimeBindingRefusal(text);

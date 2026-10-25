@@ -120,7 +120,9 @@ Presets fix the provider, including JSON edits; saved service account tokens als
 OpenClaw Presets retain their configured Harness independently of execution mode.
 Without model runtime policy, Presets keep the default Harness.
 Mode changes preserve provider transport settings.
-Operator-managed credentials fix OpenClaw across provider changes. Start with
+Operator-managed credentials fix OpenClaw across provider changes. Where the Compute Driver
+does not supply them (Kubernetes Compute), the form refuses the Preset when it opens and names
+what an administrator changes. Start with
 `default-codex` to change these choices, or edit authentication later in **Credentials**.
 
 Provider changes reset Harness, credential, and model; authentication changes
