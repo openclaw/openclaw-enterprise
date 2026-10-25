@@ -72,11 +72,12 @@ editing/deployment without defaults.
 **Selected version** uses `activeRevisionId`; **View version vN** opens read-only
 details without activating it. **Deployment activity** in `agents/deployment-evidence.mts`
 shows the newest readable version's recorded status, not live health. The Versions list
-marks a version failed from its listed `deploymentStatus`, so the mark survives a reload.
+marks failed versions from listed `deploymentStatus` and `deploymentErrorCode`, surviving
+reloads; superseded or stopped endings stay unmarked.
 Routine completion folds; pending work, read errors, warnings, and cleanup stay visible.
-A first read that lands after the `FIRST_ACTIVITY_WAIT_MS` reveal shows its outcome with
+A first read landing after the `FIRST_ACTIVITY_WAIT_MS` reveal shows its outcome with
 the details folded, unless cleanup, warnings, or an overview error open them. If an
-overview refresh cannot identify this Agent, the page keeps the recorded outcome and says so.
+overview refresh cannot identify this Agent, the page keeps the outcome and says so.
 
 On failure, `agents/deployment-recovery.mts` shows the API's message or suggests checking
 Logs if the message gives no next step. It hides the Logs link if the caller was denied the
