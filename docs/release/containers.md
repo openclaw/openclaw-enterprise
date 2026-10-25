@@ -209,7 +209,9 @@ on `main` with:
 
 - `source_sha`: the original image source SHA.
 - `preparation_run_id` and `preparation_attempt`: the original **Enterprise
-  Containers** run, with successful validation and both prepare/smoke jobs.
+  Containers** run. Validation, all four native preparation jobs, and both
+  image assembly jobs must succeed. For older runs that assembled each image
+  in its preparation job, validation and both image jobs must succeed.
 - `workflow_ci_run_id`: successful main-push CI for the selected recovery workflow
   commit. This is separate from the original image's CI evidence in its seal.
 

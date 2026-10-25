@@ -119,11 +119,23 @@ if (args[0] === "inspect") {
     status: "completed",
     conclusion: "failure",
   };
-  const jobs = ["validate", ...images.map((image) => `Prepare ${image} OCI image`)].map((name) => ({
+  const jobs = [
+    "validate",
+    "prepare / Prepare controller (amd64)",
+    "prepare / Prepare controller (arm64)",
+    "prepare / Prepare runtime (amd64)",
+    "prepare / Prepare runtime (arm64)",
+    "Assemble controller OCI image",
+    "Assemble runtime OCI image",
+  ].map((name) => ({
     name,
     head_sha: sourceSha,
     status: "completed",
     conclusion: "success",
+  }));
+  const legacyJobs = ["Prepare controller OCI image", "Prepare runtime OCI image"].map((name) => ({
+    ...jobs[0],
+    name,
   }));
   const artifacts = images.map((image, index) => ({
     id: index + 10,
@@ -328,10 +340,30 @@ globalThis.setTimeout = (resolve) => queueMicrotask(resolve);
       () => (run.conclusion = "skipped"),
       /^The expression evaluated to a falsy value:[\s\S]*includes\(run\.conclusion\)/,
     ],
-    [() => jobs.push({ ...jobs[1] }), /^Exactly one successful Prepare controller OCI image job/],
+    [
+      () => jobs.push({ ...jobs[1] }),
+      /^Exactly one successful prepare \/ Prepare controller \(amd64\) job/,
+    ],
+    [() => jobs.pop(), /^Exactly one successful Assemble runtime OCI image job/],
+    [
+      () => jobs.splice(1, 1),
+      /^Exactly one successful prepare \/ Prepare controller \(amd64\) job/,
+    ],
+    [
+      () => jobs.splice(2, Infinity, ...legacyJobs),
+      /^Preparation attempt mixes legacy and native jobs/,
+    ],
+    [
+      () => jobs.splice(1, Infinity, legacyJobs[0]),
+      /^Exactly one successful Prepare runtime OCI image job/,
+    ],
     [() => (jobs[0].head_sha = "f".repeat(40)), mismatch("'f{40}'")],
     [() => (jobs[1].status = "queued"), mismatch("'queued'")],
-    [() => (jobs[2].conclusion = "skipped"), /^Both original smoke jobs must have succeeded\./],
+    [
+      () => (jobs[2].conclusion = "skipped"),
+      /^prepare \/ Prepare controller \(arm64\) job must have succeeded/,
+    ],
+    [() => (jobs[6].conclusion = "failure"), /^Assemble runtime OCI image job must have succeeded/],
     [
       () => artifacts.push({ ...artifacts[0] }),
       /^One retained artifact named container-controller/,
@@ -440,6 +472,10 @@ globalThis.setTimeout = (resolve) => queueMicrotask(resolve);
     receipt,
   );
   // Retrying recovery verifies both existing digests without another copy.
+  await runRecovery();
+  assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), state);
+  // Older producers sealed both architectures in one job per image.
+  jobs.splice(1, Infinity, ...legacyJobs);
   await runRecovery();
   assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), state);
   // The ordinary publication command updates a mutable alias only after both
