@@ -4188,8 +4188,9 @@ export async function renderAgentDetail(
       }
       cancel.disabled = locked;
       reload.hidden = !outcomeUnknown && !reloadRequired;
-      // Without repository access in the Installation no save can succeed, and the status says
-      // so: Save is not offered, and Cancel only to undo an edit (finding 2386).
+      // Without repository access in the Installation only removing every repository can be
+      // saved (finding 2398). Otherwise the status says so: Save is not offered, and Cancel only
+      // to undo an edit (finding 2386).
       // A control hidden while focused would drop focus to the page, so the tab takes it.
       const hide = (control: HTMLButtonElement, hidden: boolean) => {
         if (hidden && document.activeElement === control) {
@@ -4197,9 +4198,8 @@ export async function renderAgentDetail(
         }
         control.hidden = hidden;
       };
-      const notConfigured = fields?.notConfigured() ?? false;
-      hide(save, notConfigured);
-      hide(cancel, notConfigured && !dirty);
+      hide(save, !saveOffered());
+      hide(cancel, Boolean(fields?.notConfigured()) && !dirty);
       actions.hidden = save.hidden && cancel.hidden && reload.hidden;
       // An edit that cannot be saved would only block leaving the tab (finding 1539).
       fields?.setDisabled(locked || updateDenied);
@@ -4210,7 +4210,7 @@ export async function renderAgentDetail(
         if (changed) {
           setStatusTone(feedback, null);
           feedback.textContent = fields.isDirty()
-            ? "Save or cancel repository changes before deploying."
+            ? pendingEditGuidance("deploying")
             : "No repository changes to save.";
         }
         update();
@@ -4221,8 +4221,17 @@ export async function renderAgentDetail(
       setStatusTone(feedback, null);
       feedback.textContent = draftEditorSaving
         ? draftEditorNavigationBlock
-        : "Save or cancel repository changes before leaving this tab.";
+        : pendingEditGuidance("leaving this tab");
     };
+    function saveOffered() {
+      return !fields?.notConfigured() || (fields.isDirty() && fields.bindings().length === 0);
+    }
+    // While Save is not offered, the guidance names only what the tab offers (finding 2398).
+    function pendingEditGuidance(before: string) {
+      return saveOffered()
+        ? `Save or cancel repository changes before ${before}.`
+        : `Remove every repository and save, or cancel repository changes, before ${before}.`;
+    }
     async function submit() {
       if (save.disabled || !fields.validate()) {
         return;
