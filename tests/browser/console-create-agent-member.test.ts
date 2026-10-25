@@ -13,6 +13,7 @@ import type {
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
+  grantMember,
   grantSecretOperate,
   holdRequests,
   login,
@@ -801,15 +802,33 @@ test("a member whose Secret operate covers only some Secrets cannot save a typed
   await page.getByLabel("Model Secret", { exact: true }).fill("sk-typed-key");
   await page.getByRole("button", { name: "Use Preset" }).click();
   assert.equal(await page.getByLabel("API key", { exact: true }).inputValue(), "sk-typed-key");
-  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  const submit = page.getByRole("button", { name: "Create Agent", exact: true });
+  await submit.click();
   await page
     .getByText(
       `${NEW_SECRET_OPERATE_DENIED} Select Start over and use an existing Secret, or ask an administrator for Secret operate across this Namespace.`,
       { exact: true },
     )
     .waitFor();
-  assert.deepEqual(
-    answers.filter((answer) => !answer.startsWith("GET ") && !answer.includes("/auth/")),
-    [],
+  const writes = () =>
+    answers.filter((answer) => !answer.startsWith("GET ") && !answer.includes("/auth/"));
+  assert.deepEqual(writes(), []);
+
+  // An administrator grants Secret operate across the Namespace, which covers a new Secret too.
+  // The retry reads the answer again, saves the key as a Secret, and Agent create binds it.
+  grantMember(fixture, "member-operate-some", [["operate", "secret"]]);
+  const createdResponse = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents` &&
+      response.request().method() === "POST",
   );
+  await waitForEnabled(submit);
+  await submit.click();
+  const response = await createdResponse;
+  assert.equal(response.status(), 201);
+  const { data: created }: AgentResponse = await response.json();
+  const secrets = await fixture.request("GET", `/namespaces/${namespace.id}/secrets`);
+  const saved = (secrets.data as SecretWire[]).find((item) => item.name === "Typed key Agent");
+  assert.ok(saved);
+  assert.deepEqual(created.harnessAuth, { method: "api_key", source: saved.ref });
 });

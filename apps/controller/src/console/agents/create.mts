@@ -3307,8 +3307,14 @@ function renderAgentForm(
     // A typed key becomes a new Secret that the next requests bind. It gets no Secret operate
     // grant of its own, so where operate is denied on a readable Secret (granted per Secret)
     // they would refuse it after the Secret and Configuration were saved: refuse it first, as
-    // the Preset's Create new Secret choice does (finding 2492).
-    if (passwordAuth && !usesOAuth && !savedSecret && (await secretsOperateDenied())?.size) {
+    // the Preset's Create new Secret choice does (finding 2492). The answer is read fresh, so a
+    // retry after an administrator's grant goes on.
+    if (
+      passwordAuth &&
+      !usesOAuth &&
+      !savedSecret &&
+      (await secretsOperateDenied({ fresh: true }))?.size
+    ) {
       endCreate();
       if (context.isCurrent()) {
         feedback.textContent = NEW_SECRET_REFUSAL;
