@@ -3964,6 +3964,21 @@ export const scenarios = {
     ],
     nextStory: "authSaveHoldsNavigation",
   },
+  earlierFailedVersion: {
+    group: "Pages/Agent detail",
+    name: "Earlier failed version",
+    path: draft,
+    deployed: true,
+    revisionHistory: 3,
+    earlierFailedVersion: 2,
+    description:
+      "v2's deployment failed and v3 now serves. The Versions list marks v2 from the list's own outcome, so the mark shows on load, before v2 is opened.",
+    steps: [
+      'Check that v3 reads "Current" and v2 shows a red "Failed" badge without opening it; v1 has no badge. A screen reader announces "View version v2, deployment failed".',
+      "Reload the page: v2 keeps its Failed badge.",
+    ],
+    gap: "The deployment records are simulated; the API reports each listed version's outcome the same way.",
+  },
   longVersionHistory: {
     group: "Pages/Agent detail",
     name: "Long version history",

@@ -30,7 +30,7 @@ test(
 // Unauthenticated requests are Git's challenge round trip and stay silent.
 test("the broker process logs one line per refused credentialed request", async (t) => {
   const fixture = await startServiceProcessFixture(t);
-  const send = (authorization) =>
+  const send = (authorization, host = new URL(fixture.config.gateway.publicOrigin).host) =>
     new Promise((resolve, reject) => {
       const outgoing = request(
         {
@@ -40,7 +40,7 @@ test("the broker process logs one line per refused credentialed request", async 
           ca: fixture.tls.ca,
           agent: false,
           headers: {
-            host: new URL(fixture.config.gateway.publicOrigin).host,
+            host,
             ...(authorization === undefined ? {} : { authorization }),
           },
         },
@@ -64,7 +64,13 @@ test("the broker process logs one line per refused credentialed request", async 
   assert.equal(await send(undefined), 401);
   // A bearer of the right shape that no open session issued.
   const bearer = randomBytes(32).toString("base64url");
-  const status = await send("Basic " + Buffer.from("gateway-session:" + bearer).toString("base64"));
+  const basic = "Basic " + Buffer.from("gateway-session:" + bearer).toString("base64");
+  // Finding 2429: a head refused before authentication (a wrong Host that the certificate
+  // still names) is logged only when its credential names an open session, so neither of
+  // these writes a line.
+  assert.equal(await send(undefined, "localhost"), 400);
+  assert.equal(await send(basic, "localhost"), 400);
+  const status = await send(basic);
   assert.equal(status, 401);
   let logged;
   for (let i = 0; i < 100 && !(logged = records()).length; i++) {

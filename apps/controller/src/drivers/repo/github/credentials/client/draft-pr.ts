@@ -78,8 +78,10 @@ const ALLOWANCE_USED =
 
 /**
  * Native broker refusals (finding 2410). The broker answers each of these codes before it
- * sends anything to GitHub, so the advice mirrors the OpenShell route's. A create that may
- * have been sent comes back as `exchange-uncertain` or an `outcome_unknown` receipt instead.
+ * sends anything to GitHub, so the advice mirrors the OpenShell route's, except where the
+ * operator looks: the broker logs its refusals in the worker Pod's `repository-credentials`
+ * container, not the default `worker` container (finding 2431). A create that may have been
+ * sent comes back as `exchange-uncertain` or an `outcome_unknown` receipt instead.
  */
 const BROKER_REFUSALS: ReadonlyMap<string, string | undefined> = new Map([
   ["unsupported-request", ROUTE_REFUSALS.get("request_not_allowed")],
@@ -87,10 +89,14 @@ const BROKER_REFUSALS: ReadonlyMap<string, string | undefined> = new Map([
     "session-unavailable",
     "The repository session for this Agent version is not open; if a retry is refused too, ask an operator to check the repository binding.",
   ],
-  ["unavailable", ROUTE_REFUSALS.get("online_authorization_denied")],
   [
+    "unavailable",
+    "Retry once; if it is refused again, ask an operator to check the repository-credentials container log in the worker Pod.",
+  ],
+  [
+    // Either this session's request limit or the broker's total limit refused it.
     "exchange-capacity",
-    "Too many repository requests are running for this Agent; retry after they finish.",
+    "Too many repository requests are running, for this Agent or across the broker; retry after a short wait.",
   ],
   ["invalid-request", undefined],
   ["limit-exceeded", undefined],

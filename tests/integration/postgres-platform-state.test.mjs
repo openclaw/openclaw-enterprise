@@ -1972,7 +1972,7 @@ test(
 
     // The list carries summaries, newest first. It never decodes a snapshot, so the
     // unreadable revision lists like any other; its exact read reports the error.
-    const revisionSummary = (item) => ({
+    const revisionSummary = (item, deploymentStatus) => ({
       id: item.id,
       namespaceId: item.namespaceId,
       agentId: item.agentId,
@@ -1982,12 +1982,15 @@ test(
       configurationGeneration: item.configurationGeneration,
       harness: item.harness,
       createdAt: item.createdAt,
+      deploymentStatus,
+      deploymentErrorCode: null,
     });
+    // The planted revision has no deployment work; the deployed one is queued.
     const revisions = await request(api, "GET", revisionPath);
     assert.equal(revisions.status, 200);
     assert.deepEqual(revisions.data, [
-      revisionSummary({ ...healthyRevision.data, id: malformedRevisionId, revision: 2 }),
-      revisionSummary(healthyRevision.data),
+      revisionSummary({ ...healthyRevision.data, id: malformedRevisionId, revision: 2 }, null),
+      revisionSummary(healthyRevision.data, "queued"),
     ]);
     const validDetail = await request(api, "GET", `${revisionPath}/${revision.id}`);
     assert.equal(validDetail.status, 200);
@@ -2114,7 +2117,7 @@ test(
         malformedRevisionId,
         revisionPath,
         `${revisionPath}/${malformedRevisionId}`,
-        [revisionSummary(healthyRevision.data)],
+        [revisionSummary(healthyRevision.data, "queued")],
       ],
       ["agent", agent.id, `/namespaces/${namespaceId}/agents`, agentPath, [healthyAgent]],
     ]) {

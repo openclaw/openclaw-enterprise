@@ -9,6 +9,7 @@ export const NewVersion = story("newVersion");
 export const FailedFirstVersion = story("failedFirstVersion");
 export const EditCurrentConfiguration = story("editCurrentConfiguration");
 export const HeaderActions = story("agentHeaderActions");
+export const EarlierFailedVersion = story("earlierFailedVersion");
 export const LongVersionHistory = story("longVersionHistory");
 export const FirstDeployment = story("draftAutomaticCredentials");
 export const ConfigurationEditor = { ...story("configurationEditor"), name: "Edit Configuration" };

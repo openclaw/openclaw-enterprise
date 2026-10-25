@@ -1425,6 +1425,19 @@ test(
       const first = await fixture.request("GET", `${agentPath}/deployments/${handoff.revisionId}`);
       assert.equal(first.status, 200, JSON.stringify(first.body));
       assert.equal(first.data.error?.code, "REVISION_STOPPED");
+      assert.equal(first.data.status, "failed");
+      // The Versions list carries that outcome with the record's code. A Stop ended the version;
+      // it did not fail, so the console shows no Failed mark on it after a reload (finding 2422).
+      const listed = await fixture.request("GET", `${agentPath}/revisions`);
+      assert.equal(listed.status, 200, JSON.stringify(listed.body));
+      assert.deepEqual(
+        listed.data.map(({ id, deploymentStatus, deploymentErrorCode }) => [
+          id,
+          deploymentStatus,
+          deploymentErrorCode,
+        ]),
+        [[handoff.revisionId, "failed", "REVISION_STOPPED"]],
+      );
       assert.equal(settled.status, "failed", JSON.stringify(settled));
       assert.equal(settled.agentId, handoff.agentId);
       assert.equal(settled.revisionId, handoff.revisionId);

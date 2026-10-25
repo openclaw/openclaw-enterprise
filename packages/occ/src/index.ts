@@ -122,7 +122,6 @@ import type {
   AgentCredentialSourceBinding,
   AgentRead,
   AgentRevisionSummary,
-  AgentRevisionSummaryPage,
   AgentRevisionRead,
   InitialWorkspaceFiles,
   AgentDeploymentDiagnostics,
@@ -802,6 +801,23 @@ export interface CreateAgentInput {
   readonly pluginApprovers?: PluginApprovers;
   readonly repositoryBindings?: readonly RepositoryBindingRequest[];
   readonly repositoryAccess?: RepositoryAccess;
+}
+
+/**
+ * A listed revision with its deployment outcome, so a Versions list marks a failed version
+ * without reading each record (finding 2422). Both are null when no deployment record matches
+ * it. The error code is the record's `error.code`: clients tell a superseded or stopped ending
+ * from a failure by it, as they do for the record itself.
+ */
+export type AgentRevisionListing = AgentRevisionSummary & {
+  readonly deploymentStatus: DeploymentStatusResult["status"] | null;
+  readonly deploymentErrorCode: string | null;
+};
+
+export interface AgentRevisionListPage {
+  readonly revisions: readonly Readonly<AgentRevisionListing>[];
+  /** Revisions numbered below this one remain; undefined on the last page. */
+  readonly nextBefore?: number;
 }
 
 /** Create Agent's preflight input: an Agent create body with its Configuration inline, unsaved. */
@@ -4037,7 +4053,7 @@ export class OpenClawController {
     namespaceId: string,
     agentId: string,
     page: { readonly before?: number; readonly limit: number } = { limit: 50 },
-  ): Promise<Readonly<AgentRevisionSummaryPage>> {
+  ): Promise<Readonly<AgentRevisionListPage>> {
     if (!Number.isSafeInteger(page.limit) || page.limit < 1 || page.limit > 100) {
       throw new ScopeViolationError("The revision page size is invalid.");
     }
@@ -4054,6 +4070,30 @@ export class OpenClawController {
     const batch = Math.max(page.limit + 1, 100);
     return this.read(async (state) => {
       const readable: Readonly<AgentRevisionSummary>[] = [];
+      // Each revision's deployment outcome, read as getDeploymentStatus reads it: one record
+      // lookup per listed revision, in this read, instead of one request per version.
+      const listing = async (nextBefore?: number) => {
+        const revisions: Readonly<AgentRevisionListing>[] = [];
+        for (const revision of readable) {
+          const work = await state.operations.findWork(`agent_revision:${revision.id}:reconcile`);
+          const matches =
+            work !== undefined &&
+            work.namespaceId === revision.namespaceId &&
+            work.agentId === revision.agentId &&
+            work.revisionId === revision.id;
+          revisions.push(
+            Object.freeze({
+              ...revision,
+              deploymentStatus: matches ? controllerWorkDeploymentStatus(work, this.clock()) : null,
+              deploymentErrorCode: matches ? (deploymentErrorForWork(work)?.code ?? null) : null,
+            }),
+          );
+        }
+        return Object.freeze({
+          revisions: Object.freeze(revisions),
+          ...(nextBefore === undefined ? {} : { nextBefore }),
+        });
+      };
       let before = page.before;
       for (;;) {
         const listed = await state.revisions.pageRevisionSummaries(agent.namespaceId, agent.id, {
@@ -4071,15 +4111,12 @@ export class OpenClawController {
             continue;
           }
           if (readable.length === page.limit) {
-            return Object.freeze({
-              revisions: Object.freeze(readable),
-              nextBefore: readable.at(-1)!.revision,
-            });
+            return listing(readable.at(-1)!.revision);
           }
           readable.push(revision);
         }
         if (listed.nextBefore === undefined) {
-          return Object.freeze({ revisions: Object.freeze(readable) });
+          return listing();
         }
         before = listed.nextBefore;
       }

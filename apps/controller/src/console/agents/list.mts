@@ -89,8 +89,17 @@ const NEUTRAL_DEPLOYMENT_OUTCOMES = new Map<string, "stopped" | "superseded">([
   ["REVISION_STOPPED", "stopped"],
 ]);
 
-// "superseded" or "stopped" for a neutral ending, otherwise null.
-export function neutralDeploymentOutcome(status: AgentDeploymentStatusWire | null | undefined) {
+// "superseded" or "stopped" for a neutral ending, otherwise null. Takes a deployment record or a
+// Versions list item's status and error code in the record's shape (finding 2422).
+export function neutralDeploymentOutcome(
+  status:
+    | {
+        readonly status: AgentDeploymentStatusWire["status"];
+        readonly error: { readonly code: string } | null;
+      }
+    | null
+    | undefined,
+) {
   return status?.status === "failed" && status.error
     ? (NEUTRAL_DEPLOYMENT_OUTCOMES.get(status.error.code) ?? null)
     : null;
