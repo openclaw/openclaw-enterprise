@@ -34,6 +34,7 @@ import {
   createRepositoryLaunchFixture,
   focusedDescription,
   focusedText,
+  withholdPermissionSummary,
 } from "./console-agents-test-support.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import { createPolicyConsole } from "./console-sandbox-policy-fixture.ts";
@@ -167,7 +168,8 @@ test("Policy denials says once that the Sandbox Driver lacks per-Agent network p
 });
 
 // A member whose grants do not include the Agent's SandboxPolicy gets a refusal; Retry would only
-// ask again for the same answer (finding 2060).
+// ask again for the same answer (finding 2060). With a permission answer the console skips the
+// read instead (finding 2454), so the answer is withheld here to reach the API's refusal.
 test("A refused policy read offers no Retry", async (t) => {
   const { fixture, namespace, agent } = await createPolicyConsole(t);
   const member = await fixture.createAccountWithPolicy("policy-member", (principal) => {
@@ -188,6 +190,7 @@ test("A refused policy read offers no Retry", async (t) => {
   const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
+  await withholdPermissionSummary(page, fixture, namespace.id, agent.id);
   await login(
     page,
     fixture,

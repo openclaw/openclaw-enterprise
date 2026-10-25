@@ -243,6 +243,7 @@ test("caller permission summaries report primary IAM decisions without authorizi
     configurationRead: true,
     configurationSecretsOperate: true,
     agentSourcesOperate: true,
+    sandboxPolicyRead: true,
   });
   const adminNamespace = await fixture.request("GET", namespacePath);
   assert.equal(adminNamespace.status, 200);
@@ -297,7 +298,26 @@ test("caller permission summaries report primary IAM decisions without authorizi
     configurationRead: false,
     configurationSecretsOperate: false,
     agentSourcesOperate: false,
+    sandboxPolicyRead: false,
   });
+  // Reading the Agent's network policy and suggestions needs read on its SandboxPolicy, a grant
+  // no other answer covers (finding 2454).
+  fixture.policy.roles.push({
+    id: "role-permission-summary-sandbox-policy",
+    namespaceId: namespace.id,
+    permissions: [{ action: "read", resourceKind: "sandbox_policy" }],
+  });
+  fixture.policy.bindings.push({
+    id: "binding-permission-summary-sandbox-policy",
+    namespaceId: namespace.id,
+    subjectKind: "identity",
+    subjectId: limited.principal.id,
+    roleId: "role-permission-summary-sandbox-policy",
+  });
+  const policySummary = await fixture.request("GET", permissionsPath, { session });
+  assert.equal(policySummary.status, 200);
+  assert.equal(policySummary.data.sandboxPolicyRead, true);
+  assert.equal(policySummary.data.update, false);
   // Configuration update on the Agent's Configuration is its own grant (finding 2421).
   fixture.policy.roles.push({
     id: "role-permission-summary-configuration",

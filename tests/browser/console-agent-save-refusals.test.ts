@@ -193,7 +193,9 @@ const editableFields = (page: Page, scope = ".agent-card") =>
 
 // The Agent-side editors: each Save sends an Agent update.
 const agentSaves = (repositorySave?: string) => [
-  { tab: "plugins", save: "Save plugin selections", field: "Plugin selections JSON" },
+  // Without a save the plugin selections show as a read-only summary with no editor or Save
+  // (finding 2455).
+  { tab: "plugins", absentSave: "Save plugin selections" },
   // The Channel Secrets card below saves the Configuration, not the Agent.
   {
     tab: "credentials",
@@ -213,7 +215,7 @@ async function assertAgentSavesDisabled(
   saves: ReturnType<typeof agentSaves>,
 ) {
   const requests = apiRequests(page, fixture.origin);
-  for (const [index, { tab, save, field, scope }] of saves.entries()) {
+  for (const [index, { tab, save, absentSave, field, scope }] of saves.entries()) {
     const url = detailUrl(fixture, namespace.id, agent.id, "draft", tab).href;
     if (index === 0) {
       await login(page, fixture, url, member.credentials);
@@ -227,25 +229,23 @@ async function assertAgentSavesDisabled(
       assert.equal(await button.isDisabled(), true, `${save} is disabled`);
     }
     assert.deepEqual(await editableFields(page, scope), [], `no ${tab} field takes an edit`);
+    if (absentSave) {
+      assert.equal(await page.getByRole("button", { name: absentSave }).count(), 0);
+    }
     if (field) {
       // The saved settings stay in view.
       assert.equal(await page.getByLabel(field, { exact: true }).isVisible(), true);
-    }
-    if (tab === "plugins") {
-      // The selections JSON stays readable and focusable, but takes no edit.
-      const json = page.getByLabel("Plugin selections JSON", { exact: true });
-      assert.equal(await json.evaluate((node) => node.closest("[inert]") === null), true);
-      assert.equal(await json.isEditable(), false);
     }
   }
   assert.deepEqual(nonAuthWriteRequests(requests), []);
 }
 
+// Repository access reads as a summary: its choices read needs Agent update (finding 2454).
 test("a member without Agent update sees the Agent-side saves and fields disabled with the reason", async (t) => {
   await assertAgentSavesDisabled(
     await readOnlyMember(t, "Agent Saves Off"),
     AGENT_UPDATE_DENIED,
-    agentSaves("Save repository access"),
+    agentSaves(),
   );
 });
 
@@ -329,26 +329,31 @@ test("a member without Agent update cannot edit repository access", async (t) =>
   assert.equal(saved.status, 200);
   const member = await createReader(fixture, namespace);
   const { page } = await newPage(t, fixture, { browser });
+  const requests = apiRequests(page, fixture.origin);
   await login(
     page,
     fixture,
     detailUrl(fixture, namespace.id, agent.id, "draft", "repositories").href,
     member.credentials,
   );
-  // Listing repository choices also needs Agent update; the saved access still shows.
-  await page.getByText("Default repository access", { exact: true }).waitFor();
+  // Listing repository choices needs Agent update, so the reader is not sent that read: the
+  // saved access shows as a summary with no editor (finding 2454).
+  await page.getByText("application · Contributor", { exact: true }).waitFor();
   await page.getByRole("status").filter({ hasText: AGENT_UPDATE_DENIED }).waitFor();
-  // Remove was the edit left open: it blocked leaving the tab behind a disabled Save.
-  assert.equal(
-    await page.getByRole("button", { name: "Remove application", exact: true }).isDisabled(),
-    true,
-  );
-  assert.equal(await page.locator("#repository-default-git-read").isDisabled(), true);
+  assert.equal(await page.getByRole("button", { name: "Remove application" }).count(), 0);
+  assert.equal(await page.getByRole("button", { name: "Cancel", exact: true }).count(), 0);
   assert.deepEqual(await editableFields(page), []);
-  // Cancel stays available; nothing is left to block leaving the tab.
-  await waitForEnabled(page.getByRole("button", { name: "Cancel", exact: true }));
+  assert.deepEqual(
+    pathRequests(
+      requests,
+      "GET",
+      `/namespaces/${namespace.id}/agents/${agent.id}/repository-options`,
+    ),
+    [],
+  );
   await page.getByRole("tab", { name: "Plugins", exact: true }).click();
-  await page.getByRole("button", { name: "Save plugin selections", exact: true }).waitFor();
+  await page.getByRole("heading", { name: "Plugin selections", exact: true }).waitFor();
+  assert.equal(await page.getByRole("button", { name: "Save plugin selections" }).count(), 0);
 });
 
 // The permission answer was read once per page, so a grant applied only after a full page

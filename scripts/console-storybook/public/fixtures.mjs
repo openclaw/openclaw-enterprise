@@ -1777,6 +1777,7 @@ export function installFixture(scenario, evidence) {
               configurationRead: true,
               configurationSecretsOperate: allowed,
               agentSourcesOperate: allowed,
+              sandboxPolicyRead: allowed,
             },
           );
         }

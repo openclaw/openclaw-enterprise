@@ -4348,7 +4348,7 @@ export async function renderAgentDetail(
       element("h2", {}, "Repository access"),
       element(
         "p",
-        { className: "muted", role: "status" },
+        { className: "muted" },
         bindings.length
           ? "These are the version draft’s repository selections, read-only with your access. The next deployment uses them as saved."
           : "The version draft selects no repositories. The Agent runs without repository access.",
@@ -4369,7 +4369,7 @@ export async function renderAgentDetail(
       bindings.some((binding) => repositoryProfile(binding.profile)?.writes)
         ? element("p", { className: "hint repository-write-access" }, repositoryWriteAccessHelp)
         : null,
-      element("p", { className: "muted" }, AGENT_UPDATE_DENIED),
+      element("p", { className: "muted", role: "status" }, AGENT_UPDATE_DENIED),
     );
   }
 
