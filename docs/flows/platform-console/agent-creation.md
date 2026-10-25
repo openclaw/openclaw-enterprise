@@ -1,7 +1,7 @@
 ---
 created: 2026-10-20
 updated: 2026-10-25
-last_updated_session: fix-postland-1025c
+last_updated_session: fix-mutant-1025c
 ---
 
 # Console Agent creation
@@ -89,6 +89,11 @@ Credential Source for the request, the form runs the preflight below with the pl
 The worker reauthorizes, creates resources and exact Secret grants, and deploys; Console polls and opens the saved version. Where the form cannot follow a placement
 refusal's advice to select Embedded OpenClaw, it shows only the missing setting.
 
+The Installation capabilities do not show whether the Compute Driver supplies a Preset's
+operator-managed (`runtime`) binding. When the capabilities are read, `checkRuntimeBinding` sends
+that binding to the preflight below; a `harnessAuth.method` refusal disables **Create Agent** and
+names what an administrator changes, because the form can change neither the binding nor the mode.
+
 Before any write, `create.mts:renderAgentForm` checks the Agent name with the API's Name rule
 (`namespaces.mts:namespaceNameProblem`) and each initial workspace file with the Workspace tab's
 `agents/workspace.mts:workspaceFileProblem`, which names the file; the check opens Advanced
@@ -147,6 +152,7 @@ Switching methods hides that feedback without changing the lookup or saved choic
 
 ## Changelog
 
+- 2026-10-25 08:00: Refuse an operator-managed Preset when it opens where the Compute Driver refuses its binding (finding 2427). (fix-mutant-1025c)
 - 2026-10-25 04:30: Run the preflight before a Credential Gateway registration too (finding 2406). (fix-postland-1025c - 44eebaad38)
 - 2026-10-25 03:30: Run the preflight before provisioning saves the model Secret; trim placement advice the form cannot follow. (fix-postland-1025b - 2b1f510594)
 - 2026-10-25 00:55: Name "no Sandbox Driver selected" as the reason Dedicated OpenClaw is disabled when the Installation lists Embedded. (finding 2384)
