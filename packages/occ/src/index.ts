@@ -828,6 +828,11 @@ export interface ValidateAgentCreateInput {
   readonly configuration: {
     readonly kind: "agent";
     readonly values: Readonly<OpenClawConfigurationDocument>;
+    /**
+     * The Secret bindings the caller will save with these values. Their Secrets are not read;
+     * absent skips the check that each channel credential reference has a binding.
+     */
+    readonly secretBindings?: SecretBindings;
   };
   readonly initialWorkspaceFiles?: InitialWorkspaceFiles;
   readonly executionMode?: HarnessExecutionMode;
@@ -2971,7 +2976,11 @@ export class OpenClawController {
         harnessAuth,
       );
       await configurationDriver.validateSize?.(configurationInput.values);
-      this.validateConfigurationContent(configurationInput.values);
+      this.validateConfigurationContent(
+        configurationInput.values,
+        undefined,
+        configurationInput.secretBindings ?? {},
+      );
       await configurationDriver.validate({
         id: "cfg_00000000-0000-4000-8000-000000000000",
         namespaceId: namespace.id,
@@ -5003,16 +5012,19 @@ export class OpenClawController {
    * Agent provisioning and Preset defaults (finding 1311). A Preset save passes `options`,
    * locating its unfilled variables. The model provider settings; the Codex approval policy and
    * a literal Gateway password; the agents shape, fallback provider and Gateway roster rules
-   * (findings 1305 and 1308); then the selected Compute Driver's rules.
+   * (findings 1305 and 1308); then the selected Compute Driver's rules. A write that saves Secret
+   * bindings with the values passes them, so the Compute Driver also refuses a channel
+   * credential reference without one (finding 2319).
    */
   private validateConfigurationContent(
     values: OpenClawConfigurationDocument,
     options?: ConfigurationValidationOptions,
+    secretBindings?: SecretBindings,
   ): void {
     validateModelProviderSettings(values, options);
     validateConfigurationSettings(values, options);
     requireDeployableRoster(values, options);
-    this.validateComputeConfiguration(values, options);
+    this.validateComputeConfiguration(values, options, secretBindings);
   }
 
   // Configuration content every topology of the selected Compute Driver refuses is refused
@@ -5022,9 +5034,10 @@ export class OpenClawController {
   private validateComputeConfiguration(
     values: Readonly<OpenClawConfigurationDocument>,
     options?: ConfigurationValidationOptions,
+    secretBindings?: SecretBindings,
   ): void {
     const compute = this.selections.get("compute")?.driver as ComputeDriver | undefined;
-    compute?.validateConfiguration?.(values, options);
+    compute?.validateConfiguration?.(values, options, secretBindings);
   }
 
   async createSecret(
@@ -6708,7 +6721,7 @@ export class OpenClawController {
       });
       // A document too large to store is refused before the content rules walk it (finding 1317).
       await driver.validateSize?.(values);
-      this.validateConfigurationContent(values);
+      this.validateConfigurationContent(values, undefined, secretBindings);
       await driver.validate(configuration);
       const metadata = await state.configurations.createConfiguration({
         id: configuration.id,
@@ -7100,8 +7113,10 @@ export class OpenClawController {
       // A document too large to store is refused before the content rules walk it (finding 1317).
       await driver.validateSize?.(values);
       // A stored Configuration that predates these rules still reads, and deployment refuses it
-      // as before; only a replacement that keeps the refused value fails.
-      this.validateConfigurationContent(values);
+      // as before; only a replacement that keeps the refused value fails. That includes a channel
+      // reference left without a binding by either half of the update: its values, or bindings
+      // it replaced (finding 2319).
+      this.validateConfigurationContent(values, undefined, secretBindings);
       await driver.validate(configuration);
       // Registered before the write: a replace that applied but answered with an error (a
       // timeout, a lost response) would otherwise leave the stored Configuration one generation
@@ -8953,7 +8968,9 @@ export class OpenClawController {
    * refusal is reported before the caller saves its Secret or Configuration. It writes nothing.
    * With `harnessAuth`, Agent save's Harness authentication check against the Compute Driver runs
    * too, so a refusal that depends only on the Agent's topology (finding 2391) is reported here.
-   * Checks that need saved resources (Secret bindings, the Harness authentication source and
+   * With `configuration.secretBindings`, a channel credential reference without a binding is
+   * refused as Configuration create would (finding 2319); the bound Secrets are not read.
+   * Checks that need saved resources (the bound Secrets, the Harness authentication source and
    * credential sources) or live repository policy stay with those writes.
    * With `name`, a name another Agent in the Namespace has is refused last, with create's 409
    * (finding 2420), so the form saves no Secret or Configuration for it. The check is advisory:
@@ -8996,10 +9013,17 @@ export class OpenClawController {
         throw new ScopeViolationError("The Configuration kind must identify an Agent.");
       }
       const values = frozenValues(input.configuration.values);
+      const secretBindings =
+        input.configuration.secretBindings === undefined
+          ? undefined
+          : normalizeRequestSecretBindings(
+              input.configuration.secretBindings,
+              "/configuration/secretBindings",
+            );
       // The form saves the Configuration first, so its content rules answer first, in
       // createConfiguration's order.
       await this.configurationDriver().validateSize?.(values);
-      this.validateConfigurationContent(values);
+      this.validateConfigurationContent(values, undefined, secretBindings);
       this.validatePluginPolicies(plugins, pluginApprovers);
       // Shaped like the saved Configuration createAgent reads; only its values are checked.
       const configuration: () => Promise<Readonly<Configuration>> = async () =>

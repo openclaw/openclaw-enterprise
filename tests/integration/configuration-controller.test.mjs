@@ -367,6 +367,11 @@ async function writePastOcc(configurationDriver, configurationId, values) {
 
 // The refusal texts the save rules name a field or setting with.
 const setting = (path, requirement) => `Configuration setting ${path} ${requirement}.`;
+const unboundChannelReference = (path, name) =>
+  setting(
+    path,
+    `references ${name} without a Configuration Secret binding: bind ${name} in secretBindings to an environment-backed Secret, or remove the reference`,
+  );
 const absoluteUrl = (field) =>
   `Configuration field ${field} must be an absolute http or https URL.`;
 const modelApi = (field) =>
@@ -1365,7 +1370,8 @@ test("Configuration save and Kubernetes deployment refuse caller-owned credentia
   assert.equal(deployed.body.error.message, apiKeyRefusal);
   await storeAsOlderRelease(valid);
   // Agent save checks what depends on the Agent: an embedded Agent cannot serve a channel. The
-  // Installation's channel runtime and the channel's Secret bindings wait for deployment.
+  // Installation's channel runtime waits for deployment. Configuration save already refuses the
+  // unbound token reference (finding 2319), so the row is one an older release stored.
   const slack = {
     ...valid,
     channels: {
@@ -1376,10 +1382,11 @@ test("Configuration save and Kubernetes deployment refuse caller-owned credentia
       },
     },
   };
-  assert.equal(
-    (await request(context.app, "PATCH", item, { body: { values: slack } })).status,
-    200,
+  assertRefused(
+    await request(context.app, "PATCH", item, { body: { values: slack } }),
+    unboundChannelReference("channels.slack.appToken", "SLACK_APP_TOKEN"),
   );
+  await storeAsOlderRelease(slack);
   const embeddedSlack = setting(
     "channels.slack",
     "is enabled, but channels require a dedicated Agent workload",
@@ -1406,6 +1413,152 @@ test("Configuration save and Kubernetes deployment refuse caller-owned credentia
       200,
       `${JSON.stringify(values)}: ${JSON.stringify(accepted.body)}`,
     );
+  }
+});
+
+test("Configuration create, update and Agent create's check refuse a channel credential reference without a Secret binding (finding 2319)", async () => {
+  // Kubernetes Compute delivers channel credentials only from Configuration Secret bindings.
+  // Deployment refused an unbound reference; create and update carry values and bindings in one
+  // request, so they refuse it where it is written, with the setting and the missing name.
+  const configurationDriver = createConfigurationBackend();
+  const { namespace, collection, ...context } = await fixture({
+    configurationDriver,
+    computeDriver: kubernetesRules("compute-channel-bindings", ...configurationRules),
+  });
+  const valid = runtimeSelected;
+  const { created, configurationId, item } = await deployableAgent(context, namespace, {
+    values: valid,
+    name: "Channel bindings consumer",
+    secretName: "channel-bindings-key",
+  });
+  const binding = async (name) => {
+    const secret = await context.controller.createSecret(context.principal.id, {
+      namespaceId: namespace.id,
+      name,
+      value: `synthetic-${name}`,
+    });
+    return { source: secret.ref, delivery: { type: "env" } };
+  };
+  const bothBindings = {
+    SLACK_APP_TOKEN: await binding("slack-app"),
+    SLACK_BOT_TOKEN: await binding("slack-bot"),
+  };
+  const slackWith = (slack) => ({
+    ...valid,
+    channels: {
+      slack: {
+        enabled: true,
+        mode: "socket",
+        appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+        botToken: "${SLACK_BOT_TOKEN}",
+        ...slack,
+      },
+    },
+  });
+  const slack = slackWith({});
+  const botRefusal = unboundChannelReference("channels.slack.botToken", "SLACK_BOT_TOKEN");
+  const appRefusal = unboundChannelReference("channels.slack.appToken", "SLACK_APP_TOKEN");
+  const unchanged = async (label) =>
+    assert.deepEqual((await request(context.app, "GET", item)).body.data, created.body.data, label);
+
+  // Create: one binding of two is refused, naming the other; both save.
+  assertRefused(
+    await request(context.app, "POST", collection, {
+      body: {
+        kind: "agent",
+        values: slack,
+        secretBindings: { SLACK_APP_TOKEN: bothBindings.SLACK_APP_TOKEN },
+      },
+    }),
+    botRefusal,
+    { label: "create with one binding" },
+  );
+  const saved = await request(context.app, "POST", collection, {
+    body: { kind: "agent", values: slack, secretBindings: bothBindings },
+  });
+  assert.equal(saved.status, 201, JSON.stringify(saved.body));
+
+  // Update that adds the references and keeps the Configuration's bindings (none).
+  assertRefused(
+    await request(context.app, "PATCH", item, { body: { values: slack } }),
+    appRefusal,
+    { label: "update adds references" },
+  );
+  await unchanged("update adds references");
+  // Values and bindings in one update save; then an update that drops one binding is refused.
+  const bound = await request(context.app, "PATCH", item, {
+    body: { values: slack, secretBindings: bothBindings },
+  });
+  assert.equal(bound.status, 200, JSON.stringify(bound.body));
+  assertRefused(
+    await request(context.app, "PATCH", item, {
+      body: { values: slack, secretBindings: { SLACK_BOT_TOKEN: bothBindings.SLACK_BOT_TOKEN } },
+    }),
+    appRefusal,
+    { label: "update removes a binding" },
+  );
+  assert.deepEqual(
+    (await request(context.app, "GET", item)).body.data,
+    bound.body.data,
+    "update removes a binding",
+  );
+
+  // A reference under a named account names its own setting; a disabled channel is not checked.
+  assertRefused(
+    await request(context.app, "PATCH", item, {
+      body: {
+        values: slackWith({ accounts: { work: { botToken: "${WORK_BOT_TOKEN}" } } }),
+        secretBindings: bothBindings,
+      },
+    }),
+    unboundChannelReference("channels.slack.accounts.work.botToken", "WORK_BOT_TOKEN"),
+    { label: "named account" },
+  );
+  const disabled = await request(context.app, "PATCH", item, {
+    body: { values: slackWith({ enabled: false }), secretBindings: {} },
+  });
+  assert.equal(disabled.status, 200, JSON.stringify(disabled.body));
+
+  // A row an older release stored without bindings still reads. As for every save rule, an
+  // update that keeps the reference unbound is refused even when it changes something else, and
+  // one that adds the bindings repairs it.
+  await writePastOcc(configurationDriver, configurationId, slack);
+  const stored = await request(context.app, "GET", item);
+  assert.equal(stored.status, 200, JSON.stringify(stored.body));
+  assert.deepEqual(stored.body.data.values, slack);
+  assertRefused(
+    await request(context.app, "PATCH", item, {
+      body: { values: { ...slack, env: { vars: { HTTP_PROXY: "http://proxy:3128" } } } },
+    }),
+    appRefusal,
+    { label: "unrelated update of a stored row" },
+  );
+  const repaired = await request(context.app, "PATCH", item, {
+    body: { values: slack, secretBindings: bothBindings },
+  });
+  assert.equal(repaired.status, 200, JSON.stringify(repaired.body));
+  assert.deepEqual(repaired.body.data.secretBindings, bothBindings);
+
+  // Agent create's check refuses the reference when the caller sends the bindings it will save,
+  // before any Secret or Configuration is saved; without them, that check is skipped.
+  const validate = (configuration) =>
+    request(context.app, "POST", `/namespaces/${namespace.id}/agents/validate`, {
+      body: { configuration: { kind: "agent", ...configuration }, executionMode: "dedicated" },
+    });
+  assertRefused(
+    await validate({
+      values: slack,
+      secretBindings: { SLACK_APP_TOKEN: bothBindings.SLACK_APP_TOKEN },
+    }),
+    botRefusal,
+    { label: "validate" },
+  );
+  for (const configuration of [
+    { values: slack, secretBindings: bothBindings },
+    { values: slack },
+  ]) {
+    const checked = await validate(configuration);
+    assert.equal(checked.status, 204, JSON.stringify(checked.body));
   }
 });
 

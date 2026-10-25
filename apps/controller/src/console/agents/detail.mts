@@ -49,6 +49,7 @@ import {
   shortId,
   namespacePath,
   refusedSave,
+  channelBindingRefusal,
   AGENT_SOURCES_DENIED,
   AGENT_UPDATE_DENIED,
   message,
@@ -4862,6 +4863,11 @@ export async function renderAgentDetail(
         feedback.textContent =
           configurationConflictMessage(error, mutationStarted && !configurationSaved) ??
           rejectionMessage(error, mutationStarted);
+        // The edited JSON holds the refused channel reference (finding 2319).
+        const channelRefusal = channelBindingRefusal(error);
+        if (channelRefusal !== undefined) {
+          editorError.show(channelRefusal);
+        }
         feedbackLocked = true;
         outcomeUnknown =
           mutationStarted && !refusedWriteStatuses.includes(requestFailure(error).status);

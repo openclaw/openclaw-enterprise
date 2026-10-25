@@ -129,6 +129,80 @@ export function enabledChannelProviders(
   return enabled;
 }
 
+/**
+ * Each enabled channel's credential references (`${NAME}`, or an env SecretRef with that `id`)
+ * need a Configuration Secret binding of that name: Kubernetes Compute delivers channel
+ * credentials only from bindings. Configuration create and update, provisioning and deployment
+ * admission refuse the first reference without one, naming its setting and the binding.
+ * `providers` lists the enabled channel providers (enabledChannelProviders).
+ */
+export function requireChannelSecretBindings(
+  configuration: Readonly<OpenClawConfigurationDocument>,
+  providers: readonly string[],
+  bound: (name: string) => boolean,
+  createError: SettingError,
+): void {
+  const channels = asRecord(configuration.channels) ?? {};
+  for (const provider of providers) {
+    const unbound = unboundChannelReference(
+      channels[provider],
+      keyedSettingPath("channels", provider),
+      bound,
+    );
+    if (unbound !== undefined) {
+      // Plain names show as written; any other env SecretRef id is quoted and shortened, so
+      // the message keeps its cap.
+      const name =
+        unbound.name.length <= 32 && /^[A-Za-z_][A-Za-z0-9_]*$/.test(unbound.name)
+          ? unbound.name
+          : quotedSettingKey(unbound.name, 32);
+      throw createError(
+        unbound.path,
+        `references ${name} without a Configuration Secret binding: bind ${name} in secretBindings to an environment-backed Secret, or remove the reference`,
+      );
+    }
+  }
+}
+
+function unboundChannelReference(
+  value: unknown,
+  path: string,
+  bound: (name: string) => boolean,
+): { readonly path: string; readonly name: string } | undefined {
+  if (typeof value === "string") {
+    const name = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/.exec(value)?.[1];
+    return name === undefined || bound(name) ? undefined : { path, name };
+  }
+  if (Array.isArray(value)) {
+    for (const [index, item] of value.entries()) {
+      const unbound = unboundChannelReference(item, `${path}[${index}]`, bound);
+      if (unbound !== undefined) {
+        return unbound;
+      }
+    }
+    return undefined;
+  }
+  const record = asRecord(value);
+  if (record === undefined) {
+    return undefined;
+  }
+  if (
+    record.source === "env" &&
+    typeof record.id === "string" &&
+    record.id.length > 0 &&
+    !bound(record.id)
+  ) {
+    return { path, name: record.id };
+  }
+  for (const [key, item] of Object.entries(record)) {
+    const unbound = unboundChannelReference(item, keyedSettingPath(path, key), bound);
+    if (unbound !== undefined) {
+      return unbound;
+    }
+  }
+  return undefined;
+}
+
 const HARNESS_BINDING = "model credentials come from the Agent's Harness authentication binding";
 // Every OPENAI_*/ANTHROPIC_* name is reserved, credential or not (for example a base URL).
 const PROVIDER_ENVIRONMENT =
