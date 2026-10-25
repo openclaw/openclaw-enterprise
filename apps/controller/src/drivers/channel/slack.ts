@@ -6,6 +6,7 @@ import type {
 import {
   ChannelCredentialError,
   ChannelDirectoryError,
+  ResourceStateConflictError,
   slackAccountTargets,
   wholeEnvironmentReferenceName,
 } from "@openclaw-enterprise/occ";
@@ -24,6 +25,50 @@ const MANAGED_SERVICE_PROXY_ENDPOINT =
   /^https?:\/\/([a-z]([-a-z0-9]*[a-z0-9])?\.[a-z0-9]([-a-z0-9]*[a-z0-9])?\.svc):([1-9][0-9]{0,4})$/;
 
 type SlackRecord = Record<string, unknown>;
+
+/**
+ * Finding 2521: the production API's egress is default-deny unless sign-in settings open it. With
+ * no Slack proxy configured, a token check that gets no answer from Slack usually means the
+ * Installation has no Slack route, but an open route can also time out (finding 2531). The fixed
+ * text names the setting and keeps the retry for that case. It is raised only after the binding
+ * and token-prefix checks, and it names no token. The error contract caps messages at 256
+ * characters.
+ */
+export class SlackRouteNotConfiguredError extends ResourceStateConflictError {
+  constructor() {
+    super(
+      "OCC could not reach Slack, and the API has no Slack proxy. If the API has another approved route to Slack, try again. Otherwise an administrator must set Helm slackProxy.enabled or api.channelDirectoryProxyUrl; see the Slack integration guide.",
+    );
+    this.name = "SlackRouteNotConfiguredError";
+  }
+}
+
+/** A request that got no HTTP answer: no connection, no DNS answer, or the time budget ran out. */
+class SlackUnansweredError extends ChannelDirectoryError {
+  constructor() {
+    super("unavailable");
+  }
+}
+
+// Fetch failure causes that mean Slack never answered (finding 2532). A redirect that
+// `redirect: "error"` refuses, a TLS failure or an invalid header value is a different failure.
+const UNANSWERED_CAUSES = new Set([
+  "ECONNREFUSED",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "ETIMEDOUT",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "UND_ERR_CONNECT_TIMEOUT",
+]);
+
+function neverAnswered(error: unknown): boolean {
+  const failure = asRecord(error);
+  return (
+    failure?.name === "TimeoutError" ||
+    UNANSWERED_CAUSES.has(String(asRecord(failure?.cause)?.code))
+  );
+}
 
 function boundedString(value: unknown, maxLength = 200): string | undefined {
   return typeof value === "string" && value.length > 0 && value.length <= maxLength
@@ -75,13 +120,21 @@ export class SlackChannelDriver implements ChannelDriver {
   readonly implementation = "occ/slack-channel";
   private readonly request: typeof fetch;
   private readonly proxy?: ProxyAgent;
+  // Production sets expectProxy: its default-deny API egress reaches Slack through a configured
+  // proxy. Without one, an unanswered check names that setting; a route an operator approved
+  // instead still works.
+  private readonly proxyMissing: boolean;
 
   constructor(
     request: typeof fetch = globalThis.fetch,
     proxyUrl?: string,
-    options: { readonly managedProxyHosts?: readonly string[] } = {},
+    options: {
+      readonly managedProxyHosts?: readonly string[];
+      readonly expectProxy?: boolean;
+    } = {},
   ) {
     this.request = request;
+    this.proxyMissing = options.expectProxy === true && proxyUrl === undefined;
     if (proxyUrl !== undefined) {
       const endpoint = PROXY_ENDPOINT.exec(proxyUrl);
       const managedEndpoint = MANAGED_SERVICE_PROXY_ENDPOINT.exec(proxyUrl);
@@ -151,6 +204,7 @@ export class SlackChannelDriver implements ChannelDriver {
         ) {
           throw new ChannelCredentialError("binding_required", field);
         }
+        let unanswered = false;
         await withSecret(ref.id, field, async (value) => {
           if (!(role === "appToken" ? /^xapp-/ : /^xoxb-/).test(value)) {
             throw new ChannelCredentialError("role_mismatch", field);
@@ -176,6 +230,11 @@ export class SlackChannelDriver implements ChannelDriver {
             if (error instanceof ChannelCredentialError) {
               throw error;
             }
+            if (error instanceof SlackUnansweredError && this.proxyMissing) {
+              // Refused below: OCC wraps any other error from this callback as unavailable.
+              unanswered = true;
+              return;
+            }
             throw new ChannelCredentialError(
               error instanceof ChannelDirectoryError &&
                 ["credentials_rejected", "missing_scope"].includes(error.reason)
@@ -185,6 +244,9 @@ export class SlackChannelDriver implements ChannelDriver {
             );
           }
         });
+        if (unanswered) {
+          throw new SlackRouteNotConfiguredError();
+        }
       }
     }
   }
@@ -216,8 +278,10 @@ export class SlackChannelDriver implements ChannelDriver {
         this.proxy === undefined
           ? await this.request(url, options)
           : await undiciFetch(url, { ...options, dispatcher: this.proxy });
-    } catch {
-      throw new ChannelDirectoryError("unavailable");
+    } catch (error) {
+      throw neverAnswered(error)
+        ? new SlackUnansweredError()
+        : new ChannelDirectoryError("unavailable");
     }
     if (!response.ok) {
       await response.body?.cancel().catch(() => {});

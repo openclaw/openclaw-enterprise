@@ -487,3 +487,71 @@ test("Slack credential checks read only a whole ${NAME} token string as an env r
   }
   assert.deepEqual(read, ["SLACK_BOT_TOKEN"]);
 });
+
+test("Slack credential checks name the missing proxy only when production expects one and Slack never answered", async (t) => {
+  // Finding 2521: production composition passes expectProxy. With no proxy URL, an auth.test
+  // that Slack never answers usually means the Installation has no Slack route, so the refusal
+  // names the Helm setting and still allows a retry for an open route that timed out (2531).
+  const check = (driver, value = token) =>
+    driver.validateCredentials(
+      { channels: { slack: { mode: "http", botToken: "${SLACK_BOT_TOKEN}" } } },
+      async (_id, _field, use) => use(value),
+    );
+  const noRoute = {
+    name: "SlackRouteNotConfiguredError",
+    message:
+      /no Slack proxy\. If the API has another approved route to Slack, try again\. Otherwise an administrator must set Helm slackProxy\.enabled/,
+  };
+  const unavailable = { reason: "unavailable", path: "/channels/slack/botToken" };
+  // Node's own fetch sends the request to local endpoints, so each failure has the real shape.
+  const listen = async (server) => {
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    t.after(() => server.close());
+    return `http://127.0.0.1:${server.address().port}/`;
+  };
+  const sendTo = (url) => (_slack, options) => globalThis.fetch(url, options);
+  const closed = net.createServer();
+  const closedUrl = await listen(closed);
+  closed.close();
+  // A refused connection and an expired time budget are the two ways Slack never answers.
+  await assert.rejects(
+    check(new SlackChannelDriver(sendTo(closedUrl), undefined, { expectProxy: true })),
+    noRoute,
+  );
+  const timedOut = async () => {
+    throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+  };
+  await assert.rejects(
+    check(new SlackChannelDriver(timedOut, undefined, { expectProxy: true })),
+    noRoute,
+  );
+  // Finding 2532: a redirect refused by redirect: "error" and an invalid header value are fetch
+  // rejections after or without a connection attempt, not a missing route: they stay transient.
+  const redirectUrl = await listen(
+    createServer((_request, response) => {
+      response.writeHead(302, { location: "https://slack.com/api/auth.test" }).end();
+    }),
+  );
+  await assert.rejects(
+    check(new SlackChannelDriver(sendTo(redirectUrl), undefined, { expectProxy: true })),
+    unavailable,
+  );
+  await assert.rejects(
+    check(
+      new SlackChannelDriver(sendTo(redirectUrl), undefined, { expectProxy: true }),
+      "xoxb-a\u0000b",
+    ),
+    unavailable,
+  );
+  // Development composition expects no proxy: the same failure stays the transient outage.
+  await assert.rejects(check(new SlackChannelDriver(sendTo(closedUrl))), unavailable);
+  // With a proxy configured, a refused tunnel is an outage of that route, not a missing setting.
+  const proxy = createServer();
+  proxy.on("connect", (_request, socket) => {
+    socket.end("HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n");
+  });
+  const proxied = new SlackChannelDriver(globalThis.fetch, (await listen(proxy)).slice(0, -1), {
+    expectProxy: true,
+  });
+  await assert.rejects(check(proxied), unavailable);
+});

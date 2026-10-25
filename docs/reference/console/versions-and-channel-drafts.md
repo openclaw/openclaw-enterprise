@@ -130,4 +130,9 @@ per-channel mention settings or sender lists, `*` channel maps, or unsupported
 plugin shapes. Inspect those settings in the native Configuration view; edit them
 through the API or operator workflow. Slack's standard token references are the
 env SecretRefs and the whole `${SLACK_APP_TOKEN}` and `${SLACK_BOT_TOKEN}`
-strings; the editor saves each in its existing form.
+strings; the editor saves each in its existing form. For any other token, the
+card uses Configuration save's term and never shows the value. A string is a
+reference only in a form the runtime reads as one, or with a `${` it keeps as
+written. An object without a `source` is an object the Slack Channel Driver
+cannot read. Any other value that is not a SecretRef is an inline credential
+value.

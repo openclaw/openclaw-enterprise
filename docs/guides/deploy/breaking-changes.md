@@ -38,7 +38,7 @@ They could not deploy before either.
 
 **How to tell.** The message names the setting, for example
 `channels.slack.botToken holds a SecretRef the Slack Channel Driver cannot
-read`. Before you upgrade, read each Agent's Configuration as the next entry
+read`, or `holds an object` for an object that is not a SecretRef. Before you upgrade, read each Agent's Configuration as the next entry
 describes and check `appToken` and `botToken` under `channels.slack` and under
 each entry of `channels.slack.accounts`.
 

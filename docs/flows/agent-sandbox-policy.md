@@ -182,7 +182,8 @@ settled rereads it first, so a later grant applies. A version snapshot without
 `sandboxDriverId` runs without a Sandbox, so the tab skips its log and suggestion reads
 and says no denials are recorded. A `RUNTIME_LOGS_SOURCE_UNAVAILABLE` answer shows the same.
 Then, and on the draft, which reads no log, the denial count, refresh, follow and filter
-controls are hidden.
+controls and the empty denial rows are hidden. When the permission answer refuses
+the policy read, only the network policy card states it; the suggestions card is hidden.
 
 ## Debugging and Verification
 
@@ -205,6 +206,7 @@ controls are hidden.
 
 ## Changelog
 
+- 2026-10-25: Hide the empty denial rows and state a refused policy read once. (finding 2522)
 - 2026-10-25: Hide the denial window's controls on the draft. (finding 2509)
 - 2026-10-25: Skip the policy and suggestion reads that the permission answer refuses. (finding 2454)
 

@@ -227,7 +227,8 @@ export function renderAgentSandboxPolicy(
     logsLoaded = false;
     logStatus.textContent = NO_SANDBOX_DENIALS;
     logRows.replaceChildren();
-    for (const node of [count, logActions, filterField]) {
+    // The empty rows block keeps its margins and a grid gap: hide it too (finding 2522).
+    for (const node of [count, logActions, filterField, logRows]) {
       node.hidden = true;
     }
   }
@@ -451,9 +452,10 @@ export function renderAgentSandboxPolicy(
       return;
     }
     if (policyReadDenied) {
+      // The network policy card says this reader cannot read the policy or its suggestions, so
+      // the suggestions card would only repeat that sentence (finding 2522).
       suggestionsDenied = true;
-      suggestionStatus.textContent = POLICY_READ_DENIED;
-      renderSuggestions();
+      suggestions.hidden = true;
       return;
     }
     if (revisionId === "draft") {
@@ -1085,9 +1087,9 @@ export function renderAgentSandboxPolicy(
     logStatus.textContent = agent.activeRevisionId
       ? "Policy denials come from deployed versions. Open the current version to see them."
       : NO_CURRENT_VERSION_DENIALS;
-    // It reads no Sandbox log, so the window's count and controls could only show nothing, as on
-    // a version without a Sandbox (finding 2509).
-    for (const node of [count, logActions, filterField]) {
+    // It reads no Sandbox log, so the window's count, controls and rows could only show nothing,
+    // as on a version without a Sandbox (findings 2509, 2522).
+    for (const node of [count, logActions, filterField, logRows]) {
       node.hidden = true;
     }
   } else {

@@ -127,8 +127,9 @@ export function slackAccountTargets(
 }
 
 // What a Slack token object that the Slack Channel Driver cannot read holds, for its refusal: a
-// SecretRef when it names a source, else some other object (finding 2518). Only an env SecretRef
-// with the default provider, or none, and a non-empty id, is one the Driver reads.
+// SecretRef when it names a source, else an object (finding 2518), so the refusal never reads as
+// if the value were fine (finding 2527). Only an env SecretRef with the default provider, or
+// none, and a non-empty id, is one the Driver reads.
 const unreadableSlackToken = (token: Record<string, unknown>): string | undefined =>
   token.source === "env" &&
   (token.provider === undefined || token.provider === "default") &&
@@ -137,7 +138,7 @@ const unreadableSlackToken = (token: Record<string, unknown>): string | undefine
     ? undefined
     : typeof token.source === "string"
       ? "a SecretRef"
-      : "an object that is not a SecretRef";
+      : "an object";
 
 /**
  * The first Slack token that is an object the Slack Channel Driver refuses with
