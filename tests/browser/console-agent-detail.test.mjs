@@ -4265,9 +4265,69 @@ test("an Agent editor without Configuration update sees the Configuration read-o
     await page.locator("#revision-selector option[value=draft]").textContent(),
     "New version · read-only Configuration",
   );
+  // Agent update alone keeps the draft a member can change, so the notice is not a reader's.
+  await page
+    .getByText(
+      "New version. Changes affect future deployments using this Configuration. Admitted versions stay unchanged.",
+      { exact: true },
+    )
+    .waitFor();
   await page.getByRole("tab", { name: "Channels", exact: true }).click();
   await page.getByText(CHANNELS_READ_ONLY, { exact: true }).waitFor();
   assert.deepEqual(nonAuthWriteRequests(requests), []);
+});
+
+// Deploy is its own grant. A member who can deploy the draft but change none of it reads it, and
+// keeps the checklist of what the next deployment needs. Deploy's status says what is missing and
+// that this member cannot change the draft to fix it (finding 2421).
+test("a deployer without update keeps the draft checklist", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Draft deployer", { ready: true });
+  // Slack is on and its token Secrets are not bound, so the draft is not ready to deploy.
+  const slack = {
+    enabled: true,
+    mode: "socket",
+    appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+    botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+    dmPolicy: "allowlist",
+    groupPolicy: "allowlist",
+    allowFrom: ["U123"],
+    channels: { C123: { requireMention: true } },
+  };
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Draft deployer Agent",
+    nativeValues("slack", { harnessId: "codex", channels: { slack } }),
+    { executionMode: "dedicated" },
+  );
+  const deployer = await fixture.createNamespaceMember("draft-deployer", namespace.id, [
+    ["read", "namespace"],
+    ["read", "agent"],
+    ["deploy", "agent"],
+    ["read", "agent_revision"],
+    ["read", "configuration"],
+  ]);
+  const path = "/namespaces/" + namespace.id + "/agents/" + agent.id;
+  const { page } = await newPage(t, fixture);
+  const permissions = page.waitForResponse((r) => r.url().endsWith(path + "/permissions"));
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
+    deployer.credentials,
+  );
+  const answer = (await (await permissions).json()).data;
+  assert.equal(answer.deploy, true);
+  assert.equal(answer.update, false);
+  assert.equal(answer.configurationUpdate, false);
+  await page.getByText(READ_ONLY_DRAFT_NOTICE, { exact: true }).waitFor();
+  await page.getByRole("heading", { name: "Prepare this version", exact: true }).waitFor();
+  assert.equal(await page.getByRole("heading", { name: "Version draft", exact: true }).count(), 0);
+  await page
+    .locator(".agent-draft-actions")
+    .getByText(/\. Your access does not include changing this version draft\.$/)
+    .waitFor();
 });
 
 // The permission answer can land after the draft is drawn; nothing waits for it. When it denies
@@ -4497,6 +4557,13 @@ test("a permission reread after a save turns the draft read-only", async (t) => 
   assert.equal((await (await permissions).json()).data.configurationUpdate, true);
   const entry = page.getByRole("button", { name: "View version draft", exact: true });
   await entry.getByText("Configuration draft", { exact: true }).waitFor();
+  // Configuration update alone keeps the draft editable, so the notice is not a reader's.
+  await page
+    .getByText(
+      "New version. Changes affect future deployments using this Configuration. Admitted versions stay unchanged.",
+      { exact: true },
+    )
+    .waitFor();
   await page.getByRole("button", { name: "Edit Configuration" }).click();
   await openAdvancedSettings(page);
   await page.getByLabel("Configuration JSON").fill(JSON.stringify(nativeValues("edited")));
