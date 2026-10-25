@@ -487,6 +487,64 @@ test("Slack credential gate treats omitted enabled as enabled", async (t) => {
   assert.equal(await page.getByRole("button", { name: "Save channel Secrets" }).isDisabled(), true);
 });
 
+// OpenClaw and the Slack Channel Driver read a token that is exactly one `${NAME}` as the env
+// SecretRef to NAME (finding 2511). Where Compute skips OCC's binding rule, as this fixture's does,
+// the Credentials tab is the only check before Deploy: it must list those keys, for a named account
+// and for the top-level account beside one, and hold Deploy until they are bound, or OCC refuses
+// the deploy with binding_required (finding 2513).
+test("Slack credential gate reads whole ${NAME} tokens beside named accounts", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Named Slack token gate", { ready: true });
+  const [appSecret] = await existingSlackSecrets(fixture, namespace.id);
+  const { appToken, botToken, ...shared } = slack;
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Named Slack Token Agent",
+    nativeValues("named-slack-tokens", {
+      harnessId: "codex",
+      channels: {
+        slack: {
+          ...shared,
+          appToken: "${SLACK_MAIN_APP_TOKEN}",
+          botToken: "${SLACK_MAIN_BOT_TOKEN}",
+          accounts: {
+            work: {
+              appToken: { source: "env", provider: "default", id: "SLACK_WORK_APP_TOKEN" },
+              botToken: "${SLACK_WORK_BOT_TOKEN}",
+            },
+          },
+        },
+      },
+    }),
+    {
+      executionMode: "dedicated",
+      secretBindings: { SLACK_WORK_APP_TOKEN: envBinding(appSecret) },
+    },
+  );
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
+  await page
+    .getByText(
+      "Complete these in Credentials before deploying: Slack Secret bindings (SLACK_MAIN_APP_TOKEN, SLACK_MAIN_BOT_TOKEN, SLACK_WORK_BOT_TOKEN).",
+    )
+    .waitFor();
+  const rows = page.locator("section.channel-secrets .credential-status-list");
+  assert.deepEqual(await rows.locator("dt").allTextContents(), [
+    "SLACK_MAIN_APP_TOKEN",
+    "SLACK_MAIN_BOT_TOKEN",
+    "SLACK_WORK_APP_TOKEN",
+    "SLACK_WORK_BOT_TOKEN",
+  ]);
+  assert.deepEqual(await rows.locator("dd").allTextContents(), [
+    "Missing",
+    "Missing",
+    "Bound",
+    "Missing",
+  ]);
+  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
+});
+
 test("Teams-enabled drafts keep console deploy blocked", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
