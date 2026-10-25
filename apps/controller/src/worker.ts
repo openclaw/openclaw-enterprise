@@ -119,6 +119,7 @@ import {
 import type { InstallationRuntimeDrivers } from "./composition/installation-config.ts";
 import { resolveApprovedHarness } from "./composition/production-harness.ts";
 import { ComputeCleanupFailedError } from "./drivers/compute/cleanup-failure.ts";
+import type { PreparedRepositoryGitMaterialState } from "./drivers/repo/github/credentials/prepared-repository-git.ts";
 import {
   ComputeStopYieldedError,
   withComputeAbortSignal,
@@ -185,11 +186,10 @@ export interface ControllerWorkerOptions {
    * Native prepared Git only: whether each open repository session of a revision holds a
    * committed GitHub token. The worker's own prepared owner supplies it, never a Driver.
    */
-  readonly repositoryGitMaterial?: (revisionId: string) => Promise<RepositoryGitMaterialState>;
+  readonly repositoryGitMaterial?: (
+    revisionId: string,
+  ) => Promise<PreparedRepositoryGitMaterialState>;
 }
-
-/** A native revision's GitHub token state; `quarantined` is never prepared again. */
-export type RepositoryGitMaterialState = "ready" | "pending" | "quarantined";
 
 type Observation = NamespaceEnsureResult | NamespaceDeleteResult;
 type Outcome = "success" | "pending" | "retry" | "permanent";
@@ -3661,14 +3661,6 @@ export class ControllerWorker {
   }
 
   /**
-   * A candidate that failed for good keeps its Sandbox for diagnosis, and with it the exposure
-   * Compute's status read used, which nothing reads any more and which the Gateway's node
-   * binding never closed (finding 1672): the sweep withdraws it from the next pass on, and a
-   * restart lists it again from its failed deployment (as a non-active revision). An active
-   * revision is left alone: its exposure went with its readiness. The failure is already
-   * committed, so a read that fails here only defers the withdrawal to the next start.
-   */
-  /**
    * Native prepared Git issues a version's first GitHub token only after its active pointer is
    * published, so a ready runtime alone would report success before GitHub answered. Hold the
    * deployment until the token commits, and fail it when GitHub's answer quarantined the
@@ -3700,6 +3692,14 @@ export class ControllerWorker {
     }
   }
 
+  /**
+   * A candidate that failed for good keeps its Sandbox for diagnosis, and with it the exposure
+   * Compute's status read used, which nothing reads any more and which the Gateway's node
+   * binding never closed (finding 1672): the sweep withdraws it from the next pass on, and a
+   * restart lists it again from its failed deployment (as a non-active revision). An active
+   * revision is left alone: its exposure went with its readiness. The failure is already
+   * committed, so a read that fails here only defers the withdrawal to the next start.
+   */
   private async scheduleFailedCandidateExposureWithdrawal(claim: ClaimedWork): Promise<void> {
     if (
       this.compute.withdrawHarnessExposure === undefined ||

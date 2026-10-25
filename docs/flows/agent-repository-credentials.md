@@ -302,7 +302,8 @@ The deployment's own Work then runs
 `PreparedRepositoryGitStore.revisionMaterial` through the worker's prepared owner. It defers at
 `REPOSITORY_GIT_MATERIAL_PENDING` until each open session has a committed token and fails with
 `REPOSITORY_GIT_TOKEN_QUARANTINED` when one holds a quarantined attempt, which is never
-prepared again. The runtime stays; maintenance skips this check
+prepared again. An unfinished attempt stays pending because its own run can still commit it.
+The runtime stays; maintenance skips this check
 ([reference](../reference/repository-credentials/prepared-native-git.md#deployment-and-the-first-token)).
 
 If standing Git evidence is missing, the worker keeps Git closed and observes the existing

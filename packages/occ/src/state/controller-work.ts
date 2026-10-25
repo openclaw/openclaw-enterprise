@@ -717,7 +717,7 @@ function deploymentErrorMessage(code: string): string {
     case "REPOSITORY_GIT_ROUTE_BLOCKED":
       return "This version's repository Git access was closed by the controller: its Sandbox or supervisor was replaced, a credential write's outcome is unknown, or the access was withdrawn. The worker log names the reason (OPENSHELL_GIT_RECONCILIATION_REQUIRED). Deploy a new version.";
     case "REPOSITORY_GIT_TOKEN_QUARANTINED":
-      return "This version has no repository Git token, and the controller does not request one again for this version: GitHub rejected the App key or the registry's App or installation, or GitHub's answer was lost. The worker log names the repository (PREPARED_GITHUB_RECOVERY_REQUIRED). Put a key GitHub accepts in the App key Secret or correct the registry, then deploy a new version.";
+      return "This version has no repository Git token, and the controller does not request one again for this version: GitHub rejected the App key or the registry's App or installation, GitHub was unreachable, or its answer was lost. The worker log names the repository (PREPARED_GITHUB_RECOVERY_REQUIRED). Put a key GitHub accepts in the App key Secret or correct the registry, then deploy a new version. If the key and registry are correct, for example GitHub was unreachable, deploy a new version.";
     case "REPOSITORY_GIT_SENDER_UNQUALIFIED":
       return "This version was admitted with repository Git delivery that the selected Credential Proxy cannot enforce: no OpenShell release is qualified for the git-write profile, so it could never start. Remove the Agent's repository binding, select a qualified installed sender, or use native prepared Git without a Sandbox, then deploy again.";
     case "REPOSITORY_GIT_PROFILE_UNSUPPORTED":

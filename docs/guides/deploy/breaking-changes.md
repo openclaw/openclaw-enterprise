@@ -21,6 +21,27 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-25: native repository deployments wait for the first Git token
+
+**What breaks.** On native prepared Git (no Sandbox), a deployment of an Agent
+with repository access now stays in progress at
+`REPOSITORY_GIT_MATERIAL_PENDING` until GitHub issues the version's first
+repository token, usually a few seconds. If that request fails, for example
+GitHub rejects the App key or is unreachable, the deployment fails with
+`REPOSITORY_GIT_TOKEN_QUARANTINED`. Earlier builds reported `succeeded` while
+every Git request of that version failed.
+
+**Who is affected.** API clients, scripts and alerts that wait for a native
+repository deployment or expect it to report `succeeded`.
+
+**How to tell.** The deployment's `error.code` is
+`REPOSITORY_GIT_TOKEN_QUARANTINED`, or its progress shows
+`REPOSITORY_GIT_MATERIAL_PENDING`.
+
+**Steps.** Put a key GitHub accepts in the App key Secret or correct the
+registry, then deploy a new version. If both are correct, deploy a new version.
+See [prepared native Git](../../reference/repository-credentials/prepared-native-git.md#deployment-and-the-first-token).
+
 ## 2026-10-25: provisioning refuses an unplaceable dedicated Agent with 400
 
 **What breaks.** `POST /namespaces/{namespaceId}/agents/provision` with a Secret

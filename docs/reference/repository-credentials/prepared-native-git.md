@@ -134,16 +134,22 @@ are not logged.
 The worker asks GitHub for a version's first token only after it publishes that
 version as active. The deployment stays in progress at
 `REPOSITORY_GIT_MATERIAL_PENDING` until the token is committed, usually a few
-seconds later. If GitHub refuses the request, for example because it rejects the
-App key or the registry names the wrong App or installation, the worker
-quarantines that version's preparation and never prepares it again. The
-deployment then fails with `REPOSITORY_GIT_TOKEN_QUARANTINED`, and the worker log
-names the revision and `repositoryRef` (`PREPARED_GITHUB_RECOVERY_REQUIRED`). A
-lost GitHub answer is quarantined the same way. The published version keeps
-running without Git access. Correct the key or registry, then deploy a new
-version; see [replace a rejected App key](../../guides/repository-credentials/team-runbook.md#replace-a-rejected-app-key).
-This check runs only for a deployment. A running version whose token renewal
-fails reports it only in the worker log.
+seconds later. If the request fails, the worker quarantines that version's
+preparation and never prepares it again. The request fails when GitHub rejects
+the App key or the registry names the wrong App or installation, and also when
+GitHub is unreachable, does not answer within 25 seconds, or its answer is lost.
+The deployment then fails at once with `REPOSITORY_GIT_TOKEN_QUARANTINED`, and
+the worker log names the revision and `repositoryRef`
+(`PREPARED_GITHUB_RECOVERY_REQUIRED`). The published version keeps running
+without Git access, and earlier versions stay until the next deployment. Correct
+the key or registry, then deploy a new version; if both are correct, deploy a new
+version. See [replace a rejected App key](../../guides/repository-credentials/team-runbook.md#replace-a-rejected-app-key).
+
+Any other wait, for example an issuer change before the new version gets a token
+or an attempt whose result the worker did not record, ends at the deployment's
+convergence deadline with `CONVERGENCE_DEADLINE_EXCEEDED`. This check runs only
+for a deployment. A running version whose token renewal fails reports it only in
+the worker log.
 
 ## Change the issuer
 

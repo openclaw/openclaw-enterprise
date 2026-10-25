@@ -3581,6 +3581,52 @@ for (const outcome of ["ready", "quarantined"]) {
 }
 
 test(
+  "a running native repository version's maintenance ignores a quarantined token renewal",
+  requiresPostgres,
+  async (context) => {
+    // Finding 2415: only a deployment waits for its version's token. A running version whose
+    // renewal GitHub refused keeps its maintenance chain: failing that pass would fail a version
+    // nobody deployed just now, and its renewal failure is reported in the worker log instead.
+    const repository = repositoryBoundary();
+    const fixture = await setup(context, { repoDriver: repository.driver });
+    const { owner, candidate } = await fixture.admitInitialRevision("repository-token-renewal", {
+      revision: { repositoryCredentials: repository.snapshot },
+    });
+    const events = [];
+    let state = "ready";
+    await fixture.start(
+      { ...fixture.compute, maintenanceIntervalMs: 200 },
+      {
+        emit: (event) => events.push(event),
+        repositoryGitMaterial: async () => state,
+      },
+    );
+    await fixture.work(candidate, "succeeded");
+    // The running version's renewal is quarantined from now on.
+    state = "quarantined";
+    const quarantinedAt = events.length;
+    const maintenance = `agent_revision:${candidate.id}:maintenance:`;
+    const passes = () =>
+      events
+        .slice(quarantinedAt)
+        .filter(
+          (event) => event.event === "worker.completed" && event.workId?.startsWith(maintenance),
+        );
+    // Two passes, so at least one began after the quarantine.
+    await waitFor("two maintenance passes after the quarantine", async () =>
+      passes().length >= 2 ? true : undefined,
+    );
+    const completed = passes();
+    assert.ok(
+      completed.every(({ outcome }) => outcome === "success"),
+      completed.map(({ outcome, code }) => `${outcome}:${code}`).join(),
+    );
+    assert.equal((await fixture.deploymentStatus(owner, candidate)).status, "succeeded");
+    assert.equal((await fixture.currentAgent(owner)).activeRevisionId, candidate.id);
+  },
+);
+
+test(
   "a deploy denial during repository admission leaves a first deployment's runtime untouched",
   requiresPostgres,
   async (context) => {
