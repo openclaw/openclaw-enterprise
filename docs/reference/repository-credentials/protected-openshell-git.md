@@ -313,8 +313,8 @@ uncertain request outcomes before retrying.
 ## GitHub App key rotated or revoked
 
 See [replace a rejected App key](../../guides/repository-credentials/team-runbook.md#replace-a-rejected-app-key).
-A ready Agent is not evidence of usable Git material. A rejected key can leave
-already issued material usable until expiry, then close requests.
+A ready Agent is not evidence of usable Git material. A changed key retires
+issued material within about a minute, even when GitHub rejects the new key.
 
 ## Move from the earlier trial
 
