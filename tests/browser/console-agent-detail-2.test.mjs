@@ -2349,6 +2349,10 @@ test("a read-only viewer is denied saved settings and native admin once per tab,
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   await trackSettledFetches(page);
+  // A failed permission read leaves the administer answer unknown, so the native admin card asks
+  // for its status as it did before the answer had that bit. With the answer it does not ask
+  // (the next test).
+  await withholdPermissionSummary(page, fixture, namespace.id, agent.id);
   const detail = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
   await login(page, fixture, detail, viewer.credentials);
   const unavailable = page.getByRole("heading", { name: "Configuration unavailable" });
@@ -2402,6 +2406,50 @@ test("a read-only viewer is denied saved settings and native admin once per tab,
   assert.equal(reads(nativeAdminPath), 2);
   assert.equal(denials("openclaw.configurations.read"), 3);
   assert.equal(denials("openclaw.agents.native_admin.read"), 2);
+});
+
+// Native admin status needs Agent administer, and each refused read is a browser console error
+// and an audited denial. The permission answer already says the caller lacks it, so the card is
+// never asked for, on any view of the page.
+test("a viewer without Agent administer never asks for native admin status", async (t) => {
+  const auditSink = new InMemoryAuditSink();
+  const fixture = await createConsoleAppFixture(t, { auditSink });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Administer answer");
+  const agent = await fixture.createAgent(namespace.id, "Viewed Agent", nativeValues("viewed"));
+  const viewer = await fixture.createNamespaceMember("administer-viewer", namespace.id, [
+    ["read", "namespace"],
+    ["read", "agent"],
+  ]);
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await trackSettledFetches(page);
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const nativeAdminPath = `${agentPath}/native-admin`;
+  const reads = (path) => requests.filter((request) => request.path === path).length;
+  const answer = page.waitForResponse((r) => r.url().endsWith(`${agentPath}/permissions`));
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id), viewer.credentials);
+  assert.equal((await (await answer).json()).data.administer, false);
+  for (let view = 0; view < 2; view += 1) {
+    await page.getByRole("heading", { name: "Viewed Agent" }).waitFor();
+    // The card would ask right after the answer lands; let that turn finish first.
+    await waitForSettledFetches(page, `${agentPath}/permissions`, 1);
+    await settlePageRequests(page);
+    await waitForIdleFetches(page);
+    assert.equal(reads(nativeAdminPath), 0);
+    assert.equal(await page.locator(".native-admin-access:not([hidden])").count(), 0);
+    await page.reload();
+  }
+  assert.equal(
+    auditSink
+      .list()
+      .filter(
+        (event) =>
+          event.kind === "authorization_denial" &&
+          event.action === "openclaw.agents.native_admin.read",
+      ).length,
+    0,
+  );
 });
 
 test("a failed native admin status read keeps the card, its error and Refresh access", async (t) => {

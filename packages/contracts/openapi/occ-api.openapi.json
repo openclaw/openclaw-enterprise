@@ -21550,6 +21550,10 @@
                     "data": {
                       "additionalProperties": false,
                       "properties": {
+                        "administer": {
+                          "description": "Whether the selected IAM Driver allows Agent administer now, which native admin UI access needs. Advisory only: other required permissions (native admin UI also needs a signed-in console session), lifecycle state, or a later authorization decision can still prevent the operation.",
+                          "type": "boolean"
+                        },
                         "configurationSecretsOperate": {
                           "description": "Whether the selected IAM Driver allows Secret operate now on every Secret that the Agent's Configuration binds. Each Configuration save needs it for the Secrets it binds. `true` when the Configuration binds no Secret. Reported only to a caller with Configuration read and update; otherwise `false`. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
                           "type": "boolean"
@@ -21580,6 +21584,7 @@
                         "deploy",
                         "operate",
                         "delete",
+                        "administer",
                         "configurationUpdate",
                         "configurationSecretsOperate"
                       ],
