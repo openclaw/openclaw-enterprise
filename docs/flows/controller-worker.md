@@ -343,9 +343,7 @@ post-commit cleanup; maintenance cannot rewrite deployment warnings.
 Indexed `workId` scopes progress to work; maintenance and unbound history cannot
 supply it. `getDeploymentStatus` reads
 `findWorkAttempt` with the work row in one State snapshot and projects fixed
-public explanations. `deploymentStatusForWork` keeps claimed work, work with a
-counted attempt, and work with evidence `running`, so a deferral or an expired
-claim never reports `queued` again. Memory State has no attempt.
+public explanations. Memory State has no attempt.
 
 Legacy terminal rows derive `reason_code` from matching activation or terminal
 reconcile audit evidence, otherwise `LEGACY_OUTCOME_UNKNOWN`, with `NULL` `result_data`.

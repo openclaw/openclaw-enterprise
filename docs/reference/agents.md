@@ -67,10 +67,8 @@ This requires exact AgentRevision `read`, not Agent `operate`.
 Responses include `deploymentId`, `namespaceId`, `agentId`, `status`, nullable
 `error`, plugin `warnings`, nullable `progress`, and nullable `cleanup`.
 
-- `queued`: no worker has claimed the work yet.
-- `running`: a worker claimed the work and no result is recorded. It stays
-  `running` between attempts and after an expired claim, so the status never
-  steps back to `queued`.
+- `queued`: not claimed yet.
+- `running`: claimed, no result yet, also between attempts.
 - `succeeded`: original work activated the version or found it already selected.
 - `failed`: terminal failure or completion without activation.
 

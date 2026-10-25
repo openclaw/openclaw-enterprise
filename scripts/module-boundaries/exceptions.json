@@ -303,6 +303,7 @@
         "value:controllerWorkDeploymentStatus",
         "value:deploymentErrorForWork",
         "value:deploymentProgressForWork",
+        "value:deploymentStatusForWork",
         "value:deploymentWarningsForWork"
       ],
       "owner": "Work status projection",
