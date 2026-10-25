@@ -4146,6 +4146,223 @@ test("a reader without update views the version draft read-only", async (t) => {
   );
 });
 
+// Agent update and Configuration update are separate grants. A member with only Agent update
+// keeps the Agent's own editors, but the draft's Configuration, its Versions entry and Channels
+// say they are read-only, so no Save answers 403 (finding 2421).
+test("an Agent editor without Configuration update sees the Configuration read-only", async (t) => {
+  const { fixture, namespace } = await createRuntimeAuthFixture(t, "Agent-only editor");
+  const agent = await fixture.createAgent(namespace.id, "Agent-only Agent", nativeValues("v1"), {
+    harnessAuth: { method: "runtime" },
+  });
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const member = await fixture.createNamespaceMember("agent-only-editor", namespace.id, [
+    ["read", "namespace"],
+    ["read", "agent"],
+    ["update", "agent"],
+    ["read", "agent_revision"],
+    ["read", "configuration"],
+  ]);
+  const path = "/namespaces/" + namespace.id + "/agents/" + agent.id;
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  const permissions = page.waitForResponse((r) => r.url().endsWith(path + "/permissions"));
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
+    member.credentials,
+  );
+  assert.deepEqual((await (await permissions).json()).data, {
+    update: true,
+    deploy: false,
+    operate: false,
+    delete: false,
+    configurationUpdate: false,
+  });
+  await page
+    .getByText("Your access does not include editing this Configuration.", { exact: true })
+    .waitFor();
+  assert.equal(await page.getByRole("button", { name: "Edit Configuration" }).count(), 0);
+  // The draft stays a new version (this member can change the Agent's own settings), but its
+  // Configuration is not called editable.
+  const entry = page.getByRole("button", {
+    name: "View new version, read-only Configuration",
+    exact: true,
+  });
+  await entry.getByText("Read-only Configuration", { exact: true }).waitFor();
+  assert.equal(
+    await page.locator("#revision-selector option[value=draft]").textContent(),
+    "New version · read-only Configuration",
+  );
+  await page.getByRole("tab", { name: "Channels", exact: true }).click();
+  await page
+    .getByText(
+      "These are the version draft’s channel settings. Your access does not include editing this Configuration.",
+      { exact: true },
+    )
+    .waitFor();
+  assert.deepEqual(
+    requests
+      .filter(({ method, path }) => method !== "GET" && path.startsWith("/namespaces/"))
+      .map(({ path }) => path),
+    [],
+  );
+});
+
+// The permission answer can land after the draft is drawn; nothing waits for it. When it denies
+// Configuration update, the Channels tab, the draft card and the Credentials tab's Channel
+// Secrets panel turn read-only in place (findings 2421, 2432).
+test("a late permission answer turns a reader's Channels and Channel Secrets read-only", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Late reader answer", { ready: true });
+  // Slack is on and its token Secrets are not bound yet, so an editor's draft offers to set them.
+  const slack = {
+    enabled: true,
+    mode: "socket",
+    appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+    botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+    dmPolicy: "allowlist",
+    groupPolicy: "allowlist",
+    allowFrom: ["U123"],
+    channels: { C123: { requireMention: true } },
+  };
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Late reader Agent",
+    nativeValues("slack", { harnessId: "codex", channels: { slack } }),
+    { executionMode: "dedicated" },
+  );
+  const reader = await fixture.createNamespaceMember("late-reader", namespace.id, [
+    ["read", "namespace"],
+    ["read", "agent"],
+    ["read", "agent_revision"],
+    ["read", "configuration"],
+    ["read", "secret"],
+  ]);
+  const path = "/namespaces/" + namespace.id + "/agents/" + agent.id;
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  const firstPermissions = await holdRequests(t, page, `${fixture.origin}${path}/permissions`, {
+    afterServer: true,
+    once: true,
+  });
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "channels"),
+    reader.credentials,
+  );
+  await firstPermissions.requested;
+  // Until the answer lands the page assumes an editor.
+  await page.getByText(/^Save and Disable update only the shared Configuration draft\./).waitFor();
+  await page.getByRole("button", { name: "Set up credentials", exact: true }).waitFor();
+  const answer = page.waitForResponse((r) => r.url().endsWith(path + "/permissions"));
+  firstPermissions.release();
+  assert.equal((await (await answer).json()).data.configurationUpdate, false);
+  await page
+    .getByText(
+      "These are the version draft’s channel settings. Your access does not include editing this Configuration.",
+      { exact: true },
+    )
+    .waitFor();
+  await page.getByText("Read-only with your access.", { exact: true }).waitFor();
+  // A reader's card offers no editor's action; Deploy says why it is disabled.
+  await page
+    .getByRole("button", { name: "Set up credentials", exact: true })
+    .waitFor({ state: "hidden" });
+  await page.getByText("Your access does not include deploying this Agent.").waitFor();
+
+  // The Channel Secrets panel was built before the answer, with enabled pickers.
+  await page.getByRole("tab", { name: "Credentials", exact: true }).click();
+  await page.getByRole("heading", { name: "Channel Secrets" }).waitFor();
+  await page
+    .getByText(
+      "Your access does not include editing this Configuration, so its channel Secrets are read-only.",
+      { exact: true },
+    )
+    .waitFor();
+  assert.equal(await page.getByLabel("Slack app token").isDisabled(), true);
+  assert.equal(await page.getByLabel("Slack bot token").isDisabled(), true);
+  assert.equal(await page.getByRole("button", { name: "Save channel Secrets" }).count(), 0);
+  assert.deepEqual(
+    requests
+      .filter(({ method, path }) => method !== "GET" && path.startsWith("/namespaces/"))
+      .map(({ path }) => path),
+    [],
+  );
+});
+
+// A draft refresh reads the permission answer again. When the reread revokes Configuration
+// update after the rebuilt tab was drawn, the notice, the Versions entry and the Configuration
+// tab turn read-only without a page Refresh (finding 2421).
+test("a permission reread after a save turns the draft read-only", async (t) => {
+  const { fixture, namespace } = await createRuntimeAuthFixture(t, "Reread revocation");
+  const agent = await fixture.createAgent(namespace.id, "Reread Agent", nativeValues("v1"), {
+    harnessAuth: { method: "runtime" },
+  });
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const editor = await fixture.createNamespaceMember("reread-editor", namespace.id, [
+    ["read", "namespace"],
+    ["read", "agent"],
+    ["read", "agent_revision"],
+    ["read", "configuration"],
+    ["update", "configuration"],
+  ]);
+  const path = "/namespaces/" + namespace.id + "/agents/" + agent.id;
+  const { page } = await newPage(t, fixture);
+  const permissions = page.waitForResponse((r) => r.url().endsWith(path + "/permissions"));
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
+    editor.credentials,
+  );
+  assert.equal((await (await permissions).json()).data.configurationUpdate, true);
+  const entry = page.getByRole("button", { name: "View version draft", exact: true });
+  await entry.getByText("Configuration draft", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "Edit Configuration" }).click();
+  await openAdvancedSettings(page);
+  await page.getByLabel("Configuration JSON").fill(JSON.stringify(nativeValues("edited")));
+  // The save reaches the API with the grant; the grant is revoked before its answer returns, so
+  // the draft refresh's reread denies Configuration update.
+  const patch = await holdRequests(
+    t,
+    page,
+    `${fixture.origin}/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+    { method: "PATCH", afterServer: true, once: true },
+  );
+  const reread = await holdRequests(t, page, `${fixture.origin}${path}/permissions`, {
+    afterServer: true,
+    once: true,
+  });
+  await page.getByRole("button", { name: "Save Configuration" }).click();
+  await patch.requested;
+  const role = fixture.policy.roles.find(({ id }) => id === "role-reread-editor");
+  role.permissions = role.permissions.filter(
+    ({ action, resourceKind }) => action !== "update" || resourceKind !== "configuration",
+  );
+  patch.release();
+  await reread.requested;
+  // The rebuilt tab is drawn from the previous answer while the reread is held.
+  await page.getByText("Configuration saved.", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "Edit Configuration" }).waitFor();
+  const answer = page.waitForResponse((r) => r.url().endsWith(path + "/permissions"));
+  reread.release();
+  assert.equal((await (await answer).json()).data.configurationUpdate, false);
+  await page
+    .getByText(
+      "Version draft · read-only with your access. The next deployment uses it as saved.",
+      { exact: true },
+    )
+    .waitFor();
+  await entry.getByText("Read-only Configuration", { exact: true }).waitFor();
+  await page
+    .getByText("Your access does not include editing this Configuration.", { exact: true })
+    .waitFor();
+  assert.equal(await page.getByRole("button", { name: "Edit Configuration" }).count(), 0);
+});
+
 test("a negative permission answer reaching an open Stop or Delete dialog prevents submission", async (t) => {
   const { fixture, namespace } = await createRuntimeAuthFixture(t, "Open confirmation");
   const agent = await fixture.createAgent(

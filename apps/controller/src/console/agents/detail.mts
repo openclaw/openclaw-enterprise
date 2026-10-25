@@ -3799,7 +3799,9 @@ export async function renderAgentDetail(
       if (draft) {
         const shownReadOnly = configurationReadOnly();
         followConfigurationAccess(() => {
-          if (context.isCurrent() && configurationReadOnly() !== shownReadOnly) {
+          if (context.isCurrent() && mountedTab && configurationReadOnly() !== shownReadOnly) {
+            // Rebuild, not restore: a reusable tab would be parked and shown again as it was.
+            mountedTab.reusable = false;
             void renderTab();
           }
         });
