@@ -2747,6 +2747,7 @@ export const scenarios = {
       "This simulated Installation cannot admit dedicated OpenClaw: it has no Sandbox Driver that can provision it, or its runtime lacks native worker support. OpenClaw defaults to Embedded execution, which works only when no Sandbox Driver is selected; Dedicated is disabled with an explanation.",
     steps: [
       "Confirm Dedicated is unavailable for OpenClaw and the explanation names the missing Sandbox Driver or runtime support.",
+      "Read the Harness hint: it names Codex for Dedicated execution without repeating the reason under Runtime details.",
       "Select Codex and confirm Dedicated remains available.",
     ],
   },
