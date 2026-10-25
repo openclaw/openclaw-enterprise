@@ -804,7 +804,6 @@ export interface CreateAgentInput {
   readonly repositoryAccess?: RepositoryAccess;
 }
 
-/** Create Agent's preflight input: an Agent create body with its Configuration inline, unsaved. */
 /**
  * A listed revision with its deployment outcome, so a Versions list marks a failed version
  * without reading each record (finding 2422). Null when no deployment record matches it.
@@ -819,6 +818,7 @@ export interface AgentRevisionListPage {
   readonly nextBefore?: number;
 }
 
+/** Create Agent's preflight input: an Agent create body with its Configuration inline, unsaved. */
 export interface ValidateAgentCreateInput {
   readonly namespaceId: string;
   readonly configuration: {
