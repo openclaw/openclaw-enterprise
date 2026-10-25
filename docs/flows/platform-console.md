@@ -240,8 +240,8 @@ provisioning, ordinary drafts, Secret grants, and harness authentication.
 ### 4–6. Edit the Agent and access runtime files
 
 [Agent editing](platform-console/agent-editing.md) traces version rendering,
-channels, credentials, and workspace files;
-[stop and deletion](platform-console/agent-stop-and-deletion.md) have their own trace;
+channels and credentials; [workspace files](platform-console/agent-workspace-files.md) and
+[stop and deletion](platform-console/agent-stop-and-deletion.md) have their own traces;
 [Agent sharing](platform-console/agent-sharing.md) traces policy writes.
 
 `channels/slack.mjs:supportSlack` rejects shapes the editor cannot preserve. The

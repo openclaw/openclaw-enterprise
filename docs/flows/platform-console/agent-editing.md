@@ -8,9 +8,9 @@ last_updated_session: 01a162e5-4303-7a21-81d4-bb51cec37c66
 
 ## Overview
 
-Trace Agent edits, credentials, and workspace files. See the
-[parent flow](../platform-console.md); [stop and deletion](agent-stop-and-deletion.md)
-have their own trace.
+Trace Agent edits and credentials. See the
+[parent flow](../platform-console.md); [workspace files](agent-workspace-files.md) and
+[stop and deletion](agent-stop-and-deletion.md) have their own traces.
 
 ## Entry Points
 
@@ -30,7 +30,7 @@ graph TD
     B --> C["Edit draft or save credential bindings"]
     B --> P["Edit Agent plugin selections"]
     B --> Q["Deploy saved draft"]
-    B --> D["Read or write workspace files"]
+    B --> D["Read or write workspace files (workspace files trace)"]
     B --> E["Confirm Agent deletion (stop and deletion trace)"]
     B --> S["Confirm Agent stop (stop and deletion trace)"]
   end
@@ -48,7 +48,6 @@ graph TD
     V -->|confirmed| W["Reload saved draft"]
     V -->|denied or interrupted| X["Show partial save and grant-only retry"]
     X -->|binding unchanged| V
-    D --> F
   end
 ```
 
@@ -268,41 +267,7 @@ Only a confirmed grant or confirmed removal of its reference clears the pending 
 
 ### 6. Read and replace live workspace files
 
-`apps/controller/src/console/agents/workspace.mts:renderWorkspaceFiles` opens from
-`tab=workspace` after an exact Agent read. Contents belong to the live Agent, not Configuration or version history.
-With no selected version, files stay unavailable and no file request is sent. Another current version
-keeps the editors, focus and caret, rereading unedited files in place; gaining or losing one rebuilds them.
-
-The editor reads each supported file by name; the response must name that file and
-include its contents. For an existing file, **Save** becomes available
-when the text differs from that baseline. The comparison uses LF line endings, so
-it does not rewrite an untouched CRLF file. A fresh read checks access before
-restoring a draft, including an empty edit. **Reload** replaces those edits.
-
-Returning to these parked editors applies the newest Agent operate answer the page has
-read (Logs can read a newer one meanwhile): a grant makes the files editable; a revocation
-makes them read-only with the explanation and keeps unsaved text. A failed permission
-read keeps the previous answer. The controller still authorizes every write. Stop and
-each version's **Run diagnostics** follow the same answer.
-
-On the first read or an explicit **Reload**, only a `404` with code `NOT_FOUND`
-and message `The requested workspace file was not found.` confirms the file is
-missing. The operator can then choose **Save** to create it, even as an empty file.
-A generic resource `404`, a denial, or an unavailable read keeps the editor and
-**Save** disabled. **Reload** checks again without writing.
-
-**Save** sends `PUT` with `{ content }` for that file and checks the returned filename. Saving neither patches Configuration nor admits
-a version. If the outcome is unknown, **Save** stays disabled until the operator chooses
-**Reload** and the controller returns the file contents or that same missing-file
-response. The editor never repeats the write automatically.
-
-The [creation trace](../platform-console.md#3-authorize-the-selected-page-resource)
-covers initial channel settings and Secret bindings.
-`apps/controller/src/console/agents/create.mts` submits `initialWorkspaceFiles`
-and `workspaceDefaultsId`. OCC stages these privately for Compute's initialization
-before execution; no gateway is needed. The [workspace flow](../workspace-files.md) owns
-authorization, native transport, initialization, retries, and cleanup. Live editing requires
-deployment.
+Moved to [Agent workspace files](agent-workspace-files.md#6-read-and-replace-live-workspace-files).
 
 <span id="stop-agent"></span>
 
@@ -340,8 +305,6 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 
 ## Changelog
 
-- 2026-10-25: Agent-side tabs follow the reread after a channel save; Disable waits for a rebind. (findings 2470, 2471)
-- 2026-10-25: The sources note names a Harness ServiceAccount's `read`. (finding 2459)
-- 2026-10-25: Channel saves may replace unoperable Secrets. (finding 2444)
+- 2026-10-25: Move step 6 (workspace files) to [its own trace](agent-workspace-files.md); move older entries to history. (finding 2488)
 
 [Console Agent editing documentation history](agent-editing/history.md) preserves the older dated entries.

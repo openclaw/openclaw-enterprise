@@ -316,6 +316,10 @@
                           {
                             "page": "reference/drivers/kubernetes-compute/codex-oauth-storage",
                             "label": "Codex OAuth Storage"
+                          },
+                          {
+                            "page": "reference/drivers/kubernetes-compute/split-layout-installations",
+                            "label": "Split-Layout Installations"
                           }
                         ]
                       },
@@ -348,6 +352,10 @@
                       {
                         "page": "reference/drivers/openshell-credential-gateway",
                         "label": "OpenShell"
+                      },
+                      {
+                        "page": "reference/drivers/openshell-credential-gateway/codex-oauth-poc",
+                        "label": "OpenShell Codex OAuth PoC"
                       }
                     ]
                   },
@@ -1039,6 +1047,7 @@
               "flows/platform-console",
               "flows/platform-console/agent-creation",
               "flows/platform-console/agent-editing",
+              "flows/platform-console/agent-workspace-files",
               "flows/platform-console/agent-stop-and-deletion",
               "flows/platform-console/agent-sharing",
               "flows/platform-console/sign-in-return",
