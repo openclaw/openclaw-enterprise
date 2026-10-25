@@ -87,6 +87,9 @@ async function failMethod(page, pattern, method, { status, error, requestId }) {
   });
 }
 
+const SLACK_SETUP_HINT =
+  "Provide SLACK_APP_TOKEN and SLACK_BOT_TOKEN through Secret bindings before deployment.";
+
 // Every case builds its own Console and browser context, so cases run a few at a time.
 describe("Agent channels", { concurrency: 3 }, () => {
   test("Channel drawer saves channel edits without exposing Secret values or dropping unrelated draft state", async (t) => {
@@ -389,6 +392,9 @@ describe("Agent channels", { concurrency: 3 }, () => {
     const requests = apiRequests(page, fixture.origin);
 
     await openDraft(page, fixture, agent, "Unbound Slack Agent");
+    // The card asks for both token Secrets until each one is bound (finding 2438).
+    const setupHint = page.locator(".channel-card").getByText(SLACK_SETUP_HINT, { exact: true });
+    await setupHint.waitFor();
     // Establish a same-document history entry before opening the modal.
     await page.getByRole("tab", { name: "Configuration", exact: true }).click();
     await page.getByRole("tab", { name: "Channels", exact: true }).click();
@@ -485,6 +491,7 @@ describe("Agent channels", { concurrency: 3 }, () => {
       CUNBOUND123: { requireMention: true, users: ["*"] },
       CBOUND456: { requireMention: true, users: ["*"] },
     });
+    await setupHint.waitFor({ state: "detached" });
     const pageText = await page.locator("body").textContent();
     assert.equal(pageText.includes(slackAppSecretValue), false);
     assert.equal(pageText.includes(slackBotSecretValue), false);

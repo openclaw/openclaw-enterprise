@@ -4256,6 +4256,21 @@ test("a late permission answer turns a reader's Channels and Channel Secrets rea
   assert.equal(await page.getByLabel("Slack app token").isDisabled(), true);
   assert.equal(await page.getByLabel("Slack bot token").isDisabled(), true);
   assert.equal(await page.getByRole("button", { name: "Save channel Secrets" }).count(), 0);
+  // A disabled picker says what is bound, not how to choose or create a Secret (finding 2438).
+  const channelSecrets = page.locator("section.channel-secrets");
+  await channelSecrets.getByText("No Secret is bound.", { exact: true }).nth(1).waitFor();
+  assert.equal(
+    await channelSecrets.getByText("Choose an existing Secret or create a new one.").count(),
+    0,
+  );
+  // At desktop width the Channel Secrets card is as wide as the Harness authentication card
+  // above it (finding 2438).
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const width = (locator) => locator.evaluate((node) => node.getBoundingClientRect().width);
+  assert.equal(
+    await width(channelSecrets),
+    await width(page.locator("form:has(#harness-auth-method)")),
+  );
   assert.deepEqual(nonAuthWriteRequests(requests), []);
 });
 
