@@ -17,6 +17,7 @@ import {
   nativeValues,
   newPage,
   nextFrames,
+  operateDeniedSecretOption,
   pathRequests,
   selectSecret,
   settledView,
@@ -309,6 +310,7 @@ test("Create Agent keeps the search Secret out of plugin approver lookups", asyn
   fixture.controller.selectDriver("plugin", driver.id);
   const namespace = await fixture.createNamespace("Approver privacy", { ready: true });
   const bot = await fixture.createSecret(namespace.id, "Search bot", "synthetic-slack-token");
+  const spare = await fixture.createSecret(namespace.id, "Spare bot", "synthetic-spare-token");
   // This administrator may not create Secrets in the Namespace, so the Namespace permission answer
   // denies Secret create; nothing here creates one.
   fixture.policy.restrictions.push({
@@ -316,6 +318,15 @@ test("Create Agent keeps the search Secret out of plugin approver lookups", asyn
     namespaceId: namespace.id,
     resourceKind: "secret",
     action: "create",
+    effect: "deny",
+  });
+  // Nor operate the spare token, which a people search needs on its Secret (finding 2469).
+  fixture.policy.restrictions.push({
+    id: "deny-approver-spare-operate",
+    namespaceId: namespace.id,
+    resourceKind: "secret",
+    resourceId: spare.id,
+    action: "operate",
     effect: "deny",
   });
   const { page } = await newPage(t, fixture, { browser });
@@ -351,6 +362,16 @@ test("Create Agent keeps the search Secret out of plugin approver lookups", asyn
     "Create new Secret... Your access does not include creating Secrets in this Namespace.",
   );
   assert.equal(await createAction.getAttribute("aria-disabled"), "true");
+  // The spare token is listed disabled with the reason, and a forced click chooses nothing, so
+  // no search is made with it.
+  const deniedSpare = await operateDeniedSecretOption(
+    page,
+    "Slack bot token Secret for people search",
+    spare,
+  );
+  await deniedSpare.click({ force: true });
+  await page.getByLabel("Slack bot token Secret for people search", { exact: true }).press("Enter");
+  assert.equal(await page.getByText("Ready to search.").count(), 0);
   await selectSecret(page, "Slack bot token Secret for people search", bot);
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });

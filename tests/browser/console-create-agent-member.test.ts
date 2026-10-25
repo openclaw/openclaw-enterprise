@@ -17,11 +17,12 @@ import {
   login,
   MEMBER_WRITE,
   newPage,
+  operateDeniedSecretOption,
   selectSecret,
   waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
 import { waitForCreateFormReads } from "./console-agents-test-support.mjs";
-import { GENERIC_DENIAL } from "../helpers/refusal-text.mjs";
+import { GENERIC_DENIAL, SECRET_OPERATE_DENIED } from "../helpers/refusal-text.mjs";
 
 // Create Agent for a Namespace member (UX plan A2, spec 3.11; findings 1901, 493). The real
 // Native IAM Driver answers every read and write: the member's GET /installation is refused, and
@@ -508,6 +509,93 @@ test("a member without Secret create sees the inline Create Secret action disabl
   assert.equal(await drawerAction.getAttribute("aria-disabled"), "true");
   assert.deepEqual(
     answers.filter((answer) => answer.startsWith("POST ") && answer.includes("/secrets")),
+    [],
+  );
+});
+
+// Agent create needs Secret operate on its Harness authentication Secret and on each Secret its
+// Configuration binds. A member with operate on only some readable Secrets was offered the others
+// in Create Agent and met a 403 after the click (finding 2469). Each Create Agent Secret field
+// lists them disabled with the reason and never stages one. The people search field, which only
+// a reader of the Installation sees, is covered in console-agent-plugin-approvers.
+test("Create Agent's Secret fields refuse a readable Secret the member cannot operate", async (t) => {
+  const { fixture, namespace, secret } = await setup(t);
+  const spare = await fixture.createSecret(namespace.id, "Spare key", "sk-member-spare");
+  const member = await fixture.createNamespaceMember(
+    "member-operate-some",
+    namespace.id,
+    MEMBER_WRITE.filter(([action, kind]) => !(action === "operate" && kind === "secret")),
+  );
+  // Secret operate on the team key only.
+  fixture.policy.roles.push({
+    id: "role-operate-team-key",
+    namespaceId: namespace.id,
+    permissions: [{ action: "operate", resourceKind: "secret" }],
+  });
+  fixture.policy.bindings.push({
+    id: "binding-operate-team-key",
+    namespaceId: namespace.id,
+    subjectKind: "identity",
+    subjectId: member.principal.id,
+    roleId: "role-operate-team-key",
+    resourceKind: "secret",
+    resourceId: secret.id,
+  });
+  const answerPath = `/namespaces/${namespace.id}/permissions/secrets`;
+  const { page } = await newPage(t, fixture);
+  const answers = apiResponses(page, fixture.origin);
+  // The first pick is made before the answer arrives: it waits for the answer.
+  const held = await holdRequests(t, page, `${fixture.origin}${answerPath}`, { once: true });
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`, member.credentials);
+  await page.getByRole("button", { name: "Start with default Preset", exact: true }).click();
+  await page.getByLabel("Agent name", { exact: true }).fill("Operate-some Agent");
+  const staged = page.getByText("Secret selected. Create Agent binds it.");
+  await selectSecret(page, "API key Secret", spare);
+  await held.requested;
+  held.release();
+  await page
+    .getByText(`${spare.name} cannot be chosen. ${SECRET_OPERATE_DENIED}`, { exact: true })
+    .waitFor();
+  assert.equal(await staged.count(), 0);
+  // Listed disabled with the reason. A forced click, Enter and the exact name on blur stage
+  // nothing either.
+  const denied = await operateDeniedSecretOption(page, "API key Secret", spare);
+  await denied.click({ force: true });
+  await page.getByLabel("API key Secret", { exact: true }).press("Enter");
+  await page.getByLabel("API key Secret", { exact: true }).fill(spare.name);
+  await page.getByLabel("API key Secret", { exact: true }).press("Tab");
+  assert.equal(await staged.count(), 0);
+  assert.notEqual(
+    await page.getByLabel("API key Secret", { exact: true }).inputValue(),
+    spare.name,
+  );
+  // The operable key stages as before.
+  await selectSecret(page, "API key Secret", secret);
+  await staged.waitFor();
+
+  // The Slack token fields in the Channels drawer list it the same way.
+  await page.getByRole("button", { name: "Configure Slack" }).click();
+  const dialog = page.getByRole("dialog", { name: "Configure Slack" });
+  for (const label of ["Slack app token", "Slack bot token"]) {
+    const option = await operateDeniedSecretOption(dialog, label, spare);
+    await option.click({ force: true });
+    await dialog.getByLabel(label, { exact: true }).press("Escape");
+  }
+  assert.equal(
+    await dialog
+      .getByText("Secret selected. Apply channel settings, then Create Agent binds it.")
+      .count(),
+    0,
+  );
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+
+  // One answer served every field, and nothing was written.
+  assert.deepEqual(
+    answers.filter((answer) => answer.includes(answerPath)),
+    [`GET ${answerPath} 200`],
+  );
+  assert.deepEqual(
+    answers.filter((answer) => !answer.startsWith("GET ") && !answer.includes("/auth/")),
     [],
   );
 });
