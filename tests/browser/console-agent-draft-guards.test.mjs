@@ -8,8 +8,11 @@ import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
   accessBindingPostRequests,
+  AGENT_READ,
   apiRequests,
   detailUrl,
+  expectNoText,
+  grantSecretOperate,
   hasFocus,
   holdRequests,
   login,
@@ -1362,6 +1365,99 @@ for (const tab of ["configuration", "repositories"]) {
     await page.waitForURL(/revision=rev_/);
   });
 }
+
+// Deploying authorizes Secret operate on every Secret the draft binds. An operator who may deploy
+// the Agent but not operate its model Secret (the iam.md operator without Secret operate) is told
+// so beside a disabled Deploy, naming the Secret and who grants it, instead of clicking into a
+// refusal. When the answer is unknown, Deploy stays enabled and the API's plain 403 is explained
+// with the same named sentence. With the grant, the same operator deploys (finding 2546).
+test("Deploy names the bound Secrets an operator may not operate", async (t) => {
+  const { fixture, namespace, agent, path } = await deployableRepositoryAgent(
+    t,
+    "Operator Secret Agent",
+  );
+  const modelSecret = agent.harnessAuth.source;
+  const operator = await fixture.createNamespaceMember("operator", namespace.id, [
+    ...AGENT_READ,
+    ["read_logs", "agent"],
+    ["deploy", "agent"],
+    ["operate", "agent"],
+    ["read", "secret"],
+  ]);
+  const reason =
+    "Deploying needs Secret operate on Demo model credential, which your access does not include. Ask an Installation administrator to grant it.";
+  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
+  const deployPosts = (requests) =>
+    requests.filter(
+      ({ method, path: requested }) => method === "POST" && requested === `${path}/deploy`,
+    );
+
+  // Known answer: Deploy is disabled up front and nothing is sent.
+  {
+    const { page } = await newPage(t, fixture);
+    const requests = apiRequests(page, fixture.origin);
+    await login(page, fixture, url, operator.credentials);
+    await page.getByRole("heading", { name: "Operator Secret Agent" }).waitFor();
+    await page.getByText(reason, { exact: true }).waitFor();
+    const deploy = page.getByRole("button", { name: "Deploy new version" });
+    assert.equal(await deploy.isDisabled(), true);
+    assert.deepEqual(deployPosts(requests), []);
+  }
+
+  // Unknown answer: the first Secret answer fails, so Deploy stays enabled and the API decides.
+  // Its plain 403 says nothing about which grant failed; the answer, read again, names it.
+  {
+    const { page } = await newPage(t, fixture);
+    let failed = false;
+    await page.route(`${fixture.origin}${path}/permissions/secrets`, async (route) => {
+      if (failed) {
+        await route.continue();
+        return;
+      }
+      failed = true;
+      await route.abort();
+    });
+    await login(page, fixture, url, operator.credentials);
+    await page.getByRole("heading", { name: "Operator Secret Agent" }).waitFor();
+    const deploy = page.getByRole("button", { name: "Deploy new version" });
+    await waitForEnabled(deploy);
+    const refused = page.waitForResponse(
+      (response) =>
+        response.url() === `${fixture.origin}${path}/deploy` &&
+        response.request().method() === "POST",
+    );
+    await deploy.click();
+    const response = await refused;
+    assert.equal(response.status(), 403);
+    assert.equal((await response.json()).error.message, GENERIC_DENIAL);
+    const alert = page.getByRole("alert").filter({ hasText: reason });
+    await alert.waitFor();
+    assert.equal(await alert.textContent(), reason);
+    // The alert says it once, and Deploy stays disabled until a grant is read.
+    assert.equal(await page.getByText(reason).count(), 1);
+    assert.equal(await deploy.isDisabled(), true);
+  }
+
+  // With Secret operate on the model Secret, the gate never holds less than the API allows: the
+  // same operator deploys.
+  grantSecretOperate(fixture, namespace.id, operator.principal, [modelSecret.id]);
+  {
+    const { page } = await newPage(t, fixture);
+    await login(page, fixture, url, operator.credentials);
+    await page.getByRole("heading", { name: "Operator Secret Agent" }).waitFor();
+    const deploy = page.getByRole("button", { name: "Deploy new version" });
+    await waitForEnabled(deploy);
+    await expectNoText(page, reason);
+    const admitted = page.waitForResponse(
+      (response) =>
+        response.url() === `${fixture.origin}${path}/deploy` &&
+        response.request().method() === "POST",
+    );
+    await deploy.click();
+    assert.equal((await admitted).status(), 202);
+    await page.waitForURL(/revision=rev_/);
+  }
+});
 
 test("Agent deployment shows the API's typed 403 and 409 refusals", async (t) => {
   const { fixture, namespace, modelSecret, grantModelAccess } =

@@ -2700,16 +2700,21 @@ test("Agent credentials name the administrator step for a member's harness Secre
       requests.filter(({ path }) => path.includes("/iam/")),
       [],
     );
-    // No dead Retry: only Reload remains, and Deploy waits until the access is confirmed.
+    // No dead Retry: only Reload remains. The save finished and nothing this member can do
+    // confirms the grant, so Deploy is not held: the API checks the Agent's access when it
+    // deploys (finding 2547).
     assert.equal(await page.getByRole("button", { name: "Retry credential access" }).count(), 0);
     assert.equal(await page.getByRole("button", { name: "Save authentication source" }).count(), 0);
     await waitForEnabled(page.getByRole("button", { name: "Reload authentication source" }));
-    assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
-    // The rebuilt tab keeps the same words and still offers no Retry.
+    const deploy = page.getByRole("button", { name: "Deploy new version" });
+    await waitForEnabled(deploy);
+    await expectNoText(page, "Confirm authentication and Secret access in Credentials");
+    // The rebuilt tab keeps the same words, still offers no Retry and still holds nothing.
     await page.getByRole("tab", { name: "Configuration", exact: true }).click();
     await page.getByRole("tab", { name: "Credentials", exact: true }).click();
     await page.getByRole("alert").filter({ hasText: HARNESS_GRANT_UNVERIFIED }).waitFor();
     assert.equal(await page.getByRole("button", { name: "Retry credential access" }).count(), 0);
+    assert.equal(await deploy.isDisabled(), false);
   }
 
   // The administrator the warning names opens the Agent's Credentials: its IAM policy read finds
