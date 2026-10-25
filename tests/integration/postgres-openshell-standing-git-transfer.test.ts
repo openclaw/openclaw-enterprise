@@ -4,7 +4,6 @@ import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
-import { Pool } from "pg";
 import { setTimeout as delay } from "node:timers/promises";
 import type { AgentRevision, ComputeRevisionContext } from "../../packages/contracts/src/index.ts";
 import { exerciseInstallationRequests } from "../helpers/openshell-installation-github-requests.ts";
@@ -23,7 +22,7 @@ import {
 import { gitExpiryGateway } from "../helpers/openshell-online-git-journey.mjs";
 import { openShellOnlineGitWire } from "../helpers/openshell-online-git-wire.mjs";
 import { invoke, token } from "../helpers/openshell-online-wire.mjs";
-import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
 import { standingExecutionFixture } from "../helpers/postgres-standing-execution.ts";
 import { preparedStandingGitPeer } from "../helpers/prepared-standing-git-peer.ts";
 import {
@@ -64,8 +63,7 @@ test(
   { ...requiresPostgres, timeout: 385_000 },
   async (t) => {
     let peer!: Awaited<ReturnType<typeof preparedStandingGitPeer>>;
-    const issuanceReader = new Pool({ connectionString: databaseUrl, max: 1 });
-    t.after(() => issuanceReader.end());
+    const issuanceReader = testPool(t, { connectionString: databaseUrl, max: 1 });
     const activeAtIssuance: (string | null)[] = [];
     // Observe each token POST at the supplier boundary, including the interval between
     // Compute returning ready and activation committing. Never use the worker's transaction.

@@ -77,7 +77,7 @@ Compute supplies gateway authentication; Presets replace the starter unchanged.
 then requests optional descriptions for visible refs. [Repository admission](../agent-repository-credentials.md) resolves the
 submitted `repositoryAccess`. Retained drafts keep selections through failed
 discovery; retries recheck current policy. Only `503 REPOSITORY_OPTIONS_UNAVAILABLE`
-permits creation without bindings, and only without retained selections; other
+or `meta.notConfigured` (no `repository` settings) permits creation without bindings, and only without retained selections; other
 failures block submission.
 
 ### 4. Submit provisioning or an ordinary draft
@@ -90,7 +90,8 @@ and deploys; Console polls and opens the saved version.
 Before any write, `create.mts:renderAgentForm` checks the Agent name with the API's Name rule
 (`namespaces.mts:namespaceNameProblem`) and each initial workspace file with the Workspace tab's
 `agents/workspace.mts:workspaceFileProblem`, which names the file; the check opens Advanced
-settings to it. It then checks draft values and plugins with
+settings to it. It then checks draft values, plugins and the planned `harnessAuth`
+(only the method for a Secret it saves next; none for a credential source) with
 `POST /namespaces/:namespaceId/agents/validate`, then posts
 `{kind: "agent", values, secretBindings}` to `.../configurations` and submits its ID,
 plugins, `initialWorkspaceFiles`, and `workspaceDefaultsId` to `.../agents`.
@@ -143,6 +144,7 @@ Switching methods hides that feedback without changing the lookup or saved choic
 
 ## Changelog
 
+- 2026-10-25 00:30: Treat repository options with `meta.notConfigured` like the fixed-composition 503. (finding 2387)
 - 2026-10-24 19:00: Check the Agent name and initial workspace files with the API's rules before any write. (fix-2339-2341)
 - 2026-10-22 10:56: Confirm creation responses before granting access or continuing provisioning. (console-create-delivery-20261022 - eef3442ff)
 - 2026-10-20 05:00: Split from the platform console flow's step 3. (docs-split-1020)

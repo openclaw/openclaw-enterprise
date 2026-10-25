@@ -3609,6 +3609,9 @@ test("NetworkPolicy peers from values are refused before install", tooling, asyn
       ["2001:db8::/31", "2001:dba::/48"],
       ["2001:db8::/32", "2001:db8::/32"],
       ["::ffff:10.0.0.0/104", "::ffff:11.0.0.0/112"],
+      // A zero-length prefix still needs the same family; groups after "::" count.
+      ["::/0", "10.0.0.0/8"],
+      ["2001:db8::1:0:0/96", "2001:db8::2:0:0/112"],
     ].map(([cidr, except]) => [
       { [`${peer}.ipBlock.cidr`]: cidr, [`${peer}.ipBlock.except[0]`]: except },
       `${at}.ipBlock.except[0] must be a strict subset of ${at}.ipBlock.cidr`,
@@ -5953,6 +5956,8 @@ test("Helm refuses unknown resource names and negative quantities", tooling, asy
   for (const [field, value, message] of [
     ["resources.limits.cpu", "-1", "resources.limits.cpu must not be negative"],
     ["resources.requests.cpu", "-.5m", "resources.requests.cpu must not be negative"],
+    // The quantity check trims the value, so the sign check does too.
+    ["resources.requests.cpu", " -1", "resources.requests.cpu must not be negative"],
     [
       "slackProxy.resources.requests.memory",
       "-64Mi",
@@ -5983,6 +5988,12 @@ test("Helm refuses unknown resource names and negative quantities", tooling, asy
       "4Mi",
       "slackProxy.resources.limits.hugepages-huge names a resource",
     ],
+    // The name after the domain prefix holds at most 63 characters.
+    [
+      `resources.limits.example\\.com/${"g".repeat(64)}`,
+      "1",
+      `resources.limits.example.com/${"g".repeat(64)} names a resource`,
+    ],
   ]) {
     await assert.rejects(render({ ...values, [field]: value }), (error) => {
       assert.ok(error.stderr.includes(message), `${field}: ${error.stderr}`);
@@ -5999,6 +6010,12 @@ test("Helm refuses unknown resource names and negative quantities", tooling, asy
     "resources.limits.example\\.com/gpu": "1",
     "slackProxy.resources.limits.hugepages-2Mi": "4Mi",
     "slackProxy.resources.requests.hugepages-1\\.5Gi": "3Gi",
+    // A huge page size is any quantity: unsuffixed, or with an exponent.
+    "slackProxy.resources.limits.hugepages-2097152": "4Mi",
+    "slackProxy.resources.limits.hugepages-1e6": "4Mi",
+    [`resources.limits.example\\.com/${"g".repeat(63)}`]: "1",
+    // Null clears a quantity instead of failing the check.
+    "resources.limits.example\\.com/fpga": "null",
     "slackProxy.resources.requests.ephemeral-storage": "-0",
     "logging.collector.resources.requests.memory": "384e6",
     "logging.collector.state.sizeLimit": "0",

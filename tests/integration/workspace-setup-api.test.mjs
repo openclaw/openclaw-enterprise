@@ -6,7 +6,9 @@ import { WORKSPACE_DEFAULTS_ID } from "../../packages/contracts/src/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
+import { assertApiError } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 
 async function setup(t, options = {}) {
   const audit = new InMemoryAuditSink();
@@ -256,6 +258,29 @@ test("Agent save and deployment refuse initial workspace files the Configuration
   assert.equal(deployed.body.error.message, workspace);
   assert.deepEqual((await f.request("GET", `${agentPath}/revisions`)).data, []);
   assert.equal((await f.staged(created.data.id)).completed, false);
+
+  // Finding 2296: every deployment delivers a completed setup, so an update naming another
+  // execution mode checks it against the same Configuration. The second managed workspace
+  // reads for this dedicated Agent but not once it is embedded.
+  const dedicatedValues = createHarnessConfiguration("openclaw", "gpt-4.1");
+  dedicatedValues.agents.defaults.workspace = "/home/node/workspace";
+  const dedicatedOnly = await f.createConfiguration(f.namespace.id, dedicatedValues);
+  const dedicated = await f.create("Completed setup", {
+    configurationId: dedicatedOnly.id,
+    executionMode: "dedicated",
+    initialWorkspaceFiles: files,
+    harnessAuth: { method: "api_key", source: key.ref },
+  });
+  assert.equal(dedicated.status, 201, JSON.stringify(dedicated.body));
+  const setupId = (await f.staged(dedicated.data.id)).id;
+  await f.state.transact((unit) =>
+    unit.workspaceSetups.complete(f.namespace.id, dedicated.data.id, setupId),
+  );
+  const embedded = await f.request("PATCH", `${f.path}/${dedicated.data.id}`, {
+    body: { configurationId: dedicatedOnly.id, executionMode: "embedded" },
+  });
+  assert.equal(embedded.status, 400, JSON.stringify(embedded.body));
+  assert.equal(embedded.body.error.message, workspace);
 });
 
 test("Agent save accepts initial workspace files for a main roster entry in any letter case", async (t) => {
@@ -499,8 +524,7 @@ test("Agent create refuses dedicated OpenClaw on OpenShell settings its workspac
       assert.equal(refused.status, 201, JSON.stringify(refused.body));
       continue;
     }
-    assert.equal(refused.status, 400, JSON.stringify(refused.body));
-    assert.equal(refused.body.error.code, "INVALID_REQUEST");
+    assertApiError(refused, 400, "INVALID_REQUEST");
     assert.equal(refused.body.error.message, message);
     assert.equal(
       (await f.request("GET", f.path)).data.some(({ name }) => name === "OpenShell openclaw"),
@@ -519,17 +543,44 @@ test("Agent create refuses dedicated OpenClaw on OpenShell settings its workspac
 // Kubernetes Compute with runtime storage but no gateway routing cannot place a dedicated Harness,
 // and deployment refused it after Agent save answered 201. Save now refuses it with the deployment
 // message wherever it checks Harness authentication: a Configuration that selects a model and a
-// Secret or runtime binding (finding 2376).
+// Secret or runtime binding (finding 2376). Create Agent's preflight refuses it too when it names
+// the planned binding, before the console saves a Secret or Configuration (finding 2391).
 test("Agent save refuses a dedicated Harness the Kubernetes Compute settings cannot place", async (t) => {
   // The fixture's unrouted Driver has no node enrollment either (composition always supplies it).
   const message =
-    "Dedicated Agents need gateway routing and node enrollment in this Installation's Kubernetes Compute configuration. Select an embedded Agent, or ask an operator to configure it.";
+    "Dedicated Agents need gateway routing and node enrollment in this Installation's Kubernetes Compute configuration. Codex runs only as a Dedicated Agent: select Embedded OpenClaw, or ask an operator to configure it.";
   for (const routed of [false, true]) {
     const f = await setup(t, { channelRuntime: true, routed });
     const secret = await f.createSecret(f.namespace.id, `model-key-${routed}`, "test-api-key");
     const harnessAuth = { method: "api_key", source: secret.ref };
     const codex = await storeConfiguration(f, "codex", "codex/gpt-5.1");
     const openclaw = await storeConfiguration(f, "openclaw", "openai/gpt-4.1");
+    const validate = (fields) =>
+      f.request("POST", `${f.path}/validate`, {
+        body: {
+          configuration: { kind: "agent", values: codex.data.values },
+          executionMode: "dedicated",
+          ...fields,
+        },
+      });
+    // The preflight checks the binding Agent create will name: the method of a Secret the console
+    // saves next, or an existing Secret. Without one it checks no Harness authentication, as
+    // before.
+    for (const [fields, refused] of [
+      [{ harnessAuth: { method: "api_key" } }, !routed],
+      [{ harnessAuth: { method: "codex_pat" } }, !routed],
+      [{ harnessAuth }, !routed],
+      [{}, false],
+      [{ harnessAuth: null }, false],
+    ]) {
+      const response = await validate(fields);
+      if (!refused) {
+        assert.equal(response.status, 204, JSON.stringify([fields, response.body]));
+        continue;
+      }
+      assertApiError(response, 400, "INVALID_REQUEST", JSON.stringify(fields));
+      assert.equal(response.body.error.message, message);
+    }
     const dedicated = await f.create("Codex", {
       configurationId: codex.data.id,
       executionMode: "dedicated",
@@ -548,8 +599,7 @@ test("Agent save refuses a dedicated Harness the Kubernetes Compute settings can
         assert.equal(response.status, saved, JSON.stringify(response.body));
         continue;
       }
-      assert.equal(response.status, 400, JSON.stringify(response.body));
-      assert.equal(response.body.error.code, "INVALID_REQUEST");
+      assertApiError(response, 400, "INVALID_REQUEST");
       assert.equal(response.body.error.message, message);
     }
     if (routed) {

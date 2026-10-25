@@ -2935,6 +2935,28 @@ function renderAgentForm(
       }
     }
   }
+  // The Harness authentication Agent create will name, as far as it is known before anything is
+  // saved, so the preflight also runs Agent save's check of it against the execution mode and the
+  // Compute settings (finding 2391). A Secret this form saves next is sent as its method alone. A
+  // credential source (ChatGPT sign-in, or one this form registers) is not sent: save cannot check
+  // it either.
+  function plannedHarnessAuth(
+    usesOAuth: boolean,
+  ): HarnessAuthBinding | { method: "api_key" | "codex_pat" } | undefined {
+    if (binding) {
+      return binding;
+    }
+    if (usesOAuth || credentialSourceTypes !== undefined) {
+      return undefined;
+    }
+    const source = passwordAuth ? savedSecret?.ref : modelCredentialSource;
+    if (source?.kind === "secret") {
+      return selectedHarnessAuth(authMethod.value, source);
+    }
+    return passwordAuth && (authMethod.value === "api_key" || authMethod.value === "codex_pat")
+      ? { method: authMethod.value }
+      : undefined;
+  }
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     // A restored draft sets the name and files without an input event.
@@ -3061,6 +3083,7 @@ function renderAgentForm(
     // form can no longer change (finding 1863). Provisioning admits its plan in one request
     // before it saves a Configuration, with its own rules, so it needs no preflight.
     if (!shouldProvision() && !savedConfiguration && !savedAgent) {
+      const harnessAuth = plannedHarnessAuth(usesOAuth);
       try {
         await request(`${namespacePath(namespaceId)}/agents/validate`, {
           method: "POST",
@@ -3071,6 +3094,7 @@ function renderAgentForm(
             initialWorkspaceFiles: body.initialWorkspaceFiles,
             ...(body.plugins ? { plugins: body.plugins } : {}),
             ...(body.pluginApprovers ? { pluginApprovers: body.pluginApprovers } : {}),
+            ...(harnessAuth ? { harnessAuth } : {}),
           },
         });
       } catch (error) {

@@ -6,6 +6,7 @@ import { getCACertificates, setDefaultCACertificates } from "node:tls";
 import test from "node:test";
 
 import { deriveNativeAdminHost } from "../../apps/controller/src/gateway/native-admin.ts";
+import { assertApiError } from "../helpers/api-error.mjs";
 import { createControllerAuth } from "../helpers/password-hasher.mjs";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
@@ -338,8 +339,7 @@ test("native admin status requires exact Agent administer and reports lifecycle 
 
   const limitedSession = await createReadOperateSession(context, "native-admin-reader");
   const denied = await nativeStatus(context, { session: limitedSession });
-  assert.equal(denied.status, 403);
-  assert.equal(denied.body.error.code, "FORBIDDEN");
+  assertApiError(denied, 403, "FORBIDDEN");
 
   const missingStatus = await context.fixture.request(
     "GET",
@@ -379,8 +379,7 @@ test("native admin status requires exact Agent administer and reports lifecycle 
   assert.equal(fullyStopped.status, 200);
   assert.deepEqual(fullyStopped.data, { status: "stopped" });
   const stillDenied = await nativeStatus(context, { session: limitedSession });
-  assert.equal(stillDenied.status, 403);
-  assert.equal(stillDenied.body.error.code, "FORBIDDEN");
+  assertApiError(stillDenied, 403, "FORBIDDEN");
   const serviceKey = await issueServiceKeyForNativeAgent(context);
   const serviceDenied = await injectJson(
     context.fixture,
@@ -461,8 +460,7 @@ test("native admin disabled status still requires exact Agent administer", async
 
   const limitedSession = await createReadOperateSession(context, "native-admin-disabled-reader");
   const denied = await nativeStatus(context, { session: limitedSession });
-  assert.equal(denied.status, 403);
-  assert.equal(denied.body.error.code, "FORBIDDEN");
+  assertApiError(denied, 403, "FORBIDDEN");
 
   const missingStatus = await context.fixture.request(
     "GET",

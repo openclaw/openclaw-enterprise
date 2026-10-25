@@ -777,13 +777,19 @@ test("dedicated runtime rejects missing workspace transport before cluster acces
 test("deployment admission refuses a dedicated Harness the Installation cannot place", () => {
   const runtime = { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" };
   const codex = { id: "codex", version: "1.0.0", mode: "dedicated" };
+  const native = { id: "openclaw", version: "1.0.0", mode: "dedicated" };
   const embedded = { id: "openclaw", version: "1.0.0", mode: "embedded" };
   const codexConfiguration = createHarnessConfiguration("codex", "gpt-5");
+  const nativeConfiguration = createHarnessConfiguration("openclaw", "gpt-4o-mini");
   const embeddedConfiguration = { agents: { defaults: { model: "openai/gpt-5" } } };
+  // Only OpenClaw has an embedded mode, so a Codex Agent is told to change its harness
+  // (finding 2391).
   const named = (setting) =>
     new RegExp(
-      `^Dedicated Agents need ${setting} in this Installation's Kubernetes Compute configuration\\. Select an embedded Agent, or ask an operator to configure it\\.$`,
+      `^Dedicated Agents need ${setting} in this Installation's Kubernetes Compute configuration\\. Codex runs only as a Dedicated Agent: select Embedded OpenClaw, or ask an operator to configure it\\.$`,
     );
+  const nativeMessage =
+    "Dedicated Agents need gatewayRouting in this Installation's Kubernetes Compute configuration. Select Embedded OpenClaw, or ask an operator to configure it.";
   // Composition always supplies node enrollment, so gatewayRouting is the setting to name.
   const routing = named("gatewayRouting");
   const storage = named("gateway routing and node enrollment");
@@ -815,6 +821,18 @@ test("deployment admission refuses a dedicated Harness the Installation cannot p
     driver.validateHarnessAuth(embedded, apiKeyAuth, embeddedConfiguration, {});
     driver.validateHarnessAuth(embedded, apiKeyAuth, embeddedConfiguration, null);
   }
+  // A Dedicated OpenClaw Agent can switch to Embedded execution. Agent save checks it; deployment
+  // refuses it without a Sandbox Driver first.
+  assert.throws(
+    () =>
+      new KubernetesComputeDriver(options({ runtime }), { nodeEnrollment: {} }).validateHarnessAuth(
+        native,
+        apiKeyAuth,
+        nativeConfiguration,
+        null,
+      ),
+    { name: "ConfigurationHarnessError", message: nativeMessage },
+  );
   new KubernetesComputeDriver(routedOptions({ runtime }), {
     nodeEnrollment: {},
   }).validateHarnessAuth(codex, apiKeyAuth, codexConfiguration, {});

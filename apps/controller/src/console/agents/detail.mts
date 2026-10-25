@@ -1976,8 +1976,10 @@ export async function renderAgentDetail(
           : "",
       );
       setLiveServing(false);
+      stopPanel.setNothingRunning(false);
       return;
     }
+    stopPanel.setNothingRunning(latestDeploymentStatus === "failed" && !currentRevisionId);
     const label = latestDeploymentStatus ? outcomeLabel(latestDeploymentStatus) : undefined;
     // A superseded or stopped deployment is neutral: it raises no banner and says nothing about
     // serving.
@@ -3123,9 +3125,13 @@ export async function renderAgentDetail(
     if (anchorBelow && shrunk < 0) {
       globalThis.scrollBy({ top: shrunk, behavior: "instant" });
     }
-    // `focus` may list fallbacks; the first enabled match in the tab takes focus.
+    // `focus` may list fallbacks; the first enabled, shown match in the tab takes focus. A
+    // Cancel that the rebuilt editor hides falls back to the tab (finding 2386).
     const named = [...content.querySelectorAll("button")].find(
-      (candidate) => [focus].flat().includes(candidate.textContent) && !candidate.disabled,
+      (candidate) =>
+        [focus].flat().includes(candidate.textContent) &&
+        !candidate.disabled &&
+        !candidate.closest("[hidden]"),
     );
     const status = saved
       ? [...content.querySelectorAll<HTMLElement>('[role="status"]')].find(
@@ -3731,8 +3737,8 @@ export async function renderAgentDetail(
         { className: "agent-card", novalidate: "" },
         auth.section,
         updateNote,
-        save,
-        reload,
+        // One action row, so Save and Reload keep the shared gap (finding 2386).
+        element("div", { className: "form-actions" }, save, reload),
         feedback,
       );
       data.setAuthenticationForm(form);
@@ -4158,6 +4164,7 @@ export async function renderAgentDetail(
       });
       rebuild("", "Cancel");
     });
+    const actions = element("div", { className: "form-actions" }, save, cancel, reload);
     function update() {
       if (reloading) {
         // A Save during the reread would write the edit being discarded, and a late field
@@ -4181,6 +4188,19 @@ export async function renderAgentDetail(
       }
       cancel.disabled = locked;
       reload.hidden = !outcomeUnknown && !reloadRequired;
+      // Without repository access in the Installation no save can succeed, and the status says
+      // so: Save is not offered, and Cancel only to undo an edit (finding 2386).
+      // A control hidden while focused would drop focus to the page, so the tab takes it.
+      const hide = (control: HTMLButtonElement, hidden: boolean) => {
+        if (hidden && document.activeElement === control) {
+          tabControls.get(selectedTab)?.focus({ preventScroll: true });
+        }
+        control.hidden = hidden;
+      };
+      const notConfigured = fields?.notConfigured() ?? false;
+      hide(save, notConfigured);
+      hide(cancel, notConfigured && !dirty);
+      actions.hidden = save.hidden && cancel.hidden && reload.hidden;
       // An edit that cannot be saved would only block leaving the tab (finding 1539).
       fields?.setDisabled(locked || updateDenied);
     }
@@ -4291,7 +4311,7 @@ export async function renderAgentDetail(
       { className: "agent-card" },
       fields.section,
       updateNote,
-      element("div", { className: "form-actions" }, save, cancel, reload),
+      actions,
       feedback,
     );
   }

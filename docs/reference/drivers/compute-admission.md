@@ -114,8 +114,10 @@ and the Installation's `runtime.channels`.
 With `runtime` set, `validateHarnessAuth` refuses `dedicated` without
 `gatewayRouting` (and node enrollment) or `runtime.gatewayNodeSelector`,
 naming the setting, at Agent save too: the execution mode is the Agent's.
-A save that skips `validateHarnessAuth` (no model selected, or another
-binding) leaves it to deployment.
+Create Agent's preflight (`POST .../agents/validate`) runs the same check when
+it names the planned `harnessAuth`, before the caller saves a Secret or
+Configuration. A save that skips `validateHarnessAuth` (no model selected, or
+another binding, such as a credential source) leaves it to deployment.
 
 [SSH Compute](ssh-compute.md) runs only embedded OpenClaw (other topologies get
 a fixed `409`) and names `harnessAuth.method` for any method but `runtime`,

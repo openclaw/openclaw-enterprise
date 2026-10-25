@@ -57,14 +57,27 @@ const refusalView = (page) =>
       };
     });
 
-// Fills Create Agent from the Standard OpenClaw Preset with `entries` merged into the
-// Configuration's `agents` and `selected` as the plugin selections, at `width`.
-async function filledCreateForm(t, name, entries, { width = 1280, selected = selections } = {}) {
+// Fills Create Agent from a standard Preset (OpenClaw unless `harness` says otherwise) on a
+// fixture built with `options`, with `entries` merged into the Configuration's `agents` and
+// `selected` as the plugin selections, at `width`.
+async function filledCreateForm(
+  t,
+  name,
+  entries,
+  { width = 1280, selected = selections, harness = "openclaw", options = {} } = {},
+) {
   const preset = JSON.parse(
-    await readFile(new URL("../../deploy/presets/standard-openclaw.json", import.meta.url), "utf8"),
+    await readFile(
+      new URL(`../../deploy/presets/standard-${harness}.json`, import.meta.url),
+      "utf8",
+    ),
   );
   const audit = new InMemoryAuditSink();
-  const fixture = await pluginFixture(t, { defaultPresets: [preset], auditSink: audit });
+  const fixture = await pluginFixture(t, {
+    ...options,
+    defaultPresets: [preset],
+    auditSink: audit,
+  });
   const namespace = await fixture.createNamespace(name, { ready: true });
   const { page } = await newPage(t, fixture, {
     browser,
@@ -78,7 +91,7 @@ async function filledCreateForm(t, name, entries, { width = 1280, selected = sel
     }
   });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset template").selectOption({ label: "Standard OpenClaw" });
+  await page.getByLabel("Preset template").selectOption({ label: preset.name });
   await page.getByLabel("Name", { exact: true }).fill(name.toLowerCase().replaceAll(" ", "-"));
   await page.getByLabel("Model", { exact: true }).fill("gpt-4.1");
   await page.getByLabel("Model Secret", { exact: true }).fill("synthetic-model-key");
@@ -244,6 +257,38 @@ test("Create Agent refuses a plugin pair before saving anything and keeps the fo
   assert.equal(response.status(), 201, await response.text());
   assert.deepEqual(Object.keys((await response.json()).data.plugins), [pluginId]);
   await page.waitForURL(/\/console\/agents\/agt_/);
+});
+
+// Kubernetes Compute with runtime storage but no gateway routing cannot place a Dedicated Agent.
+// The preflight passed, so the form saved its Secret and Configuration before Agent create
+// refused, and the saved Configuration locked the harness (finding 2391). The preflight now
+// names the binding Agent create will use (only the method of the Secret the Preset saves next)
+// and refuses first.
+test("Create Agent refuses a Dedicated Agent the Installation cannot place before saving anything", async (t) => {
+  const form = await filledCreateForm(
+    t,
+    "Unplaceable Codex",
+    {},
+    { selected: "{}", harness: "codex", options: { channelRuntime: true, routed: false } },
+  );
+  const { page, configuration, isPreflight } = form;
+  const refused = page.waitForResponse(isPreflight);
+  await submitWithKeyboard(page);
+  const response = await refused;
+  assert.equal(response.status(), 400);
+  assert.deepEqual(response.request().postDataJSON().harnessAuth, { method: "api_key" });
+  const alert = page.getByRole("alert").filter({ hasText: "Dedicated Agents need" });
+  await alert.waitFor();
+  assert.ok(
+    (await alert.textContent()).startsWith(
+      "Dedicated Agents need gateway routing and node enrollment in this Installation's Kubernetes Compute configuration. Codex runs only as a Dedicated Agent: select Embedded OpenClaw, or ask an operator to configure it.",
+    ),
+  );
+  await page.getByRole("button", { name: "Create Agent", disabled: false }).waitFor();
+  await assertNothingSaved(form);
+  // Nothing is saved, so the form can still follow that advice.
+  assert.equal(await configuration.isDisabled(), false);
+  assert.equal(await page.getByLabel("Harness", { exact: true }).isDisabled(), false);
 });
 
 // With several roster entries, deselecting the plugin only led to the next refusal: initial

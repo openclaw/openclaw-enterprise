@@ -97,7 +97,7 @@
 - [`startAgentDeviceAuthorization`](../api.md#post-namespacesnamespaceidagentsdeviceauthorizations): Experimental: Start a private device login for Agent configuration.
 - [`startSavedAgentDeviceAuthorization`](../api.md#post-namespacesnamespaceidagentsagentiddeviceauthorizations): Experimental: Start a private device login for Agent configuration.
 - [`stopAgent`](../api.md#post-namespacesnamespaceidagentsagentidstop): Stop one Agent and keep its saved Agent revision and persistent state.
-- [`validateAgentCreate`](../api.md#post-namespacesnamespaceidagentsvalidate): Check an unsaved Agent Configuration, plugin selections and initial workspace files as Configuration and Agent create would, without saving anything.
+- [`validateAgentCreate`](../api.md#post-namespacesnamespaceidagentsvalidate): Check an unsaved Agent Configuration, plugin selections, initial workspace files and Harness authentication as Configuration and Agent create would, without saving anything.
 - [`validateAgentSandboxPolicy`](../api.md#post-namespacesnamespaceidagentsagentidsandboxpolicyfacetvalidate): Preview Agent network policy admission without saving or applying.
 - [`withdrawAgentCredentialSource`](../api.md#post-namespacesnamespaceidagentsagentidcredentialsourcescredentialsourceidwithdraw): Revoke one credential source from the selected Agent revision.
 - [`getAgentNativeAdmin`](../api.md#get-namespacesnamespaceidagentsagentidnativeadmin): Resolve native admin UI launch availability for one Agent.
