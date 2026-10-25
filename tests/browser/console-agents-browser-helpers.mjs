@@ -37,6 +37,20 @@ export const MEMBER_WRITE = [
   ["read", "preset"],
 ];
 
+/**
+ * MEMBER_WRITE without each [action, resourceKind] grant in `grants`, which it must hold: the
+ * member-write persona missing exactly those grants.
+ * @param {...(typeof MEMBER_WRITE)[number]} grants
+ * @returns {typeof MEMBER_WRITE}
+ */
+export function memberWriteWithout(...grants) {
+  const held = ([action, resourceKind]) =>
+    grants.some((grant) => grant[0] === action && grant[1] === resourceKind);
+  const kept = MEMBER_WRITE.filter((grant) => !held(grant));
+  assert.equal(kept.length, MEMBER_WRITE.length - grants.length, "MEMBER_WRITE holds each grant");
+  return kept;
+}
+
 // What a member who reads an Agent holds in one Namespace: the Namespace, the Agent, its
 // versions and its Configuration. Tests add the grants their persona needs to it.
 /** @type {typeof MEMBER_WRITE} */
