@@ -1,7 +1,7 @@
 ---
 created: 2026-10-20
 updated: 2026-10-25
-last_updated_session: fix-mutant-1025c
+last_updated_session: fix-2469
 ---
 
 # Console Agent creation
@@ -54,6 +54,15 @@ Removed selections clear their details; discovery resets clear both tabs.
 Preset Secret takes precedence over an entered token. OCC reads the
 Secret server-side. Pagination is upstream; filtering is local. Selecting a plugin loads tools.
 Credential, provider, and Harness changes clear results and invalidate pending reads.
+
+The model credential, people search and Slack token fields use the shared
+[Secret picker](agent-editing.md#4-render-draft-revision-or-channels). When a field first opens,
+`renderCreateAgent` reads `GET /namespaces/:namespaceId/permissions/secrets`: the readable
+Secrets the caller may not `operate`, reported only to a caller with Namespace read and Agent
+`create`. Agent create, Configuration create and the people search refuse such a Secret, so each
+field lists it disabled with its reason and never stages it; the Preset's **Use existing Secret**
+list does the same, and **Use Preset** refuses it. A permission reread or a refused create reads
+the answer again. A failed read marks none.
 
 ### 2. Choose a model and starter Configuration
 
@@ -156,6 +165,7 @@ Switching methods hides that feedback without changing the lookup or saved choic
 
 ## Changelog
 
+- 2026-10-25: Secret fields and the Preset's existing Secret refuse readable Secrets the caller may not `operate`. (fix-2469, findings 2469, 2479)
 - 2026-10-25: Send the Agent name to the preflight; mark and focus the name field when the preflight, provisioning or Agent create refuses it as taken. (fix-dogfood-r36, finding 2420)
 - 2026-10-25 08:00: Refuse an operator-managed Preset when it opens where the Compute Driver refuses its binding (finding 2427). (fix-mutant-1025c)
 - 2026-10-25 04:30: Run the preflight before a Credential Gateway registration too (finding 2406). (fix-postland-1025c - 44eebaad38)

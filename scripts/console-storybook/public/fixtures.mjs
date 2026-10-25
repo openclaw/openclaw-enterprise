@@ -1238,6 +1238,9 @@ export function installFixture(scenario, evidence) {
           secrets: { create: !scenario.secretCreateNotPermitted },
         });
       }
+      if (resource === "permissions/secrets" && method === "GET") {
+        return response({ operateDenied: scenario.secretOperateDenied ?? [] });
+      }
       if (resource === "agents") {
         if (method === "GET") {
           return response([...agents.values()]);

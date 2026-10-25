@@ -10,6 +10,7 @@ import type {
   InstallationCapabilities,
   Namespace,
   NamespaceCallerPermissionsResponse,
+  NamespaceSecretPermissionsResponse,
   PluginApprovers,
   PresetLaunchSettings,
   SecretBindings,
@@ -62,6 +63,7 @@ import {
 type ApplyPreset = Parameters<typeof createPresetFields>[1];
 type PresetOptions = Partial<Parameters<ApplyPreset>[1]>;
 type Permissions = Static<typeof NamespaceCallerPermissionsResponse>["data"];
+type SecretPermissions = Static<typeof NamespaceSecretPermissionsResponse>["data"];
 type CreateRequest = (
   path: string,
   options?: RequestOptions & { revalidate?: false; rereadOnResume?: true; readOnly?: true },
@@ -647,18 +649,22 @@ export function renderCreateAgent(context: CreateAgentContext, restored?: unknow
   }
   // Starting the form replaces the launch view, and with it the control that started it. Give
   // focus to the page heading instead of dropping it to the document (finding 1446).
+  const operateAnswer = secretOperateAnswer(context);
   const startForm = (
     rendered: PresetLaunchSettings,
     options: PresetOptions,
     draft?: Partial<CreateAgentDraft>,
   ) => {
-    renderAgentForm(context, rendered, options, draft);
+    renderAgentForm(context, rendered, options, draft, operateAnswer);
     // The chooser could be scrolled; the form starts at its heading (finding 2098).
     if (document.activeElement === document.body && context.isCurrent()) {
       context.view.closest(".content")?.querySelector("h1")?.focus();
     }
   };
-  const presets = createPresetFields(context, startForm);
+  const presets = createPresetFields(
+    { ...context, secretsOperateDenied: operateAnswer.read },
+    startForm,
+  );
   context.view.replaceChildren(
     // A provisioning Namespace accepts drafts; its status shows before any start (finding 1895).
     // replaceChildren would print a null child as the text "null".
@@ -712,6 +718,28 @@ const PERMISSIONS_UNREAD =
 const CONFIGURATION_CREATE_REFUSAL =
   "You do not have permission to create this Agent's Configuration. Ask an administrator for Configuration create access in this Namespace, plus Secret operate on each Secret it binds.";
 
+// The readable Secrets this caller may not operate: each Create Agent Secret field, the Preset's
+// existing Secret included, lists them disabled and never stages one, since Agent create, or a
+// directory search, would answer 403 (finding 2469). Read when a field first needs it, and again
+// after a permission reread or a refused create. A failed read is unknown and marks none.
+function secretOperateAnswer(context: CreateAgentContext) {
+  let answer: Promise<ReadonlySet<string> | undefined> | null = null;
+  return {
+    read: () =>
+      (answer ??= (
+        context.request(
+          `${namespacePath(context.namespaceId)}/permissions/secrets`,
+        ) as Promise<SecretPermissions>
+      ).then(
+        (value) => (Array.isArray(value?.operateDenied) ? new Set(value.operateDenied) : undefined),
+        () => undefined,
+      )),
+    reset: () => {
+      answer = null;
+    },
+  };
+}
+
 // What Create Agent knows of its Namespace: missing from a list the form read (kept for Start
 // over, which renders from the same context), otherwise its status.
 function createNamespaceState(context: CreateAgentContext) {
@@ -740,8 +768,11 @@ function renderAgentForm(
   rendered: PresetLaunchSettings,
   presetOptions: PresetOptions = {},
   draft: Partial<CreateAgentDraft> = {},
+  operateAnswer = secretOperateAnswer(context),
 ) {
   const { view, request, namespaceId } = context;
+  const secretsOperateDenied = operateAnswer.read;
+  const secretContext = { ...context, secretsOperateDenied };
   // A recheck replaces it once the Namespace becomes ready (finding 2012).
   let notReady = createNamespaceState(context);
   let notReadyNote = notReady ? namespaceNote(notReady) : null;
@@ -1042,7 +1073,7 @@ function renderAgentForm(
     });
   }
   const modelCredentialPicker = createSecretReferenceField({
-    context,
+    context: secretContext,
     id: "provider-credential-secret",
     label: "Model credential Secret",
     getCurrentSource: () => modelCredentialSource,
@@ -1566,7 +1597,7 @@ function renderAgentForm(
     Object.hasOwn(draft, "pluginApprovers") ? draft.pluginApprovers : agent.pluginApprovers,
   );
   const directorySecret = createSecretReferenceField({
-    context,
+    context: secretContext,
     id: "approver-directory-secret",
     label: "Slack bot token Secret for people search",
     getCurrentSource: getDirectorySecretSource,
@@ -2192,6 +2223,7 @@ function renderAgentForm(
         isCurrent: context.isCurrent,
         onExpired: context.onExpired,
         secretsCreateAllowed: context.secretsCreateAllowed,
+        secretsOperateDenied,
       },
       copy: {
         editableDescription:
@@ -2918,6 +2950,7 @@ function renderAgentForm(
     capabilityStatus.textContent = permissionsUnknown ? PERMISSIONS_UNREAD : INSTALLATION_REFUSAL;
   }
   async function rereadPermissions() {
+    operateAnswer.reset();
     permissionsReading = true;
     capabilityStatus.textContent = "Checking your permissions in this Namespace…";
     updateControls();
@@ -2988,6 +3021,10 @@ function renderAgentForm(
         message: cause instanceof Error ? cause.message : "",
       };
       const terminal = cause instanceof ProvisioningFailure ? cause : undefined;
+      if (error.status === 403) {
+        // As after a refused Agent create below: the Secret fields read the answer again.
+        operateAnswer.reset();
+      }
       if (!context.isCurrent()) {
         return;
       }
@@ -3556,6 +3593,11 @@ function renderAgentForm(
       }
     } catch (cause) {
       const error = requestFailure(cause);
+      if (error.status === 403) {
+        // A refused create may follow a revoked grant: the Secret fields read the answer again
+        // when they next open (finding 2469), as the Agent page does after a refused save.
+        operateAnswer.reset();
+      }
       const knownRejection = [400, 403, 404, 409, 429].includes(error.status ?? 0);
       outcomeUnknown = mutationStarted && !knownRejection && error.status !== 401;
       if (creatingSecret && (outcomeUnknown || !context.isCurrent() || error.status === 401)) {

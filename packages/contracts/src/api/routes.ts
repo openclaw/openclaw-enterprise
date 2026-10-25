@@ -89,6 +89,7 @@ import {
   AgentCallerPermissionsResponse,
   AgentSecretPermissionsResponse,
   NamespaceCallerPermissionsResponse,
+  NamespaceSecretPermissionsResponse,
   AgentResponse,
   AgentReadResponse,
   AgentRevisionListResponse,
@@ -505,6 +506,23 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: NamespaceParams,
       response: { 200: NamespaceCallerPermissionsResponse, ...readErrors },
+    },
+  },
+  {
+    operationId: "getNamespaceSecretPermissions",
+    method: "GET",
+    path: "/namespaces/:namespaceId/permissions/secrets",
+    action: "openclaw.namespaces.permissions.read",
+    iamAction: "read",
+    resourceKind: "namespace",
+    authorizationTarget: "namespace",
+    summary:
+      "Report the readable Secrets that the caller may not bind to a new Agent, not authorization for a later operation",
+    tags: ["Namespaces"],
+    schema: {
+      querystring: EmptyQuery,
+      params: NamespaceParams,
+      response: { 200: NamespaceSecretPermissionsResponse, ...readErrors },
     },
   },
   {

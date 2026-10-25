@@ -2189,6 +2189,26 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       return;
     }
 
+    if (operation.operationId === "getNamespaceSecretPermissions") {
+      // Namespace read, checked and audited as the Namespace permission answer checks it
+      // (finding 2478), so listing the Secrets below is never a refused, audited read.
+      await controller.getNamespace(context.actorId, namespaceId);
+      // Agent create authorizes Secret operate on its Harness authentication source and on its
+      // Configuration's Secret bindings, and a directory search before it needs the same two
+      // grants (finding 2469). Only a caller who may create an Agent here gets an answer, so it
+      // reports nothing such a request would not, and only on the Secrets the caller may list.
+      // The target matches operationTarget() for createAgent.
+      const operateDenied = (await callerMay(context.actorId, "create", {
+        kind: "agent",
+        id: namespaceId,
+        namespaceId,
+      }))
+        ? await controller.listSecretsOperateDenied(context.actorId, namespaceId)
+        : [];
+      reply.send({ data: { operateDenied }, meta: { requestId: request.id } });
+      return;
+    }
+
     if (operation.operationId === "deleteNamespace") {
       const namespace = await controller.transact(async (unit) => {
         const deleting = await controller!.deleteNamespace(context.actorId, namespaceId);

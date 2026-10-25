@@ -104,8 +104,8 @@ Channel edits preserve group policies. Change DM access with
 
 Model, Harness, and Slack credentials share one searchable Secret picker; the
 [Slack editor](../../guides/console/channels-and-credentials.md#slack-editor) lists
-its controls. On the Agent page, it lists a readable Secret the caller may not `operate`
-disabled with the reason, because a save that binds it is refused. Escape restores the binding, and **Create new Secret...** stays
+its controls. On the Agent page and in Create Agent, it lists a readable Secret the caller may
+not `operate` disabled with the reason, because a save that binds it is refused. Escape restores the binding, and **Create new Secret...** stays
 available without matches, with **Name** defaulting to the Agent name and
 purpose. A name conflict keeps both inputs and overwrites no Secret. Namespace
 readiness errors require refresh.
