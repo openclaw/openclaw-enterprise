@@ -136,11 +136,17 @@ On the bundled Kubernetes Compute, every `${NAME}` reference and environment Sec
 an enabled native channel needs a matching `secretBindings` entry. This includes a
 reference inside other text (`xoxb-${NAME}`) and one with a fallback
 (`${NAME:-text}`): this Compute sets only bound names, so the fallback would
-always replace the reference. OpenClaw substitutes only uppercase names, and
-`$${NAME}` is literal text, not a reference. Configuration
-create and update refuse a reference without one with `400 INVALID_REQUEST`,
-naming the setting and the binding, so send the values and their bindings in
-one request. Deployment refuses a stored Configuration that predates this rule
+always replace the reference. `$${NAME}` is literal text, not a reference.
+
+In a channel secret-input field (Slack `appToken`, `botToken`, `signingSecret`,
+`userToken` and `relay.authToken`, on the channel or a named account; Teams
+`appPassword` on the channel), OpenClaw also reads a whole `$NAME` value as an
+environment SecretRef, so it needs a binding too. OpenClaw substitutes only
+uppercase names: such a field that holds any other `${`, such as `${slack_bot}`
+or `${NAME-text}`, is refused, because OpenClaw would send that text as the
+credential. Configuration create and update refuse these values with
+`400 INVALID_REQUEST`, naming the setting and the binding or text, so send the
+values and their bindings in one request. Deployment refuses a stored Configuration that predates this rule
 with the same message. Disabled channel provider blocks do not require
 bindings.
 

@@ -27,20 +27,24 @@ real Installation.
 provisioning, and `POST .../agents/validate` with `configuration.secretBindings`
 answer `400 INVALID_REQUEST` when an enabled channel has a `${NAME}` reference
 or environment SecretRef without a binding of that name. Builds from later that
-day also refuse one inside other text or with a `:-fallback`, which deployment
-admitted. Earlier builds refused only at deployment. An update of a stored
+day also refuse, at save and at deployment, one inside other text or with a
+`:-fallback`, an unbound `$NAME` in a channel secret-input field, and a `${`
+there that OpenClaw does not substitute, such as `${slack_bot}`. Earlier builds
+refused only at deployment. An update of a stored
 Configuration in this state is refused until it adds the bindings.
 
 **Who is affected.** Clients that save channel values before their bindings,
 and Agents whose stored Configuration has an unbound channel reference.
 
 **How to tell.** The message names the setting and the binding, for example
-`channels.slack.botToken references SLACK_BOT_TOKEN`.
+`channels.slack.botToken references SLACK_BOT_TOKEN`, or the text, for example
+`channels.slack.botToken contains ${slack_bot}`.
 
 **Steps.** Send the values and their `secretBindings` in one request. For a
 stored Configuration, save both Slack Secrets on the Agent's **Credentials**
 tab; fix named Slack accounts and `msteams` through the API, sending the
-values with every binding they reference.
+values with every binding they reference. Replace a refused `${` with an
+uppercase `${NAME}` bound to a Secret.
 
 ## 2026-10-25: provisioning refuses a taken Agent name with 409
 
