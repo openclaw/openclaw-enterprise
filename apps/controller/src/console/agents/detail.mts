@@ -77,6 +77,7 @@ import {
   channelBindingsToReplace,
   channelReplaceHint,
   channelReplaceRefusal,
+  channelDisableRefusal,
   channelSecretsOperateReadOnly,
   hasRequiredChannelCredentials,
   channelCredentialBlockReason,
@@ -635,6 +636,22 @@ export async function renderAgentDetail(
     for (const rerender of configurationAccessViews) {
       rerender();
     }
+  }
+  // An Agent-side view (Plugins, Repositories) drawn from one answer is rebuilt when a newer
+  // answer changes whether Agent saves are refused: a channel save that rebinds a Secret the
+  // caller could not operate makes them editable without a reload (finding 2470).
+  function followAgentSaveAccess(isShown: () => boolean) {
+    let shownReadOnly: boolean | null = null;
+    void agentSaveDenied.then((reason) => {
+      shownReadOnly = reason !== undefined;
+    });
+    followConfigurationAccess(() => {
+      if (mountedTab && isShown() && shownReadOnly !== null && agentReadOnly() !== shownReadOnly) {
+        // Rebuild, not restore: a reusable tab would be parked and shown again as it was.
+        mountedTab.reusable = false;
+        void renderTab();
+      }
+    });
   }
   // Applies the newest permission answer to the draft's labels and views (findings 2421, 2432).
   function applyDraftAccess() {
@@ -3233,6 +3250,8 @@ export async function renderAgentDetail(
       (permissions) => {
         if (context.isCurrent() && reread === permissionsRereads) {
           callerPermissions = permissions;
+          // Views built from now on take this answer; shown ones follow it below (finding 2470).
+          agentSaveDenied = Promise.resolve(agentSaveDenial(permissions, agent));
           if (latestDeploymentStatus === "failed" && !deleting) {
             renderLatestDeployment();
           }
@@ -3656,6 +3675,9 @@ export async function renderAgentDetail(
       showDraftEditorNavigationBlock = () =>
         showLeaveNote(plugins, draftEditorNavigationBlock, "after");
       content.append(plugins);
+      if (draft) {
+        followAgentSaveAccess(() => context.isCurrent() && plugins.isConnected);
+      }
     } else if (selectedTab === "channels") {
       const { servicePrincipalId } = agent;
       // Bound Slack token Secrets this caller may not operate, which a save must replace.
@@ -3682,6 +3704,8 @@ export async function renderAgentDetail(
               : " Configure model credentials in the Credentials tab before deploying."
           }${channelReplace ? ` ${channelReplaceHint(channelReplace)}` : ""}`,
         },
+        // Disable saves no bindings, so a binding it must replace refuses it (finding 2471).
+        disableRefusal: channelDisableRefusal(channelReplace, snapshot.secretBindings),
         drawerContext: {
           drafts: context.drafts,
           baseline: JSON.stringify([
@@ -3984,18 +4008,31 @@ export async function renderAgentDetail(
       let pending = false;
       // Set when the caller's permission answer denies Agent update (finding 1530).
       let updateDenied = false;
-      void agentSaveDenied.then((reason) => {
-        if (reason !== undefined && context.isCurrent()) {
-          // Retry credential access only rechecks the Secret grant; it is not an Agent update.
-          if (savedAuthentication) {
-            return;
-          }
-          updateDenied = true;
-          updateNote.textContent = reason;
-          updateNote.hidden = false;
-          save.disabled = true;
+      const applyUpdateDenial = (reason: string | undefined) => {
+        // Retry credential access only rechecks the Secret grant; it is not an Agent update.
+        if (savedAuthentication || updateDenied === (reason !== undefined)) {
+          return;
+        }
+        updateDenied = reason !== undefined;
+        updateNote.textContent = reason ?? "";
+        updateNote.hidden = !updateDenied;
+        // A save in flight sets the controls when it ends.
+        if (!pending) {
+          save.disabled = outcomeUnknown || updateDenied;
           // An edit that cannot be saved would only block Deploy (finding 1539).
-          auth.setDisabled(true);
+          auth.setDisabled(outcomeUnknown || updateDenied);
+        }
+      };
+      void agentSaveDenied.then((reason) => {
+        if (context.isCurrent()) {
+          applyUpdateDenial(reason);
+        }
+      });
+      // A newer answer updates the form in place: the channel Secrets panel below it keeps its
+      // state and focus (finding 2470).
+      followConfigurationAccess(() => {
+        if (context.isCurrent() && form.isConnected) {
+          applyUpdateDenial(agentSaveDenial(callerPermissions, agent));
         }
       });
       let savedAuthentication = retained?.savedAuthentication ?? null;
@@ -4385,16 +4422,18 @@ export async function renderAgentDetail(
   // editor.
   function renderRepositoryTab(context: DetailContext, data: DraftDetails) {
     const holder = element("div", {});
+    let shown: Element = holder;
     void agentSaveDenied.then((reason) => {
       if (!context.isCurrent() || !holder.parentNode) {
         return;
       }
-      holder.replaceWith(
+      shown =
         reason === undefined
           ? renderRepositoryEditor(context, data)
-          : repositoryAccessSummary(reason),
-      );
+          : repositoryAccessSummary(reason);
+      holder.replaceWith(shown);
     });
+    followAgentSaveAccess(() => context.isCurrent() && shown.isConnected);
     return holder;
   }
 

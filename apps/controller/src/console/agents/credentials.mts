@@ -417,13 +417,35 @@ export function channelReplaceRefusal(
   saved: SecretBindings | undefined,
   submitted: SecretBindings | undefined,
 ) {
-  const kept = (keys ?? []).filter((key) => {
-    const id = secretIdForBinding(submitted === undefined ? saved?.[key] : submitted[key]);
-    return id !== null && id === secretIdForBinding(saved?.[key]);
-  });
+  const kept = keptReplaceBindings(keys, saved, submitted);
   return kept.length
     ? `This save keeps ${listed(bindingNames(kept))} on a Secret your access cannot operate. Choose another Secret for ${kept.length > 1 ? "them" : "it"}, then save.`
     : null;
+}
+
+/**
+ * Why Disable is offered disabled: it saves no bindings, so it keeps each listed binding on the
+ * Secret it binds now and the API would answer 403 (finding 2471). Edit Slack rebinds them first.
+ */
+export function channelDisableRefusal(
+  keys: readonly string[] | null,
+  saved: SecretBindings | undefined,
+) {
+  const kept = keptReplaceBindings(keys, saved, undefined);
+  return kept.length
+    ? `Disabling keeps ${listed(bindingNames(kept))} on a Secret your access cannot operate. Choose another Secret for ${kept.length > 1 ? "them" : "it"} in Edit Slack first, then disable.`
+    : null;
+}
+
+function keptReplaceBindings(
+  keys: readonly string[] | null,
+  saved: SecretBindings | undefined,
+  submitted: SecretBindings | undefined,
+) {
+  return (keys ?? []).filter((key) => {
+    const id = secretIdForBinding(submitted === undefined ? saved?.[key] : submitted[key]);
+    return id !== null && id === secretIdForBinding(saved?.[key]);
+  });
 }
 
 export function createChannelSecretsPanel({
