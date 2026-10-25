@@ -3989,13 +3989,22 @@ test("a version editor without Agent update can recover a failed deployment from
     }),
   );
   const requests = apiRequests(page, fixture.origin);
-  const summary = page.waitForResponse((r) => r.url().endsWith(path + "/permissions"));
+  // The permission answer lands after the Versions list is built, so the list's draft entry is
+  // labelled again when it does.
+  const firstPermissions = await holdRequests(t, page, `${fixture.origin}${path}/permissions`, {
+    afterServer: true,
+    once: true,
+  });
   await login(
     page,
     fixture,
     detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration"),
     editor.credentials,
   );
+  await firstPermissions.requested;
+  await page.locator(".revision-create").waitFor();
+  const summary = page.waitForResponse((r) => r.url().endsWith(path + "/permissions"));
+  firstPermissions.release();
   const response = await summary;
   assert.equal(response.status(), 200);
   assert.deepEqual((await response.json()).data, {
@@ -4013,6 +4022,11 @@ test("a version editor without Agent update can recover a failed deployment from
   // Without Agent update the Versions list's draft entry is not called editable, nor read-only:
   // this caller can save the Configuration (finding 2405).
   await page.getByRole("button", { name: "View version draft", exact: true }).waitFor();
+  // The narrow-width version chooser names the draft the same way.
+  assert.equal(
+    await page.locator("#revision-selector option[value=draft]").textContent(),
+    "Version draft",
+  );
   const recovery = page.getByRole("region", { name: "Deployment needs attention" });
   await recovery
     .getByText("v2 failed its startup model check (RUNTIME_MODEL_PROBE_FAILED).", { exact: false })

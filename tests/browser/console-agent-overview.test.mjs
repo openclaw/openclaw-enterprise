@@ -315,8 +315,30 @@ test("The Versions list keeps an earlier failed version's mark after a newer dep
 
   await page.reload();
   await rail.getByRole("button", { name: /^View version v2/ }).waitFor();
+  // v1's record lands after its page shows, so the notice already reads; the record that lands
+  // then corrects it at once, not at some later poll.
+  const record = await holdRequests(
+    t,
+    page,
+    deploymentRecordUrl(fixture, namespace.id, agent.id, first.id),
+    {
+      once: true,
+      fulfill: deploymentStatusResponse(first, {
+        status: "failed",
+        error: persistedDeploymentError("RUNTIME_MODEL_PROBE_FAILED"),
+      }),
+    },
+  );
   await rail.getByRole("button", { name: /^View version v1/ }).click();
+  await record.requested;
+  await page.getByRole("heading", { name: "Version v1" }).waitFor();
+  await page.locator(".version-selection-notice").waitFor();
+  record.release();
   await page.getByText("Recorded outcome: Failed", { exact: true }).waitFor();
+  assert.equal(
+    await page.locator(".version-selection-notice").textContent(),
+    "Failed version · read-only admitted snapshot. Its deployment did not complete.",
+  );
   await page
     .getByText("Failed version · read-only admitted snapshot. Its deployment did not complete.", {
       exact: true,
@@ -347,6 +369,23 @@ test("Stop is disabled with its reason when a failed first deployment left nothi
     await stopRegion.getByRole("button", { name: "Stop Agent", exact: true }).isDisabled(),
     true,
   );
+});
+
+// Only a failed first deployment leaves nothing to stop. While a first deployment is still queued
+// no version is current either, but Stop ends that deployment, so it stays enabled.
+test("Stop stays enabled while a first deployment is queued", async (t) => {
+  const { fixture, namespace, agent, page } = await agentPage(t, "Queued first", "Queued first");
+  const queued = await fixture.deployAgent(namespace.id, agent.id);
+  await page.route(deploymentRecordUrl(fixture, namespace.id, agent.id, queued.id), (route) =>
+    route.fulfill(deploymentStatusResponse(queued, { status: "queued" })),
+  );
+
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  const summary = page.locator(".agent-current-summary");
+  await summary.getByText("v1 · Queued", { exact: true }).waitFor();
+  const stopRegion = page.getByRole("region", { name: "Stop Agent", exact: true });
+  await waitForEnabled(stopRegion.getByRole("button", { name: "Stop Agent", exact: true }));
+  assert.equal(await stopRegion.getByText(/nothing to stop/).count(), 0);
 });
 
 // The failed first version's own page (finding 2403) said "Not verified" for Live serving while
