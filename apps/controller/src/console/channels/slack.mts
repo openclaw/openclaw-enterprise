@@ -31,6 +31,11 @@ const STANDARD_REFS = {
   },
 };
 
+// A token this editor can read back and save unchanged: the standard env SecretRef, or the whole
+// `${NAME}` reference to the same binding, which the Configuration save recommends (finding 2495).
+const standardToken = (value: unknown, ref: { readonly id: string }) =>
+  value === undefined || refsEqual(value, ref) || value === `\${${ref.id}}`;
+
 const DM_POLICIES = ["pairing", "allowlist", "open", "disabled"];
 type SlackChannel = { users?: string[]; requireMention?: boolean };
 type SlackConfig = ChannelValues & {
@@ -87,17 +92,17 @@ function supportSlack(values: ChannelValues): ChannelSupport<SlackConfig> {
       config,
     };
   }
-  if (config.appToken !== undefined && !refsEqual(config.appToken, STANDARD_REFS.slack.appToken)) {
+  if (!standardToken(config.appToken, STANDARD_REFS.slack.appToken)) {
     return {
       supported: false,
-      reason: "Slack app token uses a non-standard credential reference.",
+      reason: `Slack app token uses a credential reference this editor does not write. To edit Slack here, set appToken to \${SLACK_APP_TOKEN} in the Configuration JSON.`,
       config,
     };
   }
-  if (config.botToken !== undefined && !refsEqual(config.botToken, STANDARD_REFS.slack.botToken)) {
+  if (!standardToken(config.botToken, STANDARD_REFS.slack.botToken)) {
     return {
       supported: false,
-      reason: "Slack bot token uses a non-standard credential reference.",
+      reason: `Slack bot token uses a credential reference this editor does not write. To edit Slack here, set botToken to \${SLACK_BOT_TOKEN} in the Configuration JSON.`,
       config,
     };
   }
@@ -196,8 +201,9 @@ function updatedSlack(values: ChannelValues, body: HTMLFormElement) {
     ...current,
     enabled: body.querySelector<HTMLInputElement>("#slack-enabled")!.checked,
     mode: "socket",
-    appToken: STANDARD_REFS.slack.appToken,
-    botToken: STANDARD_REFS.slack.botToken,
+    // A standard token keeps the form it was saved in.
+    appToken: current.appToken ?? STANDARD_REFS.slack.appToken,
+    botToken: current.botToken ?? STANDARD_REFS.slack.botToken,
     channels,
   };
   if (!isRecord(existingConfig)) {

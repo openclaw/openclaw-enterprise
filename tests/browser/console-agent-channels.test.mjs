@@ -350,6 +350,58 @@ describe("Agent channels", { concurrency: 3 }, () => {
     });
   }
 
+  // Configuration save recommends a whole `${NAME}` bound to a Secret for a channel token. The
+  // drawer opened that form as "non-standard" and stayed disabled (finding 2495): it now edits
+  // the channel and saves each token in the form it was written.
+  test("Channel drawer edits Slack whose tokens are whole ${NAME} references and keeps them", async (t) => {
+    const { fixture, namespace } = await readyNamespace(t, "Whole reference Slack");
+    const tokens = { appToken: "${SLACK_APP_TOKEN}", botToken: "${SLACK_BOT_TOKEN}" };
+    const { agent, slack } = await createSlackAgent(fixture, namespace, {
+      name: "Whole reference Slack",
+      slug: "whole-reference-slack",
+      slack: { ...tokens, channels: { COLD123: { requireMention: true, users: ["*"] } } },
+      secretBindings: await slackTokenBindings(fixture, namespace, "Whole reference"),
+    });
+    const { page } = await newPage(t, fixture, { browser });
+    await openDraft(page, fixture, agent, "Whole reference Slack");
+    await page.getByRole("button", { name: "Edit Slack" }).click();
+    const dialog = page.getByRole("dialog", { name: "Edit Slack" });
+    const save = dialog.getByRole("button", { name: "Save configuration" });
+    // Reading the references back is no change.
+    assert.equal(await save.isDisabled(), true);
+    await dialog.getByLabel("Require a mention").uncheck();
+    await waitForEnabled(save);
+    await save.click();
+    await page.getByText(/Configuration .*generation 2/).waitFor();
+    const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
+    const stored = (await fixture.request("GET", configurationPath)).data.values.channels.slack;
+    assert.deepEqual(stored, {
+      ...slack,
+      channels: { COLD123: { requireMention: false, users: ["*"] } },
+    });
+  });
+
+  // A token reference the drawer cannot write back keeps it disabled; the reason names the way
+  // out and describes the disabled button (finding 2495).
+  test("Channel drawer names how to edit Slack with a token reference it does not write", async (t) => {
+    const { fixture, namespace } = await readyNamespace(t, "Other reference Slack");
+    const { agent } = await createSlackAgent(fixture, namespace, {
+      name: "Other reference Slack",
+      slug: "other-reference-slack",
+      slack: { botToken: { source: "env", provider: "default", id: "OTHER_BOT_TOKEN" } },
+    });
+    const { page } = await newPage(t, fixture, { browser });
+    await openDraft(page, fixture, agent, "Other reference Slack");
+    const reason = page.getByText(
+      "Slack bot token uses a credential reference this editor does not write. To edit Slack here, set botToken to ${SLACK_BOT_TOKEN} in the Configuration JSON.",
+      { exact: true },
+    );
+    await reason.waitFor();
+    const edit = page.getByRole("button", { name: "Edit Slack" });
+    assert.equal(await edit.isDisabled(), true);
+    assert.equal(await edit.getAttribute("aria-describedby"), await reason.getAttribute("id"));
+  });
+
   // Every deployment needs a model authentication source. An Agent with its API key bound was
   // still told to configure model credentials "before first deploy" (finding 2063).
   test("Channel drawer asks for model credentials only while the Agent has none", async (t) => {

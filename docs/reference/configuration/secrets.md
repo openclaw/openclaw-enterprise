@@ -150,6 +150,9 @@ A channel secret-input field (Slack `appToken`, `botToken`, `signingSecret`,
   `${slack_bot}` or `${NAME-text}`, is refused: OpenClaw would send that text
   as the credential. The message quotes no other text of the value than a lowercase
   `${name}` or the name before `-`.
+- The Configuration Driver accepts a credential field only as one whole
+  `${NAME}` or a SecretRef, so even with a binding it refuses a fallback, a
+  `$NAME` value or text around a reference, naming the form.
 
 Configuration create and update refuse these values with `400 INVALID_REQUEST`,
 naming the setting and the binding, so send the values and their bindings in

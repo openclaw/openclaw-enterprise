@@ -169,6 +169,12 @@ export function renderAgentSandboxPolicy(
     "Denials in the loaded window: —",
   );
   const follow = element("input", { type: "checkbox", "aria-label": "Follow policy denials" });
+  const logActions = element(
+    "div",
+    { className: "form-actions" },
+    button("Refresh denials", () => void readLogs(true)),
+    element("label", {}, follow, "Follow"),
+  );
   const feedback = element("p", { role: "status", tabindex: "-1" });
   const suggestionStatus = element("p", { role: "status" }, "Loading policy suggestions…");
   const filter = element("input", {
@@ -176,6 +182,12 @@ export function renderAgentSandboxPolicy(
     placeholder: "Filter loaded denials",
     "aria-label": "Filter loaded denials",
   });
+  const filterField = element(
+    "label",
+    { className: "form-field" },
+    "Filter the loaded window",
+    filter,
+  );
   let view: SandboxPolicyViewWire | undefined;
   let validationDetails: Readonly<ReturnType<typeof requestErrorDetails>> = [];
   let draftGeneration = 0;
@@ -205,14 +217,19 @@ export function renderAgentSandboxPolicy(
     }
     return noSandboxLog;
   }
+  // Without a Sandbox log, the denial window and its controls can show nothing, so only the reason
+  // stays (finding 2497).
   function showNoSandboxDenials() {
     follow.checked = false;
     clearTimeout(logTimer);
+    clearTimeout(suggestionTimer);
     records = [];
     logsLoaded = false;
-    count.textContent = "Denials in the loaded window: none recorded";
     logStatus.textContent = NO_SANDBOX_DENIALS;
     logRows.replaceChildren();
+    for (const node of [count, logActions, filterField]) {
+      node.hidden = true;
+    }
   }
   // Set when the caller's permission answer denies sandbox policy read: the policy and its
   // suggestions are not read, so a reader meets no 403 and no refusal block (finding 2454).
@@ -415,7 +432,10 @@ export function renderAgentSandboxPolicy(
           editable() ? button("Review suggestion", () => prefill(entry.grant)) : null,
         ),
       ),
-      ...(suggestionsDenied ? [] : [button("Refresh suggestions", () => void loadSuggestions())]),
+      // A refusal gets the same answer again, and a version without a Sandbox has none to read.
+      ...(suggestionsDenied || noSandboxLog
+        ? []
+        : [button("Refresh suggestions", () => void loadSuggestions())]),
     );
   }
 
@@ -1040,14 +1060,9 @@ export function renderAgentSandboxPolicy(
   section.append(
     element("h2", {}, "Policy denials"),
     count,
-    element(
-      "div",
-      { className: "form-actions" },
-      button("Refresh denials", () => void readLogs(true)),
-      element("label", {}, follow, "Follow"),
-    ),
+    logActions,
     logStatus,
-    element("label", { className: "form-field" }, "Filter the loaded window", filter),
+    filterField,
     logRows,
     suggestions,
     policyPanel,

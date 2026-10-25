@@ -270,7 +270,12 @@ function renderCard(section: HTMLElement, state: ChannelState, provider: Channel
       provider.secretBindings.some(
         (binding) => !state.drawerContext.secretBindings?.[binding.key]?.source,
       ));
-  const actionAttrs = canOpen ? {} : { disabled: "" };
+  // A disabled action names the reason shown on the card (finding 2495).
+  const reasonId = `channel-${provider.id}-unavailable`;
+  const reasonShown = !state.readOnly && !disabledByMode && (blockReason || !support.supported);
+  const actionAttrs = canOpen
+    ? {}
+    : { disabled: "", ...(reasonShown ? { "aria-describedby": reasonId } : {}) };
   const card = element(
     "section",
     { className: "agent-card channel-card" },
@@ -339,10 +344,12 @@ function renderCard(section: HTMLElement, state: ChannelState, provider: Channel
       ),
     );
   } else if (blockReason) {
-    card.append(element("p", { className: "status", "data-tone": "danger" }, blockReason));
+    card.append(
+      element("p", { className: "status", "data-tone": "danger", id: reasonId }, blockReason),
+    );
   } else if (!support.supported) {
     card.append(
-      element("p", { className: "status", "data-tone": "danger" }, support.reason),
+      element("p", { className: "status", "data-tone": "danger", id: reasonId }, support.reason),
       nativeDocument(`${provider.name} native configuration`, support.config),
     );
   }

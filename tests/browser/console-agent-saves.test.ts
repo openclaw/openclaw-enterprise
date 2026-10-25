@@ -62,6 +62,10 @@ import {
   SAVED_CONFIGURATION_CHANGED,
 } from "../helpers/refusal-text.mjs";
 
+// The Agent page's line under a channel refusal that asks for a Secret binding (finding 2494).
+const CHANNEL_BINDING_CONSOLE_REMEDY =
+  "This editor does not save Secret bindings: bind SLACK_APP_TOKEN and SLACK_BOT_TOKEN on the Credentials tab or in the Slack editor on the Channels tab, and other names through the Configuration API.";
+
 // Saves and reloads on the Agent page's tabs, and every Reload draft, re-navigated to the same
 // URL: the page collapsed to its summary, reread the session, versions, permissions and
 // deployments (about 12 reads), jumped to the top, dropped focus and showed no saved message
@@ -284,14 +288,18 @@ test("an unbound Slack token is refused at save, under its picker and under the 
   const patched = page.waitForResponse((r) => r.url() === url && r.request().method() === "PATCH");
   await page.getByRole("button", { name: "Save Configuration", exact: true }).click();
   assert.equal((await patched).status(), 400);
+  // The refusal shows once, under the editor, which takes focus as for invalid JSON. The editor
+  // saves no Secret bindings, so the console says where it binds them (finding 2494).
+  const unbound =
+    "Configuration setting channels.slack.appToken references SLACK_APP_TOKEN without a Configuration Secret binding: bind SLACK_APP_TOKEN in secretBindings to an environment-backed Secret, or remove the reference.";
   await page
     .locator("#configuration-json-error")
-    .filter({
-      hasText:
-        "Configuration setting channels.slack.appToken references SLACK_APP_TOKEN without a Configuration Secret binding: bind SLACK_APP_TOKEN in secretBindings to an environment-backed Secret, or remove the reference.",
-    })
+    .filter({ hasText: `${unbound} ${CHANNEL_BINDING_CONSOLE_REMEDY}` })
     .waitFor();
   assert.equal(await editor.getAttribute("aria-invalid"), "true");
+  assert.equal(await page.getByText(unbound).count(), 1);
+  assert.equal(await page.locator("#configuration-editor-feedback").textContent(), "");
+  assert.equal(await editor.evaluate((node) => node === globalThis.document.activeElement), true);
   // A token `${` the runtime does not substitute is refused under the Configuration JSON too
   // (finding 2477).
   await editor.fill(
@@ -310,13 +318,74 @@ test("an unbound Slack token is refused at save, under its picker and under the 
     .locator("#configuration-json-error")
     .filter({
       hasText:
-        "Configuration setting channels.slack.appToken contains ${slack_app}, which the runtime does not substitute: use an uppercase ${NAME} bound to a Secret in secretBindings, or escape literal text as $${NAME}.",
+        "Configuration setting channels.slack.appToken contains ${slack_app}, which the runtime does not substitute: use an uppercase ${NAME} bound to a Secret in secretBindings, or escape literal text as $${NAME}. " +
+        CHANNEL_BINDING_CONSOLE_REMEDY,
     })
     .waitFor();
   assert.equal(await editor.getAttribute("aria-invalid"), "true");
+  assert.equal(await page.getByText(/which the runtime does not substitute/).count(), 1);
   const stored = (await fixture.request("GET", configurationPath(c))).data;
   assert.equal(stored.generation, 1);
   assert.deepEqual(stored.values.channels, {});
+});
+
+// A bound Slack token written as `$NAME`, with a fallback or inside other text is refused by the
+// Configuration Driver, which accepts only a whole `${NAME}` or a SecretRef. Its message named an
+// inline credential, as an alert only (finding 2493): it now names the form, under the editor,
+// and the whole `${NAME}` it recommends saves.
+test("a bound Slack token reference that is not the whole value is refused under the Configuration JSON", async (t) => {
+  // The bundled Kubernetes Compute's rule passes a bound reference; the storage Driver answers.
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Bound reference forms", {
+    computeImplementation: "kubernetes-local",
+    filesystemConfiguration: true,
+  });
+  const app = await fixture.createSecret(namespace.id, "Bound forms app token", "xapp-forms");
+  const bot = await fixture.createSecret(namespace.id, "Bound forms bot token", "xoxb-forms");
+  const values = slackValues();
+  const agent = await fixture.createAgent(namespace.id, "Bound reference forms", values, {
+    executionMode: "dedicated",
+    secretBindings: { SLACK_APP_TOKEN: envBinding(app), SLACK_BOT_TOKEN: envBinding(bot) },
+  });
+  const c = { fixture, namespace, agent };
+  const page = await openTab(t, fixture, namespace, agent, "configuration");
+  await page.getByRole("button", { name: "Edit Configuration" }).click();
+  await openAdvancedSettings(page);
+  const editor = page.getByLabel("Configuration JSON");
+  const url = fixture.origin + configurationPath(c);
+  const saveWith = async (botToken: string) => {
+    const slack = { ...values.channels.slack, botToken };
+    await editor.fill(JSON.stringify({ ...values, channels: { slack } }, null, 2));
+    const patched = page.waitForResponse(
+      (r) => r.url() === url && r.request().method() === "PATCH",
+    );
+    await page.getByRole("button", { name: "Save Configuration", exact: true }).click();
+    return (await patched).status();
+  };
+  const field = "Configuration field /channels/slack/botToken holds";
+  for (const [botToken, refusal] of [
+    [
+      "$SLACK_BOT_TOKEN",
+      `${field} a $NAME value, where a credential reference is required. Write it as one \${NAME} reference, or a SecretRef.`,
+    ],
+    [
+      "${SLACK_BOT_TOKEN:-}",
+      `${field} a \${NAME:-…} fallback, which would replace a missing credential. Make the value one \${NAME} reference without a fallback, or a SecretRef.`,
+    ],
+    [
+      "xoxb-${SLACK_BOT_TOKEN}",
+      `${field} text around a \${NAME} reference, where a credential reference must be the whole value. Make the value one \${NAME} reference alone, or a SecretRef.`,
+    ],
+  ] as const) {
+    assert.equal(await saveWith(botToken), 400, botToken);
+    await page.locator("#configuration-json-error").getByText(refusal, { exact: true }).waitFor();
+    assert.equal(await editor.getAttribute("aria-invalid"), "true", botToken);
+    assert.equal(await page.getByText(refusal).count(), 1, botToken);
+    assert.equal(await page.locator("#configuration-editor-feedback").textContent(), "");
+  }
+  assert.equal(await saveWith("${SLACK_BOT_TOKEN}"), 200);
+  await page.getByText("Configuration saved.", { exact: true }).waitFor();
+  const stored = (await fixture.request("GET", configurationPath(c))).data;
+  assert.equal(stored.values.channels.slack.botToken, "${SLACK_BOT_TOKEN}");
 });
 
 // Each save or Reload draft refreshes the draft in place, names the saved generation, moves

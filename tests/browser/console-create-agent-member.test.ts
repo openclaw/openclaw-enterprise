@@ -190,6 +190,15 @@ test("a member without Agent create never sees the form, and Create Agent names 
 
   await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Creating Agents is not available" }).waitFor();
+  // Namespace Roles cannot grant Agent create, so the note sends the member to whoever can
+  // create the Agent rather than promising access (finding 2496).
+  await page
+    .getByRole("status")
+    .getByText(
+      "Your access does not include creating Agents in this Namespace. Only an Installation administrator can create Agents: ask one to create it and to give you access to edit and deploy it.",
+      { exact: true },
+    )
+    .waitFor();
   assert.equal(await page.locator("#create-agent-form").count(), 0);
   assert.equal(await page.locator("#create-agent-access").count(), 0);
   assert.equal(await page.getByRole("button", { name: "Start with default Preset" }).count(), 0);

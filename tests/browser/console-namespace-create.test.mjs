@@ -19,7 +19,7 @@ import {
 
 const browser = fileBrowser();
 const REFUSED =
-  "Your access does not include creating Namespaces in this Installation. After an administrator grants access, select Refresh to try again.";
+  "Your access does not include creating Namespaces in this Installation. Only an Installation administrator can create Namespaces: ask one to create a Namespace or to give you access to an existing one, then select Refresh.";
 const isPrimary = (locator) =>
   locator.evaluate((node) => node.classList.contains("button--primary"));
 const creates = (requests) => pathRequests(requests, "POST", "/namespaces");
@@ -369,9 +369,13 @@ test("a member is not invited to create, and a real IAM denial disables Create N
   const dialog = page.getByRole("dialog", { name: "Create Namespace", exact: true });
   await dialog.getByLabel("Namespace name").fill("Forbidden team");
   await dialog.getByRole("button", { name: "Create Namespace", exact: true }).click();
+  // Only an Installation administrator creates Namespaces, so no grant is promised (finding 2496).
   await dialog
     .getByRole("alert")
-    .filter({ hasText: /do not have permission to create Namespaces/ })
+    .filter({
+      hasText:
+        "You do not have permission to create Namespaces in this Installation. Only an Installation administrator can create them: ask one to create a Namespace or to give you access to an existing one.",
+    })
     .waitFor();
   assert.equal(
     await dialog.getByRole("button", { name: "Create Namespace", exact: true }).isDisabled(),

@@ -2521,9 +2521,22 @@ test("an Agent reader meets no refused read on Repositories, Policy denials or L
       { exact: true },
     )
     .waitFor();
-  await page.getByText("Denials in the loaded window: none recorded", { exact: true }).waitFor();
   await settle();
-  await expectNoText(page, /permission to read|no such runtime log source|window: unavailable/);
+  await expectNoText(
+    page,
+    /permission to read|no such runtime log source|window: unavailable|Denials in the loaded window/,
+  );
+  // With no denial log, the window's controls could only show nothing; only the reason stays
+  // (finding 2497).
+  const policyTab = page.locator(".sandbox-policy");
+  for (const name of ["Refresh denials", "Refresh suggestions"]) {
+    assert.equal(await policyTab.getByRole("button", { name }).count(), 0, name);
+  }
+  assert.equal(await policyTab.getByRole("checkbox", { name: "Follow policy denials" }).count(), 0);
+  assert.equal(
+    await policyTab.getByRole("searchbox", { name: "Filter loaded denials" }).count(),
+    0,
+  );
   assert.deepEqual(
     requests.filter(({ path }) => path.includes("/runtime/logs")),
     [],

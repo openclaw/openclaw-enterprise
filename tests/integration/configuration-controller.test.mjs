@@ -4266,6 +4266,51 @@ test("Configuration and Preset saves refuse a literal secret in the other slots 
   });
 });
 
+test("a credential reference that is not the whole value is refused with a message naming its form", async (t) => {
+  // Finding 2493: a bound Slack token written as `$NAME`, with a fallback or inside other text
+  // passed the channel binding rule and fell to the inline-credential message, which reads as if
+  // the reference were a credential. The refusal stays; its message names the form and what to
+  // write, and never the text around the reference or the fallback, which may hold the token.
+  const context = await saveFixture(t);
+  const created = await request(context.app, "POST", context.collection, {
+    body: { kind: "agent", values: {} },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const item = `${context.collection}/${created.body.data.id}`;
+  const sentinel = `synthetic-${randomUUID()}`;
+  const field = (path) => `Configuration field ${path} holds`;
+  const shorthand = (path) =>
+    `${field(path)} a $NAME value, where a credential reference is required. Write it as one \${NAME} reference, or a SecretRef.`;
+  const fallback = (path) =>
+    `${field(path)} a \${NAME:-…} fallback, which would replace a missing credential. Make the value one \${NAME} reference without a fallback, or a SecretRef.`;
+  const around = (path) =>
+    `${field(path)} text around a \${NAME} reference, where a credential reference must be the whole value. Make the value one \${NAME} reference alone, or a SecretRef.`;
+  const slack = (botToken) => ({ channels: { slack: { enabled: true, botToken } } });
+  const bot = "/channels/slack/botToken";
+  for (const [values, message] of [
+    [slack("$SLACK_BOT_TOKEN"), shorthand(bot)],
+    [slack("${SLACK_BOT_TOKEN:-}"), fallback(bot)],
+    [slack(`\${SLACK_BOT_TOKEN:-${sentinel}}`), fallback(bot)],
+    [slack(`${sentinel}-\${SLACK_BOT_TOKEN}`), around(bot)],
+    [slack("xoxb-${SLACK_BOT_TOKEN}"), around(bot)],
+    // Any key slot: a plugin's API key and the Gateway's remote token.
+    [
+      {
+        plugins: {
+          entries: { brave: { config: { webSearch: { apiKey: "Bearer ${BRAVE_KEY}" } } } },
+        },
+      },
+      around("/plugins/entries/brave/config/webSearch/apiKey"),
+    ],
+    [{ gateway: { remote: { token: "$REMOTE_TOKEN" } } }, shorthand("/gateway/remote/token")],
+    // An escape renders literal text, so it is a literal credential, with that message.
+    [slack("$${SLACK_BOT_TOKEN}"), literalKey(bot)],
+  ]) {
+    await refusedOnSave(context, values, message, { item, sentinel });
+  }
+  await assertNothingStored(context, [`${created.body.data.id}.json`]);
+});
+
 test("Preset and Configuration saves refuse a baseUrl or api that a variable fills with no host or no string", async (t) => {
   // Finding 1256: `https://{{ vars.h }}/v1` filled empty renders `https:///v1`, whose first path
   // segment the URL parser reads as the host. Finding 1257: a number or boolean variable that is

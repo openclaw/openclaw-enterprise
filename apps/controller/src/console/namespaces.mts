@@ -73,7 +73,7 @@ export function renderNamespaces(
   const refusal = element(
     "p",
     { className: "muted", id: "namespace-create-refused" },
-    "Your access does not include creating Namespaces in this Installation. After an administrator grants access, select Refresh to try again.",
+    "Your access does not include creating Namespaces in this Installation. Only an Installation administrator can create Namespaces: ask one to create a Namespace or to give you access to an existing one, then select Refresh.",
   );
   const emptyText = element("p");
   // The API refused this person's creation: the control says so instead of offering another
@@ -324,7 +324,7 @@ export function renderNamespaces(
             "Outcome unknown. Namespace creation could not be confirmed. Check Namespaces for this name before trying again.";
         } else if (forbidden) {
           message =
-            "You do not have permission to create Namespaces in this Installation. Ask an administrator for access.";
+            "You do not have permission to create Namespaces in this Installation. Only an Installation administrator can create them: ask one to create a Namespace or to give you access to an existing one.";
         } else if (error.status === 409) {
           message =
             "This Namespace name is already in use or reserved by a deleted Namespace. Choose a different name.";
