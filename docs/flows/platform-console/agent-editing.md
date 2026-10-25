@@ -89,7 +89,7 @@ current versions suppress recovery; viewed versions show results. Activity polls
 `DEPLOYMENT_POLL_MS` through transient read errors until a result, denial, or missing
 record, patching in place (`patchChildren`); a new result rereads selection.
 **Refresh deployment** rereads both after any poll in flight. A pending deploy lists its
-result rows before the first attempt; the details keep their tallest height until Refresh.
+result rows before the first attempt; the details keep their tallest height until it settles.
 **Current observations** in `agents/deployment-diagnostics.mts` requests timestamped
 `succeeded`, `failed`, or `unknown` diagnostics without changing deployment status.
 Its bodyless POST requires Agent `read`/`operate` and exact Agent revision `read`.

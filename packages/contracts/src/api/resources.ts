@@ -758,6 +758,15 @@ export const NamespaceCallerPermissionsResponse = Type.Object(
           },
           { additionalProperties: false },
         ),
+        secrets: Type.Object(
+          {
+            create: Type.Boolean({
+              description:
+                "Whether the selected IAM Driver allows Secret creation in this Namespace now. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
+            }),
+          },
+          { additionalProperties: false },
+        ),
       },
       { additionalProperties: false },
     ),

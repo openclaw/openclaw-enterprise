@@ -211,13 +211,13 @@ missing wiring or failed dependencies return errors.
 `apps/controller/src/console/secrets.mts:renderSecrets` lists metadata and reads
 the exact Secret's `consumers` before showing actions. Agent IDs link to their
 pages; hidden counts and truncation remain visible. Known references disable
-Delete; the server rechecks references on submission. Create and replacement
-wait for Namespace readiness. Each mutation uses the tracked request client and
-the existing Secret API; no browser code calls a Driver directly.
+Delete; the server rechecks them. Create and replacement wait for Namespace
+readiness; false `secrets.create` disables Create with its reason. Mutations use
+the tracked request client and Secret API, never a Driver.
 
 `secrets.mjs:editValue` masks new input, preserves whitespace (CRLF becomes LF),
-and clears it after the request or dismissal. `console.mjs:clearPasswordInputs` also clears marked
-Secret inputs before retaining a view. Pending requests block navigation and
+and clears it after the request, dismissal, or view retention
+(`console.mjs:clearPasswordInputs`). Pending requests block navigation and
 dismissal. A denied write disables submission; an unconfirmed write cannot be
 replayed from that dialog. `secrets.mjs:confirmDelete` offers an explicit exact
 status read after an uncertain delete; a denial never confirms removal.
@@ -231,7 +231,7 @@ relisted. Closing refocuses the opener; a 403 disables it per account, across
 navigation, until Refresh (`fromRefresh`). Pending writes block dismissal; 400s
 mark names; conflicts keep input; unconfirmed responses need inspection.
 
-Agents and Create Agent read permissions. False `agents.create` or an Agent-refusing
+Agents, Secrets and Create Agent read Namespace permissions. False `agents.create` or an Agent-refusing
 [Namespace status](../reference/namespaces.md#lifecycle) explains why, rechecking on return; failed reads keep creation open.
 Refused `GET /installation` saves only drafts. `agents/collection.mts` polls provisioning Namespaces;
 omission disables Create (`NAMESPACE_MISSING`) and stops; failures retry.

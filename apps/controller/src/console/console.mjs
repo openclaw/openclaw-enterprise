@@ -1574,12 +1574,14 @@ async function loadPage({
     // loading) is replaced once, by the page itself (finding 1407).
     let firstItems = null;
     let firstAgent = null;
-    // The Agents list and Create Agent paint with the caller's permission answer, never enabled
-    // and then refused (findings 1517, 1521). Gating only: the API still authorizes creation, so
-    // an unknown answer (a failed read) keeps the controls.
+    // The Agents and Secrets lists, and Create Agent, paint with the caller's permission answer,
+    // never enabled and then refused (findings 1517, 1521, 2365). Gating only: the API still
+    // authorizes creation, so an unknown answer (a failed read) keeps the controls.
     const permissionsPath = `/namespaces/${encodeURIComponent(namespaceId)}/permissions`;
     const permissionsRead =
-      !scopedNamespaceUnavailable && current.feature === "agents" && !current.agentId
+      !scopedNamespaceUnavailable &&
+      ["agents", "secrets"].includes(current.feature) &&
+      !current.agentId
         ? request(permissionsPath).catch(() => null)
         : null;
     let firstPermissions = null;
@@ -2102,7 +2104,7 @@ async function loadPage({
         renderRows,
       );
     } else if (current.feature === "secrets") {
-      renderSecrets({ ...agentContext, items, sorted });
+      renderSecrets({ ...agentContext, items, sorted, permissions: firstPermissions });
     } else {
       if (current.feature === "backends" && backendsDenied) {
         backendsDenied = false;

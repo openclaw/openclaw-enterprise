@@ -296,7 +296,6 @@ export function createDeploymentStatusPanel(
   const refresh = button(
     "Refresh deployment",
     () => {
-      readerRefresh = true;
       if (loading && polling) {
         // A quiet poll is reading: refresh once it lands.
         refreshQueued = true;
@@ -320,7 +319,6 @@ export function createDeploymentStatusPanel(
   // A quiet poll leaves Refresh alone, unless the reader presses it during the poll.
   let polling = false;
   let refreshQueued = false;
-  let readerRefresh = false;
   let record: Deployment | null = null;
   let error: unknown = null;
   let overviewUnavailable = false;
@@ -423,10 +421,6 @@ export function createDeploymentStatusPanel(
       if (context.isCurrent()) {
         loading = false;
         render();
-        // A Refresh pressed during a poll is answered by the read queued after it.
-        if (!poll) {
-          readerRefresh = false;
-        }
         onStatusChange({
           outcome: record ? deploymentOutcome(record) : null,
           record,
@@ -560,15 +554,15 @@ export function createDeploymentStatusPanel(
     reserveHeight(changed);
   }
 
-  // A deploy's details grow when its first attempt is recorded and shrink when it settles, and
-  // each change moved the cards below, Share Agent then among them (finding 1598). Once a deploy is
-  // seen pending, the details keep the tallest height they have shown, until the reader's own
-  // Refresh after the deploy gives the space back.
+  // A deploy's details grow and shrink as its attempts are recorded, and each change moved the
+  // cards below, Share Agent then among them (finding 1598). While a deploy is seen pending, the
+  // details keep the tallest height they have shown. Once it settles the space is given back in
+  // the same render as the outcome, so a finished deploy leaves no empty card (finding 2369).
   function reserveHeight(changed: boolean) {
     const pending = deploymentPending(record?.status) || deploymentPending(record?.cleanup?.status);
     if (pending) {
       reservedHeight ??= 0;
-    } else if (readerRefresh && !polling && reservedHeight !== null) {
+    } else if (reservedHeight !== null) {
       reservedHeight = null;
       content.style.removeProperty("min-height");
       return;

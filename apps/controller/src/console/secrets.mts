@@ -1,4 +1,10 @@
-import type { Namespace, SecretConsumers, SecretMetadata } from "@openclaw-enterprise/contracts";
+import type {
+  Namespace,
+  NamespaceCallerPermissionsResponse,
+  SecretConsumers,
+  SecretMetadata,
+} from "@openclaw-enterprise/contracts";
+import type { Static } from "typebox";
 import { requestFailure, responseFields } from "./api-client.mjs";
 import { button, dismissOnBackdrop, element, field, statusBlock, validateFields } from "./dom.mjs";
 import { namespaceNameProblem, type NamespacePageContext } from "./namespaces.mjs";
@@ -130,6 +136,7 @@ export function renderSecrets(
     items: unknown;
     sorted(items: readonly SecretSummary[]): SecretSummary[];
     pageUrl: ReturnType<typeof createNavigation>["pageUrl"];
+    permissions?: Static<typeof NamespaceCallerPermissionsResponse>["data"] | null;
   },
 ) {
   const path = `/namespaces/${encodeURIComponent(context.namespaceId)}/secrets`;
@@ -147,7 +154,14 @@ export function renderSecrets(
   const list = element("div");
   const create = button("Create Secret", () => editValue(), { tone: "primary" });
   const ready = context.namespace?.status === "ready";
-  create.disabled = !ready;
+  // The page paints with the caller's permission answer, so Create Secret is never offered and
+  // then refused after the dialog is filled in (finding 2365). Gating only: the API still
+  // authorizes creation, so an unknown answer keeps the control.
+  const createDenied = context.permissions?.secrets?.create === false;
+  create.disabled = !ready || createDenied;
+  if (createDenied) {
+    create.setAttribute("aria-describedby", "secrets-create-denied");
+  }
   context.view.replaceChildren(
     statusBlock(
       "info",
@@ -166,6 +180,15 @@ export function renderSecrets(
         ]
       : []),
     element("div", { className: "collection-toolbar" }, search, create),
+    ...(createDenied
+      ? [
+          element(
+            "p",
+            { className: "muted", role: "status", id: "secrets-create-denied" },
+            "Your access does not include creating Secrets in this Namespace.",
+          ),
+        ]
+      : []),
     list,
   );
   search.addEventListener("input", renderList);
@@ -194,7 +217,9 @@ export function renderSecrets(
             {},
             items.length
               ? "Try another name or ID."
-              : "Create a Secret here, then select it when configuring an Agent.",
+              : createDenied
+                ? "Secrets in this Namespace that are shared with you appear here."
+                : "Create a Secret here, then select it when configuring an Agent.",
           ),
         ),
       );

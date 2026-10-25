@@ -2015,7 +2015,9 @@ async function pendingDeploy(t, viewport, name) {
 // A deploy in progress rewrote the deployment record and diagnostics on every 5 s poll, about half
 // of them unchanged, and moved Share Agent twice: down when the first attempt was recorded and
 // up when the deploy settled, CLS 0.024 (finding 1598). An unchanged poll now touches no node, a
-// changed one only what changed, and the details keep their space until the deploy is over.
+// changed one only what changed, and the details keep their space until the deploy is over. Kept
+// after that, the space was an empty band under the outcome (finding 2369), so the settle gives
+// it back.
 for (const viewport of [
   { width: 1440, height: 900 },
   { width: 390, height: 844 },
@@ -2119,7 +2121,19 @@ for (const viewport of [
     const settledTop = await shareTop();
     t.diagnostic(`${size} Share Agent at ${firstTop}, ${attemptTop}, ${settledTop}`);
     assert.ok(Math.abs(attemptTop - firstTop) <= 1, `moved ${attemptTop - firstTop} px`);
-    assert.ok(Math.abs(settledTop - firstTop) <= 1, `moved ${settledTop - firstTop} px`);
+    assert.ok(settledTop <= firstTop + 1, `moved down ${settledTop - firstTop} px`);
+    // The settled details end just under the outcome, their last line: only the details' own
+    // padding is left, not the reserved band of about 150 px.
+    const band = await page.evaluate(() => {
+      const content = globalThis.document.querySelector(".deployment-evidence-content");
+      const outcome = content.querySelector(".deployment-outcome");
+      return {
+        minHeight: content.style.minHeight,
+        below: content.getBoundingClientRect().bottom - outcome.getBoundingClientRect().bottom,
+      };
+    });
+    assert.equal(band.minHeight, "");
+    assert.ok(band.below < 40, `${band.below} px under the outcome`);
   });
 }
 

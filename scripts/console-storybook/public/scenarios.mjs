@@ -511,6 +511,17 @@ export const scenarios = {
     ],
     description: "Required-value errors remain beside their field; no request is sent.",
   },
+  secretsCreateNotPermitted: {
+    group: "Pages/Secrets",
+    name: "Create not permitted",
+    path: "/console/secrets",
+    secretCreateNotPermitted: true,
+    description:
+      "The caller's access does not include Secret creation. Create Secret is disabled and the note under the toolbar names the reason.",
+    steps: [
+      "Check that Create Secret is disabled and that a screen reader names the note as its description.",
+    ],
+  },
   secretsCreateDenied: {
     group: "Pages/Secrets",
     name: "Create denied",
@@ -523,7 +534,7 @@ export const scenarios = {
       { selector: 'dialog button[type="submit"]', click: true },
     ],
     description:
-      "The API refuses creation. The form clears the value, disables editing, and focuses Close.",
+      "The permission answer allowed creation, but the API refuses it (for example, a grant removed after the page loaded). The form clears the value, disables editing, and focuses Close.",
   },
   secretsUnknownSave: {
     group: "Pages/Secrets",

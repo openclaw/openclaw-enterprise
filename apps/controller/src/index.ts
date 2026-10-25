@@ -2176,13 +2176,16 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
     if (operation.operationId === "getNamespaceCallerPermissions") {
       await controller.getNamespace(context.actorId, namespaceId);
-      // The Agent creation target matches operationTarget() for createAgent.
-      const create = await callerMay(context.actorId, "create", {
-        kind: "agent",
-        id: namespaceId,
-        namespaceId,
+      // Each creation target matches operationTarget() for createAgent and createSecret.
+      const [agentCreate, secretCreate] = await Promise.all(
+        (["agent", "secret"] as const).map((kind) =>
+          callerMay(context.actorId, "create", { kind, id: namespaceId, namespaceId }),
+        ),
+      );
+      reply.send({
+        data: { agents: { create: agentCreate }, secrets: { create: secretCreate } },
+        meta: { requestId: request.id },
       });
-      reply.send({ data: { agents: { create } }, meta: { requestId: request.id } });
       return;
     }
 

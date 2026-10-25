@@ -12,6 +12,7 @@ export const NoNamespace = story("secretsNoNamespace");
 export const NamespaceNotReady = story("secretsNamespaceNotReady");
 export const Create = story("secretsCreate");
 export const MissingValue = story("secretsMissingValue");
+export const CreateNotPermitted = story("secretsCreateNotPermitted");
 export const CreateDenied = story("secretsCreateDenied");
 export const UnknownSave = story("secretsUnknownSave");
 export const Consumers = story("secretsConsumers");
