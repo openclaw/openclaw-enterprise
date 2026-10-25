@@ -413,6 +413,29 @@ test("saving and reloading the authentication source update the Agent page in pl
   await page.getByRole("heading", { name: "Authentication In Place" }).waitFor();
   const secretField = page.getByLabel("API key Secret");
   await waitForInputValue(secretField, secretOptionLabel(first));
+  // The card starts at its padding, and Save and Reload keep the shared action gap instead of
+  // touching (finding 2386).
+  assert.deepEqual(
+    await page.locator("form.agent-card").evaluate((card) => {
+      const save = [...card.querySelectorAll("button")].find(
+        (button) => button.textContent === "Save authentication source",
+      )!;
+      const reload = [...card.querySelectorAll("button")].find(
+        (button) => button.textContent === "Reload authentication source",
+      )!;
+      const top =
+        card.getBoundingClientRect().top +
+        card.clientTop +
+        parseFloat(getComputedStyle(card).paddingTop);
+      return {
+        firstBlockOffset: Math.round(card.firstElementChild!.getBoundingClientRect().top - top),
+        separated:
+          reload.getBoundingClientRect().top - save.getBoundingClientRect().bottom >= 8 ||
+          reload.getBoundingClientRect().left - save.getBoundingClientRect().right >= 8,
+      };
+    }),
+    { firstBlockOffset: 0, separated: true },
+  );
   const kept = await watchForReload(page);
   const saveAuthentication = page.getByRole("button", { name: "Save authentication source" });
   const savedAgent = async () =>
