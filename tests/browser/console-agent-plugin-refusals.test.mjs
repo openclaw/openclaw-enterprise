@@ -263,15 +263,25 @@ test("Create Agent refuses a plugin pair before saving anything and keeps the fo
 // The preflight passed, so the form saved its Secret and Configuration before Agent create
 // refused, and the saved Configuration locked the harness (finding 2391). The preflight now
 // names the binding Agent create will use (only the method of the Secret the Preset saves next)
-// and refuses first.
+// and refuses first. Kubernetes Compute offers Agent provisioning for every Dedicated Agent, which
+// skipped the preflight and saved the Secret before provisioning refused (finding 2395), so this
+// fixture keeps provisioning.
 test("Create Agent refuses a Dedicated Agent the Installation cannot place before saving anything", async (t) => {
   const form = await filledCreateForm(
     t,
     "Unplaceable Codex",
     {},
-    { selected: "{}", harness: "codex", options: { channelRuntime: true, routed: false } },
+    {
+      selected: "{}",
+      harness: "codex",
+      options: { channelRuntime: true, routed: false, agentProvisioning: true },
+    },
   );
-  const { page, configuration, isPreflight } = form;
+  const { fixture, page, configuration, isPreflight } = form;
+  const installation = await fixture.request("GET", "/installation");
+  assert.deepEqual(installation.data.capabilities.agentProvisioning, {
+    executionModes: ["dedicated"],
+  });
   const refused = page.waitForResponse(isPreflight);
   await submitWithKeyboard(page);
   const response = await refused;

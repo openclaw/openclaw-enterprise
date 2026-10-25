@@ -21,6 +21,24 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-25: provisioning refuses an unplaceable dedicated Agent with 400
+
+**What breaks.** `POST /namespaces/{namespaceId}/agents/provision` with a Secret
+binding answers `400 INVALID_REQUEST` and `Dedicated Agents need <setting> in
+this Installation's Kubernetes Compute configuration`, as Agent save does, when
+the Kubernetes Compute configuration sets `runtime` without `gatewayRouting` or
+`runtime.gatewayNodeSelector`. Earlier builds answered `409 RESOURCE_CONFLICT`
+with fixed text. Create Agent now runs its preflight before it saves the model
+Secret for provisioning, so no stray Secret is left.
+
+**Who is affected.** API clients and alerts that match that `409`.
+
+**How to tell.** The provisioning request answers `400` with that message.
+
+**Steps.** Configure the named setting as the
+[Kubernetes Compute reference](../../reference/drivers/kubernetes-compute.md)
+describes, or create an Embedded OpenClaw Agent.
+
 ## 2026-10-25: repository options without repository settings answer 200
 
 **What breaks.** On an Installation without a `repository` block, both

@@ -262,6 +262,9 @@ function configurationTemplate(harnessId: string, nativeProvider: string, provid
   };
 }
 
+// How Kubernetes Compute's refusal of a Dedicated Agent it cannot place begins.
+const PLACEMENT_REFUSAL = "Dedicated Agents need ";
+
 // The first sentence of a Driver refusal that names a setting: the requirement, without the
 // advice that follows it.
 function settingRequirement(refusal: string): string {
@@ -2309,6 +2312,21 @@ function renderAgentForm(
       void recheckNamespace();
     });
   }
+  // A Preset's binding, or the service account token this form saved, fixes the harness.
+  const credentialLocksHarness = () =>
+    binding?.method === "runtime" ||
+    ((binding?.method ?? authMethod.value) === "codex_pat" && Boolean(binding || savedSecret));
+  // Kubernetes Compute refuses a Dedicated Agent it cannot place with "Dedicated Agents need
+  // <setting> …" and then advises Embedded OpenClaw (finding 2391). Where this form cannot select
+  // it (a Preset's binding, a saved service account token or a saved Configuration fixes the
+  // harness to Codex, or the installation's Sandbox Driver refuses Embedded execution), quote only
+  // the requirement, as for a Sandbox Driver's setting refusal (findings 2392, 2396).
+  const followableRefusal = (text: string) =>
+    !text.startsWith(PLACEMENT_REFUSAL) ||
+    (!(capabilityDiscoveryDone && !openclawModeUsable("embedded")) &&
+      (harness.value === "openclaw" || !(savedConfiguration || credentialLocksHarness())))
+      ? text
+      : `${settingRequirement(text)} Ask an operator to configure it.`;
   const credentialSourceRefused = () =>
     credentialSourceTypes !== undefined &&
     (binding?.method ?? authMethod.value) !== "credential_source" &&
@@ -2364,11 +2382,7 @@ function renderAgentForm(
     // Why the harness choice is locked, without the request in flight: the hint must not change
     // while Create is pending, or it shifts the refusal the form just scrolled into view.
     const harnessChoiceLocked =
-      saved ||
-      outcomeUnknown ||
-      requestAdmitted ||
-      binding?.method === "runtime" ||
-      (usesPat && Boolean(binding || savedSecret));
+      saved || outcomeUnknown || requestAdmitted || credentialLocksHarness();
     harness.disabled ||= pending || harnessChoiceLocked;
     const dedicatedRefused = capabilityDiscoveryDone && !openclawModeUsable("dedicated");
     const nativeRefused = dedicatedRefused && harness.value === "openclaw";
@@ -2919,9 +2933,9 @@ function renderAgentForm(
         detail =
           "The provisioning job can no longer be retried; it may have finished. Select Create Agent to resend the same request ID and open its result.";
       } else if (reason !== undefined && error.code !== "NAMESPACE_NOT_READY") {
-        detail = reason;
+        detail = followableRefusal(reason);
       } else {
-        detail = rejectionMessage(cause, mutationStarted);
+        detail = followableRefusal(rejectionMessage(cause, mutationStarted));
       }
       const feedbackText = detail + (error.requestId ? ` Request ID: ${error.requestId}` : "");
       // A job that ended keeps its final status; any other progress line spoke for the request
@@ -3122,9 +3136,17 @@ function renderAgentForm(
     // selections or initial workspace files with this Configuration. A refusal then leaves the
     // whole form editable, the Configuration included, instead of a saved Configuration this
     // form can no longer change (finding 1863). Provisioning admits its plan in one request
-    // before it saves a Configuration, with its own rules, so it needs no preflight.
-    if (!shouldProvision() && !savedConfiguration && !savedAgent) {
-      const harnessAuth = plannedHarnessAuth(usesOAuth);
+    // before it saves a Configuration, with its own rules, so it needs no preflight, except
+    // before this form saves the model Secret the plan names: then the preflight checks that
+    // binding, so an Installation that cannot place a Dedicated Agent refuses it before the
+    // Secret exists (finding 2395).
+    const plannedAuth = plannedHarnessAuth(usesOAuth);
+    const savesSecretFirst = passwordAuth && !usesOAuth && !savedSecret;
+    if (
+      !savedConfiguration &&
+      !savedAgent &&
+      (!shouldProvision() || (savesSecretFirst && plannedAuth !== undefined))
+    ) {
       try {
         await request(`${namespacePath(namespaceId)}/agents/validate`, {
           method: "POST",
@@ -3135,7 +3157,7 @@ function renderAgentForm(
             initialWorkspaceFiles: body.initialWorkspaceFiles,
             ...(body.plugins ? { plugins: body.plugins } : {}),
             ...(body.pluginApprovers ? { pluginApprovers: body.pluginApprovers } : {}),
-            ...(harnessAuth ? { harnessAuth } : {}),
+            ...(plannedAuth ? { harnessAuth: plannedAuth } : {}),
           },
         });
       } catch (error) {
@@ -3150,7 +3172,7 @@ function renderAgentForm(
           const detail =
             error instanceof Error && error.name === "TimeoutError"
               ? "The configuration check timed out. Your entries are still here. Try Create Agent again."
-              : rejectionMessage(error);
+              : followableRefusal(rejectionMessage(error));
           feedback.textContent =
             detail + (failure.requestId ? ` Request ID: ${failure.requestId}` : "");
           // While the pressed control is still disabled, as after a save.
@@ -3421,7 +3443,7 @@ function renderAgentForm(
               ? error.serverMessage === AGENT_NAME_CONFLICT
                 ? AGENT_NAME_CONFLICT
                 : "Agent creation conflicts with the saved state. Check the Agent name and selections, then try again."
-              : rejectionMessage(cause, mutationStarted);
+              : followableRefusal(rejectionMessage(cause, mutationStarted));
       if (!savedAgent && savedConfiguration && knownRejection) {
         if (repositoryBindings.length) {
           requireRepositoryReload();

@@ -84,8 +84,10 @@ failures block submission.
 
 Supported Dedicated runtimes submit inline Configuration, optional repository
 access, and Secret references to [provisioning](../agent-provisioning.md), even after
-a `503 REPOSITORY_OPTIONS_UNAVAILABLE` outage. The worker reauthorizes, creates resources and exact Secret grants,
-and deploys; Console polls and opens the saved version.
+a `503 REPOSITORY_OPTIONS_UNAVAILABLE` outage. Before it saves a model Secret for the request, the
+form runs the preflight below with that binding. The worker reauthorizes, creates resources and exact Secret grants,
+and deploys; Console polls and opens the saved version. Where the form cannot follow a placement
+refusal's advice to select Embedded OpenClaw, it shows only the missing setting.
 
 Before any write, `create.mts:renderAgentForm` checks the Agent name with the API's Name rule
 (`namespaces.mts:namespaceNameProblem`) and each initial workspace file with the Workspace tab's
@@ -144,6 +146,7 @@ Switching methods hides that feedback without changing the lookup or saved choic
 
 ## Changelog
 
+- 2026-10-25 03:30: Run the preflight before provisioning saves the model Secret; trim placement advice the form cannot follow. (fix-postland-1025b - 2b1f510594)
 - 2026-10-25 00:55: Name "no Sandbox Driver selected" as the reason Dedicated OpenClaw is disabled when the Installation lists Embedded. (finding 2384)
 - 2026-10-25 00:30: Treat repository options with `meta.notConfigured` like the fixed-composition 503. (finding 2387)
 - 2026-10-24 19:00: Check the Agent name and initial workspace files with the API's rules before any write. (fix-2339-2341)

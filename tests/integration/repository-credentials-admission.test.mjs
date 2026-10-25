@@ -1162,6 +1162,15 @@ test("Repository capability remains optional when no repository Backend or Drive
   const scopes = await f.request("GET", `${f.collection}/${agent.id}/repository-approval-scopes`);
   assert.equal(scopes.status, 200, JSON.stringify(scopes));
   assert.deepEqual(scopes.data, []);
+  // Such a binding can still be dropped: an empty selection needs no repository Driver, so the
+  // console's Repositories tab offers Save for it (finding 2398).
+  const dropped = await f.request("PATCH", `${f.collection}/${agent.id}`, {
+    configurationId: f.configuration.id,
+    repositoryAccess: { defaultProfile: "git-full", repositories: [] },
+  });
+  assert.equal(dropped.status, 200, JSON.stringify(dropped));
+  const cleared = await f.request("GET", `${f.collection}/${agent.id}`);
+  assert.deepEqual(cleared.data.repositoryBindings ?? [], []);
 });
 
 test("Provisioning rejects a forbidden repository profile before queueing or creating resources", async (t) => {

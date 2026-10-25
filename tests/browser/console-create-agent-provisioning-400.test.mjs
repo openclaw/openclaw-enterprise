@@ -43,15 +43,19 @@ const defaultCodexPreset = JSON.parse(
 // advertises dedicated provisioning through the real /installation route. Provisioning
 // needs exact Configuration create and inspect, which only the Kubernetes Configuration
 // Driver implements; its validation refuses inline model credentials. Admission refuses
-// this request before any cluster call or provisioning record.
-function provisioningDrivers() {
-  const computeDriver = Object.assign(createTestKubernetesComputeDriver("console-provisioning"), {
-    // createNamespace({ ready: true }) runs Namespace lifecycle; readiness is the cluster
-    // boundary.
-    async ensureNamespace(namespace) {
-      return { namespaceId: namespace.id, namespaceReady: true };
+// this request before any cluster call or provisioning record. `compute` holds the Kubernetes
+// Compute fixture's options.
+function provisioningDrivers(compute = {}) {
+  const computeDriver = Object.assign(
+    createTestKubernetesComputeDriver("console-provisioning", compute),
+    {
+      // createNamespace({ ready: true }) runs Namespace lifecycle; readiness is the cluster
+      // boundary.
+      async ensureNamespace(namespace) {
+        return { namespaceId: namespace.id, namespaceReady: true };
+      },
     },
-  });
+  );
   const configurationDriver = new KubernetesConfigurationDriver(
     { authentication: { mode: "inCluster" } },
     { id: "console-provisioning-configuration" },
@@ -171,8 +175,13 @@ test("Dedicated Agent provisioning shows the API's 400 message for an inline mod
   const response = await rejected;
   assert.equal(response.status(), 400);
   const { error, meta } = await response.json();
-  // The API's own sentence names the field to fix; the console shows it unchanged.
-  assert.match(error.message, /\/models\/providers\/openai\/apiKey/);
+  // The API's own sentence names the field to fix; the console shows it unchanged. Provisioning
+  // runs Agent save's Harness authentication check first (finding 2395), so it answers with
+  // save's sentence for the dedicated Codex binding.
+  assert.equal(
+    error.message,
+    "Configuration setting models.providers.openai.apiKey must be unset: Dedicated Codex receives model credentials from the Agent's Harness authentication binding.",
+  );
   const feedback = page.getByRole("alert").filter({ hasText: meta.requestId });
   await feedback.waitFor();
   assert.equal(await feedback.textContent(), `${error.message} Request ID: ${meta.requestId}`);
@@ -1037,6 +1046,72 @@ test("When the Sandbox Driver's settings refuse Dedicated OpenClaw, Create Agent
     await boundAlert.textContent(),
     "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and its settings refuse Dedicated OpenClaw. Dedicated OpenClaw needs example.setting: false in the Sandbox Driver configuration. Ask an operator to change that setting.",
   );
+});
+
+// Kubernetes Compute with runtime storage but no gateway routing cannot place a Dedicated Agent,
+// and it offers Agent provisioning for every Dedicated Agent. A Preset bound to a saved service
+// account token saves nothing first, so Create Agent goes straight to provisioning, whose
+// Compute plan check answered a fixed 409 that names no setting (finding 2395). Provisioning now
+// answers Agent save's 400. The token fixes the harness to Codex, so the form quotes only the
+// requirement, not the advice to select Embedded OpenClaw (finding 2396).
+test("Provisioning names the placement setting a Codex-bound Preset cannot work around", async (t) => {
+  const fixture = await createConsoleAppFixture(
+    t,
+    provisioningDrivers({ channelRuntime: true, routed: false }),
+  );
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Unplaceable bound Codex", { ready: true });
+  const standard = JSON.parse(
+    await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
+  );
+  const { modelSecret: _secretVariable, ...variables } = standard.template.variables;
+  const token = await fixture.createSecret(namespace.id, "Codex token", "synthetic-codex-token");
+  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: {
+      name: "Bound Codex token",
+      template: {
+        ...standard.template,
+        variables,
+        agent: {
+          ...standard.template.agent,
+          harnessAuth: { method: "codex_pat", source: token.ref },
+        },
+      },
+    },
+  });
+  assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  const { page } = await newPage(t, fixture, { browser });
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByLabel("Preset template").selectOption({ label: "Bound Codex token" });
+  await page.getByLabel("Name", { exact: true }).fill("bound-codex");
+  await page.getByLabel("Model", { exact: true }).fill("gpt-4.1");
+  await page.getByRole("button", { name: "Use Preset" }).click();
+  const refused = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/provision` &&
+      response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Create Agent" }).click();
+  const response = await refused;
+  assert.equal(response.status(), 400);
+  const { error, meta } = await response.json();
+  const requirement =
+    "Dedicated Agents need gateway routing and node enrollment in this Installation's Kubernetes Compute configuration.";
+  assert.equal(
+    error.message,
+    `${requirement} Codex runs only as a Dedicated Agent: select Embedded OpenClaw, or ask an operator to configure it.`,
+  );
+  const alert = page.getByRole("alert").filter({ hasText: meta.requestId });
+  await alert.waitFor();
+  assert.equal(
+    await alert.textContent(),
+    `${requirement} Ask an operator to configure it. Request ID: ${meta.requestId}`,
+  );
+  assert.equal(await page.getByLabel("Harness", { exact: true }).isDisabled(), true);
+  // The Preset's token was the only Secret; the refused request saved nothing.
+  assert.equal(pathRequests(requests, "POST", `/namespaces/${namespace.id}/secrets`).length, 0);
+  assert.equal(agentProvisionPostRequests(requests, namespace.id).length, 1);
 });
 
 const SANDBOX_DRIVER_OUTAGE =

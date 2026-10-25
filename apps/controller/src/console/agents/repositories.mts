@@ -283,7 +283,11 @@ export function createRepositoryFields(
   const profileLabel = (profile: string) =>
     repositoryProfile(profile)?.label ?? "Unknown access level";
   const isSettled = () => state.discovery !== "loading";
-  const blocksCreate = () => !["loading", "ready", "draft-only"].includes(state.discovery);
+  // Without repository settings the API still accepts an empty binding list, so removing every
+  // selection unblocks Create Agent and the Repositories tab's Save (findings 2397, 2398).
+  const blocksCreate = () =>
+    !["loading", "ready", "draft-only", "not-configured"].includes(state.discovery) ||
+    (state.discovery === "not-configured" && state.selected.size > 0);
   const editable = () => !state.disabled && isSettled() && !blocksCreate();
   const isDirty = () => JSON.stringify(accessIntent()) !== initialAccess;
 
@@ -323,6 +327,9 @@ export function createRepositoryFields(
   }
 
   function changed({ preserveResults = false } = {}) {
+    if (state.discovery === "draft-only" || state.discovery === "not-configured") {
+      showSetupLink();
+    }
     validation.hidden = true;
     revealInvalidSelections();
     render({ preserveResults });
@@ -1075,22 +1082,7 @@ export function createRepositoryFields(
       setStatusTone(status, "danger");
       status.textContent = `Repository choices could not be reloaded. ${message(error)} Retry the reload or start a new draft.`;
     } else if (state.discovery === "draft-only" || state.discovery === "not-configured") {
-      setStatusTone(status, null);
-      status.replaceChildren(
-        "Repository access is not available in this Installation's configuration. ",
-        element(
-          "a",
-          {
-            href: "https://github.com/openclaw/openclaw-enterprise/blob/main/docs/guides/repository-credentials/team-runbook.md",
-            target: "_blank",
-            rel: "noopener noreferrer",
-          },
-          "Set up repository access",
-        ),
-        state.discovery === "draft-only"
-          ? ". You can continue without repository access."
-          : ". You can’t save repository changes on this page until an operator sets up repository access.",
-      );
+      showSetupLink();
     } else {
       setStatusTone(status, "danger");
       status.textContent = `Repository choices could not be loaded. ${message(error)} Retry repository choices before ${initial.agentId ? "saving repository access" : "creating an Agent"}.`;
@@ -1105,6 +1097,30 @@ export function createRepositoryFields(
           ? "unavailable"
           : state.discovery,
     };
+  }
+
+  // The status line for an Installation without repository access.
+  function showSetupLink() {
+    setStatusTone(status, null);
+    status.replaceChildren(
+      "Repository access is not available in this Installation's configuration. ",
+      element(
+        "a",
+        {
+          href: "https://github.com/openclaw/openclaw-enterprise/blob/main/docs/guides/repository-credentials/team-runbook.md",
+          target: "_blank",
+          rel: "noopener noreferrer",
+        },
+        "Set up repository access",
+      ),
+      state.selected.size > 0
+        ? `. Remove the selected repositories${initial.agentId ? " and save" : ""} to continue without repository access.`
+        : !initial.agentId
+          ? ". You can continue without repository access."
+          : isDirty()
+            ? ". Save to continue without repository access."
+            : ". You can’t save repository changes on this page until an operator sets up repository access.",
+    );
   }
 
   function recordSuccessfulSave() {
@@ -1133,7 +1149,7 @@ export function createRepositoryFields(
     isDirty,
     isSettled,
     blocksCreate,
-    /** Repository access is not set up in this Installation: no save can succeed here. */
+    /** Repository access is not set up in this Installation: only an empty selection saves. */
     notConfigured: () => state.discovery === "not-configured",
   };
 }
