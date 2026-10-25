@@ -119,8 +119,8 @@ test("Agent create preflight accepts what Agent create accepts", async (t) => {
     });
     assert.equal(created.status, 201, `${index}: ${JSON.stringify(created.body)}`);
   }
-  // A body outside the create contract is refused as one.
-  const extra = await f.validate({ configuration: { kind: "agent", values: {} }, name: "x" });
+  // A body outside the create contract is refused as one. The name is part of it (finding 2420).
+  const extra = await f.validate({ configuration: { kind: "agent", values: {} }, unknown: "x" });
   assert.equal(extra.status, 400, JSON.stringify(extra.body));
 });
 
