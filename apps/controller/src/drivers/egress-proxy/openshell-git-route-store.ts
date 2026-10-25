@@ -1,8 +1,11 @@
+import { isDeepStrictEqual } from "node:util";
+import type { PreparedJointGit, observeJointGit } from "./openshell-joint-git-provision.ts";
 import {
+  releasedJointGit,
   openShellGitDeliveryTransport,
   protectedRepositoryGitInstallationSql,
 } from "../repo/credentials/protected-repository-git-installation.ts";
-import type { AgentRevision } from "@openclaw-enterprise/contracts";
+import type { AgentRevision, EgressInstallation } from "@openclaw-enterprise/contracts";
 import {
   repositoryWithdrawalStateSql,
   CredentialDeliveryReductions,
@@ -78,6 +81,19 @@ export interface OpenShellGitExpiry {
   };
 }
 
+type JointObservation = {
+  sandboxId: string;
+  podUid: string;
+  wiring: Awaited<ReturnType<typeof observeJointGit>>;
+};
+type JointRecovery = {
+  fence: number;
+  observed: JointObservation;
+  desired: {
+    grant: PreparedJointGit["grant"];
+    recipients: Omit<PreparedJointGit["recipients"][number], "profile">[];
+  };
+};
 export interface OpenShellGitRouteStore {
   /** Records a route this worker is about to bootstrap: fence 1, bootstrap write pending. */
   open(route: OpenShellGitRouteIdentity, workerInstance: string): Promise<void>;
@@ -92,6 +108,23 @@ export interface OpenShellGitRouteStore {
     /** A replacement cannot inherit an observed hook. Take the fence and close it in one commit. */
     disposition?: "close-preview",
   ): Promise<OpenShellGitRouteRecord | undefined>;
+  claimJoint?(
+    revisionId: string,
+    committed: EgressInstallation,
+    worker: string,
+  ): Promise<JointRecovery | undefined>;
+  jointInstallation?(
+    revisionId: string,
+    observation: object,
+    fence: number,
+  ): Promise<EgressInstallation | undefined>;
+  recordJoint?(
+    entry: PreparedJointGit,
+    observed?: {
+      readonly sandboxId: string;
+      readonly wiring: Awaited<ReturnType<typeof observeJointGit>>;
+    },
+  ): Promise<boolean>;
   /** Read a known standing installation under current authority; never take its fence or open it. */
   standing(
     revision: Readonly<AgentRevision>,
@@ -336,6 +369,82 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
       );
       return record(rows[0] as Row);
     });
+  }
+
+  async claimJoint(
+    revisionId: string,
+    committed: EgressInstallation,
+    worker: string,
+  ): Promise<JointRecovery | undefined> {
+    return this.query(async (c) => {
+      const { rows } = await c.query(
+        `SELECT r.fence,r.observed,r.desired,r.binding_id,r.worker_instance,COALESCE((
+        SELECT d.policy_observed FROM occ.credential_delivery_reductions d WHERE d.revision_id=r.revision_id AND d.policy_observed IS NOT NULL
+        ORDER BY (d.policy_observed#>>'{plan,generation}')::bigint DESC LIMIT 1),p.installation) AS installation
+        FROM occ.credential_deliveries r JOIN occ.egress_installations p ON ${releasedJointGit} WHERE r.revision_id=$1 AND r.live_revision_id=r.revision_id
+        AND r.blocked IS NULL AND r.write_pending IS NULL FOR UPDATE OF r`,
+        [revisionId],
+      );
+      const saved = rows[0] as
+        | (JointRecovery & {
+            worker_instance: string;
+            binding_id: string;
+            installation: EgressInstallation;
+          })
+        | undefined;
+      if (
+        !saved ||
+        rows.length !== 1 ||
+        !saved.observed.podUid ||
+        !isDeepStrictEqual(saved.installation, committed)
+      ) {
+        return;
+      }
+      let fence = Number(saved.fence);
+      if (saved.worker_instance !== worker) {
+        await new CredentialDeliveries(c).adopt(
+          { revisionId, bindingId: saved.binding_id },
+          worker,
+        );
+        fence++;
+      }
+      return { fence, observed: saved.observed, desired: saved.desired };
+    });
+  }
+
+  async jointInstallation(
+    revisionId: string,
+    observation: object,
+    fence: number,
+  ): Promise<EgressInstallation | undefined> {
+    return this.query(async (c) => {
+      const { rows } = await c.query(
+        `SELECT COALESCE((SELECT d.policy_observed FROM occ.credential_delivery_reductions d
+       WHERE d.revision_id=r.revision_id AND d.policy_observed IS NOT NULL ORDER BY (d.policy_observed#>>'{plan,generation}')::bigint DESC LIMIT 1),p.installation) AS installation
+       FROM occ.credential_deliveries r JOIN occ.egress_installations p ON ${releasedJointGit}
+       WHERE r.revision_id=$1 AND r.live_revision_id=r.revision_id AND r.blocked IS NULL AND r.fence=$3 AND r.observed=$2::jsonb`,
+        [revisionId, JSON.stringify(observation), fence],
+      );
+      return rows.length === 1
+        ? (rows[0] as { installation: EgressInstallation }).installation
+        : undefined;
+    });
+  }
+
+  async recordJoint(
+    entry: PreparedJointGit,
+    observed?: {
+      readonly sandboxId: string;
+      readonly wiring: Awaited<ReturnType<typeof observeJointGit>>;
+    },
+  ) {
+    const desired = {
+      grant: entry.grant,
+      recipients: entry.recipients.map(({ profile: _, ...r }) => r),
+    };
+    return this.held(entry.revisionId, (state, key) =>
+      state.record(key, 1, { desired, ...(observed && { observed: { ...observed } }) }),
+    );
   }
 
   async standing(revision: Readonly<AgentRevision>) {

@@ -8,6 +8,7 @@ export type {
   CredentialDeliveryKey,
   CredentialDeliverySnapshot,
 } from "./state/credential-deliveries.ts";
+export { revisionPolicyEffects } from "./credential-policy-reduction.ts";
 export { CredentialDeliveryReductions } from "./state/credential-delivery-reductions.ts";
 export type {
   CredentialDeliveryReduction,
@@ -5766,18 +5767,25 @@ export class OpenClawController {
     const reducibleGit =
       gitProfile !== undefined &&
       (gitAuthorization === "exact-dispatch" || gitAuthorization === "online-request") &&
-      driver.policyReduction?.version === 2;
+      (driver.policyReduction?.version === 2 ||
+        (driver.policyReduction?.version === 3 &&
+          gitProfile === "github_installation" &&
+          gitAuthorization === "online-request" &&
+          sources.length === 1 &&
+          !harnessCredentialSource));
     if (repositoryGit && sources.length && !reducibleGit) {
       throw new ScopeViolationError(
         "Repository Credential Proxy does not admit unrelated credential routes.",
       );
     }
-    if (reducibleGit && driver.policyReduction?.version === 2) {
+    if (reducibleGit && driver.policyReduction) {
       await driver.policyReduction.assertAvailable(
         AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
       );
     }
-    let policyReductionVersion: ProxyPlan["policyReductionVersion"] = reducibleGit ? 2 : undefined;
+    let policyReductionVersion: ProxyPlan["policyReductionVersion"] = reducibleGit
+      ? driver.policyReduction?.version
+      : undefined;
     if (!repositoryGit && sources.length > 0 && driver.policyReduction?.version === 1) {
       policyReductionVersion = 1;
     }
@@ -9708,7 +9716,10 @@ export class OpenClawController {
         if (egressPlan.repositoryGitAuthorization === "request-hook-observed") {
           version = 6;
         }
-        if (egressPlan.repositoryGit && egressPlan.policyReductionVersion === 2) {
+        if (
+          egressPlan.repositoryGit &&
+          (egressPlan.policyReductionVersion === 2 || egressPlan.policyReductionVersion === 3)
+        ) {
           version = egressPlan.repositoryGitAuthorization === "online-request" ? 8 : 7;
         }
         executionAdmission = { version, mode: "protected" };

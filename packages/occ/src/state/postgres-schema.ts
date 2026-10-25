@@ -708,7 +708,13 @@ export const agentRevisions = occSchema.table(
             AND (
                 ${table.admittedSpec} #>> '{execution_admission,version}' IN ('3','4','5','6','7','8')
                 AND CASE WHEN ${table.admittedSpec} #>> '{execution_admission,version}' IN ('7','8')
-                  THEN ${table.admittedSpec} #> '{egress_plan,policyReductionVersion}' = '2'::jsonb
+                  THEN (${table.admittedSpec} #> '{egress_plan,policyReductionVersion}' = '2'::jsonb OR
+                    (${table.admittedSpec} #>> '{execution_admission,version}' = '8'
+                     AND ${table.admittedSpec} #> '{egress_plan,policyReductionVersion}' = '3'::jsonb
+                     AND ${table.admittedSpec} #>> '{egress_plan,repositoryGit,bindings,0,profile}' = 'github-installation'
+                     AND jsonb_array_length(${table.admittedSpec} #> '{egress_plan,repositoryGit,bindings}') = 1
+                     AND jsonb_array_length(${table.admittedSpec} #> '{egress_plan,routes}') > 0
+                     AND NOT ((${table.admittedSpec}->'egress_plan') ? 'harnessCredentialSource')))
                   ELSE NOT (${table.admittedSpec}->'egress_plan' ? 'policyReductionVersion') OR
                     (${table.admittedSpec} #>> '{execution_admission,version}' = '3' AND ${table.admittedSpec} #> '{egress_plan,policyReductionVersion}' = '1'::jsonb) END
                 AND ((${table.admittedSpec} #>> '{execution_admission,version}') IN ('4','5','6','7','8'))
@@ -2189,6 +2195,27 @@ export const credentialDeliveries = occSchema.table(
   ],
 );
 
+export const credentialPolicyEffects = occSchema.table(
+  "credential_policy_effects",
+  {
+    revisionId: text("revision_id")
+      .notNull()
+      .references(() => agentRevisions.id, { onDelete: "cascade" }),
+    step: text("step").notNull(),
+    requestId: uuid("request_id").notNull(),
+    identity: text("identity").notNull(),
+    expectedVersion: text("expected_version").notNull(),
+    receipt: text("receipt"),
+  },
+  (t) => [
+    primaryKey({ columns: [t.revisionId, t.step] }),
+    check("credential_policy_effects_step_check", sql`${t.step} <> ''`),
+    check("credential_policy_effects_identity_check", sql`${t.identity} ~ '^[a-f0-9]{64}$'`),
+    check("credential_policy_effects_expected_version_check", sql`${t.expectedVersion} <> ''`),
+    check("credential_policy_effects_receipt_check", sql`${t.receipt} <> ''`),
+  ],
+);
+
 export const credentialDeliveryReductions = occSchema.table(
   "credential_delivery_reductions",
   {
@@ -2219,7 +2246,17 @@ export const credentialDeliveryReductions = occSchema.table(
       ${t.recipient} IS NOT NULL AND ${t.materialVersion} IS NOT NULL AND ${t.retainedPolicyHash} IS NOT NULL AND ${t.policyObserved} IS NULL
     ELSE COALESCE(
       ${t.recipient} IS NULL AND ${t.materialVersion} IS NULL AND ${t.retainedPolicyHash} IS NULL
-      AND ${t.policyRequest}->>'version' IN ('1','2')
+      AND (${t.policyRequest}->>'version' IN ('1','2') OR (
+        ${t.policyRequest}->'version' = '3'::jsonb AND
+        ${t.policyRequest} #>> '{condition,predecessorKeySha256}' ~ '^[0-9a-f]{64}$'
+        AND jsonb_typeof(${t.policyRequest} #> '{condition,remainingPolicy}') = 'object'
+        AND ${t.policyRequest} #> '{condition,remainingPolicy}' <> '{}'::jsonb
+        AND jsonb_typeof(${t.policyRequest} #> '{condition,grant}') = 'object'
+        AND (${t.policyRequest} #> '{condition,grant}') ?& ARRAY['id','generation','scope','recipient']
+        AND (${t.policyRequest} #>> '{condition,grant,generation}') ~ '^[1-9][0-9]*$'
+        AND length(${t.policyRequest} #>> '{condition,grant,id}') > 0
+        AND length(${t.policyRequest} #>> '{condition,grant,scope}') > 0
+        AND length(${t.policyRequest} #>> '{condition,grant,recipient}') > 0))
       AND ${t.policyRequest}->>'operationId' = ${t.requestId}::text
       AND ${t.policyRequest} #>> '{expected,plan,execution,revisionId}' = ${t.revisionId}
       AND ${t.policyRequest} #>> '{expected,plan,generation}' = ${t.expectedVersion}

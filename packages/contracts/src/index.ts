@@ -13,7 +13,12 @@ import type {
 } from "./credential-proxy.ts";
 
 export type {
+  JointGitProvision,
+  CredentialPolicyEffects,
+  CredentialPolicyEffect,
   CredentialPolicyReduction,
+  JointPolicyCondition,
+  JointGrantIdentity,
   CredentialPolicyObservation,
   CredentialPolicyReducer,
   CredentialPolicyWithdrawalOptions,
@@ -726,6 +731,10 @@ export type ResolvedHarnessAuth =
 
 export interface ComputeRevisionContext {
   /** Worker persists only an authenticated receipt for this admitted plan. */
+  readonly policyEffects?: import("./credential-proxy.ts").CredentialPolicyEffects;
+  readonly jointAdmissionCurrent?: NonNullable<
+    import("./credential-proxy.ts").ProxyRevisionContext["jointAdmissionCurrent"]
+  >;
   readonly recordEgressInstallation?: (installation: EgressInstallation) => Promise<void>;
   /** A fresh read of the still-authorized revision and its exact committed installation. */
   readonly currentEgressInstallation?: () => Promise<EgressInstallation | undefined>;
@@ -1396,6 +1405,7 @@ export interface HarnessWorkloadRequirements {
   readonly files: readonly SandboxWorkloadFile[];
   /** Credential Gateway attachments the paired Sandbox must consume in full. */
   readonly credentialAttachments: readonly CredentialSourceAttachment[];
+  readonly currentEgressInstallation?: EgressInstallation;
   readonly proxyWiring?: ProxyWiring;
   readonly labels: Readonly<Record<string, string>>;
 }

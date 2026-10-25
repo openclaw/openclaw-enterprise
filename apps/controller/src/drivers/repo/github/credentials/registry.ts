@@ -1,3 +1,4 @@
+import { repositoryApprovalFingerprint } from "@openclaw-enterprise/occ";
 import type { RepositoryGitDeliveryResolver } from "../../credentials/delivery.ts";
 import { isDeepStrictEqual } from "node:util";
 import { createHash } from "node:crypto";
@@ -47,6 +48,7 @@ export interface GitHubInstallationAccess {
   readonly namespaces: readonly Readonly<{
     namespaceId: string;
     accessMode: "installation";
+    readonly grantGeneration?: number;
     allowStandingApproval?: true;
   }>[];
 }
@@ -119,13 +121,18 @@ function unique(values: readonly string[]): void {
 function validateInstallationAccess(value: unknown): GitHubInstallationAccess {
   const { repositoryRef, namespaces } = object(value, ["repositoryRef", "namespaces"]);
   const policies = array(namespaces, 128).map((candidate) => {
-    const { namespaceId, accessMode, allowStandingApproval } = object(candidate, [
+    const { namespaceId, accessMode, grantGeneration, allowStandingApproval } = object(candidate, [
+      "grantGeneration",
       "namespaceId",
       "accessMode",
       "allowStandingApproval",
     ]);
     if (
       accessMode !== "installation" ||
+      (grantGeneration !== undefined &&
+        (typeof grantGeneration !== "number" ||
+          !Number.isSafeInteger(grantGeneration) ||
+          grantGeneration < 1)) ||
       (allowStandingApproval !== undefined && allowStandingApproval !== true)
     ) {
       return invalid();
@@ -133,6 +140,7 @@ function validateInstallationAccess(value: unknown): GitHubInstallationAccess {
     return Object.freeze({
       namespaceId: text(namespaceId),
       accessMode,
+      ...(grantGeneration !== undefined && { grantGeneration }),
       ...(allowStandingApproval === true && { allowStandingApproval: true as const }),
     });
   });
@@ -338,7 +346,14 @@ export function resolveGitHubRepositoryBinding(
       repositoryRef,
       backendId,
       profile: githubInstallationProfile,
-      grant: Object.freeze({ providerInstanceId, repositoryId, grantId: `sha256:${fingerprint}` }),
+      grant: Object.freeze({
+        providerInstanceId,
+        repositoryId,
+        grantId:
+          policy.grantGeneration === undefined
+            ? `sha256:${fingerprint}`
+            : `github-installation:v1:${policy.grantGeneration}:${fingerprint}`,
+      }),
     });
   }
   const selectedProfile = profile(request.profile === undefined ? "git-write" : request.profile);
@@ -512,6 +527,46 @@ export function createGitHubRepositoryDeliveryResolver(
       return Object.freeze({
         binding: resolved,
         delivery: Object.freeze({ installationId: registry.githubInstallationId }),
+        ...(() => {
+          const versioned = /^github-installation:v1:([1-9]\d*):([0-9a-f]{64})$/.exec(
+            resolved.grant.grantId,
+          );
+          if (state.standingApprovalId) {
+            const scope = resolveGitHubStandingApprovalScope(registry, {
+              namespaceId: revision.namespaceId,
+              binding,
+            });
+            if (
+              !scope ||
+              !state.standingApprovalGeneration ||
+              !state.standingApprovalScopeFingerprint ||
+              repositoryApprovalFingerprint({
+                namespaceId: revision.namespaceId,
+                agentId: revision.agentId,
+                binding,
+                scope,
+              }) !== state.standingApprovalScopeFingerprint
+            ) {
+              return {};
+            }
+            return {
+              jointGrant: {
+                id: resolved.grant.grantId,
+                generation: String(state.standingApprovalGeneration),
+                scope: state.standingApprovalScopeFingerprint,
+              },
+            };
+          }
+          return versioned
+            ? {
+                jointGrant: {
+                  id: resolved.grant.grantId,
+                  generation: versioned[1]!,
+                  scope: versioned[2]!,
+                },
+              }
+            : {};
+        })(),
       });
     }
     const repository = registry.repositories.find((r) => r.repositoryRef === binding.repositoryRef);

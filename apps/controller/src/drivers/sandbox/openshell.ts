@@ -8,6 +8,7 @@ import {
   openShellEgressConfiguration,
   type OpenShellProxyOptions,
 } from "../egress-proxy/openshell.ts";
+import { verifyJointProfile } from "../egress-proxy/openshell-joint-git-provision.ts";
 import { deleteOpenShellPreparedGitProviders } from "../egress-proxy/openshell-prepared-git-provider.ts";
 import { type ErrorDetail } from "@openclaw-enterprise/contracts";
 import {
@@ -45,6 +46,7 @@ import {
   PatchStrategy,
 } from "@kubernetes/client-node";
 import {
+  isReducedCredentialPlan,
   ConfigurationHarnessError,
   configurationSettingMessage,
   DependencyUnavailableError,
@@ -3085,6 +3087,75 @@ export class OpenShellSandboxDriver implements SandboxDriver {
   async provisionHarness(context: SandboxHarnessContext): Promise<SandboxResourceRef> {
     assertNoRepositoryEnrollment(context, this.openShellGit);
     this.requireOperatorWorkspaceMode("provision a Harness");
+    const committed = (
+      context.requirements as HarnessWorkloadRequirements & {
+        currentEgressInstallation?: EgressInstallation;
+      }
+    ).currentEgressInstallation;
+    if (committed?.plan.policyReductionVersion === 3 && committed.plan.generation === 2) {
+      const prior = context.revision.egressPlan;
+      const wiring = context.requirements.proxyWiring;
+      if (
+        !prior ||
+        !isReducedCredentialPlan(prior, committed.plan) ||
+        !isDeepStrictEqual(wiring?.plan, committed.plan) ||
+        !committed.enforcement.joint ||
+        this.options.egress?.middlewareName !== "codex-workspace-pat-with-git-v2"
+      ) {
+        throw new OpenShellSandboxConfigurationFailure("Unrecognized retained joint execution.");
+      }
+      const ref = this.sandboxRef(context);
+      const workspace = workspaceName(context.namespace);
+      const client = this.gatewayClientForNamespace(ref.namespaceName);
+      const box = await client.getSandbox({ workspace, name: ref.resourceName }, context.signal);
+      const evidence = committed.enforcement.joint.ownerEvidence;
+      const runtime = runtimeProviderName(context.revision.id);
+      const legs = evidence.recipients;
+      const policy = asRecord(box?.spec?.policy);
+      const effective = asRecord(evidence.effectivePolicy);
+      if (
+        !box ||
+        box.spec?.restart_policy !== "SANDBOX_RESTART_POLICY_NEVER" ||
+        box.id !== committed.sandboxId ||
+        box.mainProcessInstanceId !== evidence.processInstanceId ||
+        box.annotations["openclaw.dev/revision-id"] !== context.revision.id ||
+        box.annotations["openclaw.dev/agent-id"] !== context.revision.agentId ||
+        box.annotations["openclaw.dev/namespace-id"] !== context.namespace.id ||
+        runtime !== evidence.runtimeProvider ||
+        !Array.isArray(legs) ||
+        legs.length !== 2 ||
+        !policy ||
+        !effective ||
+        !isDeepStrictEqual(box.spec?.providers, [
+          runtime,
+          ...(committed.plan.repositoryGit ? legs.map((r) => asRecord(r)?.provider_name) : []),
+        ])
+      ) {
+        throw new OpenShellSandboxConfigurationFailure("Retained joint Sandbox changed.");
+      }
+      if (committed.plan.repositoryGit) {
+        const prepared = await this.openShellGit?.prepareJoint(
+          context.revision,
+          client,
+          workspace,
+          ref.resourceName,
+          [],
+          context.signal,
+          context.namespace,
+          (id, signal) => this.jointSupervisorPod(context, id, signal),
+          committed,
+        );
+        if (!prepared) {
+          throw new OpenShellSandboxConfigurationFailure("Retained Git owner is unavailable.");
+        }
+        await prepared.complete(box, runtime);
+      }
+      // Compute verifies the complete authenticated installation after this read-only handoff.
+      return immutableCopy({
+        ...ref,
+        proxyWiring: { plan: committed.plan, configuration: policy },
+      });
+    }
     if (!isDeepStrictEqual(context.requirements.proxyWiring?.plan, context.revision.egressPlan)) {
       throw new OpenShellSandboxConfigurationFailure(
         "Protected egress attachment must match the admitted revision.",
@@ -3161,8 +3232,25 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         gitRouteOverlapMessage(gitOverlap),
       );
     }
+    const joint =
+      plan?.policyReductionVersion === 3
+        ? await this.openShellGit?.prepareJoint(
+            context.revision,
+            client,
+            workspace,
+            sandbox.resourceName,
+            sandboxProviders(this.options, context.requirements),
+            context.signal,
+            context.namespace,
+            (id, signal) => this.jointSupervisorPod(context, id, signal),
+            committed,
+          )
+        : undefined;
+    if (plan?.policyReductionVersion === 3 && !joint) {
+      throw new OpenShellSandboxConfigurationFailure("Joint Git owner is unavailable.");
+    }
     const git =
-      context.revision.repositoryCredentials === undefined
+      joint || context.revision.repositoryCredentials === undefined
         ? undefined
         : await this.openShellGit!.prepare(
             context.revision,
@@ -3200,6 +3288,14 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       runtimeCredentialMaterial.credentials,
       runtimeCredentialMaterial.credentialExpirationTimes,
     );
+    if (joint) {
+      if (Object.keys(runtimeCredentialMaterial.credentials).length) {
+        throw new OpenShellSandboxConfigurationFailure(
+          "Joint Harness runtime provider must be file-only.",
+        );
+      }
+      await verifyJointProfile(client, workspace, runtimeFiles.profile, context.signal);
+    }
     const serviceExposures = exposed
       ? [
           {
@@ -3239,6 +3335,16 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       ),
       serviceExposures,
     };
+    if (joint) {
+      create.spec.providers.push(...joint.providers);
+      Object.assign(create.spec.environment, {
+        GIT_TERMINAL_PROMPT: "0",
+        // gh requires a local login indicator. The required API sender consumes and
+        // replaces it only after an authorized grant; the marker grants no access.
+        GH_TOKEN: "openshell-client-" + plan!.execution.executionId,
+      });
+      create.spec.restart_policy = "SANDBOX_RESTART_POLICY_NEVER";
+    }
     if (git) {
       create.spec.providers.push(git.provider);
       Object.assign(
@@ -3278,17 +3384,19 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       );
     }
     const prepared = context.requirements.proxyWiring;
-    const result = immutableCopy({
-      ...sandbox,
-      ...(prepared === undefined
-        ? {}
-        : {
-            proxyWiring: {
-              plan: prepared.plan,
-              configuration: create.spec.policy,
-            },
-          }),
-    });
+    const result = async (box: OpenShellSandboxResponse) =>
+      immutableCopy({
+        ...sandbox,
+        ...(prepared === undefined
+          ? {}
+          : {
+              proxyWiring: {
+                plan: prepared.plan,
+                configuration: create.spec.policy,
+                ...(joint && { jointGit: await joint.complete(box, runtimeProvider) }),
+              },
+            }),
+      });
     // Every reconcile pass reaches here. Re-sending CreateSandbox for a Sandbox that
     // exists would hit the gateway's request_id replay, which refuses a changed spec
     // (REQUEST_ID_PAYLOAD_MISMATCH) and forgets the create after 24 h (ALREADY_EXISTS).
@@ -3301,7 +3409,10 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       `Sandbox ${sandbox.resourceName} cannot be created or adopted`,
     );
     let existing = await refused(() => client.getSandbox(selector, context.signal));
-    if (git?.existingSandboxId && existing?.id !== git.existingSandboxId) {
+    if (
+      (git?.existingSandboxId && existing?.id !== git.existingSandboxId) ||
+      (joint?.existingSandboxId && existing?.id !== joint.existingSandboxId)
+    ) {
       throw new OpenShellSandboxConfigurationFailure(
         "The standing Git execution is no longer present.",
       );
@@ -3370,7 +3481,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
           await delay(this.options.startupDelayMs, undefined, { signal: context.signal });
         }
         await this.initializeWorkspace(context, sandbox, client);
-        return result;
+        return result(created);
       }
       existing = await refused(() => client.getSandbox(selector, context.signal));
       if (existing === undefined && alreadyExists) {
@@ -3412,7 +3523,39 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       validateHarnessServiceUrl(service.url);
     }
     await this.initializeWorkspace(context, sandbox, client);
-    return result;
+    return result(existing);
+  }
+
+  private async jointSupervisorPod(
+    context: SandboxHarnessContext,
+    id: string,
+    signal: AbortSignal,
+  ) {
+    const namespace = namespaceName(context.namespace);
+    const name = "os-supervisor-" + id.toLowerCase();
+    const p = await kubernetes(context).read<V1Pod>({
+      apiVersion: "v1",
+      kind: "Pod",
+      metadata: { namespace, name },
+    });
+    signal.throwIfAborted();
+    const m = p.metadata;
+    const labels = m?.labels;
+    const cs = p.status?.containerStatuses;
+    if (
+      m?.namespace === namespace &&
+      m.name === name &&
+      !m.deletionTimestamp &&
+      labels?.[OPENSHELL_SANDBOX_ID_LABEL] === id &&
+      labels["openshell.ai/boundary-pair"] === id.toLowerCase() &&
+      labels[OPENSHELL_BOUNDARY_ROLE_LABEL] === "supervisor" &&
+      p.status?.phase === "Running" &&
+      p.status.conditions?.some((c) => c.type === "Ready" && c.status === "True") &&
+      cs?.length &&
+      cs.every((c) => c.ready && c.restartCount === 0 && c.state?.running && c.containerID)
+    ) {
+      return m.uid;
+    }
   }
 
   /** OpenShell labels the supervisor and workload Pods as one boundary pair. Keep both

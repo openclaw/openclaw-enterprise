@@ -70,7 +70,11 @@ export class ProtectedExecutionDriver {
     ) {
       throw new DependencyUnavailableError("The protected Driver no longer owns this plan.");
     }
-    if (context.plan.policyReductionVersion === 2 && this.proxy.policyReduction?.version === 2) {
+    if (
+      context.plan.policyReductionVersion !== undefined &&
+      this.proxy.policyReduction &&
+      this.proxy.policyReduction.version !== 1
+    ) {
       await this.proxy.policyReduction.assertAvailable(context.signal);
     }
     const profile = repositoryGitDeliveryProfile(context.plan.repositoryGit);
@@ -120,6 +124,12 @@ export class ProtectedExecutionDriver {
     const stage = launch && (await this.sandbox.observeHeldRepositoryGitPreview?.(launch));
     if (preview && !stage) {
       return false;
+    }
+    if (context.plan.policyReductionVersion === 3 && context.plan.generation > 1) {
+      // A settled reduction keeps this enrolled Harness. Revalidate custody without
+      // provisioning a signer, issuing a startup release, or adopting a new process.
+      await this.current(context, custody, ready);
+      return true;
     }
     const installed = await this.observe(context, wiring);
     if (!installed || !(await ready())) {
@@ -181,7 +191,9 @@ export class ProtectedExecutionDriver {
       // v8 can retain an authenticated model exchange beside online Git. That key
       // does not turn the Git request authorization into an exact-dispatch permit.
       (context.plan.repositoryGitAuthorization !== undefined &&
-      !(context.plan.policyReductionVersion === 2 && context.plan.routes.length > 0)
+      !(context.plan.policyReductionVersion === 3
+        ? installed.plan.routes.length > 0
+        : context.plan.policyReductionVersion === 2 && context.plan.routes.length > 0)
         ? enforcement.peerKeyId === undefined
         : !!enforcement.peerKeyId) &&
       (!installed.plan.repositoryGit ||

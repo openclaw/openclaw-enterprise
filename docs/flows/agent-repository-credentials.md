@@ -353,6 +353,7 @@ denied before reaching the provider, and chat continues.
 
 ## Related docs
 
+- [Joint admission](joint-model-git-admission.md)
 - [Repository credential reference](../reference/repository-credentials.md)
 - [Install repository access](../guides/repository-credentials/installation.md)
 - [Create and use a repository Agent](../guides/repository-credentials.md)

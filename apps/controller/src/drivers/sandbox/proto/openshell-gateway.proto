@@ -20,6 +20,7 @@ import "google/protobuf/timestamp.proto";
 service OpenShell {
   // Config reads require config:read; mutation requires config:write and workspace admin.
   rpc GetDraftPolicy(GetDraftPolicyRequest) returns (GetDraftPolicyResponse);
+  rpc AdvanceJointReduction(AdvanceJointReductionRequest) returns (AdvanceJointReductionResponse);
   rpc GetSandboxPolicyStatus(GetSandboxPolicyStatusRequest) returns (GetSandboxPolicyStatusResponse);
   rpc UpdateConfig(UpdateConfigRequest) returns (UpdateConfigResponse);
   rpc ExecSandbox(ExecSandboxRequest) returns (stream ExecSandboxEvent);
@@ -263,6 +264,7 @@ message NetworkMiddlewareConfig {
   bool credential_authority = 7;
   repeated CredentialConnector credential_connectors = 8;
   bool execution_authority = 9;
+  bool require_execution_admission = 10;
 }
 
 // Host selector controlling which admitted destinations use a middleware config.
@@ -410,6 +412,7 @@ message NetworkEndpoint {
   // Internal gateway-derived marker indicating that this endpoint belongs to
   // an attached credentialed provider. User-authored values are ignored.
   bool provider_credentialed = 26;
+  string token_grant_owner = 27;
 }
 
 // MCP options are grouped so MCP-specific policy can grow without adding more
@@ -777,6 +780,7 @@ message ProviderMutationReceipt {
   string workspace = 4;
   ProviderMutationKind kind = 5;
   ProviderDesiredIdentity desired = 6;
+  ProviderDesiredIdentity detached_from = 8;
 }
 
 enum ProviderMutationKind {
@@ -852,6 +856,91 @@ enum ProviderProfileCategory {
   PROVIDER_PROFILE_CATEGORY_KNOWLEDGE = 7;
 }
 
+message ProviderCredentialTokenGrantAudienceOverride {
+  // Optional: endpoint host selector. If omitted, inherits the profile endpoint host.
+  string host = 1;
+
+  // Optional: endpoint port selector. If omitted, matches the expanded profile endpoint port.
+  uint32 port = 2;
+
+  // Optional: endpoint path selector. If omitted, inherits the profile endpoint path.
+  string path = 3;
+
+  // Resource audience to request for matching endpoints.
+  string audience = 4;
+
+  // Optional: OAuth2 scopes to request. If omitted, inherits the token grant scopes.
+  repeated string scopes = 5;
+}
+
+// Provider credential token grant configuration.
+// When present, the credential is obtained dynamically via OAuth2 grant when needed.
+enum ProviderCredentialTokenGrantType {
+  PROVIDER_CREDENTIAL_TOKEN_GRANT_TYPE_UNSPECIFIED = 0;
+  PROVIDER_CREDENTIAL_TOKEN_GRANT_TYPE_CLIENT_CREDENTIALS = 1;
+  PROVIDER_CREDENTIAL_TOKEN_GRANT_TYPE_TOKEN_EXCHANGE = 2;
+}
+
+message ProviderCredentialTokenGrantSubjectToken {
+  // Source for the token exchange subject token. Phase one supports
+  // "provider_credential".
+  string source = 1;
+
+  // Provider credential key that stores the subject token.
+  string credential = 2;
+
+  // OAuth2 subject_token_type. If omitted, OpenShell uses
+  // urn:ietf:params:oauth:token-type:access_token.
+  string subject_token_type = 3;
+}
+
+// Source of the OAuth client assertion. Unspecified preserves SPIFFE behavior.
+enum ProviderCredentialAssertionSource {
+  PROVIDER_CREDENTIAL_ASSERTION_SOURCE_UNSPECIFIED = 0;
+  PROVIDER_CREDENTIAL_ASSERTION_SOURCE_SPIFFE_JWT_SVID = 1;
+  PROVIDER_CREDENTIAL_ASSERTION_SOURCE_KUBERNETES_PROJECTED_TOKEN = 2;
+}
+
+message ProviderCredentialTokenGrant {
+  ProviderCredentialAssertionSource assertion_source = 11;
+  reserved 4;
+  reserved "cache_ttl_seconds";
+  // OAuth2 token endpoint URL (e.g., https://keycloak.example.com/realms/my-realm/protocol/openid-connect/token)
+  string token_endpoint = 1;
+
+  // Optional: default resource audience to request from the token service
+  string audience = 2;
+
+  // Optional: audience to request when fetching the JWT-SVID from SPIRE.
+  // If omitted, the sandbox derives this from token_endpoint.
+  string jwt_svid_audience = 6;
+
+  // Optional: OAuth2 scopes to request
+  repeated string scopes = 3;
+
+  // Optional token cache TTL override. If absent, use expires_in from the token response.
+  google.protobuf.Duration cache_ttl = 104;
+
+  // Optional: endpoint-specific resource audience overrides.
+  repeated ProviderCredentialTokenGrantAudienceOverride audience_overrides = 5;
+
+  // Optional: OAuth2 client_assertion_type value. If omitted, OpenShell uses
+  // urn:ietf:params:oauth:client-assertion-type:jwt-bearer.
+  string client_assertion_type = 7;
+
+  // Grant type. If omitted/unspecified, OpenShell treats this as client_credentials
+  // for backwards compatibility.
+  ProviderCredentialTokenGrantType grant_type = 8;
+
+  // Subject token metadata for token_exchange grants.
+  ProviderCredentialTokenGrantSubjectToken subject_token = 9;
+
+  // OAuth2 requested_token_type. If omitted for token_exchange, OpenShell uses
+  // urn:ietf:params:oauth:token-type:access_token.
+  string requested_token_type = 10;
+}
+
+
 message ProviderProfileCredential {
   string name = 1;
   string description = 2;
@@ -859,7 +948,11 @@ message ProviderProfileCredential {
   bool required = 4;
   string auth_style = 5;
   string header_name = 6;
+  string query_param = 7;
   ProviderCredentialRefresh refresh = 8;
+  string path_template = 9;
+  ProviderCredentialTokenGrant token_grant = 10;
+  repeated string token_grant_owners = 11;
   // v0.1.4: identity-bound placeholder retained across static value rotations.
   bool stable_placeholder = 12;
 }
@@ -1211,6 +1304,87 @@ message NegotiatedExtensionInfo {
   repeated string supported_capabilities = 7;
   repeated string required_capabilities = 8;
 }
+message AdvanceJointReductionRequest {
+  WorkspaceSelector workspace_scope = 1;
+  string sandbox = 2;
+  JointReductionCommandV3 command = 3;
+}
+
+message AdvanceJointReductionResponse {
+  // Current, independently loaded policy and signer, never a promised projection.
+  JointReductionCommandV3 current = 1;
+  // Historical authenticated result. In particular, a fence is not retained access.
+  JointReductionResultV3 last_result = 2;
+  JointReductionCommandV3 pending = 3;
+  // True only after the credential for current.public_key was installed.
+  bool credential_installed = 4;
+  // Original signed fence, retained across successor and lost acknowledgments.
+  JointReductionResultV3 fence = 5;
+  // Fresh agreement on the current applied policy and the admitted or retained
+  // authority, never set by a mutation, pending operation, or historical receipt.
+  // The controller must independently verify that the named grant is still current.
+  bool joint_authority_verified = 6;
+}
+
+message JointExecutionGrantV3 {
+  string id = 1;
+  uint64 generation = 2;
+  string scope = 3;
+  string recipient = 4;
+}
+
+message JointGitRecipientV3 {
+  string host = 1;
+  string provider_id = 2;
+  string attachment_epoch = 3;
+  string rule_digest = 4;
+  string rule_name = 5;
+  string provider_name = 6;
+}
+
+message JointExecutionPolicyV3 {
+  string model_policy_hash = 1;
+  SandboxPolicy effective_policy = 2;
+  repeated JointGitRecipientV3 git = 3;
+  string profile = 4;
+}
+
+message JointReductionCommandV3 {
+  // admit | fence-model | fence-git | successor | retain-git; anything else fails closed.
+  string action = 1;
+  string session_id = 2;
+  bytes public_key = 3;
+  string operation_id = 4;
+  JointExecutionGrantV3 model_grant = 5;
+  JointExecutionGrantV3 git_grant = 6;
+  // At a fence, effective_policy is the exact proposed remainder; enforcement
+  // still names the original applied generation. They coincide after reduction.
+  JointExecutionPolicyV3 policy = 7;
+  LoadedEnforcementEvidence enforcement = 8;
+  bytes fence_receipt = 9;
+  bytes challenge = 10;
+  // Original github.com then api.github.com conditional detach receipts, at successor.
+  repeated string detach_receipt_ids = 11;
+  // Hard upper bound from the authenticated supervisor principal that created
+  // this session. A retained Git sender must stop before this time even if isolated.
+  int64 session_expires_at_unix_seconds = 12;
+}
+
+// Request service verification and a replacement bearer on the original
+// authenticated stream. This can never change the signer, grant or generation.
+message JointExecutionRenewV3 {
+  string session_id = 1;
+  bytes public_key = 2;
+}
+
+message JointReductionResultV3 {
+  JointReductionCommandV3 command = 1;
+  bytes receipt = 2;
+  bytes public_key = 3;
+  bytes signature = 4;
+  bool applied = 5;
+}
+
 message GetSandboxPolicyStatusRequest {
   string sandbox = 1;
   uint32 version = 2;

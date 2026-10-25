@@ -144,17 +144,52 @@ export const openShellPreviewEnded = `EXISTS (
     AND p.installation->'enforcement'=f.source#>'{session,credentialProxyExecution,enforcement}'
     AND p.installation#>'{plan,driver}'=f.source#>'{session,credentialProxyExecution,driver}')`;
 
+/** Only this original admitted family's confirmed Git removal retires an otherwise valid installation token. */
+export const openShellJointGitEnded = `EXISTS (
+  SELECT FROM occ.egress_installations p JOIN occ.credential_delivery_reductions d ON d.revision_id=p.revision_id
+  WHERE d.policy_request->'expected'=p.installation AND d.policy_observed->'plan'=d.policy_request->'retained'
+    AND d.policy_observed#>>'{plan,generation}'='2' AND NOT(d.policy_observed->'plan' ? 'repositoryGit')
+    AND p.installation#>>'{plan,policyReductionVersion}'='3' AND f.source->>'adoption'='${installationGitAdoption}'
+    AND p.installation#>>'{enforcement,joint,git,id}'=f.source#>>'{session,binding,grant,grantId}'
+    AND (p.namespace_id,p.agent_id,p.revision_id,p.sandbox_id)=
+      (f.source#>>'{session,namespaceId}',f.source#>>'{session,agentId}',f.source#>>'{session,revisionId}',f.source#>>'{session,credentialProxyExecution,sandboxId}')
+    AND p.installation->'enforcement'=f.source#>'{session,credentialProxyExecution,enforcement}'
+    AND p.installation#>'{plan,driver}'=f.source#>'{session,credentialProxyExecution,driver}')`;
+
 /** Read the bundled observer's existing fenced route; no duplicate registration or adoption. */
+// A paired installation gets material only after the two independently created
+// objects and their attached epoch match the verified execution that OCC released.
+export const releasedJointGit = `(p.installation#>>'{plan,policyReductionVersion}'='3'
+  AND p.installation#>>'{plan,repositoryGitAuthorization}'='online-request'
+  AND p.installation#>>'{plan,repositoryGit,bindings,0,profile}'='github-installation'
+  AND (p.namespace_id,p.agent_id,p.revision_id)=(r.namespace_id,r.agent_id,r.revision_id)
+  AND r.target->>'transport'='${openShellGitDeliveryTransport}' AND r.binding_id=p.installation#>>'{plan,execution,executionId}'
+  AND p.sandbox_id=r.observed->>'sandboxId' AND r.write_pending IS NULL
+  AND r.desired->'grant'=r.observed#>'{wiring,grant}' AND r.desired->'grant'=
+      ((p.installation#>'{enforcement,joint,git}')-'recipient')
+  AND p.installation#>>'{enforcement,joint,ownerEvidence,runtimeProvider}'=r.observed#>>'{wiring,runtimeProvider}'
+  AND jsonb_array_length(r.desired->'recipients')=2 AND jsonb_array_length(r.observed#>'{wiring,recipients}')=2
+  AND jsonb_array_length(p.installation#>'{enforcement,joint,ownerEvidence,recipients}')=2
+  AND NOT EXISTS (SELECT FROM generate_series(0,1) i WHERE NOT COALESCE((
+    (r.desired->'recipients'->i->>'host',r.desired->'recipients'->i->>'providerName',r.desired->'recipients'->i->>'providerId')
+      =(r.observed#>'{wiring,recipients}'->i->>'host',r.observed#>'{wiring,recipients}'->i->>'providerName',r.observed#>'{wiring,recipients}'->i->>'providerId')
+    AND (r.observed#>'{wiring,recipients}'->i->>'host',r.observed#>'{wiring,recipients}'->i->>'providerName',
+      r.observed#>'{wiring,recipients}'->i->>'providerId',r.observed#>'{wiring,recipients}'->i->>'attachmentEpoch')
+      =(p.installation#>'{enforcement,joint,ownerEvidence,recipients}'->i->>'host',p.installation#>'{enforcement,joint,ownerEvidence,recipients}'->i->>'provider_name',
+        p.installation#>'{enforcement,joint,ownerEvidence,recipients}'->i->>'provider_id',p.installation#>'{enforcement,joint,ownerEvidence,recipients}'->i->>'attachment_epoch')),false))
+  AND NOT EXISTS (SELECT FROM occ.credential_delivery_reductions d WHERE d.revision_id=r.revision_id
+    AND d.policy_request IS NOT NULL AND (d.policy_observed IS NULL OR NOT(d.policy_observed->'plan' ? 'repositoryGit'))))`;
+
 export const openShellGitRecipientEvidence: RepositoryGitRecipientEvidence = Object.freeze({
   join: `${openShellRoute} r USING(namespace_id, agent_id, revision_id)`,
-  released: `${protectedRepositoryGitInstallationSql} AND r.live_revision_id IS NOT NULL AND r.settlement='snapshot' AND r.blocked IS NULL`,
+  released: `((${protectedRepositoryGitInstallationSql}) OR ${releasedJointGit}) AND r.live_revision_id IS NOT NULL AND r.settlement='snapshot' AND r.blocked IS NULL`,
   observed: openShellObserved,
-  installed: `${openShellObserved} AND observed->>'credentialState'='active' AND write_pending IS NULL
+  installed: `${openShellObserved} AND ((observed ? 'wiring' AND write_pending IS NULL AND $4::uuid IS NOT NULL AND $5::uuid IS NOT NULL) OR (observed->>'credentialState'='active' AND write_pending IS NULL
     AND desired->>'credentialState'='active'
     AND observed->>'providerId'=desired->>'providerId'
     AND observed->>'providerResourceVersion'=desired->>'resourceVersion'
     AND observed->>'profileVersion'=desired->>'profileVersion'
-    AND preparation_attempt_id=$4 AND material_version=$5`,
+    AND preparation_attempt_id=$4 AND material_version=$5))`,
 });
 
 const registeredObservation = `SELECT FROM occ.credential_deliveries WHERE revision_id=$1 AND fence=$2

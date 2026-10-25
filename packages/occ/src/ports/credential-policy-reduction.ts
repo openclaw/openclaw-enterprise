@@ -1,7 +1,9 @@
 import type {
   Agent,
   AgentRevision,
+  CredentialPolicyEffect,
   CredentialPolicyReduction,
+  CredentialSource,
   CredentialWithdrawal,
   EgressInstallation,
   Namespace,
@@ -16,7 +18,7 @@ export interface CredentialPolicyReductionState {
 }
 
 /** The reduction service needs one transaction, without selecting a State adapter. */
-interface CredentialPolicyReductionUnitOfWork {
+export interface CredentialPolicyReductionUnitOfWork {
   readonly namespaces: {
     lockNamespace(namespaceId: string): Promise<Readonly<Pick<Namespace, "id">> | undefined>;
   };
@@ -31,6 +33,22 @@ interface CredentialPolicyReductionUnitOfWork {
     ): Promise<Readonly<AgentRevision> | undefined>;
   };
   readonly credentialSources: {
+    readPolicyEffect(
+      namespaceId: string,
+      revisionId: string,
+      step: string,
+    ): Promise<CredentialPolicyEffect | undefined>;
+    comparePolicyEffect(
+      namespaceId: string,
+      revisionId: string,
+      step: string,
+      prior: CredentialPolicyEffect | undefined,
+      next: CredentialPolicyEffect,
+    ): Promise<boolean>;
+    findCredentialSource(
+      namespaceId: string,
+      sourceId: string,
+    ): Promise<Readonly<CredentialSource> | undefined>;
     findRevisionEgressInstallation(
       namespaceId: string,
       revisionId: string,
@@ -51,7 +69,10 @@ interface CredentialPolicyReductionUnitOfWork {
       next: CredentialPolicyReductionState,
     ): Promise<boolean>;
   };
-  readonly repositorySessions: Pick<RepositorySessionReadRepository, "listRevisionAttempts">;
+  readonly repositorySessions: Pick<
+    RepositorySessionReadRepository,
+    "listRevisionAttempts" | "findStandingApproval" | "findStandingExecution"
+  >;
 }
 
 export interface CredentialPolicyReductionStore {

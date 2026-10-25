@@ -2,6 +2,11 @@ import type { AdmittedRepositoryBinding, AgentRevision } from "@openclaw-enterpr
 
 /** Nonsecret delivery scope resolved by Repo, independently of token issuance or transport. */
 export interface RepositoryGitDeliveryBinding {
+  readonly jointGrant?: {
+    readonly id: string;
+    readonly generation: string;
+    readonly scope: string;
+  };
   readonly binding: AdmittedRepositoryBinding;
   readonly delivery:
     | { readonly repository: string; readonly installationId?: never }

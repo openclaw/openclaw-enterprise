@@ -44,6 +44,7 @@ export async function fixture(
     sessionLifetimeMs = 3_600_000,
     standingApproval = false,
     installationAccess = false,
+    grantGeneration = /** @type {number | undefined} */ (undefined),
   } = {},
 ) {
   const directory = await socketDirectory(t, "prepared-git-");
@@ -82,7 +83,9 @@ export async function fixture(
     ...(installationAccess && {
       installationAccess: {
         repositoryRef: "team-install",
-        namespaces: [{ namespaceId, accessMode: "installation" }],
+        namespaces: [
+          { namespaceId, accessMode: "installation", ...(grantGeneration && { grantGeneration }) },
+        ],
       },
     }),
     repositories: [

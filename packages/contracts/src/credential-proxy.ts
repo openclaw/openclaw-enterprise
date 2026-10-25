@@ -179,7 +179,7 @@ export interface ProxyPlan {
   /** Present on every v3 admission; v2 retains the exact capability IDs recorded at admission. */
   readonly driver?: DriverRegistrationRef;
   /** Capability required by this admission, including after process restart. */
-  readonly policyReductionVersion?: 1 | 2;
+  readonly policyReductionVersion?: 1 | 2 | 3;
   /** v4–v8: the repository or installation grant, independent of sender and grant duration. */
   readonly repositoryGit?: RepositoryRevisionState;
   /** v4/v7 are exact dispatch; v5/v8 require online authorization; v6 records an observed request hook. */
@@ -257,6 +257,14 @@ export interface EgressInstallation {
     readonly peerKeyId?: string;
     /** Required for protected repository Git. Never infer this association from a matching policy. */
     readonly repositoryGitRecipient?: RepositoryGitRecipient;
+    /** Verified against the paired Sandbox's complete applied policy at admission.
+     * Both grant tuples are immutable across the sole authorized reduction. */
+    readonly joint?: {
+      readonly model: JointGrantIdentity;
+      readonly git: JointGrantIdentity;
+      /** The two registered Drivers own the nonsecret policy and recipient evidence. */
+      readonly ownerEvidence: Readonly<Record<string, unknown>>;
+    };
   };
 }
 
@@ -441,13 +449,42 @@ export async function repositoryGitProfileAvailable(
   return (await repositoryGitAuthorization(control, signal, profile)) === "exact-dispatch";
 }
 
+/** Public provenance returned by the paired Sandbox, never credential material. */
+export interface JointGitProvision {
+  readonly runtimeProvider: string;
+  readonly grant: Omit<JointGrantIdentity, "recipient">;
+  readonly recipients: readonly {
+    readonly host: string;
+    readonly providerName: string;
+    readonly providerId: string;
+    readonly attachmentEpoch: string;
+  }[];
+}
+export interface CredentialPolicyEffect {
+  readonly requestId: string;
+  readonly identity: string;
+  readonly expectedVersion: string;
+  readonly receipt?: string;
+}
+export interface CredentialPolicyEffects {
+  read(step: string): Promise<CredentialPolicyEffect | undefined>;
+  compare(
+    step: string,
+    prior: CredentialPolicyEffect | undefined,
+    next: CredentialPolicyEffect,
+  ): Promise<boolean>;
+}
 export interface ProxyWiring {
+  readonly jointGit?: JointGitProvision;
   readonly plan: ProxyPlan;
   /** Nonsecret adapter-owned configuration; only the paired Sandbox interprets it. */
   readonly configuration: Readonly<Record<string, unknown>>;
 }
 
 export interface ProxyRevisionContext {
+  readonly policyEffects?: CredentialPolicyEffects;
+  readonly currentGitGrant?: () => JointGitProvision["grant"] | undefined;
+  readonly jointAdmissionCurrent?: (git: JointGitProvision["grant"]) => Promise<boolean>;
   readonly namespace: Readonly<Namespace>;
   readonly revision: Readonly<AgentRevision>;
   readonly plan: ProxyPlan;
@@ -456,8 +493,22 @@ export interface ProxyRevisionContext {
 
 /** Versioned, compare-and-reduce operation. The paired Sandbox must retain deny-all
  * when routes is empty. No creation, replacement, expansion or business request replay. */
+export interface JointGrantIdentity {
+  readonly id: string;
+  readonly generation: string;
+  readonly scope: string;
+  readonly recipient: string;
+}
+
+/** Nonsecret, admitted facts from the independently authenticated senders. */
+export interface JointPolicyCondition {
+  readonly predecessorKeySha256: string;
+  readonly grant: JointGrantIdentity;
+  readonly remainingPolicy: Readonly<Record<string, unknown>>;
+}
 export interface CredentialPolicyReduction {
-  readonly version: 1 | 2;
+  readonly version: 1 | 2 | 3;
+  readonly condition?: JointPolicyCondition;
   readonly operationId: string;
   readonly expected: EgressInstallation;
   readonly retained: ProxyPlan;
@@ -467,6 +518,7 @@ export interface CredentialPolicyReduction {
 export interface CredentialPolicyObservation {
   readonly operationId: string;
   readonly installation: EgressInstallation;
+  readonly condition?: JointPolicyCondition;
 }
 
 /** Capability of the paired Credential Proxy and Sandbox. Every installation path must
@@ -482,12 +534,32 @@ export type CredentialPolicyReducer = CredentialPolicyReducerOperations &
         /** Authenticate the configured enforcing counterpart's reduction capability. */
         assertAvailable(signal: AbortSignal): Promise<void>;
       }
+    | {
+        readonly version: 3;
+        assertAvailable(signal: AbortSignal): Promise<void>;
+        /** Continue only new steps after observing the original authenticated fence. */
+        advance?(
+          context: ProxyRevisionContext,
+          request: CredentialPolicyReduction,
+          retainedCurrent: () => Promise<boolean>,
+        ): Promise<void>;
+        prepare(
+          context: ProxyRevisionContext,
+          expected: EgressInstallation,
+          retained: ProxyPlan,
+        ): Promise<JointPolicyCondition | undefined>;
+      }
   );
 
 interface CredentialPolicyReducerOperations {
   /** Compare exact Driver registration, execution, recipient and policy generation before
    * applying. Persist operation identity and reject stale or conflicting reductions. */
-  apply(context: ProxyRevisionContext, reduction: CredentialPolicyReduction): Promise<void>;
+  apply(
+    context: ProxyRevisionContext,
+    reduction: CredentialPolicyReduction,
+    /** For v3, revalidate the original retained authority immediately before each effect. */
+    retainedCurrent?: () => Promise<boolean>,
+  ): Promise<void>;
   /** Inspect the original operation and current enforced policy; never apply or repair. */
   observe(
     context: ProxyRevisionContext,
@@ -570,7 +642,13 @@ export function assertExecutionAdmission(
     (plan?.policyReductionVersion !== undefined &&
       !(
         (plan.policyReductionVersion === 1 && admission.version === 3) ||
-        (plan.policyReductionVersion === 2 && (admission.version === 7 || admission.version === 8))
+        (plan.policyReductionVersion === 2 &&
+          (admission.version === 7 || admission.version === 8)) ||
+        (plan.policyReductionVersion === 3 &&
+          admission.version === 8 &&
+          repositoryGitDeliveryProfile(plan.repositoryGit) === "github_installation" &&
+          plan.routes.length > 0 &&
+          plan.harnessCredentialSource === undefined)
       )) ||
     (plan &&
       new Set(plan.routes.map((route) => route.binding.source.source.id)).size > 1 &&
@@ -578,7 +656,11 @@ export function assertExecutionAdmission(
   ) {
     throw new Error("Protected execution requires its admitted policy reduction capability.");
   }
-  if ((admission.version === 7 || admission.version === 8) && plan?.policyReductionVersion !== 2) {
+  if (
+    (admission.version === 7 || admission.version === 8) &&
+    plan?.policyReductionVersion !== 2 &&
+    plan?.policyReductionVersion !== 3
+  ) {
     throw new Error("Reducible repository Git requires reduction version 2.");
   }
   const repository = revision.egressPlan?.repositoryGit;

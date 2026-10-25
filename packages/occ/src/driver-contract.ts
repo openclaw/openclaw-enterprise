@@ -63,7 +63,10 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
         typeof candidate.bindRepositoryGit === "function") &&
       (candidate.policyReduction === undefined ||
         ((reduction?.version === 1 ||
-          (reduction?.version === 2 && typeof reduction.assertAvailable === "function")) &&
+          (reduction?.version === 2 && typeof reduction.assertAvailable === "function") ||
+          (reduction?.version === 3 &&
+            typeof reduction.assertAvailable === "function" &&
+            typeof reduction.prepare === "function")) &&
           typeof reduction.apply === "function" &&
           typeof reduction.observe === "function")) &&
       control !== undefined &&

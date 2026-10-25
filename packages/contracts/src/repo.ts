@@ -114,6 +114,11 @@ export type RepositoryApprovalScope = Readonly<Record<string, RepositoryApproval
 
 export interface RepositoryPolicyDriver extends Driver {
   readonly capability: "repo";
+  /** Re-read the selected delivery owner for an independently versioned Git grant. */
+  resolveDelivery?(revision: Readonly<import("./index.ts").AgentRevision>): {
+    readonly binding: AdmittedRepositoryBinding;
+    readonly jointGrant?: Omit<import("./credential-proxy.ts").JointGrantIdentity, "recipient">;
+  };
   listOptions(input: { readonly namespaceId: string }): Promise<RepositoryOptions>;
   standingApprovalScope?(input: {
     readonly namespaceId: string;

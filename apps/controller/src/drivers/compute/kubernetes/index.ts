@@ -6910,6 +6910,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
                 namespace: sandboxContext.namespace,
                 revision,
                 plan: currentEgressInstallation?.plan ?? revision.egressPlan,
+                ...(context?.policyEffects && { policyEffects: context.policyEffects }),
+                ...(context?.jointAdmissionCurrent && {
+                  jointAdmissionCurrent: context.jointAdmissionCurrent,
+                }),
                 signal: sandboxContext.signal,
               };
         if (
@@ -6943,6 +6947,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
               );
         const requirements = {
           ...renderedRequirements,
+          ...(currentEgressInstallation?.plan.policyReductionVersion === 3 && {
+            currentEgressInstallation,
+          }),
           ...(proxyWiring === undefined ? {} : { proxyWiring }),
           environment: [
             ...renderedRequirements.environment,

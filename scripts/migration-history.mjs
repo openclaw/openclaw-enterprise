@@ -133,6 +133,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 0) {
     return "empty";
   }
+  if (count === 65) {
+    return "preJointCredentialPolicyReduction";
+  }
   if (count === 24) {
     return "prePresetsMain";
   }

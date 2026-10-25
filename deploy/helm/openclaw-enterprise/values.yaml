@@ -371,6 +371,21 @@ openshellGit:
   issuerPublicKeyConfigMapName: ""
   # Trusted OpenShell Gateway and supervisor callers: namespace and Pod labels required.
   clients: []
+  # Opt in only for a joint model + Git Installation. Both openshellGit.enabled and
+  # egressAuthority.enabled must be true. The issuer shares this worker, TLS identity,
+  # and trusted supervisor clients with the Git middleware; it is not a public endpoint.
+  # In repository.openShell, set tokenEndpoint to
+  # https://openclaw-enterprise-openshell-git.<namespace>.svc:<port>/token/git and set
+  # tokenTrust.bundlePath to /etc/openclaw/openshell-git/jwt-bundle.json. Supply the
+  # supervisor issuer's actual SPIFFE subjectPrefix and JWT algorithm in that Installation.
+  # tlsSecretName must cover the Service DNS name; the supervisor must trust its CA.
+  jointTokenIssuer:
+    enabled: false
+    # Match repository.openShell.tokenTrust in the Installation. For projected tokens,
+    # omit the bundle; the worker needs create tokenreviews and get on supervisor Pods.
+    assertionSource: spiffe-jwt-svid # or kubernetes-projected-token
+    port: 8446 # unprivileged TCP port, distinct from the model and Git middleware ports
+    bundleConfigMapName: "" # operator-owned public SPIFFE JWT bundle at key jwt-bundle.json
 
 # Optional OCE custody for explicitly enrolled, Agent-scoped GitHub metadata reads.
 # In the Installation's drivers.credential_proxy.configuration.preparedGitHub set

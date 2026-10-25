@@ -113,6 +113,7 @@
     "tests/integration/credential-free-online-grant.test.mjs",
     "tests/integration/credential-free-metadata-grant.test.ts",
     "tests/integration/egress-enrollment.test.mjs",
+    "tests/integration/openshell-joint-provision-gateway.test.ts",
     "tests/integration/protected-driver-registration.test.ts",
     "tests/integration/protected-codex-pat.test.ts",
     "tests/integration/credential-policy-recovery.test.ts",
@@ -548,6 +549,14 @@
       "expectedTests": [
         "credential-free metadata exchange accepts a reordered Driver grant",
         "credential-free route admission rejects changed, missing and undefined extra grant fields"
+      ]
+    },
+    {
+      "path": "tests/integration/openshell-joint-provision-gateway.test.ts",
+      "expectedTests": [
+        "joint provisioning binds both uncached token grants and refuses replaced Gateway identities",
+        "joint token issuer releases each approved destination once to its enrolled supervisor",
+        "one Sandbox's obsolete Pod read cannot revoke another Sandbox or its newly observed supervisor"
       ]
     },
     {

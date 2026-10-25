@@ -2764,6 +2764,59 @@ export class PostgresPlatformState implements PlatformStateStore {
           ? undefined
           : immutableCopy(jsonObject(row.installation) as unknown as EgressInstallation);
       },
+      readPolicyEffect: async (ns, revision, step) => {
+        const result = await client.query(
+          `SELECT e.request_id,e.identity,e.expected_version,e.receipt
+          FROM occ.credential_policy_effects e JOIN occ.agent_revisions r ON e.revision_id=r.id
+          WHERE r.namespace_id=$1 AND e.revision_id=$2 AND e.step=$3`,
+          [ns, revision, step],
+        );
+        const row = rows(result.rows)[0];
+        return (
+          row && {
+            requestId: String(row.request_id),
+            identity: String(row.identity),
+            expectedVersion: String(row.expected_version),
+            ...(typeof row.receipt === "string" && { receipt: row.receipt }),
+          }
+        );
+      },
+      comparePolicyEffect: async (ns, revision, step, prior, next) => {
+        if (!prior) {
+          if (next.receipt) {
+            return false;
+          }
+          const result = await client.query(
+            `INSERT INTO occ.credential_policy_effects(revision_id,step,request_id,identity,expected_version)
+            SELECT id,$3,$4,$5,$6 FROM occ.agent_revisions WHERE namespace_id=$1 AND id=$2
+            AND admitted_spec #>> '{egress_plan,policyReductionVersion}'='3' ON CONFLICT DO NOTHING`,
+            [ns, revision, step, next.requestId, next.identity, next.expectedVersion],
+          );
+          return result.rowCount === 1;
+        }
+        if (
+          !next.receipt ||
+          prior.receipt ||
+          !isDeepStrictEqual({ ...prior, receipt: next.receipt }, next)
+        ) {
+          return false;
+        }
+        const result = await client.query(
+          `UPDATE occ.credential_policy_effects e SET receipt=$7
+          FROM occ.agent_revisions r WHERE r.namespace_id=$1 AND r.id=$2 AND r.id=e.revision_id
+          AND e.step=$3 AND e.request_id=$4 AND e.identity=$5 AND e.expected_version=$6 AND e.receipt IS NULL`,
+          [
+            ns,
+            revision,
+            step,
+            prior.requestId,
+            prior.identity,
+            prior.expectedVersion,
+            next.receipt,
+          ],
+        );
+        return result.rowCount === 1;
+      },
       listCredentialPolicyReductions: (namespaceId, revisionId) =>
         new CredentialDeliveryReductions(client).listPolicies(namespaceId, revisionId),
       saveCredentialPolicyReduction: (namespaceId, revisionId, bindingId, expected, next) =>

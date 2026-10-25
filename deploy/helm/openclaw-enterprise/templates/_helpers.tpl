@@ -904,6 +904,10 @@ capabilities:
 {{- $raw -}}
 {{- end -}}
 
+{{- define "openclaw.openshellGit.serviceName" -}}
+openclaw-enterprise-openshell-git
+{{- end -}}
+
 {{/* Each listener the chart routes through a Service: its port, or disabled. API and worker
      startup and the upgrade check refuse an Installation listener on another port, not on
      all addresses, without the chart listener (finding 2213), or naming TLS or issuer files
@@ -913,6 +917,13 @@ capabilities:
 - name: {{ $listener.name }}
   value: {{ if $listener.values.enabled }}{{ include "openclaw.positiveSafeInteger" (dict "name" $listener.label "value" $listener.values.port "port" true) | quote }}{{ else }}"disabled"{{ end }}
 {{- end }}
+{{- $issuer := .Values.openshellGit.jointTokenIssuer }}
+{{- if $issuer.enabled }}
+- name: OCC_OPENSHELL_GIT_TOKEN_ASSERTION_SOURCE
+  value: {{ $issuer.assertionSource | quote }}
+{{- end }}
+- name: OCC_OPENSHELL_GIT_TOKEN_ENDPOINT
+  value: {{ if $issuer.enabled }}{{ printf "https://%s.%s.svc:%v/token/git" (include "openclaw.openshellGit.serviceName" .) .Release.Namespace $issuer.port | quote }}{{ else }}"disabled"{{ end }}
 {{- end -}}
 
 {{/* Reject obvious quantity syntax errors; Kubernetes owns full quantity validation.

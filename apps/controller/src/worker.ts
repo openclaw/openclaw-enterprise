@@ -1,3 +1,4 @@
+import { revisionPolicyEffects } from "@openclaw-enterprise/occ";
 import { proxyHarnessAuthProvider } from "@openclaw-enterprise/contracts";
 import { reduceCredentialPolicy } from "@openclaw-enterprise/occ";
 import {
@@ -2317,6 +2318,7 @@ export class ControllerWorker {
           )) ||
         (modelWithdrawn.status === "fulfilled" && modelWithdrawn.value) ||
         (revision.egressPlan?.policyReductionVersion !== 2 &&
+          revision.egressPlan?.policyReductionVersion !== 3 &&
           compute.retireExpiredRepositoryAccess === undefined)
       ) {
         // The caller matched Compute to this revision. Missing withdrawal capability is
@@ -2354,14 +2356,29 @@ export class ControllerWorker {
       signal.throwIfAborted();
       try {
         const result =
-          revision.egressPlan?.policyReductionVersion === 2
+          revision.egressPlan?.policyReductionVersion === 2 ||
+          revision.egressPlan?.policyReductionVersion === 3
             ? await reduceCredentialPolicy(
                 this.state,
                 this.protectedDriver,
-                { namespace, revision, plan: revision.egressPlan, signal },
+                {
+                  namespace,
+                  revision,
+                  plan: revision.egressPlan,
+                  signal,
+                  currentGitGrant: () =>
+                    this.repositoryPolicy?.resolveDelivery?.(revision).jointGrant,
+                },
                 undefined,
               )
             : await compute.retireExpiredRepositoryAccess!(revision, signal);
+        if (
+          result === "withdrawn" &&
+          revision.egressPlan?.policyReductionVersion === 3 &&
+          (await compute.observeRevision?.(revision, signal))?.state !== "running"
+        ) {
+          return { withdrawal: "pending" };
+        }
         return {
           withdrawal: result === "withdrawn" || result === "retire-runtime" ? result : "pending",
         };
@@ -3317,7 +3334,16 @@ export class ControllerWorker {
             const status = await this.withClaimHeartbeat(claim, (signal) =>
               withdraw(revision, source, signal, {
                 reducePolicy: (context) =>
-                  reduceCredentialPolicy(this.state, this.protectedDriver, context, source.id),
+                  reduceCredentialPolicy(
+                    this.state,
+                    this.protectedDriver,
+                    {
+                      ...context,
+                      currentGitGrant: () =>
+                        this.repositoryPolicy?.resolveDelivery?.(revision).jointGrant,
+                    },
+                    source.id,
+                  ),
               }),
             );
             const revoked = status.state === "revoked" || status.state === "absent";
@@ -3876,6 +3902,23 @@ export class ControllerWorker {
       });
       return;
     }
+    // The same conversation can retain Git after the model grant is withdrawn.
+    // Observe the existing Harness and maintain the normal cadence without re-attaching
+    // its withdrawn Harness credential or restarting the process.
+    const keepSupervising = revision.egressPlan?.policyReductionVersion === 3;
+    if (
+      keepSupervising &&
+      (
+        await this.withClaimHeartbeat(
+          claim,
+          (signal) =>
+            this.compute.observeRevision?.(revision, signal) ?? Promise.resolve(undefined),
+        )
+      )?.state !== "running"
+    ) {
+      await this.finalizeActiveRevision(claim, revision, "ACTIVATION_PENDING");
+      return;
+    }
     await this.state.transactWithQueue(async (unit, queue) => {
       // Namespace first, as every transaction that may also lock it (the work insert's
       // foreign key) must.
@@ -3886,7 +3929,10 @@ export class ControllerWorker {
       const pending = await this.pendingCredentialWithdrawals(unit, revision);
       await this.requeueCredentialWithdrawals(unit, pending);
       await queue.complete(claim, { code: "CREDENTIAL_WITHDRAWN" });
-      if (pending.length > 0 && this.revisionMaintenanceInterval(revision) !== undefined) {
+      if (
+        (pending.length > 0 || keepSupervising) &&
+        this.revisionMaintenanceInterval(revision) !== undefined
+      ) {
         await this.enqueueMaintenance(queue, claim, revision);
       }
     }, this.queueOptions);
@@ -3949,7 +3995,16 @@ export class ControllerWorker {
         withdraw(revision, source, signal, {
           recheck: true,
           reducePolicy: (context) =>
-            reduceCredentialPolicy(this.state, this.protectedDriver, context, source.id),
+            reduceCredentialPolicy(
+              this.state,
+              this.protectedDriver,
+              {
+                ...context,
+                currentGitGrant: () =>
+                  this.repositoryPolicy?.resolveDelivery?.(revision).jointGrant,
+              },
+              source.id,
+            ),
         }),
       );
     }
@@ -5464,6 +5519,88 @@ export class ControllerWorker {
         ...(revision.egressPlan === undefined
           ? {}
           : {
+              ...(revision.egressPlan.policyReductionVersion === 3 && {
+                policyEffects: revisionPolicyEffects(this.state, revision.namespaceId, revision.id),
+                jointAdmissionCurrent: async (claimed) =>
+                  this.state.transact(async (unit) => {
+                    const ns = await unit.namespaces.lockNamespace(revision.namespaceId);
+                    const agent = await unit.agents.lockAgent(
+                      revision.namespaceId,
+                      revision.agentId,
+                    );
+                    const newest = (
+                      await unit.revisions.listRevisionMetadata(
+                        revision.namespaceId,
+                        revision.agentId,
+                      )
+                    ).at(-1);
+                    const git = revision.repositoryCredentials;
+                    const binding = git?.bindings[0];
+                    const b = revision.egressPlan?.routes[0]?.binding;
+                    if (
+                      ns?.status !== "ready" ||
+                      !agent ||
+                      agent.status !== "active" ||
+                      agent.desiredRuntimeState !== "running" ||
+                      newest?.id !== revision.id ||
+                      agent.servicePrincipalId !== revision.servicePrincipalId ||
+                      !git ||
+                      !binding ||
+                      !b ||
+                      !agent.credentialSources?.some((s) => s.sourceId === b.source.source.id) ||
+                      !agent.repositoryBindings?.some(
+                        (v) =>
+                          v.repositoryRef === binding.repositoryRef &&
+                          v.profile === binding.profile,
+                      ) ||
+                      !isDeepStrictEqual(
+                        this.repositoryPolicy?.resolveDelivery?.(revision).jointGrant,
+                        claimed,
+                      )
+                    ) {
+                      return false;
+                    }
+                    const source = await unit.credentialSources.findCredentialSource(
+                      revision.namespaceId,
+                      b.source.source.id,
+                    );
+                    if (
+                      source?.state !== "ready" ||
+                      !isDeepStrictEqual(source.egress?.key, b.source) ||
+                      (
+                        await unit.credentialSources.listCredentialWithdrawals(
+                          revision.namespaceId,
+                          revision.id,
+                        )
+                      ).length ||
+                      (
+                        await unit.credentialSources.listCredentialPolicyReductions(
+                          revision.namespaceId,
+                          revision.id,
+                        )
+                      ).length
+                    ) {
+                      return false;
+                    }
+                    if (!git.standingApprovalId) {
+                      return git.deadlineWallMs > Date.now();
+                    }
+                    const approval = await unit.repositorySessions.findStandingApproval(
+                      revision.namespaceId,
+                      revision.agentId,
+                      binding.repositoryRef,
+                    );
+                    return (
+                      !!approval &&
+                      !approval.revokedAt &&
+                      approval.id === git.standingApprovalId &&
+                      approval.generation === git.standingApprovalGeneration &&
+                      approval.scopeFingerprint === claimed.scope &&
+                      String(approval.generation) === claimed.generation &&
+                      isDeepStrictEqual(approval.binding, binding)
+                    );
+                  }),
+              }),
               recordEgressInstallation: async (installation) => {
                 await this.state.transact(async (state) => {
                   await state.agents.lockAgent(revision.namespaceId, revision.agentId);

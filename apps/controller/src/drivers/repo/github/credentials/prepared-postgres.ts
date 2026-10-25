@@ -325,6 +325,10 @@ export class PreparedGitHubPostgres {
         : undefined,
   };
 
+  protected inspectWarmVersion(c: PostgresClient, source: TokenSource) {
+    return this.lockMaterial(c, source, false);
+  }
+
   private lockMaterial(
     c: PostgresClient,
     source: TokenSource,
@@ -333,19 +337,19 @@ export class PreparedGitHubPostgres {
   private lockMaterial(
     c: PostgresClient,
     source: TokenSource,
-    installed: InstalledTokenVersion,
+    installed: InstalledTokenVersion | false,
   ): Promise<CurrentTokenVersion | undefined>;
   private async lockMaterial(
     c: PostgresClient,
     source: TokenSource,
-    installed: InstalledTokenVersion | null,
+    installed: InstalledTokenVersion | null | false,
   ) {
     const warm = installed === null;
     const values = [
       source.key.source.id,
       source,
       this.issuerAuthority,
-      ...(warm ? [] : [installed.preparationAttemptId, installed.materialVersion]),
+      ...(installed ? [installed.preparationAttemptId, installed.materialVersion] : []),
     ];
     const { rows } = await c.query(
       `SELECT a.id,a.admission,a.material_version,a.usable_until${warm ? ",a.sealed" : ""}
@@ -354,7 +358,7 @@ export class PreparedGitHubPostgres {
          AND a.custody='current' AND a.state='committed' AND a.admission=f.admission
          AND a.usable_until BETWEEN clock_timestamp() AND clock_timestamp() + interval '61 minutes'
          AND a.provider_expires_at >= a.usable_until
-         ${warm ? "" : "AND a.id=$4 AND a.material_version=$5"} FOR SHARE OF f,a`,
+         ${installed ? "AND a.id=$4 AND a.material_version=$5" : ""} FOR SHARE OF f,a`,
       values,
     );
     if (rows.length !== 1) {

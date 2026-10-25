@@ -293,6 +293,7 @@ response custody and NetworkPolicy with the selected chart/image. Observe origin
 
 ## Related docs
 
+- [Joint model and Git admission](joint-model-git-admission.md)
 - [Credential source lifecycle](credential-source-lifecycle.md)
 - [Protected static inference](../reference/credential-sources/protected-inference.md)
 - [OpenShell Sandbox provisioning](openshell-sandbox-provisioning.md)

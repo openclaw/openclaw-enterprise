@@ -782,6 +782,31 @@ export async function loadInstallationConfiguration(options: {
     chartListeners.openshellGit,
   );
 
+  const chartGitToken = environment.OCC_OPENSHELL_GIT_TOKEN_ENDPOINT;
+  if (chartGitToken !== undefined) {
+    const receipt = repositoryTransportConfiguration;
+    const selected =
+      proxySelection?.configuration.middlewareName === "codex-workspace-pat-with-git-v2";
+    if (
+      (chartGitToken === "disabled" && selected) ||
+      (chartGitToken !== "disabled" &&
+        (!selected ||
+          receipt?.tokenEndpoint !== chartGitToken ||
+          !receipt.tokenTrust ||
+          environment.OCC_OPENSHELL_GIT_TOKEN_ASSERTION_SOURCE !==
+            ("assertionSource" in receipt.tokenTrust
+              ? receipt.tokenTrust.assertionSource
+              : "spiffe-jwt-svid") ||
+          (receipt?.tokenTrust &&
+            "bundlePath" in receipt.tokenTrust &&
+            receipt.tokenTrust.bundlePath !== "/etc/openclaw/openshell-git/jwt-bundle.json")))
+    ) {
+      throw new Error(
+        "The joint Git issuer endpoint and assertion trust must match Helm openshellGit.jointTokenIssuer.",
+      );
+    }
+  }
+
   const backends = backendConfiguration(
     configuration.backend,
     serviceAccount,

@@ -1,3 +1,4 @@
+import { jointPolicyJourney } from "../helpers/joint-policy-lifecycle.ts";
 import { globalAgent } from "node:https";
 import { connect } from "node:tls";
 import { ProtectedExecutionDriver } from "../../apps/controller/src/drivers/compute/protected-execution-driver.ts";
@@ -37,6 +38,17 @@ import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbo
 import type { PlatformUnitOfWork } from "../../packages/occ/src/index.ts";
 import { InstalledDriver } from "../../packages/occ/src/index.ts";
 import type { AuditEvent, CredentialSource } from "../../packages/contracts/src/index.ts";
+
+import { createHash, randomBytes } from "node:crypto";
+import { CredentialDeliveryReductions } from "../../packages/occ/src/state/credential-delivery-reductions.ts";
+import {
+  jointCondition,
+  jointSuccessor,
+} from "../../apps/controller/src/drivers/egress-proxy/openshell-joint-policy.ts";
+import { openShellExchangeCapabilities } from "../../apps/controller/src/drivers/egress-proxy/openshell-exchange-capabilities.ts";
+import { openShellEgressConfiguration } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
+import { isReducedCredentialPlan } from "../../packages/occ/src/credential-policy-reduction.ts";
+import type { ProxyPlan } from "../../packages/contracts/src/index.ts";
 
 function nativeModel(slug = "fixture-model") {
   return {
@@ -917,6 +929,342 @@ test("bundled workspace registration admits the five native routes and refuses s
       /not qualified|no OpenShell release is qualified/i,
     );
   }
+  // Derive the joint policy from the same five routes that the registered API admitted.
+  // Even with the new selector, a missing counterpart or an independently changed route
+  // cannot acquire either sender. The ordinary model-only profile remains a separate path.
+  const jointPlan: ProxyPlan = {
+    ...plan,
+    policyReductionVersion: 3,
+    repositoryGitAuthorization: "online-request",
+    repositoryGit: {
+      driver: { id: "repo", implementation: "github" },
+      deadlineWallMs: Date.now() + 60_000,
+      bindings: [
+        {
+          backendId: "repo",
+          repositoryRef: "installation",
+          profile: "github-installation",
+          grant: {
+            providerInstanceId: "fixture-provider",
+            repositoryId: "fixture-installation",
+            grantId: "fixture-grant",
+          },
+        },
+      ],
+    },
+  };
+  const jointOptions = {
+    middlewareName: "codex-workspace-pat-with-git-v2",
+    authorityScope: "execution",
+    repositoryMiddlewareName: "fixture-repository",
+  } as const;
+  const admission = { version: 8, mode: "protected" } as const;
+  assert.doesNotThrow(() =>
+    assertExecutionAdmission({ executionAdmission: admission, egressPlan: jointPlan }),
+  );
+  const jointPolicy = openShellEgressConfiguration(jointPlan, jointOptions);
+  assert.deepEqual(jointPolicy.network_policies, wiring.configuration.network_policies);
+  assert.deepEqual(Object.keys(jointPolicy.network_middlewares as object).sort(), [
+    "oce-egress",
+    "oce-prepared-git",
+  ]);
+  const { repositoryGit: _removedGit, ...modelOnly } = jointPlan;
+  const retainedModel = { ...modelOnly, generation: 2 };
+  const retainedGit = { ...jointPlan, generation: 2, routes: [] };
+  assert.ok(isReducedCredentialPlan(jointPlan, retainedModel));
+  assert.ok(isReducedCredentialPlan(jointPlan, retainedGit));
+  assert.deepEqual(
+    Object.keys(
+      openShellEgressConfiguration(retainedModel, jointOptions).network_middlewares as object,
+    ),
+    ["oce-egress"],
+  );
+  assert.deepEqual(
+    Object.keys(
+      openShellEgressConfiguration(retainedGit, jointOptions).network_middlewares as object,
+    ),
+    ["oce-prepared-git"],
+  );
+  for (const invalid of [
+    { ...retainedModel, routes: retainedModel.routes.slice(1) },
+    { ...retainedGit, generation: 3 },
+    { ...retainedModel, routes: [] },
+    { ...retainedGit, execution: { ...retainedGit.execution, executionId: "other-execution" } },
+  ]) {
+    assert.equal(isReducedCredentialPlan(jointPlan, invalid), false);
+  }
+  assert.throws(
+    () =>
+      openShellEgressConfiguration(
+        {
+          ...jointPlan,
+          repositoryGit: {
+            ...jointPlan.repositoryGit!,
+            bindings: jointPlan.repositoryGit!.bindings.map((b) => ({
+              ...b,
+              profile: "git-write",
+            })),
+          },
+        },
+        jointOptions,
+      ),
+    { message: /joint workspace sender/ },
+  );
+  assert.throws(
+    () => openShellEgressConfiguration(jointPlan, { ...jointOptions, middlewareName: "unknown" }),
+    { message: /exact model-only/ },
+  );
+  await assert.rejects(
+    worker.configure({
+      ...f.context,
+      plan: jointPlan,
+      revision: { ...f.context.revision, egressPlan: jointPlan, executionAdmission: admission },
+    }),
+    /no longer owns/,
+  );
+  // Supply decoded observations on the same side of the authenticated RPC as the
+  // Driver. This tests OCE's acceptance decision, not the peer's signature verification.
+  const digest = (label: string) => createHash("sha256").update(label).digest("hex");
+  const key = randomBytes(32);
+  const nextKey = randomBytes(32);
+  const legs = ["github.com", "api.github.com"].map((host, i) => ({
+    host,
+    provider_name: "p" + i,
+    provider_id: "id" + i,
+    rule_name: "_provider_p" + i,
+    attachment_epoch: "epoch",
+    rule_digest: digest(host),
+  }));
+  const modelGrant = {
+    id: "model",
+    generation: "1",
+    scope: "workspace-scope",
+    recipient: "model-recipient",
+  };
+  const gitGrant = {
+    id: "git",
+    generation: "1",
+    scope: "installation-scope",
+    recipient: "git-recipient",
+  };
+  const runtimeProvider = "oce-runtime-1234567890abcdef";
+  const filesRule = {
+    _provider_oce_runtime_1234567890abcdef: { name: "_provider_oce_runtime_1234567890abcdef" },
+  };
+  const full = {
+    ...jointPolicy,
+    network_policies: {
+      ...(jointPolicy.network_policies as object),
+      ...filesRule,
+      ...Object.fromEntries(legs.map((r) => [r.rule_name, { name: r.rule_name }])),
+    },
+  };
+  const sessionExpiresAt = String(Math.floor(Date.now() / 1000) + 3600);
+  const previous: EgressInstallation = {
+    ...observation!,
+    plan: jointPlan,
+    enforcement: {
+      ...observation!.enforcement,
+      peerKeyId: key.toString("base64url"),
+      joint: {
+        model: modelGrant,
+        git: gitGrant,
+        ownerEvidence: {
+          runtimeProvider,
+          sessionId: "session",
+          sessionExpiresAt,
+          processInstanceId: "process",
+          effectivePolicy: full,
+          recipients: legs,
+          sourcePolicyHash: digest("source"),
+          configRevision: "1",
+          providerEnvRevision: "1",
+        },
+      },
+      repositoryGitRecipient: {
+        providerId: "id0",
+        attachmentEpoch: "epoch",
+        processInstanceId: "process",
+        networkInstanceId: "net",
+        deliveryProfile: "github_installation",
+        authorization: "online-request",
+      },
+    },
+  };
+  const condition = jointCondition(previous, retainedModel)!;
+  assert.equal(condition.predecessorKeySha256, createHash("sha256").update(key).digest("hex"));
+  assert.deepEqual(condition.grant, modelGrant);
+  const retainedSource = openShellEgressConfiguration(retainedModel, jointOptions);
+  assert.deepEqual(condition.remainingPolicy, {
+    ...retainedSource,
+    network_policies: { ...(retainedSource.network_policies as object), ...filesRule },
+  });
+  const originalEnforcement = {
+    sandbox_id: previous.sandboxId,
+    instance_id: previous.enforcement.instanceId,
+    policy_version: 1,
+    policy_hash: previous.enforcement.policyHash,
+    config_revision: "1",
+    provider_env_revision: "1",
+    enforced_capabilities: openShellExchangeCapabilities,
+  };
+  const policy = {
+    profile: jointOptions.middlewareName,
+    model_policy_hash: digest("source"),
+    git: legs,
+    effective_policy: condition.remainingPolicy,
+  };
+  const operationId = randomUUID();
+  const command = {
+    action: "fence-git",
+    operation_id: operationId,
+    session_id: "session",
+    session_expires_at_unix_seconds: sessionExpiresAt,
+    model_grant: modelGrant,
+    git_grant: gitGrant,
+    public_key: key,
+    challenge: randomBytes(32),
+    enforcement: originalEnforcement,
+    policy,
+  };
+  const fence = { command, applied: true, receipt: randomBytes(64) };
+  const nextEnforcement = {
+    ...originalEnforcement,
+    policy_version: 2,
+    policy_hash: digest("source"),
+    config_revision: "2",
+    provider_env_revision: "3",
+  };
+  const transition = {
+    ...command,
+    action: "successor",
+    enforcement: nextEnforcement,
+    challenge: randomBytes(32),
+    fence_receipt: fence.receipt,
+    detach_receipt_ids: ["git-detach", "api-detach"],
+  };
+  const current = {
+    session_id: "session",
+    session_expires_at_unix_seconds: sessionExpiresAt,
+    model_grant: modelGrant,
+    git_grant: gitGrant,
+    public_key: nextKey,
+    enforcement: nextEnforcement,
+    policy,
+  };
+  const last = {
+    applied: true,
+    command: transition,
+    public_key: nextKey,
+    signature: randomBytes(64),
+  };
+  const reply = {
+    joint_authority_verified: true,
+    credential_installed: true,
+    current,
+    fence,
+    last_result: last,
+  };
+  const op = {
+    version: 3 as const,
+    operationId,
+    expected: previous,
+    retained: retainedModel,
+    condition,
+  };
+  const sandbox = {
+    id: previous.sandboxId,
+    name: "sandbox",
+    serviceUrls: {},
+    annotations: {},
+    labels: {},
+    mainProcessInstanceId: "process",
+    spec: { providers: [runtimeProvider] },
+  };
+  if (databaseUrl) {
+    // Close the writer, then recover the original pending operation through a fresh
+    // app-role connection. A duplicate insert must not acquire a second dispatch.
+    const bindingId = "policy:repository-git";
+    const owner = jointPlan.execution;
+    const row = { bindingId, request: op };
+    const pool = new pg.Pool({ connectionString: databaseUrl, max: 1 });
+    try {
+      const first = await pool.connect();
+      try {
+        assert.ok(
+          await new CredentialDeliveryReductions(first).savePolicy(
+            owner.namespaceId,
+            owner.revisionId,
+            bindingId,
+            undefined,
+            row,
+          ),
+        );
+      } finally {
+        first.release(true);
+      }
+      const second = await pool.connect();
+      try {
+        const ledger = new CredentialDeliveryReductions(second);
+        assert.ok(
+          (await ledger.listPolicies(owner.namespaceId, owner.revisionId)).some(
+            (r) =>
+              r.request.operationId === operationId &&
+              isDeepStrictEqual(r.request.condition, condition) &&
+              !r.observed,
+          ),
+        );
+        assert.equal(
+          await ledger.savePolicy(owner.namespaceId, owner.revisionId, bindingId, undefined, row),
+          false,
+        );
+      } finally {
+        second.release();
+      }
+    } finally {
+      await pool.end();
+    }
+  }
+  const finalPolicyStatus = {
+    active_version: 2,
+    revision: { version: 2, status: 2, policy: retainedSource },
+  };
+  assert.equal(
+    jointSuccessor(reply, op, sandbox, { ...finalPolicyStatus, active_version: 1 }),
+    undefined,
+  );
+  assert.equal(
+    jointSuccessor(reply, op, sandbox, finalPolicyStatus)?.installation.enforcement.peerKeyId,
+    nextKey.toString("base64url"),
+  );
+  // A genuine historical result can be presented unchanged after the Gateway's current
+  // signer or retained grant has moved. Neither case is a current successor.
+  for (const invalid of [
+    { ...reply, joint_authority_verified: false },
+    { ...reply, current: { ...current, public_key: randomBytes(32) } },
+    {
+      ...reply,
+      last_result: { ...last, command: { ...transition, detach_receipt_ids: ["same", "same"] } },
+    },
+    { ...reply, fence: { ...fence, command: { ...command, public_key: nextKey } } },
+    { ...reply, current: { ...current, policy: { ...policy, git: [legs[1], legs[0]] } } },
+    { ...reply, pending: transition },
+    ...["id", "scope", "generation", "recipient"].map((field) => ({
+      ...reply,
+      current: { ...current, model_grant: { ...modelGrant, [field]: "other" } },
+    })),
+  ]) {
+    assert.equal(jointSuccessor(invalid, op, sandbox, finalPolicyStatus), undefined);
+  }
+  assert.equal(
+    jointSuccessor(
+      reply,
+      op,
+      { ...sandbox, mainProcessInstanceId: "replacement" },
+      finalPolicyStatus,
+    ),
+    undefined,
+  );
   const captures = plan.routes.map((route: EgressRoute) => {
     const captured = f.capture();
     captured.request.target = {
@@ -1015,12 +1363,47 @@ test("bundled workspace registration admits the five native routes and refuses s
   f.observed.observation!.registered_exchange_public_key = Buffer.alloc(32, 2);
   assert.equal(await worker.verify(f.context, observation), false);
   f.observed.observation!.registered_exchange_public_key = registered;
+  if (databaseUrl && "state" in f) {
+    let priorActive = f.revision.id;
+    for (const remove of ["git", "model"] as const) {
+      await t.test(
+        "same-execution " + remove + " withdrawal through PostgreSQL custody",
+        async () => {
+          priorActive = await jointPolicyJourney({
+            controller: f.controller,
+            reads: () => f.secretReads,
+            state: f.state,
+            context: f.context,
+            plan: jointPlan,
+            sandbox: f.sandboxDriver,
+            client: f.gatewayClient,
+            priorActive,
+            remove,
+          });
+        },
+      );
+    }
+    await t.test("lost first detach is not redispatched on restart", async () => {
+      await jointPolicyJourney({
+        controller: f.controller,
+        reads: () => f.secretReads,
+        state: f.state,
+        context: f.context,
+        plan: jointPlan,
+        sandbox: f.sandboxDriver,
+        client: f.gatewayClient,
+        priorActive,
+        remove: "git",
+        lost: true,
+      });
+    });
+  }
   await f.revoke();
   const revoked = f.capture();
   Object.assign(revoked.request.target, captures[3]!.request.target);
   revoked.request.headers = captures[3]!.request.headers;
   assert.ok((await f.resolve(revoked)).refused);
-  assert.equal(calls.length, 6);
+  assert.equal(calls.length, databaseUrl ? 7 : 6);
 });
 
 if (databaseUrl) {
