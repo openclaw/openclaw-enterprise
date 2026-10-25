@@ -37,10 +37,12 @@ the OpenShell request-phase route loses that Git access on this release.
 above. The upgrade check prints the startup refusals, for example
 `drivers.repo native admission is retired. ...`, but the `startup-error` and
 `worker.startup-error` logs show only `STARTUP_FAILED` or
-`WORKER_STARTUP_FAILED`. The migrator (`db:migrate --check`) names a preview
-history as unsupported. With the bundled OpenShell Driver, deploying an Agent
-with a `git-write` binding answers `409 REPOSITORY_GIT_SENDER_UNQUALIFIED`, and
-startup refuses `repository.nativeSender` while a Sandbox Driver is selected.
+`WORKER_STARTUP_FAILED`. The production migrator check
+(`db:migrate:production --check`, or `scripts/migrate-production.mjs --check`
+in the controller image) names a preview history as unsupported. With the
+bundled OpenShell Driver, deploying an Agent with a `git-write` binding answers
+`409 REPOSITORY_GIT_SENDER_UNQUALIFIED`, and startup refuses
+`repository.nativeSender` while a Sandbox Driver is selected.
 
 **Steps.** Before upgrading, drain accepted repository work on the original
 release, which alone can settle it, then follow the
