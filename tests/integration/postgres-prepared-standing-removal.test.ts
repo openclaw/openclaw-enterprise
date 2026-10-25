@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { Pool } from "pg";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { fixture, prepare } from "../fixtures/prepared-repository-git.mjs";
-import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
 
 for (const first of ["removal", "use"] as const) {
   test(
@@ -49,8 +48,7 @@ for (const first of ["removal", "use"] as const) {
 
       // This pool has exactly one connection. Observe its actual lock waits and run the
       // removal owner's Namespace, Agent and generation-fenced State operations on it.
-      const writers = new Pool({ connectionString: databaseUrl, max: 1 });
-      t.after(() => writers.end());
+      const writers = testPool(t, { connectionString: databaseUrl, max: 1 });
       const state = new PostgresPlatformState(writers);
       const writer = (await writers.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
       const remove = (whenLocked?: () => Promise<void>) =>
