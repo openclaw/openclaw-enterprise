@@ -46,6 +46,7 @@ import { waitFor } from "../helpers/wait-for.mjs";
 import { withNamespaceLockHeld } from "../helpers/postgres-namespace-lock.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 import { expireWorkLease, makeWorkDue } from "../helpers/postgres-worker-revision-support.mjs";
+import { DEPENDENCY_UNAVAILABLE } from "../helpers/refusal-text.mjs";
 
 const adminEmail = "postgres-agent-provisioning-v2@example.test";
 const adminPassword = "postgres-agent-provisioning-password";
@@ -3310,7 +3311,7 @@ test(
 
     // Status and retry both require the current Sandbox contract. Restoring the complete
     // Driver makes the queued status readable and the existing attempt eligible again.
-    const message = "A required platform dependency is unavailable.";
+    const message = DEPENDENCY_UNAVAILABLE;
     const status = await switched.request("GET", admitted.data.provisioning.url);
     assert.equal(status.status, 503, JSON.stringify(status.body));
     assert.equal(status.body.error.message, message);

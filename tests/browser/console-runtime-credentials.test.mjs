@@ -20,6 +20,11 @@ import {
   waitForInputValue,
 } from "./console-agents-browser-helpers.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
+import {
+  CONFIGURATION_EDITS_PENDING,
+  DEPENDENCY_UNAVAILABLE,
+  READ_UNAVAILABLE,
+} from "../helpers/refusal-text.mjs";
 
 const slack = {
   enabled: true,
@@ -200,10 +205,7 @@ test("Deploy names a 503 refused before admission and keeps Deploy available", a
     { times: 1 },
   );
   await deploy.click();
-  await page
-    .getByRole("alert")
-    .filter({ hasText: "Service unavailable. The read could not be completed. Try again." })
-    .waitFor();
+  await page.getByRole("alert").filter({ hasText: READ_UNAVAILABLE }).waitFor();
   assert.equal(await page.getByText("The Agent store is unavailable.").count(), 0);
   assert.equal(deployRequests, 0);
   for (const { status = 503, error, text, available } of [
@@ -233,7 +235,7 @@ test("Deploy names a 503 refused before admission and keeps Deploy available", a
       // The catch-all outage names no reason.
       error: {
         code: "DEPENDENCY_UNAVAILABLE",
-        message: "A required platform dependency is unavailable.",
+        message: DEPENDENCY_UNAVAILABLE,
       },
       text: "Outcome unknown.",
       available: false,
@@ -417,7 +419,7 @@ test("unsaved Configuration blocks deployment from an admitted revision", async 
   await page
     .getByLabel("Configuration JSON")
     .fill(JSON.stringify(nativeValues("unsaved", { harnessId: "codex" }), null, 2));
-  await page.getByText("Save or cancel Configuration edits before deploying.").waitFor();
+  await page.getByText(CONFIGURATION_EDITS_PENDING).waitFor();
   assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
   assert.equal(deploymentRequests, 0);
 });
@@ -466,11 +468,7 @@ test("revision deployment blocks unavailable reads and does not replay a lost re
   await login(page, fixture, `/console/agents/${agent.id}?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Create new version" }).first().click();
   const deploy = page.getByRole("button", { name: "Deploy new version" });
-  await page
-    .getByRole("alert")
-    .filter({ hasText: "Service unavailable. The read could not be completed. Try again." })
-    .first()
-    .waitFor();
+  await page.getByRole("alert").filter({ hasText: READ_UNAVAILABLE }).first().waitFor();
   assert.equal(deploymentRequests, 0);
   assert.equal(await deploy.count(), 0);
   configurationUnavailable = false;

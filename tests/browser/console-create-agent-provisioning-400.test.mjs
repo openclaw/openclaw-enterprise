@@ -32,6 +32,14 @@ import {
 } from "./console-agents-test-support.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
+import {
+  CODEX_PLACEMENT_REFUSAL,
+  DEDICATED_PLACEMENT_REQUIREMENT,
+  DEPENDENCY_UNAVAILABLE,
+  GENERIC_DENIAL,
+  NAMESPACE_NOT_READY,
+  RESOURCE_CONFLICT,
+} from "../helpers/refusal-text.mjs";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
@@ -688,7 +696,7 @@ test("Dedicated Agent provisioning names a Namespace that is not ready", async (
           body: JSON.stringify({
             error: {
               code: "NAMESPACE_NOT_READY",
-              message: "The requested Namespace is not ready.",
+              message: NAMESPACE_NOT_READY,
             },
             meta: { requestId: "req_00000000-0000-4000-8000-000000000409" },
           }),
@@ -1065,9 +1073,6 @@ test("When the Sandbox Driver's settings refuse Dedicated OpenClaw, Create Agent
 // Compute plan check answered a fixed 409 that names no setting (finding 2395). Provisioning now
 // answers Agent save's 400. The token fixes the harness to Codex, so the form quotes only the
 // requirement, not the advice to select Embedded OpenClaw (finding 2396).
-const PLACEMENT_REQUIREMENT =
-  "Dedicated Agents need gateway routing and node enrollment in this Installation's Kubernetes Compute configuration.";
-
 // Opens Create Agent on a standard Codex Preset bound to a saved service account token, on a
 // fixture built with `options` whose Kubernetes Compute cannot place a Dedicated Agent, and
 // submits it. The binding fixes the harness to Codex, so the refusal's "select Embedded
@@ -1114,15 +1119,12 @@ async function submitBoundCodexPreset(t, options, name) {
 async function assertPlacementRequirement(page, response) {
   assert.equal(response.status(), 400);
   const { error, meta } = await response.json();
-  assert.equal(
-    error.message,
-    `${PLACEMENT_REQUIREMENT} Codex runs only as a Dedicated Agent: select Embedded OpenClaw, or ask an operator to configure it.`,
-  );
+  assert.equal(error.message, CODEX_PLACEMENT_REFUSAL);
   const alert = page.getByRole("alert").filter({ hasText: meta.requestId });
   await alert.waitFor();
   assert.equal(
     await alert.textContent(),
-    `${PLACEMENT_REQUIREMENT} Ask an operator to configure it. Request ID: ${meta.requestId}`,
+    `${DEDICATED_PLACEMENT_REQUIREMENT} Ask an operator to configure it. Request ID: ${meta.requestId}`,
   );
 }
 
@@ -1766,7 +1768,7 @@ test("Create Agent shows a provisioning refusal's own reason and keeps catch-all
       status: 503,
       error: {
         code: "DEPENDENCY_UNAVAILABLE",
-        message: "A required platform dependency is unavailable.",
+        message: DEPENDENCY_UNAVAILABLE,
       },
       text: "Outcome unknown. Retry resubmits the same request ID and saved references.",
       retry: true,
@@ -1812,7 +1814,7 @@ test("Create Agent shows a provisioning refusal's own reason and keeps catch-all
       status: 409,
       error: {
         code: "RESOURCE_CONFLICT",
-        message: "The requested platform resource already exists.",
+        message: RESOURCE_CONFLICT,
       },
       text: "The request conflicts with the saved state. Check for an existing Agent name or changed Configuration, then refresh.",
       retry: false,
@@ -1957,7 +1959,7 @@ test("Create Agent drops the Pod quota line when the deployment read is denied",
               body: JSON.stringify({
                 error: {
                   code: "FORBIDDEN",
-                  message: "The exact platform operation was not authorized.",
+                  message: GENERIC_DENIAL,
                 },
                 meta,
               }),

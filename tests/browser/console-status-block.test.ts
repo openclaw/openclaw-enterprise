@@ -24,6 +24,13 @@ import {
   openAdvancedSettings,
   withholdPermissionSummary,
 } from "./console-agents-test-support.mjs";
+import {
+  AGENT_SAVE_DENIED,
+  CONFIGURATION_SAVE_DENIED,
+  RELOAD_DRAFT_BEFORE_SAVING,
+  REPOSITORY_ACCESS_CHANGED,
+  REPOSITORY_EDITS_PENDING,
+} from "../helpers/refusal-text.mjs";
 
 // Errors, warnings and notices share one status block (UX plan C1): a stripe and wash in the
 // tone's design-token colours, with the text in the body colour. A refusal after a request takes
@@ -393,9 +400,6 @@ test("Notices and the sign-in alert", async (t) => {
   );
 });
 
-const AGENT_REFUSAL =
-  "You do not have permission to save this Agent. Ask an administrator for Agent update and Configuration read access, plus access to the Secrets, credential sources and Service Account it binds.";
-
 const SECRET_ACCESS_REFUSED =
   /^Authentication source saved, but the request to grant this Agent access to the selected Secret was refused\. /;
 
@@ -470,12 +474,12 @@ test("Authentication source save outcomes", async (t) => {
       const rolesWhenWritten = await recordWrites(feedback);
       await page.route(agentUrl, forbidden);
       await save.click();
-      const refusal = page.getByRole("alert").filter({ hasText: AGENT_REFUSAL });
+      const refusal = page.getByRole("alert").filter({ hasText: AGENT_SAVE_DENIED });
       await refusal.waitFor();
-      assert.deepEqual(await lineState(feedback), dangerAlert(AGENT_REFUSAL));
+      assert.deepEqual(await lineState(feedback), dangerAlert(AGENT_SAVE_DENIED));
       assertPaint(await statusPaint(refusal), "danger", "authentication 403");
       await assertFocusedInView(t, refusal);
-      assert.deepEqual(await rolesWhenWritten(AGENT_REFUSAL), ["alert"]);
+      assert.deepEqual(await rolesWhenWritten(AGENT_SAVE_DENIED), ["alert"]);
 
       // Saving again: while its preflight read runs, the line is quiet progress, not the old
       // refusal.
@@ -614,7 +618,7 @@ test("Repository access save refusals", async (t) => {
     await page.locator("#repository-default-git-read").check();
     await page.getByRole("button", { name: "Save repository access" }).click();
     const refusal = page.getByRole("alert").filter({
-      hasText: "Repository access changed while you were editing. Reload this draft before saving.",
+      hasText: REPOSITORY_ACCESS_CHANGED,
     });
     await refusal.waitFor();
     assertPaint(await statusPaint(refusal), "danger", "repository refusal");
@@ -644,16 +648,16 @@ test("Repository access save refusals", async (t) => {
       const rolesWhenWritten = await recordWrites(feedback);
       const refuse = async () => {
         await save.click();
-        const refusal = page.getByRole("alert").filter({ hasText: AGENT_REFUSAL });
+        const refusal = page.getByRole("alert").filter({ hasText: AGENT_SAVE_DENIED });
         await refusal.waitFor();
-        assert.deepEqual(await lineState(feedback), dangerAlert(AGENT_REFUSAL));
+        assert.deepEqual(await lineState(feedback), dangerAlert(AGENT_SAVE_DENIED));
         return refusal;
       };
       await page.locator("#repository-default-git-read").check();
       const refusal = await refuse();
       assertPaint(await statusPaint(refusal), "danger", "repository 403");
       await assertFocusedInView(t, refusal);
-      assert.deepEqual(await rolesWhenWritten(AGENT_REFUSAL), ["alert"]);
+      assert.deepEqual(await rolesWhenWritten(AGENT_SAVE_DENIED), ["alert"]);
 
       // An edit (back to the saved access): guidance in a quiet status.
       await page.locator("#repository-default-git-full").check();
@@ -663,18 +667,10 @@ test("Repository access save refusals", async (t) => {
       await page.locator("#repository-default-git-read").check();
       await refuse();
       await page.getByRole("link", { name: "← Agents", exact: true }).click();
-      assert.deepEqual(
-        await lineState(feedback),
-        quietStatus("Save or cancel repository changes before leaving this tab."),
-      );
+      assert.deepEqual(await lineState(feedback), quietStatus(REPOSITORY_EDITS_PENDING));
     },
   );
 });
-
-const CONFIGURATION_REFUSAL =
-  "You do not have permission to save this Configuration. Ask an administrator for Configuration update access, plus Secret operate on each Secret it binds.";
-const CONFIGURATION_CHANGED =
-  "The saved Configuration changed while you were editing. Reload this draft before saving.";
 
 test("Configuration save outcomes", async (t) => {
   const fixture = await createConsoleAppFixture(t);
@@ -715,7 +711,7 @@ test("Configuration save outcomes", async (t) => {
         const { page } = await newPage(t, fixture, { browser, context: { viewport } });
         await editConfiguration(page, agent, "edited by a reader", reader.credentials);
         await page.getByRole("button", { name: "Save Configuration" }).click();
-        const alert = page.getByRole("alert").filter({ hasText: CONFIGURATION_REFUSAL });
+        const alert = page.getByRole("alert").filter({ hasText: CONFIGURATION_SAVE_DENIED });
         await alert.waitFor();
         await assertFocusedInView(t, alert);
         assertPaint(await statusPaint(alert), "danger", "Configuration refusal");
@@ -743,9 +739,9 @@ test("Configuration save outcomes", async (t) => {
       // Saved elsewhere while this editor was open.
       await fixture.updateConfiguration(namespace.id, agent.configurationId, nativeValues("other"));
       await page.getByRole("button", { name: "Save Configuration" }).click();
-      await page.getByRole("alert").filter({ hasText: CONFIGURATION_CHANGED }).waitFor();
-      assert.deepEqual(await lineState(feedback), dangerAlert(CONFIGURATION_CHANGED));
-      assert.deepEqual(await rolesWhenWritten(CONFIGURATION_CHANGED), ["alert"]);
+      await page.getByRole("alert").filter({ hasText: RELOAD_DRAFT_BEFORE_SAVING }).waitFor();
+      assert.deepEqual(await lineState(feedback), dangerAlert(RELOAD_DRAFT_BEFORE_SAVING));
+      assert.deepEqual(await rolesWhenWritten(RELOAD_DRAFT_BEFORE_SAVING), ["alert"]);
 
       await page.getByRole("link", { name: "← Agents", exact: true }).click();
       assert.deepEqual(
@@ -770,8 +766,8 @@ test("Configuration save outcomes", async (t) => {
       );
       const save = page.getByRole("button", { name: "Save Configuration" });
       const refused = async () => {
-        await page.getByRole("alert").filter({ hasText: CONFIGURATION_REFUSAL }).waitFor();
-        assert.deepEqual(await lineState(feedback), dangerAlert(CONFIGURATION_REFUSAL));
+        await page.getByRole("alert").filter({ hasText: CONFIGURATION_SAVE_DENIED }).waitFor();
+        assert.deepEqual(await lineState(feedback), dangerAlert(CONFIGURATION_SAVE_DENIED));
       };
       await save.click();
       await refused();
@@ -809,7 +805,7 @@ test("Configuration save outcomes", async (t) => {
         message: "Conflict.",
         details: [{ path: "/expectedGeneration" }],
       },
-      text: CONFIGURATION_CHANGED,
+      text: RELOAD_DRAFT_BEFORE_SAVING,
     },
     {
       name: "unknown outcome",

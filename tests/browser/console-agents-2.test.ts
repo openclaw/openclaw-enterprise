@@ -59,6 +59,11 @@ import {
   optionValues,
   waitForProvisioningFailure,
 } from "./console-agents-test-support.mjs";
+import {
+  GENERIC_DENIAL,
+  NAMESPACE_NOT_READY,
+  RESOURCE_CONFLICT,
+} from "../helpers/refusal-text.mjs";
 
 const defaultCodexPreset = JSON.parse(
   await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
@@ -294,7 +299,7 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
         body: JSON.stringify({
           error: {
             code: "RESOURCE_CONFLICT",
-            message: "The requested platform resource already exists.",
+            message: RESOURCE_CONFLICT,
           },
           meta: { requestId: "req_00000000-0000-4000-8000-000000000409" },
         }),
@@ -506,7 +511,7 @@ test("Dedicated Agent creation shows the API's named reason when a provisioning 
   // conflict text (a store race; controller refusals name a reason), then naming the
   // Secret that was deleted.
   const refusals = [
-    "The requested platform resource already exists.",
+    RESOURCE_CONFLICT,
     "Secret sec_00000000-0000-4000-8000-00000000dead, which this provisioning request uses, was deleted. Submit a new Agent provisioning request.",
   ];
   const requestIds: string[] = [];
@@ -722,7 +727,7 @@ test("Dedicated Agent creation reports a stop during or before the first deploym
       // Only a 404 means the Agent is gone. A caller who may not read it (403) cannot tell a
       // Stop from a deletion either.
       job: cancelled(kept.id, "stopped"),
-      read: unreadable(403, "FORBIDDEN", "The exact platform operation was not authorized."),
+      read: unreadable(403, "FORBIDDEN", GENERIC_DENIAL),
       text: unknown,
       href: keptHref,
     },
@@ -2068,7 +2073,7 @@ test("Agent creation shows the API's duplicate-name conflict, a not-ready Namesp
       body: JSON.stringify({
         error: {
           code: "RESOURCE_CONFLICT",
-          message: "The requested platform resource already exists.",
+          message: RESOURCE_CONFLICT,
         },
         meta: { requestId: "req_00000000-0000-4000-8000-000000000409" },
       }),
@@ -2085,7 +2090,7 @@ test("Agent creation shows the API's duplicate-name conflict, a not-ready Namesp
         "Agent creation conflicts with the saved state. Check the Agent name and selections, then try again. Request ID: req_00000000-0000-4000-8000-000000000409",
     })
     .waitFor();
-  assert.equal(await page.getByText("The requested platform resource already exists.").count(), 0);
+  assert.equal(await page.getByText(RESOURCE_CONFLICT).count(), 0);
   await page.unroute(agentsUrl, otherConflict);
   await page.getByRole("button", { name: "Create Agent", disabled: false }).waitFor();
 
@@ -2099,7 +2104,7 @@ test("Agent creation shows the API's duplicate-name conflict, a not-ready Namesp
       status: 409,
       contentType: "application/json",
       body: JSON.stringify({
-        error: { code: "NAMESPACE_NOT_READY", message: "The requested Namespace is not ready." },
+        error: { code: "NAMESPACE_NOT_READY", message: NAMESPACE_NOT_READY },
         meta: { requestId: "req_00000000-0000-4000-8000-000000000410" },
       }),
     });

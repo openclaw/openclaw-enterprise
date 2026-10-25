@@ -34,6 +34,7 @@ import {
   createRepositoryLaunchFixture,
   enterManualModel,
 } from "./console-agents-test-support.mjs";
+import { AGENT_SAVE_DENIED, REPOSITORY_ACCESS_CHANGED } from "../helpers/refusal-text.mjs";
 
 test("Agent repository access labels target the right repository when references overlap", async (t) => {
   const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId) =>
@@ -843,9 +844,7 @@ test("Agent repository editor distinguishes stale, rejected, and uncertain saves
   const save = page.getByRole("button", { name: "Save repository access" });
   const cancel = page.getByRole("button", { name: "Cancel", exact: true });
   await save.click();
-  await page
-    .getByText("Repository access changed while you were editing. Reload this draft before saving.")
-    .waitFor();
+  await page.getByText(REPOSITORY_ACCESS_CHANGED).waitFor();
   assert.equal(pathRequests(requests, "PATCH", path).length, 0);
   assert.equal(await save.isDisabled(), true);
   assert.equal(await cancel.isDisabled(), true);
@@ -866,12 +865,7 @@ test("Agent repository editor distinguishes stale, rejected, and uncertain saves
     effect: "deny",
   });
   await save.click();
-  await page
-    .getByText(
-      "You do not have permission to save this Agent. Ask an administrator for Agent update and Configuration read access, plus access to the Secrets, credential sources and Service Account it binds.",
-      { exact: true },
-    )
-    .waitFor();
+  await page.getByText(AGENT_SAVE_DENIED, { exact: true }).waitFor();
   await waitForEnabled(save);
   await waitForEnabled(cancel);
   assert.equal(await page.locator("#repository-default-issues").isChecked(), true);

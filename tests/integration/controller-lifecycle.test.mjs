@@ -24,6 +24,7 @@ import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { registerAndSelectDrivers } from "../helpers/development.mjs";
 import { bindRole, permissionsFor } from "../helpers/iam-grants.mjs";
 import { requestFailure } from "../../apps/controller/src/http/errors.ts";
+import { GENERIC_DENIAL } from "../helpers/refusal-text.mjs";
 
 const installation = {
   id: "installation-a",
@@ -1270,10 +1271,7 @@ test("deploy names the Agent service principal and the permission it lacks", asy
   assert.match(failure.message, new RegExp(`secret ${secret.id}`));
 
   // Caller denials keep the generic message so they do not disclose resource details.
-  assert.equal(
-    requestFailure(new AuthorizationDeniedError("denied")).message,
-    "The exact platform operation was not authorized.",
-  );
+  assert.equal(requestFailure(new AuthorizationDeniedError("denied")).message, GENERIC_DENIAL);
   assert.deepEqual(
     await controller.transact((state) => state.revisions.listRevisions(namespace.id, agent.id)),
     [],

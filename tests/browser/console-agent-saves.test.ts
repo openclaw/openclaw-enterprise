@@ -53,6 +53,13 @@ import {
   watchForReload,
 } from "./console-agents-test-support.mjs";
 import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
+import {
+  CHANNEL_SECRETS_CONFIGURATION_CHANGED,
+  RELOAD_DRAFT_BEFORE_SAVING,
+  REPOSITORY_ACCESS_CHANGED,
+  RESOURCE_CONFLICT,
+  SAVED_CONFIGURATION_CHANGED,
+} from "../helpers/refusal-text.mjs";
 
 // Saves and reloads on the Agent page's tabs, and every Reload draft, re-navigated to the same
 // URL: the page collapsed to its summary, reread the session, versions, permissions and
@@ -755,9 +762,7 @@ test("repository saves, Cancel and Reload draft update the Agent page in place",
   assert.equal(concurrent.status, 200);
   await page.locator("#repository-default-git-full").check();
   await save.click();
-  await page
-    .getByText("Repository access changed while you were editing. Reload this draft before saving.")
-    .waitFor();
+  await page.getByText(REPOSITORY_ACCESS_CHANGED).waitFor();
   const reload = page.getByRole("button", { name: "Reload draft", exact: true });
   await reload.click();
   await page.getByRole("status").filter({ hasText: "Draft reloaded." }).waitFor();
@@ -876,7 +881,7 @@ const outcomeFocusCases = [
       await changeElsewhere(c);
       await page.getByRole("button", { name: "Save channel Secrets" }).click();
     },
-    message: "Configuration changed. Reload this draft before saving channel Secrets.",
+    message: CHANNEL_SECRETS_CONFIGURATION_CHANGED,
     focus: "Reload draft",
     described: true,
   },
@@ -891,8 +896,7 @@ const outcomeFocusCases = [
       await changeElsewhere(c);
       await page.getByRole("button", { name: "Save Configuration" }).click();
     },
-    message:
-      "The saved Configuration changed while you were editing. Reload this draft before saving.",
+    message: RELOAD_DRAFT_BEFORE_SAVING,
     focus: "Reload draft",
     described: true,
   },
@@ -976,8 +980,7 @@ test("a Channels conflict offers Reload draft, which recovers in place", async (
   await changeElsewhere(context);
   await edit.click();
   await dialog.getByRole("button", { name: "Save configuration" }).click();
-  const message =
-    "The saved Configuration changed while you were editing. Reload this draft before saving.";
+  const message = RELOAD_DRAFT_BEFORE_SAVING;
   await page.getByRole("alert").filter({ hasText: message }).waitFor();
   await dialog.waitFor({ state: "detached" });
   assert.equal(await focusedText(page), "Reload draft");
@@ -1021,8 +1024,7 @@ test("a Channels conflict keeps the editor's edits for Reload draft", async (t) 
     channels: { slack: { ...values.channels.slack, requireMention: false } },
   }));
   await dialog.getByRole("button", { name: "Save configuration" }).click();
-  const message =
-    "The saved Configuration changed while you were editing. Reload this draft before saving. Reload draft reopens your Slack edits over the saved settings, including the Secret “Carried bot token”.";
+  const message = `${RELOAD_DRAFT_BEFORE_SAVING} Reload draft reopens your Slack edits over the saved settings, including the Secret “Carried bot token”.`;
   await page.getByRole("alert").filter({ hasText: message }).waitFor();
   await dialog.waitFor({ state: "detached" });
   assert.equal(await focusedText(page), "Reload draft");
@@ -1078,8 +1080,7 @@ test("a Channels conflict does not carry a Secret picked back to the saved one",
   await selectSecret(dialog, "Slack bot token", originalBot);
   await rebindElsewhere(context, "SLACK_BOT_TOKEN", otherBot);
   await dialog.getByRole("button", { name: "Save configuration" }).click();
-  const message =
-    "The saved Configuration changed while you were editing. Reload this draft before saving. Reload draft reopens your Slack edits over the saved settings.";
+  const message = `${RELOAD_DRAFT_BEFORE_SAVING} Reload draft reopens your Slack edits over the saved settings.`;
   await page.getByRole("alert").filter({ hasText: message }).waitFor();
   assert.equal(await focusedDescription(page), message);
 
@@ -1319,7 +1320,6 @@ for (const c of declinedCarryCases) {
 // returns for a reservation (proved in postgres-agent-provisioning.test.mjs).
 // A Kubernetes resourceVersion conflict answers the catch-all "already exists" sentence instead,
 // which names nothing to fix, so each save shows its own conflict text (finding 1639).
-const GENERIC_CONFLICT = "The requested platform resource already exists.";
 const SAVED_STATE_CONFLICT =
   "The request conflicts with the saved state. Check for an existing Agent name or changed Configuration, then refresh.";
 // Deploy would deliver the saved bindings, not the refused choices shown (finding 1640).
@@ -1363,7 +1363,7 @@ const configurationSaveCases: {
     name: "channel Secrets",
     tab: "credentials",
     genericText: "Credential metadata conflicts with the saved Agent state or selected Secrets.",
-    staleText: "Configuration changed. Reload this draft before saving channel Secrets.",
+    staleText: CHANNEL_SECRETS_CONFIGURATION_CHANGED,
     async act({ page, context }) {
       await selectNewSlackSecrets(page, context);
       await page.getByRole("button", { name: "Save channel Secrets" }).click();
@@ -1379,7 +1379,7 @@ for (const [c, generic] of configurationSaveCases.flatMap((c) => [
     const context = await slackAgentWithNewSecrets(t, `Reserved ${c.name}`);
     const { fixture, namespace, agent } = context;
     const refusal = generic
-      ? GENERIC_CONFLICT
+      ? RESOURCE_CONFLICT
       : "The Configuration is reserved for provisioning and is not available for this operation.";
     let writes = 0;
     const page = await openTab(t, fixture, namespace, agent, c.tab, {
@@ -1411,7 +1411,7 @@ for (const [c, generic] of configurationSaveCases.flatMap((c) => [
       .getByText(generic ? c.genericText : refusal)
       .first()
       .waitFor();
-    assert.equal(await page.getByText(GENERIC_CONFLICT).count(), 0);
+    assert.equal(await page.getByText(RESOURCE_CONFLICT).count(), 0);
     if (c.tab === "credentials") {
       // The refused write did not bind these Secrets. Keep both choices in the rebuilt form.
       await waitForInputValue(page.getByLabel("Slack app token"), context.secondApp.name);
@@ -1426,10 +1426,7 @@ for (const [c, generic] of configurationSaveCases.flatMap((c) => [
     }
     assert.equal(writes, 1);
     assert.equal(await page.getByRole("button", { name: "Reload draft" }).count(), 0);
-    assert.equal(
-      await page.getByText("The saved Configuration changed while you were editing.").count(),
-      0,
-    );
+    assert.equal(await page.getByText(SAVED_CONFIGURATION_CHANGED).count(), 0);
   });
 }
 
@@ -1643,9 +1640,7 @@ async function channelSecretsConflict(
     await rebindElsewhere(context, "SLACK_APP_TOKEN", otherApp);
   }
   await page.getByRole("button", { name: "Save channel Secrets" }).click();
-  await page
-    .getByText("Configuration changed. Reload this draft before saving channel Secrets.")
-    .waitFor();
+  await page.getByText(CHANNEL_SECRETS_CONFIGURATION_CHANGED).waitFor();
   return { context: { ...context, secondBot, otherApp }, page };
 }
 
@@ -2043,9 +2038,7 @@ for (const c of configurationSaveCases) {
     await page.getByRole("heading", { name: `Raced ${c.name}` }).waitFor();
     await page.getByRole("button", { name: "Deploy new version", disabled: false }).waitFor();
     await c.act({ page, context, configurationEdit: "raced" });
-    const message =
-      c.staleText ??
-      "The saved Configuration changed while you were editing. Reload this draft before saving.";
+    const message = c.staleText ?? RELOAD_DRAFT_BEFORE_SAVING;
     await page.getByText(message).first().waitFor();
     assert.equal(await focusedText(page), "Reload draft");
     assert.equal(patches.length, 1);

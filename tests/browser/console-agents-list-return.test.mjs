@@ -14,6 +14,7 @@ import {
   waitForIdleFetches,
 } from "./console-agents-browser-helpers.mjs";
 import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
+import { GENERIC_DENIAL } from "../helpers/refusal-text.mjs";
 
 // One Chromium for the file; each test still gets its own context.
 const browser = fileBrowser();
@@ -1308,7 +1309,7 @@ test("Agents list names the current version by number in the page's outcome word
     return route.fulfill({
       status: 403,
       json: {
-        error: { code: "FORBIDDEN", message: "The exact platform operation was not authorized." },
+        error: { code: "FORBIDDEN", message: GENERIC_DENIAL },
         meta: {},
       },
     });

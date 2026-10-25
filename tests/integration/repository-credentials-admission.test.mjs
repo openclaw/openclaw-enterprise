@@ -42,6 +42,7 @@ import { createTestConfigurationDriver } from "../helpers/configuration-driver.m
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { grantRole } from "../helpers/iam-grants.mjs";
+import { DEPENDENCY_UNAVAILABLE } from "../helpers/refusal-text.mjs";
 
 const driverId = "repository-credentials";
 const backendId = "repository-provider";
@@ -597,7 +598,7 @@ test("Missing repository composition cannot hide denied or unavailable IAM", asy
     const failure = await f.request("GET", path);
     assert.equal(failure.status, 503, JSON.stringify(failure));
     assert.equal(failure.error.code, "DEPENDENCY_UNAVAILABLE");
-    assert.equal(failure.error.message, "A required platform dependency is unavailable.");
+    assert.equal(failure.error.message, DEPENDENCY_UNAVAILABLE);
   }
 });
 

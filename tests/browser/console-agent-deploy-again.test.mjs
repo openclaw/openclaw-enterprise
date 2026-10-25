@@ -24,6 +24,7 @@ import {
 } from "./console-deployment-activity-helpers.mjs";
 import { replyWithDifferentAgentId } from "./console-agents-test-support.mjs";
 import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
+import { GENERIC_DENIAL } from "../helpers/refusal-text.mjs";
 
 // Failed-version recovery's Deploy again: the API's DEPENDENCY_UNAVAILABLE message says to deploy
 // again, and the link opens the draft at its Deploy new version. That button is built only from a
@@ -466,7 +467,7 @@ const failure = (status) => ({
   body: JSON.stringify({
     error:
       status === 403
-        ? { code: "FORBIDDEN", message: "The exact platform operation was not authorized." }
+        ? { code: "FORBIDDEN", message: GENERIC_DENIAL }
         : { code: "UNAVAILABLE", message: "Try again." },
     meta: { requestId: "req_test_failure" },
   }),

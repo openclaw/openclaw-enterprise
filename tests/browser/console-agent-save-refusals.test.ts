@@ -24,6 +24,7 @@ import {
   withholdPermissionSummary,
 } from "./console-agents-test-support.mjs";
 import { createPolicyConsole } from "./console-sandbox-policy-fixture.ts";
+import { CONFIGURATION_SAVE_DENIED } from "../helpers/refusal-text.mjs";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
@@ -35,8 +36,6 @@ const browser = fileBrowser();
 // grant they need; Agent-side saves are disabled up front when the permission answer denies
 // Agent update.
 
-const CONFIGURATION_REFUSAL =
-  "You do not have permission to save this Configuration. Ask an administrator for Configuration update access, plus Secret operate on each Secret it binds.";
 const AGENT_UPDATE_DENIED =
   "Your access does not include updating this Agent. Ask an administrator for Agent update access to save these settings.";
 const READ_REFUSAL =
@@ -122,7 +121,7 @@ const configurationSaves = [
       await page.getByLabel("Configuration JSON").fill(edited);
       await page.getByRole("button", { name: "Save Configuration" }).click();
       return async () => {
-        await page.getByText(CONFIGURATION_REFUSAL, { exact: true }).waitFor();
+        await page.getByText(CONFIGURATION_SAVE_DENIED, { exact: true }).waitFor();
         assert.equal(await page.getByLabel("Configuration JSON").inputValue(), edited);
       };
     },
@@ -136,7 +135,7 @@ const configurationSaves = [
       await dialog.getByLabel("Direct-message policy").selectOption("disabled");
       await dialog.getByRole("button", { name: "Save configuration" }).click();
       return async () => {
-        await dialog.getByText(CONFIGURATION_REFUSAL).waitFor();
+        await dialog.getByText(CONFIGURATION_SAVE_DENIED).waitFor();
         assert.equal(await dialog.getByLabel("Direct-message policy").inputValue(), "disabled");
       };
     },

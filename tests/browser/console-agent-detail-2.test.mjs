@@ -56,6 +56,12 @@ import {
   waitForLiveControls,
 } from "./console-agents-test-support.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import {
+  DEPENDENCY_UNAVAILABLE,
+  GENERIC_DENIAL,
+  RESOURCE_NOT_FOUND,
+  WORKSPACE_FILES_UNAVAILABLE,
+} from "../helpers/refusal-text.mjs";
 
 // The Console Browser lane runs the two Agent detail test files in parallel.
 
@@ -479,7 +485,7 @@ test("Repeat deletion preserves bounded retry ownership feedback and ordinary de
   await page.clock.fastForward(DELETION_POLL_MS * 2);
   await page.getByRole("alert").getByText(ownership, { exact: true }).waitFor();
   assert.equal(writes, 1);
-  serverMessage = "The exact platform operation was not authorized.";
+  serverMessage = GENERIC_DENIAL;
   await confirm();
   await page
     .getByRole("alert")
@@ -1758,11 +1764,7 @@ test("Agent tabs replace only their content and preserve surrounding panels and 
   await waitForIdleFetches(page);
   const secretElement = await secret.elementHandle();
   await page.getByRole("tab", { name: "Workspace files", exact: true }).click();
-  await page
-    .getByText(
-      "Workspace files require a deployed Agent with a current version and a reachable gateway.",
-    )
-    .waitFor();
+  await page.getByText(WORKSPACE_FILES_UNAVAILABLE).waitFor();
   assert.equal(await secretElement.evaluate((node) => node.isConnected), false);
   await page.goBack();
   await page.getByLabel("API key Secret").waitFor();
@@ -2419,7 +2421,7 @@ test("a failed native admin status read keeps the card, its error and Refresh ac
         body: JSON.stringify({
           error: {
             code: "DEPENDENCY_UNAVAILABLE",
-            message: "A required platform dependency is unavailable.",
+            message: DEPENDENCY_UNAVAILABLE,
           },
           meta: { requestId: "req_test_native_admin_outage" },
         }),
@@ -3234,7 +3236,7 @@ test("a Workspace reread keeps a missing file's notice and clears a failed rerea
         status: 404,
         contentType: "application/json",
         body: JSON.stringify({
-          error: { code: "NOT_FOUND", message: "The requested platform resource was not found." },
+          error: { code: "NOT_FOUND", message: RESOURCE_NOT_FOUND },
           meta: { requestId: "req_test_workspace_resource_404" },
         }),
       }),
@@ -3581,7 +3583,7 @@ test("explicit missing-file readback settles an uncertain workspace create witho
   assert.equal(missingAgent.status, 404);
   assert.deepEqual(missingAgent.body.error, {
     code: "NOT_FOUND",
-    message: "The requested platform resource was not found.",
+    message: RESOURCE_NOT_FOUND,
   });
   const answerWithMissingAgent = () =>
     page.route(

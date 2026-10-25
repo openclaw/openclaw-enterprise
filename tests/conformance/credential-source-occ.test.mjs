@@ -22,6 +22,7 @@ import { createTestConfigurationDriver } from "../helpers/configuration-driver.m
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { grantRole } from "../helpers/iam-grants.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import { RESOURCE_NOT_FOUND } from "../helpers/refusal-text.mjs";
 
 const administrator = "principal-source-administrator";
 const deployer = "principal-source-deployer";
@@ -1140,7 +1141,7 @@ test("a cross-Namespace Secret is an invalid request; a Secret the Namespace lac
         {
           status: 404,
           code: "NOT_FOUND",
-          message: "The requested platform resource was not found.",
+          message: RESOURCE_NOT_FOUND,
         },
       ],
     ]) {
