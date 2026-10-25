@@ -1497,8 +1497,8 @@ test(
   { timeout: 30_000 },
   async (t) => {
     // A fixed base keeps real time out of the advanced clock, so the horizon margin below holds
-    // on a runner of any speed.
-    const start = Date.now();
+    // on a runner of any speed. The base is set again after setup (below).
+    let start = Date.now();
     let elapsed = 0;
     // Configured bounds, validated like an Installation's requestCapacity, release through the
     // same registry code as the defaults, so the loop needs only about a hundred operations.
@@ -1534,6 +1534,10 @@ test(
     assert.ok(60_000 / step > capacity.sandboxRequestIds);
     assert.ok(capacity.sandboxRequestIds < capacity.requestIds);
     assert.ok(capacity.operations < operations);
+    // The Kubernetes Secret driver stamps each read with the wall clock, and the proxy refuses
+    // material observed after its own clock. Setup can take longer than one step on a busy
+    // runner, so start the advanced clock from the wall clock after setup, not before it.
+    start = Date.now();
     for (let i = 0; i < operations; i += 1) {
       elapsed += step;
       const captured = f.capture();
