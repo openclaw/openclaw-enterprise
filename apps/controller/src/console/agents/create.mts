@@ -653,8 +653,9 @@ export function renderCreateAgent(context: CreateAgentContext, restored?: unknow
     draft?: Partial<CreateAgentDraft>,
   ) => {
     renderAgentForm(context, rendered, options, draft);
+    // The chooser could be scrolled; the form starts at its heading (finding 2098).
     if (document.activeElement === document.body && context.isCurrent()) {
-      context.view.closest(".content")?.querySelector("h1")?.focus({ preventScroll: true });
+      context.view.closest(".content")?.querySelector("h1")?.focus();
     }
   };
   const presets = createPresetFields(context, startForm);

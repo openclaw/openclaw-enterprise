@@ -796,6 +796,13 @@ export const stopFocusTrail = (page) =>
 // The page's main view once its reads have settled and nothing holds it inert.
 export const settledView = '.content [aria-live="polite"][aria-busy="false"]:not([inert])';
 
+// Whether the whole of an element is inside the window, so the reader sees it without scrolling.
+export const inViewport = (locator) =>
+  locator.evaluate((node) => {
+    const { top, bottom } = node.getBoundingClientRect();
+    return top >= 0 && bottom <= globalThis.innerHeight;
+  });
+
 // The desktop and phone sizes the console's layout checks sweep.
 export const consoleViewports = Object.freeze([
   Object.freeze({ width: 1440, height: 900 }),
