@@ -211,9 +211,7 @@ export async function assertAgentNameTaken(page) {
       .map((id) => page.locator(`[id="${id}"]`).textContent()),
   );
   assert.ok(
-    errors.includes(
-      "An Agent with this name already exists in this Namespace. Choose a different name.",
-    ),
+    errors.includes("Another Agent in this Namespace has this name."),
     `expected the duplicate-name error under the field, got ${JSON.stringify(errors)}`,
   );
 }

@@ -157,6 +157,7 @@ type ProvisioningJob = ReturnType<typeof provisioningJob>;
 // so only this one is shown as sent.
 const AGENT_NAME_CONFLICT =
   "An Agent with this name already exists in this Namespace. Choose a different name.";
+const AGENT_NAME_TAKEN_FIELD = "Another Agent in this Namespace has this name.";
 // The open Create Agent form rechecks its Namespace when the window regains focus. The page's own
 // recheck skips any open form, because a reload would discard it (finding 2012).
 let recheckOpenForm: (() => void) | null = null;
@@ -843,14 +844,15 @@ function renderAgentForm(
   // refused name never leaves a saved Configuration behind (finding 2340).
   const checkName = () => name.setCustomValidity(namespaceNameProblem(name.value));
   // A name the API refused as taken is marked under the field, which takes focus once the form
-  // enables it again; editing the name clears the mark (finding 2420). The API decides on every
-  // submit, so a marked name is not refused locally.
+  // enables it again; editing the name clears the mark (finding 2420). The refusal line keeps
+  // the API's sentence and request ID. The API decides on every submit, so a marked name is not
+  // refused locally.
   let nameTakenMarked = false;
   let focusTakenName = false;
   const markNameTaken = () => {
     nameTakenMarked = true;
     focusTakenName = true;
-    setFieldError(name, AGENT_NAME_CONFLICT);
+    setFieldError(name, AGENT_NAME_TAKEN_FIELD);
   };
   const dedicatedOption = element("option", { value: "dedicated" }, "Dedicated");
   const embeddedOption = element("option", { value: "embedded" }, "Embedded");
@@ -3209,15 +3211,18 @@ function renderAgentForm(
         if (failure.status === 401) {
           context.onExpired();
         } else {
+          const nameTaken = failure.status === 409 && failure.serverMessage === AGENT_NAME_CONFLICT;
           const detail =
             error instanceof Error && error.name === "TimeoutError"
               ? "The configuration check timed out. Your entries are still here. Try Create Agent again."
-              : followableRefusal(rejectionMessage(error));
+              : nameTaken
+                ? AGENT_NAME_CONFLICT
+                : followableRefusal(rejectionMessage(error));
           feedback.textContent =
             detail + (failure.requestId ? ` Request ID: ${failure.requestId}` : "");
           // While the pressed control is still disabled, as after a save.
           focusFeedbackLine(feedback);
-          if (failure.status === 409 && failure.serverMessage === AGENT_NAME_CONFLICT) {
+          if (nameTaken) {
             markNameTaken();
           }
         }

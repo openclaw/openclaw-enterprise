@@ -2191,7 +2191,6 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
   fixture.controller.registerDriver(pluginDriver);
   fixture.controller.selectDriver("plugin", pluginDriver.id);
   const namespace = await fixture.createNamespace("Partial save retry", { ready: true });
-  await fixture.createAgent(namespace.id, "Retry Agent");
   const discardedPatSecret = await fixture.createSecret(
     namespace.id,
     "Discarded service account token",
@@ -2290,6 +2289,9 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
       response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents` &&
       response.request().method() === "POST",
   );
+  // Another create takes the name after the preflight, so the Secret and Configuration are saved
+  // before the API refuses the Agent.
+  await raceAgentName(page, fixture, namespace.id, "Retry Agent");
   await page.getByRole("button", { name: "Create Agent" }).click();
   const savedConfiguration = await (await configurationResponse).json();
   assert.equal((await deniedAgentResponse).status(), 409);
