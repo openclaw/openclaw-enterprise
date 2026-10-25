@@ -2249,7 +2249,8 @@ select:not([multiple])[size="1"] {
 .repository-discovery input[type="search"],
 .plugin-control select,
 .plugin-json textarea,
-.revision-selector select {
+.revision-selector select,
+.slack-approver-field select {
   width: 100%;
   min-height: var(--control-h);
   border: 1px solid var(--color-border-strong);
@@ -3176,11 +3177,13 @@ select:not([multiple])[size="1"] {
 .slack-approver-field label,
 .slack-directory-field > label {
   display: grid;
-  gap: var(--space-1);
-  font-weight: var(--weight-semibold);
+  gap: var(--space-2);
+  font-weight: var(--weight-medium);
 }
+/* The select sits inside its label: it takes the shared control style and the body weight, not
+   the label's (finding 2401). */
 .slack-approver-field select {
-  width: 100%;
+  font-weight: var(--weight-regular);
 }
 .slack-approver-field .hint,
 .slack-directory-field .hint,
