@@ -9,6 +9,7 @@ import {
   isCredentialHeaderName,
   ModelCredentialValueError,
   refuseLiteralGatewayPassword,
+  secretInputShorthandName,
 } from "@openclaw-enterprise/occ";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { createUrlCredentialChecks } from "./url-credentials.ts";
@@ -81,6 +82,31 @@ const credentialHeaderMessage = (path: string): string =>
   `Configuration field ${path} holds a credential value inline, where a reference is required. Make the header value a \${NAME} reference, or Bearer \${NAME} for an Authorization header.`;
 const credentialKeyMessage = (path: string): string =>
   `Configuration field ${path} holds a credential value inline, where a reference is required. Make the value a \${NAME} reference or a SecretRef.`;
+// A key slot's value that holds a reference the runtime substitutes, but not as the whole value:
+// the `$NAME` form, a `${NAME:-fallback}` or text around a `${NAME}` (finding 2493). The message
+// names the form and never the text, which may hold the credential; any other value keeps
+// credentialKeyMessage.
+function referenceFormMessage(value: unknown): ((path: string) => string) | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  if (secretInputShorthandName(value) !== undefined) {
+    return (path) =>
+      `Configuration field ${path} holds a $NAME value, where a credential reference is required. Write it as one \${NAME} reference, or a SecretRef.`;
+  }
+  const references = [...value.matchAll(environmentReference)].filter(
+    ([, escaped]) => escaped === undefined,
+  );
+  if (references.some(([, , fallback]) => fallback !== undefined)) {
+    return (path) =>
+      `Configuration field ${path} holds a \${NAME:-…} fallback, which would replace a missing credential. Make the value one \${NAME} reference without a fallback, or a SecretRef.`;
+  }
+  if (references.length > 0) {
+    return (path) =>
+      `Configuration field ${path} holds text around a \${NAME} reference, where a credential reference must be the whole value. Make the value one \${NAME} reference alone, or a SecretRef.`;
+  }
+  return undefined;
+}
 // A media query option that counts tokens rather than carrying one.
 const TOKEN_COUNT_OPTION =
   /(?:^|[-_.])(?:max|min|num|total|context|input|output|completion)[-_.]?tokens?$/i;
@@ -172,7 +198,10 @@ export function validateModelCredentialReferences(
     if (isSecretRef(value)) {
       return;
     }
-    throw new ModelCredentialValueError(path, message);
+    throw new ModelCredentialValueError(
+      path,
+      message === credentialKeyMessage ? (referenceFormMessage(value) ?? message) : message,
+    );
   };
   // Whether a header named `name` in the headers object at `headersPath` carries a credential, and
   // whether it may hold `Bearer ${NAME}`: some gateways carry the bearer token in an

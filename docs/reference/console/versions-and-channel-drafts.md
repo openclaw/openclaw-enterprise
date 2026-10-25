@@ -128,4 +128,6 @@ The simple editor may reject native channel documents it cannot round-trip,
 including non-Socket Slack settings, non-standard credential references, mixed
 per-channel mention settings or sender lists, `*` channel maps, or unsupported
 plugin shapes. Inspect those settings in the native Configuration view; edit them
-through the API or operator workflow.
+through the API or operator workflow. Slack's standard token references are the
+env SecretRefs and the whole `${SLACK_APP_TOKEN}` and `${SLACK_BOT_TOKEN}`
+strings; the editor saves each in its existing form.

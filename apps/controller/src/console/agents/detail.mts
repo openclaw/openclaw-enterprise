@@ -352,6 +352,10 @@ const CONFIGURATION_SECRETS_READ_ONLY =
 // A save's reread or its PATCH found a newer Configuration generation than the page's.
 const CONFIGURATION_CHANGED =
   "The saved Configuration changed while you were editing. Reload this draft before saving.";
+// The Configuration JSON saves no Secret bindings; a channel refusal that asks for one gets where
+// the console binds Slack's standard names (finding 2494). The API keeps its secretBindings text.
+const CHANNEL_BINDING_CONSOLE_REMEDY =
+  "This editor does not save Secret bindings: bind SLACK_APP_TOKEN and SLACK_BOT_TOKEN on the Credentials tab or in the Slack editor on the Channels tab, and other names through the Configuration API.";
 
 // Longest wait for Deployment activity's first read before the sections below it show. On a
 // slow link that read lands over a second after the page, and a failed version's banner then
@@ -5025,6 +5029,7 @@ export async function renderAgentDetail(
       }
       let mutationStarted = false;
       let configurationSaved = false;
+      let refusedInEditor = false;
       try {
         const [freshAgent, freshConfig] = await Promise.all([
           readAgent(),
@@ -5075,14 +5080,24 @@ export async function renderAgentDetail(
           reloadRequired = true;
           return;
         }
-        setStatusTone(feedback, "danger");
-        feedback.textContent =
-          configurationConflictMessage(error, mutationStarted && !configurationSaved) ??
-          rejectionMessage(error, mutationStarted);
-        // The edited JSON holds the refused channel reference (finding 2319).
+        // The edited JSON holds the refused channel reference (finding 2319). Like invalid JSON,
+        // it gets one message, under the editor, which takes focus (finding 2494). This editor
+        // saves no Secret bindings, so a refusal that asks for one says where the console makes it.
         const channelRefusal = channelBindingRefusal(error);
         if (channelRefusal !== undefined) {
-          editorError.show(channelRefusal);
+          editorError.show(
+            channelRefusal.includes(" in secretBindings")
+              ? `${channelRefusal} ${CHANNEL_BINDING_CONSOLE_REMEDY}`
+              : channelRefusal,
+          );
+          setStatusTone(feedback, null);
+          feedback.textContent = "";
+          refusedInEditor = true;
+        } else {
+          setStatusTone(feedback, "danger");
+          feedback.textContent =
+            configurationConflictMessage(error, mutationStarted && !configurationSaved) ??
+            rejectionMessage(error, mutationStarted);
         }
         feedbackLocked = true;
         outcomeUnknown =
@@ -5094,7 +5109,10 @@ export async function renderAgentDetail(
           render();
           const refused = feedback.dataset.tone === "danger";
           feedback.setAttribute("role", refused ? "alert" : "status");
-          if (container.isConnected && refused && !outcomeUnknown && !reloadRequired) {
+          if (refusedInEditor && container.isConnected) {
+            editor.focus({ preventScroll: true });
+            editor.scrollIntoView({ block: "nearest" });
+          } else if (container.isConnected && refused && !outcomeUnknown && !reloadRequired) {
             // A refusal Reload cannot fix (a 403, say) is an alert that takes focus and comes
             // into view; under the fold, nothing seemed to happen (finding 1991).
             revealStatus(feedback, container);
