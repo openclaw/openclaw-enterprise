@@ -7074,6 +7074,8 @@ test("two Namespaces become independently ready and deletion tombstones only its
     configurationGeneration: revision.configurationGeneration,
     harness: revision.harness,
     createdAt: revision.createdAt,
+    // This in-memory API records no deployment work.
+    deploymentStatus: null,
   });
   assert.deepEqual(admittedRevisions.data, [
     summary(nextDeployment.data),

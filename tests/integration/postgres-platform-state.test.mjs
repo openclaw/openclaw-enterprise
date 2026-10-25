@@ -2116,7 +2116,7 @@ test(
         malformedRevisionId,
         revisionPath,
         `${revisionPath}/${malformedRevisionId}`,
-        [revisionSummary(healthyRevision.data)],
+        [revisionSummary(healthyRevision.data, "queued")],
       ],
       ["agent", agent.id, `/namespaces/${namespaceId}/agents`, agentPath, [healthyAgent]],
     ]) {
