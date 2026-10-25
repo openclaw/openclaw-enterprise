@@ -4344,7 +4344,7 @@ export async function renderAgentDetail(
     const bindings = agent.repositoryBindings ?? [];
     return element(
       "section",
-      { className: "agent-card repository-selection" },
+      { className: "agent-card" },
       element("h2", {}, "Repository access"),
       element(
         "p",
