@@ -227,6 +227,16 @@ export const SAVE_REFUSALS = Object.freeze({
   read: "You do not have permission to read this Agent's saved settings. Ask an administrator for Agent read and Configuration read access.",
 });
 
+// A refused save that binds Secrets a permission answer read after the refusal says the caller
+// may not operate: it names them and that grant, not the Configuration update the caller may
+// have (finding 2453). The names are the caller's own choices, read from the Secret list.
+export function secretOperateRefusal(names: readonly string[]) {
+  const them = names.length > 1 ? "them" : "it";
+  const listed =
+    names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+  return `You do not have permission to bind ${listed}. Each save needs Secret operate on every Secret it binds, which your access does not include for ${them}. Choose another Secret, or ask an administrator for Secret operate on ${them}.`;
+}
+
 // Shown beside Agent-side save controls when the caller's permission answer denies Agent update.
 // Gating only: an unknown answer keeps the controls, and the API still decides.
 export const AGENT_UPDATE_DENIED =
@@ -269,14 +279,16 @@ export function agentSaveDenial(
 
 // Marks a 403 from a save so message() names the grants it needs: the save's own when the
 // write itself was refused (`written`), read access when a read before it was (finding 1540).
+// A refused write that a fresh Secret answer explains says so instead (`named`, finding 2453).
 export function refusedSave<Cause>(
   cause: Cause,
   save: "configuration" | "agent",
   written: boolean,
+  named?: string,
 ) {
   const error = responseFields(cause);
   if (error.status === 403) {
-    error.refusal = SAVE_REFUSALS[written ? save : "read"];
+    error.refusal = written ? (named ?? SAVE_REFUSALS[save]) : SAVE_REFUSALS.read;
   }
   return cause;
 }

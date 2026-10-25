@@ -644,6 +644,140 @@ test("the per-binding Secret answer names the bindings a Configuration save must
   assertApiError(outage, 503, "DEPENDENCY_UNAVAILABLE");
 });
 
+// Binding a Secret to an Agent's Configuration, or as its Harness authentication source,
+// authorizes Secret operate on it, so a Secret field that offered every readable Secret let a
+// save be refused only after the click (finding 2453). The Secret answer names the readable
+// Secrets the caller may not operate, only to a caller who could make such a save, and each
+// step proves it against the same real Configuration PATCH.
+test("the Agent Secret answer names the readable Secrets a binding save would be refused on", async (t) => {
+  const auditSink = new InMemoryAuditSink();
+  const fixture = await createConsoleAppFixture(t, { auditSink });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Secret operate answer", { ready: true });
+  const app = await fixture.createSecret(namespace.id, "App token", "app-value");
+  const bot = await fixture.createSecret(namespace.id, "Bot token", "bot-value");
+  const spare = await fixture.createSecret(namespace.id, "Spare token", "spare-value");
+  // A Secret the member cannot read: the answer never names it, operable or not.
+  await fixture.createSecret(namespace.id, "Unread token", "unread-value");
+  const binding = (secret) => ({ source: secret.ref, delivery: { type: "env" } });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Secret answer agent",
+    {},
+    { secretBindings: { SLACK_APP_TOKEN: binding(app), SLACK_BOT_TOKEN: binding(bot) } },
+  );
+  const answerPath = `/namespaces/${namespace.id}/agents/${agent.id}/permissions/secrets`;
+  const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
+
+  // An administrator may operate every Secret, so nothing is listed.
+  const admin = await fixture.request("GET", answerPath);
+  assert.equal(admin.status, 200);
+  assert.deepEqual(admin.data, { operateDenied: [] });
+
+  const member = await fixture.createNamespaceMember("secret-operate-answer", namespace.id, [
+    ["read", "namespace"],
+    ["read", "agent"],
+    ["read", "configuration"],
+  ]);
+  const session = await fixture.signIn(member.credentials);
+  const grant = (id, action, resourceKind, resourceId) => {
+    fixture.policy.roles.push({
+      id: `role-${id}`,
+      namespaceId: namespace.id,
+      permissions: [{ action, resourceKind }],
+    });
+    fixture.policy.bindings.push({
+      id: `binding-${id}`,
+      namespaceId: namespace.id,
+      subjectKind: "identity",
+      subjectId: member.principal.id,
+      roleId: `role-${id}`,
+      resourceKind,
+      resourceId,
+    });
+  };
+  for (const secret of [app, bot, spare]) {
+    grant(`secret-answer-read-${secret.id}`, "read", "secret", secret.id);
+  }
+  const answer = async () => {
+    const response = await fixture.request("GET", answerPath, { session });
+    assert.equal(response.status, 200);
+    return response.data.operateDenied;
+  };
+  const denials = () => auditSink.list().filter((event) => event.kind === "authorization_denial");
+
+  // A reader can make no save that binds a Secret, so the answer is not reported.
+  assert.deepEqual(await answer(), []);
+  // Agent update binds a Harness authentication Secret: every readable Secret is listed,
+  // sorted, and the unreadable one is not.
+  grant("secret-answer-agent", "update", "agent", agent.id);
+  const sorted = (secrets) => secrets.map((secret) => secret.id).sort();
+  assert.deepEqual(await answer(), sorted([app, bot, spare]));
+  // Configuration update with operate on the two bound Slack Secrets, as in the dogfood walk:
+  // only the spare Secret is listed.
+  grant("secret-answer-configuration", "update", "configuration", agent.configurationId);
+  grant(`secret-answer-operate-${app.id}`, "operate", "secret", app.id);
+  grant(`secret-answer-operate-${bot.id}`, "operate", "secret", bot.id);
+  assert.deepEqual(await answer(), [spare.id]);
+  // The probes are answers, not attempted operations.
+  assert.equal(denials().length, 0);
+
+  // The answer matches the real save: binding the listed Secret is refused, and rebinding to
+  // the operable ones succeeds.
+  const saved = await fixture.request("GET", configurationPath);
+  assert.equal(saved.status, 200);
+  const save = (secretBindings, expectedGeneration) =>
+    fixture.request("PATCH", configurationPath, {
+      session,
+      body: { values: saved.data.values, secretBindings, expectedGeneration },
+    });
+  assertApiError(
+    await save(
+      { SLACK_APP_TOKEN: binding(app), SLACK_BOT_TOKEN: binding(spare) },
+      saved.data.generation,
+    ),
+    403,
+    "FORBIDDEN",
+  );
+  assert.equal(denials().at(-1).action, "openclaw.configurations.update");
+  const swapped = await save(
+    { SLACK_APP_TOKEN: binding(bot), SLACK_BOT_TOKEN: binding(app) },
+    saved.data.generation,
+  );
+  assert.equal(swapped.status, 200);
+  // Operate on the spare Secret too: nothing is listed, and the refused binding saves.
+  grant(`secret-answer-operate-${spare.id}`, "operate", "secret", spare.id);
+  assert.deepEqual(await answer(), []);
+  const rebound = await save(
+    { SLACK_APP_TOKEN: binding(app), SLACK_BOT_TOKEN: binding(spare) },
+    swapped.data.generation,
+  );
+  assert.equal(rebound.status, 200);
+
+  // An IAM failure on a Secret's operate decision is not a denial: the whole answer is
+  // unavailable, so the console keeps every Secret choosable instead of marking some.
+  const authorize = fixture.iamDriver.authorize;
+  fixture.iamDriver.authorize = async (request) => {
+    if (request.action === "operate" && request.resource.kind === "secret") {
+      throw new Error("IAM outage");
+    }
+    return authorize.call(fixture.iamDriver, request);
+  };
+  let outage;
+  try {
+    outage = await fixture.request("GET", answerPath, { session });
+  } finally {
+    fixture.iamDriver.authorize = authorize;
+  }
+  assertApiError(outage, 503, "DEPENDENCY_UNAVAILABLE");
+  // The answer itself requires Agent read and an existing Agent.
+  const missing = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/agents/agt_00000000-0000-4000-8000-000000000000/permissions/secrets`,
+  );
+  assert.equal(missing.status, 404);
+});
+
 // Each Agent update also checks the caller's grant on every source the Agent and its
 // Configuration bind, so Agent update alone does not say a save of plugins, authentication or
 // repository access can succeed (finding 2441). The answer covers the Configuration's bound

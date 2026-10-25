@@ -27,6 +27,12 @@ export const AGENT_SAVE_DENIED =
   "You do not have permission to save this Agent. Ask an administrator for Agent update and Configuration read access, plus access to the Secrets, credential sources and Service Account it binds.";
 export const CONFIGURATION_SAVE_DENIED =
   "You do not have permission to save this Configuration. Ask an administrator for Configuration update access, plus Secret operate on each Secret it binds.";
+// A Secret field lists a Secret the caller may read but not operate disabled, with this reason,
+// and a save refused on one a fresh answer names says so (finding 2453).
+export const SECRET_OPERATE_DENIED =
+  "Binding it needs Secret operate, which your access does not include.";
+export const secretOperateRefused = (name) =>
+  `You do not have permission to bind ${name}. Each save needs Secret operate on every Secret it binds, which your access does not include for it. Choose another Secret, or ask an administrator for Secret operate on it.`;
 
 // The console's text for a read that failed with a 5xx.
 export const READ_UNAVAILABLE = "Service unavailable. The read could not be completed. Try again.";

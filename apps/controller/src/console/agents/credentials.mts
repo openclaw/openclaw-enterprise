@@ -111,13 +111,15 @@ export function hasRequiredChannelCredentials(values: unknown, configuration: Ch
 
 type SaveFailure = ReturnType<typeof requestFailure> & {
   step: "configuration" | "preflight" | "grant";
+  refusal?: string | undefined;
 };
 
 function credentialSaveError(error: SaveFailure) {
   let text;
   if (error.status === 403) {
-    // A refused Configuration update names the grants it needs (finding 1839).
-    text = SAVE_REFUSALS.configuration;
+    // A refused Configuration update names the grants it needs (finding 1839), or the chosen
+    // Secrets a fresh answer says the caller may not operate (finding 2453).
+    text = error.refusal ?? SAVE_REFUSALS.configuration;
   } else if (error.status === 409) {
     text =
       configurationConflictMessage(error, true) ??
@@ -440,6 +442,7 @@ export function createChannelSecretsPanel({
   readOnly = () => false,
   readOnlyReason = () => CHANNEL_SECRETS_CONFIGURATION_READ_ONLY,
   bindingsToReplace = () => null,
+  bindingRefusal = async () => undefined,
   isCurrent = () => true,
   onOutstandingGrants,
   onConfigurationChange,
@@ -469,6 +472,9 @@ export function createChannelSecretsPanel({
   // Slack token names whose bound Secret the caller may not operate: a save must replace each of
   // them, since it is checked on the Secrets it submits (finding 2444).
   bindingsToReplace?(): readonly string[] | null;
+  // Why a save that bound these chosen Secrets was refused, when a fresh permission answer
+  // names one the caller may not operate; undefined keeps the usual text (finding 2453).
+  bindingRefusal?(secrets: readonly SecretMetadata[]): Promise<string | undefined>;
   // Whether this panel is still the page's own, for answers that arrive late.
   isCurrent?(): boolean;
   onConfigurationChange?(configuration: Configuration): void;
@@ -933,7 +939,14 @@ export function createChannelSecretsPanel({
           // A refusal is known: only an Installation administrator can grant (finding 1920).
           state.grantProblem = grantProblemFor(failure.status) ?? "unconfirmed";
         }
-        state.saveError = { ...failure, step };
+        const refusal =
+          step === "configuration" && failure.status === 403
+            ? await bindingRefusal(Object.values(draft.changedSecrets))
+            : undefined;
+        if (!context.isCurrent()) {
+          return;
+        }
+        state.saveError = { ...failure, step, refusal };
         state.saveMessage = "";
         state.outcomeUnknown =
           step === "configuration" &&

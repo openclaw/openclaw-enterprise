@@ -87,6 +87,7 @@ import {
   AgentRuntimeImagesResponse,
   AgentHarnessStatusResponse,
   AgentCallerPermissionsResponse,
+  AgentSecretPermissionsResponse,
   NamespaceCallerPermissionsResponse,
   AgentResponse,
   AgentReadResponse,
@@ -1720,6 +1721,23 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: AgentParams,
       response: { 200: AgentCallerPermissionsResponse, ...readErrors },
+    },
+  },
+  {
+    operationId: "getAgentSecretPermissions",
+    method: "GET",
+    path: "/namespaces/:namespaceId/agents/:agentId/permissions/secrets",
+    action: "openclaw.agents.permissions.read",
+    iamAction: "read",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary:
+      "Report the readable Secrets that the caller may not bind to a readable Agent, not authorization for a later operation",
+    tags: ["Agents"],
+    schema: {
+      querystring: EmptyQuery,
+      params: AgentParams,
+      response: { 200: AgentSecretPermissionsResponse, ...readErrors },
     },
   },
   {

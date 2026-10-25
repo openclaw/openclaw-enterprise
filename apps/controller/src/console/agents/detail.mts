@@ -6,9 +6,11 @@ import type {
   AgentRead,
   AgentRevision,
   AgentRevisionRead,
+  AgentSecretPermissionsResponse,
   Configuration,
   HarnessAuthBinding,
   OpenClawConfigurationDocument,
+  SecretMetadata,
 } from "@openclaw-enterprise/contracts";
 import type { Static } from "typebox";
 import { requestFailure, responseFields } from "../api-client.mjs";
@@ -49,6 +51,7 @@ import {
   shortId,
   namespacePath,
   refusedSave,
+  secretOperateRefusal,
   channelBindingRefusal,
   agentSaveDenial,
   message,
@@ -96,6 +99,7 @@ import { createDeploymentRecovery } from "./deployment-recovery.mjs";
 
 type DetailContext = ConsolePageContext & { namespaceId: string; agentId: string };
 type Permissions = Static<typeof AgentCallerPermissionsResponse>["data"];
+type SecretPermissions = Static<typeof AgentSecretPermissionsResponse>["data"];
 type RevisionPage = Awaited<ReturnType<typeof readRevisionPage>>;
 type Revision = RevisionPage["revisions"][number];
 type RevisionResult = PromiseSettledResult<RevisionPage>;
@@ -564,6 +568,17 @@ export async function renderAgentDetail(
   function readPermissions(): Promise<Permissions> {
     return request(`${path}/permissions`) as Promise<Permissions>;
   }
+  // The readable Secrets this caller may not operate: each Secret field lists them disabled and
+  // never stages one, since the save would answer 403 (finding 2453). Read when a field first
+  // needs it, and again after a permission reread. A failed read is unknown and marks none.
+  let secretsOperateRead: Promise<ReadonlySet<string> | undefined> | null = null;
+  const secretsOperateDenied = () =>
+    (secretsOperateRead ??= (
+      request(`${path}/permissions/secrets`) as Promise<SecretPermissions>
+    ).then(
+      (answer) => (Array.isArray(answer?.operateDenied) ? new Set(answer.operateDenied) : undefined),
+      () => undefined,
+    ));
   context.setTitle(agent.name);
   // A missing summary leaves each control on its usual path, except failed-version
   // recovery, which waits for a positive answer before offering a draft link.
@@ -2604,7 +2619,7 @@ export async function renderAgentDetail(
     const panelNumber = ++channelPanelCount;
     const credentials = !runtimeAuth
       ? createChannelSecretsPanel({
-          context,
+          context: { ...context, secretsOperateDenied },
           path,
           agent,
           configuration: snapshot,
@@ -2625,6 +2640,7 @@ export async function renderAgentDetail(
                   callerPermissions?.configurationSecretsOperateDeniedBindings,
                 ),
           bindingsToReplace: channelBindingsReplace,
+          bindingRefusal: refusedSecretBinding,
           isCurrent: () => panelNumber === channelPanelCount,
           onChange() {
             updateNavigationControls();
@@ -3226,7 +3242,18 @@ export async function renderAgentDetail(
   }
 
   // Reads the caller's permission answer again; a failed read keeps the last answer.
+  // Why a save that bound these chosen Secrets was refused: the Secret answer, read again, names
+  // each one the caller may not operate (finding 2453). Undefined when it names none or is
+  // unknown, so the save's usual refusal applies.
+  async function refusedSecretBinding(secrets: readonly Pick<SecretMetadata, "id" | "name">[]) {
+    secretsOperateRead = null;
+    const denied = await secretsOperateDenied();
+    const names = secrets.filter((secret) => denied?.has(secret.id)).map((secret) => secret.name);
+    return names.length ? secretOperateRefusal(names) : undefined;
+  }
+
   function rereadPermissions() {
+    secretsOperateRead = null;
     const previous = latestPermissionsRead;
     const reread = ++permissionsRereads;
     const read = readPermissions().then(
@@ -3698,6 +3725,7 @@ export async function renderAgentDetail(
           isCurrent: context.isCurrent,
           onExpired: context.onExpired,
           secretsCreateAllowed: context.secretsCreateAllowed,
+          secretsOperateDenied,
           credentialsHref: context.pageUrl(
             `agents/${agent.id}?revision=draft&tab=credentials`,
             namespaceId,
@@ -3831,7 +3859,16 @@ export async function renderAgentDetail(
               throw error;
             }
             if (!configurationSaved) {
-              refusedSave(error, "configuration", mutationStarted);
+              // A refused write names the chosen Secrets the caller may not operate, when a fresh
+              // answer says so (finding 2453).
+              const named =
+                mutationStarted && requestFailure(error).status === 403
+                  ? await refusedSecretBinding(options.changedSecrets ?? [])
+                  : undefined;
+              if (!context.isCurrent()) {
+                throw error;
+              }
+              refusedSave(error, "configuration", mutationStarted, named);
             }
             if (requestFailure(error).status === 401) {
               context.onExpired();
@@ -3922,7 +3959,7 @@ export async function renderAgentDetail(
       };
       let syncUnsavedAuthentication = () => {};
       const auth = createHarnessAuthFields(
-        context,
+        { ...context, secretsOperateDenied },
         agent.harnessAuth,
         configuredHarnessId(values),
         {
@@ -4265,13 +4302,26 @@ export async function renderAgentDetail(
             }
           } else {
             const fields = responseFields(error);
+            // A refused write names the chosen Secret when a fresh answer says the caller may not
+            // operate it (finding 2453).
+            const chosen = auth.changedSecret;
+            const named =
+              mutationStarted && requestFailure(error).status === 403 && chosen
+                ? await refusedSecretBinding([chosen])
+                : undefined;
+            if (!context.isCurrent()) {
+              return;
+            }
             outcomeUnknown =
               fields.outcomeUnknown === true ||
               (mutationStarted && !refusedWriteStatuses.includes(requestFailure(error).status));
             say(
               fields.outcomeUnknown && typeof fields.message === "string"
                 ? fields.message
-                : rejectionMessage(refusedSave(error, "agent", mutationStarted), mutationStarted),
+                : rejectionMessage(
+                    refusedSave(error, "agent", mutationStarted, named),
+                    mutationStarted,
+                  ),
               "danger",
             );
             data.setAuthenticationPending(outcomeUnknown);

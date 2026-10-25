@@ -24,6 +24,7 @@ import {
   nextFrames,
   settlePageRequests,
   nonAuthWriteRequests,
+  operateDeniedSecretOption,
   pathRequests,
   deploymentStatusResponse,
   persistedDeploymentError,
@@ -66,6 +67,7 @@ import {
   READ_UNAVAILABLE,
   SAVED_CONFIGURATION_CHANGED,
   WORKSPACE_FILES_UNAVAILABLE,
+  secretOperateRefused,
 } from "../helpers/refusal-text.mjs";
 
 test("Agent detail separates the current version, viewed version, and latest deployment", async (t) => {
@@ -4841,6 +4843,115 @@ test("the Channels drawer save must replace a bound Secret the member cannot ope
   const saved = await fixture.request("GET", configurationPath);
   assert.equal(saved.data.secretBindings.SLACK_BOT_TOKEN.source.id, own.id);
   assert.equal(saved.data.secretBindings.SLACK_APP_TOKEN.source.id, app.id);
+});
+
+// Binding a Secret needs Secret operate on it. A Configuration editor with operate on only the
+// two bound Slack Secrets was offered a third readable Secret, saw it staged, and met a 403 that
+// asked for the Configuration update they had (finding 2453, D710). Each Secret field now lists
+// it disabled with the reason and never stages it; a save refused after a revocation names it.
+test("Secret fields refuse a readable Secret the editor cannot operate", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Operate-only Secrets", { ready: true });
+  const app = await fixture.createSecret(namespace.id, "Bound app token", "xapp-bound-value");
+  const bot = await fixture.createSecret(namespace.id, "Bound bot token", "xoxb-bound-value");
+  const spare = await fixture.createSecret(namespace.id, "Spare token", "xoxb-spare-value");
+  const extra = await fixture.createSecret(namespace.id, "Extra token", "xoxb-extra-value");
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Operate-only Agent",
+    nativeValues("bound", { harnessId: "codex", channels: { slack: BOUND_SLACK } }),
+    {
+      executionMode: "dedicated",
+      secretBindings: {
+        SLACK_APP_TOKEN: { source: app.ref, delivery: { type: "env" } },
+        SLACK_BOT_TOKEN: { source: bot.ref, delivery: { type: "env" } },
+      },
+    },
+  );
+  const member = await fixture.createNamespaceMember("operate-only-editor", namespace.id, [
+    ["read", "namespace"],
+    ["read", "agent"],
+    ["read", "agent_revision"],
+    ["update", "agent"],
+    ["read", "configuration"],
+    ["update", "configuration"],
+    ["read", "secret"],
+  ]);
+  // Secret operate on the bound Secrets, the Harness authentication Secret and the extra token:
+  // every save is allowed, but binding the spare token is not.
+  fixture.policy.roles.push({
+    id: "role-operate-only-editor",
+    namespaceId: namespace.id,
+    permissions: [{ action: "operate", resourceKind: "secret" }],
+  });
+  const grantOperate = (secretId) =>
+    fixture.policy.bindings.push({
+      id: `binding-operate-only-editor-${secretId}`,
+      namespaceId: namespace.id,
+      subjectKind: "identity",
+      subjectId: member.principal.id,
+      roleId: "role-operate-only-editor",
+      resourceKind: "secret",
+      resourceId: secretId,
+    });
+  for (const secretId of [app.id, bot.id, extra.id, agent.harnessAuth.source.id]) {
+    grantOperate(secretId);
+  }
+  const path = "/namespaces/" + namespace.id + "/agents/" + agent.id;
+  const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"),
+    member.credentials,
+  );
+  const save = page.getByRole("button", { name: "Save channel Secrets" });
+  await waitForEnabled(page.getByLabel("Slack bot token", { exact: true }));
+  const answer = page.waitForResponse((r) => r.url().endsWith(path + "/permissions/secrets"));
+  const denied = await operateDeniedSecretOption(page, "Slack bot token", spare);
+  assert.deepEqual((await (await answer).json()).data, { operateDenied: [spare.id] });
+  // A forced click skips the disabled check: choosing it still stages nothing.
+  await denied.click({ force: true });
+  await page.getByLabel("Slack bot token", { exact: true }).press("Enter");
+  await page.getByLabel("Slack bot token", { exact: true }).press("Escape");
+  assert.equal(await page.getByText("Secret binding staged. Save changes to apply it.").count(), 0);
+  assert.equal(await save.isDisabled(), true);
+  // The Harness authentication field and the Edit Slack drawer list it the same way.
+  await waitForEnabled(page.getByLabel("API key Secret", { exact: true }));
+  await operateDeniedSecretOption(page, "API key Secret", spare);
+  await page.getByLabel("API key Secret", { exact: true }).press("Escape");
+  await page.getByRole("tab", { name: "Channels", exact: true }).click();
+  await page.getByRole("button", { name: "Edit Slack" }).click();
+  const dialog = page.getByRole("dialog", { name: "Edit Slack" });
+  await operateDeniedSecretOption(dialog, "Slack bot token", spare);
+  await dialog.getByLabel("Slack bot token", { exact: true }).press("Escape");
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+
+  // An operable Secret stages and saves as before. Operate on it is revoked after it is staged,
+  // so the PATCH is refused: the refusal names the Secret and the grant, not Configuration
+  // update, which this editor has.
+  await page.getByRole("tab", { name: "Credentials", exact: true }).click();
+  await selectSecret(page, "Slack bot token", extra);
+  await page.getByText("Secret binding staged. Save changes to apply it.").waitFor();
+  fixture.policy.bindings.splice(
+    fixture.policy.bindings.findIndex(
+      (binding) => binding.id === `binding-operate-only-editor-${extra.id}`,
+    ),
+    1,
+  );
+  const refused = page.waitForResponse(
+    (r) => r.request().method() === "PATCH" && r.url().endsWith(configurationPath),
+  );
+  await save.click();
+  assert.equal((await refused).status(), 403);
+  await page
+    .locator(".channel-secrets [role=alert]")
+    .getByText(secretOperateRefused(extra.name), { exact: false })
+    .waitFor();
 });
 
 // A tab parked before the answer landed is shown again with the answer applied (finding 2421).
