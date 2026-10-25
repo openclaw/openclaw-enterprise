@@ -100,7 +100,7 @@ export function deploymentProgressForWork(
       // Fixed copy, like REPOSITORY_GIT_ROUTE_PENDING (finding 1045).
       code = attempt.code;
       message =
-        "Workloads are ready; waiting for the Sandbox to install this version's repository Git credential. If this persists, check the worker log for repository credential (PREPARED_GITHUB_RECOVERY_REQUIRED) or OpenShell gateway errors.";
+        "Workloads are ready; waiting for this version's repository Git credential: GitHub must issue its first token and, with a Sandbox, the Sandbox must install it. If this persists, check the worker log for repository credential (PREPARED_GITHUB_RECOVERY_REQUIRED) or OpenShell gateway errors.";
       break;
     case "WORKSPACE_NODE_RECONNECT_PENDING":
       code = attempt.code;
@@ -716,6 +716,8 @@ function deploymentErrorMessage(code: string): string {
       return "The Installation no longer selects the repository credential Driver this revision was admitted with. Deploy again to admit a revision for the selected Driver, choosing approved repository access first if the deploy is refused. If the Installation has none, remove the Agent's repository access or ask an admin to select one.";
     case "REPOSITORY_GIT_ROUTE_BLOCKED":
       return "This version's repository Git access was closed by the controller: its Sandbox or supervisor was replaced, a credential write's outcome is unknown, or the access was withdrawn. The worker log names the reason (OPENSHELL_GIT_RECONCILIATION_REQUIRED). Deploy a new version.";
+    case "REPOSITORY_GIT_TOKEN_QUARANTINED":
+      return "This version has no repository Git token, and the controller does not request one again for this version: GitHub rejected the App key or the registry's App or installation, or GitHub's answer was lost. The worker log names the repository (PREPARED_GITHUB_RECOVERY_REQUIRED). Put a key GitHub accepts in the App key Secret or correct the registry, then deploy a new version.";
     case "REPOSITORY_GIT_SENDER_UNQUALIFIED":
       return "This version was admitted with repository Git delivery that the selected Credential Proxy cannot enforce: no OpenShell release is qualified for the git-write profile, so it could never start. Remove the Agent's repository binding, select a qualified installed sender, or use native prepared Git without a Sandbox, then deploy again.";
     case "REPOSITORY_GIT_PROFILE_UNSUPPORTED":

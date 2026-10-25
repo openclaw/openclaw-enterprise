@@ -13,7 +13,11 @@ import {
 } from "@openclaw-enterprise/occ";
 import { reconcileSandboxPolicy, failAbandonedSandboxPolicies } from "./worker/sandbox-policy.ts";
 import { timerDelayMs } from "./worker/timer-settings.ts";
-import { isSecretHarnessAuth, isServiceAccountHarnessAuth } from "@openclaw-enterprise/contracts";
+import {
+  isSecretHarnessAuth,
+  isServiceAccountHarnessAuth,
+  protectedRepositoryGitAdmission,
+} from "@openclaw-enterprise/contracts";
 import { isPositiveSafeInteger } from "@openclaw-enterprise/utils";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
@@ -177,7 +181,15 @@ export interface ControllerWorkerOptions {
    * a wedged worker from one waiting out a database outage (each pass then fails fast).
    */
   readonly onProgress?: () => Promise<void>;
+  /**
+   * Native prepared Git only: whether each open repository session of a revision holds a
+   * committed GitHub token. The worker's own prepared owner supplies it, never a Driver.
+   */
+  readonly repositoryGitMaterial?: (revisionId: string) => Promise<RepositoryGitMaterialState>;
 }
+
+/** A native revision's GitHub token state; `quarantined` is never prepared again. */
+export type RepositoryGitMaterialState = "ready" | "pending" | "quarantined";
 
 type Observation = NamespaceEnsureResult | NamespaceDeleteResult;
 type Outcome = "success" | "pending" | "retry" | "permanent";
@@ -1172,6 +1184,7 @@ export class ControllerWorker {
   private readonly emit: (event: Readonly<Record<string, unknown>>) => void;
   private readonly onHealthy: (() => Promise<void>) | undefined;
   private readonly onProgress: (() => Promise<void>) | undefined;
+  private readonly repositoryGitMaterial: ControllerWorkerOptions["repositoryGitMaterial"];
   private readonly abort = new AbortController();
   private installation: Readonly<Installation> | undefined;
   private loop: Promise<void> | undefined;
@@ -1330,6 +1343,7 @@ export class ControllerWorker {
       });
     this.onHealthy = options.onHealthy;
     this.onProgress = options.onProgress;
+    this.repositoryGitMaterial = options.repositoryGitMaterial;
     this.repositoryPolicy = drivers?.repositoryPolicy;
     this.nativeRepositorySender = drivers?.nativeRepositorySender;
     this.repositoryCleanupRetryMs = positiveInteger(
@@ -3654,6 +3668,38 @@ export class ControllerWorker {
    * revision is left alone: its exposure went with its readiness. The failure is already
    * committed, so a read that fails here only defers the withdrawal to the next start.
    */
+  /**
+   * Native prepared Git issues a version's first GitHub token only after its active pointer is
+   * published, so a ready runtime alone would report success before GitHub answered. Hold the
+   * deployment until the token commits, and fail it when GitHub's answer quarantined the
+   * preparation: no later pass prepares that version again (finding 2415). Maintenance of a
+   * running version is unchanged; its renewal failures stay in the worker log.
+   */
+  private async assertRepositoryGitMaterial(
+    claim: ClaimedWork,
+    revision: Readonly<AgentRevision>,
+  ): Promise<void> {
+    const material = this.repositoryGitMaterial;
+    if (
+      material === undefined ||
+      revision.repositoryCredentials === undefined ||
+      protectedRepositoryGitAdmission(revision.executionAdmission) ||
+      !isCandidateDeployment(claim)
+    ) {
+      return;
+    }
+    const state = await this.withClaimHeartbeat(claim, () => material(revision.id));
+    if (state === "quarantined") {
+      throw new RepositoryCredentialAuthorityError("REPOSITORY_GIT_TOKEN_QUARANTINED");
+    }
+    if (state !== "ready") {
+      throw new ActivationPendingError(
+        "REPOSITORY_GIT_MATERIAL_PENDING",
+        "The exact AgentRevision's first repository Git token is not committed.",
+      );
+    }
+  }
+
   private async scheduleFailedCandidateExposureWithdrawal(claim: ClaimedWork): Promise<void> {
     if (
       this.compute.withdrawHarnessExposure === undefined ||
@@ -4544,6 +4590,7 @@ export class ControllerWorker {
               this.stagedRevision("activateRevision", revision, context),
             );
           }
+          await this.assertRepositoryGitMaterial(claim, revision);
           await this.retireEarlierRevisions(claim, revision);
         } catch (error) {
           // A yielded predecessor stop ends the pass pending below, like a candidate's.
@@ -6035,6 +6082,7 @@ export class ControllerWorker {
             this.stagedRevision("activateRevision", activated!, resolved.context),
           );
         }
+        await this.assertRepositoryGitMaterial(claim, activated);
         await this.retireEarlierRevisions(claim, activated);
       } catch (error) {
         if (error instanceof WorkClaimLostError) {

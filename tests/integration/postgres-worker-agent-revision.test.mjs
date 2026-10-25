@@ -3525,6 +3525,63 @@ test(
   },
 );
 
+for (const outcome of ["ready", "quarantined"]) {
+  test(
+    `a native repository deployment waits for its first GitHub token, then ${
+      outcome === "ready" ? "succeeds" : "fails when GitHub refused it"
+    }`,
+    requiresPostgres,
+    async (context) => {
+      // Finding 2415: native prepared Git issues a version's first token only after its active
+      // pointer is published, so a ready runtime reported success while every Git request
+      // answered 503. In production the worker's prepared owner reports the token state; this
+      // callback returns the states its store returns (postgres-prepared-github-git-use test).
+      const repository = repositoryBoundary();
+      const fixture = await setup(context, { repoDriver: repository.driver });
+      const { owner, candidate } = await fixture.admitInitialRevision(
+        `repository-token-${outcome}`,
+        { revision: { repositoryCredentials: repository.snapshot } },
+      );
+      const checked = [];
+      let waiting;
+      await fixture.start(fixture.compute, {
+        async repositoryGitMaterial(revisionId) {
+          checked.push(revisionId);
+          // Like the owner, nothing is issued before the pointer is published; then let one
+          // more pass record the wait before GitHub answers.
+          const pointer = (await fixture.activePointer(owner)).rows[0]?.active_revision_id;
+          if (pointer !== candidate.id) {
+            return "pending";
+          }
+          if (waiting === undefined) {
+            waiting = await fixture.deploymentStatus(owner, candidate);
+            return "pending";
+          }
+          return outcome;
+        },
+      });
+      await fixture.work(candidate, outcome === "ready" ? "succeeded" : "failed_permanent");
+      assert.ok(checked.length >= 2 && checked.every((id) => id === candidate.id), checked.join());
+      // The wait is visible as progress, never as success.
+      assert.notEqual(waiting.status, "succeeded");
+      assert.equal(waiting.progress?.lastAttempt?.code, "REPOSITORY_GIT_MATERIAL_PENDING");
+      const status = await fixture.deploymentStatus(owner, candidate);
+      if (outcome === "ready") {
+        assert.equal(status.status, "succeeded");
+        assert.equal(status.error, null);
+      } else {
+        // No later pass prepares this version again, so the deployment fails at once instead of
+        // at its convergence deadline, and names the cause and the recovery.
+        assert.equal(status.status, "failed");
+        assert.equal(status.error.code, "REPOSITORY_GIT_TOKEN_QUARANTINED");
+        assert.match(status.error.message, /deploy a new version\.$/);
+      }
+      // The published runtime stays for diagnosis; a new deployment replaces it.
+      assert.equal((await fixture.activePointer(owner)).rows[0].active_revision_id, candidate.id);
+    },
+  );
+}
+
 test(
   "a deploy denial during repository admission leaves a first deployment's runtime untouched",
   requiresPostgres,

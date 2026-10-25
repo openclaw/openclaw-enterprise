@@ -700,6 +700,7 @@ export function createWorkerRevisionFixtures(
         providers,
         pool = workerPool,
         transformDrivers = (drivers) => drivers,
+        repositoryGitMaterial,
       } = {},
     ) {
       const configuredDrivers = createBackendWorkerDrivers(computeDriver, providers ?? []);
@@ -724,6 +725,7 @@ export function createWorkerRevisionFixtures(
         onProgress,
         ...(drivers === undefined ? { computeDriver } : { drivers }),
         ...(convergenceTimeoutMs === undefined ? {} : { convergenceTimeoutMs }),
+        ...(repositoryGitMaterial === undefined ? {} : { repositoryGitMaterial }),
         emit,
       });
       database.workers.add(worker);
