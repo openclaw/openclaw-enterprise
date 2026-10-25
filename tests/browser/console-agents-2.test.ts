@@ -2078,6 +2078,31 @@ test("Agent creation shows the API's duplicate-name conflict, a not-ready Namesp
   // Another name clears the mark; the conflicts below come after the Configuration is saved.
   await page.getByLabel("Agent name").fill("Racing Agent");
   assert.equal(await page.getByLabel("Agent name").getAttribute("aria-invalid"), null);
+  // Only the taken-name sentence marks the field: the preflight's other 409s do not.
+  await page.route(
+    `${agentsUrl}/validate`,
+    (route) =>
+      route.fulfill({
+        status: 409,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: {
+            code: "RESOURCE_CONFLICT",
+            message: "The Namespace does not accept new Agents.",
+          },
+          meta: { requestId: "req_00000000-0000-4000-8000-000000000408" },
+        }),
+      }),
+    { times: 1 },
+  );
+  await page.getByRole("button", { name: "Create Agent" }).click();
+  await page
+    .getByRole("alert")
+    .filter({ hasText: "req_00000000-0000-4000-8000-000000000408" })
+    .waitFor();
+  assert.equal(await page.getByText(AGENT_NAME_CONFLICT).count(), 0);
+  assert.equal(await page.getByLabel("Agent name").getAttribute("aria-invalid"), null);
+  await page.getByRole("button", { name: "Create Agent", disabled: false }).waitFor();
 
   // Any other conflict keeps the generic text: plain conflicts reach the client as "The
   // requested platform resource already exists.", which would mislead on this form.
@@ -2110,6 +2135,7 @@ test("Agent creation shows the API's duplicate-name conflict, a not-ready Namesp
     })
     .waitFor();
   assert.equal(await page.getByText(RESOURCE_CONFLICT).count(), 0);
+  assert.equal(await page.getByLabel("Agent name").getAttribute("aria-invalid"), null);
   await page.unroute(agentsUrl, otherConflict);
   await page.getByRole("button", { name: "Create Agent", disabled: false }).waitFor();
 
