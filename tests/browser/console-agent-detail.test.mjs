@@ -4345,14 +4345,15 @@ test("an Agent editor without Configuration update sees the Configuration read-o
 // bound Secret had every editor disabled, yet the draft still read as a new version they could
 // change (finding 2441). Its labels, notice and card now follow the combined answer.
 test("an editor without operate on a bound Secret views the version draft read-only", async (t) => {
-  const { fixture, namespace } = await createRuntimeAuthFixture(t, "Unoperated Secret editor");
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Unoperated Secret editor", { ready: true });
   const bound = await fixture.createSecret(namespace.id, "Bound token", "bound-token-value");
   const agent = await fixture.createAgent(
     namespace.id,
     "Unoperated Secret Agent",
     nativeValues("v1"),
     {
-      harnessAuth: { method: "runtime" },
       secretBindings: { EXTERNAL_API_TOKEN: { source: bound.ref, delivery: { type: "env" } } },
     },
   );
