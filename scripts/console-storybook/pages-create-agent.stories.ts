@@ -16,6 +16,10 @@ export const CreateSecretCreateNotPermitted = {
   ...story("createSecretCreateNotPermitted"),
   name: "Secret creation not permitted",
 };
+export const CreateSecretOperateDenied = {
+  ...story("createSecretOperateDenied"),
+  name: "Secret operate not permitted",
+};
 export const CreateRepositoryNotConfigured = {
   ...story("createRepositoryNotConfigured"),
   name: "Repository access not set up",
