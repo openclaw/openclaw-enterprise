@@ -446,32 +446,22 @@ describe("Agent channels", { concurrency: 3 }, () => {
       `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
     );
     assert.equal(beforeSave.data.generation, 1);
-    const saveReached = Promise.withResolvers();
-    const saveRelease = Promise.withResolvers();
-    t.after(() => saveRelease.resolve());
     // Hold the real save response so dismissal cannot hide an in-flight mutation.
-    await page.route(
+    const save = await holdRequests(
+      t,
+      page,
       `${fixture.origin}/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
-      async (route) => {
-        if (route.request().method() !== "PATCH") {
-          await route.continue();
-          return;
-        }
-        const response = await route.fetch();
-        saveReached.resolve();
-        await saveRelease.promise;
-        await route.fulfill({ response });
-      },
+      { method: "PATCH", afterServer: true, timeout: 0 },
     );
     await page.getByRole("button", { name: "Save configuration" }).click();
-    await saveReached.promise;
+    await save.requested;
     await page.mouse.click(bounds.x / 2, bounds.y + 8);
     assert.equal(await dialog.isVisible(), true);
     assert.equal(
       await dialog.getByRole("button", { name: "Save configuration" }).isDisabled(),
       true,
     );
-    saveRelease.resolve();
+    save.release();
     await page.getByText(/Configuration .*generation 2/).waitFor();
     const configuration = await fixture.request(
       "GET",
@@ -509,21 +499,10 @@ describe("Agent channels", { concurrency: 3 }, () => {
     });
     const { page } = await newPage(t, fixture, { browser });
     const requests = apiRequests(page, fixture.origin);
-    const grantStarted = Promise.withResolvers();
-    const releaseGrant = Promise.withResolvers();
-    t.after(() => releaseGrant.resolve());
-    await page.route(
-      `**/namespaces/${namespace.id}/iam/access-bindings`,
-      async (route, request) => {
-        if (request.method() !== "POST") {
-          await route.continue();
-          return;
-        }
-        grantStarted.resolve();
-        await releaseGrant.promise;
-        await route.continue();
-      },
-    );
+    const grant = await holdRequests(t, page, `**/namespaces/${namespace.id}/iam/access-bindings`, {
+      method: "POST",
+      timeout: 0,
+    });
 
     await openDraft(page, fixture, agent, "Final Slack Grant Agent");
     requests.length = 0;
@@ -532,7 +511,7 @@ describe("Agent channels", { concurrency: 3 }, () => {
     await selectSecret(dialog, "Slack app token", firstSecret);
     await selectSecret(dialog, "Slack app token", finalSecret);
     await page.getByRole("button", { name: "Save configuration" }).click();
-    await grantStarted.promise;
+    await grant.requested;
     // Configuration is already saved, but the Agent's Secret grant is still in flight.
     try {
       assert.equal(
@@ -544,7 +523,7 @@ describe("Agent channels", { concurrency: 3 }, () => {
         true,
       );
     } finally {
-      releaseGrant.resolve();
+      grant.release();
     }
     await page.getByText(/Configuration .*generation 2/).waitFor();
 

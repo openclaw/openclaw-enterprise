@@ -1317,14 +1317,10 @@ test("Agent detail saves plugin changes for the next revision without changing a
   });
   const requests = apiRequests(page, fixture.origin);
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "plugins");
-  const capabilitiesRead = Promise.withResolvers();
-  t.after(() => capabilitiesRead.resolve());
-  await page.route(
+  const capabilitiesRead = await holdRequests(
+    t,
+    page,
     `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/plugins/capabilities`,
-    async (route) => {
-      await capabilitiesRead.promise;
-      await route.continue();
-    },
   );
 
   await login(page, fixture, url);
@@ -1343,7 +1339,7 @@ test("Agent detail saves plugin changes for the next revision without changing a
       response.url() === `${fixture.origin}${pluginListPath}` &&
       response.request().method() === "POST",
   );
-  capabilitiesRead.resolve();
+  capabilitiesRead.release();
   assert.equal((await prefetched).status(), 200);
   const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
   assert.equal(await dialog.isVisible(), false);
@@ -2270,12 +2266,7 @@ test("session expiry clears the unsent value in the Secret picker dialog", async
   const requests = apiRequests(page, fixture.origin);
   // Let the picker open before its list read discovers the session has expired.
   const path = `/namespaces/${namespace.id}/secrets`;
-  const release = Promise.withResolvers();
-  t.after(() => release.resolve());
-  await page.route(`**${path}`, async (route) => {
-    await release.promise;
-    await route.continue();
-  });
+  const list = await holdRequests(t, page, `**${path}`);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
   await page.getByLabel("API key Secret", { exact: true }).fill("no matching Secret");
   await page.getByRole("option", { name: "Create new Secret...", exact: true }).click();
@@ -2285,7 +2276,7 @@ test("session expiry clears the unsent value in the Secret picker dialog", async
   const input = await field.evaluateHandle((node) => node);
   expireSessions(fixture);
   const refused = page.waitForResponse((response) => new URL(response.url()).pathname === path);
-  release.resolve();
+  list.release();
   assert.equal((await refused).status(), 401);
   await page.getByText("Your session has expired").waitFor();
   await dialog.waitFor({ state: "detached" });
@@ -4391,30 +4382,30 @@ test("a negative permission answer reaching an open Stop or Delete dialog preven
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   for (const action of ["Stop", "Delete"]) {
-    const received = Promise.withResolvers();
-    const release = Promise.withResolvers();
-    await page.route(permissionPath, async (route) => {
-      const response = await route.fetch();
-      received.resolve({ status: response.status(), data: (await response.json()).data });
-      // Delay delivery, not authorization: these are the controller's actual flags for this viewer.
-      await release.promise;
-      await route.fulfill({ response });
+    // Delay delivery, not authorization: these are the controller's actual flags for this viewer.
+    const permissions = await holdRequests(t, page, permissionPath, {
+      afterServer: true,
+      timeout: 0,
     });
     if (action === "Stop") {
       await login(page, fixture, url, viewer.credentials);
     } else {
       await page.goto(url.href);
     }
-    assert.deepEqual(await received.promise, {
-      status: 200,
-      data: {
-        update: false,
-        deploy: false,
-        operate: false,
-        delete: false,
-        configurationUpdate: false,
+    const received = await permissions.requested;
+    assert.deepEqual(
+      { status: received.status(), data: (await received.json()).data },
+      {
+        status: 200,
+        data: {
+          update: false,
+          deploy: false,
+          operate: false,
+          delete: false,
+          configurationUpdate: false,
+        },
       },
-    });
+    );
 
     await page.getByRole("button", { name: action + " Agent", exact: true }).click();
     const dialog = page.getByRole("dialog");
@@ -4422,7 +4413,7 @@ test("a negative permission answer reaching an open Stop or Delete dialog preven
       name: action === "Stop" ? "Stop Agent" : "Permanently delete Agent",
     });
     await confirm.focus();
-    release.resolve();
+    permissions.release();
     await dialog.getByText(/Your access does not include/).waitFor();
     assert.equal(await confirm.isDisabled(), true);
     assert.equal(

@@ -1661,18 +1661,9 @@ test("Agents list row actions explain missing access and still report a refused 
     );
 
   // Hold the first permission read so the reader can open Stop before the real answer arrives.
-  let releaseAdvice;
-  const adviceHeld = new Promise((resolve) => {
-    releaseAdvice = resolve;
+  const advice = await holdRequests(t, page, `${fixture.origin}${agentPath}/permissions`, {
+    once: true,
   });
-  await page.route(
-    `${fixture.origin}${agentPath}/permissions`,
-    async (route) => {
-      await adviceHeld;
-      await route.continue().catch(() => {});
-    },
-    { times: 1 },
-  );
 
   await login(page, fixture, listUrl(namespace.id), person.credentials);
   const row = page.getByRole("row").filter({ hasText: "Guarded Agent" });
@@ -1685,7 +1676,7 @@ test("Agents list row actions explain missing access and still report a refused 
   await stop.click();
   const dialog = page.getByRole("dialog", { name: "Stop Guarded Agent?" });
   await dialog.waitFor();
-  releaseAdvice();
+  advice.release();
   await dialog.getByText("Your access does not include stopping this Agent.").waitFor();
   const confirm = dialog.getByRole("button", { name: "Stop Agent" });
   assert.equal(await confirm.isDisabled(), true);
@@ -1795,21 +1786,15 @@ test("Agents list permission advice updates its own row without moving focus els
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   // Hold only Guarded Agent's permission read; its real answer is released on cue.
-  const holdGuardedAdvice = async () => {
-    let release;
-    const held = new Promise((resolve) => {
-      release = resolve;
-    });
-    await page.route(
-      `${fixture.origin}/namespaces/${namespace.id}/agents/${guarded.id}/permissions`,
-      async (route) => {
-        await held;
-        await route.continue().catch(() => {});
-      },
-      { times: 1 },
-    );
-    return release;
-  };
+  const holdGuardedAdvice = async () =>
+    (
+      await holdRequests(
+        t,
+        page,
+        `${fixture.origin}/namespaces/${namespace.id}/agents/${guarded.id}/permissions`,
+        { once: true },
+      )
+    ).release;
   const focusedText = () => page.evaluate(() => globalThis.document.activeElement?.textContent);
   const guardedRow = page.getByRole("row").filter({ hasText: "Guarded Agent" });
   const otherRow = page.getByRole("row").filter({ hasText: "Other Agent" });

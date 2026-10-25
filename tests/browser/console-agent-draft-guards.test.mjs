@@ -1196,24 +1196,13 @@ for (const tab of ["configuration", "repositories"]) {
     await edit.waitFor();
     const deploy = page.getByRole("button", { name: "Deploy new version" });
     await waitForEnabled(deploy);
-    const preflightStarted = Promise.withResolvers();
-    const releasePreflight = Promise.withResolvers();
-    const deployCommitted = Promise.withResolvers();
-    const releaseResponse = Promise.withResolvers();
-    t.after(() => releasePreflight.resolve());
-    t.after(() => releaseResponse.resolve());
-    await page.route(`${fixture.origin}${path}`, async (route) => {
-      if (route.request().method() === "GET") {
-        preflightStarted.resolve();
-        await releasePreflight.promise;
-      }
-      await route.continue();
+    const preflight = await holdRequests(t, page, `${fixture.origin}${path}`, {
+      method: "GET",
+      timeout: 0,
     });
-    await page.route(`${fixture.origin}${path}/deploy`, async (route) => {
-      const response = await route.fetch();
-      deployCommitted.resolve({ status: response.status(), body: await response.json() });
-      await releaseResponse.promise;
-      await route.fulfill({ response });
+    const deployment = await holdRequests(t, page, `${fixture.origin}${path}/deploy`, {
+      afterServer: true,
+      timeout: 0,
     });
     const admitted = page.waitForResponse(
       (response) =>
@@ -1221,14 +1210,14 @@ for (const tab of ["configuration", "repositories"]) {
         response.request().method() === "POST",
     );
     await deploy.click();
-    await preflightStarted.promise;
+    await preflight.requested;
     // Edits made during an admitted deployment would otherwise block its revision navigation.
     await assert.rejects(edit.click({ timeout: 500 }), /Timeout/);
-    releasePreflight.resolve();
-    const committed = await deployCommitted.promise;
-    assert.equal(committed.status, 202, JSON.stringify(committed.body));
+    preflight.release();
+    const committed = await deployment.requested;
+    assert.equal(committed.status(), 202, JSON.stringify(await committed.json()));
     await assert.rejects(edit.click({ timeout: 500 }), /Timeout/);
-    releaseResponse.resolve();
+    deployment.release();
     assert.equal((await admitted).status(), 202);
     await page.waitForURL(/revision=rev_/);
   });
@@ -1446,19 +1435,12 @@ for (const mutation of ["authentication", "channel Secrets"]) {
       mutation === "authentication"
         ? path
         : `/namespaces/${namespace.id}/configurations/${configuration.id}`;
-    const method = "PATCH";
-    const committed = Promise.withResolvers();
-    const release = Promise.withResolvers();
-    t.after(() => release.resolve());
-    await page.route(`${fixture.origin}${mutationPath}`, async (route) => {
-      if (route.request().method() !== method) {
-        await route.continue();
-        return;
-      }
-      const response = await route.fetch();
-      committed.resolve({ status: response.status(), body: await response.json() });
-      await release.promise;
-      await route.abort("failed");
+    // The server applies the write; the page loses its answer.
+    const write = await holdRequests(t, page, `${fixture.origin}${mutationPath}`, {
+      method: "PATCH",
+      afterServer: true,
+      loseResponse: true,
+      timeout: 0,
     });
     if (mutation === "authentication") {
       await page.getByRole("button", { name: "Save authentication source" }).click();
@@ -1466,8 +1448,8 @@ for (const mutation of ["authentication", "channel Secrets"]) {
       await selectSecret(page, "Slack app token", replacementSecret);
       await page.getByRole("button", { name: "Save channel Secrets" }).click();
     }
-    const result = await committed.promise;
-    assert.equal(result.status, 200, JSON.stringify(result.body));
+    const result = await write.requested;
+    assert.equal(result.status(), 200, JSON.stringify(await result.json()));
     assert.equal(
       await deploy.isDisabled(),
       true,
@@ -1499,7 +1481,7 @@ for (const mutation of ["authentication", "channel Secrets"]) {
       }
     }
     assert.equal(pathRequests(requests, "POST", `${path}/deploy`).length, 0);
-    release.resolve();
+    write.release();
     await page
       .getByText(/Outcome unknown/)
       .first()
@@ -1821,17 +1803,9 @@ for (const action of ["disable", "drawer"]) {
     const { page } = await newPage(t, fixture);
     const requests = apiRequests(page, fixture.origin);
     const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
-    const patchStarted = Promise.withResolvers();
-    const release = Promise.withResolvers();
-    t.after(() => release.resolve());
-    await page.route(`**${configurationPath}`, async (route, request) => {
-      if (request.method() !== "PATCH") {
-        await route.continue();
-        return;
-      }
-      patchStarted.resolve();
-      await release.promise;
-      await route.continue();
+    const patch = await holdRequests(t, page, `**${configurationPath}`, {
+      method: "PATCH",
+      timeout: 0,
     });
     const url = detailUrl(fixture, namespace.id, agent.id, "draft", "channels");
     await login(page, fixture, url);
@@ -1863,7 +1837,7 @@ for (const action of ["disable", "drawer"]) {
       );
       await page.getByRole("button", { name: "Save configuration" }).click();
     }
-    await patchStarted.promise;
+    await patch.requested;
     // The write has not reached the server; Deploy must not capture the old draft.
     try {
       assert.equal(await deploy.isDisabled(), true);
@@ -1899,7 +1873,7 @@ for (const action of ["disable", "drawer"]) {
         assert.equal(await page.getByRole("heading", { name: "Agents", exact: true }).count(), 0);
       }
     } finally {
-      release.resolve();
+      patch.release();
     }
     await page.getByText(/Configuration .*generation 2/).waitFor();
     await waitForEnabled(deploy);
@@ -2022,26 +1996,11 @@ test("Agent credentials block tab changes until Slack Secret grants finish", asy
   );
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
-  let markPatchPersisted;
-  const patchPersisted = new Promise((resolve) => {
-    markPatchPersisted = resolve;
-  });
-  let releasePatch;
-  const patchRelease = new Promise((resolve) => {
-    releasePatch = resolve;
-  });
-  await page.route(
+  const patch = await holdRequests(
+    t,
+    page,
     `**/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
-    async (route, request) => {
-      if (request.method() !== "PATCH") {
-        await route.continue();
-        return;
-      }
-      const response = await route.fetch();
-      markPatchPersisted();
-      await patchRelease;
-      await route.fulfill({ response });
-    },
+    { method: "PATCH", afterServer: true, timeout: 0 },
   );
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "credentials");
 
@@ -2051,10 +2010,10 @@ test("Agent credentials block tab changes until Slack Secret grants finish", asy
   await selectSecret(page, "Slack app token", slackAppSecret);
   await selectSecret(page, "Slack bot token", slackBotSecret);
   await page.getByRole("button", { name: "Save channel Secrets" }).click();
-  await patchPersisted;
+  await patch.requested;
   const channelsTab = page.getByRole("tab", { name: "Channels", exact: true });
   assert.equal(await channelsTab.isDisabled(), true);
-  releasePatch();
+  patch.release();
   await waitForCondition(
     () => accessBindingPostRequests(requests, namespace.id).length === 2,
     "expected saved Slack Secret grants to finish",

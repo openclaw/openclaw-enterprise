@@ -583,27 +583,39 @@ export function repositoryCheckbox(page, name) {
 }
 
 // Holds requests matching `url` until release(). `requested` resolves when the first one is
-// held. Once a test awaits it, it rejects if none is held within 10 s, so a test fails instead
-// of hanging. With `once`, only the first match is held; with `method`, only matches with that
-// method. Requests not held fall through to earlier routes. `once` is a hand-written flag, not
-// Playwright's { times: 1 }: that
-// turns interception off once no routes remain, which silently releases other held requests.
-// With `afterServer`, the server answers first and the page gets that answer on release (a
-// write that landed while the page waits); if that answer is lost, the page's request fails
-// rather than being sent again. With `fulfill`, the held request gets that response.
+// held. Once a test awaits it, it rejects if none is held within `timeout` ms (10 s by default),
+// so a test fails instead of hanging; `timeout: 0` waits as long as the test does. With `once`,
+// only the first match is held; with `method`, only matches with that method. Requests not held
+// fall through to earlier routes. `once` is a hand-written flag, not Playwright's { times: 1 }:
+// that turns interception off once no routes remain, which silently releases other held requests.
+// With `afterServer`, the server answers first, `requested` resolves with that answer, and the
+// page gets it on release (a write that landed while the page waits); if that answer is lost,
+// the page's request fails rather than being sent again. With `loseResponse` as well, the page's
+// request fails on release although the server applied it. With `fulfill`, the held request
+// gets that response.
 /**
  * @param {import("node:test").TestContext} t
  * @param {import("playwright").Page} page
  * @param {Parameters<import("playwright").Page["route"]>[0]} url
- * @param {{ once?: boolean, method?: string, afterServer?: boolean, fulfill?: Parameters<import("playwright").Route["fulfill"]>[0] | null }} [options]
- * @returns {Promise<{ requested: Promise<void>, release: () => void, wasRequested: () => boolean }>}
+ * @param {{ once?: boolean, method?: string, afterServer?: boolean, loseResponse?: boolean, fulfill?: Parameters<import("playwright").Route["fulfill"]>[0] | null, timeout?: number }} [options]
+ * @returns {Promise<{ requested: Promise<import("playwright").APIResponse | undefined>, release: () => void, wasRequested: () => boolean }>}
  */
 export async function holdRequests(
   t,
   page,
   url,
-  { once = false, method, afterServer = false, fulfill = null } = {},
+  {
+    once = false,
+    method,
+    afterServer = false,
+    loseResponse = false,
+    fulfill = null,
+    timeout = 10_000,
+  } = {},
 ) {
+  if (loseResponse && !afterServer) {
+    throw new Error("loseResponse needs afterServer: only a server answer can be lost");
+  }
   let release;
   const held = new Promise((resolve) => {
     release = resolve;
@@ -612,9 +624,9 @@ export async function holdRequests(
   let failRequested;
   let timer;
   const requested = new Promise((resolve, reject) => {
-    markRequested = () => {
+    markRequested = (response) => {
       clearTimeout(timer);
-      resolve();
+      resolve(response);
     };
     failRequested = (error = new Error(`No ${url} request was held`)) => {
       clearTimeout(timer);
@@ -641,8 +653,12 @@ export async function holdRequests(
         return;
       }
     }
-    markRequested();
+    markRequested(response ?? undefined);
     await held;
+    if (loseResponse) {
+      await route.abort("failed").catch(() => {});
+      return;
+    }
     await (response || fulfill ? route.fulfill(fulfill ?? { response }) : route.continue()).catch(
       () => {},
     );
@@ -654,8 +670,8 @@ export async function holdRequests(
   return {
     // The deadline starts at the first await, not at registration (a hold set before sign-in).
     get requested() {
-      if (!taken && timer === undefined) {
-        timer = setTimeout(failRequested, 10_000);
+      if (!taken && timer === undefined && timeout > 0) {
+        timer = setTimeout(failRequested, timeout);
       }
       return requested;
     },
