@@ -58,7 +58,6 @@ import {
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import {
   DEPENDENCY_UNAVAILABLE,
-  GENERIC_DENIAL,
   RESOURCE_NOT_FOUND,
   WORKSPACE_FILES_UNAVAILABLE,
 } from "../helpers/refusal-text.mjs";
@@ -485,7 +484,7 @@ test("Repeat deletion preserves bounded retry ownership feedback and ordinary de
   await page.clock.fastForward(DELETION_POLL_MS * 2);
   await page.getByRole("alert").getByText(ownership, { exact: true }).waitFor();
   assert.equal(writes, 1);
-  serverMessage = GENERIC_DENIAL;
+  serverMessage = "The exact platform operation was not authorized.";
   await confirm();
   await page
     .getByRole("alert")
