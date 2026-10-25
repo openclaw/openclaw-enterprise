@@ -6698,6 +6698,17 @@ export const scenarios = {
     description:
       "Both Slack token bindings are empty and required before a Slack-enabled draft can deploy.",
   },
+  credentialsSlackReader: {
+    group: "Components/Credentials",
+    name: "Slack tokens, viewer can only read",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    slackBindings: false,
+    readOnlyPermissionSummary: true,
+    description:
+      "The permission answer denies Configuration update, so the Slack token pickers are disabled, Save channel Secrets is not offered, and a note says why.",
+    gap: "The permission answer is simulated; the API still authorizes every save.",
+  },
   credentialsSlackStored: {
     group: "Components/Credentials",
     name: "Slack tokens stored",
