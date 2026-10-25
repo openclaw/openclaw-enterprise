@@ -2741,11 +2741,28 @@ test(
       },
     ]);
 
+    // The preflight probes the same name index: in this Namespace only, case as typed, and an
+    // Agent being deleted keeps its name until it is gone. Another Namespace's names stay private.
+    const preflight = (namespaceId, probe) =>
+      fixture.request("POST", `/namespaces/${namespaceId}/agents/validate`, {
+        body: { configuration: { kind: "agent", values: {} }, name: probe },
+      });
+    assert.equal((await preflight(namespace.id, name)).status, 409);
+    assert.equal((await preflight(namespace.id, name.toLowerCase())).status, 204);
+    await fixture.stopWorker();
+    const other = await fixture.bootstrapNamespace();
+    assert.equal((await preflight(other.id, name)).status, 204);
+
     // Once the name is free, a retry writes a new Configuration instead of trusting a receipt
     // for the deleted one, and provisioning completes with a readable Configuration.
     const agentPath = `/namespaces/${namespace.id}/agents/${created.agentId}`;
     const deleting = await fixture.request("DELETE", agentPath);
     assert.equal(deleting.status, 202, JSON.stringify(deleting.body));
+    // With no worker running, the Agent stays deleting and its name stays taken.
+    const whileDeleting = await preflight(namespace.id, name);
+    assert.equal(whileDeleting.status, 409, JSON.stringify(whileDeleting.body));
+    assert.equal(whileDeleting.body.error.message, AGENT_NAME_CONFLICT);
+    await fixture.startWorker();
     await waitFor(
       "the first Agent deletion to finish",
       async () => {

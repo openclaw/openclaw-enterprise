@@ -5,6 +5,7 @@ import test from "node:test";
 
 import { KubernetesConfigurationDriver } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
 import { ConfigurationHarnessError } from "../../packages/occ/src/index.ts";
+import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -236,11 +237,30 @@ test("Dedicated Agent provisioning refuses a taken Agent name at admission and m
   await page.getByRole("button", { name: "Start without Preset" }).click();
   await page.getByLabel("Agent name").fill("Taken provisioned");
   await pickCodexCredential(page);
-  const refused = page.waitForResponse(
-    (response) =>
-      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/provision` &&
-      response.request().method() === "POST",
+  const provisionUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/provision`;
+  const provisionPost = (response) =>
+    response.url() === provisionUrl && response.request().method() === "POST";
+  // Only the API's taken-name sentence marks the field: another admission 409 does not.
+  await page.route(
+    provisionUrl,
+    (route) =>
+      route.fulfill(
+        apiErrorResponse(409, "RESOURCE_CONFLICT", RESOURCE_CONFLICT, {
+          requestId: "req_00000000-0000-4000-8000-000000000409",
+        }),
+      ),
+    { times: 1 },
   );
+  const conflicted = page.waitForResponse(provisionPost);
+  await page.getByRole("button", { name: "Create Agent" }).click();
+  assert.equal((await conflicted).status(), 409);
+  await page
+    .getByRole("alert")
+    .filter({ hasText: "req_00000000-0000-4000-8000-000000000409" })
+    .waitFor();
+  assert.equal(await page.getByLabel("Agent name").getAttribute("aria-invalid"), null);
+  await waitForEnabled(page.getByRole("button", { name: "Create Agent" }));
+  const refused = page.waitForResponse(provisionPost);
   await page.getByRole("button", { name: "Create Agent" }).click();
   const response = await refused;
   // Admission answers Agent create's 409 instead of accepting a job that can only fail
@@ -253,7 +273,7 @@ test("Dedicated Agent provisioning refuses a taken Agent name at admission and m
   await feedback.waitFor();
   assert.equal(await feedback.textContent(), `${error.message} Request ID: ${meta.requestId}`);
   await assertAgentNameTaken(page);
-  assert.equal(agentProvisionPostRequests(requests, namespace.id).length, 1);
+  assert.equal(agentProvisionPostRequests(requests, namespace.id).length, 2);
   assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
   // Editing the name clears the mark.
   await page.getByLabel("Agent name").fill("Free provisioned");

@@ -2483,6 +2483,15 @@ for (const [target, mode, acknowledged, errors, reason, kubectlOutput] of [
     "kubectl reported an error for the create; see preflight-secret-create.err in the evidence directory.",
     /^create acknowledgement lost: private-response-marker$/m,
   ],
+  // The Secret's create ends a pipeline, so its status reaches the message as that pipeline's.
+  [
+    "secret",
+    "empty",
+    1,
+    "preflight-secret-create.err",
+    "The create returned no usable UID; kubectl's error output, if any, is in preflight-secret-create.err in the evidence directory.",
+    /^$/,
+  ],
   [
     "api",
     "empty",
@@ -2615,4 +2624,37 @@ test("cleanup ownership: a refused DELETE is reported as a failed request", asyn
   assert.equal(statSync(join(f.evidence, "preflight-cleanup.err")).mode & 0o777, 0o600);
   assert.doesNotMatch(failure.stdout + failure.stderr, /private-(?:delete-)?response-marker/);
   assert.deepEqual(await f.events(), []);
+});
+
+// Each refused DELETE appends its answer, so the first one is still there to read.
+test("cleanup ownership: every refused DELETE keeps its answer in the evidence", async (t) => {
+  const f = await fixture(t, {
+    controllerOnly: true,
+    preflightPolicy: true,
+    preflightFault: { target: "pod", mode: "delete-refused" },
+    preflightResults: {
+      worker: { phase: "Failed", log: "primary startup failure\n" },
+    },
+  });
+  const failure = await f.run().catch((error) => error);
+  const state = await f.state();
+  assert.equal(failure.code, 1);
+  assert.equal(Object.values(state.preflight.pods).length, 2);
+  const errors = await readFile(join(f.evidence, "preflight-cleanup.err"), "utf8");
+  for (const component of ["api", "worker"]) {
+    assert.match(
+      failure.stderr,
+      new RegExp(
+        `could not confirm cleanup of pod/[^:]+-${component}-[^:]+: the delete request failed;`,
+      ),
+    );
+    assert.match(
+      errors,
+      new RegExp(
+        `^pod/[^\\n]+-${component}-[^\\n]+:\\nError from server \\(Forbidden\\): pods "`,
+        "m",
+      ),
+    );
+  }
+  assert.doesNotMatch(failure.stdout + failure.stderr, /private-(?:delete-)?response-marker/);
 });
