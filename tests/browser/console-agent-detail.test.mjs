@@ -4080,6 +4080,8 @@ const CONFIGURATION_READ_ONLY = "Your access does not include editing this Confi
 const CHANNELS_READ_ONLY = `These are the version draft’s channel settings. ${CONFIGURATION_READ_ONLY}`;
 const READ_ONLY_DRAFT_NOTICE =
   "Version draft · read-only with your access. The next deployment uses it as saved.";
+const PLUGINS_READ_ONLY =
+  "These are the version draft's plugin selections, read-only with your access. The next deployment uses them as saved.";
 
 // A member who can only read the Agent views its draft: the saved JSON with no editor whose
 // Save answers 403, and no editor's copy or checklist (finding 2421).
@@ -4088,7 +4090,7 @@ test("a reader without update views the version draft read-only", async (t) => {
   const agent = await fixture.createAgent(namespace.id, "Draft reader Agent", nativeValues("v1"), {
     harnessAuth: { method: "runtime" },
   });
-  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const reader = await fixture.createNamespaceMember("draft-reader", namespace.id, [
     ["read", "namespace"],
     ["read", "agent"],
@@ -4131,6 +4133,82 @@ test("a reader without update views the version draft read-only", async (t) => {
   await page.getByText("Your access does not include deploying this Agent.").waitFor();
   const entry = page.getByRole("button", { name: "View version draft", exact: true });
   await entry.getByText("Read-only Configuration", { exact: true }).waitFor();
+
+  // Plugin selections are an Agent-side save. The reader reads them, with no editor's copy, and
+  // the page does not ask for the policy capabilities, a read that needs Agent update and would
+  // answer 403 (finding 2436).
+  await page.getByRole("tab", { name: "Plugins", exact: true }).click();
+  await page.getByText(PLUGINS_READ_ONLY, { exact: true }).waitFor();
+  assert.equal(
+    await page.getByLabel("Plugin selections JSON", { exact: true }).isEditable(),
+    false,
+  );
+  await expectNoText(page, /remains editable|Save selections on this Agent|No plugin changes/);
+  assert.deepEqual(pathRequests(requests, "GET", `${path}/plugins/capabilities`), []);
+
+  // The current version's Configuration opens the draft to read it; it offers no editor.
+  await page.goto(
+    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration").href,
+  );
+  const snapshot = page
+    .locator("section.agent-card")
+    .filter({ has: page.getByRole("heading", { name: "Configuration snapshot" }) });
+  await snapshot.getByRole("button", { name: "Open version draft", exact: true }).click();
+  await page.getByText(CONFIGURATION_READ_ONLY, { exact: true }).waitFor();
+  assert.equal(new URL(page.url()).searchParams.get("revision"), "draft");
+  assert.equal(await page.getByRole("button", { name: "Edit current Configuration" }).count(), 0);
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+});
+
+// The permission answer can land after a version's page or the Plugins tab is drawn. A reader's
+// Edit current Configuration turns into Open version draft in place, and the Plugins tab waits
+// for the answer before it reads the policy capabilities, which need Agent update (finding 2436).
+test("a late permission answer relabels a reader's version entry and skips plugin capabilities", async (t) => {
+  const { fixture, namespace } = await createRuntimeAuthFixture(t, "Late plugin reader");
+  const agent = await fixture.createAgent(namespace.id, "Late plugin Agent", nativeValues("v1"), {
+    harnessAuth: { method: "runtime" },
+  });
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const reader = await fixture.createNamespaceMember("late-plugin-reader", namespace.id, [
+    ["read", "namespace"],
+    ["read", "agent"],
+    ["read", "agent_revision"],
+    ["read", "configuration"],
+  ]);
+  const path = "/namespaces/" + namespace.id + "/agents/" + agent.id;
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  const capabilities = () => pathRequests(requests, "GET", `${path}/plugins/capabilities`);
+  const firstAnswer = await holdRequests(t, page, `${fixture.origin}${path}/permissions`, {
+    afterServer: true,
+    once: true,
+  });
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration"),
+    reader.credentials,
+  );
+  await firstAnswer.requested;
+  const snapshot = page
+    .locator("section.agent-card")
+    .filter({ has: page.getByRole("heading", { name: "Configuration snapshot" }) });
+  // Until the answer lands the page assumes an editor.
+  await snapshot.getByRole("button", { name: "Edit current Configuration", exact: true }).waitFor();
+  firstAnswer.release();
+  await snapshot.getByRole("button", { name: "Open version draft", exact: true }).waitFor();
+
+  const secondAnswer = await holdRequests(t, page, `${fixture.origin}${path}/permissions`, {
+    afterServer: true,
+    once: true,
+  });
+  await page.goto(detailUrl(fixture, namespace.id, agent.id, "draft", "plugins").href);
+  await secondAnswer.requested;
+  await page.getByLabel("Plugin selections JSON", { exact: true }).waitFor({ state: "attached" });
+  assert.deepEqual(capabilities(), []);
+  secondAnswer.release();
+  await page.getByText(PLUGINS_READ_ONLY, { exact: true }).waitFor();
+  assert.deepEqual(capabilities(), []);
   assert.deepEqual(nonAuthWriteRequests(requests), []);
 });
 

@@ -4243,6 +4243,30 @@ export async function renderAgentDetail(
           ["Compute", `${snapshot.compute.id} · ${snapshot.compute.implementation}`],
         );
       }
+      let currentConfigurationEntry: HTMLButtonElement | null = null;
+      if (!draft) {
+        // A caller who may not edit the Configuration opens the draft to read it; the entry does
+        // not offer an editor it has none of (finding 2436).
+        const entryLabel = () =>
+          configurationReadOnly() ? "Open version draft" : "Edit current Configuration";
+        const entry = button(entryLabel(), () => {
+          const edit = !configurationReadOnly();
+          // The draft this navigation opens takes it with its editor open. Saving
+          // patches the Configuration, which the API authorizes on its own.
+          linkedVersionView = {
+            key: linkedKey("draft", "configuration"),
+            load: consoleLoads + 1,
+            edit,
+          };
+          context.navigate(target("draft", "configuration"));
+        });
+        followConfigurationAccess(() => {
+          if (context.isCurrent() && entry.isConnected) {
+            entry.textContent = entryLabel();
+          }
+        });
+        currentConfigurationEntry = entry;
+      }
       content.append(
         element(
           "section",
@@ -4257,20 +4281,7 @@ export async function renderAgentDetail(
             : element(
                 "div",
                 {},
-                element(
-                  "div",
-                  { className: "form-actions" },
-                  button("Edit current Configuration", () => {
-                    // The draft this navigation opens takes it with its editor open. Saving
-                    // patches the Configuration, which the API authorizes on its own.
-                    linkedVersionView = {
-                      key: linkedKey("draft", "configuration"),
-                      load: consoleLoads + 1,
-                      edit: true,
-                    };
-                    context.navigate(target("draft", "configuration"));
-                  }),
-                ),
+                element("div", { className: "form-actions" }, currentConfigurationEntry),
                 nativeDocument(values, "View admitted native configuration"),
               ),
         ),
