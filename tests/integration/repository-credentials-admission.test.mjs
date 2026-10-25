@@ -1649,11 +1649,11 @@ test("A Git-only Credential Proxy names repository.openShell instead of a 503 or
   ]) {
     const { response } = await protectedOpenShellDeploy(t, [], options);
     assert.equal(response.status, status, `${label}: ${JSON.stringify(response)}`);
-    assert.equal(
-      response.error.code,
-      status === 409 ? "RESOURCE_CONFLICT" : "DEPENDENCY_UNAVAILABLE",
-      label,
-    );
+    if (status === 409) {
+      assert.equal(response.error.message, CredentialProxyRepositoryOnlyError.description, label);
+    } else {
+      assert.equal(response.error.code, "DEPENDENCY_UNAVAILABLE", label);
+    }
   }
 });
 
