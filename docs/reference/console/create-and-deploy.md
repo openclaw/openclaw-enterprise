@@ -109,7 +109,8 @@ and the [policy contract](../agent-plugins.md); browsing proves no runtime permi
 
 Credentials are masked Namespace Secrets, excluded from Configuration JSON, Agent
 responses, and browser storage. Binding a Secret needs Secret `operate` on it, so each Secret
-menu lists a readable Secret without it disabled, with the reason. With a selected Credential Gateway, supported
+menu lists a readable Secret without it disabled, with the reason. A new Secret has no `operate`
+grant, so where a readable Secret is denied, a Preset's **Create new Secret** is disabled too. With a selected Credential Gateway, supported
 Dedicated creation registers the selected Secret as a model
 [Credential Source](../credential-sources.md), then provisions with that source.
 The Harness receives only a placeholder. The caller also needs source `create`, `read`, and `operate`.

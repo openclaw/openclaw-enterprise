@@ -38,7 +38,11 @@ import { configuredHarnessId, harnessAuthDescription } from "./harness-auth.mjs"
 import { type DeviceLogin, createDeviceLogin } from "./device-login.mjs";
 import { createRepositoryFields } from "./repositories.mjs";
 import { ensureCredentialOperateBinding, type SecretsOperateDenied } from "./credential-access.mjs";
-import { createSecretReferenceField, secretMetadata } from "./secret-picker.mjs";
+import {
+  createSecretReferenceField,
+  NEW_SECRET_OPERATE_DENIED,
+  secretMetadata,
+} from "./secret-picker.mjs";
 import { workspaceFileProblem } from "./workspace.mjs";
 import { namespaceNameProblem } from "../namespaces.mjs";
 import { createPresetFields } from "./presets.mjs";
@@ -717,6 +721,8 @@ const PERMISSIONS_UNREAD =
 // (SAVE_REFUSALS): one fixed text for every 403 (finding 2111).
 const CONFIGURATION_CREATE_REFUSAL =
   "You do not have permission to create this Agent's Configuration. Ask an administrator for Configuration create access in this Namespace, plus Secret operate on each Secret it binds.";
+// A typed model key is saved as a new Secret, which Agent create then binds (finding 2492).
+const NEW_SECRET_REFUSAL = `${NEW_SECRET_OPERATE_DENIED} Select Start over and use an existing Secret, or ask an administrator for Secret operate across this Namespace.`;
 
 // The readable Secrets this caller may not operate: each Create Agent Secret field, the Preset's
 // existing Secret included, lists them disabled and never stages one, since Agent create, or a
@@ -3298,6 +3304,20 @@ function renderAgentForm(
     createPending = true;
     updateControls();
     feedback.textContent = "";
+    // A typed key becomes a new Secret that the next requests bind. It gets no Secret operate
+    // grant of its own, so where operate is denied on a readable Secret (granted per Secret)
+    // they would refuse it after the Secret and Configuration were saved: refuse it first, as
+    // the Preset's Create new Secret choice does (finding 2492).
+    if (passwordAuth && !usesOAuth && !savedSecret && (await secretsOperateDenied())?.size) {
+      endCreate();
+      if (context.isCurrent()) {
+        feedback.textContent = NEW_SECRET_REFUSAL;
+        focusFeedbackLine(feedback);
+      }
+      pending = false;
+      updateControls();
+      return;
+    }
     // Before anything is saved, ask the API whether Agent create would refuse these plugin
     // selections or initial workspace files with this Configuration. A refusal then leaves the
     // whole form editable, the Configuration included, instead of a saved Configuration this

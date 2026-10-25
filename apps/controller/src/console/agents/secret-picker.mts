@@ -35,6 +35,11 @@ export const SECRET_CREATE_DENIED =
 // refused (finding 2453).
 export const SECRET_OPERATE_DENIED =
   "Binding it needs Secret operate, which your access does not include.";
+// A new Secret gets no Secret operate grant of its own. A caller denied operate on a readable
+// Secret holds it per Secret, not across the Namespace, so Agent create would refuse a new one
+// after it was saved (finding 2492).
+export const NEW_SECRET_OPERATE_DENIED =
+  "Your access includes Secret operate on only some Secrets in this Namespace, so an Agent cannot use a new Secret you create here.";
 
 // The API's Name length for Secrets, in code points: the Name rule namespaces.mts mirrors.
 export const SECRET_NAME_MAX_CHARACTERS = NAME_MAX_CHARACTERS;

@@ -21,10 +21,15 @@ import {
   operateDeniedSecretOption,
   revokeMemberGrant,
   selectSecret,
+  waitForCondition,
   waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
 import { waitForCreateFormReads } from "./console-agents-test-support.mjs";
-import { GENERIC_DENIAL, SECRET_OPERATE_DENIED } from "../helpers/refusal-text.mjs";
+import {
+  GENERIC_DENIAL,
+  NEW_SECRET_OPERATE_DENIED,
+  SECRET_OPERATE_DENIED,
+} from "../helpers/refusal-text.mjs";
 
 // Create Agent for a Namespace member (UX plan A2, spec 3.11; findings 1901, 493). The real
 // Native IAM Driver answers every read and write: the member's GET /installation is refused, and
@@ -750,5 +755,61 @@ test("a Secret created inline that the member cannot operate is not staged", asy
   assert.deepEqual(
     answers.filter((answer) => !answer.startsWith("GET ") && !answer.includes("/auth/")),
     [`POST /namespaces/${namespace.id}/secrets 201`],
+  );
+});
+
+// The Preset's Create new Secret choice saves the typed key as a new Secret when Create Agent is
+// pressed, and the next requests bind it. Creating a Secret grants no Secret operate on it, so
+// this member met a 403 from Agent create after the Secret and Configuration were saved
+// (finding 2492). Its operate is per Secret (one readable Secret is denied), so the choice is
+// listed disabled with the reason, and a typed key is refused before any write.
+test("a member whose Secret operate covers only some Secrets cannot save a typed model key", async (t) => {
+  const { fixture, namespace, member } = await operateSomeSetup(t);
+  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: JSON.parse(
+      await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
+    ),
+  });
+  assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  const { page } = await newPage(t, fixture);
+  const answers = apiResponses(page, fixture.origin);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`, member.credentials);
+  await page.getByLabel("Preset template").selectOption(preset.data.id);
+  await page.getByLabel("Name", { exact: true }).fill("Typed key Agent");
+  await page.getByLabel("Model", { exact: true }).fill("gpt-5.1");
+  const source = page.getByLabel("Secret source for Model Secret", { exact: true });
+  const status = page.locator("#preset-variable-modelSecret-existing-secret-hint");
+  await waitForCondition(
+    async () => (await status.textContent()) !== "Loading existing Secrets…",
+    "the Preset's Secret list loads",
+    10_000,
+  );
+  assert.equal(
+    await status.textContent(),
+    `Choose an existing Secret. ${NEW_SECRET_OPERATE_DENIED}`,
+  );
+  const createNew = source.locator('option[value="new"]');
+  assert.equal(await createNew.isDisabled(), true);
+  assert.equal(await createNew.textContent(), `Create new Secret (${NEW_SECRET_OPERATE_DENIED})`);
+  assert.equal(await source.inputValue(), "existing");
+  // A choice the list cannot offer, as a scripted value, reaches the form's API key field; Create
+  // Agent refuses the typed key before the preflight or any write.
+  await source.evaluate((select: HTMLSelectElement) => {
+    select.value = "new";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await page.getByLabel("Model Secret", { exact: true }).fill("sk-typed-key");
+  await page.getByRole("button", { name: "Use Preset" }).click();
+  assert.equal(await page.getByLabel("API key", { exact: true }).inputValue(), "sk-typed-key");
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await page
+    .getByText(
+      `${NEW_SECRET_OPERATE_DENIED} Select Start over and use an existing Secret, or ask an administrator for Secret operate across this Namespace.`,
+      { exact: true },
+    )
+    .waitFor();
+  assert.deepEqual(
+    answers.filter((answer) => !answer.startsWith("GET ") && !answer.includes("/auth/")),
+    [],
   );
 });

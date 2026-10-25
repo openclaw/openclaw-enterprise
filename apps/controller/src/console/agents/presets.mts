@@ -17,7 +17,11 @@ import {
 } from "../preset-variables.mjs";
 import { message, namespacePath } from "./list.mjs";
 import type { SecretsOperateDenied } from "./credential-access.mjs";
-import { SECRET_CREATE_DENIED, SECRET_OPERATE_DENIED } from "./secret-picker.mjs";
+import {
+  NEW_SECRET_OPERATE_DENIED,
+  SECRET_CREATE_DENIED,
+  SECRET_OPERATE_DENIED,
+} from "./secret-picker.mjs";
 
 type PresetContext = Pick<NamespacePageContext, "request" | "isCurrent" | "onExpired"> & {
   namespaceId: string;
@@ -263,28 +267,36 @@ export function createPresetFields(
         field.secretSelect.value = field.operateDenied.has(restored) ? "" : restored;
         field.restoredSecret = undefined;
         // Without Secret create, the create-new source is listed disabled with the reason and
-        // the field binds an existing Secret, as the other Secret fields do (finding 2483).
+        // the field binds an existing Secret, as the other Secret fields do (finding 2483). So it
+        // is when operate is denied on any readable Secret: operate is then granted per Secret,
+        // and a new Secret has none, so Agent create would refuse it once saved (finding 2492).
         const createDenied = createAllowed === false;
+        const newSecretDenied = createDenied
+          ? SECRET_CREATE_DENIED
+          : field.operateDenied.size
+            ? NEW_SECRET_OPERATE_DENIED
+            : undefined;
         const createOption = field.mode.querySelector<HTMLOptionElement>(
           `option[value="${NEW_SECRET}"]`,
         );
         if (createOption) {
-          createOption.disabled = createDenied;
-          createOption.textContent = createDenied
-            ? `Create new Secret (${SECRET_CREATE_DENIED})`
+          createOption.disabled = newSecretDenied !== undefined;
+          createOption.textContent = newSecretDenied
+            ? `Create new Secret (${newSecretDenied})`
             : "Create new Secret";
         }
-        if (createDenied && field.mode.value === NEW_SECRET) {
+        if (newSecretDenied && field.mode.value === NEW_SECRET) {
           field.mode.value = EXISTING_SECRET;
           field.input.dataset.supplied = "false";
         }
-        field.secretStatus.textContent = createDenied
-          ? field.secrets.length
-            ? `Choose an existing Secret. ${SECRET_CREATE_DENIED}`
-            : `No Secrets you can read in this Namespace. ${SECRET_CREATE_DENIED} Ask an administrator for read access to an existing one.`
-          : field.secrets.length
-            ? "Existing Secrets in this Namespace are available. Secret values are never shown."
-            : "No existing Secrets are available in this Namespace. Create a new Secret instead.";
+        field.secretStatus.textContent =
+          createDenied && !field.secrets.length
+            ? `No Secrets you can read in this Namespace. ${SECRET_CREATE_DENIED} Ask an administrator for read access to an existing one.`
+            : newSecretDenied
+              ? `Choose an existing Secret. ${newSecretDenied}`
+              : field.secrets.length
+                ? "Existing Secrets in this Namespace are available. Secret values are never shown."
+                : "No existing Secrets are available in this Namespace. Create a new Secret instead.";
         updatePasswordField(field);
       }
     } catch (error) {

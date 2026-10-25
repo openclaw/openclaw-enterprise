@@ -31,6 +31,10 @@ export const CONFIGURATION_SAVE_DENIED =
 // and a save refused on one a fresh answer names says so (finding 2453).
 export const SECRET_OPERATE_DENIED =
   "Binding it needs Secret operate, which your access does not include.";
+// Create Agent's Create new Secret choice and typed model key, for a caller whose Secret operate
+// covers only some Secrets: a new Secret gets no operate grant of its own (finding 2492).
+export const NEW_SECRET_OPERATE_DENIED =
+  "Your access includes Secret operate on only some Secrets in this Namespace, so an Agent cannot use a new Secret you create here.";
 export const secretOperateRefused = (name) =>
   `You do not have permission to bind ${name}. Each save needs Secret operate on every Secret it binds, which your access does not include for it. Choose another Secret, or ask an administrator for Secret operate on it.`;
 

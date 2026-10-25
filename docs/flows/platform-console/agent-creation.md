@@ -106,7 +106,9 @@ names what an administrator changes, because the form can change neither the bin
 Before any write, `create.mts:renderAgentForm` checks the Agent name with the API's Name rule
 (`namespaces.mts:namespaceNameProblem`) and each initial workspace file with the Workspace tab's
 `agents/workspace.mts:workspaceFileProblem`, which names the file; the check opens Advanced
-settings to it. It then checks the Agent name, draft values with their staged channel
+settings to it. A new Secret gets no `operate` grant, so where the `operate` answer above denies
+any readable Secret, the Preset's **Create new Secret** choice is disabled and a typed model key
+is refused before any write. It then checks the Agent name, draft values with their staged channel
 `secretBindings`, plugins and the planned `harnessAuth`
 (only the method for a Secret it saves next or registers with a Credential Gateway; none for
 ChatGPT sign-in) with
@@ -165,6 +167,7 @@ Switching methods hides that feedback without changing the lookup or saved choic
 
 ## Changelog
 
+- 2026-10-25: Refuse a typed model key, and disable the Preset's **Create new Secret**, where `operate` is denied on a readable Secret. (fix-2492, finding 2492)
 - 2026-10-25: An inline Secret create rereads the `operate` answer before staging. (finding 2486)
 - 2026-10-25: Secret fields and the Preset's existing Secret refuse readable Secrets the caller may not `operate`. (fix-2469, findings 2469, 2479)
 - 2026-10-25: Send the Agent name to the preflight; mark and focus the name field when the preflight, provisioning or Agent create refuses it as taken. (fix-dogfood-r36, finding 2420)
