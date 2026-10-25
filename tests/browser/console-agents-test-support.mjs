@@ -145,7 +145,19 @@ export async function runProvisioningPolls(page, submit, jobPath, reads) {
     await page.clock.install();
     pollClocks.add(page);
   }
-  await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1);
+  // The clock runs between calls, so pause it a little ahead of the page's time. On a loaded host
+  // it can pass that time before pauseAt arrives, which pauseAt refuses: read the time again.
+  for (let attempt = 1; ; attempt += 1) {
+    const now = await page.evaluate(() => Date.now());
+    try {
+      await page.clock.pauseAt(now + 100);
+      break;
+    } catch (error) {
+      if (attempt === 5 || !String(error).includes("Cannot fast-forward to the past")) {
+        throw error;
+      }
+    }
+  }
   await submit();
   for (let polls = 0; ; polls += 1) {
     await waitForIdleFetches(page);
