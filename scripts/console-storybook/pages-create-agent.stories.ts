@@ -273,6 +273,10 @@ export const CreatePasswordPreset = {
   ...story("createPasswordPreset"),
   name: "Standard Codex password variable",
 };
+export const CreatePasswordPresetOperateSome = {
+  ...story("createPasswordPresetOperateSome"),
+  name: "Standard Codex, Secret operate on some Secrets",
+};
 export const CreatePasswordPresetMissingModel = {
   ...story("createPasswordPresetMissingModel"),
   name: "Standard Codex missing model",

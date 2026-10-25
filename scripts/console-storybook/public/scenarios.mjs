@@ -3367,6 +3367,21 @@ export const scenarios = {
     ],
     gap: "All credentials and API responses in this preview are simulated.",
   },
+  createPasswordPresetOperateSome: {
+    group: "Pages/Create Agent",
+    name: "Standard Codex, Secret operate on some Secrets",
+    path: create,
+    standardCodexPreset: true,
+    secretOperateDenied: ["sec_demo_slack_backup_token"],
+    actions: [{ selector: "#agent-preset", value: "pre_00000000-0000-4000-8000-000000000001" }],
+    description:
+      "The Namespace Secret answer lists the Slack backup token as readable but not operable, so this member's Secret operate is granted per Secret and a new Secret would have none. Secret source lists Create new Secret disabled with the reason and starts on Use existing Secret, which lists the backup token disabled too.",
+    steps: [
+      "Open Secret source for Model Secret: Create new Secret is disabled, and the hint under the existing Secret list gives the reason.",
+      "Choose another Secret and select Use Preset: the form opens with that Secret bound.",
+    ],
+    gap: "The Secret answer is simulated; the API still authorizes Agent create and the Secrets it binds.",
+  },
   createPasswordPresetMissingModel: {
     group: "Pages/Create Agent",
     name: "Standard Codex missing model",
