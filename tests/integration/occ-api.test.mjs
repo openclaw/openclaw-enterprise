@@ -8282,7 +8282,10 @@ test("Agent provisioning names a refused channel token reference form before Sla
     validate: async (configuration) => validateModelCredentialReferences(configuration.values),
   };
   const controller = await configuredController({
-    computeDriver: { ...createProvisioningCapableComputeDriver(), implementation: "occ/kubernetes" },
+    computeDriver: {
+      ...createProvisioningCapableComputeDriver(),
+      implementation: "occ/kubernetes",
+    },
     configurationDriver,
   });
   const { fixture } = controller;

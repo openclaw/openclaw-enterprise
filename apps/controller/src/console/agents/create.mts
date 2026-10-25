@@ -2456,7 +2456,9 @@ function renderAgentForm(
       return false;
     }
     configurationError.show(
-      refusal.includes(" in secretBindings") ? `${refusal} ${CHANNEL_BINDING_FORM_REMEDY}` : refusal,
+      refusal.includes(" in secretBindings")
+        ? `${refusal} ${CHANNEL_BINDING_FORM_REMEDY}`
+        : refusal,
     );
     return true;
   }
