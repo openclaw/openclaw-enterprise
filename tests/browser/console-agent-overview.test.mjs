@@ -373,7 +373,7 @@ test("A failed first version's page says nothing runs and offers one Create new 
   await page
     .getByRole("button", { name: "View new version, editable Configuration", exact: true })
     .click();
-  await page.getByRole("heading", { name: "Create new version" }).waitFor();
+  await page.getByRole("heading", { name: "Configuration draft" }).waitFor();
   await liveServing.getByText("Not running", { exact: true }).waitFor();
 });
 
