@@ -20,6 +20,23 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-25: repository options without repository settings answer 200
+
+**What breaks.** On an Installation without a `repository` block, both
+`repository-options` routes (`GET /namespaces/{namespaceId}/agents/repository-options`
+and the per-Agent one) answer `200` with an empty `data` array and
+`meta.notConfigured: true` instead of `503 REPOSITORY_OPTIONS_UNAVAILABLE`. An
+unsupported Compute or Sandbox Driver, or an unavailable repository Driver,
+still answers `503`. The console no longer logs an error for it.
+
+**Who is affected.** API clients and alerts that match this `503`, or that read
+an empty `data` array as "no approved repositories".
+
+**How to tell.** The answer carries `meta.notConfigured: true`.
+
+**Steps.** Treat `meta.notConfigured` as "repository access is not set up";
+Agent save still refuses repository bindings there with `409`.
+
 ## 2026-10-24: repository bindings without repository settings answer 409
 
 **What breaks.** On an Installation without a `repository` block, Agent create
