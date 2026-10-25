@@ -16,6 +16,7 @@ import type {
   PermissionAction,
   SandboxLogLine,
 } from "../../packages/contracts/src/index.ts";
+import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture, fileConsoleApp } from "../helpers/console-app.mjs";
 import { grantRole } from "../helpers/iam-grants.mjs";
 import {
@@ -1820,6 +1821,52 @@ test("the Sandbox source shows redacted policy decisions without a Pod picker", 
   await page
     .getByText(/grant the OpenClaw Enterprise gateway identity the sandbox:read scope/)
     .waitFor();
+});
+
+// Policy denials learns from the viewed version's snapshot whether it ran in a Sandbox. When the
+// snapshot read fails, the tab reads the Sandbox log once and lets the answer decide: this version
+// runs without a Sandbox, so RUNTIME_LOGS_SOURCE_UNAVAILABLE shows the reason the snapshot would
+// have given, not a read error (finding 2484).
+test("Policy denials says a version runs without a Sandbox when only the log answer can tell", async (t) => {
+  const { fixture, namespace, agent, revisionId } = await logsFixture(t);
+  const { account: reader } = await logsMember(fixture, namespace, "policy-log-reader", [
+    "read",
+    "read_logs",
+  ]);
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const logsPath = `${agentPath}/deployments/${revisionId}/runtime/logs`;
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await trackSettledFetches(page);
+  // The version's snapshot read fails, so the page cannot tell whether it ran in a Sandbox.
+  await page.route(`${fixture.origin}${agentPath}/revisions/${revisionId}`, (route) =>
+    route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Revision unavailable.")),
+  );
+  const logAnswer = page.waitForResponse((response) =>
+    response.url().startsWith(`${fixture.origin}${logsPath}?`),
+  );
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, revisionId, "policy"),
+    reader.credentials,
+  );
+  const answered = await logAnswer;
+  assert.equal(answered.status(), 400);
+  assert.equal((await answered.json()).error.code, "RUNTIME_LOGS_SOURCE_UNAVAILABLE");
+  const noSandbox = page.getByText(
+    "This Agent version runs without a Sandbox, so no policy denials are recorded for it.",
+    { exact: true },
+  );
+  await noSandbox.waitFor();
+  await settlePageRequests(page);
+  await waitForIdleFetches(page);
+  assert.equal(await page.getByText(/no such runtime log source|window: unavailable/).count(), 0);
+  assert.equal(
+    requests.filter(({ path }) => path.startsWith(`${logsPath}?`)).length,
+    1,
+    "one Sandbox log read",
+  );
 });
 
 test("a Gateway view points at an unready Harness Pod instead of reading as a network fault", async (t) => {
