@@ -824,12 +824,22 @@ function openDrawer(
     changedSecrets: structuredClone(drawerContext.draftChangedSecrets),
     unresolved: unresolved || state.pending || state.outcomeUnknown,
   });
+  // A save that changes nothing still writes a new Configuration generation and says it saved
+  // (finding 2482), so Save waits for a change, as Channel Secrets does. A provider not yet
+  // configured saves the settings shown, and Create Agent's drawer only stages its settings.
+  const unchanged = () =>
+    !drawerContext.creating && drawerContext.isConfigured && !unsavedChannelDraft(captureDraft());
+  const updateSubmit = () => {
+    submit.disabled = Boolean(stale || unresolved || unchanged());
+  };
+  body.addEventListener("input", updateSubmit);
+  body.addEventListener("change", updateSubmit);
   state.captureDraft = captureDraft;
   state.carriedDraft = null;
   state.drawerContext.drafts?.track("channels", captureDraft);
   state.drawerContext.drafts?.unsavedWhen("channels", unsavedChannelDraft);
+  updateSubmit();
   if (stale || unresolved) {
-    submit.disabled = true;
     feedback.append(
       statusBlock(
         "danger",
@@ -846,7 +856,7 @@ function openDrawer(
   body.append(feedback, element("div", { className: "dialog-actions" }, cancel, submit));
   body.addEventListener("submit", (event) => {
     event.preventDefault();
-    if (state.pending || stale || unresolved) {
+    if (state.pending || stale || unresolved || unchanged()) {
       return;
     }
     if (

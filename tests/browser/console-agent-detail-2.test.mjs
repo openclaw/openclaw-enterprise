@@ -2505,7 +2505,9 @@ test("an Agent reader meets no refused read on Repositories, Policy denials or L
     /Deploy an Agent to load Sandbox policy decisions|permission to read|Suggestions come from/,
   );
 
-  // Policy denials on the current version: still no policy or suggestions read.
+  // Policy denials on the current version: still no policy or suggestions read. The version
+  // runs without a Sandbox, so it has no denial log either: the tab says so instead of reading
+  // it and showing the 400 "no such runtime log source" (finding 2484).
   await page.goto(detailUrl(fixture, namespace.id, agent.id, active.revision.id, "policy").href);
   await page
     .getByText(
@@ -2513,8 +2515,20 @@ test("an Agent reader meets no refused read on Repositories, Policy denials or L
     )
     .first()
     .waitFor();
+  await page
+    .getByText(
+      "This Agent version runs without a Sandbox, so no policy denials are recorded for it.",
+      { exact: true },
+    )
+    .waitFor();
+  await page.getByText("Denials in the loaded window: none recorded", { exact: true }).waitFor();
   await settle();
-  await expectNoText(page, /permission to read/);
+  await expectNoText(page, /permission to read|no such runtime log source|window: unavailable/);
+  assert.deepEqual(
+    requests.filter(({ path }) => path.includes("/runtime/logs")),
+    [],
+    "no Sandbox log read",
+  );
 
   // Logs: the runtime status read needs Agent operate; the strip says so without a refused read.
   await page.getByRole("tab", { name: "Logs", exact: true }).click();

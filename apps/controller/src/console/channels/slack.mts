@@ -313,14 +313,34 @@ function credentialReferenceField(
   return picker;
 }
 
-function credentialNavigation(context: ChannelDrawerContext) {
-  return element(
-    "p",
-    { className: "hint" },
-    context.creating
-      ? "Choose existing Slack token Secrets or create them here before creating the Agent."
-      : "Choose existing Slack token Secrets or create them here. Secret menu changes are saved with these channel settings.",
+// A hint that offers Secret create, worded choose-only when the Namespace permission answer
+// denies Secret create, as the token fields themselves are (finding 2483). An unknown answer
+// keeps the create wording, as the fields keep their create action.
+function secretHint(context: ChannelDrawerContext, withCreate: string, chooseOnly: string) {
+  const hint = element("p", { className: "hint" }, withCreate);
+  void context.secretsCreateAllowed?.().then(
+    (allowed) => {
+      if (allowed === false) {
+        hint.textContent = chooseOnly;
+      }
+    },
+    () => {},
   );
+  return hint;
+}
+
+function credentialNavigation(context: ChannelDrawerContext) {
+  return context.creating
+    ? secretHint(
+        context,
+        "Choose existing Slack token Secrets or create them here before creating the Agent.",
+        "Choose existing Slack token Secrets before creating the Agent.",
+      )
+    : secretHint(
+        context,
+        "Choose existing Slack token Secrets or create them here. Secret menu changes are saved with these channel settings.",
+        "Choose existing Slack token Secrets. Secret menu changes are saved with these channel settings.",
+      );
 }
 
 function appendFields(body: HTMLFormElement, config: SlackConfig, context: ChannelDrawerContext) {
@@ -409,6 +429,8 @@ function appendFields(body: HTMLFormElement, config: SlackConfig, context: Chann
   updateDmControls();
   const tokenPickers = [...SLACK_SECRET_BINDINGS].reverse().map((binding) =>
     credentialReferenceField(binding, context, (key) => {
+      // A chosen Secret fires no field event; the editor rechecks whether Save has a change.
+      body.dispatchEvent(new Event("change"));
       if (key === "SLACK_BOT_TOKEN") {
         for (const picker of [channelPicker, allowedUsersPicker, dmUsersPicker]) {
           picker.refreshNames();
@@ -430,10 +452,10 @@ function appendFields(body: HTMLFormElement, config: SlackConfig, context: Chann
   requireTokens();
   body.append(
     element("h2", {}, "Slack credentials"),
-    element(
-      "p",
-      { className: "hint" },
+    secretHint(
+      context,
       "First, select or create a Slack bot token Secret to search channels and people by name. Then choose an app token for Socket Mode and configure access below. An enabled Slack channel saves only with both tokens.",
+      "First, select a Slack bot token Secret to search channels and people by name. Then choose an app token for Socket Mode and configure access below. An enabled Slack channel saves only with both tokens.",
     ),
     ...tokenPickers.map((picker) => picker.field),
     credentialNavigation(context),

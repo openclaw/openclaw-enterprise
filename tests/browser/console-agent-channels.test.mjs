@@ -643,7 +643,11 @@ describe("Agent channels", { concurrency: 3 }, () => {
     const dialog = page.getByRole("dialog", { name: "Edit Slack" });
     await selectSecret(dialog, "Slack app token", temporarySecret);
     await selectSecret(dialog, "Slack app token", originalSecret);
-    await page.getByRole("button", { name: "Save configuration" }).click();
+    // Picked back, the Secret is no change, so Save waits for one (finding 2482).
+    const saveButton = dialog.getByRole("button", { name: "Save configuration" });
+    assert.equal(await saveButton.isDisabled(), true);
+    await dialog.getByLabel("Require a mention", { exact: true }).uncheck();
+    await saveButton.click();
     await page.getByText(/Configuration .*generation 2/).waitFor();
 
     const configuration = await fixture.request(
@@ -702,6 +706,66 @@ describe("Agent channels", { concurrency: 3 }, () => {
     assert.equal(configuration.status, 200);
     assert.deepEqual(configuration.data.secretBindings, botBinding);
     assert.deepEqual(accessBindingPostRequests(requests, namespace.id), []);
+  });
+
+  // A save with nothing changed wrote the same settings as a new Configuration generation and
+  // said "Channels saved." (finding 2482). Save waits for a change, as Channel Secrets does: a
+  // Secret picked back, a cleared token field that restores its Secret, or a box checked back
+  // is no change.
+  test("Edit Slack keeps Save disabled until something changes", async (t) => {
+    const { fixture, namespace } = await readyNamespace(t, "Slack no-op save");
+    const app = await fixture.createSecret(namespace.id, "No-op Slack app token", "hidden-app");
+    const spare = await fixture.createSecret(namespace.id, "Spare Slack app token", "hidden-spare");
+    const { agent } = await createSlackAgent(fixture, namespace, {
+      name: "Slack No-op Agent",
+      slug: "slack-noop",
+      slack: { channels: { CNOOP123: { requireMention: true, users: ["*"] } } },
+      secretBindings: {
+        SLACK_APP_TOKEN: { source: app.ref, delivery: { type: "env" } },
+        ...(await slackTokenBindings(fixture, namespace, "No-op", ["bot"])),
+      },
+    });
+    const { page } = await newPage(t, fixture, { browser });
+    const requests = apiRequests(page, fixture.origin);
+    await openDraft(page, fixture, agent, "Slack No-op Agent");
+    requests.length = 0;
+    await page.getByRole("button", { name: "Edit Slack" }).click();
+    const dialog = page.getByRole("dialog", { name: "Edit Slack" });
+    const save = dialog.getByRole("button", { name: "Save configuration", exact: true });
+    const bot = dialog.getByLabel("Slack bot token", { exact: true });
+    const boundBot = "No-op Slack bot token";
+    await waitForInputValue(bot, boundBot);
+    assert.equal(await save.isDisabled(), true);
+    // Enter in a field submits nothing either.
+    await bot.press("Enter");
+    // A cleared token field puts its Secret back when it loses focus.
+    await bot.fill("");
+    await bot.press("Tab");
+    await waitForInputValue(bot, boundBot);
+    assert.equal(await save.isDisabled(), true);
+    // A Secret picked and then picked back.
+    await selectSecret(dialog, "Slack app token", spare);
+    await waitForEnabled(save);
+    await selectSecret(dialog, "Slack app token", app);
+    assert.equal(await save.isDisabled(), true);
+    // A box changed and changed back.
+    const mention = dialog.getByLabel("Require a mention", { exact: true });
+    await mention.uncheck();
+    await waitForEnabled(save);
+    await mention.check();
+    assert.equal(await save.isDisabled(), true);
+    // Only directory lookups, which read Slack names, were sent.
+    assert.deepEqual(
+      nonAuthWriteRequests(requests).filter(
+        (request) => !request.path.endsWith("/channel-directory/lookup"),
+      ),
+      [],
+    );
+    const configuration = await fixture.request(
+      "GET",
+      `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+    );
+    assert.equal(configuration.data.generation, 1);
   });
 
   test("Channel drawer round trips existing Slack everyone channel access", async (t) => {
@@ -803,6 +867,7 @@ describe("Agent channels", { concurrency: 3 }, () => {
     await openDraft(page, fixture, agent, "Embedded Slack Agent");
     await page.getByRole("button", { name: "Edit Slack" }).click();
     const dialog = page.getByRole("dialog", { name: "Edit Slack" });
+    await dialog.getByLabel("Require a mention", { exact: true }).uncheck();
     await dialog.getByRole("button", { name: "Save configuration", exact: true }).click();
     // A refusal is a danger alert (finding 2006), and nothing is written.
     const refusal = dialog.getByText("Channels require Dedicated execution.", { exact: true });
@@ -1403,6 +1468,20 @@ describe("Agent channels", { concurrency: 3 }, () => {
     );
     await page.getByRole("button", { name: "Edit Slack" }).click();
     const drawer = page.getByRole("dialog", { name: "Edit Slack" });
+    // The drawer's hints offer no Secret create either (finding 2483).
+    await drawer
+      .getByText(
+        "Choose existing Slack token Secrets. Secret menu changes are saved with these channel settings.",
+        { exact: true },
+      )
+      .waitFor();
+    await drawer
+      .getByText(
+        "First, select a Slack bot token Secret to search channels and people by name. Then choose an app token for Socket Mode and configure access below. An enabled Slack channel saves only with both tokens.",
+        { exact: true },
+      )
+      .waitFor();
+    assert.equal(await drawer.getByText(/or create/).count(), 0);
     await drawer.getByLabel("Slack app token", { exact: true }).fill("Create a new Secret");
     const action = drawer.getByRole("option", {
       name: "Create new Secret... Your access does not include creating Secrets in this Namespace.",

@@ -188,7 +188,9 @@ It loads `GET /namespaces/:namespaceId/secrets`; Namespace read is required.
 without calling the Secret Driver. Shared `agents/secret-picker.mjs:createSecretReferenceField`
 filters names/IDs in a combobox. Arrows navigate, Enter selects, and Escape
 restores the binding. Typing stages nothing; selection stages a reference,
-Cancel discards it. A false Namespace `secrets.create` disables creation, with its reason.
+Cancel discards it. A false Namespace `secrets.create` disables creation, with its reason;
+drawer hints and Preset Secret sources then offer only existing Secrets. **Save configuration**
+stays disabled until a field or binding changes.
 On the Agent page, `GET .../agents/:agentId/permissions/secrets` lists readable Secrets the
 caller may not `operate`; each is disabled with its reason and never staged. A refused binding
 save rereads it to name such a Secret.

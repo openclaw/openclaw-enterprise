@@ -1703,6 +1703,7 @@ export const scenarios = {
       "The Namespace permission answer denies Secret creation. The API key Secret field still lists Create new Secret..., disabled with the reason, and its hint says to choose an existing Secret.",
     steps: [
       "Type a name no Secret has in API key Secret. Create new Secret... is listed with the access note under it and opens nothing.",
+      "Open Configure Slack. Its hints say to choose existing Slack token Secrets, with no offer to create them.",
     ],
     gap: "The permission answer is simulated; the API still authorizes Secret creation.",
   },
