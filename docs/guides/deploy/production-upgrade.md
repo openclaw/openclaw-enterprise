@@ -81,11 +81,10 @@ A controller-only release does not deploy Agents, but the new worker can
 restart their Pods once
 ([details](breaking-changes-before-2026-10-11.md#2026-10-10-controller-only-releases-can-restart-agent-pods-once)).
 Restarting the repository
-broker loses delivered sessions. Before a release,
-plan interruption and authorized replacement versions for affected Agents;
-review their drafts and deploy grants. Stop if recovery cannot be performed
-safely. A lost delivered session fails its version and queues retirement;
-inspect its retained cleanup. Follow the
+broker recreates dedicated Codex Pods and can leave a session that the worker
+cannot replace. Before a release, plan the interruption and authorized
+replacement versions for affected Agents; review their drafts and deploy grants.
+Stop if recovery cannot be performed safely. Follow the
 [broker recovery procedure](../repository-credentials/installation.md#install-and-verify).
 
 During the maintenance window, stop other Helm changes until the command
