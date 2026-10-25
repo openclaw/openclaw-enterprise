@@ -1336,6 +1336,8 @@ for (const [dmPolicy, groupPolicy, enterpriseOrgInstall] of [
       `Slack policy editing ${dmPolicy ?? "omitted"} ${groupPolicy ?? "omitted"}${enterpriseOrgInstall ? " organization" : ""}`,
       { ready: true },
     );
+    const appSecret = await fixture.createSecret(namespace.id, "Slack app token", "xapp-policy");
+    const botSecret = await fixture.createSecret(namespace.id, "Slack bot token", "xoxb-policy");
     const slack = {
       enabled: true,
       mode: "socket",
@@ -1354,7 +1356,13 @@ for (const [dmPolicy, groupPolicy, enterpriseOrgInstall] of [
         harnessId: "codex",
         channels: { slack },
       }),
-      { executionMode: "dedicated" },
+      {
+        executionMode: "dedicated",
+        secretBindings: {
+          SLACK_APP_TOKEN: { source: appSecret.ref, delivery: { type: "env" } },
+          SLACK_BOT_TOKEN: { source: botSecret.ref, delivery: { type: "env" } },
+        },
+      },
     );
     const { page } = await newPage(t, fixture);
     const url = detailUrl(fixture, namespace.id, agent.id, "draft", "channels");

@@ -6381,6 +6381,20 @@ export const scenarios = {
     description:
       "A selected channel needs allowed channel user IDs or the everyone checkbox before the Configuration can be saved.",
   },
+  slackTokensMissing: {
+    group: "Components/Channels",
+    name: "Slack token Secrets missing",
+    path: `${draft}&tab=channels`,
+    actions: [
+      click("Configure Slack"),
+      { selector: "#slack-dm-policy", value: "disabled" },
+      { selector: "#slack-channel-ids-search", value: "CDEMO123", key: "Enter" },
+      { selector: "#slack-channel-access", value: "everyone" },
+      click("Save configuration"),
+    ],
+    description:
+      "An enabled Slack channel saves only with both token Secrets: each missing one is named under its picker, and nothing is sent.",
+  },
   slackSecretMenu: {
     group: "Components/Channels",
     name: "Slack Secret menu",

@@ -2711,8 +2711,9 @@ Check an unsaved Agent Configuration, plugin selections, initial workspace files
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `configuration` | `object` | Yes | The Agent Configuration the caller will save, not yet saved. |
+| `configuration` | `object` | Yes | The Agent Configuration the caller will save, not yet saved. With `secretBindings`, a channel credential reference without a binding is refused as Configuration create refuses it; the bound Secrets are not read. Without them, that check is skipped. |
 | `configuration.kind` | `"agent"` | Yes | — |
+| `configuration.secretBindings` | `object<string, object>` | No | Optional Secret binding map. Keys are destination environment variable names; at most 64 bindings are accepted. Each value must contain `source.kind`, `source.namespaceId`, and `source.id`, and may contain `delivery.type: "env"`. Admission rejects reserved or process-control destinations such as `OPENCLAW_*`, `CODEX_*`, `OPENAI_*`, `ANTHROPIC_*`, `OCC_*`, `KUBERNETES_*`, `PATH`, `HOME`, and proxy variables. Model authentication belongs to Agent.harnessAuth. |
 | `configuration.values` | `object<string, SafeJsonValue>` | Yes | A native OpenClaw configuration document. |
 | `executionMode` | `"embedded" or "dedicated"` | No | — |
 | `harnessAuth` | `object or object or object or object or object or null` | No | The Harness authentication Agent create will name, so Agent save's check of it against the execution mode and Compute settings runs here too. For a Secret the caller saves next, send only its `method`. The Secret and credential source are not read; omitted or null skips this check. |

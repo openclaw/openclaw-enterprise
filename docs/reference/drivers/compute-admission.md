@@ -9,7 +9,7 @@ trusted Installation settings, never the backend.
 
 | Method                                                                            | Called at                                                                                                                                                                                                                                                                  | Refusal                                                                                                                                                              |
 | --------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `validateConfiguration(configuration, options?)`                                  | Configuration create and update, Agent provisioning, and Preset create and update (rendered with defaults; `options.unresolved` marks unfilled variables)                                                                                                                  | `ConfigurationHarnessError` answers `400` with its message. Use it for rules every topology applies; `validateHarnessAuth` applies them again at deployment.         |
+| `validateConfiguration(configuration, options?, secretBindings?)`                 | Configuration create and update, Agent provisioning, Create Agent's preflight, and Preset create and update (rendered with defaults; `options.unresolved` marks unfilled variables). `secretBindings` are the bindings saved with the values; Preset saves pass none        | `ConfigurationHarnessError` answers `400` with its message. Use it for rules every topology applies; `validateHarnessAuth` applies them again at deployment.         |
 | `validateHarnessAuth(harness, auth, configuration, secretBindings?, sourceType?)` | Deployment and provisioning, which require it; Agent create and update, with `null` bindings, when the binding is `runtime` or a Secret and the Configuration selects a model                                                                                              | `ConfigurationHarnessError` answers `400` with its message; any other error becomes a fixed `409`. A missing method at deployment is a dependency-unavailable error. |
 | `validateGatewaySettings(configuration)`                                          | Deployment, after `validateHarnessAuth`                                                                                                                                                                                                                                    | `ComputeGatewaySettingError` answers `409` with its message. Leave other refusals to preparation.                                                                    |
 | `validateWorkspaceSetup(harness, configuration, sandboxDriverId?)`                | Agent create with initial workspace files, Agent update while that setup is pending (or completed, when the update names another Configuration or execution mode), deployment of an Agent with a pending or completed setup, and provisioning with initial workspace files | `ConfigurationHarnessError` answers `400`; any other error becomes a fixed `409`. Preparation applies the same rule.                                                 |
@@ -37,9 +37,9 @@ will be stored, with the messages deployment uses:
 Save leaves to deployment what depends on live state or not on the Agent: a
 Harness the Installation approves for neither mode, a Configuration that
 selects no model or no supported Harness, ServiceAccount and credential-source
-Harness authentication, a Secret binding whose Secret is gone, a Configuration
-channel's Secret bindings (which it may stage after its values), and whether
-the Installation provides dedicated OpenClaw or a channel runtime. A stored
+Harness authentication, a Secret binding whose Secret is gone, and whether
+the Installation provides dedicated OpenClaw or a channel runtime.
+Configuration save already checked the channel Secret bindings. A stored
 Agent that fails a check still reads; its next update must fix the pair.
 
 ## Kubernetes Compute
@@ -49,6 +49,9 @@ Agent that fails a check still reads; its next update must fix the pair.
 `validateConfiguration` refuses:
 
 - an enabled `channels.<provider>` other than `slack` or `msteams`;
+- with `secretBindings`, a `${NAME}` reference or environment SecretRef in an
+  enabled channel without a binding of that name. The message names the
+  setting and the binding, a long or unusual name quoted and shortened;
 - a non-empty `auth`;
 - an `env` or `env.vars` name starting `OPENAI_` or `ANTHROPIC_` in any
   case, or `CODEX_ACCESS_TOKEN`, `CODEX_CHATGPT_WORKSPACE_ID` or
@@ -105,8 +108,9 @@ reads, still passes: the binding cannot see what a name means.
 Agent's `harnessAuth.method` when its topology cannot use it (embedded OpenClaw
 takes `api_key`, dedicated OpenClaw also `credential_source`, and dedicated
 Codex also `codex_pat` and `oauth`), then the model provider rule above, a
-channel credential reference without a Configuration Secret binding, and the
-dedicated OpenClaw model catalog settings. Whether the Installation supplies
+channel credential reference without a Configuration Secret binding (for a
+row stored before `validateConfiguration` checked it), and the dedicated
+OpenClaw model catalog settings. Whether the Installation supplies
 what a method needs (OAuth needs no Sandbox Driver; a credential source needs
 its paired Sandbox) stays a fixed `409`.
 The channel runtime rule stays at deployment: it depends on the execution mode

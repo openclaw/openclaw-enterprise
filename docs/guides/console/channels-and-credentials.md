@@ -20,7 +20,7 @@ unavailable.
 | Control                                                                 | Purpose                                                                                                                                                                                                         |
 | ----------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Enable Slack**                                                        | Enables Slack in the draft when saved.                                                                                                                                                                          |
-| **Slack bot token** / **Slack app token**                               | Search readable Secrets by name or ID, then select with arrow keys and Enter, or choose **Create new Secret...**. The bot token Secret also enables name search below.                                          |
+| **Slack bot token** / **Slack app token**                               | Search readable Secrets by name or ID, then select with arrow keys and Enter, or choose **Create new Secret...**. The bot token Secret also enables name search below. Both are required while Slack is enabled. |
 | **Create new Secret...**                                                | Opens a modal with an editable Name (the Agent name and token by default), the fixed binding key, and a masked Value.                                                                                           |
 | **View bot token Secret metadata** / **View app token Secret metadata** | Opens the selected Secret's metadata in a new tab, keeping unsaved drawer inputs.                                                                                                                               |
 | **Channels**                                                            | Search channels by name with the bot token Secret, or paste exact channel IDs. Existing properties of retained channels are preserved.                                                                          |
@@ -38,6 +38,12 @@ channel people edit the selected channels' `users`. Switching to **Open** writes
 `allowFrom: ["*"]`, Pairing or Allowlist write the listed people to `allowFrom`, and Disabled
 keeps the saved list. Save channel edits before changing
 credentials on the Credentials tab.
+
+A Configuration save refuses an enabled channel whose token reference has no
+Secret binding. The refusal names the setting and the binding, for example
+`channels.slack.botToken` and `SLACK_BOT_TOKEN`, under the Configuration JSON
+when you edit it there. Select the token Secrets in the Slack editor, or remove
+the reference.
 See [Slack setup](../integrations/slack.md) for credentials and policy details.
 
 In any Secret picker, typing a Secret's exact name selects it when you press

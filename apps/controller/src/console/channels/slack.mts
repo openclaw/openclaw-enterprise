@@ -417,11 +417,13 @@ function appendFields(body: HTMLFormElement, config: SlackConfig, context: Chann
     }),
   );
   // Configuration save refuses an enabled channel whose token references have no Secret
-  // binding (finding 2319), so the form names the missing token under its picker first.
+  // binding (finding 2319), so a drawer that saves names the missing token under its picker
+  // first. Create Agent's drawer only stages settings, which may take several visits; its
+  // preflight refuses an unbound token before anything is saved.
   const enabled = body.querySelector<HTMLInputElement>("#slack-enabled");
   const requireTokens = () => {
     for (const picker of tokenPickers) {
-      picker.setRequired(enabled?.checked !== false);
+      picker.setRequired(!context.creating && enabled?.checked !== false);
     }
   };
   enabled?.addEventListener("change", requireTokens);
