@@ -1644,7 +1644,10 @@ test("Configuration save and Agent create's check refuse a Slack token SecretRef
     request(context.app, "POST", collection, { body: { kind: "agent", values, secretBindings } });
   const validate = (values) =>
     request(context.app, "POST", `/namespaces/${namespace.id}/agents/validate`, {
-      body: { configuration: { kind: "agent", values, secretBindings }, executionMode: "dedicated" },
+      body: {
+        configuration: { kind: "agent", values, secretBindings },
+        executionMode: "dedicated",
+      },
     });
 
   for (const [slack, path] of [
@@ -1656,10 +1659,7 @@ test("Configuration save and Agent create's check refuse a Slack token SecretRef
     ],
     [{ accounts: { work: { botToken: fileRef } } }, "channels.slack.accounts.work.botToken"],
     // An account named "default" replaces the implicit one, and inherits the channel's token.
-    [
-      { botToken: fileRef, accounts: { default: { appToken } } },
-      "channels.slack.botToken",
-    ],
+    [{ botToken: fileRef, accounts: { default: { appToken } } }, "channels.slack.botToken"],
   ]) {
     const values = slackWith(slack);
     const label = JSON.stringify(slack);
