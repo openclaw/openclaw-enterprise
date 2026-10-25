@@ -767,15 +767,17 @@ test("Recovery offers Open Credentials only when an Agent update would pass its 
 // (finding 2450). Its label says "Open version draft" only when that editor is read-only.
 test("Recovery's Open Configuration follows whether the caller may edit the Configuration", async (t) => {
   const { fixture, namespace } = await readyNamespace(t, "Configuration recovery", runtimeLogs());
+  const bound = await fixture.createSecret(namespace.id, "Configuration token", "bound-value");
   const agent = await fixture.createAgent(
     namespace.id,
     "Configuration Recovery",
     nativeValues("v1"),
+    { secretBindings: { EXTERNAL_API_TOKEN: { source: bound.ref, delivery: { type: "env" } } } },
   );
   assert.equal(agent.harnessAuth.method, "api_key");
   const failed = await fixture.deployAgent(namespace.id, agent.id);
-  // Configuration read and update, but no Secret operate: the Configuration binds no Secret, so
-  // its save would pass, while an Agent update would fail on the Harness API key Secret.
+  // Configuration read and update, and operate on the one Secret the Configuration binds, so a
+  // Configuration save would pass; an Agent update would fail on the Harness API key Secret.
   const member = await fixture.createNamespaceMember("configuration-recovery", namespace.id, [
     ["read", "namespace"],
     ["read", "agent"],
@@ -785,6 +787,21 @@ test("Recovery's Open Configuration follows whether the caller may edit the Conf
     ["update", "configuration"],
   ]);
   const role = fixture.policy.roles.find(({ id }) => id === "role-configuration-recovery");
+  fixture.policy.roles.push({
+    id: "role-configuration-recovery-operate",
+    namespaceId: namespace.id,
+    permissions: [{ action: "operate", resourceKind: "secret" }],
+  });
+  const boundOperate = {
+    id: "binding-configuration-recovery-operate",
+    namespaceId: namespace.id,
+    subjectKind: "identity",
+    subjectId: member.principal.id,
+    roleId: "role-configuration-recovery-operate",
+    resourceKind: "secret",
+    resourceId: bound.id,
+  };
+  fixture.policy.bindings.push(boundOperate);
   const { page } = await newPage(t, fixture, { browser });
   await routeFailedRecord(page, fixture, namespace, agent, failed);
   await trackSettledFetches(page);
@@ -815,6 +832,10 @@ test("Recovery's Open Configuration follows whether the caller may edit the Conf
     return answer;
   };
   const links = () => recovery.getByRole("link").allTextContents();
+  const without = (action, resourceKind) =>
+    role.permissions.filter(
+      (grant) => grant.action !== action || grant.resourceKind !== resourceKind,
+    );
 
   let answer = await shown();
   assert.equal(answer.configurationUpdate, true);
@@ -828,13 +849,19 @@ test("Recovery's Open Configuration follows whether the caller may edit the Conf
   assert.equal(answer.deploy, true);
   assert.deepEqual(await links(), ["Open v1 Logs", "Open Configuration"]);
 
+  // Without operate on the bound Secret every Configuration save is refused, so the editor is
+  // read-only: recovery offers the draft to read and deploy.
+  fixture.policy.bindings.splice(fixture.policy.bindings.indexOf(boundOperate), 1);
+  answer = await shown();
+  assert.equal(answer.configurationUpdate, true);
+  assert.equal(answer.configurationSecretsOperate, false);
+  await recovery.getByRole("link", { name: "Open version draft", exact: true }).waitFor();
+  assert.deepEqual(await links(), ["Open v1 Logs", "Open version draft"]);
+
   // The inverse: an Agent editor whose Agent update would pass but who may not update the
-  // Configuration reads it, so recovery offers it as a draft to read and deploy, and without
-  // deploy offers nothing there.
+  // Configuration reads it too, and without deploy recovery offers nothing there.
   role.permissions = [
-    ...role.permissions.filter(
-      ({ action, resourceKind }) => action !== "update" || resourceKind !== "configuration",
-    ),
+    ...without("update", "configuration"),
     { action: "operate", resourceKind: "secret" },
   ];
   answer = await shown();
@@ -842,9 +869,7 @@ test("Recovery's Open Configuration follows whether the caller may edit the Conf
   assert.equal(answer.agentSourcesOperate, true);
   await recovery.getByRole("link", { name: "Open version draft", exact: true }).waitFor();
   assert.deepEqual(await links(), ["Open v1 Logs", "Open version draft"]);
-  role.permissions = role.permissions.filter(
-    ({ action, resourceKind }) => action !== "deploy" || resourceKind !== "agent",
-  );
+  role.permissions = without("deploy", "agent");
   answer = await shown();
   assert.equal(answer.deploy, false);
   assert.deepEqual(await links(), ["Open v1 Logs"]);

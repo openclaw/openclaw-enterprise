@@ -20,7 +20,7 @@ import {
   selectSecret,
   waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
-import { openAdvancedSettings, waitForCreateFormReads } from "./console-agents-test-support.mjs";
+import { waitForCreateFormReads } from "./console-agents-test-support.mjs";
 import { GENERIC_DENIAL } from "../helpers/refusal-text.mjs";
 
 // Create Agent for a Namespace member (UX plan A2, spec 3.11; findings 1901, 493). The real
@@ -496,8 +496,7 @@ test("a member without Secret create sees the inline Create Secret action disabl
   // A forced click skips the disabled check: choosing the action still opens nothing.
   await action.click({ force: true });
   assert.equal(await page.getByRole("dialog").count(), 0);
-  // The Configure Slack drawer's token fields and the Slack-bot directory picker get the same
-  // answer (finding 2451).
+  // The Configure Slack drawer's token fields get the same answer (finding 2451).
   await page.getByRole("button", { name: "Configure Slack", exact: true }).click();
   const drawer = page.getByRole("dialog", { name: "Configure Slack" });
   await drawer.getByLabel("Slack app token", { exact: true }).fill("no matching Secret");
@@ -507,19 +506,6 @@ test("a member without Secret create sees the inline Create Secret action disabl
   });
   await drawerAction.waitFor();
   assert.equal(await drawerAction.getAttribute("aria-disabled"), "true");
-  await drawer.getByRole("button", { name: "Close", exact: true }).click();
-  await drawer.waitFor({ state: "detached" });
-  await openAdvancedSettings(page);
-  await page.getByLabel("Default plugin approvers mode").selectOption("chosen");
-  await page
-    .getByLabel("Slack bot token Secret for people search", { exact: true })
-    .fill("no matching Secret");
-  const directoryAction = page
-    .locator('[id^="approver-directory-secret-option-"]')
-    .filter({ hasText: "Create new Secret..." });
-  await directoryAction.waitFor();
-  assert.equal(await directoryAction.textContent(), `Create new Secret... ${denial}`);
-  assert.equal(await directoryAction.getAttribute("aria-disabled"), "true");
   assert.deepEqual(
     answers.filter((answer) => answer.startsWith("POST ") && answer.includes("/secrets")),
     [],

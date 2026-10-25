@@ -72,6 +72,9 @@ export const DeploymentFailsWhileWatching = story("deploymentFailsWhileWatching"
 export const DeploymentModelProbeRetried = story("deploymentModelProbeRetried");
 export const DeploymentModelProbeFailedReadOnly = story("deploymentModelProbeFailedReadOnly");
 export const DeploymentModelProbeFailedDeployOnly = story("deploymentModelProbeFailedDeployOnly");
+export const DeploymentModelProbeFailedConfigurationEditor = story(
+  "deploymentModelProbeFailedConfigurationEditor",
+);
 export const DeploymentFailedDeployAgain = story("deploymentFailedDeployAgain");
 export const DeploymentFailedDeployAgainUnreadable = story("deploymentFailedDeployAgainUnreadable");
 export const DeploymentModelProbeFailedDeployOnlyUnreadable = story(
