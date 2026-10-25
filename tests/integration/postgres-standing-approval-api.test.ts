@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { randomUUID } from "node:crypto";
-import pg from "pg";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import type {
   ComputeDriver,
@@ -21,7 +20,7 @@ import {
   PostgresPlatformState,
 } from "../../packages/occ/src/index.ts";
 import { grantAgentSecretOperate } from "../helpers/postgres-harness-auth.mjs";
-import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
 import { ensurePostgresAgentBootstrap } from "../helpers/postgres-agent-app.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
@@ -38,8 +37,7 @@ test(
   requiresPostgres,
   async (t) => {
     await ensurePostgresAgentBootstrap(t, { label: "standing-approval", authSecret });
-    const pool = new pg.Pool({ connectionString: databaseUrl, max: 6 });
-    t.after(() => pool.end());
+    const pool = testPool(t, { connectionString: databaseUrl, max: 6 });
     const state = new PostgresPlatformState(pool);
     const installation = await state.loadInstallation();
     assert.ok(installation);
