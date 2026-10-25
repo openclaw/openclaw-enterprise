@@ -535,8 +535,8 @@ export function renderAgentPlugins(
     intro.textContent = PLUGINS_READ_ONLY;
     updateNote.textContent = reason;
     updateNote.hidden = false;
-    // The approver field waits for the capabilities read skipped above, so the saved default
-    // approvers, which the next deployment also uses, are shown as text (finding 2447).
+    // The approver field waits for the capabilities read, which this caller is not sent, so the
+    // saved default approvers, which the next deployment also uses, show as text (finding 2447).
     discovery.fields.section.insertBefore(
       element(
         "div",
