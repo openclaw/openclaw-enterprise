@@ -27,9 +27,9 @@ real Installation.
 provisioning, and `POST .../agents/validate` with `configuration.secretBindings`
 answer `400 INVALID_REQUEST` when an enabled channel has a `${NAME}` reference
 or environment SecretRef without a binding of that name. Builds from later that
-day also refuse, at save and at deployment, one inside other text or with a
-`:-fallback`, an unbound `$NAME` in a channel secret-input field, and a `${`
-there that OpenClaw does not substitute, such as `${slack_bot}`. Earlier builds
+day also refuse, at save and at deployment, one inside other text and, in a
+channel secret-input field, one with a `:-fallback`, an unbound `$NAME` and a
+`${` that OpenClaw does not substitute, such as `${slack_bot}`. Earlier builds
 refused only at deployment. An update of a stored
 Configuration in this state is refused until it adds the bindings.
 
@@ -38,7 +38,9 @@ and Agents whose stored Configuration has an unbound channel reference.
 
 **How to tell.** The message names the setting and the binding, for example
 `channels.slack.botToken references SLACK_BOT_TOKEN`, or the text, for example
-`channels.slack.botToken contains ${slack_bot}`.
+`channels.slack.botToken contains ${slack_bot}`. Before you upgrade, read each
+Agent's Configuration (`GET /namespaces/{namespaceId}/configurations/{configurationId}`)
+and look for `${` or a whole `$NAME` in its `channels` values.
 
 **Steps.** Send the values and their `secretBindings` in one request. For a
 stored Configuration, save both Slack Secrets on the Agent's **Credentials**
