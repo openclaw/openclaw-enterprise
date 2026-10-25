@@ -842,7 +842,7 @@ test(
     const launch = String.raw`
 const fs = require("node:fs");
 const cp = require("node:child_process");
-const { gatewayArgs, harness, workspaceNodeId, startupMs, validateMs } = JSON.parse(fs.readFileSync(0, "utf8"));
+const { gatewayArgs, harness, workspaceNodeId, startupMs, harnessRunMs, validateMs } = JSON.parse(fs.readFileSync(0, "utf8"));
 const model = "openai/runtime-image-schema";
 function validate(path) {
   const home = fs.mkdtempSync("/tmp/oce-config-validate-");
@@ -853,7 +853,7 @@ function validate(path) {
   const report = JSON.parse(result.stdout);
   return { status: result.status, valid: report.valid, issues: report.issues ?? [] };
 }
-function run(args, env, readinessUrl) {
+function run(args, env, readinessUrl, limitMs = startupMs) {
   const child = cp.spawn("node", args, { env: { PATH: process.env.PATH, HOME: "/home/node", ...env }, detached: true, stdio: ["ignore", "pipe", "pipe"] });
   let output = "";
   child.stdout.on("data", (value) => { output += value; });
@@ -866,7 +866,7 @@ function run(args, env, readinessUrl) {
   return new Promise((resolve, reject) => {
     // Kill the owned process group: a launcher can leave native children holding
     // stdout open even after it exits. Container removal is the outer safeguard.
-    const deadline = setTimeout(() => killGroup("SIGKILL"), startupMs);
+    const deadline = setTimeout(() => killGroup("SIGKILL"), limitMs);
     child.once("error", reject);
     child.once("exit", () => {
       stopped = true;
@@ -946,7 +946,7 @@ function run(args, env, readinessUrl) {
     OPENCLAW_HARNESS_CREDENTIAL_ENV: "OPENAI_API_KEY",
     OPENAI_API_KEY: "sk-openclaw-runtime-image-schema-synthetic",
     OPENCLAW_HARNESS_PROBE_CONFIG: JSON.stringify({ agents: { defaults: { model } } }),
-  });
+  }, undefined, harnessRunMs);
   const harnessConfig = "/home/node/.openclaw-node/openclaw.json";
   process.stdout.write(JSON.stringify({
     gateway: { ...gatewayRun, restart: gatewayRestart, conflictingRestart, config: JSON.parse(fs.readFileSync(gatewayConfig, "utf8")), validation: validate(gatewayConfig) },
@@ -954,11 +954,15 @@ function run(args, env, readinessUrl) {
   }));
 })().catch((error) => { console.error(error); process.exitCode = 1; });
 `;
-    // The waits scale with the runner's CPUs: the lane's other files start runtimes
-    // at the same time, so a slow start under that load is not a failure (finding
-    // 2460). The container starts four runtimes one after another and validates two
-    // configurations: its limit is their sum plus a minute to create and remove it.
+    // The Gateway start and validation waits scale with the runner's CPUs: the
+    // lane's other files start runtimes at the same time, so a slow start under that
+    // load is not a failure (finding 2460). The worker never connects without a
+    // network, so its run always ends at harnessRunMs after writing its
+    // configuration; that window stays fixed, or each run would take longer on
+    // fewer CPUs. The container runs these one after another: its limit is their
+    // sum plus a minute to create and remove it.
     const startupMs = cpuScaledImageTimeoutMs(90_000);
+    const harnessRunMs = 90_000 * imageSmokeTimeoutMultiplier;
     const validateMs = cpuScaledImageTimeoutMs(60_000);
     const { stdout } = await runDocker(
       [
@@ -988,12 +992,16 @@ function run(args, env, readinessUrl) {
         "-e",
         launch,
       ],
-      { timeout: 4 * startupMs + 2 * validateMs + 60_000 * imageSmokeTimeoutMultiplier },
+      {
+        timeout:
+          3 * startupMs + harnessRunMs + 2 * validateMs + 60_000 * imageSmokeTimeoutMultiplier,
+      },
       JSON.stringify({
         gatewayArgs: nodeProgramArguments(KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT),
         harness: NATIVE_WORKER_ENTRYPOINT,
         workspaceNodeId: randomBytes(32).toString("hex"),
         startupMs,
+        harnessRunMs,
         validateMs,
       }),
     );
