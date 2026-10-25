@@ -4342,11 +4342,15 @@ export const scenarios = {
     deployed: true,
     auth: "codex_pat",
     agentPlugins: JSON.parse(pluginSelections),
+    agentPluginApprovers: [{ channel: "slack", id: "team:TDEMO123:user:UDEMO123" }],
     pluginCapabilities,
     pluginDiscovery,
     readOnlyPermissionSummary: true,
     description:
-      "The permission answer denies Agent update, so Save plugin selections and the plugin fields are disabled, the saved selections stay in view as read-only, and the note names the grant to ask for. The page does not read the plugin policy capabilities, which need Agent update. The API still decides.",
+      "The permission answer denies Agent update, so Save plugin selections and the plugin fields are disabled, the saved selections stay in view as read-only, and the note names the grant to ask for. The page does not read the plugin policy capabilities, which need Agent update, so the saved default plugin approvers show as text. The API still decides.",
+    steps: [
+      "Under Default plugin approvers, read that the next deployment uses these Agent default approvers and find slack: team:TDEMO123:user:UDEMO123. No approver field is offered.",
+    ],
     gap: "The permission answer is simulated; the API still authorizes every save.",
   },
   draftReader: {
