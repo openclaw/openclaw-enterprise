@@ -119,12 +119,16 @@ Event reads with runtime logs; worker: Pod `patch` and `batch` Job `get`, `creat
 and `delete`). Worker Job grants are required even with runtime logs disabled.
 A missing rule refuses the candidate and points to
 [upgrading the execution chart](../testing/kubernetes.md#upgrade-the-execution-chart).
-Because the chart's default-deny NetworkPolicy also selects these Pods, the
-helper first creates a temporary NetworkPolicy carrying the rendered
-`openclaw-enterprise-dependency-egress` (and execution-cluster API) egress rules.
+When the chart renders `openclaw-enterprise-dependency-egress`, the helper first
+creates a temporary NetworkPolicy carrying its egress rules (and execution-cluster
+API rules). The chart's default-deny NetworkPolicy also selects these Pods.
 A failure, stuck pull, or timeout stops preparation before writers stop. The
 script saves both Pods' statuses and logs, reports each failure, and attempts
-to delete the Pods, Secret, and NetworkPolicy. Cleanup is best effort.
+to delete the Pods, Secret, and temporary NetworkPolicy whose successful creation
+returned a usable unique identifier (UID). Cleanup is best effort and uses that
+UID, so a different object with the same name is left alone. If a create response
+is lost or has no usable UID, the operator must check for a possible leftover
+before cleanup.
 
 With `--preflight-only`, the helper exits without marking preparation complete.
 It leaves serving writers running and retains private evidence. This evidence
