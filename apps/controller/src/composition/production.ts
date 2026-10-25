@@ -299,6 +299,7 @@ export async function composeProduction(
             config.channelDirectoryManagedProxyHost === undefined
               ? []
               : [config.channelDirectoryManagedProxyHost],
+          expectProxy: true,
         },
       );
       controller.registerDriver(channelDriver);
