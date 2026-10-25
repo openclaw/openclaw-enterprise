@@ -9,6 +9,10 @@ export const CredentialsSlackReader = {
   ...story("credentialsSlackReader"),
   name: "Slack tokens, viewer can only read",
 };
+export const CredentialsSlackSecretsOperateDenied = {
+  ...story("credentialsSlackSecretsOperateDenied"),
+  name: "Slack tokens, editor cannot operate the bound Secrets",
+};
 export const CredentialsSlackStored = {
   ...story("credentialsSlackStored"),
   name: "Slack tokens stored",

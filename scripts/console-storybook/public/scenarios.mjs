@@ -6751,6 +6751,23 @@ export const scenarios = {
       "The permission answer denies Configuration update, so the Slack token pickers are disabled, Save channel Secrets is not offered, and a note says why.",
     gap: "The permission answer is simulated; the API still authorizes every save.",
   },
+  credentialsSlackSecretsOperateDenied: {
+    group: "Components/Credentials",
+    name: "Slack tokens, editor cannot operate the bound Secrets",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    agentPermissionSummary: {
+      update: true,
+      deploy: true,
+      operate: true,
+      delete: true,
+      configurationUpdate: true,
+      configurationSecretsOperate: false,
+    },
+    description:
+      "The permission answer allows Configuration update but not Secret operate on every Secret the Configuration binds, which each Configuration save needs. The Slack token pickers are disabled, Save channel Secrets is not offered, and a note names the missing grant.",
+    gap: "The permission answer is simulated; the API still authorizes every save.",
+  },
   credentialsSlackStored: {
     group: "Components/Credentials",
     name: "Slack tokens stored",

@@ -106,7 +106,8 @@ This section appears when Slack is enabled in the saved Configuration.
 First-deployment credential generation requires Agent `read` and `operate` when
 generated credentials are missing; deployment also requires `deploy`.
 Saving channel Secrets additionally requires Secret,
-Configuration, and Namespace IAM permissions. These are multiple writes, so a
+Configuration, and Namespace IAM permissions. Every Configuration save needs Secret `operate`
+on each Secret the Configuration binds; without it, the pickers are read-only and say so. These are multiple writes, so a
 failure can leave partial progress. Granting the Agent a Secret needs Installation
 `administer`: when a member saves a token, the Configuration saves, but the member's session
 sends no grant, so it does not verify the Agent's access. The console asks an Installation
