@@ -18,6 +18,7 @@ export function createVersionDiagnostics(
   revisionId: string,
   recordedStatus: () => AgentDeploymentStatusWire | null,
   operateAllowed: Promise<boolean | undefined>,
+  isCurrentVersion: () => boolean,
 ) {
   const section = element("section", { className: "agent-card version-diagnostics" });
   let diagnostics: AgentDeploymentDiagnosticsWire | null = null;
@@ -208,6 +209,14 @@ export function createVersionDiagnostics(
 
   // The version's record calls this on every deployment poll: rewrite only what changed.
   function render() {
+    // A failed version that is not current never ran, or no longer runs: there is no runtime to
+    // check, so the panel is not offered (finding 2403). Its record and Logs stay.
+    const recorded = recordedStatus();
+    const nothingToCheck =
+      recorded?.status === "failed" && !neutralDeploymentOutcome(recorded) && !isCurrentVersion();
+    if (section.hidden !== nothingToCheck) {
+      section.hidden = nothingToCheck;
+    }
     const { status } = requestFailure(error);
     patchChildren(section, [
       element(
