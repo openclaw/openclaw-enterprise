@@ -175,8 +175,13 @@ test("Dedicated Agent provisioning shows the API's 400 message for an inline mod
   const response = await rejected;
   assert.equal(response.status(), 400);
   const { error, meta } = await response.json();
-  // The API's own sentence names the field to fix; the console shows it unchanged.
-  assert.match(error.message, /\/models\/providers\/openai\/apiKey/);
+  // The API's own sentence names the field to fix; the console shows it unchanged. Provisioning
+  // runs Agent save's Harness authentication check first (finding 2395), so it answers with
+  // save's sentence for the dedicated Codex binding.
+  assert.equal(
+    error.message,
+    "Configuration setting models.providers.openai.apiKey must be unset: Dedicated Codex receives model credentials from the Agent's Harness authentication binding.",
+  );
   const feedback = page.getByRole("alert").filter({ hasText: meta.requestId });
   await feedback.waitFor();
   assert.equal(await feedback.textContent(), `${error.message} Request ID: ${meta.requestId}`);
