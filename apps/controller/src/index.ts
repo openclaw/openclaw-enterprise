@@ -2563,15 +2563,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       // caller may list.
       const operateDenied =
         namespaceRead && configurationRead && (configurationUpdate || update)
-          ? (
-              await Promise.all(
-                (await controller.listSecrets(context.actorId, namespaceId)).map(async (secret) =>
-                  (await callerMay(context.actorId, "operate", secret.ref)) ? [] : [secret.id],
-                ),
-              )
-            )
-              .flat()
-              .sort()
+          ? await controller.listSecretsOperateDenied(context.actorId, namespaceId)
           : [];
       reply.send({ data: { operateDenied }, meta: { requestId: request.id } });
       return;

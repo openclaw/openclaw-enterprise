@@ -2641,7 +2641,7 @@ export async function renderAgentDetail(
                   callerPermissions?.configurationSecretsOperateDeniedBindings,
                 ),
           bindingsToReplace: channelBindingsReplace,
-          bindingRefusal: refusedSecretBinding,
+          bindingRefusal: (secrets) => refusedSecretBinding("configuration", secrets),
           isCurrent: () => panelNumber === channelPanelCount,
           onChange() {
             updateNavigationControls();
@@ -3243,13 +3243,27 @@ export async function renderAgentDetail(
   }
 
   // Why a save that bound these chosen Secrets was refused: the Secret answer, read again, names
-  // each one the caller may not operate (finding 2453). Undefined when it names none or is
-  // unknown, so the save's usual refusal applies.
-  async function refusedSecretBinding(secrets: readonly Pick<SecretMetadata, "id" | "name">[]) {
+  // each one the caller may not operate (finding 2453). It is named only when the permission
+  // answer, read again too, allows the save's own grants: update on the Configuration for a
+  // Configuration save; update, Configuration read and the bound sources for an Agent save.
+  // Otherwise, or when either read fails, the save's usual refusal names every grant it needs.
+  async function refusedSecretBinding(
+    save: "configuration" | "agent",
+    secrets: readonly Pick<SecretMetadata, "id" | "name">[],
+  ) {
     secretsOperateRead = null;
-    const denied = await secretsOperateDenied();
+    const [permissions, denied] = await Promise.all([
+      readPermissions().catch(() => null),
+      secretsOperateDenied(),
+    ]);
+    const ownGrants =
+      save === "configuration"
+        ? permissions?.configurationUpdate === true
+        : permissions?.update === true &&
+          permissions.configurationRead === true &&
+          permissions.agentSourcesOperate === true;
     const names = secrets.filter((secret) => denied?.has(secret.id)).map((secret) => secret.name);
-    return names.length ? secretOperateRefusal(names) : undefined;
+    return ownGrants && names.length ? secretOperateRefusal(names) : undefined;
   }
 
   // Reads the caller's permission answer again; a failed read keeps the last answer.
@@ -3864,7 +3878,7 @@ export async function renderAgentDetail(
               // answer says so (finding 2453).
               const named =
                 mutationStarted && requestFailure(error).status === 403
-                  ? await refusedSecretBinding(options.changedSecrets ?? [])
+                  ? await refusedSecretBinding("configuration", options.changedSecrets ?? [])
                   : undefined;
               if (!context.isCurrent()) {
                 throw error;
@@ -4308,7 +4322,7 @@ export async function renderAgentDetail(
             const chosen = auth.changedSecret;
             const named =
               mutationStarted && requestFailure(error).status === 403 && chosen
-                ? await refusedSecretBinding([chosen])
+                ? await refusedSecretBinding("agent", [chosen])
                 : undefined;
             if (!context.isCurrent()) {
               return;

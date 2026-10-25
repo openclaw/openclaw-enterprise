@@ -64,6 +64,7 @@ import {
 import {
   AGENT_SAVE_DENIED,
   CONFIGURATION_EDITS_PENDING,
+  CONFIGURATION_SAVE_DENIED,
   READ_UNAVAILABLE,
   SAVED_CONFIGURATION_CHANGED,
   WORKSPACE_FILES_UNAVAILABLE,
@@ -4857,6 +4858,7 @@ test("Secret fields refuse a readable Secret the editor cannot operate", async (
   const bot = await fixture.createSecret(namespace.id, "Bound bot token", "xoxb-bound-value");
   const spare = await fixture.createSecret(namespace.id, "Spare token", "xoxb-spare-value");
   const extra = await fixture.createSecret(namespace.id, "Extra token", "xoxb-extra-value");
+  const other = await fixture.createSecret(namespace.id, "Other token", "xoxb-other-value");
   const agent = await fixture.createAgent(
     namespace.id,
     "Operate-only Agent",
@@ -4895,7 +4897,7 @@ test("Secret fields refuse a readable Secret the editor cannot operate", async (
       resourceKind: "secret",
       resourceId: secretId,
     });
-  for (const secretId of [app.id, bot.id, extra.id, agent.harnessAuth.source.id]) {
+  for (const secretId of [app.id, bot.id, extra.id, other.id, agent.harnessAuth.source.id]) {
     grantOperate(secretId);
   }
   const path = "/namespaces/" + namespace.id + "/agents/" + agent.id;
@@ -4958,6 +4960,33 @@ test("Secret fields refuse a readable Secret the editor cannot operate", async (
     .locator(".channel-secrets [role=alert]")
     .getByText(secretOperateRefused(extra.name), { exact: false })
     .waitFor();
+
+  // With Configuration update revoked too, the answer cannot say operate is all that is missing:
+  // the refusal keeps the text that names both grants.
+  await selectSecret(page, "Slack bot token", other);
+  await page.getByText("Secret binding staged. Save changes to apply it.").waitFor();
+  fixture.policy.bindings.splice(
+    fixture.policy.bindings.findIndex(
+      (binding) => binding.id === `binding-operate-only-secrets-${other.id}`,
+    ),
+    1,
+  );
+  const editorRole = fixture.policy.roles.find((role) => role.id === "role-operate-only-editor");
+  editorRole.permissions = editorRole.permissions.filter(
+    (permission) =>
+      !(permission.action === "update" && permission.resourceKind === "configuration"),
+  );
+  const refusedAgain = page.waitForResponse(
+    (r) => r.request().method() === "PATCH" && r.url().endsWith(configurationPath),
+  );
+  await save.click();
+  assert.equal((await refusedAgain).status(), 403);
+  const alert = page.locator(".channel-secrets [role=alert]");
+  await alert.getByText(CONFIGURATION_SAVE_DENIED, { exact: false }).waitFor();
+  assert.equal(
+    await alert.getByText(secretOperateRefused(other.name), { exact: false }).count(),
+    0,
+  );
 });
 
 // A tab parked before the answer landed is shown again with the answer applied (finding 2421).
