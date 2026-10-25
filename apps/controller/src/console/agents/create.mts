@@ -51,6 +51,7 @@ import { createPluginDiscovery } from "./plugin-discovery.mjs";
 import { createSlackApproverField } from "./slack-approvers.mjs";
 import { renderChannels } from "../channels.mjs";
 import {
+  administratorMessage,
   AGENT_CREATE_DENIED,
   type AgentNavigation,
   channelBindingRefusal,
@@ -3650,10 +3651,12 @@ function renderAgentForm(
         return;
       }
       const registrationProblem = error.status && error.status >= 400 ? ` ${message(cause)}` : "";
+      // A refused grant on a saved Agent shows this text only to an Installation administrator (a
+      // member sees MEMBER_GRANT_REFUSED below), so its denial names nobody to ask (finding 2113).
       const detail = credentialRegistration
         ? `Credential Source registration could not be confirmed.${registrationProblem} Check credential registration before retrying; the selected Secret remains saved.`
         : savedAgent
-          ? `The Agent was created, but credential access is not confirmed. ${message(cause)} Retry credential access, or open the saved Agent and ask an administrator to check access to its saved model and channel Secrets.`
+          ? `The Agent was created, but credential access is not confirmed. ${administratorMessage(cause)} Retry credential access, or open the saved Agent and ask an administrator to check access to its saved model and channel Secrets.`
           : error.status === 409 && creatingSecret && error.code !== "NAMESPACE_NOT_READY"
             ? `A Secret named "${body.name}" already exists in this Namespace, possibly from an earlier Agent with this name. Choose another Agent name, delete that Secret, or select Start over, choose the Preset again, and set its Secret source to Use existing Secret.`
             : error.status === 409 && savedConfiguration && error.code !== "NAMESPACE_NOT_READY"

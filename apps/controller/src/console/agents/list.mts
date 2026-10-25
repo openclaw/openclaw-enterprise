@@ -88,6 +88,35 @@ export const AGENT_CREATE_DENIED =
   "Your access does not include creating Agents in this Namespace. Only an Installation administrator can create Agents: ask one to create it and to give you access to edit and deploy it.";
 export const GENERIC_CONFLICT = "The requested platform resource already exists.";
 
+// Granting access writes Namespace IAM policy, which only Installation administration may do (UX
+// plan A2). Every message that sends a reader to have access granted names that role in these
+// words (findings 1920, 2259, 2260).
+export const askInstallationAdministrator = (task: string) =>
+  `needs Installation administration access: ask an Installation administrator to ${task}.`;
+
+// The grant a read needs, so its 403 names it as Stop, Delete and occ's hints do (finding 1530):
+// `task` says what the request does and `grant` names the one permission it checks, in the
+// permissions cheat sheet's words. The API keeps the caller's own denial generic, so the view
+// names it. The text depends only on the request, never on whether the resource exists.
+export interface AccessNeed {
+  readonly task: string;
+  readonly grant: string;
+}
+
+// Namespace lists (Secrets, Presets, ServiceAccounts) check Namespace read, then read on each item:
+// a 403 is the Namespace read, and an item the caller may not read is left out instead.
+export const namespaceListNeed = (items: string): AccessNeed => ({
+  task: `Listing ${items} in this Namespace`,
+  grant: "Namespace read",
+});
+
+// A 403 that names no grant. message() adds who grants access; administratorMessage() does not.
+const PLAIN_ACCESS_DENIED = "Access denied. You do not have permission for this operation.";
+
+export function accessDenied({ task, grant }: AccessNeed) {
+  return `Access denied. ${task} needs ${grant}, which your access does not include. Granting it ${askInstallationAdministrator("check that grant")}`;
+}
+
 // The API records these deployment endings as failed, but nothing went wrong with the version,
 // so the console shows a neutral outcome instead. A newer version took over before this one
 // became current (finding 1353; the record never names the newer version, so neither does the
@@ -141,7 +170,16 @@ export const NEUTRAL_DEPLOYMENT_NOTES = {
   stopped: "Stopped before it finished",
 };
 
-export function message(cause: unknown, mutation = false): string {
+// message() for a caller known to administer the Installation: its own 403 is not one that asking
+// an Installation administrator can fix, so the denial names nobody (finding 2113).
+export function administratorMessage(cause: unknown): string {
+  const error = responseFields(cause);
+  return error.status === 403 && typeof error.refusal !== "string"
+    ? PLAIN_ACCESS_DENIED
+    : message(cause);
+}
+
+export function message(cause: unknown, mutation = false, need?: AccessNeed): string {
   const error = responseFields(cause);
   if (error.code === "SAVED_CONFIGURATION_UNREADABLE") {
     const fieldLabels: Record<string, string> = {
@@ -159,7 +197,9 @@ export function message(cause: unknown, mutation = false): string {
   if (error.status === 403) {
     return typeof error.refusal === "string"
       ? error.refusal
-      : "Access denied. You do not have permission for this operation.";
+      : need
+        ? accessDenied(need)
+        : `${PLAIN_ACCESS_DENIED} Granting it ${askInstallationAdministrator("check your access")}`;
   }
   if (error.status === 404) {
     return "Resource unavailable in this Namespace. Check the ID and your access.";

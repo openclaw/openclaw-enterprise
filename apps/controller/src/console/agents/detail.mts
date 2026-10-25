@@ -66,6 +66,8 @@ import {
   neutralDeploymentOutcome,
   outcomeLabel,
   preAdmissionRefusal,
+  askInstallationAdministrator,
+  type AccessNeed,
 } from "./list.mjs";
 import {
   type CarriedChannelSecrets,
@@ -85,7 +87,6 @@ import {
   channelCredentialBlockReason,
 } from "./credentials.mjs";
 import {
-  askInstallationAdministrator,
   credentialOperateGrants,
   ensureCredentialOperateBinding,
   secretOperateAnswer,
@@ -269,6 +270,12 @@ function harnessCredential(binding: HarnessAuthBinding | null | undefined, names
       : null;
 }
 
+// The draft is the Agent's Configuration: an Agent reader without Configuration read is refused it.
+const DRAFT_CONFIGURATION_NEED: AccessNeed = {
+  task: "Reading this Agent's draft Configuration",
+  grant: "Configuration read",
+};
+
 function errorPanel(
   cause: unknown,
   context: DetailContext,
@@ -299,7 +306,7 @@ function errorPanel(
       {},
       versionDenied
         ? "Your access to this Agent does not include this version, so its configuration and deployment outcome are hidden. Ask an Agent administrator for read access to it."
-        : message(cause),
+        : message(cause, false, DRAFT_CONFIGURATION_NEED),
     ),
     responseFields(cause).remembered === true
       ? element(

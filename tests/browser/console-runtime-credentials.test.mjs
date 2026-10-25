@@ -26,6 +26,7 @@ import {
   CONFIGURATION_EDITS_PENDING,
   DEPENDENCY_UNAVAILABLE,
   READ_UNAVAILABLE,
+  namespaceListDenied,
 } from "../helpers/refusal-text.mjs";
 
 const slack = {
@@ -864,7 +865,11 @@ test("Credentials shows issued-account denial only while that source is selected
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
   assert.equal((await deniedList).status(), 403);
   fixture.policy.restrictions.splice(fixture.policy.restrictions.indexOf(restriction), 1);
-  const feedback = page.getByText(/Service accounts unavailable\. Access denied/);
+  // The refusal names the grant the list checks and who can grant it.
+  const feedback = page.getByText(
+    `Service Accounts unavailable. ${namespaceListDenied("Service Accounts")}`,
+    { exact: true },
+  );
   const issuedAccount = page.getByLabel("Issued ChatGPT service account", { exact: true });
   await feedback.waitFor();
   assert.equal(await issuedAccount.inputValue(), account.id);

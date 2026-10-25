@@ -69,12 +69,6 @@ export function secretOperateAnswer(read: () => Promise<unknown>) {
 
 type CredentialReference = SecretReference | CredentialSourceReference;
 
-// Granting access writes Namespace IAM policy, which only Installation administration may do (UX
-// plan A2). Every message that sends a reader to have access granted names that role in these
-// words (findings 1920, 2259, 2260).
-export const askInstallationAdministrator = (task: string) =>
-  `needs Installation administration access: ask an Installation administrator to ${task}.`;
-
 // A malformed policy read is not an empty policy: never create a grant on that evidence.
 export function policyList<T>(value: unknown, read: (item: unknown) => T): T[] {
   if (!Array.isArray(value)) {

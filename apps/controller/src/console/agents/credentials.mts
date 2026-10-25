@@ -11,13 +11,13 @@ import { sameValue } from "../carry.mjs";
 import { element, button, focusSaveOutcome, setStatusTone, validateFields } from "../dom.mjs";
 import { wholeEnvironmentReferenceName } from "../environment-references.mjs";
 import {
+  askInstallationAdministrator,
   configurationConflictMessage,
   isStaleGeneration,
   namespacePath,
   SAVE_REFUSALS,
 } from "./list.mjs";
 import {
-  askInstallationAdministrator,
   credentialOperateGrants,
   ensureCredentialOperateBinding,
   type AgentAccessContext,
