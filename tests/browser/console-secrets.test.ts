@@ -17,6 +17,7 @@ import type {
   SecretDetailResponse,
   SecretListResponse,
 } from "../../packages/contracts/src/api/resources.ts";
+import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { consoleStorage } from "../helpers/console-storage.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
@@ -522,19 +523,15 @@ test("Secret refusals keep their meaning, and incomplete consumers or a not-read
   const secret = await fixture.createSecret(namespace.id, "Listed Secret", "synthetic-listed");
   const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
-  const refusals: { status: number; code: string }[] = [
-    { status: 429, code: "RATE_LIMITED" },
-    { status: 404, code: "NOT_FOUND" },
+  // The Secret API never answers 429: that refusal comes from a rate limit in front of it (an
+  // ingress or proxy), so it is the proxy's page with no API envelope. The 404 is the API's own.
+  const refusals = [
+    proxyErrorResponse(429),
+    apiErrorResponse(404, "NOT_FOUND", "The requested platform resource was not found."),
   ];
   await page.route(`${fixture.origin}${secretPath(namespace)}`, (route) => {
     const refusal = route.request().method() === "POST" ? refusals.shift() : undefined;
-    return refusal
-      ? route.fulfill({
-          status: refusal.status,
-          contentType: "application/json",
-          body: JSON.stringify({ error: { code: refusal.code, message: "refused" } }),
-        })
-      : route.fallback();
+    return refusal ? route.fulfill(refusal) : route.fallback();
   });
   await login(page, fixture, secretsUrl(namespace));
   await page.getByRole("button", { name: "Create Secret", exact: true }).click();

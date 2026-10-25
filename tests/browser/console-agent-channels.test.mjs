@@ -14,6 +14,7 @@ import {
   MEMBER_WRITE,
   nativeValues,
   newPage,
+  nextFrames,
   nonAuthWriteRequests,
   pathRequests,
   revealNativeConfiguration,
@@ -453,22 +454,38 @@ describe("Agent channels", { concurrency: 3 }, () => {
     );
     assert.equal(beforeSave.data.generation, 1);
     // Hold the real save response so dismissal cannot hide an in-flight mutation.
-    const save = await holdRequests(
-      t,
-      page,
-      `${fixture.origin}/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
-      { method: "PATCH", afterServer: true, timeout: 0 },
-    );
+    const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
+    const save = await holdRequests(t, page, `${fixture.origin}${configurationPath}`, {
+      method: "PATCH",
+      afterServer: true,
+      timeout: 0,
+    });
     await page.getByRole("button", { name: "Save configuration" }).click();
     await save.requested;
     await page.mouse.click(bounds.x / 2, bounds.y + 8);
+    await nextFrames(page);
     assert.equal(await dialog.isVisible(), true);
     assert.equal(
       await dialog.getByRole("button", { name: "Save configuration" }).isDisabled(),
       true,
     );
+    // The API has applied the save, but the page has not heard so: it is still waiting on the
+    // Configuration write and has not started the Secret grants that follow it.
+    assert.equal((await fixture.request("GET", configurationPath)).data.generation, 2);
+    const saved = requests.findLastIndex(
+      ({ method, path }) => method === "PATCH" && path === configurationPath,
+    );
+    assert.notEqual(saved, -1);
+    assert.deepEqual(
+      requests.slice(saved + 1).filter(({ path }) => path.includes("/iam/")),
+      [],
+    );
     save.release();
     await page.getByText(/Configuration .*generation 2/).waitFor();
+    assert.deepEqual(
+      accessBindingPostRequests(requests, namespace.id).map(({ body }) => body.resourceId),
+      [slackAppSecret.id, slackBotSecret.id],
+    );
     const configuration = await fixture.request(
       "GET",
       `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
@@ -519,8 +536,10 @@ describe("Agent channels", { concurrency: 3 }, () => {
     await selectSecret(dialog, "Slack app token", finalSecret);
     await page.getByRole("button", { name: "Save configuration" }).click();
     await grant.requested;
-    // Configuration is already saved, but the Agent's Secret grant is still in flight.
+    // Configuration is already saved, but the Agent's Secret grant is still in flight: the API
+    // has not received it, and the page keeps Deploy and Credentials closed until it answers.
     try {
+      await nextFrames(page);
       assert.equal(
         await page.getByRole("button", { name: "Deploy new version" }).isDisabled(),
         true,
@@ -528,6 +547,14 @@ describe("Agent channels", { concurrency: 3 }, () => {
       assert.equal(
         await page.getByRole("tab", { name: "Credentials", exact: true }).isDisabled(),
         true,
+      );
+      const bindings = await fixture.request(
+        "GET",
+        `/namespaces/${namespace.id}/iam/access-bindings`,
+      );
+      assert.deepEqual(
+        bindings.data.filter(({ resourceId }) => resourceId === finalSecret.id),
+        [],
       );
     } finally {
       grant.release();

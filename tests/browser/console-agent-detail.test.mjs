@@ -20,6 +20,7 @@ import {
   MEMBER_WRITE,
   nativeValues,
   newPage,
+  nextFrames,
   settlePageRequests,
   nonAuthWriteRequests,
   pathRequests,
@@ -1333,6 +1334,14 @@ test("Agent detail saves plugin changes for the next revision without changing a
   // The draft edits Agent-owned selections. The admitted revision remains immutable.
   assert.equal(await page.getByLabel("Service account token for plugin discovery").count(), 0);
   const pluginListPath = `/namespaces/${namespace.id}/agents/${agent.id}/plugins`;
+  // Until the policy capabilities answer, the catalog is still being checked and nothing is
+  // fetched from it.
+  await capabilitiesRead.requested;
+  await nextFrames(page);
+  assert.equal(
+    await page.locator(".plugin-browser-status [role=status]").textContent(),
+    "Checking plugin catalog availability…",
+  );
   assert.equal(pathRequests(requests, "POST", pluginListPath).length, 0);
   const prefetched = page.waitForResponse(
     (response) =>
