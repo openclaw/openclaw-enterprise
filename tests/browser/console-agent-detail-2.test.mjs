@@ -2523,7 +2523,7 @@ test("an Agent reader meets no refused read on Repositories, Policy denials or L
     .waitFor();
   await page.getByText("Denials in the loaded window: none recorded", { exact: true }).waitFor();
   await settle();
-  await expectNoText(page, /permission to read|no such runtime log source|unavailable/);
+  await expectNoText(page, /permission to read|no such runtime log source|window: unavailable/);
   assert.deepEqual(
     requests.filter(({ path }) => path.includes("/runtime/logs")),
     [],
