@@ -4,6 +4,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { asRecord, numericLastLabel } from "@openclaw-enterprise/utils";
 
+import { environmentReference, environmentReferenceNames } from "./environment-references.ts";
 import {
   ConfigurationHarnessError,
   configurationSettingMessage,
@@ -36,19 +37,6 @@ const pointer = (...segments: readonly (string | number)[]): string =>
   segments
     .map((segment) => `/${String(segment).replaceAll("~", "~0").replaceAll("/", "~1")}`)
     .join("");
-
-// The runtime resolves `${VAR}` and `${VAR:-fallback}` environment references (uppercase
-// names) before it validates its configuration, so a value that holds one is left to it. Its
-// `$${VAR}` escape renders a literal `${VAR}` and resolves nothing, so text that holds only
-// escapes is checked as written. This follows OpenClaw's `containsEnvVarReference`
-// (`src/config/env-substitution.ts`).
-export const environmentReference = /\$(\$)?\{[A-Z_][A-Z0-9_]*(?::-([^${}]*))?\}/g;
-
-/** The variable names the runtime substitutes in `text`, in order: an escape names none. */
-export const environmentReferenceNames = (text: string): string[] =>
-  [...text.matchAll(environmentReference)]
-    .filter(([, escaped]) => escaped === undefined)
-    .map(([reference]) => reference.slice(2, reference.search(/[:}]/)));
 
 const holdsEnvironmentReference = (value: unknown): boolean =>
   typeof value === "string" && environmentReferenceNames(value).length > 0;

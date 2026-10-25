@@ -10327,10 +10327,13 @@ test("native channel providers require Secret bindings and project them only to 
     },
   });
   const appBinding = { SLACK_APP_TOKEN: secretBindings.SLACK_APP_TOKEN };
+  // In a secret-input field such as botToken, a whole `$NAME` is an environment SecretRef too
+  // (finding 2476).
   for (const botToken of [
     "xoxb-${SLACK_BOT_TOKEN}",
     "${SLACK_BOT_TOKEN:-}",
     "${SLACK_APP_TOKEN}${SLACK_BOT_TOKEN:-xoxb-fallback}",
+    " $SLACK_BOT_TOKEN ",
   ]) {
     assert.throws(
       () =>
@@ -10348,11 +10351,40 @@ test("native channel providers require Secret bindings and project them only to 
       botToken,
     );
   }
+  for (const botToken of ["xoxb-$${SLACK_BOT_TOKEN}", "$SLACK_APP_TOKEN"]) {
+    driver.validateHarnessAuth(
+      revision.harness,
+      revision.harnessAuth,
+      slackToken(botToken),
+      appBinding,
+    );
+  }
+  // A `${` the runtime does not substitute would reach Slack as written: a secret-input field
+  // refuses it whatever the bindings hold (finding 2477).
+  assert.throws(
+    () =>
+      driver.validateHarnessAuth(
+        revision.harness,
+        revision.harnessAuth,
+        slackToken("${slack_bot}"),
+        { ...appBinding, slack_bot: secretBindings.SLACK_BOT_TOKEN },
+      ),
+    {
+      name: "ConfigurationHarnessError",
+      message:
+        "Configuration setting channels.slack.botToken contains ${slack_bot}, which the runtime does not substitute: use an uppercase ${NAME} bound to a Secret in secretBindings, or escape literal text as $${NAME}.",
+    },
+  );
+  // Elsewhere the runtime keeps both forms as written, so they need no binding: a named Teams
+  // account's appPassword is not a secret-input field.
   driver.validateHarnessAuth(
     revision.harness,
     revision.harnessAuth,
-    slackToken("xoxb-$${SLACK_BOT_TOKEN}"),
-    appBinding,
+    {
+      agents: { defaults: { model: "codex/gpt-5" } },
+      channels: { msteams: { accounts: [{ appPassword: "$TEAMS_PASSWORD${teams}" }] } },
+    },
+    {},
   );
 
   const ipv6 = createKubernetesComputeDriver(
