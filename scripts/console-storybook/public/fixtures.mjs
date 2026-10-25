@@ -898,6 +898,9 @@ export function installFixture(scenario, evidence) {
             : {
                 openclaw: {
                   executionModes: scenario.openclawExecutionModes,
+                  ...(scenario.openclawSettingRefusal
+                    ? { settingRefusals: { dedicated: scenario.openclawSettingRefusal } }
+                    : {}),
                   ...(scenario.sandboxDriverUnavailable ? { sandboxDriverUnavailable: true } : {}),
                 },
               }),

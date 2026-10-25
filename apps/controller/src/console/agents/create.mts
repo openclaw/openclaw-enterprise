@@ -2381,20 +2381,27 @@ function renderAgentForm(
     // A setting refusal names the setting to change, not another Sandbox Driver (finding 2373).
     // Its last sentence advises "Select Codex, or ask an operator to …"; quote only the
     // requirement when this form cannot select Codex: a Preset's binding locks the harness, or
-    // Anthropic hides it (finding 2392).
+    // Anthropic hides it (finding 2392). A saved or bound model credential also locks the
+    // provider, so switching to OpenAI is not offered then either.
     const codexSelectable = !harnessChoiceLocked && nativeProvider.value !== "anthropic";
+    const providerLocked =
+      Boolean(savedSecret || savedCredentialSource || credentialRegistration) ||
+      hasBoundModelCredential;
     const dedicatedRefusalReason = dedicatedSettingRefusal
       ? `its settings refuse Dedicated OpenClaw. ${codexSelectable ? dedicatedSettingRefusal : settingRequirement(dedicatedSettingRefusal)}`
       : "it cannot run Dedicated OpenClaw.";
-    // What a reader without a Preset can do when no OpenClaw mode is usable.
+    // What a reader without an operator-managed Preset can do when no OpenClaw mode is usable.
     let noOpenClawAdvice = "";
     if (!dedicatedSettingRefusal) {
       noOpenClawAdvice =
         " Choose OpenAI with the Codex harness, or ask an administrator to select a Sandbox Driver that can provision dedicated OpenClaw, with a runtime that has native worker support.";
-    } else if (!codexSelectable && !harnessChoiceLocked) {
-      // Anthropic hides Codex, so name the provider switch the Driver's advice leaves out.
+    } else if (!codexSelectable) {
+      // Anthropic hides Codex: name the provider switch the Driver's advice leaves out, when the
+      // form still allows it.
       noOpenClawAdvice =
-        " Choose OpenAI with the Codex harness, or ask an operator to change that setting.";
+        harnessChoiceLocked || providerLocked
+          ? " Ask an operator to change that setting."
+          : " Choose OpenAI with the Codex harness, or ask an operator to change that setting.";
     }
     const modeRefusal = sandboxDriverOutage
       ? SANDBOX_DRIVER_OUTAGE
@@ -2502,9 +2509,7 @@ function renderAgentForm(
       harnessHint.textContent =
         "This Preset's operator-managed credentials require the OpenClaw harness.";
     }
-    nativeProvider.disabled ||=
-      Boolean(savedSecret || savedCredentialSource || credentialRegistration) ||
-      hasBoundModelCredential;
+    nativeProvider.disabled ||= providerLocked;
     authMethod.disabled ||= Boolean(savedSecret || savedCredentialSource || credentialRegistration);
     apiKeyOption.textContent =
       nativeProvider.value === "anthropic" ? "Anthropic API key" : "OpenAI API key";

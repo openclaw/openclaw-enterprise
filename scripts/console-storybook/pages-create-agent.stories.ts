@@ -108,6 +108,14 @@ export const CreateOpenclawNoExecutionMode = {
   ...story("createOpenclawNoExecutionMode"),
   name: "OpenClaw with no usable execution mode",
 };
+export const CreateOpenclawSettingRefusal = {
+  ...story("createOpenclawSettingRefusal"),
+  name: "OpenClaw refused by Sandbox Driver settings",
+};
+export const CreateOpenclawSettingRefusalAnthropic = {
+  ...story("createOpenclawSettingRefusalAnthropic"),
+  name: "OpenClaw refused by Sandbox Driver settings, Anthropic",
+};
 export const CreateOpenclawSandboxDriverOutage = {
   ...story("createOpenclawSandboxDriverOutage"),
   name: "OpenClaw during a Sandbox Driver outage",

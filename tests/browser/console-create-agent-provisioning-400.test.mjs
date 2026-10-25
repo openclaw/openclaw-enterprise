@@ -997,6 +997,46 @@ test("When the Sandbox Driver's settings refuse Dedicated OpenClaw, Create Agent
     "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and its settings refuse Dedicated OpenClaw. Dedicated OpenClaw needs example.setting: false in the Sandbox Driver configuration. Choose OpenAI with the Codex harness, or ask an operator to change that setting.",
   );
   assert.deepEqual(writesSinceFill(), []);
+
+  // A Preset bound to a saved Anthropic Secret locks the provider too, so the refusal offers
+  // only the operator.
+  const secret = await fixture.createSecret(namespace.id, "Anthropic model key", "anthropic-key");
+  const primary = "anthropic/claude-bound-model";
+  const values = nativeValues("bound-anthropic");
+  values.agents.defaults.model = primary;
+  values.agents.defaults.models = { [primary]: { agentRuntime: { id: "openclaw" } } };
+  values.models = {
+    ...values.models,
+    providers: {
+      anthropic: {
+        baseUrl: "https://api.anthropic.com",
+        api: "anthropic-messages",
+        models: [{ id: "claude-bound-model", name: "claude-bound-model" }],
+      },
+    },
+  };
+  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: {
+      name: "Bound Anthropic credential",
+      template: {
+        agent: {
+          name: "Bound Anthropic Agent",
+          executionMode: "embedded",
+          harnessAuth: { method: "api_key", source: secret.ref },
+        },
+        configuration: { values },
+      },
+    },
+  });
+  assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  const bound = await openPreset(t, fixture, namespace, preset.data.id);
+  const boundAlert = bound.getByRole("alert").filter({ hasText: /^OpenClaw is unavailable / });
+  await boundAlert.waitFor();
+  assert.equal(await bound.getByLabel("Provider", { exact: true }).isDisabled(), true);
+  assert.equal(
+    await boundAlert.textContent(),
+    "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and its settings refuse Dedicated OpenClaw. Dedicated OpenClaw needs example.setting: false in the Sandbox Driver configuration. Ask an operator to change that setting.",
+  );
 });
 
 const SANDBOX_DRIVER_OUTAGE =
