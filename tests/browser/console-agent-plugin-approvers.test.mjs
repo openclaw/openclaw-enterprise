@@ -216,6 +216,23 @@ test("Create Agent searches approvers with a search-only Slack Secret", async (t
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start with default Preset" }).click();
   await openAdvancedSettings(page);
+  // The approvers select looks like every other select on the form: it was bold with a thin
+  // square border and no padding (finding 2401).
+  const controlStyle = (locator) =>
+    locator.evaluate((node) => {
+      const style = globalThis.getComputedStyle(node);
+      return {
+        border: `${style.borderTopWidth} ${style.borderTopColor}`,
+        radius: style.borderTopLeftRadius,
+        padding: style.padding,
+        minHeight: style.minHeight,
+        weight: style.fontWeight,
+      };
+    });
+  assert.deepEqual(
+    await controlStyle(page.getByLabel("Default plugin approvers mode")),
+    await controlStyle(page.getByLabel("Provider", { exact: true })),
+  );
   await page.getByLabel("Default plugin approvers mode").selectOption("chosen");
   const people = page.getByRole("combobox", {
     name: "Default plugin approvers people",
