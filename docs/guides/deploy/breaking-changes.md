@@ -21,6 +21,31 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-25: Configuration save refuses a Slack token SecretRef the Slack Driver cannot read
+
+**What breaks.** On the bundled Kubernetes Compute, Configuration create and
+update, provisioning, and `POST .../agents/validate` with
+`configuration.secretBindings` answer `400 INVALID_REQUEST` when a Slack
+`appToken` or `botToken` is a `file` or `exec` SecretRef, an env SecretRef
+with a provider other than `default`, or another object. Earlier builds saved it, and the Slack
+credential check then refused provisioning and deployment with
+`binding_required`. A stored Configuration in this state still reads; an update
+that keeps the token is refused, and its deployment can now fail with this
+message instead. App tokens in HTTP mode and disabled accounts are not checked.
+
+**Who is affected.** Agents whose stored Configuration has such a Slack token.
+They could not deploy before either.
+
+**How to tell.** The message names the setting, for example
+`channels.slack.botToken holds a SecretRef the Slack Channel Driver cannot
+read`. Before you upgrade, read each Agent's Configuration as the next entry
+describes and check `appToken` and `botToken` under `channels.slack` and under
+each entry of `channels.slack.accounts`.
+
+**Steps.** Write the token as an env SecretRef with provider `default`, or as
+one whole `${NAME}`, and send its `secretBindings` entry for `NAME` in the same
+request.
+
 ## 2026-10-25: Configuration save refuses an unbound channel credential reference
 
 **What breaks.** On the bundled Kubernetes Compute, Configuration create and update,
@@ -294,47 +319,3 @@ and configure `gatewayRouting`, as the
 [Kubernetes Compute reference](../../reference/drivers/kubernetes-compute.md)
 describes; fix the selector labels or quota entries; then restart the
 controller.
-
-## 2026-10-24: Preset saves check literal Agent launch fields
-
-**What breaks.** Preset create and update, and seeding a missing `presets.files`
-copy at startup, bootstrap or Namespace creation, refuse a template whose `agent.name`, `agent.executionMode`,
-`agent.backendId` or `agent.pluginApprovers` is written without a variable token
-and breaks the rule Agent create applies (for example `executionMode: turbo`,
-a Backend the Installation does not configure, or a non-Slack approver while a
-Plugin Driver is selected).
-Earlier builds saved it, and every Agent created from it was refused.
-
-**Who is affected.** Installations whose `presets.files` hold such a field, and
-API clients that save one. Existing copies and other stored Presets still read
-and render.
-
-**How to tell.** The write answers `400`, or startup or Namespace creation
-fails, with a message such as
-`Preset agent.executionMode: must be "embedded" or "dedicated".`
-
-**Steps.** Fix the named field, or replace it with a variable token; then
-restart the controller or repeat the write. _Untested_ on a real Installation.
-
-## 2026-10-24: OpenShell refuses a quoted userNamespaces and endpoints without ports
-
-**What breaks.** Controller startup refuses an OpenShell Sandbox Driver
-configuration whose `kubernetes.userNamespaces` is not a YAML boolean (for
-example the quoted string `"false"`, or a key left empty, which is null), or whose
-`policy.networkPolicies[].endpoints[].ports` list is empty. Earlier builds
-started: a quoted `"false"` reached the Gateway as user namespaces on, so
-OpenClaw Agents were refused while Codex Sandboxes kept user namespaces, and an
-endpoint without ports failed every Sandbox creation.
-
-**Who is affected.** OpenShell Installations with either setting. Those with a
-quoted or empty `userNamespaces` could still run Codex Agents; an endpoint
-without ports blocked every Agent.
-
-**How to tell.** Startup fails with `INVALID_TYPE` at
-`/kubernetes/userNamespaces`, or a `minItems` refusal at a path such as
-`/policy/networkPolicies/0/endpoints/0/ports`.
-
-**Steps.** Write `userNamespaces: false` (or `true`) without quotes, or remove
-an empty key, and give each endpoint at least one port; then restart the
-controller. Unquoting `false`
-turns user namespaces off for Codex Sandboxes too, as the setting says.

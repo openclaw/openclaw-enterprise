@@ -7,6 +7,50 @@ apply when you upgrade from a source commit older than their date. Entries are
 newest first. Steps marked _untested_ have not been run against a real
 Installation.
 
+## 2026-10-24: Preset saves check literal Agent launch fields
+
+**What breaks.** Preset create and update, and seeding a missing `presets.files`
+copy at startup, bootstrap or Namespace creation, refuse a template whose `agent.name`, `agent.executionMode`,
+`agent.backendId` or `agent.pluginApprovers` is written without a variable token
+and breaks the rule Agent create applies (for example `executionMode: turbo`,
+a Backend the Installation does not configure, or a non-Slack approver while a
+Plugin Driver is selected).
+Earlier builds saved it, and every Agent created from it was refused.
+
+**Who is affected.** Installations whose `presets.files` hold such a field, and
+API clients that save one. Existing copies and other stored Presets still read
+and render.
+
+**How to tell.** The write answers `400`, or startup or Namespace creation
+fails, with a message such as
+`Preset agent.executionMode: must be "embedded" or "dedicated".`
+
+**Steps.** Fix the named field, or replace it with a variable token; then
+restart the controller or repeat the write. _Untested_ on a real Installation.
+
+## 2026-10-24: OpenShell refuses a quoted userNamespaces and endpoints without ports
+
+**What breaks.** Controller startup refuses an OpenShell Sandbox Driver
+configuration whose `kubernetes.userNamespaces` is not a YAML boolean (for
+example the quoted string `"false"`, or a key left empty, which is null), or whose
+`policy.networkPolicies[].endpoints[].ports` list is empty. Earlier builds
+started: a quoted `"false"` reached the Gateway as user namespaces on, so
+OpenClaw Agents were refused while Codex Sandboxes kept user namespaces, and an
+endpoint without ports failed every Sandbox creation.
+
+**Who is affected.** OpenShell Installations with either setting. Those with a
+quoted or empty `userNamespaces` could still run Codex Agents; an endpoint
+without ports blocked every Agent.
+
+**How to tell.** Startup fails with `INVALID_TYPE` at
+`/kubernetes/userNamespaces`, or a `minItems` refusal at a path such as
+`/policy/networkPolicies/0/endpoints/0/ports`.
+
+**Steps.** Write `userNamespaces: false` (or `true`) without quotes, or remove
+an empty key, and give each endpoint at least one port; then restart the
+controller. Unquoting `false`
+turns user namespaces off for Codex Sandboxes too, as the setting says.
+
 ## 2026-10-24: chart NetworkPolicy peers are checked at render
 
 **What breaks.** `helm install` and `helm upgrade` refuse a

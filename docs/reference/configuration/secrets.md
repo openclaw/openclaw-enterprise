@@ -142,6 +142,10 @@ A channel secret-input field (Slack `appToken`, `botToken`, `signingSecret`,
 `userToken` and `relay.authToken`, on the channel or a named account; Teams
 `appPassword` on the channel) has stricter rules:
 
+- A Slack `appToken` or `botToken` written as an object must be an env SecretRef
+  with provider `default`: the Slack Channel Driver reads no other SecretRef or
+  object. The rule covers the tokens that Driver checks, so it skips the app
+  token in HTTP mode and disabled accounts.
 - A reference with a fallback needs a binding: this Compute sets only bound
   names, so the fallback, often empty, would replace the credential.
 - OpenClaw reads a whole `$NAME` value as an environment SecretRef, so it needs
