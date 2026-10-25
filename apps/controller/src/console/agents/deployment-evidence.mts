@@ -466,9 +466,11 @@ export function createDeploymentStatusPanel(
             {
               // One retire cleanup per version: OAuth bootstrap or repository credential resources.
               queued:
-                "Revision cleanup pending. This version's resources have not been confirmed removed; the controller will retry.",
-              running:
-                "Revision cleanup is running. This version's resources have not been confirmed removed.",
+                "Revision cleanup pending. This version's resources have not been confirmed removed.",
+              // A started cleanup stays running between its attempts (finding 2466).
+              running: record.cleanup.nextAttemptAt
+                ? "Revision cleanup started. This version's resources have not been confirmed removed; the controller will retry."
+                : "Revision cleanup is running. This version's resources have not been confirmed removed.",
               succeeded: "Revision cleanup completed for this version.",
               failed:
                 "Revision cleanup failed. Ask an operator to inspect the retained cleanup obligation.",

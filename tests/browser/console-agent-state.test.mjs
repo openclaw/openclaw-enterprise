@@ -154,7 +154,7 @@ test("Deployment activity names retire cleanup as revision cleanup and follows i
   const agent = await fixture.createAgent(namespace.id, "Cleanup Agent", nativeValues("v1"));
   const revision = await fixture.deployAgent(namespace.id, agent.id);
   const { page } = await newPage(t, fixture);
-  let cleanup = { status: "queued", nextAttemptAt: null };
+  let cleanup = { status: "queued", nextAttemptAt: "2026-09-30T12:00:00.000Z" };
   await page.route(deploymentRecordUrl(fixture, namespace.id, agent.id, revision.id), (route) =>
     route.fulfill({
       status: 200,
@@ -185,8 +185,17 @@ test("Deployment activity names retire cleanup as revision cleanup and follows i
   assert.equal(await status.getAttribute("role"), "status");
   assert.equal(
     await status.innerText(),
-    "Revision cleanup pending. This version's resources have not been confirmed removed; the controller will retry.",
+    "Revision cleanup pending. This version's resources have not been confirmed removed.",
   );
+  // A failed attempt queues the cleanup for a retry; the API keeps reporting it running, with
+  // the time of the next attempt, so the status line says it started (finding 2466).
+  cleanup = { status: "running", nextAttemptAt: "2026-09-30T12:01:00.000Z" };
+  await page.clock.runFor(DEPLOYMENT_POLL_MS);
+  await status
+    .getByText(
+      "Revision cleanup started. This version's resources have not been confirmed removed; the controller will retry.",
+    )
+    .waitFor();
   cleanup = { status: "succeeded", nextAttemptAt: null };
   await page.clock.runFor(DEPLOYMENT_POLL_MS);
   await status.getByText("Revision cleanup completed for this version.").waitFor();

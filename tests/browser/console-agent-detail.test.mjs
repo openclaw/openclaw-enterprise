@@ -25,6 +25,7 @@ import {
   settlePageRequests,
   nonAuthWriteRequests,
   pathRequests,
+  deploymentStatusResponse,
   persistedDeploymentError,
   recordLayoutShifts,
   revealNativeConfiguration,
@@ -83,36 +84,19 @@ test("Agent detail separates the current version, viewed version, and latest dep
   const requests = apiRequests(page, fixture.origin);
   // The in-memory API fixture has no worker records. Supply contract-shaped status
   // reads to prove the UI keeps each version's outcome tied to its exact ID.
-  let pendingProgress = { lastAttempt: null, nextAttemptAt: "2026-09-27T12:00:00.000Z" };
-  let pendingStatus = "queued";
-  for (const [revisionId, recorded] of [
-    [current.revision.id, () => "succeeded"],
-    [pending.id, () => pendingStatus],
+  let pendingRecord = { status: "queued" };
+  for (const [revision, recorded] of [
+    [
+      current.revision,
+      () => ({
+        status: "succeeded",
+        warnings: [{ code: "PLUGIN_AUTH_REQUIRED", pluginId: "linear@openai-curated-remote" }],
+      }),
+    ],
+    [pending, () => pendingRecord],
   ]) {
-    await page.route(
-      deploymentRecordUrl(fixture, namespace.id, agent.id, revisionId),
-      async (route) => {
-        const status = recorded();
-        await route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({
-            data: {
-              deploymentId: revisionId,
-              namespaceId: namespace.id,
-              agentId: agent.id,
-              status,
-              error: null,
-              warnings:
-                status === "succeeded"
-                  ? [{ code: "PLUGIN_AUTH_REQUIRED", pluginId: "linear@openai-curated-remote" }]
-                  : [],
-              progress: status === "succeeded" ? null : pendingProgress,
-            },
-            meta: { requestId: "req_test_deployment_activity" },
-          }),
-        });
-      },
+    await page.route(deploymentRecordUrl(fixture, namespace.id, agent.id, revision.id), (route) =>
+      route.fulfill(deploymentStatusResponse(revision, recorded())),
     );
   }
   const diagnosticsRequest = await holdRequests(t, page, `${fixture.origin}${diagnosticsPath}`, {
@@ -154,13 +138,9 @@ test("Agent detail separates the current version, viewed version, and latest dep
   // Simulate a subsequent status read: the first attempt deferred, so the work waits for its next
   // attempt and the deploy reads as running (finding 2456). Persistence and attribution are
   // proved separately by the PostgreSQL queue/worker test, not by this browser fixture.
-  pendingStatus = "running";
-  pendingProgress = {
-    lastAttempt: {
-      at: "2026-09-27T12:01:00.000Z",
-      code: "REVISION_INCOMPLETE",
-      message: "Waiting for the runtime to become ready.",
-    },
+  pendingRecord = {
+    status: "running",
+    attempt: { at: new Date("2026-09-27T12:01:00.000Z"), code: "REVISION_INCOMPLETE" },
     nextAttemptAt: "2026-09-27T12:01:01.000Z",
   };
   await activity.getByRole("button", { name: "Refresh deployment" }).click();

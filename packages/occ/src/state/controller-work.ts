@@ -642,11 +642,12 @@ export function controllerWorkDeploymentStatus(
 }
 
 /**
- * The status a deployment's record reports. Once a worker has claimed its work, the deployment
- * stays `running` until it records a result: a deferral between attempts, a retry or an expired
- * claim queues the work again, but reporting `queued` then read as the deploy stepping back
- * (finding 2456). `attempt` is the latest evidence bound to this work; a deferral that refunds
- * its attempt still records evidence, so a claimed deployment always has one or the other.
+ * The status a deployment's record reports for its work, and for its revision cleanup. Once a
+ * worker has claimed the work, it stays `running` until it records a result: a deferral between
+ * attempts, a retry or an expired claim queues the work again, but reporting `queued` then read
+ * as the deploy or cleanup stepping back (findings 2456, 2466). `attempt` is the latest evidence
+ * bound to this work; a deferral that refunds its attempt still records evidence, so claimed
+ * work always has one or the other. Callers can skip reading it when `attemptCount` is non-zero.
  */
 export function deploymentStatusForWork(
   work: Readonly<ControllerWork>,

@@ -802,15 +802,21 @@ export const consoleViewports = Object.freeze([
   Object.freeze({ width: 390, height: 844 }),
 ]);
 
-// The getAgentDeployment response for an admitted revision when the fixture has no worker.
+// The getAgentDeployment response for an admitted revision when the fixture has no worker. A
+// running record with `nextAttemptAt` is a started deploy whose work waits for its next attempt:
+// it stays running between attempts (finding 2456).
 export function deploymentStatusResponse(
   { id: deploymentId, namespaceId, agentId, createdAt },
-  { status, error = null, attempt },
+  { status, error = null, attempt, nextAttemptAt, warnings = [] },
 ) {
+  const waiting = status === "queued" || nextAttemptAt !== undefined;
   const progress =
     status === "queued" || status === "running"
       ? deploymentProgressForWork(
-          { state: status === "queued" ? "queued" : "claimed", availableAt: new Date(createdAt) },
+          {
+            state: waiting ? "queued" : "claimed",
+            availableAt: new Date(nextAttemptAt ?? createdAt),
+          },
           attempt,
         )
       : null;
@@ -823,7 +829,7 @@ export function deploymentStatusResponse(
         status,
         cleanup: null,
         error,
-        warnings: [],
+        warnings,
         progress,
       },
       meta: { requestId: "req_00000000-0000-4000-8000-000000000001" },

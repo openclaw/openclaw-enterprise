@@ -4110,9 +4110,10 @@ export class OpenClawController {
             work.namespaceId === revision.namespaceId &&
             work.agentId === revision.agentId &&
             work.revisionId === revision.id;
-          // Only queued work needs its evidence to tell a waiting deploy from a started one.
+          // Only queued work no claim has counted needs its evidence to tell a waiting deploy
+          // from a started one; a counted attempt already reads as running.
           const attempt =
-            matches && work.state === "queued"
+            matches && work.state === "queued" && work.attemptCount === 0
               ? await state.operations.findWorkAttempt(key)
               : undefined;
           revisions.push(
@@ -4369,11 +4370,16 @@ export class OpenClawController {
     ) {
       throw new ScopeViolationError("Deployment cleanup does not match its revision.");
     }
+    // A started cleanup stays running between its attempts, as a deployment does (finding 2466).
+    const attempt =
+      cleanup.state === "queued" && cleanup.attemptCount === 0
+        ? await state.operations.findWorkAttempt(key)
+        : undefined;
     return Object.freeze({
       status:
         cleanup.state === "succeeded"
           ? "succeeded"
-          : controllerWorkDeploymentStatus(cleanup, this.clock()),
+          : deploymentStatusForWork(cleanup, attempt, this.clock()),
       nextAttemptAt: cleanup.state === "queued" ? cleanup.availableAt.toISOString() : null,
     });
   }

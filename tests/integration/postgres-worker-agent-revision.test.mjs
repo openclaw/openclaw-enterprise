@@ -1841,8 +1841,10 @@ revisionTest(
     });
     await fixture.stop();
 
+    // The failed cleanup attempt queued its work for a retry. A cleanup a worker has started never
+    // reports queued again between its attempts, as a deployment does not (finding 2466).
     const pendingStatus = await fixture.deploymentStatus(owner, candidate);
-    assert.equal(pendingStatus.cleanup.status, "queued");
+    assert.equal(pendingStatus.cleanup.status, "running");
     assert.equal(typeof pendingStatus.cleanup.nextAttemptAt, "string");
     // The database must reject raw provider output even if a writer bypasses
     // the controller's public evidence validator.
