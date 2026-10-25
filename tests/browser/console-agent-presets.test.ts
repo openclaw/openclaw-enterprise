@@ -845,6 +845,55 @@ test("Runtime-auth Presets retain OpenClaw when changing from Anthropic to OpenA
   );
 });
 
+// The same operator-managed binding on Kubernetes Compute, which takes only an API key for
+// embedded OpenClaw. Create Agent's preflight sends the Preset's runtime binding, so Agent save's
+// refusal comes before anything is saved. Without it, the form saved a Configuration that Agent
+// create then refused, and the form could no longer edit that Configuration.
+test("Runtime-auth Presets are refused before anything is saved where Compute refuses them", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Runtime Preset refused", { ready: true });
+  const preset: FixtureResponse<Preset> = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/presets`,
+    {
+      body: {
+        name: "Operator-managed credentials",
+        template: {
+          agent: {
+            name: "Runtime Agent",
+            executionMode: "embedded",
+            harnessAuth: { method: "runtime" },
+          },
+          configuration: { values: nativeValues("runtime-refused") },
+        },
+      },
+    },
+  );
+  assert.equal(preset.status, 201);
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByLabel("Preset template").selectOption(preset.data.id);
+  await page.getByRole("button", { name: "Use Preset" }).click();
+  const preflight = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/validate` &&
+      response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  const response = await preflight;
+  assert.equal(response.status(), 400);
+  assert.deepEqual(response.request().postDataJSON().harnessAuth, { method: "runtime" });
+  await page
+    .getByRole("alert")
+    .filter({ hasText: "harnessAuth.method must be api_key for embedded OpenClaw" })
+    .waitFor();
+  await page.getByRole("button", { name: "Create Agent", disabled: false }).waitFor();
+  assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
+  assert.equal(agentPostRequests(requests, namespace.id).length, 0);
+});
+
 test("Create Agent browses the curated plugin catalog without a discovery credential", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
