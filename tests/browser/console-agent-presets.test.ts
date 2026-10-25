@@ -2450,6 +2450,27 @@ test("Create Agent stays in view after Use Preset fills a long form", async (t) 
       `${size}: focus is on the heading`,
     );
     assert.equal(await inViewport(heading), true, `${size}: the form starts at its heading`);
+    // Tab down the form to the row: no focused control on the way is under it.
+    let reachedRow = false;
+    for (let step = 1; step <= 60 && !reachedRow; step += 1) {
+      await page.keyboard.press("Tab");
+      const focus = await page.evaluate(() => {
+        const focused = document.activeElement!;
+        const row = document.querySelector("#create-agent-form ~ .form-actions")!;
+        if (row.contains(focused)) {
+          return { inRow: true, hidden: null };
+        }
+        const { bottom } = focused.getBoundingClientRect();
+        return {
+          inRow: false,
+          hidden:
+            bottom > row.getBoundingClientRect().top + 1 ? focused.outerHTML.slice(0, 120) : null,
+        };
+      });
+      assert.equal(focus.hidden, null, `${size}: Tab ${step} focused a control under the row`);
+      reachedRow = focus.inRow;
+    }
+    assert.equal(reachedRow, true, `${size}: Tab reaches the action row`);
   }
 });
 
