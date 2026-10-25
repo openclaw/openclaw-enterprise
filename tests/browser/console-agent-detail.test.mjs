@@ -4081,6 +4081,12 @@ test("a version editor without Agent update can recover a failed deployment from
   );
 });
 
+// The Agent page's copy for a caller without Configuration update (finding 2421).
+const CONFIGURATION_READ_ONLY = "Your access does not include editing this Configuration.";
+const CHANNELS_READ_ONLY = `These are the version draft’s channel settings. ${CONFIGURATION_READ_ONLY}`;
+const READ_ONLY_DRAFT_NOTICE =
+  "Version draft · read-only with your access. The next deployment uses it as saved.";
+
 // A member who can only read the Agent views its draft: the saved JSON with no editor whose
 // Save answers 403, and no editor's copy or checklist (finding 2421).
 test("a reader without update views the version draft read-only", async (t) => {
@@ -4112,21 +4118,14 @@ test("a reader without update views the version draft read-only", async (t) => {
     delete: false,
     configurationUpdate: false,
   });
-  await page
-    .getByText("Your access does not include editing this Configuration.", { exact: true })
-    .waitFor();
+  await page.getByText(CONFIGURATION_READ_ONLY, { exact: true }).waitFor();
   await page.getByText("View native Configuration", { exact: true }).waitFor();
   assert.equal(await page.getByRole("button", { name: "Edit Configuration" }).count(), 0);
   assert.equal(
     await page.getByRole("button", { name: "Enable gateway password access" }).count(),
     0,
   );
-  await page
-    .getByText(
-      "Version draft · read-only with your access. The next deployment uses it as saved.",
-      { exact: true },
-    )
-    .waitFor();
+  await page.getByText(READ_ONLY_DRAFT_NOTICE, { exact: true }).waitFor();
   assert.equal(await page.getByText(/New version\. Changes affect/).count(), 0);
   // The draft card names the draft; Deploy says why it is disabled, with no editor's steps.
   await page.getByRole("heading", { name: "Version draft", exact: true }).waitFor();
@@ -4179,9 +4178,7 @@ test("an Agent editor without Configuration update sees the Configuration read-o
     delete: false,
     configurationUpdate: false,
   });
-  await page
-    .getByText("Your access does not include editing this Configuration.", { exact: true })
-    .waitFor();
+  await page.getByText(CONFIGURATION_READ_ONLY, { exact: true }).waitFor();
   assert.equal(await page.getByRole("button", { name: "Edit Configuration" }).count(), 0);
   // The draft stays a new version (this member can change the Agent's own settings), but its
   // Configuration is not called editable.
@@ -4195,12 +4192,7 @@ test("an Agent editor without Configuration update sees the Configuration read-o
     "New version · read-only Configuration",
   );
   await page.getByRole("tab", { name: "Channels", exact: true }).click();
-  await page
-    .getByText(
-      "These are the version draft’s channel settings. Your access does not include editing this Configuration.",
-      { exact: true },
-    )
-    .waitFor();
+  await page.getByText(CHANNELS_READ_ONLY, { exact: true }).waitFor();
   assert.deepEqual(
     requests
       .filter(({ method, path }) => method !== "GET" && path.startsWith("/namespaces/"))
@@ -4260,12 +4252,7 @@ test("a late permission answer turns a reader's Channels and Channel Secrets rea
   const answer = page.waitForResponse((r) => r.url().endsWith(path + "/permissions"));
   firstPermissions.release();
   assert.equal((await (await answer).json()).data.configurationUpdate, false);
-  await page
-    .getByText(
-      "These are the version draft’s channel settings. Your access does not include editing this Configuration.",
-      { exact: true },
-    )
-    .waitFor();
+  await page.getByText(CHANNELS_READ_ONLY, { exact: true }).waitFor();
   await page.getByText("Read-only with your access.", { exact: true }).waitFor();
   // A reader's card offers no editor's action; Deploy says why it is disabled.
   await page
@@ -4323,16 +4310,9 @@ test("a Channels tab parked before a reader's permission answer returns read-onl
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await page.getByRole("button", { name: "Edit Configuration" }).waitFor();
   firstPermissions.release();
-  await page
-    .getByText("Your access does not include editing this Configuration.", { exact: true })
-    .waitFor();
+  await page.getByText(CONFIGURATION_READ_ONLY, { exact: true }).waitFor();
   await page.getByRole("tab", { name: "Channels", exact: true }).click();
-  await page
-    .getByText(
-      "These are the version draft’s channel settings. Your access does not include editing this Configuration.",
-      { exact: true },
-    )
-    .waitFor();
+  await page.getByText(CHANNELS_READ_ONLY, { exact: true }).waitFor();
   await expectNoText(page, /^Save and Disable update only the shared Configuration draft\./);
 });
 
@@ -4393,16 +4373,9 @@ test("a permission reread after a save turns the draft read-only", async (t) => 
   const answer = page.waitForResponse((r) => r.url().endsWith(path + "/permissions"));
   reread.release();
   assert.equal((await (await answer).json()).data.configurationUpdate, false);
-  await page
-    .getByText(
-      "Version draft · read-only with your access. The next deployment uses it as saved.",
-      { exact: true },
-    )
-    .waitFor();
+  await page.getByText(READ_ONLY_DRAFT_NOTICE, { exact: true }).waitFor();
   await entry.getByText("Read-only Configuration", { exact: true }).waitFor();
-  await page
-    .getByText("Your access does not include editing this Configuration.", { exact: true })
-    .waitFor();
+  await page.getByText(CONFIGURATION_READ_ONLY, { exact: true }).waitFor();
   assert.equal(await page.getByRole("button", { name: "Edit Configuration" }).count(), 0);
 });
 
