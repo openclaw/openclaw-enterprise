@@ -2182,6 +2182,17 @@ select:not([multiple])[size="1"] {
   padding: var(--space-6);
   margin: var(--space-5) 0;
 }
+/* A tab card's first block starts at the card's padding. The Credentials fieldset and the
+   repository picker carry the top margin (and the fieldset its rule) that separate them from
+   fields above on Create Agent, which left an empty band at the top of the card (finding 2386). */
+.agent-card > .harness-auth-fields:first-child,
+.agent-card > .repository-selection:first-child {
+  margin-top: 0;
+}
+.agent-card > .harness-auth-fields:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
 .agent-form {
   max-width: 960px;
 }

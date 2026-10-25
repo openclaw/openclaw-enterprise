@@ -1133,5 +1133,7 @@ export function createRepositoryFields(
     isDirty,
     isSettled,
     blocksCreate,
+    /** Repository access is not set up in this Installation: no save can succeed here. */
+    notConfigured: () => state.discovery === "not-configured",
   };
 }

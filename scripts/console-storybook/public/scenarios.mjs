@@ -23,6 +23,9 @@ const runtimeLogsPage = {
 };
 const refuseLogRead = { suffix: "/runtime/logs", status: 403, code: "FORBIDDEN" };
 const form = [click("Start with default Preset")];
+// The OpenShell Sandbox Driver's refusal of Dedicated OpenClaw on its settings alone.
+const openShellUserNamespacesRefusal =
+  "Dedicated OpenClaw needs kubernetes.userNamespaces: false in the OpenShell Sandbox Driver configuration. Select Codex, or ask an operator to set it.";
 const oauthForm = [...form, { selector: "#agent-auth-method", value: "credential_source" }];
 const startOAuthLogin = [...oauthForm, click("Sign in with OAuth")];
 const reservedConfigurationWrite = {
@@ -1211,6 +1214,14 @@ export const scenarios = {
     name: "Namespace unavailable",
     path: "/console/agents?namespace=ns_missing",
     description: "A stale Namespace link asks the reader to switch scope.",
+  },
+  namespaceMissingNoneReadable: {
+    group: "Pages/Agents",
+    name: "Namespace unavailable, none readable",
+    emptyNamespaces: true,
+    path: "/console/agents?namespace=ns_missing",
+    description:
+      "A stale Namespace link for a reader with no readable Namespace points at the header's Refresh, with no Switch Namespace button.",
   },
   agentsCreateRestricted: {
     group: "Pages/Agents",
@@ -2755,6 +2766,44 @@ export const scenarios = {
     steps: [
       "Look for “Execution mode unavailable” in Runtime details. Both modes and Create Agent are disabled; there is no “saved as drafts” message.",
       "Select Codex and confirm the alert clears and Dedicated remains available.",
+    ],
+  },
+  createOpenclawSettingRefusal: {
+    group: "Pages/Create Agent",
+    name: "OpenClaw refused by Sandbox Driver settings",
+    path: create,
+    nativeWorkerSupport: false,
+    openclawExecutionModes: [],
+    openclawSettingRefusal: openShellUserNamespacesRefusal,
+    actions: [
+      ...form,
+      { selector: "#agent-harness", value: "openclaw" },
+      { selector: ".launch-runtime summary", click: true },
+    ],
+    description:
+      "This simulated Sandbox Driver refuses Embedded OpenClaw, and its settings refuse Dedicated OpenClaw. The alert quotes the refusal, which names the setting and suggests Codex, because Codex can still be selected.",
+    steps: [
+      "Confirm the alert names kubernetes.userNamespaces and ends with “Select Codex, or ask an operator to set it.”",
+      "Select Codex and confirm the alert clears.",
+    ],
+  },
+  createOpenclawSettingRefusalAnthropic: {
+    group: "Pages/Create Agent",
+    name: "OpenClaw refused by Sandbox Driver settings, Anthropic",
+    path: create,
+    nativeWorkerSupport: false,
+    openclawExecutionModes: [],
+    openclawSettingRefusal: openShellUserNamespacesRefusal,
+    actions: [
+      ...form,
+      { selector: "#agent-harness", value: "openclaw" },
+      { selector: "#model-provider", value: "anthropic" },
+      { selector: ".launch-runtime summary", click: true },
+    ],
+    description:
+      "As above, with Anthropic, which hides Codex. The alert keeps the setting requirement but drops “Select Codex”, and names the switch to OpenAI instead.",
+    steps: [
+      "Confirm the alert names kubernetes.userNamespaces, does not say “Select Codex”, and ends with “Choose OpenAI with the Codex harness, or ask an operator to change that setting.”",
     ],
   },
   createOpenclawSandboxDriverOutage: {

@@ -367,7 +367,7 @@ test("Agent repository access preserves inheritance, custom overrides, and expli
   assert.deepEqual(await statusTone(gone), { className: "status", tone: "danger", role: null });
 });
 
-test("Agent repository tab keeps Save disabled for an existing binding while repository options are unavailable", async (t) => {
+test("Agent repository tab offers no Save for an existing binding while repository access is not set up", async (t) => {
   const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId) => [
     {
       repositoryRef: "application",
@@ -421,14 +421,27 @@ test("Agent repository tab keeps Save disabled for an existing binding while rep
     )
     .waitFor();
   assert.equal(await page.getByRole("button", { name: "Retry repository choices" }).count(), 0);
+  // No save can succeed on this page, so Save is not offered (finding 2386).
   const save = page.getByRole("button", { name: "Save repository access" });
-  assert.equal(await save.isDisabled(), true);
-  // Removing the binding makes the form dirty, and Save still stays disabled on this page.
+  const cancel = page.locator(".agent-card").getByRole("button", { name: "Cancel", exact: true });
+  assert.equal(await save.count(), 0);
+  assert.equal(await cancel.count(), 0);
+  // Removing the binding makes the form dirty: Save stays hidden, and Cancel undoes the edit.
   const remove = page.getByRole("button", { name: /^Remove / });
   assert.equal(await remove.count(), 1);
   await remove.click();
   assert.equal(await remove.count(), 0);
-  assert.equal(await save.isDisabled(), true);
+  assert.equal(await save.count(), 0);
+  await cancel.click();
+  await remove.waitFor();
+  // The rebuilt editor offers Cancel only until its repository read settles.
+  await cancel.waitFor({ state: "hidden" });
+  // The hidden Cancel cannot keep focus; the Repositories tab takes it.
+  await page.waitForFunction(() => document.activeElement?.getAttribute("role") === "tab");
+  assert.equal(
+    await page.evaluate(() => document.activeElement?.textContent?.trim()),
+    "Repositories",
+  );
 });
 
 test("Agent repository tab without a Repo Driver names the setup step and offers no Retry", async (t) => {
@@ -469,9 +482,27 @@ test("Agent repository tab without a Repo Driver names the setup step and offers
   );
   assert.doesNotMatch(await status.innerText(), /Retry|Try again/);
   assert.equal(await page.getByRole("button", { name: "Retry repository choices" }).count(), 0);
+  // Nothing can be saved here, so no dead Save or Cancel is offered, and the card starts at its
+  // padding (finding 2386).
+  for (const name of ["Save repository access", "Cancel"]) {
+    assert.equal(
+      await page.locator(".agent-card").getByRole("button", { name, exact: true }).count(),
+      0,
+      name,
+    );
+  }
   assert.equal(
-    await page.getByRole("button", { name: "Save repository access" }).isDisabled(),
-    true,
+    await page
+      .locator(".agent-card:has(> .repository-selection)")
+      .evaluate((card) =>
+        Math.round(
+          card.firstElementChild!.getBoundingClientRect().top -
+            card.getBoundingClientRect().top -
+            card.clientTop -
+            parseFloat(getComputedStyle(card).paddingTop),
+        ),
+      ),
+    0,
   );
 });
 
