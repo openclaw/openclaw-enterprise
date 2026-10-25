@@ -335,12 +335,13 @@ export function rejectionMessage(cause: unknown, mutation = false): string {
     : message(cause, mutation);
 }
 
-// A channel credential reference that Configuration save or provisioning refuses: one without a
-// Secret binding, a `${` the runtime does not substitute, or one that is not the whole value
-// (findings 2319, 2477, 2493); otherwise undefined. The message names the setting, so a form shows
-// it under the field that holds the Configuration.
+// A channel credential value that Configuration save or provisioning refuses: a reference without
+// a Secret binding, a `${` the runtime does not substitute, or a value the setting "holds" that is
+// not one whole reference or a SecretRef it accepts, an inline credential included (findings 2319,
+// 2477, 2493, 2517); otherwise undefined. The message names the setting, so a form shows it under
+// the field that holds the Configuration.
 const CHANNEL_REFERENCE_REFUSAL =
-  / (?:without a Configuration Secret binding|the runtime does not substitute): | holds (?:a \$NAME value|a \$\{NAME:-…\} fallback|a \$\{NAME\} reference with other text)/;
+  / (?:without a Configuration Secret binding|the runtime does not substitute): | holds /;
 export function channelBindingRefusal(cause: unknown): string | undefined {
   const { status, serverMessage } = requestFailure(cause);
   return status === 400 &&

@@ -4131,6 +4131,10 @@ test("Configuration and Preset saves refuse a literal secret in the other slots 
     at(field, value),
     message(field),
   ];
+  // A channel setting is named as the channel rules name it, `channels.telegram.botToken`
+  // (finding 2517).
+  const channelLiteral = (field) =>
+    referenceFormRefusal(field.slice(1).replaceAll("/", "."), "inline");
   const tokenUrl = `https://chat.example.test/?token=${sentinel}`;
   const refused = [
     // Slots the pinned OpenClaw schema registers sensitive.
@@ -4147,22 +4151,22 @@ test("Configuration and Preset saves refuse a literal secret in the other slots 
     slot("/agents/defaults/sandbox/ssh/knownHostsData"),
     slot("/storage/locations/backup/encryption/passphrase"),
     // Channel settings: a token, an account's password and an inline service account.
-    slot("/channels/telegram/botToken"),
-    slot("/channels/matrix/accounts/work/password"),
-    slot("/channels/googlechat/serviceAccount", literalKey, { private_key: sentinel }),
+    slot("/channels/telegram/botToken", channelLiteral),
+    slot("/channels/matrix/accounts/work/password", channelLiteral),
+    slot("/channels/googlechat/serviceAccount", channelLiteral, { private_key: sentinel }),
     // A field only the channel's manifest marks sensitive: a URL that carries a token.
-    slot("/channels/synology-chat/incomingUrl", literalKey, tokenUrl),
-    slot("/channels/synology-chat/accounts/ops/webhookUrl", literalKey, tokenUrl),
-    slot("/channels/synology-chat/webhookUrl", literalKey, tokenUrl),
-    slot("/channels/synology-chat/accounts/ops/incomingUrl", literalKey, tokenUrl),
+    slot("/channels/synology-chat/incomingUrl", channelLiteral, tokenUrl),
+    slot("/channels/synology-chat/accounts/ops/webhookUrl", channelLiteral, tokenUrl),
+    slot("/channels/synology-chat/webhookUrl", channelLiteral, tokenUrl),
+    slot("/channels/synology-chat/accounts/ops/incomingUrl", channelLiteral, tokenUrl),
     // Each word of the rule: a secret, an encryption key, a service account reference.
-    slot("/channels/line/channelSecret"),
-    slot("/channels/feishu/encryptKey"),
-    slot("/channels/googlechat/serviceAccountRef"),
+    slot("/channels/line/channelSecret", channelLiteral),
+    slot("/channels/feishu/encryptKey", channelLiteral),
+    slot("/channels/googlechat/serviceAccountRef", channelLiteral),
     // Two literals in one channel: the first in the document is named.
     [
       { channels: { telegram: { botToken: sentinel, webhookSecret: sentinel } } },
-      literalKey("/channels/telegram/botToken"),
+      channelLiteral("/channels/telegram/botToken"),
     ],
     // Plugin settings: a key, an account's password, a list entry, a field only the manifest
     // marks sensitive and a headers map.
@@ -4200,7 +4204,7 @@ test("Configuration and Preset saves refuse a literal secret in the other slots 
     variables: { token: { type: "string" } },
     configuration: { values: { channels: { telegram: { botToken: "{{ vars.token }}" } } } },
   });
-  assertRefused(variable, literalKey("/channels/telegram/botToken"));
+  assertRefused(variable, channelLiteral("/channels/telegram/botToken"));
   await assertNothingStored(context, [`${created.body.data.id}.json`]);
 
   // `${NAME}` and SecretRef references still save, and so do settings the rule leaves alone:
@@ -4304,8 +4308,10 @@ test("a credential reference that is not the whole value is refused with a messa
       otherText("plugins.entries.brave.config.webSearch.apiKey"),
     ],
     [{ gateway: { remote: { token: "$REMOTE_TOKEN" } } }, shorthand("gateway.remote.token")],
-    // An escape renders literal text, so it is a literal credential, with that message.
-    [slack("$${SLACK_BOT_TOKEN}"), literalKey("/channels/slack/botToken")],
+    // An escape renders literal text, so it is a literal credential, with that message. So is a
+    // `$` before a name the runtime does not read as one (finding 2517).
+    [slack("$${SLACK_BOT_TOKEN}"), referenceFormRefusal(bot, "inline")],
+    [slack(`$xoxb${sentinel}`), referenceFormRefusal(bot, "inline")],
   ]) {
     await refusedOnSave(context, values, message, { item, sentinel });
   }

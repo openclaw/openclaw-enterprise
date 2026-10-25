@@ -366,6 +366,8 @@ test("a bound Slack token reference that is not the whole value is refused under
     ["xoxb-${SLACK_BOT_TOKEN}", form("otherText")],
     // A trailing space is not text around the reference (finding 2503).
     ["${SLACK_BOT_TOKEN} ", form("otherText")],
+    // A token pasted as the value names the setting the same way (finding 2517).
+    ["xoxb-pasted-token-value", form("inline")],
   ] as const) {
     assert.equal(await saveWith(botToken), 400, botToken);
     await page.locator("#configuration-json-error").getByText(refusal, { exact: true }).waitFor();

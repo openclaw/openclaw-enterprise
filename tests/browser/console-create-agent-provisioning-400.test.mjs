@@ -491,6 +491,8 @@ test("Create Agent names a refused Slack token form once, under its Configuratio
   };
   for (const [botToken, message] of [
     ["xoxb-${SLACK_BOT_TOKEN}", referenceFormRefusal("channels.slack.botToken", "otherText")],
+    // A `$` before a name the runtime does not read is the token itself (finding 2517).
+    ["$xoxbSECRET", referenceFormRefusal("channels.slack.botToken", "inline")],
     [
       "${SLACK_SPARE_TOKEN}",
       "Configuration setting channels.slack.botToken references SLACK_SPARE_TOKEN without a Configuration Secret binding: bind SLACK_SPARE_TOKEN in secretBindings to an environment-backed Secret, or remove the reference.",
@@ -513,7 +515,7 @@ test("Create Agent names a refused Slack token form once, under its Configuratio
   }
   // Refused before Slack was asked, and nothing was saved.
   assert.equal(slackCalls, lookups);
-  assert.equal(agentProvisionPostRequests(requests, namespace.id).length, 2);
+  assert.equal(agentProvisionPostRequests(requests, namespace.id).length, 3);
   assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
 });
 

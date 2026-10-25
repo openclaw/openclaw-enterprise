@@ -8271,7 +8271,7 @@ test("SSH Compute refuses at Agent save and deploy a roster or workspace whose m
   }
 });
 
-test("Agent provisioning names a refused channel token reference form before Slack validation", async () => {
+test("Agent provisioning and deploy name a refused channel token reference form before Slack validation", async () => {
   // Finding 2506: provisioning ran the Slack Channel Driver's check before the Configuration rules
   // Configuration save applies. That check reads only an env SecretRef, so every refused string
   // form, bound or not, got its generic "Select an environment-backed Secret" answer. These are
@@ -8337,8 +8337,10 @@ test("Agent provisioning names a refused channel token reference form before Sla
     });
   const setting = (requirement) => `Configuration setting channels.slack.botToken ${requirement}.`;
   const form = (name) => referenceFormRefusal("channels.slack.botToken", name);
-  for (const [botToken, message] of [
+  const forms = [
     ["xoxb-${SLACK_BOT_TOKEN}", form("otherText")],
+    // Finding 2517: a token pasted as the value names the setting the same way.
+    ["$xoxbSECRET", form("inline")],
     // Finding 2503: trailing space and two references are not "text around" a reference.
     ["${SLACK_BOT_TOKEN} ", form("otherText")],
     ["${SLACK_BOT_TOKEN}${SLACK_APP_TOKEN}", form("otherText")],
@@ -8356,11 +8358,19 @@ test("Agent provisioning names a refused channel token reference form before Sla
         "references SLACK_SPARE_TOKEN without a Configuration Secret binding: bind SLACK_SPARE_TOKEN in secretBindings to an environment-backed Secret, or remove the reference",
       ),
     ],
-  ]) {
+    // Finding 2520: the binding rule answers before the form rule, at save and at deploy.
+    [
+      "xoxb-${SLACK_SPARE_TOKEN}",
+      setting(
+        "references SLACK_SPARE_TOKEN without a Configuration Secret binding: bind SLACK_SPARE_TOKEN in secretBindings to an environment-backed Secret, or remove the reference",
+      ),
+    ],
+  ];
+  for (const [botToken, message] of forms) {
     const refused = await provision(botToken);
     assertApiError(refused, 400, "INVALID_REQUEST");
     assert.equal(refused.body.error.message, message, botToken);
-    assert.doesNotMatch(JSON.stringify(refused.body), /xoxb-synthetic/);
+    assert.doesNotMatch(JSON.stringify(refused.body), /xoxb-synthetic|SECRET/);
   }
   // Each was refused before Slack was asked, and nothing was created.
   assert.equal(calls, 0);
@@ -8368,6 +8378,49 @@ test("Agent provisioning names a refused channel token reference form before Sla
     await fixture.platformState.read((view) => view.agents.listAgents(namespace.id)),
     [],
   );
+
+  // Finding 2516: deployment also asked the Slack Channel Driver first. A stored Configuration
+  // that predates these rules, written past OCC, now gets the rule's message at deploy, still
+  // before Slack is asked.
+  const values = {
+    agents: { defaults: { model: "codex/gpt-6-astra" } },
+    channels: {
+      slack: {
+        enabled: true,
+        mode: "socket",
+        appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+        botToken: "${SLACK_BOT_TOKEN}",
+      },
+    },
+  };
+  const config = await controller.request("POST", `${base}/configurations`, {
+    body: {
+      kind: "agent",
+      values,
+      secretBindings: {
+        SLACK_APP_TOKEN: { source: app.ref, delivery: { type: "env" } },
+        SLACK_BOT_TOKEN: { source: bot.ref, delivery: { type: "env" } },
+      },
+    },
+  });
+  assert.equal(config.status, 201, JSON.stringify(config.body));
+  const agent = await controller.request("POST", `${base}/agents`, {
+    body: { name: "slack-forms", configurationId: config.data.id },
+  });
+  assert.equal(agent.status, 201, JSON.stringify(agent.body));
+  await bindHarnessKey(fixture, namespace.id, agent.data);
+  for (const [botToken, message] of forms) {
+    const stored = configurationDriver.stored({ namespaceId: namespace.id, id: config.data.id });
+    await configurationDriver.update({
+      ...stored,
+      values: { ...values, channels: { slack: { ...values.channels.slack, botToken } } },
+    });
+    const refused = await controller.request("POST", `${base}/agents/${agent.data.id}/deploy`);
+    assertApiError(refused, 400, "INVALID_REQUEST");
+    assert.equal(refused.body.error.message, message, botToken);
+    assert.doesNotMatch(JSON.stringify(refused.body), /xoxb-synthetic|SECRET/);
+  }
+  assert.equal(calls, 0);
 });
 
 test("Slack validation rejects swapped credentials and preserves authorization", async () => {

@@ -68,8 +68,11 @@ export const REPOSITORY_EDITS_PENDING =
 export const CONFIGURATION_EDITS_PENDING = "Save or cancel Configuration edits before deploying.";
 
 // The Configuration Drivers' refusal of a credential slot that holds a reference the runtime
-// substitutes, but not as the whole value, naming the setting (findings 2493, 2503).
+// substitutes, but not as the whole value, naming the setting (findings 2493, 2503), and of a
+// channel credential setting that holds the value itself (finding 2517).
 const REFERENCE_FORMS = {
+  inline:
+    "holds a credential value inline, where a reference is required. Make the value a ${NAME} reference or a SecretRef",
   shorthand:
     "holds a $NAME value, where a credential reference is required. Write it as one ${NAME} reference, or a SecretRef",
   fallback:
