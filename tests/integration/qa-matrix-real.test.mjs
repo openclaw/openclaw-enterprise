@@ -24,7 +24,7 @@ test(
     const { protectedText } = await import("../helpers/qa-secrets.mjs");
     const { createQaReport } = await import("../helpers/qa-report.mjs");
     const { createQaBrowser } = await import("../helpers/qa-browser.mjs");
-    const { prepareQaRepository, verifyQaRepository, stopQaAgent } =
+    const { prepareQaRepository, verifyQaRepository, stopQaAgentForCleanup } =
       await import("../helpers/qa-repository.mjs");
     const { verifyCalendarReviewPolicy } = await import("../helpers/calendar-review.mjs");
     const { verifyQaSlack } = await import("../helpers/qa-slack.mjs");
@@ -124,15 +124,17 @@ test(
                     const step = (title, action) =>
                       stage(scenarioContext, cell, title, action, name);
                     const suffix = `-${name}`;
+                    let agent;
+                    let afterStop;
                     try {
-                      const agent = await step(
+                      agent = await step(
                         "preset deployment and supported authentication",
                         async () => {
                           assert.ok(ready, "blocked by preset preparation failure");
                           return createQaAgent(f, preset, browser?.nativeOrigin, suffix);
                         },
                       );
-                      await work(agent, (title, action) =>
+                      afterStop = await work(agent, (title, action) =>
                         step(title, async () => {
                           assert.ok(agent, "blocked by Agent deployment failure");
                           return action();
@@ -145,14 +147,14 @@ test(
                         (agent) => agent.preset === preset && agent.qaScenario === suffix,
                       );
                       if (owned && !owned.stopped) {
-                        await step("ordinary Agent cleanup", async () => {
-                          try {
-                            await stopQaAgent(f, owned);
-                          } catch (error) {
-                            f.retained = true;
-                            throw error;
-                          }
-                        });
+                        const stopped = await step("ordinary Agent cleanup", () =>
+                          stopQaAgentForCleanup(f, owned),
+                        );
+                        // A failed or filtered stage returns no value. Deletion requires both
+                        // the successful scenario and this exact Agent's confirmed stop.
+                        if (stopped && owned === agent && afterStop) {
+                          await afterStop();
+                        }
                       }
                     }
                   });
@@ -161,13 +163,20 @@ test(
                   [
                     "console-secrets",
                     async (agent, step) => {
-                      await step(
+                      const verified = await step(
                         "console Secret lifecycle and Agent Configuration references",
                         async () => {
                           assert.ok(browser, "blocked by browser setup failure");
                           await browser.verifySecrets(agent);
+                          return true;
                         },
                       );
+                      if (verified) {
+                        return () =>
+                          step("follow Console deletion through completion", () =>
+                            browser.verifyAgentDeletion(agent),
+                          );
+                      }
                     },
                   ],
                   [

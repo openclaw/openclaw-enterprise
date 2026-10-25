@@ -15,6 +15,7 @@
     "tests/integration/postgres-backend-ownership.test.mjs",
     "tests/integration/postgres-restart-recovery.test.mjs",
     "tests/integration/postgres-agent-deletion-audit.test.mjs",
+    "tests/integration/postgres-agent-deletion-status.test.ts",
     "tests/integration/postgres-agent-runtime-logs.test.mjs",
     "tests/integration/postgres-repository-broker-receipts.test.mjs",
     "tests/integration/postgres-worker-stale-claim.test.mjs",
@@ -197,6 +198,12 @@
       "path": "tests/integration/postgres-agent-deletion-audit.test.mjs",
       "expectedTests": [
         "Agent delete audit lists every AccessBinding and Restriction the deletion finalizer removes"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-agent-deletion-status.test.ts",
+      "expectedTests": [
+        "Agent deletion receipts follow real work through lost claims, takeover and removal of Agent access"
       ]
     },
     {

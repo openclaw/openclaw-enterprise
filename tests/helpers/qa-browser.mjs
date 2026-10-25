@@ -6,6 +6,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:tls";
 import { chromium } from "playwright";
+import { verifyConsoleAgentDeletion } from "./console-agent-deletion.ts";
 import { availablePort } from "./available-port.mjs";
 import { prepareQaConsoleTheme } from "./qa-installation.mjs";
 import { waitFor } from "./qa-utils.mjs";
@@ -120,6 +121,9 @@ export async function createQaBrowser(f, { themed }) {
   });
   return {
     nativeOrigin: f.controlPlane === "compose" ? nativeOrigin : undefined,
+    async verifyAgentDeletion(agent) {
+      await verifyConsoleAgentDeletion(browser, f.consoleUrl, agent);
+    },
     async verifySecrets(agent) {
       const secretsPage = await browser.newPage();
       const base = `/namespaces/${agent.namespaceId}`;

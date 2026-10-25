@@ -12,6 +12,7 @@ export function createPlatformReadView(
     operations: bindRepository(repositories.operations, lifetime, [
       "list",
       "findWork",
+      "findAgentDeletionStatus",
       "findWorkAttempt",
       "hasOutstandingCredentialWithdrawalWork",
     ]),

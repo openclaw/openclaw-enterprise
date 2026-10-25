@@ -30,6 +30,7 @@ import {
 import type {
   AccessBinding,
   Agent,
+  AgentDeletionStatusResponse,
   AgentRead,
   AgentRevisionMetadata,
   AgentRevisionSummaryPage,
@@ -915,6 +916,13 @@ export type PlatformOperation =
 
 export interface PlatformOperationReadRepository {
   list(): Promise<readonly Readonly<PlatformOperation>[]>;
+  /** An exact live deletion, or the outcome of this actor's receipted DELETE. */
+  findAgentDeletionStatus(request: {
+    readonly installationId: string;
+    readonly namespaceId: string;
+    readonly agentId: string;
+    readonly receipt?: { readonly id: string; readonly actorId: string };
+  }): Promise<Pick<AgentDeletionStatusResponse["data"], "status" | "nextAttemptAt"> | undefined>;
   findWork(idempotencyKey: string): Promise<Readonly<ControllerWork> | undefined>;
   findWorkAttempt(idempotencyKey: string): Promise<Readonly<ControllerWorkAttempt> | undefined>;
   /** True while credential withdrawal work for the revision is queued or claimed. */
@@ -3512,6 +3520,57 @@ function repositories(
         Object.freeze(snapshot.operations.map((operation) => immutableCopy(operation))),
       // The in-memory operation log has no executing or terminal work records.
       retryFailedAgentDeletion: async () => false,
+      findAgentDeletionStatus: async ({ installationId, namespaceId, agentId, receipt }) => {
+        if (snapshot.installation?.id !== installationId) {
+          return undefined;
+        }
+        const namespace = snapshot.namespaces.get(namespaceId);
+        if (namespace === undefined || namespace.deletedAt !== undefined) {
+          return undefined;
+        }
+        const exactSuccess = (event: AuditEvent) =>
+          event.kind === "mutation" &&
+          event.outcome === "success" &&
+          event.installationId === installationId &&
+          event.namespaceId === namespaceId &&
+          event.resource.kind === "agent" &&
+          event.resource.id === agentId;
+        if (
+          receipt &&
+          !snapshot.audit.some(
+            (event) =>
+              event.id === receipt.id &&
+              event.actorId === receipt.actorId &&
+              event.action === "openclaw.agents.delete" &&
+              exactSuccess(event),
+          )
+        ) {
+          return undefined;
+        }
+        const agent = snapshot.agents.get(agentKey(namespaceId, agentId));
+        if (agent !== undefined) {
+          const queued =
+            agent.status === "deleting" &&
+            agent.desiredRuntimeState === "stopped" &&
+            snapshot.operations.some(
+              (op) =>
+                op.kind === "agent" &&
+                op.target === "deleted" &&
+                op.namespaceId === namespaceId &&
+                op.resourceId === agentId,
+            );
+          return queued ? { status: "queued" } : undefined;
+        }
+        const completed =
+          receipt !== undefined &&
+          snapshot.audit.some(
+            (event) =>
+              event.action === "openclaw.agents.lifecycle.delete" &&
+              exactSuccess(event) &&
+              event.details?.reasonCode === "AGENT_DELETED",
+          );
+        return completed ? { status: "deleted" } : undefined;
+      },
       retryFailedNamespaceDeletion: async () => false,
       expediteCredentialWithdrawalWork: async () => false,
       findWorkAttempt: async () => undefined,

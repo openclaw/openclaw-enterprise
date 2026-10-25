@@ -1,3 +1,5 @@
+import { isDeletionReceiptId } from "./agents/deletion-status.mjs";
+
 export const pages = Object.freeze({
   agents: "Agents",
   secrets: "Secrets",
@@ -12,6 +14,7 @@ interface LoginIntent {
   namespaceId: string | null;
   revision: string | null;
   tab: string | null;
+  receiptId?: string;
 }
 
 interface NavigationOptions {
@@ -36,10 +39,11 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: Nav
     const path = url.pathname;
     const feature =
       path === "/console" || path === "/console/" ? "agents" : path.slice("/console/".length);
-    const agentPath = /^agents\/(new|agt_[a-f0-9-]+)$/.exec(feature);
+    const agentPath = /^agents\/(?:(new)|(agt_[a-f0-9-]+)(\/deletion)?)$/.exec(feature);
     return {
       feature: agentPath ? "agents" : feature,
-      agentId: agentPath?.[1] === "new" ? null : agentPath?.[1],
+      agentId: agentPath?.[1] === "new" ? null : agentPath?.[2],
+      deletion: agentPath?.[3] !== undefined,
       creating: agentPath?.[1] === "new",
       target: feature + url.search,
       namespace: url.searchParams.get("namespace"),
@@ -91,10 +95,20 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: Nav
       return false;
     }
     const detail = intent.feature.startsWith("agents/") && agentId.test(intent.feature.slice(7));
+    // Resume only a structured same-origin status link. The receipt identifies the deletion;
+    // the controller checks the newly signed-in subject and current Namespace access.
+    const deletion =
+      intent.feature.startsWith("agents/") &&
+      intent.feature.endsWith("/deletion") &&
+      agentId.test(intent.feature.slice(7, -9));
     return (
-      (Object.hasOwn(pages, intent.feature) || intent.feature === "agents/new" || detail) &&
-      (intent.namespaceId === null ||
+      (Object.hasOwn(pages, intent.feature) ||
+        intent.feature === "agents/new" ||
+        detail ||
+        deletion) &&
+      ((!deletion && intent.namespaceId === null) ||
         (typeof intent.namespaceId === "string" && namespaceId.test(intent.namespaceId))) &&
+      (intent.receiptId === undefined || (deletion && isDeletionReceiptId(intent.receiptId))) &&
       (intent.revision === null ||
         (detail &&
           typeof intent.revision === "string" &&
@@ -112,8 +126,10 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: Nav
     if (url.origin !== location.origin) {
       return null;
     }
+    const receiptId = url.searchParams.get("receiptId");
     const intent = {
       kind: "console",
+      ...(receiptId === null ? {} : { receiptId }),
       feature: url.pathname.slice("/console/".length),
       namespaceId: url.searchParams.get("namespace"),
       revision: url.searchParams.get("revision"),
@@ -135,6 +151,9 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: Nav
     }
     if (intent.tab !== null) {
       query.set("tab", intent.tab);
+    }
+    if (intent.receiptId !== undefined) {
+      query.set("receiptId", intent.receiptId);
     }
     return `/console/${intent.feature}${query.size ? `?${query}` : ""}`;
   }
@@ -166,7 +185,10 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: Nav
     }
     // A deliberate list → detail navigation, not a refresh, deep link or history traversal.
     const openingAgent =
-      !replace && current.url.pathname === "/console/agents" && Boolean(route().agentId);
+      !replace &&
+      current.url.pathname === "/console/agents" &&
+      Boolean(route().agentId) &&
+      !route().deletion;
     void loadPage({ fromNavigation: true, openingAgent });
   }
 

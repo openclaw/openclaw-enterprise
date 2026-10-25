@@ -373,7 +373,7 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
     },
     async deleteAgent({ controller, context, request, reply, params, namespaceId, mutationEvent }) {
       const agentId = params.agentId!;
-      const agent = await controller.transact(async (unit) => {
+      const { agent, deletionReceiptId } = await controller.transact(async (unit) => {
         const deleting = await controller.deleteAgent(context.actorId, namespaceId, agentId);
         // The deleting Agent refuses new bindings on itself, its AgentRevisions, and its
         // ServicePrincipal, so these are exactly the AccessBindings that completing the
@@ -381,22 +381,31 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
         const pending = await accessBindingsRemovedWithAgent(unit, deleting);
         // The finalizer also deletes the Restrictions on the Agent and its AgentRevisions.
         const restrictions = await restrictionsRemovedWithAgent(unit, deleting);
-        await unit.audit.append(
-          mutationEvent(
-            { kind: "agent", id: deleting.id, namespaceId },
-            pending.length === 0 && restrictions.length === 0
-              ? undefined
-              : {
-                  ...(pending.length === 0 ? {} : { accessBindingsRemovedOnCompletion: pending }),
-                  ...(restrictions.length === 0
-                    ? {}
-                    : { restrictionsRemovedOnCompletion: restrictions }),
-                },
-          ),
+        const admission = mutationEvent(
+          { kind: "agent", id: deleting.id, namespaceId },
+          pending.length === 0 && restrictions.length === 0
+            ? undefined
+            : {
+                ...(pending.length === 0 ? {} : { accessBindingsRemovedOnCompletion: pending }),
+                ...(restrictions.length === 0
+                  ? {}
+                  : { restrictionsRemovedOnCompletion: restrictions }),
+              },
         );
-        return clientAgent(deleting);
+        await unit.audit.append(admission);
+        return { agent: clientAgent(deleting), deletionReceiptId: admission.id };
       });
-      reply.status(202).send({ data: agent, meta: { requestId: request.id } });
+      reply.status(202).send({ data: agent, meta: { requestId: request.id, deletionReceiptId } });
+    },
+    async getAgentDeletionStatus({ controller, context, request, reply, params, namespaceId }) {
+      const { receiptId } = request.query as { readonly receiptId?: string };
+      const data = await controller.getAgentDeletionStatus(
+        context.actorId,
+        namespaceId,
+        params.agentId!,
+        receiptId,
+      );
+      reply.header("cache-control", "no-store").send({ data, meta: { requestId: request.id } });
     },
     async getAgentRuntimeImages({ controller, context, request, reply, params, namespaceId }) {
       const agentId = params.agentId!;

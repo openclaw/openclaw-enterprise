@@ -721,10 +721,10 @@ test("The current version, Slack token bindings and Namespace rows use the badge
   );
 });
 
-// The Agents list's Deleting and Saved configuration unreadable badges and the detail header's
-// Deleting badge keep their tones; no test checked them (finding 1973).
-test("Deleting and unreadable configuration badges take their tones on the list and the detail page", async (t) => {
-  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Badge tones");
+test("The Agents list links to queued deletion progress and marks unreadable configuration as danger", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Agent status tones", {
+    recordOperations: true,
+  });
   const deleting = await fixture.createAgent(namespace.id, "Deleting Agent", nativeValues("del"));
   const unreadable = await fixture.createAgent(
     namespace.id,
@@ -767,38 +767,39 @@ test("Deleting and unreadable configuration badges take their tones on the list 
   });
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
   const table = page.locator(settledView).getByRole("table", { name: "Agents" });
-  const rowBadge = (name: string) =>
-    table
-      .getByRole("row")
-      .filter({ has: page.getByRole("link", { name, exact: true }) })
-      .locator(".badge");
-  for (const [name, text, tone] of [
-    ["Deleting Agent", "Deleting", "warning"],
-    ["Unreadable Agent", "Saved configuration unreadable", "danger"],
-  ] as const) {
-    await rowBadge(name).waitFor();
-    const { badge, text: shown, tone: shownTone, painted } = await badgeState(rowBadge(name));
-    assert.deepEqual(
-      { badge, text: shown, tone: shownTone, painted },
-      { badge: true, text, tone, painted: true },
-      name,
-    );
-  }
+  const row = (name: string) =>
+    table.getByRole("row").filter({ has: page.getByRole("link", { name, exact: true }) });
+  const unreadableBadge = row(unreadable.name).getByText("Saved configuration unreadable", {
+    exact: true,
+  });
+  const { badge, tone, painted } = await badgeState(unreadableBadge);
+  assert.deepEqual({ badge, tone, painted }, { badge: true, tone: "danger", painted: true });
 
-  await page.goto(detailUrl(fixture, namespace.id, deleting.id).href);
-  await page.locator(settledView).waitFor();
-  // The badge sits in the page header's actions, where Create new version would be.
-  const header = page
-    .locator(".content .page-header .page-actions")
-    .locator(".badge")
-    .filter({ hasText: /^Deleting$/ });
-  await header.waitFor();
-  const { badge, text, tone, painted } = await badgeState(header);
-  assert.deepEqual(
-    { badge, text, tone, painted },
-    { badge: true, text: "Deleting", tone: "warning", painted: true },
-    "detail header",
+  // A deleting row opens progress. Ordinary queued cleanup uses the informational colour.
+  await row(deleting.name)
+    .getByRole("link", { name: "View deletion progress", exact: true })
+    .click();
+  await page.waitForURL(
+    (url) =>
+      url.pathname === `/console/agents/${deleting.id}/deletion` &&
+      url.searchParams.get("namespace") === namespace.id,
   );
+  const progress = page.getByRole("list", { name: "Deletion progress" });
+  const queued = progress
+    .getByRole("listitem")
+    .filter({ hasText: "Agent cleanup" })
+    .getByText("Queued", { exact: true });
+  await queued.waitFor();
+  const informational = await queued.evaluate((node) => {
+    const probe = node.ownerDocument.createElement("span");
+    probe.style.color = "var(--color-info)";
+    node.after(probe);
+    const painted =
+      globalThis.getComputedStyle(node).color === globalThis.getComputedStyle(probe).color;
+    probe.remove();
+    return painted;
+  });
+  assert.equal(informational, true, "Queued cleanup uses the informational colour");
 });
 
 // Links and disclosures share a colour distinct from primary actions. Names in a table

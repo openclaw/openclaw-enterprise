@@ -5226,6 +5226,64 @@ export class PostgresPlatformState implements PlatformStateStore {
           await this.requireInitialized(context);
           return queue.findWork(idempotencyKey);
         },
+        findAgentDeletionStatus: async ({ installationId, namespaceId, agentId, receipt }) => {
+          // Admission is a primary-key lookup. The finalizer removes the grants, Agent and work,
+          // and commits AGENT_DELETED in that same transaction. Read one snapshot across that
+          // boundary; neither absence nor an accepted DELETE is evidence that deletion finished.
+          await this.requireInstallation(context, installationId);
+          const found = await client.query(
+            `WITH admission AS (
+               SELECT 1 FROM occ.audit_events
+               WHERE id = $3 AND actor_id = $4 AND namespace_id = $1 AND resource_id = $2
+                 AND action = 'openclaw.agents.delete' AND kind = 'mutation'
+                 AND resource_kind = 'agent' AND outcome = 'success'
+                 AND EXISTS (SELECT FROM occ.namespaces WHERE id = $1 AND deleted_at IS NULL)
+             ), agent AS (
+               SELECT status, desired_runtime_state FROM occ.agents WHERE namespace_id = $1 AND id = $2
+             ), live AS (
+               SELECT work.state,
+                 work.lease_expires_at > statement_timestamp() AS lease_active,
+                 CASE WHEN work.state = 'queued' AND work.available_at > statement_timestamp()
+                   THEN work.available_at END AS next_attempt_at
+               FROM occ.controller_work AS work, agent
+               WHERE agent.status = 'deleting' AND agent.desired_runtime_state = 'stopped'
+                 AND work.idempotency_key = 'agent:' || $2 || ':reconcile:deleted'
+                 AND work.namespace_id = $1 AND work.agent_id = $2 AND work.work_kind = 'lifecycle'
+                 AND work.agent_target = 'deleted' AND work.revision_id IS NULL AND work.namespace_target IS NULL
+                 AND ($3::text IS NULL OR EXISTS (SELECT FROM admission))
+             )
+             SELECT CASE
+               WHEN state = 'claimed' THEN CASE WHEN lease_active THEN 'running' ELSE 'waiting' END
+               WHEN state = 'queued' THEN CASE WHEN next_attempt_at IS NULL THEN 'queued' ELSE 'waiting' END
+               ELSE 'failed'
+             END AS status, next_attempt_at
+             FROM live WHERE state IN ('claimed', 'queued', 'failed_permanent')
+             UNION ALL
+             SELECT 'deleted', NULL
+             WHERE EXISTS (SELECT FROM admission) AND NOT EXISTS (SELECT FROM agent)
+               AND EXISTS (
+                 SELECT FROM occ.audit_events
+                 WHERE namespace_id = $1 AND resource_id = $2
+                   AND action = 'openclaw.agents.lifecycle.delete' AND kind = 'mutation'
+                   AND resource_kind = 'agent' AND outcome = 'success' AND details->>'reasonCode' = 'AGENT_DELETED'
+               )`,
+            [namespaceId, agentId, receipt?.id ?? null, receipt?.actorId ?? null],
+          );
+          const row = found.rows[0] as
+            | {
+                status: "queued" | "running" | "waiting" | "failed" | "deleted";
+                next_attempt_at: Date | null;
+              }
+            | undefined;
+          return row === undefined
+            ? undefined
+            : {
+                status: row.status,
+                ...(row.next_attempt_at === null
+                  ? {}
+                  : { nextAttemptAt: row.next_attempt_at.toISOString() }),
+              };
+        },
         findWorkAttempt: async (idempotencyKey) => {
           await this.requireInitialized(context);
           return queue.findWorkAttempt(idempotencyKey);
