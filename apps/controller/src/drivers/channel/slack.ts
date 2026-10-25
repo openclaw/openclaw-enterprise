@@ -3,7 +3,11 @@ import type {
   ChannelDirectoryResult,
   ChannelDriver,
 } from "@openclaw-enterprise/contracts";
-import { ChannelCredentialError, ChannelDirectoryError } from "@openclaw-enterprise/occ";
+import {
+  ChannelCredentialError,
+  ChannelDirectoryError,
+  wholeEnvironmentReferenceName,
+} from "@openclaw-enterprise/occ";
 import { asRecord, readCappedBody } from "@openclaw-enterprise/utils";
 import { isIP } from "node:net";
 import { fetch as undiciFetch, ProxyAgent, type Response as UndiciResponse } from "undici";
@@ -145,7 +149,12 @@ export class SlackChannelDriver implements ChannelDriver {
           continue;
         }
         const field = `${path}/${role}`;
-        const ref = asRecord(config[role]);
+        // OpenClaw reads a token that is exactly one `${NAME}` as the env SecretRef to NAME, and
+        // Configuration save accepts that form (finding 2511). Any other string stays refused.
+        const token = config[role];
+        const whole = typeof token === "string" ? wholeEnvironmentReferenceName(token) : undefined;
+        const ref: Record<string, unknown> | undefined =
+          whole === undefined ? asRecord(token) : { source: "env", id: whole };
         if (
           ref?.source !== "env" ||
           (ref.provider !== undefined && ref.provider !== "default") ||
