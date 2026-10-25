@@ -197,6 +197,7 @@ test("caller permission summaries report primary IAM decisions without authorizi
     operate: true,
     delete: true,
     configurationUpdate: true,
+    configurationSecretsOperate: true,
   });
   const adminNamespace = await fixture.request("GET", namespacePath);
   assert.equal(adminNamespace.status, 200);
@@ -247,6 +248,7 @@ test("caller permission summaries report primary IAM decisions without authorizi
     operate: false,
     delete: false,
     configurationUpdate: false,
+    configurationSecretsOperate: false,
   });
   // Configuration update on the Agent's Configuration is its own grant (finding 2421).
   fixture.policy.roles.push({
@@ -303,6 +305,78 @@ test("caller permission summaries report primary IAM decisions without authorizi
   const after = await fixture.request("GET", revisionsPath);
   assert.equal(after.status, 200);
   assert.deepEqual(after.data, before.data, "denied deployment created no revision");
+
+  // Each Configuration save authorizes Secret operate on every Secret it binds, so Configuration
+  // update alone does not say a save can succeed (finding 2437). The answer covers the bound
+  // Secrets, and only for a caller who may read and update the Configuration.
+  assert.equal(configurationSummary.data.configurationSecretsOperate, false);
+  const bound = await fixture.createSecret(namespace.id, "Bound token", "bound-token-value");
+  const boundAgent = await fixture.createAgent(
+    namespace.id,
+    "Bound agent",
+    {},
+    {
+      secretBindings: { EXTERNAL_API_TOKEN: { source: bound.ref, delivery: { type: "env" } } },
+    },
+  );
+  const boundPermissions = `/namespaces/${namespace.id}/agents/${boundAgent.id}/permissions`;
+  const bindExact = (id, roleId, resourceKind, resourceId) =>
+    fixture.policy.bindings.push({
+      id,
+      namespaceId: namespace.id,
+      subjectKind: "identity",
+      subjectId: limited.principal.id,
+      roleId,
+      resourceKind,
+      resourceId,
+    });
+  fixture.policy.roles.push(
+    {
+      id: "role-permission-summary-configuration-editor",
+      namespaceId: namespace.id,
+      permissions: [
+        { action: "read", resourceKind: "configuration" },
+        { action: "update", resourceKind: "configuration" },
+      ],
+    },
+    {
+      id: "role-permission-summary-secret-operator",
+      namespaceId: namespace.id,
+      permissions: [{ action: "operate", resourceKind: "secret" }],
+    },
+  );
+  bindExact("binding-bound-agent", "role-permission-summary-agent", "agent", boundAgent.id);
+  // Configuration update without read: the answer says nothing about the bound Secrets.
+  bindExact(
+    "binding-bound-configuration-update",
+    "role-permission-summary-configuration",
+    "configuration",
+    boundAgent.configurationId,
+  );
+  const updateOnly = await fixture.request("GET", boundPermissions, { session });
+  assert.equal(updateOnly.data.configurationUpdate, true);
+  assert.equal(updateOnly.data.configurationSecretsOperate, false);
+  // Read and update, but no operate on the bound Secret: a save would be refused.
+  bindExact(
+    "binding-bound-configuration-editor",
+    "role-permission-summary-configuration-editor",
+    "configuration",
+    boundAgent.configurationId,
+  );
+  const withoutOperate = await fixture.request("GET", boundPermissions, { session });
+  assert.equal(withoutOperate.data.configurationUpdate, true);
+  assert.equal(withoutOperate.data.configurationSecretsOperate, false);
+  // Operate on that exact Secret completes what a save checks.
+  bindExact(
+    "binding-bound-secret-operator",
+    "role-permission-summary-secret-operator",
+    "secret",
+    bound.id,
+  );
+  const withOperate = await fixture.request("GET", boundPermissions, { session });
+  assert.equal(withOperate.data.configurationSecretsOperate, true);
+  // The probes are answers, not attempted operations.
+  assert.equal(denials().at(-1).action, "openclaw.agents.deploy");
 });
 
 test("console static routes expose only public assets and preserve API JSON failures", async (t) => {

@@ -4010,6 +4010,7 @@ test("a version editor without Agent update can recover a failed deployment from
     operate: false,
     delete: false,
     configurationUpdate: true,
+    configurationSecretsOperate: true,
   });
 
   // The header label confirms the page applied the permission answer before recovery is used.
@@ -4078,6 +4079,10 @@ test("a version editor without Agent update can recover a failed deployment from
 // The Agent page's copy for a caller without Configuration update (finding 2421).
 const CONFIGURATION_READ_ONLY = "Your access does not include editing this Configuration.";
 const CHANNELS_READ_ONLY = `These are the version draft’s channel settings. ${CONFIGURATION_READ_ONLY}`;
+const CONFIGURATION_SECRETS_READ_ONLY =
+  "Saving this Configuration needs Secret operate on each Secret it binds, which your access does not include.";
+const SECRETS_OPERATE_CHANNEL_SECRETS =
+  "Saving channel Secrets needs Secret operate on each Secret the Configuration binds, which your access does not include.";
 const READ_ONLY_DRAFT_NOTICE =
   "Version draft · read-only with your access. The next deployment uses it as saved.";
 
@@ -4111,6 +4116,7 @@ test("a reader without update views the version draft read-only", async (t) => {
     operate: false,
     delete: false,
     configurationUpdate: false,
+    configurationSecretsOperate: false,
   });
   await page.getByText(CONFIGURATION_READ_ONLY, { exact: true }).waitFor();
   await page.getByText("View native Configuration", { exact: true }).waitFor();
@@ -4166,6 +4172,7 @@ test("an Agent editor without Configuration update sees the Configuration read-o
     operate: false,
     delete: false,
     configurationUpdate: false,
+    configurationSecretsOperate: false,
   });
   await page.getByText(CONFIGURATION_READ_ONLY, { exact: true }).waitFor();
   assert.equal(await page.getByRole("button", { name: "Edit Configuration" }).count(), 0);
@@ -4256,6 +4263,80 @@ test("a late permission answer turns a reader's Channels and Channel Secrets rea
   assert.equal(await page.getByLabel("Slack app token").isDisabled(), true);
   assert.equal(await page.getByLabel("Slack bot token").isDisabled(), true);
   assert.equal(await page.getByRole("button", { name: "Save channel Secrets" }).count(), 0);
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+});
+
+// Every Configuration save also needs Secret operate on each Secret the Configuration binds. A
+// member with Configuration update but no Secret operate on the bound Slack tokens is told so up
+// front: no picker, editor or Save whose PATCH would answer 403 (finding 2437).
+test("a Configuration editor without Secret operate on its bound Secrets reads them", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Bound Secrets editor", { ready: true });
+  const app = await fixture.createSecret(namespace.id, "Bound app token", "xapp-bound-value");
+  const bot = await fixture.createSecret(namespace.id, "Bound bot token", "xoxb-bound-value");
+  const slack = {
+    enabled: true,
+    mode: "socket",
+    appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+    botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+    dmPolicy: "allowlist",
+    groupPolicy: "allowlist",
+    allowFrom: ["U123"],
+    channels: { C123: { requireMention: true } },
+  };
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Bound Secrets Agent",
+    nativeValues("bound", { harnessId: "codex", channels: { slack } }),
+    {
+      executionMode: "dedicated",
+      secretBindings: {
+        SLACK_APP_TOKEN: { source: app.ref, delivery: { type: "env" } },
+        SLACK_BOT_TOKEN: { source: bot.ref, delivery: { type: "env" } },
+      },
+    },
+  );
+  const member = await fixture.createNamespaceMember("bound-secrets-editor", namespace.id, [
+    ["read", "namespace"],
+    ["read", "agent"],
+    ["read", "agent_revision"],
+    ["read", "configuration"],
+    ["update", "configuration"],
+    ["read", "secret"],
+  ]);
+  const path = "/namespaces/" + namespace.id + "/agents/" + agent.id;
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  const permissions = page.waitForResponse((r) => r.url().endsWith(path + "/permissions"));
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"),
+    member.credentials,
+  );
+  const answer = (await (await permissions).json()).data;
+  assert.equal(answer.configurationUpdate, true);
+  assert.equal(answer.configurationSecretsOperate, false);
+  await page.getByRole("heading", { name: "Channel Secrets" }).waitFor();
+  await page.getByText(SECRETS_OPERATE_CHANNEL_SECRETS, { exact: true }).waitFor();
+  assert.equal(await page.getByLabel("Slack app token").isDisabled(), true);
+  assert.equal(await page.getByLabel("Slack bot token").isDisabled(), true);
+  assert.equal(await page.getByRole("button", { name: "Save channel Secrets" }).count(), 0);
+
+  // The Configuration editor's Save binds the same Secrets, so it is read-only too.
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await page.getByText(CONFIGURATION_SECRETS_READ_ONLY, { exact: true }).waitFor();
+  assert.equal(await page.getByRole("button", { name: "Edit Configuration" }).count(), 0);
+  await page.getByRole("tab", { name: "Channels", exact: true }).click();
+  await page
+    .getByText(
+      `These are the version draft’s channel settings. ${CONFIGURATION_SECRETS_READ_ONLY}`,
+      {
+        exact: true,
+      },
+    )
+    .waitFor();
   assert.deepEqual(nonAuthWriteRequests(requests), []);
 });
 
@@ -4413,6 +4494,7 @@ test("a negative permission answer reaching an open Stop or Delete dialog preven
         operate: false,
         delete: false,
         configurationUpdate: false,
+        configurationSecretsOperate: false,
       },
     });
 

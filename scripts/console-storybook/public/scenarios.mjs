@@ -5308,6 +5308,7 @@ export const scenarios = {
       operate: false,
       delete: false,
       configurationUpdate: true,
+      configurationSecretsOperate: true,
     },
     description:
       "Recovery offers Open version draft when the viewer may deploy but cannot update the Agent. Configuration access is separate.",
@@ -5367,6 +5368,7 @@ export const scenarios = {
       operate: false,
       delete: false,
       configurationUpdate: true,
+      configurationSecretsOperate: true,
     },
     rules: [
       {

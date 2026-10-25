@@ -1770,6 +1770,7 @@ export function installFixture(scenario, evidence) {
               operate: allowed,
               delete: allowed,
               configurationUpdate: allowed,
+              configurationSecretsOperate: allowed,
             },
           );
         }

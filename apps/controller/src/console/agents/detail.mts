@@ -334,6 +334,9 @@ function nativeDocument(values: OpenClawConfigurationDocument, label: string) {
 const READ_ONLY_DRAFT_NOTICE =
   "Version draft · read-only with your access. The next deployment uses it as saved.";
 const CONFIGURATION_READ_ONLY = "Your access does not include editing this Configuration.";
+// Saving a Configuration also needs Secret operate on every Secret it binds (finding 2437).
+const CONFIGURATION_SECRETS_READ_ONLY =
+  "Saving this Configuration needs Secret operate on each Secret it binds, which your access does not include.";
 // A save's reread or its PATCH found a newer Configuration generation than the page's.
 const CONFIGURATION_CHANGED =
   "The saved Configuration changed while you were editing. Reload this draft before saving.";
@@ -585,7 +588,15 @@ export async function renderAgentDetail(
   });
   // A caller who may neither update the Agent nor its Configuration reads the draft; the page
   // says so instead of addressing an editor (finding 2421). An unknown answer keeps the editor.
-  const configurationReadOnly = () => callerPermissions?.configurationUpdate === false;
+  // Each Configuration save also needs Secret operate on every Secret it binds, so a caller
+  // without it reads the Configuration too (finding 2437).
+  const configurationReadOnly = () =>
+    callerPermissions?.configurationUpdate === false ||
+    callerPermissions?.configurationSecretsOperate === false;
+  const configurationReadOnlyReason = () =>
+    callerPermissions?.configurationUpdate === false
+      ? CONFIGURATION_READ_ONLY
+      : CONFIGURATION_SECRETS_READ_ONLY;
   const draftReadOnly = () => callerPermissions?.update === false && configurationReadOnly();
   // Draft views that follow Configuration update. Nothing waits for an answer: a view drawn
   // before the first answer, or before a reread that changes the bit, is redrawn when it lands.
@@ -2578,6 +2589,10 @@ export async function renderAgentDetail(
           canGrant: context.installationAdmin !== false,
           // Binding Secrets saves the Configuration (finding 2432).
           readOnly: configurationReadOnly,
+          readOnlyReason: () =>
+            callerPermissions?.configurationUpdate === false
+              ? "Your access does not include editing this Configuration, so its channel Secrets are read-only."
+              : "Saving channel Secrets needs Secret operate on each Secret the Configuration binds, which your access does not include.",
           isCurrent: () => panelNumber === channelPanelCount,
           onChange() {
             updateNavigationControls();
@@ -3599,7 +3614,7 @@ export async function renderAgentDetail(
         copy: {
           ...(draft && configurationReadOnly()
             ? {
-                readOnlyDescription: `These are the version draft’s channel settings. ${CONFIGURATION_READ_ONLY}`,
+                readOnlyDescription: `These are the version draft’s channel settings. ${configurationReadOnlyReason()}`,
                 readOnlyCardMessage: "Read-only with your access.",
               }
             : {}),
@@ -4854,7 +4869,7 @@ export async function renderAgentDetail(
       if (shownReadOnly) {
         // A reader views the saved JSON; no editor whose Save would answer 403 (finding 2421).
         container.replaceChildren(
-          element("p", { className: "hint" }, CONFIGURATION_READ_ONLY),
+          element("p", { className: "hint" }, configurationReadOnlyReason()),
           nativeDocument(values, "View native Configuration"),
           ...(feedback.textContent ? [feedback] : []),
         );

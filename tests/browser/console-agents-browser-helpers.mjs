@@ -56,7 +56,10 @@ export async function grantStaleConfigurationUpdate(page) {
     const body = await response.json();
     await route.fulfill({
       response,
-      json: { ...body, data: { ...body.data, configurationUpdate: true } },
+      json: {
+        ...body,
+        data: { ...body.data, configurationUpdate: true, configurationSecretsOperate: true },
+      },
     });
   });
 }

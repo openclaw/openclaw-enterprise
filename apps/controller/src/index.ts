@@ -2405,14 +2405,39 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         id: agent.configurationId,
         namespaceId,
       };
-      const [update, deploy, operate, remove, configurationUpdate] = await Promise.all([
-        ...(["update", "deploy", "operate", "delete"] as const).map((action) =>
-          callerMay(context.actorId, action, target),
-        ),
-        callerMay(context.actorId, "update", configuration),
-      ]);
+      const [update, deploy, operate, remove, configurationUpdate, configurationRead] =
+        await Promise.all([
+          ...(["update", "deploy", "operate", "delete"] as const).map((action) =>
+            callerMay(context.actorId, action, target),
+          ),
+          callerMay(context.actorId, "update", configuration),
+          callerMay(context.actorId, "read", configuration),
+        ]);
+      // Each Configuration save authorizes Secret operate on every Secret it binds, so
+      // Configuration update alone does not say a save can succeed (finding 2437). Only a caller
+      // who may read and update the Configuration gets the answer: the bindings are visible to
+      // them, and a save would report the same decision.
+      let configurationSecretsOperate = false;
+      if (configurationUpdate && configurationRead) {
+        const sources = await controller.getConfigurationSecretSources(
+          context.actorId,
+          namespaceId,
+          agent.configurationId,
+        );
+        const allowed = await Promise.all(
+          sources.map((source) => callerMay(context.actorId, "operate", source)),
+        );
+        configurationSecretsOperate = allowed.every(Boolean);
+      }
       reply.send({
-        data: { update, deploy, operate, delete: remove, configurationUpdate },
+        data: {
+          update,
+          deploy,
+          operate,
+          delete: remove,
+          configurationUpdate,
+          configurationSecretsOperate,
+        },
         meta: { requestId: request.id },
       });
       return;
