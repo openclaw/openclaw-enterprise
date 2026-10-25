@@ -2470,6 +2470,10 @@ for (const [target, mode, acknowledged] of [
         `/${remaining[0].metadata.name}; no cleanup was attempted for this name.`,
       ),
     );
+    assert.match(
+      failure.stderr,
+      /Check whether this object remains in the selected namespace\. Correct the failure and use a fresh evidence directory\. This run stopped no OCC writer\./,
+    );
     assert.ok(!failure.stderr.includes(remaining[0].metadata.uid), "create response stays private");
     assert.doesNotMatch(failure.stdout + failure.stderr, /private-(?:delete-)?response-marker/);
     assert.deepEqual(await f.events(), [], "no writer stops or migration");

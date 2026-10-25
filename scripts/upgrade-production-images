@@ -328,7 +328,7 @@ occ_json=("$occ" --output json)
 # Only a successful create acknowledgement establishes cleanup ownership.
 preflight_resources=()
 unconfirmed_preflight() {
-  die "ownership unconfirmed for ${1:0:300}; no cleanup was attempted for this name."
+  die "ownership unconfirmed for ${1:0:300}; no cleanup was attempted for this name. Check whether this object remains in the selected namespace. Correct the failure and use a fresh evidence directory. This run stopped no OCC writer."
 }
 create_preflight() {
   # Validate the opaque UID before Bash can strip newlines or NULs, and build
