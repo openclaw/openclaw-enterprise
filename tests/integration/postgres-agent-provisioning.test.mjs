@@ -4558,23 +4558,35 @@ test(
     const namespace = await fixture.bootstrapNamespace();
     const secrets = await createProvisioningSecrets(fixture, namespace.id);
     const name = `Duplicate ${randomUUID().slice(0, 8)}`;
-    const first = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
-      body: provisioningBody(namespace.id, secrets, { name }),
-    });
-    assert.equal(first.status, 202, JSON.stringify(first.body));
-    await fixture.startWorker();
-    try {
-      const created = await waitFor("first Agent provisioning to succeed", async () => {
-        const observed = await fixture.request("GET", first.data.provisioning.url);
-        assert.equal(observed.status, 200, JSON.stringify(observed.body));
-        return observed.data.status === "succeeded" ? observed.data : undefined;
-      });
-      const duplicate = await fixture.request(
+    // Admission refuses a name an Agent already has (finding 2420), so both same-name requests
+    // are admitted before the worker runs; the later Agent insert hits the name conflict.
+    const admitted = [];
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const response = await fixture.request(
         "POST",
         `/namespaces/${namespace.id}/agents/provision`,
         { body: provisioningBody(namespace.id, secrets, { name }) },
       );
-      assert.equal(duplicate.status, 202, JSON.stringify(duplicate.body));
+      assert.equal(response.status, 202, JSON.stringify(response.body));
+      admitted.push(response);
+    }
+    await fixture.startWorker();
+    try {
+      const outcomes = await waitFor("both same-name provisioning jobs to finish", async () => {
+        const observed = await Promise.all(
+          admitted.map((response) => fixture.request("GET", response.data.provisioning.url)),
+        );
+        for (const response of observed) {
+          assert.equal(response.status, 200, JSON.stringify(response.body));
+        }
+        return observed.every(({ data }) => data.status === "succeeded" || data.status === "failed")
+          ? observed.map(({ data }) => data)
+          : undefined;
+      });
+      assert.deepEqual(outcomes.map(({ status }) => status).sort(), ["failed", "succeeded"]);
+      const winner = outcomes.findIndex(({ status }) => status === "succeeded");
+      const created = outcomes[winner];
+      const duplicate = admitted[1 - winner];
       await waitFor("duplicate-name Agent provisioning to fail", async () => {
         const work = await fixture.pool.query(
           "SELECT state FROM occ.controller_work WHERE idempotency_key = $1",
