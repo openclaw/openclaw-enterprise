@@ -400,16 +400,23 @@ test("login handles are actor and Agent scoped while source discovery uses exact
 
 // Each Agent update checks credential source operate on every source the Agent lists, so the
 // caller permissions answer for Agent saves covers them (finding 2441); the same real PATCH
-// proves each answer.
+// proves each answer. The Harness source and a second listed source have distinct ids, so the
+// answer is shown to cover the listed sources and not only the Harness one.
 test("the Agent sources answer covers the credential sources an Agent update checks", async (t) => {
   const fixture = await createFixture(t);
   const login = await readyLogin(fixture);
+  const listed = await readyLogin(fixture);
+  assert.notEqual(listed.source.id, login.source.id);
   const harnessAuth = { method: "credential_source", sourceId: login.source.id };
   const agent = await fixture.createAgent(
     fixture.namespace.id,
     "Source editor Agent",
     createHarnessConfiguration("codex", "gpt-5.1"),
-    { executionMode: "dedicated", harnessAuth, credentialSources: [{ sourceId: login.source.id }] },
+    {
+      executionMode: "dedicated",
+      harnessAuth,
+      credentialSources: [{ sourceId: login.source.id }, { sourceId: listed.source.id }],
+    },
   );
   const account = await fixture.createAccountWithPolicy("source-editor", (principal) => {
     grantRole(fixture.policy, principal.id, {
@@ -430,14 +437,23 @@ test("the Agent sources answer covers the credential sources an Agent update che
       session,
       body: { configurationId: agent.configurationId },
     });
-  // Agent update and Configuration read, but no operate on the bound source.
+  // Agent update and Configuration read, but no operate on the bound sources.
   assert.equal(await answer(), false);
   assert.equal((await save()).status, 403);
+  // Operate on the Harness source only: the other listed source still refuses the update.
   grantRole(fixture.policy, account.principal.id, {
     id: "source-editor-source",
     namespaceId: fixture.namespace.id,
     permissions: { credential_source: ["operate"] },
     resource: login.source,
+  });
+  assert.equal(await answer(), false);
+  assert.equal((await save()).status, 403);
+  grantRole(fixture.policy, account.principal.id, {
+    id: "source-editor-listed-source",
+    namespaceId: fixture.namespace.id,
+    permissions: { credential_source: ["operate"] },
+    resource: listed.source,
   });
   assert.equal(await answer(), true);
   const saved = await save();

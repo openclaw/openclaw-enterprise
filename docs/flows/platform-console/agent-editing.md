@@ -114,10 +114,10 @@ Saves preserve scroll, focus and admitted snapshots. Rejected edits stay in the 
 an uncertain save requires readback. Unsaved edits block deployment; pending saves block tab and version changes.
 A refused write lists required grants without guessing which; a refused preflight read names read
 access, a Workspace file save Agent `operate`. Plugin, repository and authentication editors are
-disabled without Agent `update` or `operate` on each source the Agent and its Configuration bind.
+disabled without Agent `update`, Configuration `read`, or `operate` on each bound source.
 Lacking Configuration `update` or `operate` on a bound Secret makes
-Configuration, Channels and channel Secrets read-only; lacking that and Agent `update`, the draft
-says so and, without deploy, has no checklist.
+Configuration, Channels and channel Secrets read-only; lacking that and an Agent-side grant, the
+draft says so and, without deploy, has no checklist.
 
 `agents/plugin-fields.mts:createPluginFields` renders **Plugins**.
 `agents/plugins.mts:savePlugins` rereads the Agent before PATCH. If the Agent,
@@ -189,7 +189,7 @@ It loads `GET /namespaces/:namespaceId/secrets`; Namespace read is required.
 without calling the Secret Driver. Shared `agents/secret-picker.mjs:createSecretReferenceField`
 filters names/IDs in a combobox. Arrows navigate, Enter selects, and Escape
 restores the binding. Typing stages nothing; selection stages a reference,
-Cancel discards it. Creation remains available.
+Cancel discards it. A false Namespace `secrets.create` disables creation, with its reason.
 
 `apps/controller/src/console/agents/secret-picker.mjs:openCreateSecretDialog` shows
 an editable Agent-prefixed Name, the Secrets page's `secretValueControl` (CRLF becomes LF),
@@ -350,8 +350,7 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 
 ## Changelog
 
+- 2026-10-25: Draft labels, recovery and inline Secret creation follow permissions. (findings 2441, 2442)
 - 2026-10-25: Agent-side editors follow bound source `operate`. (finding 2441)
-- 2026-10-25: Readers see the draft read-only. (finding 2421)
-- 2026-10-25: Mark failed versions from the revision list. (finding 2422)
 
 [Console Agent editing documentation history](agent-editing/history.md) preserves the older dated entries.

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
+import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { grantRole } from "../helpers/iam-grants.mjs";
 import {
@@ -261,17 +262,17 @@ test("a rate-limited or malformed creation answer is reported, not shown as crea
   await fixture.bootstrap();
   const { page } = await newPage(t, fixture, { browser });
   const answers = [
-    {
-      status: 429,
-      json: { error: { code: "RATE_LIMITED", message: "Too many requests." }, meta: {} },
-    },
+    // A rate limit in front of the API: the route itself sends no 429.
+    proxyErrorResponse(429),
     // A 201 whose Namespace is not provisioning does not match the creation contract.
-    { status: 201, json: { data: { id: "ns_fake", name: "Odd team", status: "ready" } } },
+    {
+      status: 201,
+      contentType: "application/json",
+      json: { data: { id: "ns_fake", name: "Odd team", status: "ready" } },
+    },
   ];
   await page.route(`${fixture.origin}/namespaces`, (route) =>
-    route.request().method() === "POST"
-      ? route.fulfill({ ...answers.shift(), contentType: "application/json" })
-      : route.continue(),
+    route.request().method() === "POST" ? route.fulfill(answers.shift()) : route.continue(),
   );
   await login(page, fixture, "/console/namespaces");
   await page.getByRole("button", { name: "Create Namespace", exact: true }).click();
@@ -493,10 +494,7 @@ test("an unknown administrator answer keeps Create Namespace the primary action"
   await fixture.bootstrap();
   const { page } = await newPage(t, fixture, { browser });
   await page.route(`${fixture.origin}/observability`, (route) =>
-    route.fulfill({
-      status: 503,
-      json: { error: { code: "UNAVAILABLE", message: "Try again." } },
-    }),
+    route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Try again.")),
   );
   const probed = page.waitForResponse(
     (response) => new URL(response.url()).pathname === "/observability",
@@ -608,14 +606,11 @@ test("an unexpected Namespace creation failure shows its request ID", async (t) 
   const { page } = await newPage(t, fixture, { browser });
   await page.route(`${fixture.origin}/namespaces`, (route) =>
     route.request().method() === "POST"
-      ? route.fulfill({
-          status: 503,
-          contentType: "application/json",
-          json: {
-            error: { code: "UNAVAILABLE", message: "Try again later." },
-            meta: { requestId: "req_00000000-0000-4000-8000-000000000503" },
-          },
-        })
+      ? route.fulfill(
+          apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Try again later.", {
+            requestId: "req_00000000-0000-4000-8000-000000000503",
+          }),
+        )
       : route.continue(),
   );
   await login(page, fixture, "/console/namespaces");

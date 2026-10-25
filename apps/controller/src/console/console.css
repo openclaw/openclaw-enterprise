@@ -2311,6 +2311,15 @@ select:not([multiple])[size="1"] {
 .secret-typeahead-create {
   font-weight: var(--weight-medium);
 }
+/* Secret create denied by the permission answer: listed with the reason, not chosen. */
+.secret-typeahead-listbox [role="option"][aria-disabled="true"] {
+  color: var(--muted);
+  cursor: not-allowed;
+}
+.secret-typeahead-create[aria-disabled="true"] small {
+  display: block;
+  font-weight: var(--weight-regular);
+}
 .secret-typeahead-empty {
   color: var(--muted);
 }

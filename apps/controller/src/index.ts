@@ -2493,6 +2493,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           delete: remove,
           administer,
           configurationUpdate,
+          configurationRead,
           configurationSecretsOperate,
           agentSourcesOperate,
         },

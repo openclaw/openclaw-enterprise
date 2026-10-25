@@ -8,6 +8,8 @@ This record preserves the dated changes to the Console Agent editing flow. See t
 
 ## Changelog
 
+- 2026-10-25: Readers see the draft read-only. (finding 2421)
+- 2026-10-25: Mark failed versions from the revision list. (finding 2422)
 - 2026-10-24: Restoring parked Workspace files applies the latest observed Agent operate answer. (pr-3474)
 - 2026-10-24 17:30: Stop and Run diagnostics follow the latest observed operate answer. (fix-2328)
 - 2026-10-24 23:40: Apply a newer Agent operate answer when parked Workspace files return, and keep unsaved text if operate is removed. (workspace-operate-restore)

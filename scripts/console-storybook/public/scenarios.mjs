@@ -1693,6 +1693,19 @@ export const scenarios = {
       "Choose Reset template and confirm to restore the standard runtime settings for the selected model.",
     ],
   },
+  createSecretCreateNotPermitted: {
+    group: "Pages/Create Agent",
+    name: "Secret creation not permitted",
+    path: create,
+    actions: form,
+    secretCreateNotPermitted: true,
+    description:
+      "The Namespace permission answer denies Secret creation. The API key Secret field still lists Create new Secret..., disabled with the reason, and its hint says to choose an existing Secret.",
+    steps: [
+      "Type a name no Secret has in API key Secret. Create new Secret... is listed with the access note under it and opens nothing.",
+    ],
+    gap: "The permission answer is simulated; the API still authorizes Secret creation.",
+  },
   createRepositoryNotConfigured: {
     group: "Pages/Create Agent",
     name: "Repository access not set up",
@@ -4368,6 +4381,30 @@ export const scenarios = {
     ],
     gap: "The permission answer is simulated; the API still authorizes every save.",
   },
+  draftSourcesOperateDenied: {
+    group: "Pages/Agent detail",
+    name: "Version draft, editor cannot operate a bound Secret",
+    path: `${draft}&tab=configuration`,
+    deployed: true,
+    agentPermissionSummary: {
+      update: true,
+      deploy: false,
+      operate: false,
+      delete: false,
+      administer: false,
+      configurationUpdate: true,
+      configurationRead: true,
+      configurationSecretsOperate: false,
+      agentSourcesOperate: false,
+    },
+    description:
+      "The permission answer allows Agent and Configuration update but not operate on a Secret the Configuration binds, which every save checks. Each editor is disabled, so the draft reads as read-only with this access, as for a viewer.",
+    steps: [
+      "Read the notice: Version draft · read-only with your access.",
+      "The Versions entry reads Version draft with Read-only Configuration, and the draft card has no Prepare this version steps.",
+    ],
+    gap: "The permission answer is simulated; the API still authorizes every save.",
+  },
   pluginsToolRefusal: {
     group: "Pages/Agent detail",
     name: "Plugin selections refused by the Configuration",
@@ -5338,6 +5375,7 @@ export const scenarios = {
       delete: false,
       administer: false,
       configurationUpdate: true,
+      configurationRead: true,
       configurationSecretsOperate: true,
       agentSourcesOperate: false,
     },
@@ -5400,6 +5438,7 @@ export const scenarios = {
       delete: false,
       administer: false,
       configurationUpdate: true,
+      configurationRead: true,
       configurationSecretsOperate: true,
       agentSourcesOperate: false,
     },
@@ -6769,6 +6808,18 @@ export const scenarios = {
     description:
       "The saved harness authentication source can be reviewed or changed before deployment.",
   },
+  credentialsSecretCreateNotPermitted: {
+    group: "Components/Credentials",
+    name: "Model authentication, Secret creation not permitted",
+    path: `${draft}&tab=credentials`,
+    secretCreateNotPermitted: true,
+    description:
+      "The Namespace permission answer denies Secret creation. The Secret field still lists Create new Secret..., disabled with the reason, and its hint says to choose an existing Secret.",
+    steps: [
+      "Type a name no Secret has in the Secret field. Create new Secret... is listed with the access note under it and opens nothing.",
+    ],
+    gap: "The permission answer is simulated; the API still authorizes Secret creation.",
+  },
   credentialsUpdateDenied: {
     group: "Components/Credentials",
     name: "Model authentication, viewer cannot update the Agent",
@@ -6789,6 +6840,7 @@ export const scenarios = {
       delete: true,
       administer: true,
       configurationUpdate: true,
+      configurationRead: true,
       configurationSecretsOperate: true,
       agentSourcesOperate: false,
     },
@@ -6828,6 +6880,7 @@ export const scenarios = {
       delete: true,
       administer: true,
       configurationUpdate: true,
+      configurationRead: true,
       configurationSecretsOperate: false,
       agentSourcesOperate: false,
     },

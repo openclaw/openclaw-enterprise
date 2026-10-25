@@ -467,3 +467,37 @@ test("a member's refused Configuration create and empty Secret list name the acc
     .waitFor();
   assert.equal(await other.getByText(/^No readable Secrets yet\./).count(), 0);
 });
+
+// The Secrets page disables Create Secret when the Namespace's permission answer denies Secret
+// create. Create Agent read the same answer but its inline Create Secret action still opened a
+// dialog whose write the API refused (finding 2442). It stays listed, disabled with the reason.
+test("a member without Secret create sees the inline Create Secret action disabled with the reason", async (t) => {
+  const { fixture, namespace } = await setup(t);
+  const noSecretCreate = await fixture.createNamespaceMember(
+    "member-no-secret-create",
+    namespace.id,
+    MEMBER_WRITE.filter(([action, kind]) => !(action === "create" && kind === "secret")),
+  );
+  const { page } = await newPage(t, fixture);
+  const answers = apiResponses(page, fixture.origin);
+  await login(
+    page,
+    fixture,
+    `/console/agents/new?namespace=${namespace.id}`,
+    noSecretCreate.credentials,
+  );
+  await page.getByRole("button", { name: "Start with default Preset", exact: true }).click();
+  const denial = "Your access does not include creating Secrets in this Namespace.";
+  await page.getByText(`Choose an existing Secret. ${denial}`, { exact: true }).first().waitFor();
+  await page.getByLabel("API key Secret", { exact: true }).fill("no matching Secret");
+  const action = page.getByRole("option", { name: `Create new Secret... ${denial}`, exact: true });
+  await action.waitFor();
+  assert.equal(await action.getAttribute("aria-disabled"), "true");
+  // A forced click skips the disabled check: choosing the action still opens nothing.
+  await action.click({ force: true });
+  assert.equal(await page.getByRole("dialog").count(), 0);
+  assert.deepEqual(
+    answers.filter((answer) => answer.startsWith("POST ") && answer.includes("/secrets")),
+    [],
+  );
+});

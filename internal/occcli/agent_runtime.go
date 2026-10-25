@@ -36,9 +36,10 @@ var sleepContext = func(ctx context.Context, d time.Duration) error {
 
 // agentRevision returns the requested revision, or the Agent's active revision.
 // Without an active revision (for example, after a failed first deploy) it uses
-// the latest revision and says so on notices, because that is the version whose
-// Pods and output explain the failure. When it had to read the chosen revision's
-// runtime description to decide, it returns that description too (else nil).
+// the latest revision the caller can list and says so on notices, because that
+// is the version whose Pods and output explain the failure. When it had to read
+// the chosen revision's runtime description to decide, it returns that
+// description too (else nil).
 // revisionAdvice tells a caller who can list no revision how to name one
 // anyway, or is "" when the command itself needs revision read.
 func (app *application) agentRevision(
@@ -70,7 +71,7 @@ func (app *application) agentRevision(
 		if err != nil {
 			return "", nil, err
 		}
-		noticef(notices, "notice: agent %s has no active revision; using latest revision %s", agentID, latest)
+		noticef(notices, "notice: agent %s has no active revision; using %s, the latest revision you can list", agentID, latest)
 		return latest, nil, nil
 	}
 	// A newer revision than the active one is being deployed or has failed; while

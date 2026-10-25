@@ -240,6 +240,7 @@ test("caller permission summaries report primary IAM decisions without authorizi
     delete: true,
     administer: true,
     configurationUpdate: true,
+    configurationRead: true,
     configurationSecretsOperate: true,
     agentSourcesOperate: true,
   });
@@ -293,6 +294,7 @@ test("caller permission summaries report primary IAM decisions without authorizi
     delete: false,
     administer: false,
     configurationUpdate: false,
+    configurationRead: false,
     configurationSecretsOperate: false,
     agentSourcesOperate: false,
   });
@@ -520,11 +522,15 @@ test("the Agent sources answer matches what a real Agent update checks", async (
       resourceId,
     });
   };
-  const answer = async () => {
+  const summary = async () => {
     const response = await fixture.request("GET", `${agentPath}/permissions`, { session });
     assert.equal(response.status, 200);
-    assert.equal(response.data.update, true);
-    return response.data.agentSourcesOperate;
+    return response.data;
+  };
+  const answer = async () => {
+    const data = await summary();
+    assert.equal(data.update, true);
+    return data.agentSourcesOperate;
   };
   // A no-op save, as the console's plugin, authentication and repository saves are on top.
   const save = () =>
@@ -546,9 +552,12 @@ test("the Agent sources answer matches what a real Agent update checks", async (
   grant("agent-sources-second", "operate", "secret", second.id);
   grant("agent-sources-harness", "operate", "secret", agent.harnessAuth.source.id);
   assert.equal(await answer(), false);
+  // The console names the missing Configuration read rather than source operate.
+  assert.equal((await summary()).configurationRead, false);
   assertApiError(await save(), 403, "FORBIDDEN");
   // With Configuration read the set is complete, and the same save succeeds.
   grant("agent-sources-configuration", "read", "configuration", agent.configurationId);
+  assert.equal((await summary()).configurationRead, true);
   assert.equal(await answer(), true);
   assert.equal((await save()).status, 200);
   // Operate on one of the two Configuration Secrets is not enough: the answer covers every
@@ -565,6 +574,18 @@ test("the Agent sources answer matches what a real Agent update checks", async (
   assert.equal(denials().length, refusals);
   assertApiError(await save(), 403, "FORBIDDEN");
   assert.equal(denials().length, refusals + 1);
+
+  // Every source grant and Configuration read, but no Agent update: an update is refused, so the
+  // answer is false even though each source check would pass.
+  grant("agent-sources-harness", "operate", "secret", agent.harnessAuth.source.id);
+  assert.equal(await answer(), true);
+  const editor = fixture.policy.roles.find((role) => role.id === "role-agent-sources-editor");
+  editor.permissions = editor.permissions.filter((permission) => permission.action !== "update");
+  const withoutUpdate = await summary();
+  assert.equal(withoutUpdate.update, false);
+  assert.equal(withoutUpdate.configurationRead, true);
+  assert.equal(withoutUpdate.agentSourcesOperate, false);
+  assertApiError(await save(), 403, "FORBIDDEN");
 });
 
 test("console static routes expose only public assets and preserve API JSON failures", async (t) => {

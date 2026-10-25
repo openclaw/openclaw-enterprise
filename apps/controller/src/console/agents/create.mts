@@ -81,6 +81,8 @@ export interface CreateAgentContext extends AgentNavigation {
   namespaceMissing?: boolean;
   installationAdmin: boolean | null;
   permissions: Permissions | null | undefined;
+  // The Namespace permission answer's secrets.create, for inline Create Secret.
+  secretsCreateAllowed?: (() => Promise<boolean | undefined>) | undefined;
   drafts: Parameters<typeof createPresetFields>[0]["drafts"];
   request: CreateRequest;
   isCurrent(): boolean;
@@ -2188,6 +2190,7 @@ function renderAgentForm(
         secretBindings: configurationSecretBindings,
         isCurrent: context.isCurrent,
         onExpired: context.onExpired,
+        secretsCreateAllowed: context.secretsCreateAllowed,
       },
       copy: {
         editableDescription:

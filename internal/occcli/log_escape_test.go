@@ -42,7 +42,7 @@ func TestAgentLogsEscapeBidiAndZeroWidthCharactersInTextAndNotices(t *testing.T)
 		t.Errorf("text output = %q, want %q", out, want)
 	}
 	for _, want := range []string{
-		`agent agt_1 has no active revision; using latest revision rev_\u2069\u202a2`,
+		`agent agt_1 has no active revision; using rev_\u2069\u202a2, the latest revision you can list`,
 		`notice: - gap stream\u202ereplaced: Container \ufeffrestarted.`,
 		`notice: 2026-09-30T12:00:02Z 3 lines withheld (over\u200dlimit)`,
 	} {

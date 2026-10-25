@@ -1030,14 +1030,9 @@ test("Dedicated Agent creation names a full Namespace Pod quota while it waits",
           return;
         }
         if (lastAttempt === "unavailable") {
-          return route.fulfill({
-            status: 503,
-            contentType: "application/json",
-            body: JSON.stringify({
-              error: { code: "SERVICE_UNAVAILABLE", message: "Service unavailable." },
-              meta,
-            }),
-          });
+          return route.fulfill(
+            apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Service unavailable.", meta),
+          );
         }
         const deploymentReadable =
           mode !== "refused" && (mode !== "access lost" || deploymentReads.length === 1);
@@ -1268,17 +1263,11 @@ test("Dedicated Agent creation names the first deployment's wait while it provis
         // Job reads from 2 on carry the polls; the first handed-off one and the last name no wait.
         const answer = deploymentReader ? (polls[read - 3]?.[1] ?? null) : 403;
         if (typeof answer === "number") {
-          return route.fulfill({
-            status: answer,
-            contentType: "application/json",
-            body: JSON.stringify({
-              error:
-                answer === 503
-                  ? { code: "SERVICE_UNAVAILABLE", message: "Service unavailable." }
-                  : { code: "FORBIDDEN", message: "Access denied." },
-              meta,
-            }),
-          });
+          return route.fulfill(
+            answer === 503
+              ? apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Service unavailable.", meta)
+              : apiErrorResponse(403, "FORBIDDEN", "Access denied.", meta),
+          );
         }
         return route.fulfill({
           status: 200,

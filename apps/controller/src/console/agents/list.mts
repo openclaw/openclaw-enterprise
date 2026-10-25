@@ -1,4 +1,9 @@
-import type { AgentDeploymentStatusWire, Namespace } from "@openclaw-enterprise/contracts";
+import type {
+  AgentCallerPermissionsResponse,
+  AgentDeploymentStatusWire,
+  Namespace,
+} from "@openclaw-enterprise/contracts";
+import type { Static } from "typebox";
 import { requestFailure, responseFields } from "../api-client.mjs";
 import { element } from "../dom.mjs";
 import type { createNavigation } from "../navigation.mjs";
@@ -225,10 +230,29 @@ export const SAVE_REFUSALS = Object.freeze({
 // Gating only: an unknown answer keeps the controls, and the API still decides.
 export const AGENT_UPDATE_DENIED =
   "Your access does not include updating this Agent. Ask an administrator for Agent update access to save these settings.";
+// Shown instead when the answer allows Agent update but not the Configuration read each Agent
+// update needs; the source note would name the wrong grant.
+export const AGENT_CONFIGURATION_READ_DENIED =
+  "Saving these settings needs read access to this Agent's Configuration, which your access does not include. Ask an administrator for Configuration read access.";
 // Shown instead when the answer allows Agent update but not the source grants each Agent update
 // also checks on what the Agent and its Configuration bind (finding 2441).
 export const AGENT_SOURCES_DENIED =
   "Saving these settings needs operate on each Secret and credential source this Agent and its Configuration bind, which your access does not include. Ask an administrator for that access.";
+
+// Why the permission answer says an Agent-side save would be refused, or undefined when it allows
+// the save or is unknown. Each Agent update also needs Configuration read and checks the caller's
+// grant on every source the Agent and its Configuration bind (finding 2441).
+export function agentSaveDenial(
+  permissions: Static<typeof AgentCallerPermissionsResponse>["data"] | null | undefined,
+): string | undefined {
+  if (permissions?.update === false) {
+    return AGENT_UPDATE_DENIED;
+  }
+  if (permissions?.configurationRead === false) {
+    return AGENT_CONFIGURATION_READ_DENIED;
+  }
+  return permissions?.agentSourcesOperate === false ? AGENT_SOURCES_DENIED : undefined;
+}
 
 // Marks a 403 from a save so message() names the grants it needs: the save's own when the
 // write itself was refused (`written`), read access when a read before it was (finding 1540).

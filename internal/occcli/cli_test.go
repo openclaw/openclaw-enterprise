@@ -475,8 +475,8 @@ func TestAgentLogsNameTheRevisionGrantWhenNoRevisionIsReadable(t *testing.T) {
 
 // A first deploy that fails leaves no active revision; the failed version is
 // the one an operator needs to inspect, so runtime and logs default to it.
-func TestAgentRuntimeAndLogsDefaultToLatestRevisionWithoutActiveRevision(t *testing.T) {
-	// OCC lists revisions newest first.
+func TestAgentRuntimeAndLogsDefaultToLatestListableRevisionWithoutActiveRevision(t *testing.T) {
+	// OCC lists readable revisions newest first; later revisions may be hidden.
 	revisions := `[{"id":"rev_2","revision":2},{"id":"rev_1","revision":1}]`
 	stub := &runtimeLogStub{t: t, revisions: revisions, pages: []func(http.ResponseWriter, url.Values){
 		logPage("", logLine(1, "error", "startup failed")),
@@ -489,7 +489,7 @@ func TestAgentRuntimeAndLogsDefaultToLatestRevisionWithoutActiveRevision(t *test
 		t.Fatalf("logs output = %q", out)
 	}
 	// Every CLI notice carries the notice: prefix (D610).
-	if !strings.HasPrefix(errOut, "notice: agent agt_1 has no active revision; using latest revision rev_2\n") {
+	if !strings.HasPrefix(errOut, "notice: agent agt_1 has no active revision; using rev_2, the latest revision you can list\n") {
 		t.Fatalf("logs notice = %q", errOut)
 	}
 	_, runtimeErr, err := runLogsCommand(t, context.Background(), stub, "agent", "runtime", "agt_1")
@@ -499,7 +499,7 @@ func TestAgentRuntimeAndLogsDefaultToLatestRevisionWithoutActiveRevision(t *test
 	if want := "/namespaces/ns_1/agents/agt_1/deployments/rev_2/runtime"; !slices.Contains(stub.paths, want) {
 		t.Fatalf("runtime requests = %v, want %s", stub.paths, want)
 	}
-	if !strings.Contains(runtimeErr, "using latest revision rev_2") {
+	if !strings.Contains(runtimeErr, "using rev_2, the latest revision you can list") {
 		t.Fatalf("runtime notice = %q", runtimeErr)
 	}
 }

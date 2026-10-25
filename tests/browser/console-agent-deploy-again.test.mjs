@@ -4,7 +4,7 @@ import test from "node:test";
 
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/deployment-evidence.mts";
-import { apiErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
 import { grantRole } from "../helpers/iam-grants.mjs";
 import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.mjs";
 import {
@@ -441,20 +441,16 @@ test("Open version draft waits for the Configuration read to succeed", async (t)
 // selected v2 and called it "Historical" beside "Selected version v1" until the deployment
 // finished (finding 2065). Its notice says it is deploying until it becomes current. `record`
 // drives the newest deployment's answer: its status, or an error while `fail` holds an HTTP
-// status (503, 403); `agentFail` answers the Agent read with a 503. `recordReads` counts the
+// status (503, 403, 429); `agentFail` answers the Agent read with a 503. `recordReads` counts the
 // newest deployment's reads, and `warnings` are its startup warnings. With `older`, a version
 // admitted before the deploying one is neither current nor deploying.
-const failure = (status) => ({
-  status,
-  contentType: "application/json",
-  body: JSON.stringify({
-    error:
-      status === 403
-        ? { code: "FORBIDDEN", message: GENERIC_DENIAL }
-        : { code: "UNAVAILABLE", message: "Try again." },
-    meta: { requestId: "req_test_failure" },
-  }),
-});
+// The record route sends no 429: that one comes from a rate limit in front of the API.
+const failure = (status) =>
+  status === 429
+    ? proxyErrorResponse(429)
+    : status === 403
+      ? apiErrorResponse(403, "FORBIDDEN", GENERIC_DENIAL)
+      : apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Try again.");
 const UNAVAILABLE = failure(503);
 
 async function deployingVersion(t, name, { status = "running", older = false } = {}) {

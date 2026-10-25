@@ -23,7 +23,14 @@ import { secretValueControl } from "../secrets.mjs";
 type SecretContext = Partial<AgentAccessContext> & {
   operatorId?: string;
   installationAdmin?: boolean | null;
+  // The Namespace permission answer's secrets.create: undefined when it is unknown.
+  secretsCreateAllowed?: (() => Promise<boolean | undefined>) | undefined;
 };
+
+// Shown for the inline Create Secret action when the permission answer denies Secret create, as
+// on the Secrets page (finding 2442).
+export const SECRET_CREATE_DENIED =
+  "Your access does not include creating Secrets in this Namespace.";
 
 // The API's Name length for Secrets, in code points: the Name rule namespaces.mts mirrors.
 export const SECRET_NAME_MAX_CHARACTERS = NAME_MAX_CHARACTERS;
@@ -287,6 +294,24 @@ export function createSecretReferenceField({
   let searchQuery = "";
   // Closing the create dialog returns focus to the input; that must not reopen the listbox.
   let suppressFocusOpen = false;
+  // Set when the permission answer denies Secret create: the inline create action stays listed,
+  // disabled with the reason, so no dialog is filled in only to be refused (finding 2442). An
+  // unknown answer keeps the action.
+  let createDenied = false;
+  function readCreateAnswer() {
+    void context.secretsCreateAllowed?.().then((allowed) => {
+      if (!isCurrent() || createDenied === (allowed === false)) {
+        return;
+      }
+      createDenied = allowed === false;
+      if (listboxOpen) {
+        renderListbox();
+      }
+      if (listedHint && !staged) {
+        status.textContent = listedStatus();
+      }
+    });
+  }
 
   function isCurrent() {
     return typeof context.isCurrent !== "function" || context.isCurrent();
@@ -410,6 +435,7 @@ export function createSecretReferenceField({
         const selected =
           (option.kind === "secret" && option.secret.id === selectedSecretId) ||
           (option.kind === "current" && selectedSecretId !== null);
+        const createOff = option.kind === "create" && createDenied;
         const node = element(
           "div",
           {
@@ -417,8 +443,12 @@ export function createSecretReferenceField({
             role: "option",
             className: option.kind === "create" ? "secret-typeahead-create" : "",
             "aria-selected": selected ? "true" : "false",
+            ...(createOff ? { "aria-disabled": "true" } : {}),
           },
           option.label,
+          // The space keeps the reason a separate sentence in the option's accessible name.
+          createOff ? " " : null,
+          createOff ? element("small", {}, SECRET_CREATE_DENIED) : null,
         );
         node.addEventListener("pointerdown", (event) => event.preventDefault());
         node.addEventListener("click", () => selectOption(option));
@@ -435,6 +465,10 @@ export function createSecretReferenceField({
   function openListbox() {
     if (manuallyDisabled) {
       return;
+    }
+    // A grant or revocation since the field was drawn applies when the list opens.
+    if (!listboxOpen) {
+      readCreateAnswer();
     }
     listboxOpen = true;
     listbox.hidden = false;
@@ -485,6 +519,11 @@ export function createSecretReferenceField({
     }
     // The list holds only the Secrets this account may read. Someone the session knows is not
     // an Installation administrator may not see Secrets that exist (finding 2111).
+    if (createDenied) {
+      return secrets.length
+        ? `Choose an existing Secret. ${SECRET_CREATE_DENIED}`
+        : `No Secrets you can read in this Namespace. ${SECRET_CREATE_DENIED} Ask an administrator for read access to an existing one.`;
+    }
     return secrets.length
       ? "Choose an existing Secret or create a new one."
       : context.installationAdmin === false
@@ -530,6 +569,9 @@ export function createSecretReferenceField({
 
   function selectOption(option: SecretOption) {
     if (option.kind === "create") {
+      if (createDenied) {
+        return;
+      }
       closeListbox({ restoreSelection: true });
       openCreateSecretDialog();
       return;
@@ -753,6 +795,7 @@ export function createSecretReferenceField({
     updateValidity();
   } else {
     setSecretOptions();
+    readCreateAnswer();
     status.textContent = "Loading available Secrets...";
     context
       .request(`${namespacePath(context.namespaceId)}/secrets`)

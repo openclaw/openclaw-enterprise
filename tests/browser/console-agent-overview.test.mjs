@@ -6,6 +6,7 @@ import { DELETION_POLL_MS } from "../../apps/controller/src/console/agents/delet
 import { FIRST_ACTIVITY_WAIT_MS } from "../../apps/controller/src/console/agents/detail.mts";
 import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/deployment-evidence.mts";
 import { deploymentFailureStep } from "../../apps/controller/src/console/agents/deployment-recovery.mts";
+import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { fileConsoleApp } from "../helpers/console-app.mjs";
 import {
   createProviderSandboxDriver,
@@ -711,6 +712,53 @@ test("Recovery offers no Credentials link for operator-managed harness credentia
   await recovery.getByRole("link", { name: "Open v1 Logs" }).waitFor();
   await waitForIdleFetches(page);
   assert.equal(await recovery.getByRole("link", { name: "Open Credentials" }).count(), 0);
+});
+
+// Open Credentials leads to the authentication source editor, an Agent update. Each Agent update
+// also checks operate on the Harness authentication Secret, so an Agent editor without it found
+// every Credentials editor disabled (finding 2441). Recovery offers the link only when the
+// permission answer allows the update and its source grants.
+test("Recovery offers Open Credentials only when an Agent update would pass its source checks", async (t) => {
+  const { fixture, namespace } = await readyNamespace(t, "Credentials recovery", runtimeLogs());
+  const agent = await fixture.createAgent(namespace.id, "Credentials Recovery", nativeValues("v1"));
+  assert.equal(agent.harnessAuth.method, "api_key");
+  const failed = await fixture.deployAgent(namespace.id, agent.id);
+  const member = await fixture.createNamespaceMember("credentials-recovery", namespace.id, [
+    ["read", "namespace"],
+    ["read", "agent"],
+    ["update", "agent"],
+    ["read", "agent_revision"],
+    ["read", "configuration"],
+  ]);
+  const { page } = await newPage(t, fixture, { browser });
+  await routeFailedRecord(page, fixture, namespace, agent, failed, "RUNTIME_AUTHENTICATION_FAILED");
+  await trackSettledFetches(page);
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const permissions = page.waitForResponse((r) => r.url().endsWith(`${path}/permissions`));
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
+    member.credentials,
+  );
+  const answer = (await (await permissions).json()).data;
+  assert.equal(answer.update, true);
+  assert.equal(answer.agentSourcesOperate, false);
+  const recovery = page.getByRole("region", { name: "Deployment needs attention" });
+  await recovery
+    .getByText("v1 did not deploy successfully (RUNTIME_AUTHENTICATION_FAILED).", {
+      exact: false,
+    })
+    .waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(await recovery.getByRole("link", { name: "Open Credentials" }).count(), 0);
+
+  // With operate on the Harness authentication Secret the same member gets the link.
+  fixture.policy.roles
+    .find((role) => role.id === "role-credentials-recovery")
+    .permissions.push({ action: "operate", resourceKind: "secret" });
+  await page.reload();
+  await recovery.getByRole("link", { name: "Open Credentials", exact: true }).waitFor();
 });
 
 // One readable version per history page: the first page lists the newest readable version.
@@ -1748,10 +1796,7 @@ test("a late first deployment read moves nothing above the version tabs", async 
     false,
   );
 
-  const unavailable = {
-    status: 503,
-    json: { error: { code: "SERVICE_UNAVAILABLE", message: "Service unavailable." } },
-  };
+  const unavailable = apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Service unavailable.");
   for (const c of [
     { status: "succeeded", label: "Completed", stillOn: ["draft", "version"] },
     { status: "running", label: "In progress", stillOn: ["draft", "version"] },

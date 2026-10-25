@@ -729,6 +729,10 @@ export const AgentCallerPermissionsResponse = Type.Object(
           description:
             "Whether the selected IAM Driver allows update of the Agent's Configuration now, which saving its draft Configuration needs. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
         }),
+        configurationRead: Type.Boolean({
+          description:
+            "Whether the selected IAM Driver allows read of the Agent's Configuration now, which each Agent update needs. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
+        }),
         configurationSecretsOperate: Type.Boolean({
           description:
             "Whether the selected IAM Driver allows Secret operate now on every Secret that the Agent's Configuration binds. Each Configuration save needs it for the Secrets it binds. `true` when the Configuration binds no Secret. Reported only to a caller with Configuration read and update; otherwise `false`. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
