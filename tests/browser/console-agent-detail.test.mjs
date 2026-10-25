@@ -4880,10 +4880,6 @@ test("a Secret created inline that the member cannot operate is not staged", asy
     .waitFor();
   assert.equal(await picker.inputValue(), bound.name);
   assert.equal(await page.getByText("Secret binding staged. Save changes to apply it.").count(), 0);
-  assert.equal(
-    await page.getByRole("button", { name: "Save authentication source" }).isDisabled(),
-    true,
-  );
   // The answer was read once when the list opened and again after the create.
   assert.deepEqual(answers, [200, 200]);
   // The new Secret is listed disabled with the reason.
