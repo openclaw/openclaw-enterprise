@@ -1434,7 +1434,7 @@ test("an abandoned GitHub attempt does not turn password sign-in into a GitHub f
   await page.getByRole("button", { name: "Sign in" }).click();
   await page.waitForURL(/\/console\/agents/);
   assert.equal(requests.includes("/api/auth/providers/github/result"), false);
-  await expectNoText(page, /Could not sign in with GitHub/, async () => {
+  await expectNoText(page, /Could not (?:finish signing|sign) in with GitHub/, async () => {
     await page.locator(settledView).waitFor();
     await waitForIdleFetches(page);
   });
@@ -1653,7 +1653,9 @@ test("OIDC sign-in uses the discovered label and accepts only the discovered end
   assert.equal(refused.request().postDataJSON().attemptId, attemptId);
   assert.equal(refused.status(), 403);
   await page
-    .getByText("Could not sign in with Acme SSO. Try again or use your password.")
+    .getByText(
+      "Could not finish signing in with Acme SSO. The sign-in in this tab did not complete in time, or another sign-in replaced it. Select Continue with Acme SSO to start again.",
+    )
     .waitFor();
   assert.equal(requests.includes("/api/auth/providers/google/result"), false);
 
