@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/deployment-evidence.mts";
+import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   apiRequests,
@@ -581,14 +582,7 @@ test("Agent detail returns to the Agents list once background deletion finishes"
   let gone = false;
   await page.route(`${fixture.origin}${agentPath}`, async (route, request) => {
     if (gone && request.method() === "GET") {
-      await route.fulfill({
-        status: 404,
-        contentType: "application/json",
-        body: JSON.stringify({
-          error: { code: "RESOURCE_NOT_FOUND", message: "Agent not found." },
-          meta: { requestId: "req_00000000-0000-4000-8000-000000000404" },
-        }),
-      });
+      await route.fulfill(apiErrorResponse(404, "NOT_FOUND", "Agent not found."));
       return;
     }
     await route.continue();
@@ -669,14 +663,7 @@ test("An unknown Installation access answer keeps the Access tab", async (t) => 
   const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const { page } = await newPage(t, fixture);
   await page.route(`${fixture.origin}/observability`, (route) =>
-    route.fulfill({
-      status: 503,
-      contentType: "application/json",
-      body: JSON.stringify({
-        error: { code: "SERVICE_UNAVAILABLE", message: "Unavailable." },
-        meta: { requestId: "req_00000000-0000-4000-8000-000000000503" },
-      }),
-    }),
+    route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Unavailable.")),
   );
   await login(
     page,
@@ -1328,11 +1315,7 @@ test("Agent detail reads the selected version's deployment record once on load",
   await page.route(deploymentRecordUrl(fixture, namespace.id, agent.id, revision.id), (route) => {
     recordReads += 1;
     if (failFirst && recordReads === 1) {
-      return route.fulfill({
-        status: 503,
-        contentType: "application/json",
-        body: JSON.stringify({ error: { code: "UNAVAILABLE", message: "Try again." } }),
-      });
+      return route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Try again."));
     }
     return route.fulfill({
       status: 200,

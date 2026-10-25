@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
+import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture as createBaseConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   apiRequests,
@@ -203,7 +204,8 @@ test("a draft kept after a refusal between the Secret and the Configuration keep
   const { page } = await newPage(t, fixture);
   await routeInstallationWithoutProvisioning(page, fixture);
   const requests = apiRequests(page, fixture.origin);
-  // The first Configuration write is refused as too many requests; nothing was saved by it.
+  // A rate limit in front of the API refuses the first Configuration write (the route itself
+  // sends no 429); nothing was saved by it.
   let refuse = true;
   await page.route(`**/namespaces/${namespace.id}/configurations`, async (route, request) => {
     if (!refuse || request.method() !== "POST") {
@@ -211,11 +213,7 @@ test("a draft kept after a refusal between the Secret and the Configuration keep
       return;
     }
     refuse = false;
-    await route.fulfill({
-      status: 429,
-      contentType: "application/json",
-      body: JSON.stringify({ error: { code: "RATE_LIMITED", message: "Slow down." } }),
-    });
+    await route.fulfill(proxyErrorResponse(429));
   });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByLabel("Preset template").selectOption(preset.data.id);
@@ -863,15 +861,6 @@ test("Secret choices carried through Reload draft do not ask before a reload", a
 // A refusal keeps the Create form as a draft only when a retry cannot repeat a write: an
 // uncertain outcome, an admitted provisioning job, a pending credential registration, a job that
 // created its Agent and a repository policy refusal keep none (finding 1965).
-const apiError = (status, code, message) => ({
-  status,
-  contentType: "application/json",
-  body: JSON.stringify({
-    error: { code, message },
-    meta: { requestId: "req_00000000-0000-4000-8000-000000001965" },
-  }),
-});
-
 // The sidebar leaves the refused form and Create Agent returns to the chooser: no kept draft
 // reopens it or asks before a reload.
 async function expectNoKeptDraft(page) {
@@ -935,7 +924,7 @@ test("an uncertain Create outcome keeps no draft", async (t) => {
     }
     // The Agent is created, but the answer does not say so: a retry could create another.
     await route.fetch();
-    await route.fulfill(apiError(503, "DEPENDENCY_UNAVAILABLE", "masked"));
+    await route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "masked"));
   });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await startDefaultPreset(page);
@@ -953,7 +942,9 @@ test("a refused read of an admitted provisioning job keeps no draft", async (t) 
   const { page } = await newPage(t, fixture);
   await routeInstallationProvisioning(page, fixture);
   // The job is admitted, then its status read is refused: the request ID stays the job's.
-  await routeProvisioningJob(page, namespace, () => apiError(404, "NOT_FOUND", RESOURCE_NOT_FOUND));
+  await routeProvisioningJob(page, namespace, () =>
+    apiErrorResponse(404, "NOT_FOUND", RESOURCE_NOT_FOUND),
+  );
   await fillProvisionedAgent(page, fixture, namespace, "Admitted Agent");
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   await page.getByText(/^Resource unavailable in this Namespace\./).waitFor();
@@ -1021,7 +1012,8 @@ test("a refused credential registration keeps no draft", async (t) => {
       await route.fallback();
       return;
     }
-    await route.fulfill(apiError(429, "RATE_LIMITED", "Slow down."));
+    // A rate limit in front of the API: the route itself sends no 429.
+    await route.fulfill(proxyErrorResponse(429));
   });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();

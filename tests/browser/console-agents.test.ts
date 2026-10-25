@@ -28,6 +28,7 @@ import {
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
+import { proxyErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture as createBaseConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
@@ -858,7 +859,8 @@ test("Agent creation blocks selective Agent-create IAM unavailability even when 
 
 for (const failure of [
   { name: "not found", status: 404, code: "NOT_FOUND" },
-  { name: "rate limited", status: 429, code: "RATE_LIMITED" },
+  // A rate limit in front of the API: the route itself sends no 429.
+  { name: "proxy rate limited", status: 429, proxy: true },
   { name: "internal error", status: 500, code: "INTERNAL_ERROR" },
   { name: "dependency unavailable", status: 503, code: "DEPENDENCY_UNAVAILABLE" },
   { name: "missing error code", status: 503 },
@@ -890,15 +892,17 @@ for (const failure of [
     const failDiscovery = (route: Route) =>
       failure.status === undefined
         ? route.abort("failed")
-        : route.fulfill({
-            status: failure.status,
-            contentType: "application/json",
-            body: JSON.stringify(
-              failure.body ?? {
-                error: { code: failure.code, message: "untrusted-server-detail" },
-              },
-            ),
-          });
+        : failure.proxy
+          ? route.fulfill(proxyErrorResponse(failure.status))
+          : route.fulfill({
+              status: failure.status,
+              contentType: "application/json",
+              body: JSON.stringify(
+                failure.body ?? {
+                  error: { code: failure.code, message: "untrusted-server-detail" },
+                },
+              ),
+            });
     await page.route(path, failDiscovery);
     await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
     await page.getByRole("button", { name: "Start with default Preset" }).click();

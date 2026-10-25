@@ -6,6 +6,7 @@ import { DELETION_POLL_MS } from "../../apps/controller/src/console/agents/delet
 import { FIRST_ACTIVITY_WAIT_MS } from "../../apps/controller/src/console/agents/detail.mts";
 import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/deployment-evidence.mts";
 import { deploymentFailureStep } from "../../apps/controller/src/console/agents/deployment-recovery.mts";
+import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { fileConsoleApp } from "../helpers/console-app.mjs";
 import {
   createProviderSandboxDriver,
@@ -1748,10 +1749,7 @@ test("a late first deployment read moves nothing above the version tabs", async 
     false,
   );
 
-  const unavailable = {
-    status: 503,
-    json: { error: { code: "SERVICE_UNAVAILABLE", message: "Service unavailable." } },
-  };
+  const unavailable = apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Service unavailable.");
   for (const c of [
     { status: "succeeded", label: "Completed", stillOn: ["draft", "version"] },
     { status: "running", label: "In progress", stillOn: ["draft", "version"] },

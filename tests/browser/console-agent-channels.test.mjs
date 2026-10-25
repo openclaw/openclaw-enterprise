@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { describe, test } from "node:test";
 
+import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   accessBindingPostRequests,
@@ -74,17 +75,13 @@ async function openDraft(page, fixture, agent, heading, tab = "channels") {
 }
 
 // Answers `method` requests to `pattern` with an API error; other requests reach the API.
-async function failMethod(page, pattern, method, { status, error, requestId }) {
+async function failMethod(page, pattern, method, answer) {
   await page.route(pattern, async (route, request) => {
     if (request.method() !== method) {
       await route.continue();
       return;
     }
-    await route.fulfill({
-      status,
-      contentType: "application/json",
-      body: JSON.stringify({ error, meta: { requestId } }),
-    });
+    await route.fulfill(answer);
   });
 }
 
@@ -631,11 +628,14 @@ describe("Agent channels", { concurrency: 3 }, () => {
     const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
     const { page } = await newPage(t, fixture, { browser });
     const requests = apiRequests(page, fixture.origin);
-    await failMethod(page, `**${configurationPath}`, "PATCH", {
-      status: 403,
-      error: { code: "ACCESS_DENIED", message: "masked Configuration denial" },
-      requestId: "req_00000000-0000-4000-8000-000000000403",
-    });
+    await failMethod(
+      page,
+      `**${configurationPath}`,
+      "PATCH",
+      apiErrorResponse(403, "FORBIDDEN", "masked Configuration denial", {
+        requestId: "req_00000000-0000-4000-8000-000000000403",
+      }),
+    );
 
     await openDraft(page, fixture, agent, "Rejected Slack Save Agent");
     requests.length = 0;
@@ -782,11 +782,14 @@ describe("Agent channels", { concurrency: 3 }, () => {
     });
     const { page } = await newPage(t, fixture, { browser });
     const requests = apiRequests(page, fixture.origin);
-    await failMethod(page, `**/namespaces/${namespace.id}/iam/access-bindings`, "POST", {
-      status: 503,
-      error: { code: "DEPENDENCY_UNAVAILABLE", message: "masked IAM failure" },
-      requestId: "req_00000000-0000-4000-8000-000000000433",
-    });
+    await failMethod(
+      page,
+      `**/namespaces/${namespace.id}/iam/access-bindings`,
+      "POST",
+      apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "masked IAM failure", {
+        requestId: "req_00000000-0000-4000-8000-000000000433",
+      }),
+    );
 
     await openDraft(page, fixture, agent, "Partial Slack Grant Agent");
     requests.length = 0;
@@ -1045,14 +1048,11 @@ describe("Agent channels", { concurrency: 3 }, () => {
           await route.continue();
           return;
         }
-        await route.fulfill({
-          status: 403,
-          contentType: "application/json",
-          body: JSON.stringify({
-            error: { code: "ACCESS_DENIED", message: "masked IAM denial" },
-            meta: { requestId: "req_00000000-0000-4000-8000-000000000833" },
+        await route.fulfill(
+          apiErrorResponse(403, "FORBIDDEN", "masked IAM denial", {
+            requestId: "req_00000000-0000-4000-8000-000000000833",
           }),
-        });
+        );
       },
     );
 
@@ -1150,11 +1150,14 @@ describe("Agent channels", { concurrency: 3 }, () => {
     });
     const { page } = await newPage(t, fixture, { browser });
     const configurationPath = `**/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
-    await failMethod(page, configurationPath, "PATCH", {
-      status: 403,
-      error: { code: "ACCESS_DENIED", message: "masked Configuration denial" },
-      requestId: "req_00000000-0000-4000-8000-000000002015",
-    });
+    await failMethod(
+      page,
+      configurationPath,
+      "PATCH",
+      apiErrorResponse(403, "FORBIDDEN", "masked Configuration denial", {
+        requestId: "req_00000000-0000-4000-8000-000000002015",
+      }),
+    );
     await openDraft(page, fixture, agent, "Runtime Slack Tone Order Agent", "credentials");
     await selectSecret(page, "Slack app token", appSecret);
     const feedback = page.locator(".channel-secrets > p.status[role=alert]").first();
@@ -1192,15 +1195,22 @@ describe("Agent channels", { concurrency: 3 }, () => {
     assert.deepEqual(await feedbackChanges(), ["data-tone", "text"]);
   });
 
-  // Every grant failure keeps the saved binding blocked. An unavailable IAM API (503) still leaves a
-  // known saved Configuration, not an unknown outcome. A refusal (403) says who can grant it
-  // (finding 1920). Retry Secret access retries the pending grant on its own, without another
-  // Configuration write; 403 keeps it pending for the channel-edit check below.
-  const grantErrorCodes = {
-    403: "ACCESS_DENIED",
-    429: "TOO_MANY_REQUESTS",
-    503: "DEPENDENCY_UNAVAILABLE",
-  };
+  // Every grant failure keeps the saved binding blocked. An unavailable IAM API (503) or a rate
+  // limit in front of it (429; the route itself sends none) still leaves a known saved
+  // Configuration, not an unknown outcome. A refusal (403) says who can grant it (finding 1920).
+  // Retry Secret access retries the pending grant on its own, without another Configuration
+  // write; 403 keeps it pending for the channel-edit check below.
+  const grantFailure = (status) =>
+    status === 429
+      ? proxyErrorResponse(429)
+      : apiErrorResponse(
+          status,
+          status === 403 ? "FORBIDDEN" : "DEPENDENCY_UNAVAILABLE",
+          "masked IAM failure",
+          {
+            requestId: "req_00000000-0000-4000-8000-000000000733",
+          },
+        );
   for (const grantStatus of [403, 429, 503]) {
     test(`Agent credentials report partial Slack Secret grant failure (${grantStatus})`, async (t) => {
       const { fixture, namespace } = await readyNamespace(t, "Runtime Slack grant failure");
@@ -1225,11 +1235,12 @@ describe("Agent channels", { concurrency: 3 }, () => {
       });
       const { page } = await newPage(t, fixture, { browser });
       const requests = apiRequests(page, fixture.origin);
-      await failMethod(page, `**/namespaces/${namespace.id}/iam/access-bindings`, "POST", {
-        status: grantStatus,
-        error: { code: grantErrorCodes[grantStatus], message: "masked IAM failure" },
-        requestId: "req_00000000-0000-4000-8000-000000000733",
-      });
+      await failMethod(
+        page,
+        `**/namespaces/${namespace.id}/iam/access-bindings`,
+        "POST",
+        grantFailure(grantStatus),
+      );
 
       await openDraft(page, fixture, agent, "Runtime Slack Grant Failure Agent", "credentials");
       requests.length = 0;
