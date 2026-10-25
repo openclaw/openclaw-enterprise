@@ -24,6 +24,7 @@ import {
 } from "./console-agents-browser-helpers.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import {
+  CHANNEL_BINDING_CREDENTIALS_REMEDY,
   CONFIGURATION_EDITS_PENDING,
   DEPENDENCY_UNAVAILABLE,
   READ_UNAVAILABLE,
@@ -576,7 +577,7 @@ test("Slack credential gate reads the keys the default account's tokens name", a
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
   await page
     .getByText(
-      "The Slack tokens use the keys listed above, not the SLACK_APP_TOKEN and SLACK_BOT_TOKEN pair this form binds. Bind them through the Configuration API.",
+      "The Slack tokens read keys this form does not bind: it binds only SLACK_APP_TOKEN and SLACK_BOT_TOKEN. Bind the keys listed above through the Configuration API.",
     )
     .waitFor();
   const rows = page.locator("section.channel-secrets .credential-status-list");
@@ -589,12 +590,73 @@ test("Slack credential gate reads the keys the default account's tokens name", a
   await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
 });
 
-// A stored Configuration can hold a Slack token form that save now refuses (breaking-changes
+// HTTP mode reads no app token, so an account whose bot token reads SLACK_BOT_TOKEN binds only that
+// key. The tab keeps the bot token's picker, the only console path that rebinds it: the Channels
+// tab's Slack editor refuses HTTP mode and the Configuration JSON saves no bindings (finding 2540).
+test("an HTTP-mode Slack account keeps the bot token picker alone", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("HTTP Slack token gate", { ready: true });
+  const [, botSecret] = await existingSlackSecrets(fixture, namespace.id);
+  const replacement = await fixture.createSecret(namespace.id, "Rotated bot", "xoxb-rotated");
+  const signingSecret = await fixture.createSecret(namespace.id, "Signing secret", "signing");
+  const secretBindings = {
+    SLACK_BOT_TOKEN: envBinding(botSecret),
+    SLACK_SIGNING_SECRET: envBinding(signingSecret),
+  };
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "HTTP Slack Token Agent",
+    nativeValues("http-slack-tokens", {
+      harnessId: "codex",
+      channels: {
+        slack: {
+          ...slack,
+          mode: "http",
+          appToken: undefined,
+          botToken: "${SLACK_BOT_TOKEN}",
+          signingSecret: "${SLACK_SIGNING_SECRET}",
+        },
+      },
+    }),
+    { executionMode: "dedicated", secretBindings },
+  );
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
+  const botToken = page.getByLabel("Slack bot token");
+  await waitForInputValue(botToken, secretOptionLabel(botSecret));
+  assert.equal(await page.getByLabel("Slack app token").count(), 0);
+  const rows = page.locator("section.channel-secrets .credential-status-list");
+  assert.deepEqual(await rows.locator("dt").allTextContents(), ["Slack bot token"]);
+  await expectNoText(page, /keys this form does not bind/);
+  await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
+  // Rotating the bot token saves with only its picker filled.
+  await selectSecret(page, "Slack bot token", replacement);
+  const saved = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/configurations/${agent.configurationId}`) &&
+      response.request().method() === "PATCH",
+  );
+  await page.getByRole("button", { name: "Save channel Secrets" }).click();
+  assert.equal((await saved).status(), 200);
+  await page
+    .getByText("Channel Secret bindings saved. Deploy the new version to deliver them.")
+    .waitFor();
+  assert.deepEqual(await savedSecretBindings(fixture, namespace.id, agent.configurationId), {
+    ...secretBindings,
+    SLACK_BOT_TOKEN: envBinding(replacement),
+  });
+  await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
+});
+
+// A stored Configuration can hold a channel setting that save now refuses (breaking-changes
 // 2026-10-25). Saving channel Secrets resends the stored values, so the API refuses that save and
 // names the setting. The tab said "Check the selected Secrets and reload this Agent.", which no
-// Secret choice or reload fixes (finding 2529); it now shows the API's sentence and where to fix it.
-test("a channel Secret save refused for a stored Slack token form names the setting", async (t) => {
-  // The bundled Kubernetes Compute's rule refuses the form; the storage Driver keeps the row an
+// Secret choice or reload fixes (finding 2529); it now shows the API's sentence and where to fix
+// it: the Configuration JSON for a form save refuses, and where the console binds a name for a
+// reference without a binding, which that editor cannot save (finding 2542).
+async function refusedStoredSlackSave(t, { store, refusal }) {
+  // The bundled Kubernetes Compute's rule refuses the setting; the storage Driver keeps the row an
   // earlier build saved, which this test writes through the Driver as that build did.
   const configurationDriver = createTestConfigurationDriver({ id: "console-configuration" });
   const fixture = await createConsoleAppFixture(t, {
@@ -619,7 +681,7 @@ test("a channel Secret save refused for a stored Slack token form names the sett
   );
   const reference = { namespaceId: namespace.id, id: agent.configurationId };
   const stored = configurationDriver.stored(reference);
-  stored.values.channels.slack.botToken = { source: "file", provider: "default", id: "/run/bot" };
+  store(stored.values.channels.slack);
   await configurationDriver.update(stored);
   const { page } = await newPage(t, fixture);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
@@ -633,12 +695,31 @@ test("a channel Secret save refused for a stored Slack token form names the sett
   );
   await page.getByRole("button", { name: "Save channel Secrets" }).click();
   assert.equal((await saved).status(), 400);
-  const refusal = `Configuration setting channels.slack.botToken holds a SecretRef the Slack Channel Driver cannot read: use an env SecretRef with provider default, or one whole \${NAME}, bound in secretBindings. Fix that setting in the Configuration JSON on the Configuration tab: this tab saves only the SLACK_APP_TOKEN and SLACK_BOT_TOKEN bindings.`;
   const alert = page.locator("section.channel-secrets .status[role=alert]");
   await alert.filter({ hasText: refusal }).waitFor();
   await expectNoText(page, "Check the selected Secrets and reload this Agent.");
-  // Nothing saved: the stored bindings and the refused form stay as they were.
+  // Nothing saved: the stored bindings and the refused setting stay as they were.
   assert.deepEqual(configurationDriver.stored(reference), stored);
+  return page;
+}
+
+test("a channel Secret save refused for a stored Slack token form names the setting", async (t) => {
+  await refusedStoredSlackSave(t, {
+    store(slackChannel) {
+      slackChannel.botToken = { source: "file", provider: "default", id: "/run/bot" };
+    },
+    refusal: `Configuration setting channels.slack.botToken holds a SecretRef the Slack Channel Driver cannot read: use an env SecretRef with provider default, or one whole \${NAME}, bound in secretBindings. Fix that setting in the Configuration JSON on the Configuration tab: this tab saves only the SLACK_APP_TOKEN and SLACK_BOT_TOKEN bindings.`,
+  });
+});
+
+test("a channel Secret save refused for a missing binding says where to bind it", async (t) => {
+  const page = await refusedStoredSlackSave(t, {
+    store(slackChannel) {
+      slackChannel.signingSecret = "${SLACK_SIGNING_SECRET}";
+    },
+    refusal: `Configuration setting channels.slack.signingSecret references SLACK_SIGNING_SECRET without a Configuration Secret binding: bind SLACK_SIGNING_SECRET in secretBindings to an environment-backed Secret, or remove the reference. ${CHANNEL_BINDING_CREDENTIALS_REMEDY}`,
+  });
+  await expectNoText(page, /Fix that setting in the Configuration JSON/);
 });
 
 test("Teams-enabled drafts keep console deploy blocked", async (t) => {

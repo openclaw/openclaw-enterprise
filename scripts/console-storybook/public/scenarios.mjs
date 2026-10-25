@@ -6978,11 +6978,24 @@ export const scenarios = {
     name: "Slack tokens on other keys",
     path: `${draft}&tab=credentials`,
     slack: true,
+    slackTokens: {
+      appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+      botToken: "${ACME_SLACK_BOT}",
+    },
+    slackBindings: ["SLACK_APP_TOKEN"],
+    description:
+      "The bot token reads ACME_SLACK_BOT, which the token pickers do not bind, so the tab lists each key the tokens read without pickers. Deploy waits until ACME_SLACK_BOT is bound through the Configuration API.",
+  },
+  credentialsSlackHttp: {
+    group: "Components/Credentials",
+    name: "Slack HTTP mode, bot token only",
+    path: `${draft}&tab=credentials`,
+    slack: true,
     slackMode: "http",
     slackTokens: { botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" } },
     slackBindings: ["SLACK_BOT_TOKEN"],
     description:
-      "HTTP mode reads no app token, so the tab lists only SLACK_BOT_TOKEN, offers no token pickers, and Deploy is available once it is bound.",
+      "HTTP mode reads no app token, so the tab offers only the Slack bot token picker, and Deploy is available while it is bound.",
   },
   credentialsSlackReader: {
     group: "Components/Credentials",
@@ -7127,6 +7140,29 @@ export const scenarios = {
     gap: "The refusal is simulated; the API refuses the stored form on the bundled Kubernetes Compute.",
     steps: [
       "Press Save channel Secrets. The Console shows the API's message, which names the setting, and says to fix it in the Configuration JSON on the Configuration tab.",
+    ],
+  },
+  credentialsSaveChannelBindingRefused: {
+    group: "Components/Credentials",
+    name: "Channel Secret save refused for a missing binding",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
+        method: "PATCH",
+        status: 400,
+        code: "INVALID_REQUEST",
+        message:
+          "Configuration setting channels.slack.signingSecret references SLACK_SIGNING_SECRET without a Configuration Secret binding: bind SLACK_SIGNING_SECRET in secretBindings to an environment-backed Secret, or remove the reference.",
+      },
+    ],
+    actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
+    description:
+      "The stored Configuration references a name that has no Secret binding, so saving channel Secrets, which resends the stored values, is refused for that setting.",
+    gap: "The refusal is simulated; the API refuses the unbound reference on the bundled Kubernetes Compute.",
+    steps: [
+      "Press Save channel Secrets. The Console shows the API's message, which names the setting, and says where the console binds a Secret: this tab for SLACK_APP_TOKEN and SLACK_BOT_TOKEN, the Configuration API for other names.",
     ],
   },
   credentialsSaveConflict: {

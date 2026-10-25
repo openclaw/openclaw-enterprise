@@ -155,13 +155,30 @@ test("the deploy gate requires the keys the default Slack account's tokens name"
   assert.deepEqual(missingChannelCredentialGroups(http, bound("SLACK_SIGNING_SECRET")), [
     "Slack Secret bindings (SLACK_BOT_TOKEN)",
   ]);
-  // Save still requires a binding for an app token HTTP mode keeps, so the gate lists it.
-  const httpWithApp = slackWith({
+  // Save still requires a binding for each name an app token HTTP mode keeps references, written
+  // whole or not, so the gate lists it (finding 2541).
+  for (const [appToken, key] of [
+    ["${ACME_SLACK_APP}", "ACME_SLACK_APP"],
+    ["${ACME_SLACK_APP:-x}", "ACME_SLACK_APP"],
+    ["xapp-${ACME_SLACK_APP}", "ACME_SLACK_APP"],
+    ["$ACME_SLACK_APP", "ACME_SLACK_APP"],
+    ["$SLACK_APP_TOKEN", "SLACK_APP_TOKEN"],
+  ]) {
+    const httpWithApp = slackWith({ mode: "http", appToken, botToken: "${SLACK_BOT_TOKEN}" });
+    assert.notDeepEqual(missingChannelCredentialGroups(httpWithApp, bound("SLACK_BOT_TOKEN")), []);
+    assert.deepEqual(
+      missingChannelCredentialGroups(httpWithApp, bound("SLACK_BOT_TOKEN", key)),
+      [],
+    );
+  }
+  // Every name in the app token, not just the first.
+  const twoNames = slackWith({
     mode: "http",
-    appToken: "${ACME_SLACK_APP}",
+    appToken: "${ACME_SLACK_A}${ACME_SLACK_B}",
     botToken: "${SLACK_BOT_TOKEN}",
   });
-  assert.deepEqual(missingChannelCredentialGroups(httpWithApp, bound("SLACK_BOT_TOKEN")), [
-    "Slack Secret bindings (ACME_SLACK_APP)",
-  ]);
+  assert.deepEqual(
+    missingChannelCredentialGroups(twoNames, bound("SLACK_BOT_TOKEN", "ACME_SLACK_A")),
+    ["Slack Secret bindings (ACME_SLACK_B)"],
+  );
 });

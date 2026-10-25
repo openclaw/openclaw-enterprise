@@ -21,6 +21,10 @@ export const CredentialsSlackOtherKeys = {
   ...story("credentialsSlackOtherKeys"),
   name: "Slack tokens on other keys",
 };
+export const CredentialsSlackHttp = {
+  ...story("credentialsSlackHttp"),
+  name: "Slack HTTP mode, bot token only",
+};
 export const CredentialsSlackReader = {
   ...story("credentialsSlackReader"),
   name: "Slack tokens, viewer can only read",
@@ -60,6 +64,10 @@ export const CredentialsSaveProvisioningReserved = {
 export const CredentialsSaveChannelRefused = {
   ...story("credentialsSaveChannelRefused"),
   name: "Channel Secret save refused for a channel setting",
+};
+export const CredentialsSaveChannelBindingRefused = {
+  ...story("credentialsSaveChannelBindingRefused"),
+  name: "Channel Secret save refused for a missing binding",
 };
 export const CredentialsSaveConflict = {
   ...story("credentialsSaveConflict"),

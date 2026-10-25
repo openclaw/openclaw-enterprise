@@ -51,6 +51,7 @@ import {
   namespacePath,
   refusedSave,
   secretOperateRefusal,
+  CHANNEL_BINDING_PLACES,
   channelBindingRefusal,
   agentSaveDenial,
   message,
@@ -352,8 +353,7 @@ const CONFIGURATION_CHANGED =
   "The saved Configuration changed while you were editing. Reload this draft before saving.";
 // The Configuration JSON saves no Secret bindings; a channel refusal that asks for one gets where
 // the console binds Slack's standard names (finding 2494). The API keeps its secretBindings text.
-const CHANNEL_BINDING_CONSOLE_REMEDY =
-  "This editor does not save Secret bindings: bind SLACK_APP_TOKEN and SLACK_BOT_TOKEN on the Credentials tab or in the Slack editor on the Channels tab, and other names through the Configuration API.";
+const CHANNEL_BINDING_CONSOLE_REMEDY = `This editor does not save Secret bindings: ${CHANNEL_BINDING_PLACES}`;
 
 // Longest wait for Deployment activity's first read before the sections below it show. On a
 // slow link that read lands over a second after the page, and a failed version's banner then
