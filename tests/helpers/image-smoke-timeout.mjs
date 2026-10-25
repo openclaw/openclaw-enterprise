@@ -16,10 +16,9 @@ assert.ok(
 // A startup wait sized on an 8-CPU runner, for the CPUs this runner has. CI runs
 // image files side by side, so a runtime start on 4 CPUs honestly takes about twice
 // as long, and longer while every file starts at once (finding 2448: a 45 s wait
-// failed on a 16vcpu runner). Never shorter than the 8-CPU wait, so a hang still
-// fails within a few minutes.
+// failed on a 16vcpu runner). The wait grows at most fourfold (2 CPUs), so a hang
+// still fails within minutes.
 export function cpuScaledImageTimeoutMs(eightCpuMs) {
-  return Math.ceil(
-    eightCpuMs * imageSmokeTimeoutMultiplier * Math.max(1, 8 / availableParallelism()),
-  );
+  const cpuFactor = Math.min(4, Math.max(1, 8 / availableParallelism()));
+  return Math.ceil(eightCpuMs * imageSmokeTimeoutMultiplier * cpuFactor);
 }
