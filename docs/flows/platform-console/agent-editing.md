@@ -72,6 +72,8 @@ editing/deployment without defaults.
 **Selected version** uses `activeRevisionId`; **View version vN** opens read-only
 details without activating it. **Deployment activity** in `agents/deployment-evidence.mts`
 shows the newest readable version's recorded status. It does not measure live health.
+The Versions list marks each version whose listed `deploymentStatus` is `failed`, so an
+earlier failed version keeps its mark after a reload without a read of its record.
 Routine completion folds. Pending work, read errors, warnings, and cleanup stay visible.
 If the first read finishes after the `FIRST_ACTIVITY_WAIT_MS` reveal, the summary shows its
 outcome and the details stay folded so the version tabs do not move. Cleanup, warnings, or an
@@ -351,6 +353,7 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 
 ## Changelog
 
+- 2026-10-25: The Versions list marks earlier failed versions from the revision list's `deploymentStatus`. (fix-dogfood-r36, finding 2422)
 - 2026-10-24: Restoring parked Workspace files applies the latest observed Agent operate answer. (pr-3474)
 - 2026-10-24 17:30: Stop and Run diagnostics follow the latest observed operate answer. (fix-2328)
 

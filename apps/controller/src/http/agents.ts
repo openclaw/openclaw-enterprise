@@ -501,6 +501,7 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
           configurationGeneration: summary.configurationGeneration,
           harness: summary.harness,
           createdAt: summary.createdAt,
+          deploymentStatus: summary.deploymentStatus,
         })),
         meta: {
           requestId: request.id,

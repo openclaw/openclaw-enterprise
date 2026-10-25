@@ -22829,6 +22829,16 @@
                             "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
                             "type": "string"
                           },
+                          "deploymentStatus": {
+                            "anyOf": [
+                              { "const": "queued", "type": "string" },
+                              { "const": "running", "type": "string" },
+                              { "const": "succeeded", "type": "string" },
+                              { "const": "failed", "type": "string" },
+                              { "type": "null" }
+                            ],
+                            "description": "The status that reading this revision's deployment would report, or `null` when OCC has no deployment record for it."
+                          },
                           "harness": {
                             "additionalProperties": false,
                             "properties": {
@@ -22863,7 +22873,8 @@
                           "configurationId",
                           "configurationGeneration",
                           "harness",
-                          "createdAt"
+                          "createdAt",
+                          "deploymentStatus"
                         ],
                         "type": "object"
                       },

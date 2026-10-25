@@ -346,11 +346,12 @@ const DEPLOYMENT_OUTCOME_TONES: Partial<Record<DeploymentOutcome, string>> = {
   failed: "danger",
 };
 
-// Versions whose deployment record this tab has read as failed, keyed by Agent path and version
-// ID. The Versions list reads only the latest version's record, so an earlier failed version
-// lost its mark once a newer version was deployed (finding 2383). A failed record is final, so
-// the mark stays for as long as the console is open. A new page load knows the latest one and
-// each version opened since, whose own record panel adds it (finding 2407).
+// Versions whose deployment this tab has read as failed, keyed by Agent path and version ID. The
+// Versions list reads only the latest version's record, so an earlier failed version lost its
+// mark once a newer version was deployed (finding 2383). A failed record is final, so the mark
+// stays for as long as the console is open. Each listed version's outcome comes with the list,
+// so a new page load marks earlier failed versions too (finding 2422); a version's own record
+// panel and the latest version's record add marks as they are read (finding 2407).
 const failedVersions = new Set<string>();
 const failedVersionKey = (agentPath: string, revisionId: string) =>
   JSON.stringify([agentPath, revisionId]);
@@ -529,6 +530,11 @@ export async function renderAgentDetail(
       throw new Error(
         "The version history did not identify this Agent. Refresh to check it again.",
       );
+    }
+    for (const item of page.revisions) {
+      if (item.deploymentStatus === "failed") {
+        failedVersions.add(failedVersionKey(path, item.id));
+      }
     }
     return page;
   }

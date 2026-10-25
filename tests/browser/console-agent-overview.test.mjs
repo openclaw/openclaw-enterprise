@@ -88,6 +88,25 @@ function routeFailedRecord(
   });
 }
 
+// The in-memory fixture keeps no deployment records, so its Versions list reports no outcome.
+// This lists `revision` as failed, as the API does once its record failed (finding 2422).
+async function routeFailedListing(page, fixture, namespace, agent, revision) {
+  const listPath = `/namespaces/${namespace.id}/agents/${agent.id}/revisions`;
+  await page.route(
+    (url) => url.origin === fixture.origin && url.pathname === listPath,
+    async (route) => {
+      const response = await route.fetch();
+      const body = await response.json();
+      for (const item of body.data ?? []) {
+        if (item.id === revision.id) {
+          item.deploymentStatus = "failed";
+        }
+      }
+      await route.fulfill({ response, json: body });
+    },
+  );
+}
+
 // The Agent summary showed "vN · Loading…" for a frame or more on every load while the newest
 // version's deployment record was read (finding 1438). Its loading text now follows the 250 ms
 // rule: it is hidden for the first 250 ms, so a read that settles sooner never shows it.
@@ -292,10 +311,13 @@ test("A failed older version raises no recovery while the current version is hid
 // like an ordinary version (finding 2383). A failed record is final, so the mark stays. After a
 // reload only the latest record is read again, so the earlier failed version read "Historical"
 // with no mark beside its own record's "Failed" (finding 2407); opening it reads that record.
+// The list now carries each version's outcome, so the mark shows before v1 is opened (finding
+// 2422).
 test("The Versions list keeps an earlier failed version's mark after a newer deploy", async (t) => {
   const { fixture, namespace, agent, page } = await agentPage(t, "Failed then", "Failed then");
   const first = await fixture.deployAgent(namespace.id, agent.id);
   await routeFailedRecord(page, fixture, namespace, agent, first);
+  await routeFailedListing(page, fixture, namespace, agent, first);
 
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
   const rail = page.getByRole("toolbar", { name: "Versions" });
@@ -315,6 +337,15 @@ test("The Versions list keeps an earlier failed version's mark after a newer dep
 
   await page.reload();
   await rail.getByRole("button", { name: /^View version v2/ }).waitFor();
+  // The reloaded list marks v1 from its own outcome, before v1 or its record is opened.
+  const v1RecordReads = [];
+  page.on("request", (request) => {
+    if (request.url() === deploymentRecordUrl(fixture, namespace.id, agent.id, first.id)) {
+      v1RecordReads.push(request.url());
+    }
+  });
+  await rail.getByRole("button", { name: "View version v1, deployment failed" }).waitFor();
+  assert.deepEqual(v1RecordReads, []);
   // Hold v1's record until v1's page and its notice show. The record that lands then must
   // relabel the notice at once: no later poll rerenders it (finding 2407).
   const record = await holdRequests(

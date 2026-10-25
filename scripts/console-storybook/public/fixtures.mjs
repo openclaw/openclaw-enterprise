@@ -502,6 +502,19 @@ export function installFixture(scenario, evidence) {
           Date.parse(createdAt) - (scenario.revisionHistory - number) * 86_400_000,
         ).toISOString();
         revisions.set(older.id, older);
+        // An earlier version whose deployment failed before a later one succeeded.
+        if (scenario.earlierFailedVersion === number) {
+          deployments.set(older.id, {
+            deploymentId: older.id,
+            namespaceId,
+            agentId: agent.id,
+            status: "failed",
+            cleanup: null,
+            progress: null,
+            error: candidateDeploymentError(scenario, older.createdAt),
+            warnings: [],
+          });
+        }
       }
     }
     deployments.set(revisionId, {
@@ -1850,6 +1863,8 @@ export function installFixture(scenario, evidence) {
               configurationGeneration: item.configurationGeneration,
               harness: item.harness,
               createdAt: item.createdAt,
+              // The API lists each version's deployment outcome (finding 2422).
+              deploymentStatus: deployments.get(item.id)?.status ?? null,
             })),
             200,
             undefined,
