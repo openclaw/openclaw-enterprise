@@ -5059,7 +5059,18 @@ export class OpenClawController {
     validateConfigurationSettings(values, options);
     requireDeployableRoster(values, options);
     this.validateComputeConfiguration(values, options);
-    if (secretBindings !== undefined && this.bundledKubernetesCompute()) {
+    if (secretBindings !== undefined) {
+      this.requireBundledChannelBindings(values, secretBindings);
+    }
+  }
+
+  // On the bundled Kubernetes Compute, which delivers channel credentials only from bindings, the
+  // channel credential rule its deployment admission applies (finding 2319).
+  private requireBundledChannelBindings(
+    values: OpenClawConfigurationDocument,
+    secretBindings: SecretBindings,
+  ): void {
+    if (this.bundledKubernetesCompute()) {
       requireChannelSecretBindings(
         values,
         enabledChannelEntries(values),
@@ -9592,10 +9603,18 @@ export class OpenClawController {
     if (metadata?.kind !== "agent") {
       throw new ScopeViolationError("The Agent Configuration is unavailable.");
     }
+    const configurationDriver = this.configurationDriver();
     const configuration = this.exactConfiguration(
-      await this.driverOperation(() => this.configurationDriver().read(metadata)),
+      await this.driverOperation(() => configurationDriver.read(metadata)),
       metadata,
     );
+    // Before the Channel Driver, which reads only an env SecretRef and answers any other channel
+    // credential form with its generic binding refusal: the Configuration Driver's rules and the
+    // bundled Kubernetes channel rule, which deployment applies again below, so a stored
+    // Configuration that predates a rule gets the message its next save would, as provisioning
+    // does (findings 2506, 2516).
+    await configurationDriver.validate(configuration);
+    this.requireBundledChannelBindings(configuration.values, configuration.secretBindings ?? {});
     return this.validateChannelCredentials(
       principalId,
       input.namespaceId,

@@ -84,11 +84,19 @@ const credentialHeaderMessage = (path: string): string =>
   `Configuration field ${path} holds a credential value inline, where a reference is required. Make the header value a \${NAME} reference, or Bearer \${NAME} for an Authorization header.`;
 const credentialKeyMessage = (path: string): string =>
   `Configuration field ${path} holds a credential value inline, where a reference is required. Make the value a \${NAME} reference or a SecretRef.`;
+// A channel's credential setting is named as Configuration save's channel rules name it
+// (`channels.slack.botToken`), so the Console shows the refusal under the Configuration JSON as
+// it shows theirs (finding 2517). The message never shows the value.
+const channelCredentialKeyMessage = (path: string): string =>
+  configurationSettingMessage(
+    settingPath(path),
+    "holds a credential value inline, where a reference is required. Make the value a ${NAME} reference or a SecretRef",
+  );
 // A key slot's value that holds a reference the runtime substitutes, but not as the whole value:
 // the `$NAME` form, a `${NAME:-fallback}`, or a `${NAME}` with other text, spaces or references
 // (findings 2493, 2503). The message names the form and never the text, which may hold the
 // credential, and names the setting as Configuration save's channel rules do
-// (`channels.slack.botToken`); any other value keeps credentialKeyMessage.
+// (`channels.slack.botToken`); any other value keeps the slot's inline-value message.
 function referenceFormMessage(value: unknown): ((path: string) => string) | undefined {
   if (typeof value !== "string") {
     return undefined;
@@ -209,7 +217,9 @@ export function validateModelCredentialReferences(
     }
     throw new ModelCredentialValueError(
       path,
-      message === credentialKeyMessage ? (referenceFormMessage(value) ?? message) : message,
+      message === credentialKeyMessage || message === channelCredentialKeyMessage
+        ? (referenceFormMessage(value) ?? message)
+        : message,
     );
   };
   // Whether a header named `name` in the headers object at `headersPath` carries a credential, and
@@ -323,6 +333,7 @@ export function validateModelCredentialReferences(
   // (`requireToken: true`) passes.
   const refuseSensitiveSettings = (root: SettingPath, settings: unknown, owner: string): void => {
     const manifest = (SENSITIVE_MANIFEST_SETTINGS[owner] ?? []).map((field) => field.split("."));
+    const keyMessage = root[0] === "channels" ? channelCredentialKeyMessage : credentialKeyMessage;
     const marked = (relative: SettingPath): boolean =>
       manifest.some(
         (field) =>
@@ -336,7 +347,7 @@ export function validateModelCredentialReferences(
       const key = relative.at(-1);
       if (typeof value === "string") {
         if (sensitive) {
-          validateReference(value, pointer(...path), false, credentialKeyMessage);
+          validateReference(value, pointer(...path), false, keyMessage);
         }
         continue;
       }
@@ -352,7 +363,7 @@ export function validateModelCredentialReferences(
         continue;
       }
       if (sensitive && typeof key === "string" && SERVICE_ACCOUNT_SETTING.test(key)) {
-        validateReference(record, pointer(...path), false, credentialKeyMessage);
+        validateReference(record, pointer(...path), false, keyMessage);
       }
       if (key === "headers") {
         refuseCredentialHeaders(path, record, credentialHeaderMessage);
