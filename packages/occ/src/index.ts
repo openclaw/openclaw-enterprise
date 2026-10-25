@@ -348,7 +348,6 @@ import {
   deploymentErrorForWork,
   deploymentProgressForWork,
   deploymentWarningsForWork,
-  type DeploymentStatus,
   type DeploymentStatusResult,
 } from "./state/controller-work.ts";
 import { PostgresCommitOutcomeUnknownError } from "./state/postgres-state.ts";
@@ -809,7 +808,7 @@ export interface CreateAgentInput {
  * without reading each record (finding 2422). Null when no deployment record matches it.
  */
 export type AgentRevisionListing = AgentRevisionSummary & {
-  readonly deploymentStatus: DeploymentStatus | null;
+  readonly deploymentStatus: DeploymentStatusResult["status"] | null;
 };
 
 export interface AgentRevisionListPage {
