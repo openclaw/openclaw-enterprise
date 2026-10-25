@@ -190,7 +190,7 @@ const editableFields = (page: Page, scope = ".agent-card") =>
   );
 
 // The Agent-side editors: each Save sends an Agent update.
-const agentSaves = [
+const agentSaves = (repositorySave?: string) => [
   { tab: "plugins", save: "Save plugin selections", field: "Plugin selections JSON" },
   // The Channel Secrets card below saves the Configuration, not the Agent.
   {
@@ -200,7 +200,7 @@ const agentSaves = [
     scope: "form:has(#harness-auth-method)",
   },
   // Repository fields need a repository Driver; the repository test covers them.
-  { tab: "repositories", save: "Save repository access" },
+  { tab: "repositories", save: repositorySave },
 ];
 
 // Opens each Agent-side editor as the signed-in member and checks it shows `note`, offers no
@@ -208,20 +208,22 @@ const agentSaves = [
 async function assertAgentSavesDisabled(
   { fixture, namespace, agent, member, page }: Awaited<ReturnType<typeof readOnlyMember>>,
   note: string,
+  saves: ReturnType<typeof agentSaves>,
 ) {
   const requests = apiRequests(page, fixture.origin);
-  for (const [index, { tab, save, field, scope }] of agentSaves.entries()) {
+  for (const [index, { tab, save, field, scope }] of saves.entries()) {
     const url = detailUrl(fixture, namespace.id, agent.id, "draft", tab).href;
     if (index === 0) {
       await login(page, fixture, url, member.credentials);
     } else {
       await page.goto(url);
     }
-    const button = page.getByRole("button", { name: save, exact: true });
-    await button.waitFor();
     await page.getByRole("status").filter({ hasText: note }).waitFor();
-    // The note is the proof where Save is also disabled for an unedited form.
-    assert.equal(await button.isDisabled(), true, `${save} is disabled`);
+    if (save) {
+      // The note is the proof where Save is also disabled for an unedited form.
+      const button = page.getByRole("button", { name: save, exact: true });
+      assert.equal(await button.isDisabled(), true, `${save} is disabled`);
+    }
     assert.deepEqual(await editableFields(page, scope), [], `no ${tab} field takes an edit`);
     if (field) {
       // The saved settings stay in view.
@@ -238,7 +240,11 @@ async function assertAgentSavesDisabled(
 }
 
 test("a member without Agent update sees the Agent-side saves and fields disabled with the reason", async (t) => {
-  await assertAgentSavesDisabled(await readOnlyMember(t, "Agent Saves Off"), AGENT_UPDATE_DENIED);
+  await assertAgentSavesDisabled(
+    await readOnlyMember(t, "Agent Saves Off"),
+    AGENT_UPDATE_DENIED,
+    agentSaves("Save repository access"),
+  );
 });
 
 // Each Agent update also checks operate on every source the Agent and its Configuration bind:
@@ -252,7 +258,9 @@ test("an Agent editor without operate on the bound Secrets sees the Agent-side s
   const answer = member.page.waitForResponse((response) =>
     response.url().endsWith(`/agents/${member.agent.id}/permissions`),
   );
-  await assertAgentSavesDisabled(member, AGENT_SOURCES_DENIED);
+  // Without a repository Driver an Agent editor's repository tab offers no Save at all; the
+  // note and the disabled fields still show.
+  await assertAgentSavesDisabled(member, AGENT_SOURCES_DENIED, agentSaves());
   const data = (await (await answer).json()).data;
   assert.equal(data.update, true);
   assert.equal(data.agentSourcesOperate, false);
