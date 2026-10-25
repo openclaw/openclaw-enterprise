@@ -400,20 +400,29 @@ test("a member's unconfirmed credential grant offers a retry until the API refus
   );
 });
 
+const ADMINISTRATOR_GRANT_REQUEST = "req_00000000-0000-4000-8000-000000002543";
+const ADMINISTRATOR_GRANT_REFUSED = `${CREDENTIAL_ACCESS_UNCONFIRMED} Access denied. You do not have permission for this operation. Retry credential access, or open the saved Agent and ask an administrator to check access to its saved model and channel Secrets. Request ID: ${ADMINISTRATOR_GRANT_REQUEST}`;
+
 test("an administrator's refused credential grant keeps the retry and the API's answer", async (t) => {
   const { fixture, namespace, secret } = await setup(t);
   const { page } = await newPage(t, fixture);
   await page.route(`${fixture.origin}/namespaces/${namespace.id}/iam/roles`, (route) =>
-    route.fulfill(apiErrorResponse(403, "FORBIDDEN", GENERIC_DENIAL)),
+    route.fulfill(
+      apiErrorResponse(403, "FORBIDDEN", GENERIC_DENIAL, {
+        requestId: ADMINISTRATOR_GRANT_REQUEST,
+      }),
+    ),
   );
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await fillDefaultPreset(page, secret, "Administrator Agent");
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  // Only a member's refusal names an Installation administrator (finding 2113).
-  await page
-    .getByRole("alert")
-    .filter({ hasText: `${CREDENTIAL_ACCESS_UNCONFIRMED} Access denied.` })
-    .waitFor();
+  // Only a member's refusal names an Installation administrator (finding 2113): the
+  // administrator is one, so the whole alert names nobody to ask for the grant (finding 2543).
+  const alert = page.getByRole("alert").filter({ hasText: CREDENTIAL_ACCESS_UNCONFIRMED });
+  await alert.waitFor();
+  const alertText = await alert.textContent();
+  assert.doesNotMatch(alertText ?? "", /Installation administrat/);
+  assert.equal(alertText, ADMINISTRATOR_GRANT_REFUSED);
   assert.equal(await page.getByText(MEMBER_GRANT_REFUSED).count(), 0);
   await waitForEnabled(page.getByRole("button", { name: "Retry credential access", exact: true }));
 });

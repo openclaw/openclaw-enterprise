@@ -77,6 +77,7 @@ import {
   SAVED_CONFIGURATION_CHANGED,
   SECRET_OPERATE_DENIED,
   WORKSPACE_FILES_UNAVAILABLE,
+  namespaceListDenied,
   secretOperateRefused,
 } from "../helpers/refusal-text.mjs";
 
@@ -1953,8 +1954,13 @@ test("Agent credentials choose existing Secrets for harness authentication", asy
     await route.fulfill({ status: 403, contentType: "application/json", body: "{}" });
   });
   await page.reload();
-  await page.getByText(/Secrets unavailable/).waitFor();
-  assert.deepEqual(await statusTone(page.getByText(/Secrets unavailable/)), {
+  // A refused Secret list names the Namespace read it checks, not a bare "Access denied".
+  const unavailableSecrets = page.getByText(
+    `Secrets unavailable. ${namespaceListDenied("Secrets")}`,
+    { exact: true },
+  );
+  await unavailableSecrets.waitFor();
+  assert.deepEqual(await statusTone(unavailableSecrets), {
     className: "status",
     tone: "danger",
     role: "alert",
