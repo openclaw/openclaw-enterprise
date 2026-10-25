@@ -62,7 +62,8 @@ Secrets the caller may not `operate`, reported only to a caller with Namespace r
 `create`. Agent create, Configuration create and the people search refuse such a Secret, so each
 field lists it disabled with its reason and never stages it; the Preset's **Use existing Secret**
 list does the same, and **Use Preset** refuses it. A permission reread, a refused create or an
-inline Secret create reads the answer again. A failed read marks none.
+inline Secret create reads the answer again. A failed read keeps the last answer, or marks
+none before any answer.
 
 ### 2. Choose a model and starter Configuration
 

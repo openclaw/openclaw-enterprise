@@ -194,6 +194,9 @@ stays disabled until a field or binding changes.
 On the Agent page, `GET .../agents/:agentId/permissions/secrets` lists readable Secrets the
 caller may not `operate`; each is disabled with its reason and never staged. A refused binding
 save rereads it to name such a Secret; an inline create rereads it before staging.
+When it lists any Secret, `operate` is granted per Secret and a new Secret has none: creation is
+disabled with that reason and drawer hints offer only existing Secrets, as the Preset's **Create
+new Secret** is. A failed reread keeps the last answer.
 
 `apps/controller/src/console/agents/secret-picker.mjs:openCreateSecretDialog` shows
 an editable Agent-prefixed Name, the Secrets page's `secretValueControl` (CRLF becomes LF),
