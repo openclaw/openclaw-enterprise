@@ -303,7 +303,8 @@ test("caller permission summaries report primary IAM decisions without authorizi
     sandboxPolicyRead: false,
   });
   // Reading the Agent's network policy and suggestions needs read on its SandboxPolicy, a grant
-  // no other answer covers (finding 2454).
+  // no other answer covers (finding 2454). The grant names only this Agent's policy, the
+  // resource the policy and suggestion reads authorize.
   fixture.policy.roles.push({
     id: "role-permission-summary-sandbox-policy",
     namespaceId: namespace.id,
@@ -315,11 +316,34 @@ test("caller permission summaries report primary IAM decisions without authorizi
     subjectKind: "identity",
     subjectId: limited.principal.id,
     roleId: "role-permission-summary-sandbox-policy",
+    resourceKind: "sandbox_policy",
+    resourceId: `sbp_${agent.id.slice(4)}`,
   });
   const policySummary = await fixture.request("GET", permissionsPath, { session });
   assert.equal(policySummary.status, 200);
   assert.equal(policySummary.data.sandboxPolicyRead, true);
   assert.equal(policySummary.data.update, false);
+  // The answer agrees with the real policy read it stands for.
+  const policyRead = await fixture.request("GET", `${agentPath}/sandbox-policy/networking`, {
+    session,
+  });
+  assert.equal(policyRead.status, 200);
+  // An IAM failure on this decision is not a denial: the whole answer is unavailable, so the
+  // console keeps reading the policy instead of hiding it.
+  const authorizeSandboxPolicy = fixture.iamDriver.authorize;
+  fixture.iamDriver.authorize = async (request) => {
+    if (request.resource.kind === "sandbox_policy") {
+      throw new Error("IAM outage");
+    }
+    return authorizeSandboxPolicy.call(fixture.iamDriver, request);
+  };
+  let policyOutage;
+  try {
+    policyOutage = await fixture.request("GET", permissionsPath, { session });
+  } finally {
+    fixture.iamDriver.authorize = authorizeSandboxPolicy;
+  }
+  assertApiError(policyOutage, 503, "DEPENDENCY_UNAVAILABLE");
   // Configuration update on the Agent's Configuration is its own grant (finding 2421).
   fixture.policy.roles.push({
     id: "role-permission-summary-configuration",

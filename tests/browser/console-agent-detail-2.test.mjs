@@ -2516,7 +2516,8 @@ test("an Agent reader meets no refused read on Repositories, Policy denials or L
   assert.equal(await page.getByRole("button", { name: "Save repository access" }).count(), 0);
 
   // Policy denials on the draft: the denials live on the deployed versions, and the policy and
-  // its suggestions are not read.
+  // its suggestions are not read. The suggestions do not send the reader to the current
+  // version, which refuses them too.
   await page.getByRole("tab", { name: "Policy denials", exact: true }).click();
   await page
     .getByText("Policy denials come from deployed versions. Open the current version to see them.")
@@ -2525,9 +2526,13 @@ test("an Agent reader meets no refused read on Repositories, Policy denials or L
     .getByText(
       "Your access does not include reading this Agent’s network policy or its suggestions.",
     )
+    .first()
     .waitFor();
   await settle();
-  await expectNoText(page, /Deploy an Agent to load Sandbox policy decisions|permission to read/);
+  await expectNoText(
+    page,
+    /Deploy an Agent to load Sandbox policy decisions|permission to read|Suggestions come from/,
+  );
 
   // Policy denials on the current version: still no policy or suggestions read.
   await page.goto(detailUrl(fixture, namespace.id, agent.id, active.revision.id, "policy").href);

@@ -4229,6 +4229,10 @@ test("a reader without update views the version draft read-only", async (t) => {
   // answer 403 (finding 2436).
   await page.getByRole("tab", { name: "Plugins", exact: true }).click();
   await page.getByText(PLUGINS_READ_ONLY, { exact: true }).waitFor();
+  // The version notice addresses the reader too, not an editor whose changes reach the next
+  // deployment (finding 2455).
+  await page.getByText(READ_ONLY_DRAFT_NOTICE, { exact: true }).waitFor();
+  assert.equal(await page.getByText(/^Plugin changes to this Agent appear/).count(), 0);
   // A read-only summary: no editor, no disabled Save or Discard, no instructions (finding 2455).
   assert.equal(await page.getByLabel("Plugin selections JSON", { exact: true }).count(), 0);
   assert.equal(await page.getByRole("button", { name: /Save plugin|Discard/ }).count(), 0);

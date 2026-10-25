@@ -214,6 +214,84 @@ test("A refused policy read offers no Retry", async (t) => {
   assert.equal(await tab.getByText("null", { exact: true }).count(), 0);
 });
 
+// The page read its answer before a policy read grant. Opening Policy denials compares the
+// remembered denial with a fresh answer, which is not audited, so the policy shows on the first
+// visit instead of only after a reload (finding 2454).
+test("A policy read grant after the page loaded shows the policy on the first visit", async (t) => {
+  const { fixture, namespace, agent } = await createPolicyConsole(t);
+  const role = {
+    id: "role-policy-granted-later",
+    namespaceId: namespace.id,
+    permissions: ["namespace", "agent", "agent_revision", "configuration"].map((resourceKind) => ({
+      action: "read",
+      resourceKind,
+    })),
+  };
+  const member = await fixture.createAccountWithPolicy("policy-granted-later", (principal) => {
+    fixture.policy.roles.push(role);
+    fixture.policy.bindings.push({
+      id: "binding-policy-granted-later",
+      namespaceId: namespace.id,
+      subjectKind: "identity",
+      subjectId: principal.id,
+      roleId: role.id,
+    });
+  });
+  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  const answer = page.waitForResponse((r) => r.url().endsWith(`/agents/${agent.id}/permissions`));
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration"),
+    member.credentials,
+  );
+  assert.equal((await (await answer).json()).data.sandboxPolicyRead, false);
+  await settlePageRequests(page);
+
+  role.permissions.push({ action: "read", resourceKind: "sandbox_policy" });
+  await page.getByRole("tab", { name: "Policy denials", exact: true }).click();
+  const tab = page.locator(".sandbox-policy");
+  await tab.getByText(/^Policy v\d+ · Editing/).waitFor();
+  await settlePageRequests(page);
+  assert.equal(await tab.getByText(/Your access does not include reading/).count(), 0);
+  assert.equal(
+    pathRequests(
+      requests,
+      "GET",
+      `/namespaces/${namespace.id}/agents/${agent.id}/sandbox-policy/networking`,
+    ).length,
+    1,
+  );
+});
+
+// The draft has no deployment of its own. With a current version, its denials and suggestions
+// are on that version; without one (never deployed, stopped, or first deployment running) the
+// tab says so instead of telling every reader to deploy.
+test("Policy denials on the draft says where denials and suggestions come from", async (t) => {
+  const { fixture, namespace, agent } = await createPolicyConsole(t);
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "policy"));
+  const tab = page.locator(".sandbox-policy");
+  await tab
+    .getByText("Policy denials come from deployed versions. This Agent has no current version.")
+    .waitFor();
+  await tab
+    .getByText("Suggestions come from deployed versions. This Agent has no current version.")
+    .waitFor();
+  assert.equal(await tab.getByText(/^Deploy an Agent/).count(), 0);
+
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  await page.reload();
+  await tab
+    .getByText("Policy denials come from deployed versions. Open the current version to see them.")
+    .waitFor();
+  await tab
+    .getByText("Suggestions come from deployed versions. Open the current version to see them.")
+    .waitFor();
+});
+
 const delegatedPolicyGrant = {
   id: "python-demo",
   binary: "/usr/bin/python3.11",

@@ -257,9 +257,14 @@ test("an Agent editor without operate on the bound Secrets sees the Agent-side s
   const reader = member.fixture.policy.roles.find((role) => role.id === "role-save-refusal-reader");
   assert.ok(reader, "the read-only role exists");
   reader.permissions.push({ action: "update", resourceKind: "agent" });
-  // Without a repository Driver an Agent editor's repository tab offers no Save at all; the
-  // note and the disabled fields still show.
+  // As on Plugins, repository access reads as a summary with the note: no save could keep an
+  // edit, so the editor and its choices read are not offered.
   await assertAgentSavesDisabled(member, AGENT_SOURCES_DENIED, agentSaves());
+  await member.page
+    .getByText(
+      "The version draft selects no repositories. The Agent runs without repository access.",
+    )
+    .waitFor();
   // The answer the page showed: Agent update, but not the bound sources.
   const session = await member.fixture.signIn(member.member.credentials);
   const answer = await member.fixture.request(
@@ -356,6 +361,39 @@ test("a member without Agent update cannot edit repository access", async (t) =>
   assert.equal(await page.getByRole("button", { name: "Save plugin selections" }).count(), 0);
 });
 
+// An unknown permission answer keeps today's behaviour: the editor shows and its choices are
+// read, and the API still authorizes every save (finding 2454).
+test("an unknown permission answer keeps the repository access editor", async (t) => {
+  const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId: string) => [
+    {
+      repositoryRef: "application",
+      repositoryId: "1601",
+      repository: "example/application",
+      namespaces: [{ namespaceId, profiles: ["git-read", "git-write", "git-full"] }],
+    },
+  ]);
+  const agent = await fixture.createAgent(namespace.id, "Repository Editor", nativeValues("repo"));
+  const { page } = await newPage(t, fixture, { browser });
+  const requests = apiRequests(page, fixture.origin);
+  await withholdPermissionSummary(page, fixture, namespace.id, agent.id);
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "repositories").href,
+  );
+  await page.getByText("Default repository access", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "Save repository access", exact: true }).waitFor();
+  assert.notDeepEqual(
+    pathRequests(
+      requests,
+      "GET",
+      `/namespaces/${namespace.id}/agents/${agent.id}/repository-options`,
+    ),
+    [],
+  );
+  assert.equal(await page.getByText(/read-only with your access/).count(), 0);
+});
+
 // The permission answer was read once per page, so a grant applied only after a full page
 // Refresh (finding 1538). Reload authentication source reads it again.
 test("a granted Agent update enables the Agent-side save on the next draft refresh", async (t) => {
@@ -387,6 +425,54 @@ test("a granted Agent update enables the Agent-side save on the next draft refre
     .getByRole("button", { name: "Save authentication source", exact: true, disabled: false })
     .waitFor();
   await waitForEnabled(page.getByLabel("Authentication source", { exact: true }));
+});
+
+// A plugin edit left unsaved on another tab was kept as a draft. Once a reread answer denied
+// Agent update, Plugins showed its summary but the kept edit still counted as unsaved: Deploy
+// said "Save or discard plugin changes" and nothing could discard it (finding 2463). The summary
+// shows the Agent as read, so it drops the kept edit and Deploy no longer waits for it.
+test("a plugin edit kept across a revoked Agent update no longer holds Deploy", async (t) => {
+  const { fixture, namespace, agent, member, page } = await readOnlyMember(t, "Plugin Draft");
+  const reader = fixture.policy.roles.find((role) => role.id === "role-save-refusal-reader");
+  assert.ok(reader, "the read-only role exists");
+  reader.permissions.push(
+    { action: "update", resourceKind: "agent" },
+    { action: "deploy", resourceKind: "agent" },
+    { action: "operate", resourceKind: "secret" },
+  );
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "plugins").href,
+    member.credentials,
+  );
+  const held = page.getByText("Save or discard plugin changes before deploying.", {
+    exact: true,
+  });
+  await page.locator("summary").filter({ hasText: "Plugin selections JSON" }).click();
+  const json = page.getByLabel("Plugin selections JSON", { exact: true });
+  await waitForEnabled(json);
+  await json.fill(JSON.stringify({ "codex-plugin:linear@openai-curated-remote": {} }));
+  await held.waitFor();
+
+  // Leaving the tab keeps the edit. Agent update is revoked, and Reload authentication source
+  // rereads the permission answer.
+  await page.getByRole("tab", { name: "Credentials", exact: true }).click();
+  reader.permissions = reader.permissions.filter(
+    (permission) => !(permission.action === "update" && permission.resourceKind === "agent"),
+  );
+  await page.getByRole("button", { name: "Reload authentication source", exact: true }).click();
+  await page.getByRole("status").filter({ hasText: AGENT_UPDATE_DENIED }).waitFor();
+  await held.waitFor();
+
+  await page.getByRole("tab", { name: "Plugins", exact: true }).click();
+  await page.getByRole("heading", { name: "Plugin selections", exact: true }).waitFor();
+  await page.getByText("No plugins are selected.", { exact: true }).waitFor();
+  await held.waitFor({ state: "detached" });
+  // The kept edit is gone for good: leaving and reopening the tab does not bring it back.
+  await page.getByRole("tab", { name: "Credentials", exact: true }).click();
+  await page.getByRole("status").filter({ hasText: AGENT_UPDATE_DENIED }).waitFor();
+  assert.equal(await held.count(), 0);
 });
 
 // A save first rereads what it saves. A 403 from that read is a missing read grant, not a
