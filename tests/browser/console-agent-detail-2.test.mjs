@@ -2531,7 +2531,12 @@ test("an Agent reader meets no refused read on Repositories, Policy denials or L
   await page.getByRole("tab", { name: "Logs", exact: true }).click();
   await page.getByText(/^Runtime status requires Agent operate/).waitFor();
   await settle();
-  await expectNoText(page, /Request ID/);
+  // The strip shows no refusal's Request ID. (This Compute Driver has no log text, a separate
+  // answer that is not about access.)
+  assert.doesNotMatch(
+    (await page.getByText(/^Runtime status requires Agent operate/).textContent()) ?? "",
+    /Request ID/,
+  );
 
   const refused = [
     `${agentPath}/repository-options`,

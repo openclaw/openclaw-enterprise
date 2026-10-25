@@ -1908,7 +1908,11 @@ test("a reader without operate learns what log text needs and is not asked for s
     requests.filter(({ path }) => path.endsWith(`/deployments/${revisionId}/runtime`)).length;
   await settlePageRequests(page);
   assert.equal(statusReads(), 0);
-  assert.equal(await page.getByText(/Request ID/).count(), 0);
+  // The status strip shows no refusal's Request ID (the log text read is still refused).
+  assert.doesNotMatch(
+    (await page.getByText(/^Runtime status requires Agent operate/).textContent()) ?? "",
+    /Request ID/,
+  );
 
   // Reopening the tab does not ask either.
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
@@ -2816,14 +2820,15 @@ test("a restored operate grant shows status on Back, and a new sign-in asks for 
   assert.equal(logReads(), 1);
   await page.getByText(/Log text requires Agent read_logs/).waitFor();
 
-  // Operate revoked: the rebuilt page's answer says so, so status is not asked, across Backs.
+  // Operate revoked: Back's check of the shown status is refused once; the rebuilt view takes
+  // that refusal and the page's answer, and does not ask again across Backs.
   await leave();
   changeGrant(role, "operate", false);
   permissionsBefore = permissionReads();
   await page.goBack();
   await page.getByText(/Runtime status requires Agent operate/).waitFor();
   await waitForIdleFetches(page);
-  assert.equal(statusReads(), 1);
+  assert.equal(statusReads(), 2);
   assert.equal(permissionReads() - permissionsBefore, 2);
   // A kept view takes the answer Back's check read; it does not ask again.
   await leave();
@@ -2831,7 +2836,7 @@ test("a restored operate grant shows status on Back, and a new sign-in asks for 
   await page.goBack();
   await page.getByText(/Runtime status requires Agent operate/).waitFor();
   await waitForIdleFetches(page);
-  assert.equal(statusReads(), 1);
+  assert.equal(statusReads(), 2);
   assert.equal(permissionReads() - permissionsBefore, 1);
 
   // Sign out and in again as the same member, without reloading the tab.
