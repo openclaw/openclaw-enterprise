@@ -466,7 +466,9 @@ export function createSecretReferenceField({
     if (manuallyDisabled) {
       return;
     }
-    // A grant or revocation since the field was drawn applies when the list opens.
+    // Opening the list asks for the answer again. Create Agent rereads it in place, so a grant or
+    // revocation since the field was drawn applies here; the Agent page caches it for the page
+    // load, so there it applies after a page reload.
     if (!listboxOpen) {
       readCreateAnswer();
     }
