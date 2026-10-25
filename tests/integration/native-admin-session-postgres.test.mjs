@@ -27,7 +27,6 @@ import {
 } from "../helpers/bootstrap-installation.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { grantAgentSecretOperate } from "../helpers/postgres-harness-auth.mjs";
-import { testPool } from "../helpers/postgres-database.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { waitFor, waitUntil } from "../helpers/wait-for.mjs";
 
@@ -183,7 +182,8 @@ async function startNativeHttpsUpstream(t) {
 }
 
 async function ensureBootstrap(t) {
-  const observer = testPool(t, { connectionString: databaseUrl, max: 2 });
+  const observer = new pg.Pool({ connectionString: databaseUrl, max: 2 });
+  t.after(() => observer.end());
   const state = new PostgresPlatformState(observer);
   if ((await state.loadInstallation()) !== undefined) {
     return;
