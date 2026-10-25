@@ -263,6 +263,7 @@
               "reference/configuration/secrets",
               "reference/security/runtime-isolation",
               "reference/agents",
+              "reference/agents/workspace-files",
               "reference/agent-plugins",
               "reference/presets"
             ]
