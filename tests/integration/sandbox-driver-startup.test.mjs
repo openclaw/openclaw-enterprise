@@ -3809,6 +3809,8 @@ test("startup refuses unknown OpenShell settings and invalid Agent resource quan
   for (const agentResources of [
     { requests: { cpu: "one" } },
     { limits: { memory: 5 } },
+    // Quantities are strings: without the type check 512 would parse as a quantity (5 does not).
+    { requests: { memory: 512 } },
     { limits: { cpu: "1", "example.com/gpu": "1 Gi" } },
     { requests: { cpu: "-500m" } },
   ]) {
@@ -3834,11 +3836,38 @@ test("startup refuses unknown OpenShell settings and invalid Agent resource quan
       },
     ],
   );
+  // Every resource is compared, not only the first.
+  await rejectsAtStartup(
+    t,
+    (c) =>
+      (sandboxOf(c).kubernetes.agentResources = {
+        requests: { cpu: "1", memory: "3Gi" },
+        limits: { cpu: "1", memory: "2Gi" },
+      }),
+    [
+      {
+        path: "/kubernetes/agentResources/requests",
+        code: "INVALID_RANGE",
+        message: "The memory request (3Gi) cannot exceed its limit (2Gi).",
+      },
+    ],
+  );
+  // An invalid limit is reported once, without also comparing the request against it.
+  await rejectsAtStartup(
+    t,
+    (c) =>
+      (sandboxOf(c).kubernetes.agentResources = {
+        requests: { cpu: "1" },
+        limits: { cpu: "-1" },
+      }),
+    invalidValue("/kubernetes/agentResources/limits", quantity),
+  );
   // Control: every known key, and quantities in each spelling the API server accepts, load.
   const accepted = sandboxInstallation();
   Object.assign(sandboxOf(accepted).kubernetes, {
+    // Zero is a valid quantity, and a request needs no limit.
     agentResources: {
-      requests: { cpu: "500m", memory: "1Gi", "example.com/gpu": "1" },
+      requests: { cpu: "500m", memory: "1Gi", "example.com/gpu": "1", "ephemeral-storage": "0" },
       limits: { cpu: "0.5", memory: "4e9", "example.com/gpu": "1" },
     },
   });
@@ -3877,6 +3906,29 @@ test("startup refuses OpenShell endpoint protocols the gateway refuses", async (
       invalidValue("/policy/networkPolicies/0/endpoints/0/protocol", message),
     );
   }
+  // Every policy and endpoint is checked, and each detail names its own indexes.
+  await rejectsAtStartup(
+    t,
+    (c) => {
+      policiesOf(c)[0].endpoints.push({
+        host: "tools.example.test",
+        ports: [443],
+        protocol: "http",
+      });
+      policiesOf(c).push({
+        name: "database",
+        endpoints: [{ host: "db.example.test", ports: [5432], protocol: "rest" }],
+        binaries: [{ path: "/app/bin/model-client" }],
+      });
+    },
+    [
+      ...invalidValue("/policy/networkPolicies/0/endpoints/1/protocol", unknown),
+      ...invalidValue(
+        "/policy/networkPolicies/1/endpoints/0/protocol",
+        "Protocol rest needs an access preset (read_only, read_write or full).",
+      ),
+    ],
+  );
   // Control: the protocols the Gateway accepts without rules.
   for (const endpoint of [
     { protocol: "tcp" },
@@ -3890,6 +3942,14 @@ test("startup refuses OpenShell endpoint protocols the gateway refuses", async (
     const configuration = sandboxInstallation();
     Object.assign(endpointOf(configuration), endpoint);
     await loadInstallationFile(t, configuration);
+    // Some Gateway checks compare lowercase names, so the policy carries the protocol lowercase.
+    const driver = new OpenShellSandboxDriver(sandboxOf(configuration), {
+      id: "openshell-sandbox",
+      implementation: "openshell",
+      backend: backendFor(workspaceGatewayClient()),
+    });
+    const [sent] = driver.admitNetworkPolicy([], 1).defaults["model-egress"].endpoints;
+    assert.equal(sent.protocol, endpoint.protocol.toLowerCase());
   }
 });
 
