@@ -2493,28 +2493,31 @@ test("an Agent reader meets no refused read on Repositories, Policy denials or L
   await page
     .getByText("Policy denials come from deployed versions. Open the current version to see them.")
     .waitFor();
-  await page
-    .getByText(
-      "Your access does not include reading this Agent’s network policy or its suggestions.",
-    )
-    .first()
-    .waitFor();
+  const noPolicyAccess = page.getByText(
+    "Your access does not include reading this Agent’s network policy or its suggestions.",
+  );
+  await noPolicyAccess.first().waitFor();
   await settle();
   await expectNoText(
     page,
     /Deploy an Agent to load Sandbox policy decisions|permission to read|Suggestions come from/,
   );
+  // The sentence names the suggestions too, so it is said once, on the network policy card: no
+  // suggestions card repeats it (finding 2522).
+  const sayOnce = async () => {
+    assert.equal(await noPolicyAccess.count(), 1);
+    assert.equal(
+      await page.getByRole("heading", { name: "Policy suggestions", exact: true }).isVisible(),
+      false,
+    );
+  };
+  await sayOnce();
 
   // Policy denials on the current version: still no policy or suggestions read. The version
   // runs without a Sandbox, so it has no denial log either: the tab says so instead of reading
   // it and showing the 400 "no such runtime log source" (finding 2484).
   await page.goto(detailUrl(fixture, namespace.id, agent.id, active.revision.id, "policy").href);
-  await page
-    .getByText(
-      "Your access does not include reading this Agent’s network policy or its suggestions.",
-    )
-    .first()
-    .waitFor();
+  await noPolicyAccess.first().waitFor();
   await page
     .getByText(
       "This Agent version runs without a Sandbox, so no policy denials are recorded for it.",
@@ -2526,6 +2529,7 @@ test("an Agent reader meets no refused read on Repositories, Policy denials or L
     page,
     /permission to read|no such runtime log source|window: unavailable|Denials in the loaded window/,
   );
+  await sayOnce();
   // With no denial log, the window's controls could only show nothing; only the reason stays
   // (finding 2497).
   const policyTab = page.locator(".sandbox-policy");

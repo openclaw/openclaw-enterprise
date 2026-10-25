@@ -28,6 +28,7 @@ import {
   CONFIGURATION_EDITS_PENDING,
   DEPENDENCY_UNAVAILABLE,
   READ_UNAVAILABLE,
+  unreadableSlackTokenRefusal,
 } from "../helpers/refusal-text.mjs";
 
 const slack = {
@@ -708,7 +709,7 @@ test("a channel Secret save refused for a stored Slack token form names the sett
     store(slackChannel) {
       slackChannel.botToken = { source: "file", provider: "default", id: "/run/bot" };
     },
-    refusal: `Configuration setting channels.slack.botToken holds a SecretRef the Slack Channel Driver cannot read: use an env SecretRef with provider default, or one whole \${NAME}, bound in secretBindings. Fix that setting in the Configuration JSON on the Configuration tab: this tab saves only the SLACK_APP_TOKEN and SLACK_BOT_TOKEN bindings.`,
+    refusal: `${unreadableSlackTokenRefusal("channels.slack.botToken", "secretRef")} Fix that setting in the Configuration JSON on the Configuration tab: this tab saves only the SLACK_APP_TOKEN and SLACK_BOT_TOKEN bindings.`,
   });
 });
 

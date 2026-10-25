@@ -474,6 +474,18 @@ test("Create Agent names a refused Slack token form once, under its Configuratio
   const configuration = page.getByLabel("Configuration JSON");
   const values = JSON.parse(await configuration.inputValue());
   const jsonError = page.locator("#configuration-json-error");
+  // The Slack card names a token pasted as the value the way Configuration save does, and does
+  // not show it (finding 2523).
+  values.channels.slack.botToken = "xoxb-pasted-card-token";
+  await configuration.fill(JSON.stringify(values, null, 2));
+  const inline = "holds a credential value inline, where a reference is required";
+  const reference = "uses a credential reference this editor does not write";
+  const cardText = (form) =>
+    `Slack bot token ${form}. To edit Slack here, set botToken to \${SLACK_BOT_TOKEN} in the Configuration JSON.`;
+  const card = page.locator(".channel-card", { hasText: "Slack bot token holds" });
+  await card.getByText(cardText(inline), { exact: true }).waitFor();
+  // Its closed native configuration disclosure is the JSON the reader typed, not card text.
+  assert.doesNotMatch(await card.innerText(), /xoxb-pasted/);
   // The Slack editor's channel field looked names up; Create Agent must not call Slack again.
   const lookups = slackCalls;
   const submitWith = async (botToken) => {
@@ -489,17 +501,24 @@ test("Create Agent names a refused Slack token form once, under its Configuratio
     assert.equal(response.status(), 400, botToken);
     return (await response.json()).error;
   };
-  for (const [botToken, message] of [
-    ["xoxb-${SLACK_BOT_TOKEN}", referenceFormRefusal("channels.slack.botToken", "otherText")],
-    // A `$` before a name the runtime does not read is the token itself (finding 2517).
-    ["$xoxbSECRET", referenceFormRefusal("channels.slack.botToken", "inline")],
+  for (const [botToken, message, form] of [
+    [
+      "xoxb-${SLACK_BOT_TOKEN}",
+      referenceFormRefusal("channels.slack.botToken", "otherText"),
+      reference,
+    ],
+    // A `$` before a name the runtime does not read is the token itself (finding 2517), and the
+    // card says so too (finding 2530).
+    ["$xoxbSECRET", referenceFormRefusal("channels.slack.botToken", "inline"), inline],
     [
       "${SLACK_SPARE_TOKEN}",
       "Configuration setting channels.slack.botToken references SLACK_SPARE_TOKEN without a Configuration Secret binding: bind SLACK_SPARE_TOKEN in secretBindings to an environment-backed Secret, or remove the reference.",
+      reference,
     ],
   ]) {
     const error = await submitWith(botToken);
     assert.equal(error.message, message, botToken);
+    await page.locator(".channel-card").getByText(cardText(form), { exact: true }).waitFor();
     // A refusal that asks for a binding says where this form makes one.
     const shown = message.includes(" in secretBindings")
       ? `${message} ${CHANNEL_BINDING_FORM_REMEDY}`

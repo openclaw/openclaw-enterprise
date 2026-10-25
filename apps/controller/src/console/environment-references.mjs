@@ -3,5 +3,6 @@
 export {
   environmentReferenceNames,
   secretInputShorthandName,
+  unsubstitutedReference,
   wholeEnvironmentReferenceName,
 } from "@openclaw-enterprise/occ";

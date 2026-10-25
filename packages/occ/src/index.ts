@@ -554,6 +554,7 @@ export {
   environmentReference,
   environmentReferenceNames,
   secretInputShorthandName,
+  unsubstitutedReference,
   wholeEnvironmentReferenceName,
 } from "./environment-references.ts";
 export {

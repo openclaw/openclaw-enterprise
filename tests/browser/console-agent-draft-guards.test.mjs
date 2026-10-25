@@ -312,6 +312,24 @@ test("Policy denials on the draft says where denials and suggestions come from",
     }
     assert.equal(await tab.getByRole("checkbox", { name: "Follow policy denials" }).count(), 0);
     assert.equal(await tab.getByRole("searchbox", { name: "Filter loaded denials" }).count(), 0);
+    // No empty band where the rows would be: only the grid gap and the two elements' own margins
+    // separate the reason from the suggestions card (finding 2522).
+    assert.equal(await tab.locator(".sandbox-decisions").isVisible(), false);
+    const band = await tab.evaluate((section) => {
+      const style = (node) => globalThis.getComputedStyle(node);
+      const reason = [...section.children].find((node) =>
+        node.textContent?.startsWith("Policy denials come from deployed versions."),
+      );
+      const card = section.querySelector(":scope > .agent-card");
+      return {
+        expected:
+          Number.parseFloat(style(section).rowGap) +
+          Number.parseFloat(style(reason).marginBottom) +
+          Number.parseFloat(style(card).marginTop),
+        space: card.getBoundingClientRect().top - reason.getBoundingClientRect().bottom,
+      };
+    });
+    assert.ok(Math.abs(band.space - band.expected) < 1, JSON.stringify(band));
   };
   await tab
     .getByText("Policy denials come from deployed versions. This Agent has no current version.")

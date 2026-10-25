@@ -72,6 +72,7 @@ import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs
 import { createOccLogger, emitOccLogEvent } from "../../apps/controller/src/logging.ts";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
 import { conformanceKubeconfig } from "../helpers/kubernetes-compute.mjs";
+import { unreadableSlackTokenRefusal } from "../helpers/refusal-text.mjs";
 import {
   tenant,
   apiKeyAuth,
@@ -10441,8 +10442,7 @@ test("native channel providers require Secret bindings and project them only to 
       ),
     {
       name: "ConfigurationHarnessError",
-      message:
-        "Configuration setting channels.slack.accounts.ops.botToken holds a SecretRef the Slack Channel Driver cannot read: use an env SecretRef with provider default, or one whole ${NAME}, bound in secretBindings.",
+      message: unreadableSlackTokenRefusal("channels.slack.accounts.ops.botToken", "secretRef"),
     },
   );
   // Outside a secret-input field the runtime keeps `$NAME` and other `${` text as written, and a

@@ -25,7 +25,7 @@ import {
 } from "../helpers/auth-session.mjs";
 import { bindRole } from "../helpers/iam-grants.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
-import { referenceFormRefusal } from "../helpers/refusal-text.mjs";
+import { referenceFormRefusal, unreadableSlackTokenRefusal } from "../helpers/refusal-text.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 function createConfigurationBackend() {
@@ -389,11 +389,7 @@ const unsubstitutedChannelReference = (path, shown) =>
 const unsubstitutedChannelText = (path) =>
   setting(path, `contains a \${ the runtime does not substitute: ${useUppercase}`);
 // A Slack token SecretRef the Slack Channel Driver cannot read (finding 2514).
-const unreadableSlackReference = (path) =>
-  setting(
-    path,
-    "holds a SecretRef the Slack Channel Driver cannot read: use an env SecretRef with provider default, or one whole ${NAME}, bound in secretBindings",
-  );
+const unreadableSlackReference = (path) => unreadableSlackTokenRefusal(path, "secretRef");
 const absoluteUrl = (field) =>
   `Configuration field ${field} must be an absolute http or https URL.`;
 const modelApi = (field) =>
@@ -1678,10 +1674,7 @@ test("Configuration save and Agent create's check refuse a Slack token SecretRef
   for (const botToken of [{ value: "xoxb-not-a-reference" }, {}]) {
     assertRefused(
       await save(slackWith({ botToken })),
-      setting(
-        "channels.slack.botToken",
-        "holds an object that is not a SecretRef the Slack Channel Driver cannot read: use an env SecretRef with provider default, or one whole ${NAME}, bound in secretBindings",
-      ),
+      unreadableSlackTokenRefusal("channels.slack.botToken", "object"),
       { label: JSON.stringify(botToken), sentinel: "xoxb-not-a-reference" },
     );
   }
