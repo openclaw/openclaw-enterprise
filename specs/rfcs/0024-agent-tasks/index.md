@@ -95,8 +95,9 @@ OCE deploys and governs the Agents that could do this work, but it cannot take t
 No Driver contract changes. Delivery reuses the authenticated route OCC uses for
 [workspace files](../../../docs/flows/workspace-files.md): OCC opens WSS to Envoy with the mounted service key, and
 Envoy forwards to the Agent's gateway Service. An integration-test helper already drives a native session over this
-route (`sessions.create`, `sessions.send`, `agent.wait`, `chat.history`). Unlike the HTTP chat endpoint, a session run
-does not end when the client disconnects, so a worker restart does not cancel work. Compute Drivers without the route
+route (`sessions.create`, `sessions.send`, `agent.wait`, `chat.history`). The HTTP chat endpoint cancels a run when its
+client disconnects; a session run belongs to the gateway, and the plan confirms that a worker restart leaves it
+running. Compute Drivers without the route
 (Docker, SSH) reject Task creation with `501` in the first slice.
 
 ### Model
