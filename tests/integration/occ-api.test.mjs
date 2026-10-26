@@ -6649,13 +6649,16 @@ test("Agent provisioning API validates inline configuration with existing Secret
   const unreadableAccount = await provisionWithAccount(managedSource);
   fixture.state.restrictions.pop();
   assertApiError(unreadableAccount, 403, "FORBIDDEN");
-  for (const [description, source] of [
-    ["another Namespace", { ...managedSource, namespaceId: foreignNamespaceId }],
-    ["a missing account", { ...managedSource, id: `sa_${randomUUID()}` }],
-  ]) {
-    const refused = await provisionWithAccount(source);
-    assertApiError(refused, 404, "NOT_FOUND", description);
-  }
+  // Another Namespace is a rule about the request, named before any lookup (finding 2536); a
+  // missing account in the route Namespace stays a 404.
+  const foreignAccount = await provisionWithAccount({
+    ...managedSource,
+    namespaceId: foreignNamespaceId,
+  });
+  assertApiError(foreignAccount, 400, "INVALID_REQUEST", "another Namespace");
+  assert.equal(foreignAccount.body.error.message, SERVICE_ACCOUNT_CROSS_NAMESPACE);
+  const missingAccount = await provisionWithAccount({ ...managedSource, id: `sa_${randomUUID()}` });
+  assertApiError(missingAccount, 404, "NOT_FOUND", "a missing account");
   const acceptedAccount = await provisionWithAccount(managedSource);
   assert.equal(acceptedAccount.status, 503, JSON.stringify(acceptedAccount.body));
   assert.equal(acceptedAccount.body.error.code, "DEPENDENCY_UNAVAILABLE");

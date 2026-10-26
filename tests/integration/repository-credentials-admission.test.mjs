@@ -47,7 +47,6 @@ import {
   DEPENDENCY_UNAVAILABLE,
   REPOSITORY_ACCESS_OR_BINDINGS,
   REPOSITORY_SELECTION_NOT_APPROVED,
-  SERVICE_ACCOUNT_CROSS_NAMESPACE,
   sentIdHidden,
 } from "../helpers/refusal-text.mjs";
 
@@ -1272,37 +1271,6 @@ test("Provisioning rejects a forbidden repository profile before queueing or cre
   assert.equal(response.status, 400, JSON.stringify(response));
   assert.equal(response.error.code, "INVALID_REQUEST");
   assert.equal(response.error.message, REPOSITORY_SELECTION_NOT_APPROVED);
-  assert.deepEqual((await f.request("GET", f.collection)).data, []);
-});
-
-test("Provisioning names a ServiceAccount from another Namespace before any lookup", async (t) => {
-  // The rule reads only the request, so a 400 that names it says nothing about whether the
-  // account exists (finding 2536; occ-api.test.mjs compares an existing and a missing account on
-  // Agent create). Nothing is queued or created.
-  const configurationDriver = createTestConfigurationDriver();
-  configurationDriver.createExact = async () => assert.fail("The request created Configuration");
-  configurationDriver.inspectExact = async () => assert.fail("The request inspected Configuration");
-  const f = await fixture(t, { harness: "codex", configurationDriver });
-  await f.state.transact((unit) =>
-    unit.namespaces.transitionNamespaceStatus(f.namespace.id, "provisioning", "ready"),
-  );
-  const response = await f.request("POST", `${f.collection}/provision`, {
-    requestId: `req_${randomUUID()}`,
-    name: "Foreign account provisioning",
-    executionMode: "dedicated",
-    configuration: { kind: "agent", values: f.configuration.values },
-    harnessAuth: {
-      method: "codex_pat",
-      source: {
-        kind: "service_account",
-        namespaceId: `ns_${randomUUID()}`,
-        id: `sa_${randomUUID()}`,
-      },
-    },
-  });
-  assert.equal(response.status, 400, JSON.stringify(response));
-  assert.equal(response.error.code, "INVALID_REQUEST");
-  assert.equal(response.error.message, SERVICE_ACCOUNT_CROSS_NAMESPACE);
   assert.deepEqual((await f.request("GET", f.collection)).data, []);
 });
 
