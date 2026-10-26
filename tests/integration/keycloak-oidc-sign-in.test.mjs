@@ -344,7 +344,7 @@ async function assertAliceSignedIn({ prepared, page }, callback, result) {
   // The Console adopts only the session its own attempt created, then loads signed in.
   const confirmed = await result;
   assert.equal(confirmed.status(), 200);
-  await page.waitForURL(/\/console\/(agents|providers|namespaces|settings)/);
+  await page.waitForURL(/\/console\/(launch|agents|providers|namespaces|settings)/);
   const session = await page.evaluate(
     async () => (await (await fetch("/api/auth/session")).json()).data,
   );

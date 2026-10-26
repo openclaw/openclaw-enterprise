@@ -880,7 +880,7 @@ test(
           await page.locator("#password").fill(alicePassword);
           await page.locator("#kc-login").click();
           assert.equal((await result).status(), 200);
-          await page.waitForURL(/\/console\/(agents|providers|namespaces|settings)/);
+          await page.waitForURL(/\/console\/(launch|agents|providers|namespaces|settings)/);
           const session = await api(page, "/api/auth/session");
           assert.equal(session.status, 200);
           assert.equal(
