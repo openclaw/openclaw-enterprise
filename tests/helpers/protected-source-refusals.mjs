@@ -7,16 +7,63 @@ import { backendFixtures, createConsoleAppFixture } from "./console-app.mjs";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
 import { staticEgressFixture } from "./static-egress.mjs";
 
+function unexpectedIssuerWork() {
+  assert.fail("a refused protected source create must not reach the prepared issuer");
+}
+
+/**
+ * The create body of each protected source type that names its Agent in `config.agent_id`: the
+ * Proxy's credential-free metadata and, with `githubMetadata`, the prepared GitHub metadata.
+ */
+export const protectedSourceInputs = {
+  "credential-free-repository-metadata": (agentId) => ({
+    name: "credential-free",
+    type: "credential-free-repository-metadata",
+    config: {
+      origin: "https://api.github.com",
+      repository_id: "7311",
+      repository: "fixture/credential-free",
+      agent_id: agentId,
+      authority: "execution",
+    },
+  }),
+  "github-app-metadata": (agentId, issuer) => ({
+    name: "prepared-metadata",
+    type: "github-app-metadata",
+    config: {
+      app_id: "11",
+      installation_id: "22",
+      repository_id: "7311",
+      repository: "fixture/prepared",
+      agent_id: agentId,
+      authority: "execution",
+    },
+    secrets: { private_key: issuer },
+  }),
+};
+
 /**
  * The static egress fixture (real app, IAM, controller, OpenShell Credential Proxy and Gateway
  * Drivers; supplier wires are fixtures) with one Agent bound to a live-adopted protected source,
  * not yet deployed. `restart` opens the same platform state with a controller for the same
  * Installation after a change of its Driver selection, as a new API process would.
  */
-export async function protectedSourceFixture(t, options = {}) {
+export async function protectedSourceFixture(t, { githubMetadata = false, ...options } = {}) {
   let state;
   const f = await staticEgressFixture(t, {
     admitRevision: false,
+    // `githubMetadata` enables the prepared github-app-metadata type. These refusals come before
+    // any issuer work, so its lifecycle must never run.
+    ...(githubMetadata && {
+      preparedGitHub: {
+        apiOrigin: "https://api.github.com",
+        configure: unexpectedIssuerWork,
+        readWarm: unexpectedIssuerWork,
+        ready: unexpectedIssuerWork,
+        withdraw: unexpectedIssuerWork,
+        current: unexpectedIssuerWork,
+      },
+    }),
     ...options,
     appFactory: (context, appOptions) =>
       createConsoleAppFixture(context, { ...appOptions, wrapState: (base) => (state = base) }),

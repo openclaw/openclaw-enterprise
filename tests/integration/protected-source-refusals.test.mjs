@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
-import { protectedSourceFixture } from "../helpers/protected-source-refusals.mjs";
+import {
+  protectedSourceFixture,
+  protectedSourceInputs,
+} from "../helpers/protected-source-refusals.mjs";
 import {
   AGENT_DELETING,
   CREDENTIAL_PROXY_SOURCES_WITHOUT_PROXY,
@@ -18,16 +21,11 @@ import {
 // caller's grants and is about the request or an Installation property. Each now names its
 // cause, and none names a resource the caller cannot read.
 
-const metadataConfig = (agentId) => ({
-  origin: "https://api.github.com",
-  repository_id: "7311",
-  repository: "fixture/credential-free",
-  agent_id: agentId,
-  authority: "execution",
-});
+const credentialFree = protectedSourceInputs["credential-free-repository-metadata"];
 
 test("protected credential source create names the type, the foreign Secret or the Agent it refuses", async (t) => {
-  const f = await protectedSourceFixture(t);
+  // Prepared GitHub metadata enabled: the Proxy's longest list of protected types.
+  const f = await protectedSourceFixture(t, { githubMetadata: true });
   const create = (body, session) => f.request("POST", f.path, { body, session });
   // With a Credential Proxy selected, a Gateway type the Proxy cannot protect is an Installation
   // property, not a missing resource.
@@ -38,10 +36,11 @@ test("protected credential source create names the type, the foreign Secret or t
   });
   assert.equal(pat.status, 409, JSON.stringify(pat.body));
   assert.equal(pat.body.error.code, "RESOURCE_CONFLICT");
-  assert.equal(
-    pat.body.error.message,
-    protectedSourceTypeRefused("codex-pat", "openai, credential-free-repository-metadata"),
-  );
+  // The whole text, who to ask included: the 256-character message cap must not cut it.
+  const protectedTypes = "openai, credential-free-repository-metadata, github-app-metadata";
+  assert.equal(pat.body.error.message, protectedSourceTypeRefused("codex-pat", protectedTypes));
+  // The longest bundled Gateway type (OpenShell, with toolBinaries and a Refresh Driver) fits too.
+  assert.ok(protectedSourceTypeRefused("oauth2-client-credentials", protectedTypes).length <= 256);
   // A Secret reference to another Namespace is the request's own error, refused as the Credential
   // Gateway path refuses it.
   const crossed = await create({
@@ -58,20 +57,21 @@ test("protected credential source create names the type, the foreign Secret or t
   const deleting = await f.deletingAgent("deleting-agent");
   const embedded = await f.embeddedAgent("embedded-agent");
   const missingId = `agt_${randomUUID()}`;
-  for (const [agentId, status, code, message] of [
-    [deleting.id, 409, "AGENT_DELETING", AGENT_DELETING],
-    [embedded.id, 409, "RESOURCE_CONFLICT", PROTECTED_SOURCE_EMBEDDED_AGENT],
-    // An Agent the caller may operate that does not exist stays the generic 404.
-    [missingId, 404, "NOT_FOUND", RESOURCE_NOT_FOUND],
-  ]) {
-    const refused = await create({
-      name: "credential-free",
-      type: "credential-free-repository-metadata",
-      config: metadataConfig(agentId),
-    });
-    assert.equal(refused.status, status, JSON.stringify(refused.body));
-    assert.equal(refused.body.error.code, code);
-    assert.equal(refused.body.error.message, message);
+  const issuer = f.source.secrets.api_key;
+  // Both types that name their Agent: the Proxy's credential-free metadata and prepared GitHub
+  // metadata, which refuses before any issuer work.
+  for (const [type, input] of Object.entries(protectedSourceInputs)) {
+    for (const [agentId, status, code, message] of [
+      [deleting.id, 409, "AGENT_DELETING", AGENT_DELETING],
+      [embedded.id, 409, "RESOURCE_CONFLICT", PROTECTED_SOURCE_EMBEDDED_AGENT],
+      // An Agent the caller may operate that does not exist stays the generic 404.
+      [missingId, 404, "NOT_FOUND", RESOURCE_NOT_FOUND],
+    ]) {
+      const refused = await create(input(agentId, issuer));
+      assert.equal(refused.status, status, `${type}: ${JSON.stringify(refused.body)}`);
+      assert.equal(refused.body.error.code, code, type);
+      assert.equal(refused.body.error.message, message, type);
+    }
   }
   // A caller who may create sources but not operate the Agent gets one denial for an existing
   // Agent and a missing one: the Agent checks above never run for it.
@@ -81,14 +81,7 @@ test("protected credential source create names the type, the foreign Secret or t
   const session = await f.signIn(member.credentials);
   const answers = [];
   for (const agentId of [embedded.id, missingId]) {
-    const denied = await create(
-      {
-        name: "credential-free",
-        type: "credential-free-repository-metadata",
-        config: metadataConfig(agentId),
-      },
-      session,
-    );
+    const denied = await create(credentialFree(agentId), session);
     answers.push({
       status: denied.status,
       code: denied.body.error.code,
@@ -126,11 +119,7 @@ test("deploy names a live-adopted source without a provider/model and Proxy sour
   // A credential-free source is owned by the Proxy itself. Bind it to a second dedicated Agent,
   // with the operate grant deployment checks for the Agent's own principal.
   const created = await f.request("POST", f.path, {
-    body: {
-      name: "credential-free",
-      type: "credential-free-repository-metadata",
-      config: metadataConfig(f.agent.id),
-    },
+    body: credentialFree(f.agent.id),
   });
   assert.equal(created.status, 201, JSON.stringify(created.body));
   assert.equal(created.data.ownerCapability, "credential_proxy");
@@ -174,11 +163,7 @@ test("withdrawal of a source the active version does not use is a conflict, for 
   const revision = await f.deployAgent(f.namespace.id, f.agent.id);
   await f.activateRevision(f.namespace.id, f.agent.id, revision.id);
   const unused = await f.request("POST", f.path, {
-    body: {
-      name: "credential-free",
-      type: "credential-free-repository-metadata",
-      config: metadataConfig(f.agent.id),
-    },
+    body: credentialFree(f.agent.id),
   });
   assert.equal(unused.status, 201, JSON.stringify(unused.body));
   // The check reads only the revision's bindings, never the source: an existing source and a

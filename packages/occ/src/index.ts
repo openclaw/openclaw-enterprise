@@ -5900,9 +5900,10 @@ export class OpenClawController {
       provider.sourceType.rotation === "refresh" ||
       provider.sourceType.secrets.length !== 1
     ) {
-      // An Installation property about the type the request sent (finding 2536).
+      // An Installation property about the type the request sent (finding 2536). The who comes
+      // before the type list, so the 256-character cap never cuts it.
       throw new ResourceStateConflictError(
-        `With a Credential Proxy selected, every new credential source is protected, and the selected Credential Proxy cannot protect ${type} sources. Create a type it protects (${control.providers.map((entry) => entry.sourceType.type).join(", ")}), or ask an Installation administrator.`,
+        `The selected Credential Proxy cannot protect ${type} sources, and a Proxy protects every new source. Ask an Installation administrator, or create a type it protects: ${control.providers.map((entry) => entry.sourceType.type).join(", ")}.`,
       );
     }
     provider.normalizeConfig(config);

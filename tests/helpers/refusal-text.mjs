@@ -80,7 +80,7 @@ export const AGENT_DELETING = "The requested Agent is being deleted.";
 export const PROTECTED_SOURCE_EMBEDDED_AGENT =
   "config.agent_id names an embedded Agent, and a protected credential source serves only a dedicated Agent. Name a dedicated Agent in this Namespace.";
 export const protectedSourceTypeRefused = (type, types) =>
-  `With a Credential Proxy selected, every new credential source is protected, and the selected Credential Proxy cannot protect ${type} sources. Create a type it protects (${types}), or ask an Installation administrator.`;
+  `The selected Credential Proxy cannot protect ${type} sources, and a Proxy protects every new source. Ask an Installation administrator, or create a type it protects: ${types}.`;
 export const CREDENTIAL_SOURCE_SECRETS_CROSS_NAMESPACES =
   "Credential source Secrets cannot cross Namespaces.";
 // Withdrawal of a source the Agent's active revision does not use (409).
