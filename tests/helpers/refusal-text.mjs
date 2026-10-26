@@ -11,6 +11,9 @@ export const GENERIC_DENIAL = "The exact platform operation was not authorized."
 // carried, otherwise "a <Kind> this request uses".
 export const callerDenied = (grant, target) =>
   `Not authorized: this needs ${grant} on ${target}. Ask an Installation administrator to grant it.`;
+// A denial echoes the ID its request sent, so a real and an unknown ID get answers that match once
+// each answer's own ID is hidden: the text never says whether the resource exists.
+export const sentIdHidden = (text, id) => text.replaceAll(id, "<id>");
 // A create needs the collection grant, which Namespace Roles cannot give.
 export const createDenied = (kind, namespaceId) =>
   `Not authorized: this needs ${kind} create in Namespace ${namespaceId}. Namespace Roles cannot grant create: ask an Installation administrator to create the ${kind} for you or to grant it.`;

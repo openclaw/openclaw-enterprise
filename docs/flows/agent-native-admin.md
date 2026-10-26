@@ -154,7 +154,8 @@ open native tab after expiry.
 
 A signed-in `administer` denial on that navigation stays HTTP 403. The page does
 not name the Agent and links **Go to your Agents** to `/console/agents` on the
-configured public origin. JSON and WebSocket refusals stay unchanged.
+configured public origin. A JSON refusal names the `administer` grant but not
+the Agent, the same for an unknown host; WebSocket refusals stay unchanged.
 
 Status and proxy checks reuse one Better Auth lookup for identity, expiry and
 attribution. Each WebSocket lease checks the current session again. After handling
@@ -235,6 +236,7 @@ admin Configuration remains Pod-local.
 
 ## Changelog
 
+- 2026-10-26 01:00: A JSON `administer` denial names the grant, not the Agent.
 - 2026-10-25 12:00: Skip the status read when the permission answer denies `administer`.
 - 2026-10-24 23:25: Documented the authenticated browser 403 Agents link.
 - 2026-10-20 14:54: Extract persistence repair; trim repeated prose. (agent:roboclaw:dashboard:830a6ba7-3357-4ae0-9037-95d98205608c - 1ce18eeea10c83c856c8c08f6b0815e4b39308e0)

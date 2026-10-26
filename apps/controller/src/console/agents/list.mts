@@ -97,9 +97,8 @@ export const askInstallationAdministrator = (task: string) =>
 
 // The grant a read needs, so its 403 names it as Stop, Delete and occ's hints do (finding 1530):
 // `task` says what the request does and `grant` names the one permission it checks, in the
-// permissions cheat sheet's words. An API that names the caller's missing grant itself (finding
-// 2534) takes precedence; this covers an older API's generic denial. The text depends only on
-// the request, never on whether the resource exists.
+// permissions cheat sheet's words, with the task, where the API's own denial (finding 2534) names
+// a raw ID instead. The text depends only on the request, never on whether the resource exists.
 export interface AccessNeed {
   readonly task: string;
   readonly grant: string;
@@ -197,12 +196,14 @@ export function message(cause: unknown, mutation = false, need?: AccessNeed): st
     return `Saved ${field ?? "configuration"} could not be read. Editing and deployment are unavailable for these settings. Ask an administrator to repair the saved configuration, then refresh this page.`;
   }
   if (error.status === 403) {
+    // A view's own refusal or grant names the task in its words; without one, the API's named
+    // denial (finding 2534) says which grant is missing, and an older API's generic one nothing.
     return typeof error.refusal === "string"
       ? error.refusal
-      : (namedDenial(cause) ??
-          (need
-            ? accessDenied(need)
-            : `${PLAIN_ACCESS_DENIED} Granting it ${askInstallationAdministrator("check your access")}`));
+      : need
+        ? accessDenied(need)
+        : (namedDenial(cause) ??
+          `${PLAIN_ACCESS_DENIED} Granting it ${askInstallationAdministrator("check your access")}`);
   }
   if (error.status === 404) {
     return "Resource unavailable in this Namespace. Check the ID and your access.";

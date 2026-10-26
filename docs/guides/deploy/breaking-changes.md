@@ -21,6 +21,21 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-26: A denial of your own permission names the missing grant
+
+**What breaks.** A `403 FORBIDDEN` for a grant the caller lacks no longer says
+`The exact platform operation was not authorized.` It names the grant and who
+grants it, for example `Not authorized: this needs Agent deploy on Agent <id>.
+Ask an Installation administrator to grant it.` Statuses and codes do not
+change. Denials that name no grant keep the old sentence.
+
+**Who is affected.** Clients that match the old sentence exactly. The console
+and `occ` from this build accept both.
+
+**How to tell.** The message starts with `Not authorized:`.
+
+**Steps.** Match the `FORBIDDEN` code instead of the message.
+
 ## 2026-10-25: Configuration save refuses a Slack token SecretRef the Slack Driver cannot read
 
 **What breaks.** On the bundled Kubernetes Compute, Configuration create and

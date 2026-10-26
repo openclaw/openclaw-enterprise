@@ -27,6 +27,7 @@
     "tests/integration/runtime-credentials-api.test.mjs",
     "tests/integration/secret-api.test.mjs",
     "tests/integration/console-api.test.mjs",
+    "tests/integration/caller-denial-api.test.ts",
     "tests/conformance/kubernetes-preflight.test.mjs",
     "tests/conformance/kubernetes-client.test.mjs",
     "tests/conformance/kubernetes-api-read.test.mjs",
@@ -340,6 +341,9 @@
     },
     {
       "path": "tests/integration/console-api.test.mjs"
+    },
+    {
+      "path": "tests/integration/caller-denial-api.test.ts"
     },
     {
       "path": "tests/integration/console-build-metadata.test.mjs"

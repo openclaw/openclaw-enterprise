@@ -199,9 +199,10 @@ waits; an expired or invalid date keeps the normal follow interval. It does not 
 the server's request ID. To capture that ID for a failed request, use the
 [HTTP API directly](../guides/http-api.md#troubleshoot).
 
-OCC's generic `403` adds a `hint:` line naming the grants the command needs, or
-the Namespace of a Namespace-scoped key used elsewhere. It never depends on the
-IDs passed: OCC refuses a missing ID the same way.
+OCC's `403` names the grant you lack. A generic `403` from an older OCC gets a
+`hint:` line naming the grants the command needs, and a Namespace-scoped key
+used elsewhere gets one naming its Namespace. OCC refuses a missing ID the same
+way as one you cannot read.
 
 ## Local development
 

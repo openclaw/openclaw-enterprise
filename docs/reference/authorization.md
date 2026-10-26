@@ -380,7 +380,11 @@ ambiguous identity fails closed.
 
 - `401`: The session cookie or service key is missing, invalid, expired, or revoked.
 - `403`: The principal lacks an exact grant, belongs to another Namespace, or
-  matches a deny Restriction.
+  matches a deny Restriction. The message names the grant the request checked,
+  for example `Not authorized: this needs Agent read on Agent agt_1.`, and asks
+  you to have an Installation administrator grant it. It names a resource ID
+  only when the request sent it. A Restriction, a missing grant and a resource
+  that does not exist get the same message.
 - `404`: The requested resource does not exist under its exact parent.
 - `503 DEPENDENCY_UNAVAILABLE`: The selected IAM or audit dependency is
   unavailable; no fallback authorization provider is used.

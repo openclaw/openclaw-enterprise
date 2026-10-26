@@ -38,7 +38,7 @@ test("a caller's own denial names the missing grant without disclosing what the 
     method: string,
     path: string,
     body?: Body,
-    as: unknown = session,
+    as: typeof session = session,
   ): Promise<{ code: string; message: string }> => {
     const response = await fixture.request(method, path, { session: as, body });
     assertApiError(response, 403, "FORBIDDEN", `${method} ${path}`);

@@ -25,7 +25,11 @@ import {
 } from "../helpers/auth-session.mjs";
 import { bindRole } from "../helpers/iam-grants.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
-import { referenceFormRefusal, unreadableSlackTokenRefusal } from "../helpers/refusal-text.mjs";
+import {
+  referenceFormRefusal,
+  sentIdHidden,
+  unreadableSlackTokenRefusal,
+} from "../helpers/refusal-text.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 function createConfigurationBackend() {
@@ -2115,7 +2119,12 @@ test("Configuration save refuses a model selection or apiKey off the primary mod
       const responses = [];
       for (const path of [item, `${collection}/${unused.body.data.id}`]) {
         const { status, body } = await request(context.app, "PATCH", path, { body: { values } });
-        responses.push({ status, error: body.error });
+        // A denial names the Configuration ID this request sent, and nothing else about it.
+        const error =
+          body.error === undefined
+            ? undefined
+            : { ...body.error, message: sentIdHidden(body.error.message, path.split("/").at(-1)) };
+        responses.push({ status, error });
       }
       assert.deepEqual(responses[0], responses[1], JSON.stringify(values));
       return responses[0];

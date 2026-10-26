@@ -28,7 +28,7 @@ import {
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
-import { proxyErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture as createBaseConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
@@ -77,6 +77,7 @@ import {
 } from "./console-deployment-activity-helpers.mjs";
 import {
   CONSOLE_ACCESS_DENIED,
+  createDenied,
   DEPENDENCY_UNAVAILABLE,
   GENERIC_DENIAL,
 } from "../helpers/refusal-text.mjs";
@@ -1731,6 +1732,16 @@ test("Dedicated Agent creation keeps provisioning when optional repository disco
   assert.equal(Object.hasOwn(body, "repositoryBindings"), false);
   assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
   assert.equal(agentPostRequests(requests, namespace.id).length, 0);
+
+  // A denial that names the missing grant (finding 2534) shows as the API wrote it.
+  const named = createDenied("Agent", namespace.id);
+  await page.unroute(`**/namespaces/${namespace.id}/agents/provision`);
+  await page.route(`**/namespaces/${namespace.id}/agents/provision`, (route) =>
+    route.fulfill(apiErrorResponse(403, "FORBIDDEN", named)),
+  );
+  await page.getByRole("button", { name: "Create Agent" }).click();
+  await page.getByText(named, { exact: true }).waitFor();
+  assert.equal(agentProvisionPostRequests(requests, namespace.id).length, 2);
 });
 
 test("Dedicated Agent creation uses regular create when provisioning is unsupported", async (t) => {

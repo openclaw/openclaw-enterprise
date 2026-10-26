@@ -11,7 +11,10 @@ import {
   ConfigurationValidationError,
 } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
 import {
+  accessDenied,
   isStaleGeneration,
+  message,
+  namespaceListNeed,
   PROVISIONING_REFUSAL_CODES,
   preAdmissionRefusal,
 } from "../../apps/controller/src/console/agents/list.mts";
@@ -74,6 +77,7 @@ import {
 import {
   AGENT_NAME_CONFLICT,
   callerDenied,
+  CONSOLE_ACCESS_DENIED,
   DEPENDENCY_UNAVAILABLE,
   GENERIC_DENIAL,
   NAMESPACE_NOT_READY,
@@ -1486,4 +1490,17 @@ test("a caller denial names each checked grant without disclosing a Restriction 
     ).message,
     callerDenied("Agent read", "an Agent this request uses"),
   );
+});
+
+// The console shows the API's named denial where the view has no grant or refusal of its own,
+// and keeps its own text for an older API's generic denial.
+test("the console shows a named denial unless the view names the grant itself", () => {
+  const named = callerDenied("Agent read", "Agent agt_1");
+  const denial = (serverMessage) => ({ status: 403, code: "FORBIDDEN", serverMessage });
+  assert.equal(message(denial(named)), named);
+  assert.equal(message(denial(GENERIC_DENIAL)), CONSOLE_ACCESS_DENIED);
+  assert.equal(message(denial("The admitted Namespace does not match.")), CONSOLE_ACCESS_DENIED);
+  const need = namespaceListNeed("Secrets");
+  assert.equal(message(denial(named), false, need), accessDenied(need));
+  assert.equal(message({ ...denial(named), refusal: "View refusal." }), "View refusal.");
 });
