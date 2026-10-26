@@ -1256,10 +1256,13 @@ test("Installation-administration reads after a revoke are refused and audited o
 });
 
 // Finding 2636. A page kept for Back replays its reads to check it is unchanged. The reads only
-// Installation administration may make keep that gate on replay: after a revoke, the first Back to
-// a kept Access tab sends one of them, the API refuses and audits it, and that refusal settles
-// "not an administrator" for the tab. The other replays, and every later Back, are refused unsent.
-test("Back to a kept Access tab after a revoke sends one audited administration read", async (t) => {
+// Installation administration may make keep that gate on replay. First the Access tab is opened
+// as an administrator: after a revoke, the first Back to it sends one of them, the API refuses and
+// audits it, and that refusal settles "not an administrator" for the tab. The other replays, and
+// every later Back, are refused unsent. Then the Access tab is opened after a revoke: its
+// first administration read is audited and the rest are refused unsent, and Back sends none of
+// them again.
+test("Back to a kept Agent page after a revoke sends no more audited administration reads", async (t) => {
   const auditSink = new InMemoryAuditSink();
   const url = "https://metrics.example.test/d/operations";
   const fixture = await createConsoleAppFixture(t, { auditSink, observabilityUrl: url });
@@ -1278,36 +1281,47 @@ test("Back to a kept Access tab after a revoke sends one audited administration 
       auditSink,
       /^openclaw\.(observability|backends|iam|secrets|installation)\./,
     );
-
-  const revoke = grantInstallationAdministration(fixture, account.principal);
-  await login(
-    page,
-    fixture,
-    String(detailUrl(fixture, namespace.id, agent.id, "draft", "access")).replace(
-      fixture.origin,
-      "",
-    ),
-    account.credentials,
-  );
-  await page.getByRole("tab", { name: "Access", selected: true }).waitFor();
-  await waitForIdleFetches(page);
+  const accessUrl = String(detailUrl(fixture, namespace.id, agent.id, "draft", "access"));
+  const settingsUrl = `/console/settings?namespace=${namespace.id}`;
   // In-app navigation keeps the Agent page for Back.
-  await page.locator("nav").getByRole("link", { name: "Agents", exact: true }).first().click();
-  await page.waitForURL(/\/console\/agents\?/);
-  await waitForIdleFetches(page);
-  assert.equal(adminDenials().length, 0);
-
-  revoke();
-  for (let step = 0; step < 3; step += 1) {
-    await page.goBack();
-    await page.waitForURL(new RegExp(`/console/agents/${agent.id}\\?`));
-    await waitForIdleFetches(page);
-    assert.equal(await observability.count(), 0, `Back ${step}`);
-    assert.equal(adminDenials().length, 1, `Back ${step}`);
-    await page.goForward();
+  const leaveForAgents = async () => {
+    await page.locator("nav").getByRole("link", { name: "Agents", exact: true }).first().click();
     await page.waitForURL(/\/console\/agents\?/);
     await waitForIdleFetches(page);
-  }
+  };
+  const backThreeTimes = async (denials) => {
+    for (let step = 0; step < 3; step += 1) {
+      await page.goBack();
+      await page.waitForURL(new RegExp(`/console/agents/${agent.id}\\?`));
+      await waitForIdleFetches(page);
+      assert.equal(await observability.count(), 0, `Back ${step}`);
+      assert.equal(adminDenials().length, denials, `Back ${step}`);
+      await page.goForward();
+      await page.waitForURL(/\/console\/agents\?/);
+      await waitForIdleFetches(page);
+    }
+  };
+
+  let revoke = grantInstallationAdministration(fixture, account.principal);
+  await login(page, fixture, accessUrl.replace(fixture.origin, ""), account.credentials);
+  await page.getByRole("tab", { name: "Access", selected: true }).waitFor();
+  await waitForIdleFetches(page);
+  await leaveForAgents();
+  assert.equal(adminDenials().length, 0);
+  revoke();
+  await backThreeTimes(1);
+
+  // Administration again: a page load asks the permission answer, then the probe.
+  revoke = grantInstallationAdministration(fixture, account.principal);
+  await page.goto(`${fixture.origin}${settingsUrl}`);
+  await page.getByRole("heading", { name: "Installation Driver configuration" }).waitFor();
+  revoke();
+  await page.goto(accessUrl);
+  await page.getByText(ACCESS_TAB_UNAVAILABLE, { exact: true }).waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(adminDenials().length, 2);
+  await leaveForAgents();
+  await backThreeTimes(2);
 });
 
 // Finding 2637. A Restriction refuses an administrator's bound Secret read, and the permission
