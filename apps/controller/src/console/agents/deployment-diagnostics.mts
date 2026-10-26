@@ -4,9 +4,13 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { requestFailure } from "../api-client.mjs";
 import { button, element, focusSaveOutcome, patchChildren, statusBlock } from "../dom.mjs";
-import { askInstallationAdministrator } from "./credential-access.mjs";
 import type { DeploymentContext } from "./deployment-evidence.mjs";
-import { displayDate, message, neutralDeploymentOutcome } from "./list.mjs";
+import {
+  askInstallationAdministrator,
+  displayDate,
+  message,
+  neutralDeploymentOutcome,
+} from "./list.mjs";
 
 // The console's delay for loading text (console.css .delayed-status): a diagnostics answer within
 // it never shows the waiting line (finding 1714).

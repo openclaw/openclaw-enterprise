@@ -75,7 +75,11 @@ import {
   expectDeploymentOutcome,
   openFailureDetails,
 } from "./console-deployment-activity-helpers.mjs";
-import { DEPENDENCY_UNAVAILABLE, GENERIC_DENIAL } from "../helpers/refusal-text.mjs";
+import {
+  CONSOLE_ACCESS_DENIED,
+  DEPENDENCY_UNAVAILABLE,
+  GENERIC_DENIAL,
+} from "../helpers/refusal-text.mjs";
 
 const defaultCodexPreset = JSON.parse(
   await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
@@ -1719,7 +1723,7 @@ test("Dedicated Agent creation keeps provisioning when optional repository disco
   );
   await page.getByRole("button", { name: "Create Agent" }).click();
   assert.equal((await admission).status(), 403);
-  await page.getByText("Access denied. You do not have permission for this operation.").waitFor();
+  await page.getByText(CONSOLE_ACCESS_DENIED).waitFor();
   const submitted = agentProvisionPostRequests(requests, namespace.id);
   assert.equal(submitted.length, 1);
   const body = submittedBody<ProvisionAgentBody>(submitted[0]);

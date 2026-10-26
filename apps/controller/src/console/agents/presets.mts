@@ -15,7 +15,7 @@ import {
   requiredPresetVariables,
   validatePresetTemplate,
 } from "../preset-variables.mjs";
-import { message, namespacePath } from "./list.mjs";
+import { message, namespaceListNeed, namespacePath } from "./list.mjs";
 import type { SecretsOperateDenied } from "./credential-access.mjs";
 import {
   NEW_SECRET_OPERATE_DENIED,
@@ -319,7 +319,7 @@ export function createPresetFields(
         field.secretSelect.replaceChildren(
           element("option", { value: "" }, "Existing Secrets unavailable"),
         );
-        field.secretStatus.textContent = `Existing Secrets unavailable. ${message(error)} Choose create-new mode to enter a new token.`;
+        field.secretStatus.textContent = `Existing Secrets unavailable. ${message(error, false, namespaceListNeed("Secrets"))} Choose create-new mode to enter a new token.`;
         updatePasswordField(field);
       }
     }
@@ -651,7 +651,7 @@ export function createPresetFields(
       if (requestFailure(error).status === 401) {
         context.onExpired();
       } else {
-        status.textContent = `Presets unavailable. ${message(error)} Try again or ask an administrator to check Preset access.`;
+        status.textContent = `Presets unavailable. ${message(error, false, namespaceListNeed("Presets"))}`;
       }
     });
   return { section, startDefault, defaultHint };

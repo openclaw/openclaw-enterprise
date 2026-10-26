@@ -15,6 +15,7 @@ import {
   wholeEnvironmentReferenceName,
 } from "../environment-references.mjs";
 import {
+  askInstallationAdministrator,
   CHANNEL_BINDING_PLACES,
   channelBindingRefusal,
   configurationConflictMessage,
@@ -23,7 +24,6 @@ import {
   SAVE_REFUSALS,
 } from "./list.mjs";
 import {
-  askInstallationAdministrator,
   credentialOperateGrants,
   ensureCredentialOperateBinding,
   type AgentAccessContext,

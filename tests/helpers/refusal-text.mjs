@@ -42,6 +42,16 @@ export const NEW_SECRET_OPERATE_DENIED =
 // What an administrator can grant instead: Secret operate on one exact Secret (finding 2507).
 export const NEW_SECRET_OPERATE_REMEDY =
   "To use a new Secret, create it on the Secrets page, then ask an administrator to grant you Secret operate on that Secret.";
+// The console's 403 for a read that names its grant, and for one that names none. Granting access
+// is Installation administration (findings 1920, 2259, 2260).
+const ASK_INSTALLATION_ADMINISTRATOR =
+  "needs Installation administration access: ask an Installation administrator to";
+export const accessDeniedNeeding = (task, grant) =>
+  `Access denied. ${task} needs ${grant}, which your access does not include. Granting it ${ASK_INSTALLATION_ADMINISTRATOR} check that grant.`;
+// A Namespace list (Secrets, Presets, Service Accounts) is refused for lack of Namespace read.
+export const namespaceListDenied = (items) =>
+  accessDeniedNeeding(`Listing ${items} in this Namespace`, "Namespace read");
+export const CONSOLE_ACCESS_DENIED = `Access denied. You do not have permission for this operation. Granting it ${ASK_INSTALLATION_ADMINISTRATOR} check your access.`;
 export const secretOperateRefused = (name) =>
   `You do not have permission to bind ${name}. Each save needs Secret operate on every Secret it binds, which your access does not include for it. Choose another Secret, or ask an administrator for Secret operate on it.`;
 

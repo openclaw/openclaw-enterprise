@@ -7,7 +7,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { requestFailure, responseFields } from "../api-client.mjs";
 import { element } from "../dom.mjs";
-import { message, namespacePath } from "./list.mjs";
+import { message, namespaceListNeed, namespacePath } from "./list.mjs";
 import { createSecretReferenceField, renderSecretReference } from "./secret-picker.mjs";
 import type { AgentAccessContext } from "./credential-access.mjs";
 import { createDeviceLogin, type DeviceLogin } from "./device-login.mjs";
@@ -304,7 +304,7 @@ export function createHarnessAuthFields(
       if (requestFailure(error).status === 401) {
         context.onExpired();
       } else {
-        feedback.textContent = `Service accounts unavailable. ${message(error)}`;
+        feedback.textContent = `Service Accounts unavailable. ${message(error, false, namespaceListNeed("Service Accounts"))}`;
       }
     });
   return {
