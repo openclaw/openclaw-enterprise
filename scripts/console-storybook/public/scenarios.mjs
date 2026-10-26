@@ -2489,6 +2489,23 @@ export const scenarios = {
       "Click Create Agent. The line changes from “Provisioning Agent…” to the image pull sentence, which asks an administrator to check the runtime image reference and registry access.",
     ],
   },
+  createDeploymentSuperseded: {
+    group: "Pages/Create Agent",
+    name: "A newer deployment took over",
+    path: create,
+    actions: readyForm,
+    provisionedDeploymentStatus: "failed",
+    provisionedDeploymentError: {
+      code: "REVISION_SUPERSEDED",
+      message: "Deployment was superseded by a newer revision.",
+    },
+    description:
+      "A newer deployment took over before the first was ready. The provisioning response identifies only the deployment that ended.",
+    steps: [
+      "Click Create Agent and wait for the message that a newer deployment took over.",
+      "Confirm the message explains what happened without offering a repair, retry or deployment link.",
+    ],
+  },
   createDeploymentFailed: {
     group: "Pages/Create Agent",
     name: "Initial deployment failed",

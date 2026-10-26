@@ -634,6 +634,10 @@ export const WITHDRAWAL_NOT_FOUND =
 // policy view, validate, save, apply and turning editing on (D774).
 export const NO_SANDBOX_DRIVER_NETWORK_POLICY =
   "This Installation selects no Sandbox Driver, so Agents run without a Sandbox: there are no policy denials, suggestions or Agent network rules.";
+// A policy denial that names only OpenShell's policy DNS placeholder address, with no record
+// of the host it stood for in the loaded log: the row proposes no rule (D771).
+export const PLACEHOLDER_DESTINATION =
+  "OpenShell logged only a placeholder address for this connection, and the record that names its hostname is not in the loaded log, so this denial proposes no rule. Add a rule for the hostname in Manage rules.";
 export const POLICY_RECOMMENDATIONS_NO_SANDBOX =
   "This version runs without a Sandbox, so it records no network denials to recommend policy from. Policy recommendations need an Agent deployed with a Sandbox Driver such as OpenShell.";
 export const DEVICE_LOGIN_NOT_CONFIGURED =

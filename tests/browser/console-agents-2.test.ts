@@ -632,7 +632,7 @@ test("Dedicated Agent creation shows the API's named reason when a provisioning 
   assert.equal(requestIds.length, 2);
 });
 
-// The stopped guidance is not an error, so neither its text nor its block's stripe takes the
+// Neutral deployment guidance is not an error, so neither its text nor its block's stripe takes the
 // error colour.
 async function assertNotErrorColour(locator: Locator) {
   const [colour, stripe, errorColour] = await locator.evaluate((node) => {
@@ -661,7 +661,7 @@ async function assertNotErrorColour(locator: Locator) {
 // Agent and its name, so "create a new Agent" would be refused as a duplicate. The create page
 // names the stop without a cause to correct and links the kept Agent (finding 1376); it reads the
 // Agent a cancelled job names to tell a Stop from a deletion.
-test("Dedicated Agent creation reports a stop during or before the first deployment and links the kept Agent", async (t) => {
+test("Dedicated Agent creation distinguishes stopped, superseded and failed first deployments", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Provision stopped", { ready: true });
@@ -676,6 +676,14 @@ test("Dedicated Agent creation reports a stop during or before the first deploym
     `/namespaces/${namespace.id}/agents/${removed.id}`,
   );
   assert.equal(deletion.status, 202, JSON.stringify(deletion.body));
+  const deployed = await fixture.createAgent(namespace.id, "Versioned Agent", nativeValues("v1"));
+  const revision = await fixture.deployAgent(namespace.id, deployed.id);
+  const handoff = {
+    phase: "handoff",
+    configurationId: deployed.configurationId,
+    agentId: deployed.id,
+    revisionId: revision.id,
+  };
   const { page } = await newPage(t, fixture);
   await routeDedicatedProvisioning(page, fixture, namespace);
   const work = provisioningJob(namespace.id, "work_stopped");
@@ -691,18 +699,41 @@ test("Dedicated Agent creation reports a stop during or before the first deploym
     status,
     error: { code, message },
   });
+  const superseded = "A newer deployment took over before this one was ready.";
+  const revisionHref = `/console/agents/${deployed.id}?revision=${revision.id}&namespace=${namespace.id}`;
   const keptHref = `/console/agents/${kept.id}?namespace=${namespace.id}`;
   const unknown =
     "Provisioning was cancelled because the Agent was stopped. If the Agent still exists, open it and deploy a version; otherwise select Create Agent to submit a new request.";
   // Each submit returns the same job; each case changes which Agent it names, how it ended and
   // how that Agent reads. `href` is the Open Agent link, null when there is none. The retryable
   // failure stays last: the page keeps its accepted job, so the next Create Agent would retry it.
-  const cases = [
+  const cases: {
+    job: { agentId: string; revisionId?: string; error: { code?: string; message: string } };
+    text: string;
+    stopped?: boolean;
+    link?: string;
+    href: string | null;
+    read?: ReturnType<typeof unreadable>;
+  }[] = [
+    ...["REVISION_SUPERSEDED", "REPOSITORY_REVISION_SUPERSEDED"].map((code) => ({
+      job: { ...handoff, error: { code, message: "Deployment was superseded." } },
+      text: superseded,
+      href: null,
+    })),
+    // The same message with an unknown or absent code still points to the failed version.
+    ...["UNKNOWN", undefined].map((code) => ({
+      job: {
+        ...handoff,
+        error: { ...(code && { code }), message: "Deployment was superseded." },
+      },
+      text: "Deployment was superseded. Open this Agent to see the failed version and its recovery actions.",
+      href: revisionHref,
+      link: "Open Agent and deployment details",
+    })),
     {
       // Someone stopped the Agent while its first deployment was rolling out.
       job: {
-        agentId: "agt_00000000-0000-4000-8000-00000000c0de",
-        revisionId: "rev_00000000-0000-4000-8000-00000000c0de",
+        ...handoff,
         error: {
           code: "REVISION_STOPPED",
           message: "The Agent was stopped before its first deployment finished.",
@@ -711,7 +742,7 @@ test("Dedicated Agent creation reports a stop during or before the first deploym
       text: "The Agent was stopped before its first deployment finished. Open this Agent and deploy a new version when you want it running.",
       stopped: true,
       link: "Open Agent and deployment details",
-      href: `/console/agents/agt_00000000-0000-4000-8000-00000000c0de?revision=rev_00000000-0000-4000-8000-00000000c0de&namespace=${namespace.id}`,
+      href: revisionHref,
     },
     {
       job: cancelled(kept.id, "stopped"),
@@ -755,7 +786,16 @@ test("Dedicated Agent creation reports a stop during or before the first deploym
     },
   ];
   let current = cases[0]!;
-  await routeProvisioningJob(page, work, () => work.job("failed", current.job));
+  // A versioned job already identifies its revision when Create admits it.
+  await routeProvisioningJob(
+    page,
+    {
+      ...work,
+      job: (status, extra) =>
+        current.job.revisionId ? work.job("running", handoff) : work.job(status, extra),
+    },
+    () => work.job("failed", current.job),
+  );
   await page.route(`**/namespaces/${namespace.id}/agents/${kept.id}`, (route) =>
     current.read
       ? route.fulfill({
@@ -775,25 +815,49 @@ test("Dedicated Agent creation reports a stop during or before the first deploym
   await createModelCredentialSecret(page, "model-secret-value");
   await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
   const create = page.getByRole("button", { name: "Create Agent" });
+  const requests = apiRequests(page, fixture.origin);
   for (const [index, c] of cases.entries()) {
     current = c;
+    requests.length = 0;
     // Each submit polls the job once.
     await runProvisioningPolls(page, () => create.click(), work.url, index + 1);
-    await page.getByText(c.text).waitFor();
-    if (c.stopped) {
+    const feedback = page.locator("#create-agent-form ~ p[role=alert]").filter({ hasText: /\S/ });
+    await feedback.waitFor();
+    assert.ok((await feedback.innerText()).includes(c.text));
+    if (c.text === superseded) {
+      assert.equal(await feedback.innerText(), superseded);
+      await assertNotErrorColour(feedback.locator(":scope > .provisioning-neutral"));
+      assert.equal(await feedback.getByRole("link").count(), 0);
+      assert.equal(await feedback.evaluate((node) => node === document.activeElement), true);
+      assert.equal(
+        await page.getByRole("button", { name: "Retry provisioning request" }).isVisible(),
+        false,
+      );
+      assert.equal(await page.getByText("Provisioning failed.", { exact: true }).count(), 0);
+      assert.equal(new URL(page.url()).pathname, "/console/agents/new");
+      assert.deepEqual(
+        requests
+          .filter(
+            ({ method, path }) =>
+              method === "POST" && path.startsWith(`/namespaces/${namespace.id}/agents/provision`),
+          )
+          .map(({ path }) => path),
+        [`/namespaces/${namespace.id}/agents/provision`],
+      );
+    } else if (c.stopped) {
       await page.getByText("Provisioning stopped.", { exact: true }).waitFor();
       assert.equal(
         await page.getByText(/Provisioning failed|Create a new Agent|correct the cause/i).count(),
         0,
       );
-      await assertNotErrorColour(page.locator(".provisioning-stopped"));
+      await assertNotErrorColour(feedback.locator(":scope > .provisioning-neutral"));
       assert.equal(
         await page.getByRole("button", { name: "Retry provisioning request" }).isVisible(),
         false,
       );
     } else {
       await waitForProvisioningFailure(page);
-      assert.equal(await page.locator(".provisioning-stopped").count(), 0);
+      assert.equal(await feedback.locator(".provisioning-neutral").count(), 0);
     }
     const open = page.getByRole("link", { name: c.link ?? "Open Agent", exact: true });
     if (c.href) {
@@ -809,6 +873,243 @@ test("Dedicated Agent creation reports a stop during or before the first deploym
   const summary = page.locator(".agent-current-summary");
   await summary.getByText("No readable deployments.", { exact: true }).waitFor();
   assert.equal(await summary.getByText(/failed/i).count(), 0);
+});
+
+// The worker assigns the initial revision at handoff. Later changes or omissions contradict
+// the job the form has already seen, even when they carry a recognized supersession code.
+test("Dedicated Agent creation keeps the first revision observed after admission", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  for (const outcome of ["matched", "changed", "omitted"] as const) {
+    const namespace = await fixture.createNamespace(`First revision ${outcome}`, { ready: true });
+    const agent = await fixture.createAgent(namespace.id, "Versioned Agent", nativeValues("v1"));
+    const revision = await fixture.deployAgent(namespace.id, agent.id);
+    const work = provisioningJob(namespace.id, "work_revision");
+    const { page } = await newPage(t, fixture);
+    await routeDedicatedProvisioning(page, fixture, namespace);
+    const handoff = {
+      agentId: agent.id,
+      configurationId: agent.configurationId,
+      revisionId: revision.id,
+      phase: "handoff",
+    };
+    const observations = [
+      work.job("running", { configurationId: agent.configurationId }),
+      work.job("running", handoff),
+      work.job("failed", {
+        ...handoff,
+        revisionId:
+          outcome === "matched"
+            ? revision.id
+            : outcome === "changed"
+              ? `rev_${randomUUID()}`
+              : undefined,
+        error: { code: "REVISION_SUPERSEDED", message: "Deployment was superseded." },
+      }),
+    ];
+    const served = await routeProvisioningJob(page, work, (index) => {
+      const observation = observations[index];
+      assert.ok(observation, "unexpected additional provisioning poll");
+      return observation;
+    });
+    await trackSettledFetches(page);
+    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+    await page.getByRole("button", { name: "Start without Preset" }).click();
+    await page.getByLabel("Agent name").fill("Observe handoff");
+    await enterManualModel(page, "test-model-key");
+    const requests = apiRequests(page, fixture.origin);
+    await runProvisioningPolls(
+      page,
+      () => page.getByRole("button", { name: "Create Agent" }).click(),
+      work.url,
+      observations.length,
+    );
+    const matches = outcome === "matched";
+    const alert = page.getByRole("alert").filter({
+      hasText: matches
+        ? "A newer deployment took over before this one was ready."
+        : "Outcome unknown after provisioning admission",
+    });
+    await alert.waitFor();
+    assert.equal(await alert.getByRole("link").count(), 0);
+    assert.equal(
+      await page.getByRole("button", { name: "Retry provisioning request" }).isVisible(),
+      !matches,
+    );
+    assert.equal(served.reads, observations.length);
+    assert.deepEqual(
+      requests
+        .filter(({ method, path }) => method === "POST" && path.includes("/agents/provision"))
+        .map(({ path }) => path),
+      [`/namespaces/${namespace.id}/agents/provision`],
+    );
+    await page.close();
+  }
+});
+
+test("Create preserves the admitted version when the operator resends the same provisioning request", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  for (const outcome of ["matched", "changed", "omitted"] as const) {
+    await t.test(outcome, async () => {
+      const namespace = await fixture.createNamespace(`Resend ${outcome}`, { ready: true });
+      const versioned = async (name: string) => {
+        const agent = await fixture.createAgent(namespace.id, name, nativeValues("v1"));
+        const revision = await fixture.deployAgent(namespace.id, agent.id);
+        return {
+          agentId: agent.id,
+          configurationId: agent.configurationId,
+          revisionId: revision.id,
+        };
+      };
+      const first = await versioned("First deployment");
+      const next = await versioned("Next deployment");
+      assert.notEqual(next.revisionId, first.revisionId);
+      const { page } = await newPage(t, fixture);
+      await routeDedicatedProvisioning(page, fixture, namespace);
+      const root = `/namespaces/${namespace.id}/agents/provision`;
+      const jobUrl = `${root}/work_first`;
+      const retryUrl = `${jobUrl}/retry`;
+      const bodies: ProvisionAgentBody[] = [];
+      const error = { code: "REVISION_SUPERSEDED", message: "Deployment was superseded." };
+      await page.route(`**${root}`, (route) => {
+        const body: ProvisionAgentBody = route.request().postDataJSON();
+        bodies.push(body);
+        const fresh = bodies.length === 3;
+        const workId = fresh ? "work_next" : "work_first";
+        const resource = fresh ? next : first;
+        const terminal = bodies.length > 1;
+        const provisioning: ProvisioningStatus = {
+          requestId: body.requestId,
+          workId,
+          url: `${root}/${workId}`,
+          phase: "handoff",
+          status: terminal ? "failed" : "running",
+          attemptCount: 1,
+          updatedAt: new Date().toISOString(),
+          agentId: resource.agentId,
+          configurationId: resource.configurationId,
+          ...(terminal && { error }),
+          ...(!terminal || fresh || outcome === "matched"
+            ? { revisionId: resource.revisionId }
+            : outcome === "changed"
+              ? { revisionId: next.revisionId }
+              : {}),
+        };
+        return route.fulfill({
+          status: 202,
+          json: { data: { provisioning }, meta: { requestId: `req_${randomUUID()}` } },
+        });
+      });
+      await page.route(`**${jobUrl}`, (route) =>
+        route.fulfill(
+          apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Provisioning status unavailable."),
+        ),
+      );
+      await page.route(`**${retryUrl}`, (route) =>
+        route.fulfill(
+          apiErrorResponse(
+            409,
+            "RESOURCE_CONFLICT",
+            "Provisioning cannot retry after cancellation or deployment handoff.",
+          ),
+        ),
+      );
+      await trackSettledFetches(page);
+      await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+      await page.getByRole("button", { name: "Start without Preset" }).click();
+      const name = page.getByLabel("Agent name");
+      await name.fill("Recover first deployment");
+      await enterManualModel(page, "test-model-key");
+      const requests = apiRequests(page, fixture.origin);
+      const create = page.getByRole("button", { name: "Create Agent" });
+      const retry = page.getByRole("button", { name: "Retry provisioning request" });
+      const alert = page.getByRole("alert");
+      const takeover = "A newer deployment took over before this one was ready.";
+      const unknown = "Outcome unknown after provisioning admission.";
+      const responseAt = (path: string) =>
+        page.waitForResponse((r) => r.url() === fixture.origin + path);
+      const admitted = responseAt(root);
+      const interrupted = responseAt(jobUrl);
+      await runProvisioningPolls(page, () => create.click(), jobUrl, 1);
+      const acceptedResponse = await admitted;
+      assert.equal(acceptedResponse.status(), 202);
+      const accepted: ProvisioningStatus = (await acceptedResponse.json()).data.provisioning;
+      assert.equal(accepted.agentId, first.agentId);
+      assert.equal(accepted.revisionId, first.revisionId);
+      assert.equal((await interrupted).status(), 503);
+      await alert.filter({ hasText: unknown }).waitFor();
+      const refused = responseAt(retryUrl);
+      await retry.click();
+      assert.equal((await refused).status(), 409);
+      await alert
+        .filter({ hasText: "Select Create Agent to resend the same request ID" })
+        .waitFor();
+      assert.equal(await name.isDisabled(), true);
+      assert.equal(await retry.isVisible(), false);
+      const resent = responseAt(root);
+      await create.click();
+      const response = await resent;
+      assert.equal(response.status(), 202);
+      assert.deepEqual(admission(bodies, 2), admission(bodies, 1));
+      const observed: ProvisioningStatus = (await response.json()).data.provisioning;
+      assert.equal(observed.requestId, admission(bodies, 1).requestId);
+      assert.equal(observed.url, jobUrl);
+      assert.equal(observed.agentId, first.agentId);
+      assert.equal(observed.error?.code, "REVISION_SUPERSEDED");
+      assert.equal(
+        observed.revisionId,
+        outcome === "matched"
+          ? first.revisionId
+          : outcome === "changed"
+            ? next.revisionId
+            : undefined,
+      );
+      const matches = outcome === "matched";
+      const result = alert.filter({
+        hasText: /A newer deployment took over|Outcome unknown after provisioning admission/,
+      });
+      await result.waitFor();
+      assert.ok((await result.innerText()).startsWith(matches ? takeover : unknown));
+      assert.equal(await result.getByRole("link").count(), 0);
+      assert.equal(await retry.isVisible(), !matches);
+      const location = new URL(page.url());
+      assert.equal(location.pathname, "/console/agents/new");
+      assert.equal(location.searchParams.get("namespace"), namespace.id);
+      assert.equal(await result.evaluate((node) => node === document.activeElement), true);
+      await page.clock.runFor(1_100);
+      await waitForIdleFetches(page);
+      const writePaths = () =>
+        nonAuthWriteRequests(requests).map(({ method, path }) => [method, path]);
+      const writes = [
+        ["POST", root],
+        ["POST", retryUrl],
+        ["POST", root],
+      ];
+      assert.deepEqual(writePaths(), writes);
+      assert.equal(pathRequests(requests, "GET", jobUrl).length, 1);
+      if (matches) {
+        // A new ID and edited plan on the same form must accept their own first version.
+        await name.fill("Recover next deployment");
+        const freshResponse = responseAt(root);
+        await create.click();
+        const fresh = await freshResponse;
+        assert.equal(fresh.status(), 202);
+        const replacement: ProvisioningStatus = (await fresh.json()).data.provisioning;
+        assert.notEqual(replacement.requestId, observed.requestId);
+        assert.equal(replacement.requestId, admission(bodies, 3).requestId);
+        assert.equal(admission(bodies, 3).name, "Recover next deployment");
+        assert.deepEqual(admission(bodies, 3).harnessAuth, admission(bodies, 1).harnessAuth);
+        assert.equal(replacement.url, `${root}/work_next`);
+        assert.equal(replacement.agentId, next.agentId);
+        assert.equal(replacement.revisionId, next.revisionId);
+        await alert.filter({ hasText: takeover }).waitFor();
+        assert.equal(await retry.isVisible(), false);
+        assert.deepEqual(writePaths(), [...writes, ["POST", root]]);
+      }
+      await page.close();
+    });
+  }
 });
 
 // Create rereads the provisioning job every second, and a started job goes back to queued

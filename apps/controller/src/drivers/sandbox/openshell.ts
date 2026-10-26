@@ -15,7 +15,7 @@ import {
   SandboxNetworkPolicyConfiguration,
   ConfigurationValidationError,
 } from "@openclaw-enterprise/contracts";
-import { openShellLogDecision } from "./openshell-log-decisions.ts";
+import { openShellLogDecisions } from "./openshell-log-decisions.ts";
 import {
   AGENT_POLICY_PREFIX,
   openShellAgentNetworkRules,
@@ -4436,7 +4436,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     return Object.freeze({
       sandbox: sandbox.resourceName,
       observedAt: new Date().toISOString(),
-      lines: response.lines.map(openShellLogDecision),
+      lines: openShellLogDecisions(response.lines),
       bufferTotal: response.bufferTotal,
     });
   }

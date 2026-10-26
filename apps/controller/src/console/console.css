@@ -588,8 +588,8 @@ p {
   --status-tone: var(--color-danger);
   --status-wash: var(--color-danger-subtle);
 }
-/* An Agent stopped by its owner during creation: guidance, not an error (finding 1375). */
-.status:has(> .provisioning-stopped) {
+/* A stopped or superseded first deployment is informational. */
+.status:has(> .provisioning-neutral) {
   --status-tone: var(--color-info);
   --status-wash: var(--color-info-subtle);
 }

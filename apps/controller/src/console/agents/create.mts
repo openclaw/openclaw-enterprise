@@ -71,6 +71,7 @@ import {
   namespaceCreation,
   namespaceListNeed,
   namespacePath,
+  neutralDeploymentOutcome,
   preAdmissionRefusal,
   readFailure,
   rejectionMessage,
@@ -167,6 +168,7 @@ interface ProvisioningAttempt {
   body: Record<string, unknown> & { requestId: string };
   acknowledged: boolean;
   statusUrl?: string | undefined;
+  revisionId?: string;
 }
 
 type ProvisioningContext = Pick<CreateAgentContext, "request" | "namespaceId" | "isCurrent"> & {
@@ -526,9 +528,12 @@ async function waitForProvisioning({
   status,
   first,
   namespaceId,
-  provisionPath,
+  observeJob,
   isCurrent,
-}: ProvisioningContext & { first: ProvisioningJob; provisionPath: string }) {
+}: ProvisioningContext & {
+  first: ProvisioningJob;
+  observeJob: (value: unknown) => ProvisioningJob;
+}) {
   let current = first;
   // A started job goes back to queued between retries. Keep one label once it has started,
   // and write it only when it changes, since this rereads every second (finding 1424).
@@ -563,7 +568,7 @@ async function waitForProvisioning({
       throw new DOMException("View closed", "AbortError");
     }
     const next = await request(first.url);
-    current = provisioningJob(next, provisionPath, first.requestId, first.url);
+    current = observeJob(next);
   }
   // A Stop during the first deployment (REVISION_STOPPED) or before it (PROVISIONING_CANCELLED)
   // is the owner's choice, not a failure to repair.
@@ -571,18 +576,20 @@ async function waitForProvisioning({
     current?.status === "failed" && current.error?.code === "PROVISIONING_CANCELLED"
       ? await cancelledAgentState(request, namespaceId, current.agentId)
       : null;
-  const stopped =
-    current?.status === "failed" &&
-    (current.error?.code === "REVISION_STOPPED" || cancelledAgent === "kept");
+  const neutralOutcome =
+    cancelledAgent === "kept"
+      ? "stopped"
+      : neutralDeploymentOutcome({ status: current.status, error: current.error ?? null });
   // A failed job's reason leads the form's error line, so its status line would only repeat
   // that it failed (finding 2423).
-  status.textContent = stopped
-    ? "Provisioning stopped."
-    : current?.status === "failed"
-      ? ""
-      : provisioningStatusText(current?.status);
+  status.textContent =
+    neutralOutcome === "stopped"
+      ? "Provisioning stopped."
+      : current?.status === "failed"
+        ? ""
+        : provisioningStatusText(current?.status);
   if (current?.status !== "succeeded") {
-    throw new ProvisioningFailure(current, stopped, cancelledAgent === "unknown");
+    throw new ProvisioningFailure(current, neutralOutcome, cancelledAgent === "unknown");
   }
   if (typeof current.agentId !== "string" || !current.agentId) {
     throw new Error("Provisioning status did not include an Agent.");
@@ -595,18 +602,22 @@ async function waitForProvisioning({
 
 class ProvisioningFailure extends Error {
   readonly job: ProvisioningJob;
-  readonly stopped: boolean;
+  readonly neutralOutcome: ReturnType<typeof neutralDeploymentOutcome>;
   readonly agentUnknown: boolean;
   readonly failed: boolean;
   readonly canRetry: boolean;
 
-  constructor(job: ProvisioningJob, stopped: boolean, agentUnknown: boolean) {
+  constructor(
+    job: ProvisioningJob,
+    neutralOutcome: ReturnType<typeof neutralDeploymentOutcome>,
+    agentUnknown: boolean,
+  ) {
     super(job.error?.message ?? "Provisioning did not complete.");
     this.job = job;
-    this.stopped = stopped;
+    this.neutralOutcome = neutralOutcome;
     this.agentUnknown = agentUnknown;
     this.failed = job.status === "failed";
-    this.canRetry = this.failed && canRetryFailedProvisioning(job);
+    this.canRetry = !neutralOutcome && this.failed && canRetryFailedProvisioning(job);
   }
 }
 
@@ -615,32 +626,40 @@ async function finishProvisioningAttempt({
   status,
   namespaceId,
   attempt,
+  retryUrl,
   isCurrent,
-}: ProvisioningContext & { attempt: ProvisioningAttempt }) {
+}: ProvisioningContext & { attempt: ProvisioningAttempt; retryUrl?: string | undefined }) {
   status.textContent = "Submitting provisioning request…";
   const provisionPath = `${namespacePath(namespaceId)}/agents/provision`;
   const provisioned =
-    attempt.statusUrl === undefined
+    retryUrl === undefined
       ? await request(provisionPath, {
           method: "POST",
           body: attempt.body,
         })
-      : await request(`${attempt.statusUrl}/retry`, { method: "POST" });
+      : await request(`${retryUrl}/retry`, { method: "POST" });
   attempt.acknowledged = true;
-  const accepted = provisioningJob(
-    provisioned,
-    provisionPath,
-    attempt.body.requestId,
-    attempt.statusUrl,
-  );
-  attempt.statusUrl = accepted.url;
+  function observeJob(value: unknown) {
+    const job = provisioningJob(value, provisionPath, attempt.body.requestId, attempt.statusUrl);
+    // A job can acquire its first revision at handoff. Once observed, that revision belongs
+    // to this request across subsequent polls and explicit recovery attempts.
+    if (attempt.revisionId !== undefined && job.revisionId !== attempt.revisionId) {
+      throw new Error("The provisioning response did not identify the expected revision.");
+    }
+    attempt.statusUrl = job.url;
+    if (typeof job.revisionId === "string" && job.revisionId) {
+      attempt.revisionId = job.revisionId;
+    }
+    return job;
+  }
+  const accepted = observeJob(provisioned);
   status.textContent = "Provisioning request accepted.";
   return waitForProvisioning({
     request,
     status,
     first: accepted,
     namespaceId,
-    provisionPath,
+    observeJob,
     isCurrent,
   });
 }
@@ -1735,6 +1754,8 @@ function renderAgentForm(
   // must then resend the same plan: the API answers an edited one with 409 "different plan".
   let requestAdmitted = false;
   let provisioningAttempt: ProvisioningAttempt | null = null;
+  // Create can resend an admitted plan after the retry endpoint refuses a finished job.
+  let admittedAttempt: ProvisioningAttempt | undefined;
   const capabilityStatus = element(
     "p",
     { id: "create-agent-capability-status", className: "hint", role: "status" },
@@ -1797,7 +1818,7 @@ function renderAgentForm(
     if (!provisioningAttempt || pending) {
       return;
     }
-    void submitProvisioningAttempt(provisioningAttempt);
+    void submitProvisioningAttempt(provisioningAttempt, provisioningAttempt.statusUrl);
   });
   const checkCredentialRegistration = button("Check credential registration", async () => {
     if (!credentialRegistration || pending) {
@@ -3029,11 +3050,11 @@ function renderAgentForm(
     }
   }
   void loadInstallationCapabilities();
-  async function submitProvisioningAttempt(attempt: ProvisioningAttempt) {
+  async function submitProvisioningAttempt(attempt: ProvisioningAttempt, retryUrl?: string) {
     // A retry of a job known to have failed. Read before the request: an admitted first
     // attempt also gains a retry URL, and after an unknown outcome the job may have
     // succeeded (recovering), so a refusal there must keep the request ID to recover it.
-    const viaRetry = attempt.statusUrl !== undefined;
+    const viaRetry = retryUrl !== undefined;
     const retrying = viaRetry && !outcomeUnknown;
     const recovering = viaRetry && outcomeUnknown;
     pending = true;
@@ -3049,6 +3070,7 @@ function renderAgentForm(
         status: savedStatus,
         namespaceId,
         attempt,
+        retryUrl,
         isCurrent: context.isCurrent,
       });
       focusFeedbackLine(savedStatus);
@@ -3099,7 +3121,9 @@ function renderAgentForm(
         detail = `${reason ?? "Outcome unknown."} Retry resubmits the same request ID and saved references.`;
       } else if (terminal?.canRetry) {
         detail = `${error.message} Retry uses the accepted provisioning job.`;
-      } else if (terminal?.stopped) {
+      } else if (terminal?.neutralOutcome === "superseded") {
+        detail = "A newer deployment took over before this one was ready.";
+      } else if (terminal?.neutralOutcome === "stopped") {
         // A stopped Agent keeps its name and needs a deployment, not a repair or a new Agent.
         detail = `${error.message} Open this Agent and deploy ${terminal.job.revisionId ? "a new version" : "a version"} when you want it running.`;
       } else if (terminal?.agentUnknown) {
@@ -3135,15 +3159,19 @@ function renderAgentForm(
       }
       // Admission's channel reference refusal names the Configuration JSON's setting.
       refusedInConfiguration = !terminal && !outcomeUnknown && showChannelBindingRefusal(cause);
-      if (terminal?.stopped) {
+      if (terminal?.neutralOutcome) {
         // Not an error: keep the guidance out of the error colour. Later messages replace the span.
         feedback.replaceChildren(
-          element("span", { className: "provisioning-stopped" }, feedbackText),
+          element("span", { className: "provisioning-neutral" }, feedbackText),
         );
       } else {
         feedback.textContent = refusedInConfiguration ? "" : feedbackText;
       }
-      if (terminal?.job.revisionId && terminal.job.agentId) {
+      if (
+        terminal?.job.revisionId &&
+        terminal.job.agentId &&
+        terminal.neutralOutcome !== "superseded"
+      ) {
         feedback.append(
           link(
             " Open Agent and deployment details",
@@ -3151,7 +3179,10 @@ function renderAgentForm(
             context,
           ),
         );
-      } else if ((terminal?.stopped || terminal?.agentUnknown) && terminal.job.agentId) {
+      } else if (
+        (terminal?.neutralOutcome === "stopped" || terminal?.agentUnknown) &&
+        terminal.job.agentId
+      ) {
         feedback.append(link(" Open Agent", `agents/${terminal.job.agentId}`, context));
       }
       focusFeedbackLine(feedback);
@@ -3177,6 +3208,7 @@ function renderAgentForm(
           provisioningRequestId = createClientRequestId();
           requestAdmitted = false;
         }
+        admittedAttempt = requestAdmitted && attempt.statusUrl ? attempt : undefined;
       }
       // A job that names its Agent created one, which a kept draft must not create again.
       if (!terminal?.job.agentId) {
@@ -3503,19 +3535,21 @@ function renderAgentForm(
         harnessAuth = { method: "credential_source", sourceId: savedCredentialSource.id };
       }
       if (shouldProvision()) {
-        provisioningAttempt = {
-          acknowledged: false,
-          body: {
-            requestId: provisioningRequestId,
-            ...body,
-            harnessAuth,
-            configuration: {
-              kind: "agent",
-              values,
-              ...(Object.keys(bindings).length ? { secretBindings: bindings } : {}),
-            },
+        const plan = {
+          requestId: provisioningRequestId,
+          ...body,
+          harnessAuth,
+          configuration: {
+            kind: "agent",
+            values,
+            ...(Object.keys(bindings).length ? { secretBindings: bindings } : {}),
           },
         };
+        provisioningAttempt =
+          admittedAttempt && sameValue(admittedAttempt.body, plan)
+            ? admittedAttempt
+            : { body: plan, acknowledged: false };
+        admittedAttempt = undefined;
         await submitProvisioningAttempt(provisioningAttempt);
         return;
       }
