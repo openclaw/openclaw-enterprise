@@ -66,6 +66,33 @@ to verify your local setup or ask an operator to
 Check for an actual answer from the configured model, not just a selected
 version or successful file read.
 
+## An embedded Gateway reports an unverifiable state owner
+
+After a hard kill, a replacement Gateway can find locks on the Agent's retained
+volume. If it cannot verify that the previous Gateway stopped, startup requires
+operator confirmation. This can happen on a new deployment with managed mode
+on or off.
+
+1. Record the volume and original container ID. On Kubernetes, also record the
+   Pod UID and node. Stop the Agent and verify with the compute provider that
+   this exact container exited. If its node is unreachable, keep the Agent
+   stopped until an operator verifies shutdown. [Stop and resume](../../reference/agents/deployment.md#stop-and-resume)
+2. Keep other writers off the volume. Start a maintenance container from the
+   Gateway's pinned image as its runtime user. Mount the same retained volume
+   and configuration at the Gateway's paths and use its state directory and profile.
+   Inspect the recorded holders without starting a Gateway.
+
+   ```sh
+   node /app/openclaw.mjs gateway recover-lock --json
+   ```
+
+3. Match every reported holder to the stopped workload. If any holder could
+   still write or cannot be identified, leave all locks in place. Otherwise repeat the
+   command with `--confirm` and the exact `confirmation` fingerprint from the
+   inspection. If OpenClaw reports a changed record, inspect and verify its holders again.
+4. Exit the maintenance container, deploy the Agent again and send a chat
+   message to verify it can use its retained state.
+
 ## A save or deployment lost its response
 
 The operation may have succeeded. Before retrying:

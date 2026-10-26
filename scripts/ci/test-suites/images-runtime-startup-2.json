@@ -34,7 +34,7 @@
     {
       "path": "tests/integration/runtime-image-gateway-unclean-restart.test.mjs",
       "expectedTests": [
-        "runtime image embedded Gateway restarted after an unclean stop is ready only when its agent takes turns"
+        "runtime image embedded Gateway serves its first turn after operator-confirmed recovery from an unclean stop"
       ]
     },
     {
