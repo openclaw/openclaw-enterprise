@@ -39,6 +39,19 @@ allows manual entry but does not prove access. Execution mode follows the
 harness; saved tokens require Codex. **Experimental Dedicated OpenClaw** shows
 the runtime-build warning; Embedded OpenClaw does not.
 
+**Native Plugins Unrestricted**, **Native Plugins Empty Allowlist** and
+**Native Plugins Allowlist** preserve authored policy across Harness switches.
+**Native Plugins Codex Round Trip** retains the Codex-only allowlist and refuses
+OpenClaw with instructions to open **Advanced settings → Configuration JSON**.
+Explicitly change `plugins.allow` from `["codex"]` to `["codex", "openai"]` and
+submit again. **Native Plugins Deny Conflict**
+refuses Codex creation until the operator removes its denial. Edit Configuration
+JSON explicitly; selecting a Harness does not grant permission.
+**Native Plugins Disabled Entry** preserves `plugins.entries.codex.enabled: false`
+through Harness switches. Try creation, then set that field to `true` in
+**Configuration JSON** and submit again. An absent Codex entry still gets the
+normal enabled runtime defaults.
+
 In **Enter another model ID**, switch to **Choose a model from the list** and
 back: listed models survive both switches, focus moves to the active input, and
 other settings persist. Edit the manual ID to another listed model; returning

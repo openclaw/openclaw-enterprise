@@ -18,6 +18,8 @@ This record preserves the dated changes to the harness execution topology flow. 
 
 - 2026-10-21 05:00: Validate execution peer label types. (authoring-run/9c5e8c34-6292-465b-a82a-7b56e03b535d - e8185dac805b737363c7178d3068b310a53a7c24)
 
+- 2026-10-20 12:09: Preserve native plugin policy and reject required-plugin conflicts during Harness admission. (Codex/01a12fe8-d0c6-7df1-937d-364a1301566a - 61140f671)
+
 - 2026-10-17 17:48: Restrict custom native endpoints to CredentialSources and retain upstream temporary-directory ownership. (authoring-run/b639668e-1ef2-4d43-bed4-ed1a6a4be5d6 - 7eebfc12c)
 
 - 2026-10-17 15:09: Preserve compatible native model endpoints and private worker temporary state. (authoring-run/b639668e-1ef2-4d43-bed4-ed1a6a4be5d6 - bcdb0b10f)
