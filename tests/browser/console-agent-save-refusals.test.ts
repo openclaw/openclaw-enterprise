@@ -860,7 +860,8 @@ test("a Stop refusal clears once a later answer grants Agent operate", async (t)
   await page.unroute(scenario.permissionsUrl);
   await scenario.rememberStatusDenial();
   // The row stays because this viewer used it; the denial disables Stop and adds its notice.
-  const notice = stopRow.getByText(AGENT_STOP_DENIED);
+  // Exact: the refusal repeats the reason after "Stop was refused:".
+  const notice = stopRow.getByText(AGENT_STOP_DENIED, { exact: true });
   await scenario.rereadThroughLogs();
   await notice.waitFor();
   scenario.operate(true);
