@@ -77,7 +77,7 @@ func opaqueIDArgs(kind string) cobra.PositionalArgs {
 			return err
 		}
 		value := values[0]
-		if strings.ContainsAny(value, "/\\") || strings.Trim(value, ".") == "" {
+		if strings.Contains(value, "/") || strings.Trim(value, ".") == "" {
 			return fmt.Errorf("%q is not a valid %s ID: IDs never contain \"/\" or consist only of dots", value, kind)
 		}
 		return nil
