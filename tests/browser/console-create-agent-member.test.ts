@@ -488,7 +488,7 @@ test("a member's refused Configuration create and empty Secret list name the acc
     .getByRole("alert")
     .filter({
       hasText:
-        "You do not have permission to create this Agent's Configuration. Ask an administrator for Configuration create access in this Namespace, plus Secret operate on each Secret it binds.",
+        "You do not have permission to create this Agent's Configuration. It needs Configuration create in this Namespace, which only an Installation administrator holds, plus Secret operate on each Secret it binds. Ask an Installation administrator.",
     })
     .waitFor();
 

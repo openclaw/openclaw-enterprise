@@ -722,7 +722,7 @@ const PERMISSIONS_UNREAD =
 // A refused Configuration create names the grants it needs, as a refused save does
 // (SAVE_REFUSALS): one fixed text for every 403 (finding 2111).
 const CONFIGURATION_CREATE_REFUSAL =
-  "You do not have permission to create this Agent's Configuration. Ask an administrator for Configuration create access in this Namespace, plus Secret operate on each Secret it binds.";
+  "You do not have permission to create this Agent's Configuration. It needs Configuration create in this Namespace, which only an Installation administrator holds, plus Secret operate on each Secret it binds. Ask an Installation administrator.";
 // This form saves Secret bindings only from its Slack channel settings. A channel refusal that
 // asks for a binding gets where to add one, as on the Agent page (findings 2494, 2506).
 const CHANNEL_BINDING_FORM_REMEDY =
