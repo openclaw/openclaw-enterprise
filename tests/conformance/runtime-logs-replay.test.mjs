@@ -412,6 +412,38 @@ test("OpenShell placeholder addresses resolve to the host its policy DNS mapped,
   }
 });
 
+test("an IPv6 placeholder keeps its port apart and resolves through its mapping record", () => {
+  // OpenShell writes an IPv6 destination bare, so the port is the last `:<digits>`.
+  const line = (time, message) => ({
+    time,
+    sandboxId: "",
+    level: "OCSF",
+    target: "ocsf",
+    message,
+    source: "sandbox",
+    fields: {},
+  });
+  const [, denied, real] = openShellLogDecisions([
+    line(
+      "2026-10-26T20:43:13.940000000Z",
+      "CONFIG:PUBLISHED [INFO] Policy DNS mapped db.example.com resolved=2001:db8::5 synthetic=fd23:6f70:656e::5 ports=5432 mapping_id=35efb49a-76c2-46b0-ae12-e68bd01add6d",
+    ),
+    line(
+      "2026-10-26T20:43:13.953000000Z",
+      "NET:OPEN [MED] DENIED /usr/bin/psql(7) -> fd23:6f70:656e::5:6432 [reason:transparent_tcp_mapping_denied]",
+    ),
+    line(
+      "2026-10-26T20:43:14.000000000Z",
+      "NET:OPEN [MED] DENIED /usr/bin/psql(7) -> 2001:db8::9:443 [reason:transparent_tcp_policy_denied]",
+    ),
+  ]);
+  assert.deepEqual(
+    [denied.fields.dst_placeholder_ip, denied.fields.dst_port, denied.decision.host],
+    ["fd23:6f70:656e::5", "6432", "db.example.com"],
+  );
+  assert.deepEqual([real.fields.dst_host, real.decision.port], ["2001:db8::9", 443]);
+});
+
 test("real Kubernetes Events mask node, image and object names before they reach the status", async () => {
   const { fixtures } = await manifest();
   const { events } = await replay(fixtures.find(({ source }) => source === "events"));
