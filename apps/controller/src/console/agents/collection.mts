@@ -678,18 +678,23 @@ export function renderAgentList(context: AgentListContext) {
     const canDelete = allowed?.delete !== false;
     const noteId = `agent-row-note-${item.id}`;
     const badgeId = `agent-row-badge-${item.id}`;
-    // The note names the grant and who gives it (findings 2539, 2548); its title shows all of it
-    // where the row truncates the line.
+    // The note names the grant and who gives it (findings 2539, 2548). Its reserved line fits
+    // only the grant, so the line shows that and the whole reason is its tooltip and what
+    // assistive technology reads.
     let restriction = null;
+    let grant = null;
     if (!canStop && !canDelete) {
       restriction = notIncluded(
         "stopping or deleting this Agent",
         "Agent operate and Agent delete on it",
       );
+      grant = "Needs operate and delete";
     } else if (!canStop) {
       restriction = AGENT_STOP_DENIED;
+      grant = "Needs Agent operate";
     } else if (!canDelete) {
       restriction = AGENT_DELETE_DENIED;
+      grant = "Needs Agent delete";
     }
     const describedBy = (blocked: boolean, badge: string | null) => {
       const ids = [blocked ? noteId : null, badge].filter(Boolean);
@@ -724,7 +729,12 @@ export function renderAgentList(context: AgentListContext) {
     const note = element(
       "span",
       { className: "row-action-note", id: noteId, ...(restriction ? { title: restriction } : {}) },
-      restriction ?? "",
+      ...(restriction
+        ? [
+            element("span", { "aria-hidden": "true" }, grant ?? ""),
+            element("span", { className: "visually-hidden" }, restriction),
+          ]
+        : []),
     );
     return { stop, delete: remove, note };
   }

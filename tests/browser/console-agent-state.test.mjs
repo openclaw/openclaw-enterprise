@@ -1685,13 +1685,22 @@ test("Agents list row actions explain missing access and still report a refused 
   );
 
   // The Agent's real permission read reports neither action, so both icons are disabled with a
-  // visible reason before any confirmation, and nothing is sent.
-  await row
-    .getByText(
-      "Your access does not include stopping or deleting this Agent. Ask an Installation administrator for Agent operate and Agent delete on it.",
-      { exact: true },
-    )
-    .waitFor();
+  // visible reason before any confirmation, and nothing is sent. The row's one line names the
+  // grants; the whole reason, with who gives them, is its tooltip and the icons' description.
+  const bothDenied =
+    "Your access does not include stopping or deleting this Agent. Ask an Installation administrator for Agent operate and Agent delete on it.";
+  await row.getByText(bothDenied, { exact: true }).waitFor();
+  const note = row.locator(".row-action-note");
+  assert.equal(await note.locator("[aria-hidden=true]").textContent(), "Needs operate and delete");
+  assert.equal(await note.getAttribute("title"), bothDenied);
+  assert.equal(
+    await stop.evaluate(
+      (node) =>
+        globalThis.document.getElementById(node.getAttribute("aria-describedby").split(" ")[0])
+          ?.title,
+    ),
+    bothDenied,
+  );
   assert.equal(await stop.isDisabled(), true);
   assert.equal(await remove.isDisabled(), true);
   assert.deepEqual(nonAuthWriteRequests(requests), []);
