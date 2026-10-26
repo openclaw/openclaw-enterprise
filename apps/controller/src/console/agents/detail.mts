@@ -763,10 +763,21 @@ export async function renderAgentDetail(
     tabNotice.hidden = text === "";
   }
   showTabNotice(unavailableTabNotice(tab));
-  // Set when a Logs read is refused after the same read succeeded: the caller's access changed,
-  // so tab changes read the page again instead of showing tabs built from earlier reads
-  // (finding 2550).
+  // Set when a read the page had the grant for is refused: the caller's access changed, so tab
+  // changes read the page again instead of showing tabs built from earlier reads (findings 2550,
+  // 2568).
   let accessChanged = false;
+  // Reads that succeeded on this page. A later refusal of one is a revocation (finding 2568).
+  const allowedReads = new Set<string>([path]);
+  // Whether refusing this read means the caller's access changed: the same read succeeded on this
+  // page, or it needs only Agent read, which the page's own Agent read used. A read whose grant
+  // the page never had (a Namespace's Secrets for an Agent reader, say) changes nothing. Runtime
+  // status and log reads are left to Logs, which weighs a refusal against the permission answer.
+  const readHadGrant = (readPath: string) =>
+    !readPath.startsWith(`${path}/deployments/`) &&
+    (allowedReads.has(readPath) ||
+      readPath.startsWith(`${path}/workspace/files/`) ||
+      readPath === `${path}/driver-configurations`);
   let deployInFlight = false;
   // The draft holds below are declared before a deleting Agent's early return: ← Agents and the
   // reload check read them on that page too (finding 2125).
@@ -2599,6 +2610,7 @@ export async function renderAgentDetail(
     }
     try {
       const value = await request(snapshotPath);
+      allowedReads.add(snapshotPath);
       return selected === "draft"
         ? configurationForPage(value, agent.configurationId)
         : revisionForPage(value, selected);
@@ -3631,12 +3643,22 @@ export async function renderAgentDetail(
     const tabContext: DetailContext = {
       ...context,
       isCurrent: () => context.isCurrent() && mountedTab === state,
-      request: async (path, options) => {
+      request: async (readPath, options) => {
+        const read = (options?.method ?? "GET") === "GET";
         state.pending += 1;
         try {
-          return await context.request(path, options);
+          const result = await context.request(readPath, options);
+          if (read) {
+            allowedReads.add(readPath);
+          }
+          return result;
         } catch (error) {
           state.reusable = false;
+          // Any tab's refusal of a read the page had the grant for, not only Logs', makes the next
+          // tab change read the page again instead of reusing tabs read before (finding 2568).
+          if (read && requestFailure(error).status === 403 && readHadGrant(readPath)) {
+            accessChanged = true;
+          }
           throw error;
         } finally {
           state.pending -= 1;

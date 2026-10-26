@@ -1483,8 +1483,10 @@ test("Google sign-in accepts only a Google authorization URL and confirms throug
   assert.equal(refused.request().postDataJSON().attemptId, attemptId);
   // The unconfigured controller refuses the result, so this tab adopts no session. The
   // callback already settled the identity, so the refusal does not read as an identity failure.
+  // It is the answer for a provider removed after the start: starting again cannot help, so
+  // the text does not offer it (finding 2555).
   assert.equal(refused.status(), 403);
-  await page.getByText(GOOGLE_EXCHANGE_REFUSED).waitFor();
+  await page.getByText(GOOGLE_PROVIDER_GONE, { exact: true }).waitFor();
   assert.equal(requests.includes("/api/auth/providers/github/result"), false);
 
   await page.goto(`${fixture.origin}/console/?authError=google`);
@@ -1493,6 +1495,8 @@ test("Google sign-in accepts only a Google authorization URL and confirms throug
 
 const GOOGLE_EXCHANGE_REFUSED =
   "Could not finish signing in with Google. The sign-in in this tab did not complete in time, or another sign-in replaced it. Select Continue with Google to start again.";
+const GOOGLE_PROVIDER_GONE =
+  "Could not finish signing in with Google. Google sign-in is no longer available on this Installation. Use another sign-in method, or ask an administrator.";
 const UNTRUSTED_ORIGIN_SIGN_IN =
   "Sign-in was refused because this page was not opened from the console's configured address. Open the console from its configured URL and sign in there. If you did, ask an operator to check the console address setting (OCC_AUTH_BASE_URL) and any proxy in front of it.";
 
@@ -1657,7 +1661,8 @@ test("OIDC sign-in uses the discovered label and accepts only the discovered end
   assert.equal(refused.status(), 403);
   await page
     .getByText(
-      "Could not finish signing in with Acme SSO. The sign-in in this tab did not complete in time, or another sign-in replaced it. Select Continue with Acme SSO to start again.",
+      "Could not finish signing in with Acme SSO. Acme SSO sign-in is no longer available on this Installation. Use another sign-in method, or ask an administrator.",
+      { exact: true },
     )
     .waitFor();
   assert.equal(requests.includes("/api/auth/providers/google/result"), false);
@@ -2748,11 +2753,12 @@ test("a refused provider exchange discards its pending login destination", async
   await page.route("https://github.com/**", (route) =>
     route.fulfill({ status: 302, headers: { location: `${fixture.origin}/console/` } }),
   );
+  // The answer for an attempt that expired or that another sign-in replaced.
   await page.route("**/api/auth/providers/github/result", (route) =>
     route.fulfill({
-      status: 403,
+      status: 401,
       contentType: "application/json",
-      body: JSON.stringify({ error: { code: "FORBIDDEN" } }),
+      body: JSON.stringify({ error: { code: "UNAUTHENTICATED" } }),
     }),
   );
   await page.goto(`${fixture.origin}/console/agents/${agent.id}?namespace=${namespace.id}`);

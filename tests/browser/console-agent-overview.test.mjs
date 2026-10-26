@@ -1447,21 +1447,6 @@ const NEUTRAL_DEPLOYMENT_CODES = [
   "REVISION_STOPPED",
   "REVISION_SUPERSEDED",
 ];
-// Older messages longer than the provisioning status cap (follow-up to finding 2571). A first
-// deployment's failure copies its message into that status. Remove a code once its text fits.
-const OVER_PROVISIONING_CAP = [
-  "AUTHORIZATION_DENIED",
-  "KUBERNETES_SECRET_WRITE_FORBIDDEN",
-  "REPOSITORY_DRIVER_MISMATCH",
-  "REPOSITORY_GIT_PROFILE_UNSUPPORTED",
-  "REPOSITORY_GIT_ROUTE_BLOCKED",
-  "REPOSITORY_GIT_SENDER_UNQUALIFIED",
-  "REPOSITORY_RUNTIME_UNSUPPORTED",
-  "RUNTIME_MODEL_PROBE_FAILED",
-  "RUNTIME_MODEL_PROBE_TIMEOUT",
-  "SANDBOX_GATEWAY_UNAUTHORIZED",
-  "WORKSPACE_SETUP_REFUSED",
-];
 
 // Every failed deployment code names its cause and a next step, and the banner chooses its actions
 // from OCC's step table, not from the message's words (findings 1898, 2537). The table lists each
@@ -1578,11 +1563,7 @@ test("Every failed deployment code has its own message and next step", async () 
       const { message } = persistedDeploymentError(code);
       // Each code has its own text: the cause, then a step (at least two sentences).
       assert.notEqual(message, fallback, code);
-      assert.equal(
-        message.length > cap,
-        OVER_PROVISIONING_CAP.includes(code),
-        `${code}: ${message.length}`,
-      );
+      assert.ok(message.length <= cap, `${code}: ${message.length}`);
       assert.ok(message.split(/[.:;] /u).length >= 2, `${code}: ${message}`);
       assert.doesNotMatch(message, /reconciliation failed/u, code);
       // The banner offers Deploy again for these, so the text says to deploy again too.
