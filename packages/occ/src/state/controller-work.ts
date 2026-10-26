@@ -732,13 +732,13 @@ function deploymentErrorMessage(code: string): string {
     // Repository credential refusals (finding 1045). Like the refusals below, the status never
     // names a repository, grant or Driver.
     case "REPOSITORY_RUNTIME_UNSUPPORTED":
-      return "This revision can no longer get repository credentials: they need an embedded OpenClaw or dedicated Codex runtime, no Sandbox Driver, and a Compute Driver set up for them. Ask an Installation administrator to restore that, or remove repository access, then deploy again.";
+      return "This revision lost repository credentials: they need an embedded OpenClaw or dedicated Codex runtime, no Sandbox Driver, and a Compute Driver set up for them. Ask an Installation administrator to restore that or remove repository access, then deploy again.";
     case "REPOSITORY_BINDING_UNAVAILABLE":
       return "A repository this revision binds, or its access level, is no longer approved for the Agent's Namespace. Choose approved repository access on the Agent, or ask an Installation administrator to approve it again, then deploy again.";
     case "REPOSITORY_BINDING_CHANGED":
       return "The approval behind a repository this revision binds changed since admission, for example the access levels or push rules approved for the Agent's Namespace. Deploy again to admit a revision with the current approval.";
     case "REPOSITORY_DRIVER_MISMATCH":
-      return "The Installation no longer selects the repository credential Driver this revision was admitted with. Deploy again, choosing approved repository access first if refused. If it selects none, remove the repository access or ask an Installation administrator to select one.";
+      return "The Installation no longer selects the repository credential Driver admitted with this revision. Deploy again, choosing approved repository access if refused. If it selects none, remove repository access or ask an Installation administrator to select one.";
     case "REPOSITORY_GIT_ROUTE_BLOCKED":
       return "The controller closed this version's repository Git access: its Sandbox or supervisor was replaced, a credential write's outcome is unknown, or the access was withdrawn (worker log: OPENSHELL_GIT_RECONCILIATION_REQUIRED). Deploy a new version.";
     case "REPOSITORY_GIT_SENDER_UNQUALIFIED":
@@ -750,7 +750,7 @@ function deploymentErrorMessage(code: string): string {
     // Refusals the worker decides again on every pass (finding 1039). The status never names
     // the principal or the resource the decision was about.
     case "AUTHORIZATION_DENIED":
-      return "The deploying account, or the Agent's own identity, lost a permission the revision needs: deploy on the Agent, read on its Configuration, or use of a bound Secret, credential source or ServiceAccount. Ask an Installation administrator to grant it, then deploy again.";
+      return "The deploying account, or the Agent's own identity, lost a permission the revision needs: Agent deploy, Configuration read, or use of a bound Secret, credential source or ServiceAccount. Ask an Installation administrator to grant it, then deploy again.";
     case "ACTOR_REVOKED":
       return "The account that requested this deployment is no longer an active account in the Installation. Deploy again from an account with deploy access to the Agent.";
     case "HARNESS_AUTH_REQUIRED":
@@ -764,9 +764,9 @@ function deploymentErrorMessage(code: string): string {
     case "NAMESPACE_NOT_READY":
       return "The Agent's Namespace was not ready when the controller ran this deployment, for example while it is being deleted. Deploy again once the Namespace is ready.";
     case "WORKSPACE_SETUP_REFUSED":
-      return "Initial workspace setup refused this version, and retries would too: its files, setup record or runtime defaults differ from what the Agent was created with. Ask an Installation administrator to check workspace storage and the runtime image; do not delete the setup record.";
+      return "Initial workspace setup refused this version, and retries would too: its files, setup record or runtime defaults differ from the Agent's originals. Ask an Installation administrator to check workspace storage and the runtime image; keep the setup record.";
     case "WORKSPACE_SETUP_UNSUPPORTED":
-      return "The Agent was created with initial workspace files, which the Installation's Compute Driver cannot set up. Ask an Installation administrator to select a Compute Driver that supports them, then deploy again, or create the Agent without initial workspace files.";
+      return "The Agent was created with initial workspace files, which the Installation's Compute Driver cannot set up. Ask an Installation administrator to select a Compute Driver that supports them, then deploy again, or create the Agent without them.";
     case "DEPENDENCY_UNAVAILABLE":
       return "A dependency the controller needs stayed unavailable through every attempt. Deploy again; if it keeps failing, ask an Installation administrator to check the controller worker log.";
     case "LEASE_EXPIRED":
