@@ -979,7 +979,11 @@ export function installFixture(scenario, evidence) {
       const [, ns, resource] = match;
       if (ns !== namespaceId) {
         if (resource === "permissions" && namespaces.some((item) => item.id === ns)) {
-          return response({ agents: { create: true }, secrets: { create: true } });
+          return response({
+            agents: { create: true },
+            secrets: { create: true },
+            installation: { administer: !scenario.observabilityDenied },
+          });
         }
         return response([]);
       }
@@ -1250,6 +1254,10 @@ export function installFixture(scenario, evidence) {
         return response({
           agents: { create: !scenario.readOnlyPermissionSummary },
           secrets: { create: !scenario.secretCreateNotPermitted },
+          // A read-only member is no Installation administrator either.
+          installation: {
+            administer: !scenario.readOnlyPermissionSummary && !scenario.observabilityDenied,
+          },
         });
       }
       if (resource === "permissions/secrets" && method === "GET") {

@@ -1821,6 +1821,8 @@ Report advisory primary IAM permissions on a readable Namespace, not authorizati
 | `data` | `object` | Yes | — |
 | `data.agents` | `object` | Yes | — |
 | `data.agents.create` | `boolean` | Yes | Whether the selected IAM Driver allows Agent creation in this Namespace now. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation. |
+| `data.installation` | `object` | Yes | — |
+| `data.installation.administer` | `boolean` | Yes | Whether the selected IAM Driver allows Installation administer now, which Installation-wide operations such as listing Backends need. The check targets the Installation, not this Namespace. Advisory only: a later authorization decision can still prevent the operation. |
 | `data.secrets` | `object` | Yes | — |
 | `data.secrets.create` | `boolean` | Yes | Whether the selected IAM Driver allows Secret creation in this Namespace now. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation. |
 | `meta` | `object` | Yes | — |

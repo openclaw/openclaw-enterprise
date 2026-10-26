@@ -29948,6 +29948,17 @@
                           "required": ["create"],
                           "type": "object"
                         },
+                        "installation": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "administer": {
+                              "description": "Whether the selected IAM Driver allows Installation administer now, which Installation-wide operations such as listing Backends need. The check targets the Installation, not this Namespace. Advisory only: a later authorization decision can still prevent the operation.",
+                              "type": "boolean"
+                            }
+                          },
+                          "required": ["administer"],
+                          "type": "object"
+                        },
                         "secrets": {
                           "additionalProperties": false,
                           "properties": {
@@ -29960,7 +29971,7 @@
                           "type": "object"
                         }
                       },
-                      "required": ["agents", "secrets"],
+                      "required": ["agents", "secrets", "installation"],
                       "type": "object"
                     },
                     "meta": {
