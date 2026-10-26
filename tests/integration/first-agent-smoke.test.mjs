@@ -594,7 +594,7 @@ test("the provider image is the runtime's pinned Node base with only the runtime
   );
   assert.match(
     runtimeNodeBaseImage(dockerfile),
-    /^docker\.io\/library\/node:24-[^@]+@sha256:[a-f0-9]{64}$/,
+    /^docker\.io\/library\/node:24\.\d+\.\d+-bookworm-slim@sha256:[a-f0-9]{64}$/,
   );
   assert.throws(
     () => runtimeNodeBaseImage("ARG NODE_RUNTIME_BASE_IMAGE=node:24-bookworm-slim\n"),
