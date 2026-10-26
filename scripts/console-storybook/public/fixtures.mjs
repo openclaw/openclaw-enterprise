@@ -184,7 +184,8 @@ function candidateDeploymentError(scenario, checkedAt) {
   if (scenario.candidateSelected) {
     return {
       code: "REVISION_FINALIZATION_INCOMPLETE",
-      message: "Deployment reconciliation failed.",
+      message:
+        "Deployment failed. Check this version's logs; if they show nothing, ask an Installation administrator to check the controller worker log for this code.",
     };
   }
   return {
@@ -1339,7 +1340,8 @@ export function installFixture(scenario, evidence) {
                     }
                   : {
                       code: "DEPENDENCY_UNAVAILABLE",
-                      message: "Deployment reconciliation failed.",
+                      message:
+                        "A dependency the controller needs stayed unavailable through every attempt. Deploy again; if it keeps failing, ask an admin to check the controller worker log.",
                     },
             warnings: [],
           });

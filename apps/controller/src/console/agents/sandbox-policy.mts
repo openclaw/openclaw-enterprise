@@ -55,6 +55,30 @@ function grantText(grant: SandboxNetworkGrant) {
   return `${visibleText(grant.binary)} → ${visibleText(grant.host)}:${ports}`;
 }
 
+// What a failed live application's reason code (`worker/sandbox-policy.ts`) means and what to do
+// next; the page showed the bare code (finding 2537). Every code but the unconfirmed one fails
+// before the worker sends anything to the Sandbox.
+const APPLICATION_FAILURES: Readonly<Record<string, string>> = {
+  SANDBOX_POLICY_REVISION_CHANGED:
+    "The Agent’s current version changed, or the Agent stopped, before the policy reached its Sandbox, so nothing was applied. Apply the saved policy to the current version again.",
+  AUTHORIZATION_DENIED:
+    "The account that applied the policy no longer has Agent manage_policy and SandboxPolicy update, so nothing was applied. Ask an Installation administrator for that access, then apply again.",
+  SANDBOX_POLICY_CEILING_CHANGED:
+    "The Installation delegation ceiling changed and no longer covers every saved rule, so nothing was applied. Remove the rules outside the ceiling, save, then apply again.",
+  SANDBOX_POLICY_UNSUPPORTED:
+    "The Sandbox Driver running this version cannot apply Agent network policy, or refused these rules, so nothing was applied. Check the rules with Review changes; if they pass, deploy a new version to put the saved policy into effect.",
+  SANDBOX_POLICY_PROTECTED_EXECUTION:
+    "This version runs under protected execution, whose egress policy an Agent network policy cannot replace, so nothing was applied. Remove the saved rules so that they do not block the next deploy.",
+  SANDBOX_POLICY_VALIDATION_FAILED:
+    "The Sandbox Driver’s settings refused the saved rules, so nothing was applied. Review changes shows each problem: correct the rules, save, then apply again.",
+  SANDBOX_POLICY_PLACEMENT_UNAVAILABLE:
+    "The Installation’s Compute Driver changed since this version was deployed, so the controller cannot reach its Sandbox and nothing was applied. Deploy a new version to put the saved policy into effect.",
+  SANDBOX_POLICY_PROVIDER_FAILED:
+    "The Sandbox reported that applying the policy failed. Refresh policy, then apply again; if it fails again, ask an operator to check the Sandbox gateway.",
+};
+const APPLICATION_UNCONFIRMED =
+  "Application was not confirmed. The provider may have accepted part of the request; refresh and retry explicitly. No redeployment was started.";
+
 // Review the rules returned by validation, including any normalization. The controller owns admission.
 function readableRules(value: unknown): value is SandboxNetworkGrant[] {
   return (
@@ -682,11 +706,15 @@ export function renderAgentSandboxPolicy(
         ),
       );
       if (application.state === "failed") {
+        // The code stays on the status line, so the reader can match it to the audit log.
+        const reason = application.reason;
         policyPanel.append(
           element(
             "p",
             { className: "notice" },
-            "Application was not confirmed. The provider may have accepted part of the request; refresh and retry explicitly. No redeployment was started.",
+            reason && Object.hasOwn(APPLICATION_FAILURES, reason)
+              ? APPLICATION_FAILURES[reason]
+              : APPLICATION_UNCONFIRMED,
           ),
         );
       }

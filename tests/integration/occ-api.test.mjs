@@ -3129,8 +3129,17 @@ test("a refused deployment's status names its cause and remedy without naming pr
       "Deployment runtime could not sign in to the model provider. Check the Agent's model credential (for an OAuth login, sign in again) and that the runtime can reach the provider, then deploy a new version.",
     RUNTIME_STARTUP_FAILED:
       "Deployment runtime failed a startup check. Check this version's logs for the failed check and correct its cause, then deploy a new version.",
-    // Internal inconsistencies keep the generic text.
-    INVALID_REVISION_OWNER: "Deployment reconciliation failed.",
+    // Finding 2537: these fell through to "Deployment reconciliation failed.", which named no
+    // step. A version stored inconsistently sends the reader to an administrator, not to
+    // runtime logs that do not exist.
+    INVALID_REVISION_OWNER:
+      "The stored records for this version are inconsistent with its Agent or Namespace, so the controller did not start it and it has no runtime logs. Ask an Installation administrator to check the controller worker log for this deployment.",
+    INVALID_HARNESS_AUTH:
+      "This version's Harness authentication cannot be used: its Secret or ServiceAccount is outside the Agent's Namespace, or its method is not supported. Choose the Harness authentication again on the Agent's Credentials, then deploy a new version.",
+    EXECUTION_ADMISSION_UNAVAILABLE:
+      "This version was admitted for protected execution that the Installation can no longer provide, for example after its Credential Proxy changed. Deploy again to admit a version for the current setup; if the deploy is refused, ask an Installation administrator to check the Installation's Credential Proxy.",
+    REPOSITORY_PROXY_ADMISSION_MISMATCH:
+      "This version's repository access no longer matches the Credential Proxy delivery it was admitted with. Deploy again to admit a version with the current repository access.",
   };
   for (const [reasonCode, message] of Object.entries(messages)) {
     deploymentWorks.set(workKey, {
