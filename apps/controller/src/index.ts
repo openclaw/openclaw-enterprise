@@ -2570,19 +2570,23 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         id: agent.configurationId,
         namespaceId,
       };
-      const [update, configurationUpdate, configurationRead, namespaceRead] = await Promise.all([
-        callerMay(context.actorId, "update", { kind: "agent", id: agentId, namespaceId }),
-        callerMay(context.actorId, "update", configuration),
-        callerMay(context.actorId, "read", configuration),
-        // Checked first, so listing the Secrets below is never a refused, audited read.
-        callerMay(context.actorId, "read", { kind: "namespace", id: namespaceId, namespaceId }),
-      ]);
+      const agentRef: ResourceRef = { kind: "agent", id: agentId, namespaceId };
+      const [update, deploy, configurationUpdate, configurationRead, namespaceRead] =
+        await Promise.all([
+          callerMay(context.actorId, "update", agentRef),
+          callerMay(context.actorId, "deploy", agentRef),
+          callerMay(context.actorId, "update", configuration),
+          callerMay(context.actorId, "read", configuration),
+          // Checked first, so listing the Secrets below is never a refused, audited read.
+          callerMay(context.actorId, "read", { kind: "namespace", id: namespaceId, namespaceId }),
+        ]);
       // Binding a Secret to the Agent's Configuration, or as its Harness authentication source,
-      // authorizes Secret operate on it (finding 2453). Only a caller who may make such a save
-      // gets an answer, so it reports nothing that save would not, and only on the Secrets the
-      // caller may list.
+      // authorizes Secret operate on it (finding 2453), and so does deploying a draft that binds
+      // it (finding 2546). Only a caller who may make such a save or deployment gets an answer,
+      // so it reports nothing that request would not, and only on the Secrets the caller may
+      // list.
       const operateDenied =
-        namespaceRead && configurationRead && (configurationUpdate || update)
+        namespaceRead && configurationRead && (configurationUpdate || update || deploy)
           ? await controller.listSecretsOperateDenied(context.actorId, namespaceId)
           : [];
       reply.send({ data: { operateDenied }, meta: { requestId: request.id } });

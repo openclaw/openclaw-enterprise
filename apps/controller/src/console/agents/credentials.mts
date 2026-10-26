@@ -784,13 +784,19 @@ export function createChannelSecretsPanel({
   // Channel credentials are saved and complete: the next-step card's credentials step (UX spec
   // 3.7). Deploy also needs the version history. A grant read still in flight may yet show a
   // bound Secret the Agent cannot use, so Deploy waits for it (#3686 review).
+  // A grant this session could not verify holds nothing: the save finished, nothing here can
+  // confirm the grant, and the API checks the Agent's access when it deploys (finding 2547).
+  function grantHoldsDeploy() {
+    return Boolean(state.saveGrantWarning) && state.grantProblem !== "unverified";
+  }
+
   function credentialsReady() {
     return (
       !state.saving &&
       !state.checkingGrants &&
       !state.outcomeUnknown &&
       !state.reloadRequired &&
-      !state.saveGrantWarning &&
+      !grantHoldsDeploy() &&
       !state.unsavedSecrets &&
       hasRequiredChannelCredentials(state.values, state.configuration)
     );
@@ -816,7 +822,7 @@ export function createChannelSecretsPanel({
     if (state.checkingGrants) {
       return "Checking this Agent's credential access before deploying.";
     }
-    if (state.saveGrantWarning) {
+    if (grantHoldsDeploy()) {
       return "Resolve the saved Secret access grant before deploying.";
     }
     const blockReason = channelCredentialBlockReason(state.values);

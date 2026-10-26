@@ -1039,7 +1039,8 @@ describe("Agent channels", { concurrency: 3 }, () => {
   // A member cannot write IAM policy, and the session already knows it (finding 2109), so a Slack
   // token saved from the drawer or from Credentials sends no grant the API would refuse and audit.
   // The warning says nothing verified the Agent's access and names who grants it. It offers no
-  // Retry, and Reload draft clears the block, as the harness path does (findings 2259, 2263).
+  // Retry and holds no Deploy, and Reload draft clears it, as the harness path does (findings
+  // 2259, 2263, 2547).
   for (const entry of ["drawer", "credentials"]) {
     test(`A member's Slack token saved from ${entry} names the administrator step without a grant`, async (t) => {
       const { fixture, namespace } = await readyNamespace(t, `Member Slack ${entry}`);
@@ -1115,11 +1116,10 @@ describe("Agent channels", { concurrency: 3 }, () => {
           .evaluateAll((items) => items.map((badge) => badge.textContent));
       assert.deepEqual(await badges(), ["Bound · Agent access not confirmed", "Bound"]);
       assert.equal(await page.getByRole("button", { name: "Retry Secret access" }).count(), 0);
-      await page.getByText("Resolve the saved Secret access grant before deploying.").waitFor();
-      assert.equal(
-        await page.getByRole("button", { name: "Deploy new version" }).isDisabled(),
-        true,
-      );
+      // The save finished and nothing this member can do confirms the grant, so Deploy is not
+      // held: the API checks the Agent's access when it deploys (finding 2547).
+      await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
+      await expectNoText(page, "Resolve the saved Secret access grant before deploying.");
       const configuration = await fixture.request(
         "GET",
         `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
@@ -1133,7 +1133,7 @@ describe("Agent channels", { concurrency: 3 }, () => {
         [],
       );
 
-      // Nothing verified the grant, so Reload draft clears the block it set.
+      // Nothing verified the grant, so Reload draft clears the warning.
       await panel.getByRole("button", { name: "Reload draft" }).click();
       await page.getByText("Draft reloaded.", { exact: true }).waitFor();
       await expectNoText(page, GRANT_UNVERIFIED);
