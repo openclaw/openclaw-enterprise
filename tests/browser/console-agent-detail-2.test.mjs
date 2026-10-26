@@ -64,11 +64,13 @@ import {
   DEPENDENCY_UNAVAILABLE,
   GENERIC_DENIAL,
   MALFORMED_REQUEST,
+  RESOURCE_CONFLICT,
   RESOURCE_NOT_FOUND,
   SANDBOX_POLICY_READ_DENIED,
   WORKSPACE_FILES_UNAVAILABLE,
   askForGrant,
   notIncluded,
+  deleteRefused,
 } from "../helpers/refusal-text.mjs";
 
 // The Console Browser lane runs the two Agent detail test files in parallel.
@@ -486,25 +488,17 @@ test("Repeat deletion preserves bounded retry ownership feedback and ordinary de
   };
   await confirm();
   await page.getByRole("alert").getByText(ownership, { exact: true }).waitFor();
-  await expectNoText(page, "Ask an Installation administrator for Agent delete on it", () =>
-    waitForIdleFetches(page),
-  );
+  await expectNoText(page, askForGrant("Agent delete on it"), () => waitForIdleFetches(page));
   assert.equal(writes, 1);
   await page.clock.fastForward(DELETION_POLL_MS * 2);
   await page.getByRole("alert").getByText(ownership, { exact: true }).waitFor();
   assert.equal(writes, 1);
   serverMessage = GENERIC_DENIAL;
   await confirm();
-  await page
-    .getByRole("alert")
-    .getByText("You do not have permission to delete this Agent", { exact: false })
-    .waitFor();
+  await page.getByRole("alert").getByText(deleteRefused("this Agent"), { exact: false }).waitFor();
   assert.equal(writes, 2);
   await page.clock.fastForward(DELETION_POLL_MS * 2);
-  await page
-    .getByRole("alert")
-    .getByText("You do not have permission to delete this Agent", { exact: false })
-    .waitFor();
+  await page.getByRole("alert").getByText(deleteRefused("this Agent"), { exact: false }).waitFor();
   await page.getByRole("button", { name: "Refresh deletion status", exact: true }).click();
   await page.getByRole("alert").waitFor({ state: "hidden" });
   assert.equal(writes, 2);
@@ -526,7 +520,7 @@ test("Agent page Stop shows the API's 400 and 409 reasons", async (t) => {
     [
       "generic conflict",
       409,
-      "The requested platform resource already exists.",
+      RESOURCE_CONFLICT,
       "This Agent lifecycle changed while stopping. Refresh stop status before trying again.",
     ],
   ]) {

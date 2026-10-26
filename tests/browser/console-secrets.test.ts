@@ -19,6 +19,7 @@ import type {
 } from "../../packages/contracts/src/api/resources.ts";
 import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
 import {
+  RESOURCE_NOT_FOUND,
   SECRET_CREATE_DENIED,
   SECRET_NAME_CONFLICT,
   tooManyRequestsIn,
@@ -559,7 +560,7 @@ test("Secret refusals keep their meaning, and incomplete consumers or a not-read
   const refusals = [
     { ...proxyErrorResponse(429), headers: { "retry-after": "30" } },
     { ...proxyErrorResponse(429), headers: { "retry-after": "600" } },
-    apiErrorResponse(404, "NOT_FOUND", "The requested platform resource was not found."),
+    apiErrorResponse(404, "NOT_FOUND", RESOURCE_NOT_FOUND),
   ];
   await page.route(`${fixture.origin}${secretPath(namespace)}`, (route) => {
     const refusal = route.request().method() === "POST" ? refusals.shift() : undefined;

@@ -63,6 +63,8 @@ import {
   REPOSITORY_ACCESS_CHANGED,
   RESOURCE_CONFLICT,
   SAVED_CONFIGURATION_CHANGED,
+  unboundReferenceRefusal,
+  unsubstitutedReferenceRefusal,
 } from "../helpers/refusal-text.mjs";
 
 // Saves and reloads on the Agent page's tabs, and every Reload draft, re-navigated to the same
@@ -291,8 +293,7 @@ test("an unbound Slack token is refused at save, under its picker and under the 
   assert.equal((await patched).status(), 400);
   // The refusal shows once, under the editor, which takes focus as for invalid JSON. The editor
   // saves no Secret bindings, so the console says where it binds them (finding 2494).
-  const unbound =
-    "Configuration setting channels.slack.appToken references SLACK_APP_TOKEN without a Configuration Secret binding: bind SLACK_APP_TOKEN in secretBindings to an environment-backed Secret, or remove the reference.";
+  const unbound = unboundReferenceRefusal("channels.slack.appToken", "SLACK_APP_TOKEN");
   await page
     .locator("#configuration-json-error")
     .filter({ hasText: `${unbound} ${CHANNEL_BINDING_CONSOLE_REMEDY}` })
@@ -318,9 +319,7 @@ test("an unbound Slack token is refused at save, under its picker and under the 
   await page
     .locator("#configuration-json-error")
     .filter({
-      hasText:
-        "Configuration setting channels.slack.appToken contains ${slack_app}, which the runtime does not substitute: use an uppercase ${NAME} bound to a Secret in secretBindings, or escape literal text as $${NAME}. " +
-        CHANNEL_BINDING_CONSOLE_REMEDY,
+      hasText: `${unsubstitutedReferenceRefusal("channels.slack.appToken", "${slack_app}")} ${CHANNEL_BINDING_CONSOLE_REMEDY}`,
     })
     .waitFor();
   assert.equal(await editor.getAttribute("aria-invalid"), "true");

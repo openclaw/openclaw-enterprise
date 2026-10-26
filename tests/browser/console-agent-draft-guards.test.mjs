@@ -44,7 +44,6 @@ import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.
 import { createPolicyConsole } from "./console-sandbox-policy-fixture.ts";
 import {
   AGENT_SAVE_DENIED,
-  askForGrant,
   callerDenied,
   CHANNEL_SECRETS_CONFIGURATION_CHANGED,
   CONFIGURATION_SAVE_DENIED,
@@ -54,6 +53,7 @@ import {
   READ_UNAVAILABLE,
   REPOSITORY_EDITS_PENDING,
   RESOURCE_CONFLICT,
+  permissionRefused,
 } from "../helpers/refusal-text.mjs";
 
 test("Agent policy ceiling rejection is announced in view and preserves unsaved additions", async (t) => {
@@ -237,13 +237,11 @@ test("A refused policy read offers no Retry", async (t) => {
   await tab
     .getByRole("alert")
     .filter({
-      hasText: `You do not have permission to read this Agent’s policy. ${askForGrant("SandboxPolicy read on it")}`,
+      hasText: permissionRefused("read this Agent’s policy", "SandboxPolicy read on it"),
     })
     .waitFor();
   await tab
-    .getByText(
-      `You do not have permission to read policy suggestions. ${askForGrant("SandboxPolicy read on it")}`,
-    )
+    .getByText(permissionRefused("read policy suggestions", "SandboxPolicy read on it"))
     .waitFor();
   assert.equal(await tab.getByRole("button", { name: "Retry policy read" }).count(), 0);
   assert.equal(await tab.getByRole("button", { name: "Refresh suggestions" }).count(), 0);

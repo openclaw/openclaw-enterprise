@@ -87,6 +87,7 @@ import {
   WORKSPACE_FILES_UNAVAILABLE,
   namespaceListDenied,
   secretOperateRefused,
+  stopRefused,
 } from "../helpers/refusal-text.mjs";
 
 test("Agent detail separates the current version, viewed version, and latest deployment", async (t) => {
@@ -3601,7 +3602,7 @@ test("Agent stop denial keeps the Agent running with permission feedback", async
     .click();
   assert.equal((await denied).status(), 403);
 
-  await page.getByText("You do not have permission to stop this Agent").waitFor();
+  await page.getByText(stopRefused("this Agent")).waitFor();
   assert.equal(agentStopRequests(requests, namespace.id, agent.id).length, 1);
   await waitForEnabled(page.getByRole("button", { name: "Stop Agent" }));
   const current = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);

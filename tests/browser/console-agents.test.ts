@@ -80,6 +80,7 @@ import {
   createDenied,
   DEPENDENCY_UNAVAILABLE,
   GENERIC_DENIAL,
+  AGENT_CREATE_INSTALLATION_DENIED,
 } from "../helpers/refusal-text.mjs";
 
 const defaultCodexPreset = JSON.parse(
@@ -2242,11 +2243,7 @@ test("Agent creation explains a denied capability check instead of offering a re
   await page.getByText(/^Your permissions in this Namespace could not be checked/).waitFor();
   permissions = { agents: { create: false } };
   await page.getByRole("button", { name: "Retry permission check" }).click();
-  await page
-    .getByText(
-      "Creating an Agent needs Installation access that your account does not have. Ask an Installation administrator to create this Agent.",
-    )
-    .waitFor();
+  await page.getByText(AGENT_CREATE_INSTALLATION_DENIED).waitFor();
   assert.equal(await page.getByRole("button", { name: "Retry permission check" }).count(), 0);
   const retry = page.getByRole("button", { name: "Retry capability check" });
   assert.equal(

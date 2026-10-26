@@ -52,6 +52,9 @@ import {
   NAMESPACE_NOT_READY,
   referenceFormRefusal,
   RESOURCE_CONFLICT,
+  unboundReferenceRefusal,
+  POD_QUOTA_FULL,
+  codexApiKeyRefusal,
 } from "../helpers/refusal-text.mjs";
 
 // Every test opens its own context in one Chromium per file.
@@ -209,10 +212,7 @@ test("Dedicated Agent provisioning shows the API's 400 message for an inline mod
   // The API's own sentence names the field to fix; the console shows it unchanged. Provisioning
   // runs Agent save's Harness authentication check first (finding 2395), so it answers with
   // save's sentence for the dedicated Codex binding.
-  assert.equal(
-    error.message,
-    "Configuration setting models.providers.openai.apiKey must be unset: Dedicated Codex receives model credentials from the Agent's Harness authentication binding.",
-  );
+  assert.equal(error.message, codexApiKeyRefusal("models.providers.openai.apiKey"));
   const feedback = page.getByRole("alert").filter({ hasText: meta.requestId });
   await feedback.waitFor();
   assert.equal(await feedback.textContent(), `${error.message} Request ID: ${meta.requestId}`);
@@ -512,7 +512,7 @@ test("Create Agent names a refused Slack token form once, under its Configuratio
     ["$xoxbSECRET", referenceFormRefusal("channels.slack.botToken", "inline"), inline],
     [
       "${SLACK_SPARE_TOKEN}",
-      "Configuration setting channels.slack.botToken references SLACK_SPARE_TOKEN without a Configuration Secret binding: bind SLACK_SPARE_TOKEN in secretBindings to an environment-backed Secret, or remove the reference.",
+      unboundReferenceRefusal("channels.slack.botToken", "SLACK_SPARE_TOKEN"),
       reference,
     ],
   ]) {
@@ -2138,8 +2138,7 @@ test("Create Agent shows a provisioning refusal's own reason and keeps catch-all
 // generic progress again once the reader can no longer read that deployment (finding 1637). A
 // denied read (403) loses access as surely as a missing one (404): the quota line must not stay.
 test("Create Agent drops the Pod quota line when the deployment read is denied", async (t) => {
-  const quotaFull =
-    "The Namespace's Pod quota is full. Stop or delete an Agent, or ask an administrator to raise the quota.";
+  const quotaFull = POD_QUOTA_FULL;
   const fixture = await createConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset] });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Pod quota denied", { ready: true });
