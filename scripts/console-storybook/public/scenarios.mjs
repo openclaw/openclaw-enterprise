@@ -5481,7 +5481,7 @@ export const scenarios = {
     candidateFailure: {
       code: "EXECUTION_ADMISSION_UNAVAILABLE",
       message:
-        "This version was admitted for protected execution that the Installation can no longer provide, for example after its Credential Proxy changed. Deploy again to admit a version for the current setup; if the deploy is refused, ask an Installation administrator to check the Installation's Credential Proxy.",
+        "This version was admitted for protected execution that the Installation can no longer provide, for example after its Credential Proxy changed. Deploy again; if the deploy is refused, ask an Installation administrator to check the Credential Proxy.",
     },
     description:
       "v7 failed because the Installation's protected execution changed after admission. OCC's step table says deploying again can help, so the recovery offers Deploy again first and adds no logs advice.",

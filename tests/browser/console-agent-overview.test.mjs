@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { DELETION_POLL_MS } from "../../apps/controller/src/console/agents/deletion.mjs";
@@ -9,6 +10,7 @@ import {
   DEPLOYMENT_FAILURE_STEPS,
   deploymentFailureStep,
 } from "../../apps/controller/src/console/deployment-failure-steps.mjs";
+import { AgentProvisioningStatusSchema } from "../../packages/contracts/src/api/resources.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { fileConsoleApp } from "../helpers/console-app.mjs";
 import {
@@ -1438,10 +1440,35 @@ for (const c of [
   }
 }
 
+// Codes the console shows as a neutral ending, not a failure (`agents/list.mts`), so they need no
+// step.
+const NEUTRAL_DEPLOYMENT_CODES = [
+  "REPOSITORY_REVISION_SUPERSEDED",
+  "REVISION_STOPPED",
+  "REVISION_SUPERSEDED",
+];
+// Older messages longer than the provisioning status cap (follow-up to finding 2571). A first
+// deployment's failure copies its message into that status. Remove a code once its text fits.
+const OVER_PROVISIONING_CAP = [
+  "AUTHORIZATION_DENIED",
+  "KUBERNETES_SECRET_WRITE_FORBIDDEN",
+  "REPOSITORY_DRIVER_MISMATCH",
+  "REPOSITORY_GIT_PROFILE_UNSUPPORTED",
+  "REPOSITORY_GIT_ROUTE_BLOCKED",
+  "REPOSITORY_GIT_SENDER_UNQUALIFIED",
+  "REPOSITORY_RUNTIME_UNSUPPORTED",
+  "RUNTIME_MODEL_PROBE_FAILED",
+  "RUNTIME_MODEL_PROBE_TIMEOUT",
+  "SANDBOX_GATEWAY_UNAUTHORIZED",
+  "WORKSPACE_SETUP_REFUSED",
+];
+
 // Every failed deployment code names its cause and a next step, and the banner chooses its actions
 // from OCC's step table, not from the message's words (findings 1898, 2537). The table lists each
-// code once; a rewording that drops the step, or a new code missing from the table, fails here.
-test("Every failed deployment code has its own message and next step", () => {
+// code once, and every code the message switch handles is in it unless the console shows it as
+// neutral (finding 2572): a rewording that drops the step, or a new code missing from the table,
+// fails here.
+test("Every failed deployment code has its own message and next step", async () => {
   const steps = {
     "deploy-again": [
       "ACTOR_REVOKED",
@@ -1465,6 +1492,7 @@ test("Every failed deployment code has its own message and next step", () => {
       "REPOSITORY_EXECUTION_UNVERIFIED",
       "REPOSITORY_GIT_ROUTE_BLOCKED",
       "REPOSITORY_PROXY_ADMISSION_MISMATCH",
+      "REPOSITORY_REVISION_STOPPED",
       "REPOSITORY_SESSION_NO_LONGER_CURRENT",
       "REPOSITORY_SESSION_RECOVERY_UNSAFE",
       "SANDBOX_ADMISSION_LIMIT_REACHED",
@@ -1477,7 +1505,6 @@ test("Every failed deployment code has its own message and next step", () => {
       "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED",
       "HARNESS_CREDENTIAL_BOOTSTRAP_TIMEOUT",
       "INVALID_DRIVER_OBSERVATION",
-      "INVALID_REPOSITORY_ATTEMPT_OWNER",
       "INVALID_REPOSITORY_DRIVER_OBSERVATION",
       "RUNTIME_AUTHENTICATION_FAILED",
       "RUNTIME_CPU_STARVED",
@@ -1502,6 +1529,7 @@ test("Every failed deployment code has its own message and next step", () => {
       "INVALID_ADMITTED_REVISION",
       "INVALID_AGENT_PRINCIPAL",
       "INVALID_HARNESS_AUTH",
+      "INVALID_REPOSITORY_ATTEMPT_OWNER",
       "INVALID_REVISION_OWNER",
       "INVALID_TARGET",
       "KUBERNETES_SECRET_WRITE_FORBIDDEN",
@@ -1527,6 +1555,22 @@ test("Every failed deployment code has its own message and next step", () => {
     Object.keys(DEPLOYMENT_FAILURE_STEPS).sort(),
     Object.values(steps).flat().sort(),
   );
+  // The codes OCC's message switch handles (`deploymentErrorMessage` in controller-work.ts).
+  const source = await readFile(
+    new URL("../../packages/occ/src/state/controller-work.ts", import.meta.url),
+    "utf8",
+  );
+  const start = source.indexOf("function deploymentErrorMessage(");
+  const body = source.slice(start, source.indexOf("    default:", start));
+  const handled = [...body.matchAll(/case "([A-Z0-9_]+)":/gu)].map((match) => match[1]);
+  assert.ok(handled.length > NEUTRAL_DEPLOYMENT_CODES.length, "message switch found");
+  assert.deepEqual(
+    handled.filter((code) => !NEUTRAL_DEPLOYMENT_CODES.includes(code)).sort(),
+    Object.keys(DEPLOYMENT_FAILURE_STEPS).sort(),
+  );
+  // A failed first deployment copies its message into the provisioning status, whose schema caps
+  // error.message (finding 2571).
+  const cap = AgentProvisioningStatusSchema.properties.error.properties.message.maxLength;
   const fallback = persistedDeploymentError("UNLISTED_FAILURE_CODE").message;
   for (const [step, codes] of Object.entries(steps)) {
     for (const code of codes) {
@@ -1534,6 +1578,11 @@ test("Every failed deployment code has its own message and next step", () => {
       const { message } = persistedDeploymentError(code);
       // Each code has its own text: the cause, then a step (at least two sentences).
       assert.notEqual(message, fallback, code);
+      assert.equal(
+        message.length > cap,
+        OVER_PROVISIONING_CAP.includes(code),
+        `${code}: ${message.length}`,
+      );
       assert.ok(message.split(/[.:;] /u).length >= 2, `${code}: ${message}`);
       assert.doesNotMatch(message, /reconciliation failed/u, code);
       // The banner offers Deploy again for these, so the text says to deploy again too.

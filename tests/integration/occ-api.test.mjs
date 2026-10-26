@@ -3100,7 +3100,7 @@ test("a refused deployment's status names its cause and remedy without naming pr
     WORKSPACE_SETUP_UNSUPPORTED:
       "The Agent was created with initial workspace files, which the Installation's Compute Driver cannot set up. Ask an admin to select a Compute Driver that supports them, then deploy again, or create the Agent without initial workspace files.",
     REPOSITORY_REVISION_STOPPED:
-      "Deployment ended because the Agent was stopped or its Namespace is no longer ready.",
+      "Deployment ended because the Agent was stopped or its Namespace is no longer ready. To run the Agent, deploy again once its Namespace is ready.",
     REPOSITORY_REVISION_SUPERSEDED: "Deployment was superseded by a newer revision.",
     // Finding 1045: repository credential refusals name cause and remedy, never the repository.
     REPOSITORY_RUNTIME_UNSUPPORTED:
@@ -3137,7 +3137,7 @@ test("a refused deployment's status names its cause and remedy without naming pr
     INVALID_HARNESS_AUTH:
       "This version's Harness authentication cannot be used: its Secret or ServiceAccount is outside the Agent's Namespace, or its method is not supported. Choose the Harness authentication again in the Agent's Credentials, then deploy a new version.",
     EXECUTION_ADMISSION_UNAVAILABLE:
-      "This version was admitted for protected execution that the Installation can no longer provide, for example after its Credential Proxy changed. Deploy again to admit a version for the current setup; if the deploy is refused, ask an Installation administrator to check the Installation's Credential Proxy.",
+      "This version was admitted for protected execution that the Installation can no longer provide, for example after its Credential Proxy changed. Deploy again; if the deploy is refused, ask an Installation administrator to check the Credential Proxy.",
     REPOSITORY_PROXY_ADMISSION_MISMATCH:
       "This version's repository access no longer matches the Credential Proxy delivery it was admitted with. Deploy again to admit a version with the current repository access.",
   };
