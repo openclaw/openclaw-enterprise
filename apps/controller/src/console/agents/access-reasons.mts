@@ -112,6 +112,12 @@ export const SECRET_DELETE_DENIED = notIncluded("deleting this Secret", "Secret 
 // A link to a Secret the readable list leaves out. The list answers the same for a Secret that
 // does not exist, so the text says either may be true (finding D761).
 export const SECRET_LINK_UNLISTED = `This Secret is not in your readable list: it may not exist, or your access does not include reading it. ${askForGrant("Secret read on it")}`;
+// The same link for an Installation administrator, who is that "Installation administrator": the
+// text asks nothing, and names the linked Secret only when its ID is well formed, so a link
+// cannot put other words on the page (finding D769).
+const SECRET_ID = /^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+export const secretLinkUnlistedForAdministrator = (secretId: string) =>
+  `No ${SECRET_ID.test(secretId) ? `Secret ${secretId}` : "such Secret"} is in your readable list for this Namespace.`;
 export const SECRET_OPERATE_NEEDED = askForGrant("Secret operate on it");
 // Deploying authorizes Secret operate on each Secret the draft binds. A bound Secret the caller
 // may neither read nor operate keeps its name hidden, and the grant to ask for includes read

@@ -418,7 +418,7 @@ test("a member's unconfirmed credential grant offers a retry until the API refus
 });
 
 const ADMINISTRATOR_GRANT_REQUEST = "req_00000000-0000-4000-8000-000000002543";
-const ADMINISTRATOR_GRANT_REFUSED = `${CREDENTIAL_ACCESS_UNCONFIRMED} ${ADMINISTRATOR_ACCESS_DENIED} Retry credential access, or open the saved Agent and ask an administrator to check access to its saved model and channel Secrets. Request ID: ${ADMINISTRATOR_GRANT_REQUEST}`;
+const ADMINISTRATOR_GRANT_REFUSED = `${CREDENTIAL_ACCESS_UNCONFIRMED} ${ADMINISTRATOR_ACCESS_DENIED} Retry credential access, or open the saved Agent and check its access to its saved model and channel Secrets. Request ID: ${ADMINISTRATOR_GRANT_REQUEST}`;
 
 test("an administrator's refused credential grant keeps the retry and the API's answer", async (t) => {
   const { fixture, namespace, secret } = await setup(t);

@@ -1,5 +1,5 @@
 import { renderInstallationConfigurations } from "./driver-configurations.mjs";
-import { element, button, statusBlock, trackVisualViewport } from "./dom.mjs";
+import { element, button, requestIdDisclosure, statusBlock, trackVisualViewport } from "./dom.mjs";
 import {
   agentPageReadRefusal,
   clearResolvedSecretNames,
@@ -209,18 +209,18 @@ function providerFailure(label) {
   return (password) =>
     password
       ? `Could not sign in with ${label}. Try again or use your password.`
-      : `Could not sign in with ${label}. Try again, or ask an administrator to attach your ${label} identity to your account.`;
+      : `Could not sign in with ${label}. Try again, or ask an Installation administrator to attach your ${label} identity to your account.`;
 }
 
 // GitHub sign-in refused by the organization and team allowlist (RFC-0061). The controller
 // sends only these reasons; anything else keeps the generic provider message.
 const githubMembershipFailures = {
   membership: (password) =>
-    `Your GitHub account is not a member of an organization or team allowed to sign in here. If you were invited, accept the invitation on GitHub and try again; otherwise ask an administrator for access${password ? " or use your password" : ""}.`,
+    `Your GitHub account is not a member of an organization or team allowed to sign in here. If you were invited, accept the invitation on GitHub and try again; otherwise ask an Installation administrator for access${password ? " or use your password" : ""}.`,
   "membership-unavailable": (password) =>
     password
       ? "Could not check your GitHub organization membership. Try again later or use your password."
-      : "Could not check your GitHub organization membership. Try again later; if this keeps happening, ask an administrator.",
+      : "Could not check your GitHub organization membership. Try again later; if this keeps happening, ask an Installation administrator.",
 };
 
 // The provider could not answer, or refused this Installation's client: an outage or a
@@ -230,7 +230,7 @@ function providerUnavailableFailure(label) {
   return (password) =>
     password
       ? `${label} sign-in is unavailable right now. Try again later or use your password.`
-      : `${label} sign-in is unavailable right now. Try again later. If you are an administrator, use Recovery sign-in.`;
+      : `${label} sign-in is unavailable right now. Try again later. If you are an Installation administrator, use Recovery sign-in.`;
 }
 
 // The callback failed inside OCE (its database or audit store), so no sign-in can finish.
@@ -281,7 +281,7 @@ function providerExchangeFailure(error, label) {
   // configures the provider (it was removed after the start), which the provider list shows
   // anyway. Starting again would fail the same way (finding 2555).
   if (error.status === 403) {
-    return `Could not finish signing in with ${label}. ${label} sign-in is no longer available on this Installation. Use another sign-in method, or ask an administrator.`;
+    return `Could not finish signing in with ${label}. ${label} sign-in is no longer available on this Installation. Use another sign-in method, or ask an Installation administrator.`;
   }
   return `Could not finish signing in with ${label}. The sign-in in this tab did not complete in time, or another sign-in replaced it. Select Continue with ${label} to start again.`;
 }
@@ -2604,11 +2604,15 @@ async function loadPage({
             ? `Your account does not have access to this page in this Namespace. Choose another Namespace, or ${ASK_INSTALLATION_ADMINISTRATOR} for access.`
             : "The read could not be completed. Retry to check current access and saved state.",
       // Retrying a permission refusal gives the same answer; the header's Refresh checks access
-      // again after a grant (finding 2549). The Request ID stays for whoever traces the denial.
+      // again after a grant (finding 2549). The Request ID stays for whoever traces the denial,
+      // behind a disclosure (finding D770).
       error.status === 403 ? undefined : "Retry",
       error.status === 403 ? undefined : () => void loadPage(),
-      error.requestId,
+      error.status === 403 ? null : error.requestId,
     );
+    if (error.status === 403 && error.requestId) {
+      shell.view.querySelector(".state-panel").append(requestIdDisclosure(error.requestId));
+    }
   } finally {
     stopLoadingTimer();
     if (openingAgentLoad === active) {

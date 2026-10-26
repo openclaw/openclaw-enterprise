@@ -59,6 +59,7 @@ import {
   createRuntimeLogCursorCodec,
   DependencyUnavailableError,
   DeviceAuthorizationStartError,
+  NoActiveAgentRevisionError,
   ResourceConflictError,
   RuntimeCredentialsForbiddenByClusterError,
   RuntimeLogsError,
@@ -121,6 +122,7 @@ import {
   requestFailure,
   responseHeaders,
   unstorableTextFailure,
+  workspaceWithoutRunningVersion,
 } from "./http/errors.ts";
 import { iamHandlers } from "./http/iam.ts";
 import { MAX_JSON_BODY_DEPTH, tooDeepFailure, tooDeepJsonPath } from "./http/json-depth.ts";
@@ -2708,7 +2710,13 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           operation.operationId === "getAgentWorkspaceFile"
             ? controller.getReadableActiveAgentRevision(context.actorId, namespaceId, agentId)
             : controller.getOperableActiveAgentRevision(context.actorId, namespaceId, agentId),
-        );
+        ).catch((error: unknown) => {
+          // Raised after the Agent read or operate authorization, so a caller without the grant
+          // still gets its 403; this names the Agent's state instead of a 503 (finding D768).
+          throw error instanceof NoActiveAgentRevisionError
+            ? workspaceWithoutRunningVersion(agentId, error.stopped)
+            : error;
+        });
         const target = { kind: "agent" as const, id: agent.id, namespaceId: agent.namespaceId };
         // After authorization, so a caller without the grant gets its 403, not this 503
         // (finding 2584).
@@ -4484,6 +4492,29 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     });
   }
 
+  /**
+   * Whether `error` is the caller's own create denial, by a Restriction, while the caller
+   * administers the Installation: only then does the text name the Restriction (finding D769).
+   * Administration is the non-auditing check the Namespace permission answer makes; a failed
+   * check keeps the plain text.
+   */
+  async function administratorRestricted(error: unknown, actorId: string | undefined) {
+    if (
+      actorId === undefined ||
+      !isAuthorizationDenied(error) ||
+      isDependencyUnavailable(error) ||
+      error.checkedPrincipalId !== actorId ||
+      error.authorization?.action !== "create" ||
+      error.authorization.resource.kind === "namespace" ||
+      (error.evidence?.restrictionIds.length ?? 0) === 0
+    ) {
+      return false;
+    }
+    return callerMay(actorId, "administer", { kind: "installation", id: installationId }).catch(
+      () => false,
+    );
+  }
+
   app.setErrorHandler(async (error, request, reply) => {
     // A caller's own denial names a resource ID only when this request carried it or the caller
     // may already read that resource.
@@ -4491,6 +4522,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     let mapped = requestFailure(error, {
       requested: await nameableIds(error, actorId, requestedValues(request), routeOwners(request)),
       ...(actorId === undefined ? {} : { actorId }),
+      ...((await administratorRestricted(error, actorId)) ? { administratorRestricted: true } : {}),
     });
     if (error instanceof RuntimeLogsError && error.retryAfterSeconds !== undefined) {
       reply.header("retry-after", String(error.retryAfterSeconds));

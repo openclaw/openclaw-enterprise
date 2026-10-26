@@ -302,7 +302,7 @@ const HARNESS_AUTH_REFUSAL = "Agent setting harnessAuth.method must be ";
 // changes (finding 2427).
 function runtimeBindingRefusal(refusal: string): string {
   const requirement = refusal.replace(/: change [^:]*$/u, ".");
-  return `This Preset's operator-managed credentials need a Compute Driver that supplies them. ${requirement} Ask an administrator to change the Preset's harnessAuth or the Compute Driver, or start without a Preset.`;
+  return `This Preset's operator-managed credentials need a Compute Driver that supplies them. ${requirement} Ask an Installation administrator to change the Preset's harnessAuth or the Compute Driver, or start without a Preset.`;
 }
 
 function selectedHarnessAuth(
@@ -456,13 +456,13 @@ const NAMED_DEPLOYMENT_WAITS = new Set([
 // An outage, unlike the Installation's shape, needs no administrator change (finding 1624). Agent
 // save and deploy answer 503 for every harness until the selected Sandbox Driver returns.
 const SANDBOX_DRIVER_OUTAGE =
-  "Agents cannot be created right now: this installation's Sandbox Driver is unavailable. Reload this page to check again, or ask an administrator if it persists.";
+  "Agents cannot be created right now: this installation's Sandbox Driver is unavailable. Reload this page to check again, or ask an Installation administrator if it persists.";
 // Without native worker support the Installation does not say why (finding 1612), unless it
 // lists Embedded: then it selects no Sandbox Driver, and the reason is exact (finding 2384).
 const NATIVE_WORKERS_UNAVAILABLE =
-  "Dedicated OpenClaw is unavailable: this installation has no Sandbox Driver that can provision it, or its OpenClaw runtime lacks native worker support. Choose the Codex harness, or Embedded execution if the installation selects no Sandbox Driver. Otherwise an administrator must select a Sandbox Driver that can provision dedicated OpenClaw, or a runtime with native worker support.";
+  "Dedicated OpenClaw is unavailable: this installation has no Sandbox Driver that can provision it, or its OpenClaw runtime lacks native worker support. Choose the Codex harness, or Embedded execution if the installation selects no Sandbox Driver. Otherwise an Installation administrator must select a Sandbox Driver that can provision dedicated OpenClaw, or a runtime with native worker support.";
 const NO_SANDBOX_DRIVER_DEDICATED =
-  "Dedicated OpenClaw is unavailable: this installation selects no Sandbox Driver. Choose the Codex harness or Embedded execution, or ask an administrator to select a Sandbox Driver that can provision dedicated OpenClaw.";
+  "Dedicated OpenClaw is unavailable: this installation selects no Sandbox Driver. Choose the Codex harness or Embedded execution, or ask an Installation administrator to select a Sandbox Driver that can provision dedicated OpenClaw.";
 // The deployment read was refused (401, 403 or 404): the reader can't see its waits now.
 const DEPLOYMENT_UNREADABLE = Symbol("deployment unreadable");
 
@@ -2594,7 +2594,7 @@ function renderAgentForm(
     let noOpenClawAdvice = "";
     if (!dedicatedSettingRefusal) {
       noOpenClawAdvice =
-        " Choose OpenAI with the Codex harness, or ask an administrator to select a Sandbox Driver that can provision dedicated OpenClaw, with a runtime that has native worker support.";
+        " Choose OpenAI with the Codex harness, or ask an Installation administrator to select a Sandbox Driver that can provision dedicated OpenClaw, with a runtime that has native worker support.";
     } else if (!codexSelectable) {
       // Anthropic hides Codex: name the provider switch the Driver's advice leaves out, when the
       // form still allows it.
@@ -2607,11 +2607,11 @@ function renderAgentForm(
       ? SANDBOX_DRIVER_OUTAGE
       : noOpenClawMode
         ? binding?.method === "runtime"
-          ? `OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and ${dedicatedRefusalReason} This Preset's operator-managed credentials require OpenClaw. Ask an administrator, or start without a Preset.`
+          ? `OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and ${dedicatedRefusalReason} This Preset's operator-managed credentials require OpenClaw. Ask an Installation administrator, or start without a Preset.`
           : `OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and ${dedicatedRefusalReason}${noOpenClawAdvice}`
         : openclawEmbeddedRefused && mode.value === "embedded"
           ? binding?.method === "runtime"
-            ? "This Preset's operator-managed credentials require Embedded OpenClaw, which this installation refuses because it selects a Sandbox Driver. Ask an administrator, or start without a Preset."
+            ? "This Preset's operator-managed credentials require Embedded OpenClaw, which this installation refuses because it selects a Sandbox Driver. Ask an Installation administrator, or start without a Preset."
             : nativeProvider.value === "anthropic"
               ? "Anthropic uses Embedded OpenClaw, which this installation refuses because it selects a Sandbox Driver. Choose OpenAI to use Dedicated execution."
               : "Embedded OpenClaw is unavailable: this installation selects a Sandbox Driver, which requires Dedicated execution. Select Dedicated under Runtime details."
@@ -3696,7 +3696,7 @@ function renderAgentForm(
       const detail = credentialRegistration
         ? `Credential Source registration could not be confirmed.${registrationProblem} Check credential registration before retrying; the selected Secret remains saved.`
         : savedAgent
-          ? `The Agent was created, but credential access is not confirmed. ${administratorMessage(cause)} Retry credential access, or open the saved Agent and ask an administrator to check access to its saved model and channel Secrets.`
+          ? `The Agent was created, but credential access is not confirmed. ${administratorMessage(cause)} Retry credential access, or open the saved Agent and check its access to its saved model and channel Secrets.`
           : error.status === 409 && creatingSecret && error.code !== "NAMESPACE_NOT_READY"
             ? `A Secret named "${body.name}" already exists in this Namespace, possibly from an earlier Agent with this name. Choose another Agent name, delete that Secret, or select Start over, choose the Preset again, and set its Secret source to Use existing Secret.`
             : error.status === 409 && savedConfiguration && error.code !== "NAMESPACE_NOT_READY"

@@ -258,14 +258,18 @@ export class CredentialSourceDriverError extends DependencyUnavailableError {
 }
 
 /**
- * A running Agent has no active revision yet (its first deployment, or a redeploy after a
- * stop, is still activating). A lifecycle state, not an outage; it stays a
- * DependencyUnavailableError so callers that need a revision still answer 503.
+ * The Agent has no active revision: it is stopped or was never deployed (`stopped`), or it is
+ * running and its first deployment, or a redeploy after a stop, is still activating. A lifecycle
+ * state, not an outage; it stays a DependencyUnavailableError so callers that need a revision
+ * still answer 503, unless the route names the state (workspace files, finding D768).
  */
 export class NoActiveAgentRevisionError extends DependencyUnavailableError {
-  constructor() {
+  readonly stopped: boolean;
+
+  constructor(stopped = false) {
     super("The Agent has no active gateway revision.");
     this.name = "NoActiveAgentRevisionError";
+    this.stopped = stopped;
   }
 }
 

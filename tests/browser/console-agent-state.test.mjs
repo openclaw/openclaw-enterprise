@@ -1158,6 +1158,13 @@ test("A Backends refusal after administration is revoked is read and audited onc
   );
 });
 
+// Settings shows the Installation Driver configuration heading while its schemas read is still in
+// flight. An administrator's Settings page has settled once the schemas are listed; a revoke
+// before then reaches that read and the API refuses and audits it (finding 2654).
+async function waitForDriverSchemas(page) {
+  await page.getByText(/^Inspect startup settings accepted by the selected Drivers\./).waitFor();
+}
+
 // Finding D760. An administrator revoked while signed in keeps the tab's settled answer, so the
 // first page she opens afterwards sends reads only Installation administration may make: sharing
 // policy, a bound Secret by ID, the Installation's Driver schemas. The API audits each refusal.
@@ -1233,7 +1240,7 @@ test("Installation-administration reads after a revoke are refused and audited o
       revoke = grantInstallationAdministration(fixture, account.principal);
       await page.goto(settingsUrl);
     }
-    await driverSchemas.waitFor();
+    await waitForDriverSchemas(page);
     assert.equal(await observability.getAttribute("href"), url, first);
     revoke();
     await pages[first]();
@@ -1252,7 +1259,7 @@ test("Installation-administration reads after a revoke are refused and audited o
   const named = page.getByRole("link", { name: "Revoked model key", exact: true });
   revoke = grantInstallationAdministration(fixture, account.principal);
   await page.goto(settingsUrl);
-  await driverSchemas.waitFor();
+  await waitForDriverSchemas(page);
   revoke();
   await page.goto(agentUrl);
   await named.waitFor();
@@ -1268,7 +1275,7 @@ test("Installation-administration reads after a revoke are refused and audited o
   // the Secret, so she still sees its name.
   revoke = grantInstallationAdministration(fixture, account.principal);
   await page.goto(settingsUrl);
-  await driverSchemas.waitFor();
+  await waitForDriverSchemas(page);
   revoke();
   await page.goto(String(detailUrl(fixture, namespace.id, agent.id, "draft", "access")));
   await page.getByText(ACCESS_TAB_UNAVAILABLE, { exact: true }).waitFor();
@@ -1360,7 +1367,7 @@ test("Back to a kept Agent page after a revoke sends no more audited administrat
   // Administration again: a page load asks the permission answer, then the probe.
   revoke = grantInstallationAdministration(fixture, account.principal);
   await page.goto(`${fixture.origin}${settingsUrl}`);
-  await page.getByRole("heading", { name: "Installation Driver configuration" }).waitFor();
+  await waitForDriverSchemas(page);
   revoke();
   await page.goto(accessUrl);
   await page.getByText(ACCESS_TAB_UNAVAILABLE, { exact: true }).waitFor();
