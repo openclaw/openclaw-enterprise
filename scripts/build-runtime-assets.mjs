@@ -14,6 +14,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, sep, resolve } from "node:path";
+import { readOpenclawSource } from "./lib/openclaw-source.mjs";
 
 // Every patch deploy/runtime/Dockerfile applies, in order, as provenance records it under
 // `patches` (finding 2290). runtime-assets.test.mjs checks this list against the Dockerfile.
@@ -47,7 +48,7 @@ const appliedPatches = [
     sha256: "af52f6ec87e80f35f141c82cfd0e34a73b7ba90bf593fb4889a48b22dea76a11",
   },
 ];
-const [command, sourceRoot, output] = process.argv.slice(2);
+const [command, sourceRoot, output, sourceManifest] = process.argv.slice(2);
 const root = await realpath(sourceRoot);
 const runtimePaths = [
   "dist",
@@ -241,6 +242,13 @@ if (command === "inputs") {
     }
   }
 } else if (command === "package") {
+  if (!sourceManifest) {
+    throw new Error("Runtime packaging requires the OpenClaw source manifest path");
+  }
+  const source = await readOpenclawSource(sourceManifest);
+  if (process.env.GIT_COMMIT !== source.commit) {
+    throw new Error("GIT_COMMIT must match the OpenClaw source manifest");
+  }
   // Preserve runtime templates and help text; omit upstream development/QA trees.
   for (const name of await readdir(root)) {
     if (!runtimePaths.includes(name)) {
@@ -332,8 +340,8 @@ if (command === "inputs") {
     `${JSON.stringify(
       {
         source: "https://github.com/openclaw/openclaw",
-        commit: process.env.GIT_COMMIT,
-        sourceArchiveSha256: "bdf8d13a4d2e344b5925f2c506f4aadf184796defb3d4fde4938250ae89ecfa6",
+        commit: source.commit,
+        sourceArchiveSha256: source.sourceArchiveSha256,
         ...Object.fromEntries(
           appliedPatches.flatMap(({ field, sha256 }) => (field ? [[field, sha256]] : [])),
         ),

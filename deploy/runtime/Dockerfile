@@ -1,4 +1,6 @@
-ARG OPENCLAW_COMMIT=cee236c9e9891396a7d672ab016a5e5d9d51a003
+ARG OPENCLAW_COMMIT
+ARG OPENCLAW_SOURCE_SHA256
+ARG OPENCLAW_BUILD_TIMESTAMP
 ARG NODE_BASE_IMAGE=docker.io/library/node:24.22.1-bookworm@sha256:6449e19d8184d84062525b6a7524def03146c2cb04a7f08b076680d0e8e4240a
 ARG NODE_RUNTIME_BASE_IMAGE=docker.io/library/node:24.22.1-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205
 
@@ -86,16 +88,21 @@ FROM node-build-base AS openclaw-source
 
 # Keep the source identity separate from its unreleased package version.
 ARG OPENCLAW_COMMIT
+ARG OPENCLAW_SOURCE_SHA256
+ARG OPENCLAW_BUILD_TIMESTAMP
 ENV GIT_COMMIT=${OPENCLAW_COMMIT}
-ENV OPENCLAW_BUILD_TIMESTAMP=2026-10-23T16:16:05Z
+ENV OPENCLAW_BUILD_TIMESTAMP=${OPENCLAW_BUILD_TIMESTAMP}
 ENV OPENCLAW_PREFER_PNPM=1
 WORKDIR /source
+COPY deploy/runtime/openclaw-source.json /tmp/openclaw-source.json
+COPY scripts/lib/openclaw-source.mjs /tmp/lib/openclaw-source.mjs
 RUN --mount=type=secret,id=build-ca,required=false \
     set -eu; \
+    node /tmp/lib/openclaw-source.mjs verify /tmp/openclaw-source.json; \
     if [ -f /run/secrets/build-ca ]; then export CURL_CA_BUNDLE=/run/secrets/build-ca; fi; \
     curl --fail --location --silent --show-error \
       "https://codeload.github.com/openclaw/openclaw/tar.gz/${GIT_COMMIT}" -o /tmp/openclaw-source.tar.gz; \
-    echo 'bdf8d13a4d2e344b5925f2c506f4aadf184796defb3d4fde4938250ae89ecfa6  /tmp/openclaw-source.tar.gz' | sha256sum --check --strict; \
+    printf '%s  /tmp/openclaw-source.tar.gz\n' "$OPENCLAW_SOURCE_SHA256" | sha256sum --check --strict; \
     tar -xzf /tmp/openclaw-source.tar.gz --strip-components=1; \
     rm /tmp/openclaw-source.tar.gz
 # Record every patch applied here in appliedPatches in scripts/build-runtime-assets.mjs,
@@ -135,8 +142,9 @@ RUN --mount=type=secret,id=build-ca,required=false \
 
 FROM node-build-base AS openclaw-dependency-inputs
 ARG OPENCLAW_COMMIT
+ARG OPENCLAW_BUILD_TIMESTAMP
 ENV GIT_COMMIT=${OPENCLAW_COMMIT}
-ENV OPENCLAW_BUILD_TIMESTAMP=2026-10-23T16:16:05Z
+ENV OPENCLAW_BUILD_TIMESTAMP=${OPENCLAW_BUILD_TIMESTAMP}
 ENV OPENCLAW_PREFER_PNPM=1
 WORKDIR /source
 COPY --from=openclaw-source /inputs/ ./
@@ -257,12 +265,14 @@ for (const plugin of ["codex", "slack"]) {
 }
 NODE
 COPY scripts/build-runtime-assets.mjs /tmp/build-runtime-assets.mjs
+COPY scripts/lib/openclaw-source.mjs /tmp/lib/openclaw-source.mjs
+COPY --from=openclaw-source /tmp/openclaw-source.json /tmp/openclaw-source.json
 RUN --mount=type=bind,from=openclaw-source,source=/source/scripts,target=/verification/scripts \
     --mount=type=bind,from=openclaw-build,source=/source/node_modules,target=/verification/node_modules \
     node scripts/docker/copy-bootstrap-scripts.mjs /tmp/openclaw-runtime-bootstrap \
     && rm -rf scripts \
     && mv /tmp/openclaw-runtime-bootstrap/scripts scripts \
-    && node /tmp/build-runtime-assets.mjs package /source /out \
+    && node /tmp/build-runtime-assets.mjs package /source /out /tmp/openclaw-source.json \
     && node /verification/scripts/check-package-dist-imports.mjs /source
 
 FROM node-runtime-base AS runtime
@@ -310,6 +320,7 @@ RUN mkdir -p node_modules/.bin \
     && ln -s ../openclaw/node_modules/@openai/codex/bin/codex.js node_modules/.bin/codex
 
 COPY scripts/build-runtime-assets.mjs /tmp/build-runtime-assets.mjs
+COPY scripts/lib/openclaw-source.mjs /tmp/lib/openclaw-source.mjs
 
 RUN mkdir -p node_modules/openclaw/dist/extensions ./plugin-skills /etc/openclaw /home/node/.codex/generated_images \
   && chown node:node /home/node/.codex /home/node/.codex/generated_images \
@@ -338,7 +349,7 @@ RUN mkdir -p node_modules/openclaw/dist/extensions ./plugin-skills /etc/openclaw
   && test -f /app/dist/extensions/codex/openclaw.plugin.json \
   && test -f /app/dist/extensions/slack/openclaw.plugin.json \
   && node /tmp/build-runtime-assets.mjs inventory /app/node_modules/openclaw /opt/oce/runtime \
-  && rm /tmp/build-runtime-assets.mjs
+  && rm /tmp/build-runtime-assets.mjs /tmp/lib/openclaw-source.mjs
 
 RUN /usr/bin/git config --system --add include.path /run/oce/repository-credentials/gitconfig
 

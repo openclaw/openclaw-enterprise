@@ -145,9 +145,33 @@ The console's **Policy denials** tab uses the existing bounded, exact-revision
 Sandbox log path and its `read_logs`/administration rules. Typed metadata is
 optional. Recognized OpenShell records are parsed by the Driver; OCC validates,
 redacts, and applies the normal output and retention limits. Unknown fields stay
-unknown. **Denials in the loaded window** counts retained records, not requests
-or lifetime denials. Buffer gaps, withheld records, permission denial, and missing
+unknown. The denial count describes retained records, not unique requests or
+lifetime denials. The console retains up to 1,000 log records and initially shows
+five denials per page, newest first. Search filters the loaded window. Follow
+collects new records without moving inspected rows; **Show newest** displays them. Buffer gaps, withheld records, permission denial, and missing
 metadata remain visible. An empty successful read says **No denials in this window.**
+
+The **Network policy** card precedes the denial log and distinguishes saved
+policy from confirmed live application. **Allow this** prefills one exact rule;
+**Allow selected** stages eligible denials selected across pages. **Select page**
+selects only the visible page. Repeated executable/host/port requests and requests
+covered by existing rules do not create additional rules. The complete proposed
+policy preserves existing rules and passes the normal preview, save, and apply
+admission. Selecting denials grants no access until the user reviews and saves.
+**Manage rules** searches and pages explicit rules, five at a time, with separate
+controls to edit or remove a rule. Installation defaults stay read-only.
+The **Policy editing** switch sits beside **Manage rules**. With editing off,
+**View rules**, suggestions, and **View network limits** remain available for
+inspection; mutation controls are hidden. The ceiling has a separate read-only
+dialog. **Policy details** on the page shows versions and Installation defaults.
+Suggestions initially show three entries, with an explicit action to show the rest.
+Their executable basenames have expandable full paths. Bulk review shows selected
+record and new-rule counts, repeated requests, and already-covered requests.
+The rule dialog footer offers review for unsaved changes, application for saved
+changes, and **Done** when no action remains. Save feedback distinguishes saved,
+pending, confirmed, and unconfirmed outcomes. **Refresh status** only reads;
+**Retry application** requires an explicit refresh of the failed application and
+rechecks application authority. Neither action starts a deployment.
 
 Provider suggestions use a separate authorized and audited read. OpenShell's
 `GetDraftPolicy` returns aggregated chunks, including its lifecycle and observation

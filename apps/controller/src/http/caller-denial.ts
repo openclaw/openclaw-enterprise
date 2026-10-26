@@ -17,7 +17,7 @@ const KIND_LABELS: Readonly<Record<ResourceKind, string>> = Object.freeze({
   secret: "Secret",
   agent: "Agent",
   agent_revision: "AgentRevision",
-  credential_source: "credential source",
+  credential_source: "CredentialSource",
   sandbox_policy: "SandboxPolicy",
 });
 
@@ -40,13 +40,21 @@ export const NATIVE_ADMIN_DENIAL = `${NAMED_DENIAL_PREFIX} opening this Agent's 
  *   Configuration that binds it (findings 2594, 2614). It never names any other ID read from stored
  *   state.
  * - It never names a binding, Role, Restriction or another principal, and it reads the same
- *   whether a Restriction denied the request or no grant allowed it.
+ *   whether a Restriction denied the request or no grant allowed it. One exception: a create that
+ *   a Restriction denies to a caller who administers the Installation says so
+ *   (`administrator_restricted`, finding D769). That caller's own permission answer already shows
+ *   administration without the create, which only a Restriction causes, and the console words it
+ *   the same way (AGENT_CREATE_RESTRICTED). Every other caller gets the plain text.
  * - It depends only on the request and the checked grant, never on whether the resource exists,
  *   so an unknown ID and one the caller cannot read get the same answer.
+ * - `qualifier` adds why the grant matters here: it is checked on the Agent's current Harness
+ *   authentication even by an update that replaces it (finding D763), or native admin is off on
+ *   this Installation, so the grant alone would not open it (finding D762).
  */
 export function callerDenialMessage(
   authorization: { readonly action: PermissionAction; readonly resource: ResourceRef },
   requested: (value: string) => boolean = () => false,
+  qualifier?: "current_harness_auth" | "native_admin_off" | "administrator_restricted",
 ): string {
   const { action, resource } = authorization;
   const kind = KIND_LABELS[resource.kind] ?? resource.kind;
@@ -66,6 +74,12 @@ export function callerDenialMessage(
       return `${NAMED_DENIAL_PREFIX} this needs Namespace create. Only an Installation administrator can create ${kinds}: ask one to create it.`;
     }
     const namespaceId = named(resource.namespaceId);
+    if (qualifier === "administrator_restricted") {
+      // Administration cannot lift a Restriction, so the text sends the caller to whoever
+      // manages Restrictions, or to another Namespace.
+      const namespace = namespaceId === undefined ? "this Namespace" : `Namespace ${namespaceId}`;
+      return `${NAMED_DENIAL_PREFIX} a Restriction in ${namespace} denies ${kind} create, even for Installation administrators. Ask whoever manages IAM Restrictions to lift it, or create the ${kind} in another Namespace.`;
+    }
     const where = namespaceId === undefined ? " in this Namespace" : ` in Namespace ${namespaceId}`;
     return `${NAMED_DENIAL_PREFIX} this needs ${kind} create${where}. Only an Installation administrator can create ${kinds}: ask one to create it.`;
   }
@@ -76,6 +90,12 @@ export function callerDenialMessage(
   // (finding 2599); the text never tells whether a Restriction applied.
   const grant =
     action === "read_logs" ? "Agent read_logs (or Agent administer)" : `${kind} ${action}`;
+  if (qualifier === "current_harness_auth") {
+    return `${NAMED_DENIAL_PREFIX} this needs ${grant} on ${target}, the Agent's current Harness authentication: every update checks it, even one that replaces it. ${ASK}`;
+  }
+  if (qualifier === "native_admin_off") {
+    return `${NAMED_DENIAL_PREFIX} this needs ${grant} on ${target}. ${ASK} Native admin is also off on this Installation, so the grant alone would not open it.`;
+  }
   return `${NAMED_DENIAL_PREFIX} this needs ${grant} on ${target}. ${ASK}`;
 }
 
@@ -85,6 +105,11 @@ export interface DeniedRequest {
   readonly requested: (value: string) => boolean;
   /** The acting principal: a denial decided for another principal names no grant. */
   readonly actorId?: string;
+  /**
+   * The denial is the caller's own create, refused by a Restriction, and the caller administers
+   * the Installation (finding D769).
+   */
+  readonly administratorRestricted?: boolean;
 }
 
 // A body or query field that names a resource: `id`, or a name ending in `Id` (one ID) or `Ids`

@@ -182,7 +182,7 @@ function candidateDeploymentError(scenario, checkedAt) {
     return {
       code: "DEPENDENCY_UNAVAILABLE",
       message:
-        "A dependency the controller needs stayed unavailable through every attempt. Deploy again; if it keeps failing, ask an admin to check the controller worker log.",
+        "A dependency the controller needs stayed unavailable through every attempt. Deploy again; if it keeps failing, ask an Installation administrator to check the controller worker log.",
     };
   }
   if (scenario.candidateSelected) {
@@ -465,6 +465,7 @@ export function installFixture(scenario, evidence) {
         : {}),
       harness: { id: harnessId, version: "demo", mode: owner.executionMode },
       compute: { id: "kubernetes-demo", implementation: "kubernetes" },
+      ...(scenario.policyState ? { sandboxDriverId: "sandbox-story" } : {}),
       servicePrincipalId: owner.servicePrincipalId,
       ...(owner.repositoryBindings?.length
         ? {
@@ -742,8 +743,48 @@ export function installFixture(scenario, evidence) {
     namespaceId,
     agentId: agent.id,
     version: 1,
-    additions: scenario.policyState === "protected" ? [policyGrant] : [],
+    additions:
+      scenario.policyState === "protected"
+        ? [policyGrant]
+        : Array.from({ length: scenario.policyRuleCount ?? 0 }, (_, index) => ({
+            ...structuredClone(policyGrant),
+            id: `explicit-${index + 1}`,
+            host: `allowed-${index + 1}.example.org`,
+          })),
   };
+  if (scenario.policyRuleCount) {
+    sandboxPolicy.applied = {
+      revisionId: candidateRevisionId,
+      policyVersion: 1,
+      providerVersion: "4",
+      appliedAt: createdAt,
+    };
+  }
+  const policyCeiling = scenario.policyCeiling ?? [
+    policyGrant,
+    ...(scenario.policyDenialCount
+      ? [{ ...policyGrant, id: "observed-services-ceiling", host: "*.example.org" }]
+      : []),
+    ...sandboxPolicy.additions,
+    ...(scenario.policySuggestions ?? []).map((entry) => entry.grant),
+  ];
+  if (scenario.policyInitialOutcome) {
+    sandboxPolicy.version = 2;
+    if (scenario.policyInitialOutcome !== "saved") {
+      sandboxPolicy.application = {
+        id: "00000000-0000-4000-8000-000000000009",
+        revisionId: candidateRevisionId,
+        policyVersion: 2,
+        state: scenario.policyInitialOutcome,
+        requestedBy: "identity_demo",
+        requestedAt: createdAt,
+      };
+    }
+    if (scenario.policyInitialOutcome === "applied") {
+      sandboxPolicy.applied.policyVersion = 2;
+    }
+  }
+  let policyNewRead = false;
   if (scenario.policyState === "failed" || scenario.policyState === "failedCeiling") {
     sandboxPolicy.application = {
       id: "00000000-0000-4000-8000-000000000009",
@@ -1361,11 +1402,11 @@ export function installFixture(scenario, evidence) {
                       code: "REVISION_STOPPED",
                       message: "Deployment ended because the Agent was stopped.",
                     }
-                  : {
+                  : (scenario.provisionedDeploymentError ?? {
                       code: "DEPENDENCY_UNAVAILABLE",
                       message:
-                        "A dependency the controller needs stayed unavailable through every attempt. Deploy again; if it keeps failing, ask an admin to check the controller worker log.",
-                    },
+                        "A dependency the controller needs stayed unavailable through every attempt. Deploy again; if it keeps failing, ask an Installation administrator to check the controller worker log.",
+                    }),
             warnings: [],
           });
         }
@@ -1454,7 +1495,7 @@ export function installFixture(scenario, evidence) {
                             code: "REVISION_STOPPED",
                             message: "The Agent was stopped before its first deployment finished.",
                           }
-                        : {
+                        : (scenario.provisionedDeploymentError ?? {
                             code:
                               scenario.provisionedDeploymentStatus === "failed"
                                 ? "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED"
@@ -1463,7 +1504,7 @@ export function installFixture(scenario, evidence) {
                               scenario.provisionedDeploymentStatus === "failed"
                                 ? "Harness credential initialization failed. Correct the cause and deploy again."
                                 : "The worker could not finish provisioning.",
-                          },
+                          }),
                   }
                 : {}),
               ...(current.status === "succeeded" || current.reads > 1
@@ -1571,7 +1612,11 @@ export function installFixture(scenario, evidence) {
             // Simulate another operator saving between reads; HTTP workflow coverage uses real saves.
             sandboxPolicy.version = read;
           }
-          if (sandboxPolicy.application?.state === "pending" && ++policyPolls > 1) {
+          if (
+            sandboxPolicy.application?.state === "pending" &&
+            !scenario.policyKeepPending &&
+            ++policyPolls > 1
+          ) {
             sandboxPolicy.application.state = "applied";
             sandboxPolicy.application.providerVersion = "5";
             sandboxPolicy.applied = {
@@ -1586,7 +1631,7 @@ export function installFixture(scenario, evidence) {
             configuration: policyDescriptor,
             editingEnabled: policyEditing,
             protectedExecution: scenario.policyState === "protected",
-            ceiling: [policyGrant],
+            ceiling: policyCeiling,
             defaults:
               scenario.policyState === "unsupported"
                 ? null
@@ -1617,6 +1662,9 @@ export function installFixture(scenario, evidence) {
           suffix === "/sandbox-policy/networking/editing" &&
           method === "PATCH"
         ) {
+          if (scenario.policyAdminDenied) {
+            return error(403, "AUTHORIZATION_DENIED");
+          }
           policyEditing = body.enabled;
           return response({ ...agent, sandboxPolicyEditing: policyEditing });
         }
@@ -1685,7 +1733,8 @@ export function installFixture(scenario, evidence) {
           }
           return response({
             recommendations:
-              scenario.policyState === "empty"
+              scenario.policySuggestions ??
+              (scenario.policyState === "empty"
                 ? []
                 : [
                     {
@@ -1697,7 +1746,7 @@ export function installFixture(scenario, evidence) {
                           : policyGrant,
                       observations: 4,
                     },
-                  ],
+                  ]),
             truncated: false,
           });
         }
@@ -1726,6 +1775,22 @@ export function installFixture(scenario, evidence) {
                     reason: "Destination is not in the network policy",
                   },
           };
+          if (url.searchParams.has("cursor") && scenario.policyNewDenials && !policyNewRead) {
+            policyNewRead = true;
+            return response({
+              revisionId: candidateRevisionId,
+              source: "sandbox",
+              stream,
+              observedAt: createdAt,
+              records: Array.from({ length: scenario.policyNewDenials }, (_, index) => ({
+                ...log,
+                time: new Date(Date.parse(createdAt) + (index + 1) * 1000).toISOString(),
+              })),
+              cursor: "simulated-policy-new-cursor",
+              withheld: 0,
+              truncated: false,
+            });
+          }
           return response({
             revisionId: candidateRevisionId,
             source: "sandbox",
@@ -1746,7 +1811,21 @@ export function installFixture(scenario, evidence) {
                           },
                         ]
                       : []),
-                    log,
+                    ...Array.from({ length: scenario.policyDenialCount ?? 1 }, (_, index) => ({
+                      ...log,
+                      time: new Date(
+                        Date.parse(createdAt) -
+                          ((scenario.policyDenialCount ?? 1) - index - 1) * 17000,
+                      ).toISOString(),
+                      ...(scenario.policyDenialCount
+                        ? {
+                            decision: {
+                              ...log.decision,
+                              host: `service-${Math.floor(index / 2) + 1}.example.org`,
+                            },
+                          }
+                        : {}),
+                    })),
                   ],
             cursor: "simulated-policy-cursor",
             withheld: 0,

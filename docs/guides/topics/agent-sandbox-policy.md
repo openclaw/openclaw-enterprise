@@ -6,30 +6,47 @@ observed denials. A version that runs without a Sandbox records none, and the ta
 says so. Policy reads and changes have independent permissions; see the
 [policy reference](../../reference/sandbox-policies.md).
 
-1. Read **Denials in the loaded window** and any gap notices. Expand a row for
-   decision metadata and its sanitized log. Missing binary, destination, reason,
-   or generation information is shown as unknown.
-2. If available, inspect **Policy suggestions** separately. Their observation
-   counts are aggregated provider data. Choose **Review suggestion**, or enter a
-   grant manually under **Agent network policy**. A denial with an exact path and
-   destination can also prefill a grant.
-3. In the discovered configuration section, use **Add Network rules** and
-   **Remove Network rules** to edit additions. These changes stay local. Review the executable path, hostname, and complete
-   port scope against the **Installation delegation ceiling**, then select
-   **Review changes**. The preview shows field errors without saving or applying.
-   Review the rules the controller validated. If the Console cannot read them,
-   your proposal stays editable. **Back to editing** also preserves your proposal.
-4. Choose **Save** to persist the policy without changing the current revision,
-   or **Save and apply to current revision** to save and request live application
-   to the selected running revision. Wait for `applied` and a provider version
-   before retrying the original tool action. A successful tool result provides
-   the final execution evidence.
-   If the Console cannot confirm which rules were saved, select **Refresh policy**
-   and inspect the saved version before deciding whether to apply it.
-5. To apply a policy saved earlier, select **Apply saved policy to current
-   revision**. This control is unavailable while your proposal has unsaved edits.
-   When live application is unsupported, use **Deploy new version** explicitly.
-   Deployment requires deploy permission and can interrupt the Agent.
+1. Check the **Network policy** card above the log. **Policy details** shows saved
+   and confirmed live versions and read-only Installation defaults. **View network
+   limits** opens the Installation ceiling, which grants no access by itself.
+   Suggestions are untrusted candidates. The card shows three at a time; **Show all**
+   expands the list. Expand **Full executable path** before reviewing a suggestion.
+   With editing off, **View suggestions** still lets you inspect candidates.
+2. Read the denial count and any gap notices. The log starts with five rows per
+   page. Search the loaded window or use **Next** to inspect more records. Expand
+   a row for decision metadata and its sanitized log. Missing fields stay unknown.
+   **Follow** collects updates without moving the rows you are inspecting; select
+   **Show newest** to display them.
+3. Choose **Allow this** for one denial, or select several and choose
+   **Allow selected**. **Select page** selects eligible rows on the visible page.
+   Selection carries across pages; the count includes selections outside the
+   current page. Exact executable, host, and port requests become proposed rules.
+   Repeated requests and requests covered by saved or proposed rules do not add
+   duplicate rules. Incomplete metadata cannot prefill a rule.
+4. Administrators can use the **Policy editing** switch beside **Manage rules**.
+   Its **On** or **Off** label states the current setting. Disabling editing preserves
+   saved rules. **View rules** remains available with editing off. To change rules,
+   enable editing and choose **Manage rules**. Search or page through five rules at
+   a time. Use **Add rule** or a row's menu to edit or remove a rule. These changes
+   stay local. The dialog footer offers **Review changes** when the draft changes;
+   **Done** closes without saving and retains the proposal on this page.
+5. Select **Review changes** after editing a rule. A batch opens this review
+   directly. Check the rules to add, update, or remove. The preview shows field
+   errors without saving or applying. **Back to editing** retains the proposal.
+6. Choose **Save for later** to persist the policy without changing the current
+   revision, or **Save and apply to current revision** to save and request live
+   application. Wait for **Applied** before retrying the original tool action.
+   A successful tool result provides the final execution evidence.
+   If the Console cannot confirm which rules were saved, open **Manage rules**,
+   select **Refresh policy**, and inspect the saved version before applying it.
+7. To apply a policy saved earlier, choose **Apply saved rules** on the card or
+   in the **Manage rules** footer. This action is unavailable while the proposal
+   has unsaved edits. **Applying…** waits for provider confirmation. If application
+   is unconfirmed, use **Refresh status** to read the outcome without submitting
+   another request. If the refreshed application still failed, **Retry application**
+   offers a separate explicit request to authorized users. When live application
+   is unsupported, use **Deploy new version** explicitly. Deployment requires deploy
+   permission and can interrupt the Agent.
 
 The schema supplies field descriptions and constraints. Shapes without a form
 use a schema-aware JSON editor. A preview for an older draft or policy version

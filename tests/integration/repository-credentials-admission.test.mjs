@@ -32,7 +32,6 @@ import {
   CredentialSourceUnprotectedError,
   InstalledDriver,
   OpenClawController,
-  RepositoryDriverNotConfiguredError,
   RepositoryGitProfileUnsupportedError,
   RepositoryGitSenderUnqualifiedError,
   SandboxNetworkPolicyConflictError,
@@ -62,6 +61,7 @@ import {
   PROXY_REGISTRATION_UNAVAILABLE,
   REPOSITORY_ACCESS_OR_BINDINGS,
   REPOSITORY_SELECTION_NOT_APPROVED,
+  REPOSITORY_SETTINGS_MISSING,
   SAVED_REPOSITORY_SELECTION_NOT_APPROVED,
 } from "../helpers/refusal-text.mjs";
 import { assertSameAnswer } from "../helpers/refusal-answers.mjs";
@@ -1395,7 +1395,8 @@ test("Repository capability remains optional when no repository Backend or Drive
     const missingDriver = await f.request(method, path, body);
     assert.equal(missingDriver.status, 409, `${method}: ${JSON.stringify(missingDriver)}`);
     assert.equal(missingDriver.error.code, "RESOURCE_CONFLICT", method);
-    assert.equal(missingDriver.error.message, RepositoryDriverNotConfiguredError.description);
+    // Names the missing settings and who adds them (finding D763).
+    assert.equal(missingDriver.error.message, REPOSITORY_SETTINGS_MISSING);
   }
   assert.equal((await f.request("GET", f.collection)).data.length, 1, "no Agent was created");
   const unchanged = await f.request("GET", `${f.collection}/${agent.id}`);

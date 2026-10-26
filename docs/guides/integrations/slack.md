@@ -117,7 +117,9 @@ Before handing off the Slack setup, verify both paths:
 A directory response of `503` can indicate that the API cannot reach Slack;
 enable the managed Slack proxy or check the external proxy route. When the API
 has no Slack proxy and gets no answer from Slack, Agent provisioning and
-deployment answer `409` with the proxy settings to configure. If the API has
+deployment answer `409` and ask for an Installation administrator to give the
+API a route to Slack: Helm `slackProxy.enabled` or
+`api.channelDirectoryProxyUrl`. If the API has
 another approved route to Slack, such as a sign-in setting with empty
 `egressCidrs`, try again; a timeout on that route gets the same answer. A missing-scope response requires updating the bot's Slack scopes. Missing gateway
 proxy configuration prevents Slack-enabled workload preparation. Resolve each path

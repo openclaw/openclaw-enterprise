@@ -76,14 +76,8 @@ requests or claiming work. Installed Drivers validate their own reviewed
 configuration and implementation-specific prerequisites.
 
 Agent workspace-file requests use the selected Compute Driver's private gateway
-endpoint. Kubernetes derives the URL from the optional `gatewayRouting.hostname`
-and the admitted Namespace and Agent IDs. If the hostname is omitted or empty,
-Compute derives the chart's Service DNS hostname from the required `gatewayName`,
-`gatewayNamespace`, and `envoyNamespace`. It derives the allowed Envoy peer from
-those settings and rejects explicit `network.gatewayClients` in routed mode. It
-does not read a per-Agent endpoint file or persist a URL in Agent Configuration.
-See [private Agent gateway routes](../drivers/kubernetes-compute/networking-and-isolation.md#private-agent-gateway-routes)
-for the hostname contract and each setting's role.
+endpoint; [private Agent gateway routes](../drivers/kubernetes-compute/networking-and-isolation.md#private-agent-gateway-routes)
+define the hostname contract and each setting's role.
 
 `OCC_GATEWAY_API_KEY_PATH` mounts a dedicated, high-entropy Envoy service key;
 never reuse the Better Auth signing secret or a model-provider credential.
@@ -92,12 +86,8 @@ during rotation makes new requests unavailable. The worker needs
 route configuration and namespace-bound HTTPRoute permissions, but no service
 key or CA bundle for native file access.
 
-With Helm routing enabled and no `gatewayRouting.issuerRef.name`, cert-manager
-bootstraps a private CA and issues Envoy's certificate. The chart projects only
-the generated root Secret's public `tls.crt` into API and worker Pods and sets
-`NODE_EXTRA_CA_CERTS`; the CA signing key is never mounted into OCC. An explicit
-issuer selects operator-managed issuance instead. Its optional `caSecretName`
-and `caSecretKey` must be supplied together when additional CA trust is needed.
+The [TLS lifecycle](../gateway-routing.md#tls-and-certificate-lifecycle) covers
+the generated private CA, explicit issuers, and the trust OCC loads.
 
 See the [deployment procedure](../../guides/deploy/workspace-routing.md#agent-workspace-files)
 for Envoy, cert-manager, native trusted-proxy configuration, and key/certificate rotation.

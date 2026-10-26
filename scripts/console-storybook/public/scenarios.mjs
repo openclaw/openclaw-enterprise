@@ -134,7 +134,7 @@ const unavailablePlugins = [
     name: "Team chat",
     available: false,
     unavailableReason:
-      "Disabled by a ChatGPT workspace administrator. Ask an administrator to enable access for the user or service account behind this token.",
+      "Disabled by a ChatGPT workspace administrator. Ask one to enable access for the user or service account behind this token.",
     unavailableHelp: pluginSetup.links[0],
     tools: null,
   },
@@ -144,7 +144,7 @@ const unavailablePlugins = [
     name: "Analytics",
     available: false,
     unavailableReason:
-      "This workspace's plan is not eligible for this plugin. Ask a workspace administrator to review plan availability.",
+      "This workspace's plan is not eligible for this plugin. Ask a ChatGPT workspace administrator to review plan availability.",
     unavailableHelp: pluginSetup.links[0],
     tools: null,
   },
@@ -589,7 +589,7 @@ export const scenarios = {
     name: "Link to an unlisted Secret",
     path: "/console/secrets?secret=sec_not_listed",
     description:
-      "A link to a Secret the readable list leaves out opens no dialog. A note says it may not exist or the caller may not read it, and who grants read. Nothing reads the Secret.",
+      "A link to a Secret the readable list leaves out opens no dialog. For a member, a note says it may not exist or the caller may not read it, and who grants read. This simulated caller administers the Installation, so the note says only that no such Secret is in the readable list. Nothing reads the Secret.",
   },
   secretsReplace: {
     group: "Pages/Secrets",
@@ -1347,7 +1347,7 @@ export const scenarios = {
     name: "Access denied",
     rules: [{ path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents", status: 403 }],
     description:
-      "Collection authorization denial with a request ID. Retry would repeat the refusal, so the panel offers none; the header's Refresh checks access again.",
+      "Collection authorization denial. Its request ID is behind a Request details disclosure, not in the reason. Retry would repeat the refusal, so the panel offers none; the header's Refresh checks access again.",
   },
   agentsError: {
     group: "Pages/Agents",
@@ -2462,7 +2462,7 @@ export const scenarios = {
     provisionedDeploymentAttempt: {
       code: "NAMESPACE_POD_QUOTA_EXCEEDED",
       message:
-        "The Namespace's Pod quota is full. Stop or delete an Agent, or ask an administrator to raise the quota.",
+        "The Namespace's Pod quota is full. Stop or delete an Agent, or ask an Installation administrator to raise the quota.",
     },
     description:
       "The first deployment read explains the full Pod quota. A stalled read and a temporary outage preserve that detail; a later not-found response clears it while provisioning continues.",
@@ -2480,13 +2480,30 @@ export const scenarios = {
     provisionedDeploymentAttempt: {
       code: "REVISION_IMAGE_PULL_FAILED",
       message:
-        "Kubernetes cannot pull a container image for this Agent and keeps retrying. Ask an administrator to check the runtime image reference and that the cluster's nodes can pull from its registry.",
+        "Kubernetes cannot pull a container image for this Agent and keeps retrying. Ask an Installation administrator to check the runtime image reference and that the cluster's nodes can pull from its registry.",
     },
     provisioningNamesDeploymentWait: true,
     description:
       "The first deployment waits on a container image the cluster's nodes cannot pull. Create Agent shows that sentence alone in place of the provisioning line, as it does for a full Pod quota.",
     steps: [
       "Click Create Agent. The line changes from “Provisioning Agent…” to the image pull sentence, which asks an administrator to check the runtime image reference and registry access.",
+    ],
+  },
+  createDeploymentSuperseded: {
+    group: "Pages/Create Agent",
+    name: "A newer deployment took over",
+    path: create,
+    actions: readyForm,
+    provisionedDeploymentStatus: "failed",
+    provisionedDeploymentError: {
+      code: "REVISION_SUPERSEDED",
+      message: "Deployment was superseded by a newer revision.",
+    },
+    description:
+      "A newer deployment took over before the first was ready. The provisioning response identifies only the deployment that ended.",
+    steps: [
+      "Click Create Agent and wait for the message that a newer deployment took over.",
+      "Confirm the message explains what happened without offering a repair, retry or deployment link.",
     ],
   },
   createDeploymentFailed: {
@@ -7732,7 +7749,8 @@ export const scenarios = {
     group: "Components/Workspace",
     name: "No deployed revision",
     path: `${draft}&tab=workspace`,
-    description: "Workspace editing requires a deployed Agent and reachable gateway.",
+    description:
+      "Workspace editing requires a deployed Agent and reachable gateway; the note says to deploy the Agent.",
   },
   workspaceDenied: {
     group: "Components/Workspace",
@@ -8599,6 +8617,8 @@ export const scenarios = {
 for (const [id, state, name] of [
   ["policyDenials", "ready", "Policy denials and reviewed network additions"],
   ["policyUnicodeExecutable", "unicode", "Unicode executable path remains complete"],
+  ["policyDenialsMany", "many", "Two hundred denials with batch approval"],
+  ["policyRulesPopulated", "populated", "Manage ten applied network rules"],
   [
     "policyConfigurationAlternate",
     "alternate",
@@ -8657,20 +8677,26 @@ for (const [id, state, name] of [
     deployed: true,
     candidateDeploymentStatus: "succeeded",
     policyState: state,
+    ...(["many", "populated"].includes(state)
+      ? { policyDenialCount: 200, policyRuleCount: 10, policyNewDenials: 12 }
+      : {}),
     ...(state === "discoveryLoading"
       ? { rules: [{ suffix: "/driver-configurations", hold: true }] }
       : {}),
     ...(state === "discoveryDenied"
       ? { rules: [{ suffix: "/driver-configurations", status: 403 }] }
       : {}),
+    ...(state === "editDenied"
+      ? { rules: [{ method: "PATCH", suffix: "/sandbox-policy/networking/editing", status: 403 }] }
+      : {}),
     ...(state === "stalePreview" ? { rules: [{ suffix: "/validate", delayMs: 3000 }] } : {}),
     description:
       "Observed denial records, aggregated provider suggestions, and governed policy additions remain distinct.",
     steps: [
       "Expand a denial to inspect the sanitized log. Review its exact executable and endpoint before saving an addition.",
-      "Use the schema field Add and Remove controls to edit proposed rules. Confirm these local edits do not save. Review changes and return with Back to editing.",
-      "Compare Save (current revision unchanged) with Save and apply to current revision (pending, then confirmed with a provider version). Apply saved policy to current revision is unavailable while a proposal has unsaved edits.",
-      "Disable policy editing and confirm approved grants remain visible. Check the empty, denied, unsupported, missing metadata, and unconfirmed stories.",
+      "Select denial rows across pages, then Allow selected. Confirm the validated proposal retains existing rules and combines repeated executable/host/port requests. Back to editing preserves the draft.",
+      "Open Manage rules. Search the five-row pages, use a row menu to edit or remove a rule, or Add rule. Compare Save for later with Save and apply to current revision. Apply saved rules is unavailable while a proposal has unsaved edits.",
+      "Use the Policy editing switch in the Network policy card on the page. Open Manage rules and confirm the editing toggle is absent, saved rules remain, and Add rule follows the editing setting. Close the dialog to re-enable editing. Check the empty, denied, unsupported, missing metadata, and unconfirmed stories.",
     ],
     gap: "Simulated UI proof only. These fixtures do not prove authorization, persistence, enforcement, or provider policy activation.",
     ...(state === "unicode"
@@ -8678,8 +8704,8 @@ for (const [id, state, name] of [
           description:
             "A normalized executable path has 281 Unicode code points and 551 UTF-16 code units, within the API schema's 512-code-point limit.",
           steps: [
-            "Copy the full executable path from Installation delegation ceiling. Choose Review suggestion, then paste the copied path into Executable path. Confirm the value still ends with /tool.",
-            "Choose Review changes. Confirm the complete executable path, including /tool, appears in Proposed rules. Choose Save and confirm policy v2 keeps that same path while the current revision stays unchanged.",
+            "Open View network limits and copy the full executable path from the Installation ceiling. Close the dialog, choose Review suggestion, then paste the copied path into Executable path. Confirm the value still ends with /tool.",
+            "Choose Review changes. Confirm the complete executable path, including /tool, appears in Proposed rules. Choose Save for later and confirm policy v2 keeps that same path while the current revision stays unchanged.",
             "Reset the story to repeat. The six directory components each contain 45 Deseret letters (U+10400); the path is 1091 UTF-8 bytes.",
           ],
           gap: "Simulated UI proof only. This story does not validate a real executable, save to OCC, apply OpenShell policy or start a workload.",
@@ -8713,8 +8739,8 @@ for (const [id, state, name] of [
     ...(state === "protected"
       ? {
           steps: [
-            "The tab states that protected execution applies: the Credential Proxy routes alone govern this Agent's egress, so network policy additions are refused. The proposal editor and Apply are unavailable.",
-            "A rule saved before protected execution applied blocks every protected deploy. Choose Remove saved network rules and confirm the saved policy is now empty.",
+            "Open Manage rules. The protected execution notice is visible, adding and editing are disabled, and live application is unavailable.",
+            "A rule saved before protected execution applied blocks every protected deploy. Choose Remove saved network rules, review the removal, then Save for later and confirm the saved policy is empty.",
           ],
         }
       : {}),
@@ -8780,3 +8806,53 @@ for (const [id, source, name, theme] of [
       "Deployment branding from the production theme loader. Resource, session, and runtime states are simulated.",
   };
 }
+
+const policySuggestions = Array.from({ length: 12 }, (_, index) => ({
+  id: `suggested-${index}`,
+  status: "pending",
+  observations: 12 - index,
+  grant: {
+    id: `suggested-rule-${index}`,
+    binary: "/usr/bin/python3.11",
+    host: `service-${index + 1}.example.org`,
+    ports: [{ from: 443, to: 443 }],
+  },
+}));
+for (const [id, outcome, name] of [
+  ["policySuggestionsExpanded", undefined, "Twelve suggestions with compact review"],
+  ["policySavedForLater", "saved", "Saved rules awaiting application"],
+  ["policyApplying", "pending", "Waiting for Sandbox confirmation"],
+  ["policyApplied", "applied", "Confirmed running policy"],
+  ["policyRetryApplication", "failed", "Inspect then retry unconfirmed application"],
+]) {
+  scenarios[id] = {
+    ...scenarios.policyRulesPopulated,
+    name,
+    policySuggestions,
+    policyInitialOutcome: outcome,
+    policyKeepPending: outcome === "pending",
+    policyNewDenials: 0,
+    steps: [
+      "Inspect three suggestions, show all twelve, then show fewer. Expand a full executable path.",
+      "Open View network limits directly from the page. The ceiling is read-only and grants no access.",
+      "Manage rules: inspect five at a time. Remove a rule and review through the fixed footer. Done preserves the local proposal without saving.",
+      "For failed application, Refresh status reads without applying. Retry application is a separate explicit action after inspection.",
+    ],
+  };
+}
+scenarios.policyDenialsDisabled = {
+  ...scenarios.policyDenialsDisabled,
+  policyRuleCount: 10,
+  policySuggestions,
+};
+scenarios.policyEditingAdminDenied = {
+  ...scenarios.policyDenialsDisabled,
+  name: "Editing administration refused",
+  policyAdminDenied: true,
+};
+scenarios.policyNoNetworkLimits = {
+  ...scenarios.policyDenialsDisabled,
+  name: "No additional network access delegated",
+  policyRuleCount: 0,
+  policyCeiling: [],
+};

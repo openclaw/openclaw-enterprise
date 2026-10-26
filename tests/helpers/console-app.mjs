@@ -902,6 +902,8 @@ export async function createConsoleAppFixture(t, options = {}) {
     memoryDatabase,
     provisionedAccounts,
     policy,
+    // The sink State and the API audit to: `options.auditSink`, or one the fixture made.
+    auditSink,
     // The real Native IAM Driver, for tests that simulate an IAM outage at its boundary.
     iamDriver,
     withIamOutage,
@@ -928,4 +930,48 @@ export async function createConsoleAppFixture(t, options = {}) {
       return controller;
     },
   };
+}
+
+// The Role that fixture.createNamespaceMember made for `label`. Tests change it in place to
+// grant or revoke after sign-in: State reads the policy on each request.
+export function memberRole(fixture, label) {
+  const role = fixture.policy.roles.find(({ id }) => id === `role-${label}`);
+  assert.ok(role, `member ${label} has a Role`);
+  return role;
+}
+
+/** Adds `grants`, as [action, resourceKind] pairs, to member `label`'s Role. */
+export function grantMember(fixture, label, grants) {
+  memberRole(fixture, label).permissions.push(
+    ...grants.map(([action, resourceKind]) => ({ action, resourceKind })),
+  );
+}
+
+// The authorization denials an InMemoryAuditSink recorded: all of them, or those for `action`,
+// an exact action name or a RegExp for a family of actions.
+export function authorizationDenials(auditSink, action) {
+  const matches =
+    action === undefined
+      ? () => true
+      : typeof action === "string"
+        ? (name) => name === action
+        : (name) => action.test(name);
+  return auditSink
+    .list()
+    .filter((event) => event.kind === "authorization_denial" && matches(event.action));
+}
+
+// Runs `send` and returns its response with the checks its authorization denials name, as
+// { action, kind, id }, so a refusal can be shown to be audited once, for its own target.
+export async function denialsDuring(auditSink, send) {
+  const before = authorizationDenials(auditSink).length;
+  const response = await send();
+  const denials = authorizationDenials(auditSink)
+    .slice(before)
+    .map(({ authorization: { action, resource } }) => ({
+      action,
+      kind: resource.kind,
+      id: resource.id,
+    }));
+  return { response, denials };
 }

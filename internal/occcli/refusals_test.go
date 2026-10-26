@@ -198,15 +198,16 @@ func TestRefusedCommandsNameTheGrantTheyNeed(t *testing.T) {
 // route gets OCC's admitted-Namespace refusal; the hint names the key's own
 // Namespace from the local key file, the same for any target.
 func TestNamespaceKeyRefusalNamesTheKeysNamespace(t *testing.T) {
-	const mismatch = "The admitted Namespace does not match."
+	const mismatch = "This service key works only in Namespace " + testNamespaceID + "; this request is outside it. Ask an Installation administrator to run it."
 	scoped := writeKeyFile(t, `{"data":{"key":"test-key","namespaceId":"`+testNamespaceID+`"}}`)
-	want := "\nhint: this service key is scoped to Namespace " + testNamespaceID + `; it cannot reach another Namespace or Installation-level commands such as "occ namespace list". Pass --namespace ` + testNamespaceID + ` (or set OCC_NAMESPACE), read it with "occ namespace get ` + testNamespaceID + `", or use an Installation-scoped key.`
+	want := "\nhint: pass --namespace " + testNamespaceID + ` (or set OCC_NAMESPACE) and read it with "occ namespace get ` + testNamespaceID + `"; other Namespaces and Installation-level commands such as "occ namespace list" need an Installation-scoped key.`
 	for _, args := range [][]string{
 		{"namespace", "get", "ns_00000000-0000-4000-8000-000000000000"},
 		{"--namespace", "ns_00000000-0000-4000-8000-000000000000", "agent", "get", testAgentID},
 	} {
 		err := runRefused(t, scoped, mismatch, args...)
-		if err == nil || !strings.HasSuffix(err.Error(), want) {
+		// The hint adds to OCC's message without repeating it (finding D770).
+		if err == nil || !strings.HasSuffix(err.Error(), want) || strings.Count(err.Error(), "works only in") != 1 {
 			t.Fatalf("occ %v refusal = %v, want suffix %q", args, err, want)
 		}
 	}
@@ -221,11 +222,11 @@ func TestNamespaceKeyRefusalNamesTheKeysNamespace(t *testing.T) {
 		`{"data":{"key":"test-key","namespaceId":123}}`,
 	} {
 		err := runRefused(t, writeKeyFile(t, contents), mismatch, "namespace", "get", "ns_00000000-0000-4000-8000-000000000000")
-		if err == nil || !strings.Contains(err.Error(), "hint: this service key is scoped to one Namespace;") {
+		if err == nil || !strings.Contains(err.Error(), "hint: pass this key's Namespace ID with --namespace") {
 			t.Fatalf("refusal with key file %s = %v", contents, err)
 		}
 		err = runRefused(t, writeKeyFile(t, contents), mismatch, "namespace", "list")
-		if want := "\nhint: \"occ namespace list\" needs an Installation-scoped key. This service key works only in one Namespace, so ask an Installation administrator to run it for you."; err == nil || !strings.HasSuffix(err.Error(), want) {
+		if want := "\nhint: \"occ namespace list\" needs an Installation-scoped key; no --namespace value helps."; err == nil || !strings.HasSuffix(err.Error(), want) {
 			t.Fatalf("refusal with key file %s = %v, want suffix %q", contents, err, want)
 		}
 	}
@@ -235,7 +236,7 @@ func TestNamespaceKeyRefusalNamesTheKeysNamespace(t *testing.T) {
 // not tell the caller to pass the --namespace it already selected; it says the
 // command needs an Installation-scoped key and who can run it.
 func TestInstallationCommandRefusalAsksForAnInstallationKey(t *testing.T) {
-	const mismatch = "The admitted Namespace does not match."
+	const mismatch = "This service key works only in Namespace " + testNamespaceID + "; this request is outside it. Ask an Installation administrator to run it."
 	scoped := writeKeyFile(t, `{"data":{"key":"test-key","namespaceId":"`+testNamespaceID+`"}}`)
 	for _, args := range [][]string{
 		{"installation", "get"},
@@ -245,9 +246,10 @@ func TestInstallationCommandRefusalAsksForAnInstallationKey(t *testing.T) {
 		{"service-key", "revoke", "key-1"},
 	} {
 		path := strings.Join(args[:2], " ")
-		want := "\nhint: \"occ " + path + "\" needs an Installation-scoped key. This service key works only in Namespace " + testNamespaceID + ` (read it with "occ namespace get ` + testNamespaceID + `"), so ask an Installation administrator to run it for you.`
+		want := "\nhint: \"occ " + path + "\" needs an Installation-scoped key; no --namespace value helps. Read this key's Namespace with \"occ namespace get " + testNamespaceID + "\"."
 		err := runRefused(t, scoped, mismatch, append([]string{"--namespace", testNamespaceID}, args...)...)
-		if err == nil || !strings.HasSuffix(err.Error(), want) || strings.Contains(err.Error(), "Pass --namespace") {
+		// The hint adds to OCC's message without repeating it (finding D770).
+		if err == nil || !strings.HasSuffix(err.Error(), want) || strings.Contains(strings.ToLower(err.Error()), "pass --namespace") || strings.Count(err.Error(), "works only in") != 1 {
 			t.Fatalf("occ %v refusal = %v, want suffix %q", args, err, want)
 		}
 	}

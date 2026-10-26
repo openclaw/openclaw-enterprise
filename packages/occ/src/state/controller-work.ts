@@ -75,13 +75,13 @@ export function deploymentProgressForWork(
       // Fixed copy: never the image reference or the registry's response.
       code = attempt.code;
       message =
-        "Kubernetes cannot pull a container image for this Agent and keeps retrying. Ask an administrator to check the runtime image reference and that the cluster's nodes can pull from its registry.";
+        "Kubernetes cannot pull a container image for this Agent and keeps retrying. Ask an Installation administrator to check the runtime image reference and that the cluster's nodes can pull from its registry.";
       break;
     case "NAMESPACE_POD_QUOTA_EXCEEDED":
       // Fixed copy: never the quota's numbers or name (finding 1617).
       code = attempt.code;
       message =
-        "The Namespace's Pod quota is full. Stop or delete an Agent, or ask an administrator to raise the quota.";
+        "The Namespace's Pod quota is full. Stop or delete an Agent, or ask an Installation administrator to raise the quota.";
       break;
     case "WORKSPACE_NODE_PENDING":
       code = attempt.code;
@@ -90,7 +90,7 @@ export function deploymentProgressForWork(
     case "WORKSPACE_SETUP_RETRYING":
       code = attempt.code;
       message =
-        "Workspace setup failed; Kubernetes is retrying it. If it keeps failing, ask an admin to check the Agent's workspace storage and runtime image.";
+        "Workspace setup failed; Kubernetes is retrying it. If it keeps failing, ask an Installation administrator to check the Agent's workspace storage and runtime image.";
       break;
     case "WORKSPACE_NODE_BINDING_PENDING":
       code = attempt.code;
@@ -706,7 +706,7 @@ function deploymentErrorMessage(code: string): string {
     case "RUNTIME_AUTHENTICATION_FAILED":
       return "The model provider rejected this version's credential (HTTP 401 or 403). Check that the key or token is valid and can use the selected model, update or replace the Agent's model credential, then deploy a new version.";
     case "RUNTIME_CPU_STARVED":
-      return "Deployment runtime did not get enough CPU to finish its startup model check, because of a CPU limit below one core or a busy node. Ask an admin to raise the limit or free node capacity, then deploy a new version.";
+      return "Deployment runtime did not get enough CPU to finish its startup model check, because of a CPU limit below one core or a busy node. Ask an Installation administrator to raise the limit, or an operator to free node capacity, then deploy a new version.";
     // Model-probe codes come from the runtime wrapper's startup model check
     // (`runtime-entrypoints.ts`). OpenClaw classifies transport errors (refused connection,
     // DNS failure, "fetch failed") as a timeout; Codex reports them as
@@ -732,13 +732,13 @@ function deploymentErrorMessage(code: string): string {
     // Repository credential refusals (finding 1045). Like the refusals below, the status never
     // names a repository, grant or Driver.
     case "REPOSITORY_RUNTIME_UNSUPPORTED":
-      return "This revision can no longer get repository credentials: they need an embedded OpenClaw or dedicated Codex runtime, no Sandbox Driver, and a Compute Driver set up for them. Ask an admin to restore that, or remove repository access, then deploy again.";
+      return "This revision lost repository credentials: they need an embedded OpenClaw or dedicated Codex runtime, no Sandbox Driver, and a Compute Driver set up for them. Ask an Installation administrator to restore that or remove repository access, then deploy again.";
     case "REPOSITORY_BINDING_UNAVAILABLE":
-      return "A repository this revision binds, or its access level, is no longer approved for the Agent's Namespace. Choose approved repository access on the Agent, or ask an admin to approve it again, then deploy again.";
+      return "A repository this revision binds, or its access level, is no longer approved for the Agent's Namespace. Choose approved repository access on the Agent, or ask an Installation administrator to approve it again, then deploy again.";
     case "REPOSITORY_BINDING_CHANGED":
       return "The approval behind a repository this revision binds changed since admission, for example the access levels or push rules approved for the Agent's Namespace. Deploy again to admit a revision with the current approval.";
     case "REPOSITORY_DRIVER_MISMATCH":
-      return "The Installation no longer selects the repository credential Driver this revision was admitted with. Deploy again, choosing approved repository access first if refused. If it selects none, remove the repository access or ask an admin to select one.";
+      return "The Installation no longer selects the repository credential Driver admitted with this revision. Deploy again, choosing approved repository access if refused. If it selects none, remove repository access or ask an Installation administrator to select one.";
     case "REPOSITORY_GIT_ROUTE_BLOCKED":
       return "The controller closed this version's repository Git access: its Sandbox or supervisor was replaced, a credential write's outcome is unknown, or the access was withdrawn (worker log: OPENSHELL_GIT_RECONCILIATION_REQUIRED). Deploy a new version.";
     case "REPOSITORY_GIT_SENDER_UNQUALIFIED":
@@ -750,13 +750,13 @@ function deploymentErrorMessage(code: string): string {
     // Refusals the worker decides again on every pass (finding 1039). The status never names
     // the principal or the resource the decision was about.
     case "AUTHORIZATION_DENIED":
-      return "The deploying account, or the Agent's own identity, lost a permission the revision needs: deploy on the Agent, read on its Configuration, or use of a bound Secret, credential source or ServiceAccount. Ask an admin to grant it, then deploy again.";
+      return "The deploying account, or the Agent's own identity, lost a permission the revision needs: Agent deploy, Configuration read, or use of a bound Secret, credential source or ServiceAccount. Ask an Installation administrator to grant it, then deploy again.";
     case "ACTOR_REVOKED":
       return "The account that requested this deployment is no longer an active account in the Installation. Deploy again from an account with deploy access to the Agent.";
     case "HARNESS_AUTH_REQUIRED":
       return "This revision has no Harness authentication method. Set one on the Agent, then deploy again.";
     case "BACKEND_UNAVAILABLE":
-      return "The Backend this revision was admitted with is no longer configured on the Installation. Ask an admin to restore it, or move the Agent to a configured Backend, then deploy again.";
+      return "The Backend this revision was admitted with is no longer configured on the Installation. Ask an Installation administrator to restore it, or move the Agent to a configured Backend, then deploy again.";
     case "HARNESS_AUTH_SOURCE_CHANGED":
       return "The ServiceAccount this revision authenticates with is missing, has no access token, or its credential changed since admission. Bind an available ServiceAccount, or deploy again to admit a revision with its current credential.";
     case "SECRET_BINDING_UNAVAILABLE":
@@ -764,11 +764,11 @@ function deploymentErrorMessage(code: string): string {
     case "NAMESPACE_NOT_READY":
       return "The Agent's Namespace was not ready when the controller ran this deployment, for example while it is being deleted. Deploy again once the Namespace is ready.";
     case "WORKSPACE_SETUP_REFUSED":
-      return "Initial workspace setup refused this version, and retries would too: its files, setup record or runtime defaults differ from what the Agent was created with. Ask an admin to check workspace storage and the runtime image; do not delete the setup record.";
+      return "Initial workspace setup refused this version, and retries would too: its files, setup record or runtime defaults differ from the Agent's originals. Ask an Installation administrator to check workspace storage and the runtime image; keep the setup record.";
     case "WORKSPACE_SETUP_UNSUPPORTED":
-      return "The Agent was created with initial workspace files, which the Installation's Compute Driver cannot set up. Ask an admin to select a Compute Driver that supports them, then deploy again, or create the Agent without initial workspace files.";
+      return "The Agent was created with initial workspace files, which the Installation's Compute Driver cannot set up. Ask an Installation administrator to select a Compute Driver that supports them, then deploy again, or create the Agent without them.";
     case "DEPENDENCY_UNAVAILABLE":
-      return "A dependency the controller needs stayed unavailable through every attempt. Deploy again; if it keeps failing, ask an admin to check the controller worker log.";
+      return "A dependency the controller needs stayed unavailable through every attempt. Deploy again; if it keeps failing, ask an Installation administrator to check the controller worker log.";
     case "LEASE_EXPIRED":
       return "The controller worker stopped or lost its claim during this deployment's last attempt. Deploy again.";
     case "AGENT_GATEWAY_UNAVAILABLE":
@@ -796,7 +796,7 @@ function deploymentErrorMessage(code: string): string {
     case "HARNESS_AUTH_SOURCE_UNAVAILABLE":
       return "The Harness authentication source this revision was admitted with is missing, being deleted, or changed since admission. Bind an available source, then deploy again.";
     case "EGRESS_PROVIDER_UNAVAILABLE":
-      return "The protected egress provider this revision's Harness source was admitted with is no longer selected or available. Ask an admin to reselect it, or bind a source admitted under the selected provider, then deploy again.";
+      return "The protected egress provider this revision's Harness source was admitted with is no longer selected or available. Ask an Installation administrator to reselect it, or bind a source admitted under the selected provider, then deploy again.";
     case "CREDENTIAL_SOURCE_UNAVAILABLE":
       return "A credential source this revision lists is missing, being deleted, or changed since admission. Bind available sources, then deploy again.";
     case "SECRET_DRIVER_MISMATCH":

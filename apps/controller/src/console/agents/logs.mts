@@ -117,7 +117,8 @@ function runtimeErrorText(
   manualRead = false,
 ) {
   if (error.status === 403) {
-    // Name both grants: without status the Logs section never says what log text needs.
+    // Each names its own grant: a status refusal still reads log text, whose pane names
+    // read_logs if that is refused too.
     return tier === "logs" ? LOG_TEXT_DENIED : RUNTIME_STATUS_DENIED;
   }
   if (error.status === 501) {

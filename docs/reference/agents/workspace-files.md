@@ -76,7 +76,7 @@ records the Agent, file name, and outcome in the audit log.
 | `400 INVALID_REQUEST`        | Invalid file name or content.                        |
 | `404 NOT_FOUND`              | The requested Agent or file was not found.           |
 | `409 AGENT_DELETING`         | The Agent is being deleted.                          |
-| `409 RESOURCE_CONFLICT`      | The Agent is stopping.                               |
+| `409 RESOURCE_CONFLICT`      | The Agent is stopping, or has no running version.    |
 | `413 PAYLOAD_TOO_LARGE`      | The request body exceeds 97 KiB.                     |
 | `503 DEPENDENCY_UNAVAILABLE` | Workspace access is unavailable.                     |
 | `503 UNKNOWN_OUTCOME`        | OCC could not confirm the write or its audit record. |

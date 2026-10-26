@@ -431,8 +431,37 @@ runtime_images="$(sed -n '3,$p' "$compose_analysis")"
 if [ "$runtime_mode" = "default" ]; then
   export OCC_DOCKER_RUNTIME_IMAGE="$DEFAULT_RUNTIME_IMAGE"
   if ! engine image inspect "$DEFAULT_RUNTIME_IMAGE" >/dev/null 2>&1; then
-    if ! engine build -f deploy/runtime/Dockerfile --tag "$DEFAULT_RUNTIME_IMAGE" .; then
-      fail "runtime image" "could not build $DEFAULT_RUNTIME_IMAGE" "${engine_command[@]}" build -f deploy/runtime/Dockerfile --tag "$DEFAULT_RUNTIME_IMAGE" .
+    if ! runtime_source="$(python3 - deploy/runtime/openclaw-source.json <<'PY'
+import datetime
+import json
+import re
+import sys
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as source_file:
+        source = json.load(source_file)
+    if not isinstance(source, dict) or set(source) != {"commit", "sourceArchiveSha256", "buildTimestamp"}:
+        raise ValueError("require exactly commit, sourceArchiveSha256, and buildTimestamp")
+    for field, pattern in (("commit", r"[a-f0-9]{40}"), ("sourceArchiveSha256", r"[a-f0-9]{64}"),
+                           ("buildTimestamp", r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")):
+        if not isinstance(source[field], str) or not re.fullmatch(pattern, source[field]):
+            raise ValueError(f"invalid {field}")
+    datetime.datetime.strptime(source["buildTimestamp"], "%Y-%m-%dT%H:%M:%SZ")
+    print(source["commit"], source["sourceArchiveSha256"], source["buildTimestamp"])
+except (OSError, ValueError) as error:
+    sys.exit(f"{sys.argv[1]}: {error}")
+PY
+    )"; then
+      fail "runtime image" "cannot read a valid deploy/runtime/openclaw-source.json"
+    fi
+    read -r openclaw_commit openclaw_archive_sha256 openclaw_build_timestamp <<<"$runtime_source"
+    runtime_build_args=(build -f deploy/runtime/Dockerfile
+      --build-arg "OPENCLAW_COMMIT=$openclaw_commit"
+      --build-arg "OPENCLAW_SOURCE_SHA256=$openclaw_archive_sha256"
+      --build-arg "OPENCLAW_BUILD_TIMESTAMP=$openclaw_build_timestamp"
+      --tag "$DEFAULT_RUNTIME_IMAGE" .)
+    if ! engine "${runtime_build_args[@]}"; then
+      fail "runtime image" "could not build $DEFAULT_RUNTIME_IMAGE" "${engine_command[@]}" "${runtime_build_args[@]}"
     fi
   fi
 elif [ "$runtime_mode" = "custom" ]; then

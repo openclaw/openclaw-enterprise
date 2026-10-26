@@ -17,6 +17,11 @@ import { createTestConfigurationDriver } from "../helpers/configuration-driver.m
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { bindRole, grantRole } from "../helpers/iam-grants.mjs";
+import {
+  AUTHORIZATION_HEADER_REFUSED,
+  CREDENTIAL_REQUIRED,
+  serviceKeyOutsideNamespace,
+} from "../helpers/refusal-text.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const run = promisify(execFile);
@@ -815,12 +820,14 @@ test("service API keys authenticate scoped automation without replacing sessions
         assert.match(error.stderr, /FORBIDDEN/);
         assert.match(error.stderr, /HTTP 403/);
         // The hint names the Namespace of the key this request sent, not the rotated one, and
-        // asks for an Installation-scoped key rather than a --namespace (finding D740).
+        // asks for an Installation-scoped key rather than a --namespace (finding D740), without
+        // repeating OCC's own sentence (finding D770).
         assert.ok(
           error.stderr.includes(
-            `"occ installation get" needs an Installation-scoped key. This service key works only in Namespace ${namespaceId} `,
+            `"occ installation get" needs an Installation-scoped key; no --namespace value helps. Read this key's Namespace with "occ namespace get ${namespaceId}".`,
           ),
         );
+        assert.equal(error.stderr.split("works only in").length, 2);
         return true;
       },
     );
@@ -834,15 +841,20 @@ test("service API keys authenticate scoped automation without replacing sessions
     async () => {
       for (const key of ["", "forged-key", `${issued.data.key}tampered`]) {
         const invalidHeaders = { "x-api-key": key, cookie: session.cookie };
-        assert.equal((await request("GET", path, { headers: invalidHeaders })).status, 401);
+        const refused = await request("GET", path, { headers: invalidHeaders });
+        assert.equal(refused.status, 401);
+        // Only a request that sent an Authorization header gets header advice (finding D762).
+        assert.equal(refused.error.message, CREDENTIAL_REQUIRED);
         await assertServiceKeyManagementDenied(invalidHeaders, issued, 401);
       }
-      assert.equal((await request("GET", path, { headers: {} })).status, 401);
-      assert.equal(
-        (await request("GET", path, { headers: { authorization: `Bearer ${issued.data.key}` } }))
-          .status,
-        401,
-      );
+      const anonymous = await request("GET", path, { headers: {} });
+      assert.equal(anonymous.status, 401);
+      assert.equal(anonymous.error.message, CREDENTIAL_REQUIRED);
+      const bearer = await request("GET", path, {
+        headers: { authorization: `Bearer ${issued.data.key}` },
+      });
+      assert.equal(bearer.status, 401);
+      assert.equal(bearer.error.message, AUTHORIZATION_HEADER_REFUSED);
     },
   );
 
@@ -853,7 +865,8 @@ test("service API keys authenticate scoped automation without replacing sessions
       const eventsBefore = auditSink.events.length;
       const denied = await request("GET", other, { headers });
       assert.equal(denied.status, 403);
-      assert.equal(denied.error.message, "The admitted Namespace does not match.");
+      // Names the key's own Namespace, never the requested one (finding D763).
+      assert.equal(denied.error.message, serviceKeyOutsideNamespace(namespaceId));
       assert.equal(auditSink.events.length, eventsBefore + 1);
       const audit = auditSink.events.at(-1);
       assert.equal(audit.kind, "authorization_denial");

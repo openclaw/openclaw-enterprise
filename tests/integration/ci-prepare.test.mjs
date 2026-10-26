@@ -485,6 +485,9 @@ describe("CI preparation", { concurrency }, () => {
   // Only main's warm job exports: a lane export on main could land after a newer
   // commit's warm export and replace main's cache with older layers.
   test("Images and Packaging only restores the image caches, on main pushes too", async (t) => {
+    const source = JSON.parse(
+      await readFile(join(repositoryRoot, "deploy/runtime/openclaw-source.json"), "utf8"),
+    );
     for (const event of ["pull_request", "merge_group", "workflow_dispatch", "push"]) {
       const commands = await fixtureImageCommands(t, "success", "images-packaging", {
         ...imageCacheEnv,
@@ -501,6 +504,20 @@ describe("CI preparation", { concurrency }, () => {
       // the probe must resolve the same ID the build would load.
       for (const { args } of calls) {
         assert.equal(args[args.indexOf("SOURCE_DATE_EPOCH=0") - 1], "--build-arg", event);
+        // The cache probe and final build must select the same upstream source;
+        // the controller image has no OpenClaw source build.
+        const sourceArguments = args.filter((arg) => /^OPENCLAW_/.test(arg));
+        assert.deepEqual(
+          sourceArguments,
+          args.includes("--target")
+            ? []
+            : [
+                `OPENCLAW_COMMIT=${source.commit}`,
+                `OPENCLAW_SOURCE_SHA256=${source.sourceArchiveSha256}`,
+                `OPENCLAW_BUILD_TIMESTAMP=${source.buildTimestamp}`,
+              ],
+          event,
+        );
       }
       assert.match(prepared.stderr, /"stage":"controller-image-reuse","outcome":"absent"/, event);
       assert.match(prepared.stderr, /"stage":"runtime-image-reuse","outcome":"absent"/, event);

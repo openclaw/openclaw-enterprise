@@ -920,6 +920,7 @@ export class ControllerAdmissionVerifier implements AdmissionVerifier {
         401,
         "UNAUTHENTICATED",
         "Controller API bearer authentication is disabled.",
+        "authorization_header",
       );
     }
     if (request.requestedScope.installationId !== this.#installationId) {

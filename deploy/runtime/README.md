@@ -91,13 +91,12 @@ Native AMD64 and ARM64 image checks and real deployment verification remain
 separate requirements. Schema acceptance alone does not prove placement,
 enrollment, containment, workspace access, or model execution.
 
-| Input                                        | Selection                                                                                                         |
-| -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| Build base                                   | `docker.io/library/node:24.22.1-bookworm@sha256:6449e19d8184d84062525b6a7524def03146c2cb04a7f08b076680d0e8e4240a` |
-| OpenClaw source commit                       | `cee236c9e9891396a7d672ab016a5e5d9d51a003`                                                                        |
-| Source archive SHA-256                       | `bdf8d13a4d2e344b5925f2c506f4aadf184796defb3d4fde4938250ae89ecfa6`                                                |
-| Dedicated Codex CLI (`OPENAI_CODEX_VERSION`) | `0.163.0-alpha.2`                                                                                                 |
-| Matrix crypto native library                 | `@matrix-org/matrix-sdk-crypto-nodejs` `v0.6.6`, SHA-256 per architecture                                         |
+| Input                                                 | Selection                                                                                                         |
+| ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| Build base                                            | `docker.io/library/node:24.22.1-bookworm@sha256:6449e19d8184d84062525b6a7524def03146c2cb04a7f08b076680d0e8e4240a` |
+| OpenClaw commit, archive SHA-256, and build timestamp | [Source manifest](openclaw-source.json)                                                                           |
+| Dedicated Codex CLI (`OPENAI_CODEX_VERSION`)          | `0.163.0-alpha.2`                                                                                                 |
+| Matrix crypto native library                          | `@matrix-org/matrix-sdk-crypto-nodejs` `v0.6.6`, SHA-256 per architecture                                         |
 
 The source's package version is `2026.10.6`; it does not identify this custom
 build. `/opt/oce/runtime/provenance.json` records the source commit, verified archive
@@ -106,7 +105,7 @@ package identity, and the SHA-256 of `contents.json`, which inventories
 packaged files, modes, hashes, and symlinks after final-stage permission
 normalization. The final stage copies the assembled
 directory directly, without an intermediate compressed archive. Its pinned
-`node:24-bookworm-slim` base retains required runtime libraries, Git/SSH, GitHub CLI,
+`node:24.22.1-bookworm-slim` base retains required runtime libraries, Git/SSH, GitHub CLI,
 Python, and process utilities. Both bases apply available Debian package updates
 during the build, including updates published after the pinned Node images.
 Build compilers stay in the full Bookworm stages.
@@ -124,10 +123,37 @@ walk removes unreachable pnpm store entries while retaining importer-specific
 versions and installed optional dependencies. Building
 requires registry access.
 
-Build it from the repository root:
+## Resolve OpenClaw build arguments
+
+[openclaw-source.json](openclaw-source.json) selects the OpenClaw commit, source
+archive checksum, and fixed upstream build timestamp. Update these values
+together when changing the selected source. The runtime Dockerfile has no source
+defaults: missing or invalid arguments, or arguments that differ from this
+manifest, fail the build before the source archive download. Archive checksum
+verification remains required.
+
+From the repository root, run this in Bash with Node.js 24 or newer:
+
+```bash
+source_args="$(node scripts/lib/openclaw-source.mjs build-args)" || exit 1
+openclaw_build_args=()
+while IFS= read -r argument; do
+  openclaw_build_args+=(--build-arg "$argument")
+done <<< "$source_args"
+```
+
+Keep this shell for the build. CI and the development launchers resolve the
+same manifest automatically. An explicitly selected prebuilt runtime image
+keeps its own identity. The separate [local OpenClaw checkout test path](../../docs/testing/openshell.md)
+builds its selected checkout and records that checkout's commit.
+
+## Build a local runtime image
+
+After [resolving the build arguments](#resolve-openclaw-build-arguments), run:
 
 ```bash
 docker build -f deploy/runtime/Dockerfile \
+  "${openclaw_build_args[@]}" \
   --tag openclaw-enterprise-runtime:quickstart \
   .
 ```
@@ -148,15 +174,14 @@ dependencies. They must load from a fresh runtime home without downloading or
 installing packages at gateway startup. Slack credentials remain operator-owned
 runtime Secrets; do not put them in the image.
 
-Keep the source commit and archive checksum together when updating OpenClaw.
 The `matrix-sdk-crypto` stage fetches the Matrix crypto library with the retrying,
 checksum-verifying download helper, and both installs read it from a loopback server
 instead of GitHub. When an OpenClaw update changes the locked
 `@matrix-org/matrix-sdk-crypto-nodejs` version, update that stage's version, URL and
 both SHA-256 values. Until then the install fails with a "no pinned file" message.
-Follow the [pinned upstream Docker assembly](https://github.com/openclaw/openclaw/blob/cee236c9e9891396a7d672ab016a5e5d9d51a003/Dockerfile)
-to keep plugin dependencies and runtime assets consistent. Its plugin-local
-dependency layout preserves dependencies that differ from core versions.
+The source manifest selects the commit to build. The
+[reviewed upstream Dockerfile](https://github.com/openclaw/openclaw/blob/cee236c9e9891396a7d672ab016a5e5d9d51a003/Dockerfile)
+keeps plugin dependencies separate when their versions differ from core.
 Plugin chunks emitted directly under `dist` also need package-root resolution.
 The assembly links missing plugin dependencies into that root without replacing
 existing core dependencies.

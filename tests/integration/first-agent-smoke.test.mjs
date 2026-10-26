@@ -486,6 +486,11 @@ const bakeInput = {
   context: "/work/runtime-trust",
   providerContext: "/work/provider-image",
   nodeRuntimeBaseImage: `docker.io/library/node:24-bookworm-slim@sha256:${"a".repeat(64)}`,
+  openclawSource: {
+    commit: "b".repeat(40),
+    sourceArchiveSha256: "c".repeat(64),
+    buildTimestamp: "2026-01-02T03:04:05Z",
+  },
   registryAddress: "172.17.0.3:5000",
   caches: (role) => [`cache-${role}`],
 };
@@ -498,6 +503,14 @@ test("the smoke bake only pushes the controller and runtime images, and loads th
   assert.deepEqual(target["smoke-runtime"].output, [pushOutput("runtime")]);
   assert.deepEqual(target["smoke-controller"].labels, {
     "org.opencontainers.image.revision": bakeInput.revision,
+  });
+  // The upstream source identity must remain distinct from the OCE revision.
+  assert.deepEqual(target["smoke-runtime-base"].args, {
+    OPENCLAW_COMMIT: bakeInput.openclawSource.commit,
+    OPENCLAW_SOURCE_SHA256: bakeInput.openclawSource.sourceArchiveSha256,
+    OPENCLAW_BUILD_TIMESTAMP: bakeInput.openclawSource.buildTimestamp,
+    OCC_BUILD_REVISION: bakeInput.revision,
+    SOURCE_DATE_EPOCH: "0",
   });
   assert.deepEqual(target["smoke-provider"], {
     context: "/work/provider-image",
