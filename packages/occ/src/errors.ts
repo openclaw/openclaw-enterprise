@@ -11,6 +11,11 @@ export class AuthorizationDeniedError extends Error {
     readonly action: AuthorizationRequest["action"];
     readonly resource: ResourceRef;
   };
+  /**
+   * The principal whose grant was checked. HTTP names the missing grant only when it is the
+   * caller, since IAM Drivers need not report it in `evidence` (finding 2586).
+   */
+  readonly checkedPrincipalId?: string;
 
   constructor(
     message = "The exact platform operation was not authorized.",
@@ -19,6 +24,7 @@ export class AuthorizationDeniedError extends Error {
       readonly action: AuthorizationRequest["action"];
       readonly resource: ResourceRef;
     },
+    checkedPrincipalId?: string,
   ) {
     super(message);
     this.name = "AuthorizationDeniedError";
@@ -33,8 +39,18 @@ export class AuthorizationDeniedError extends Error {
         resource: Object.freeze({ ...authorization.resource }),
       });
     }
+    if (checkedPrincipalId !== undefined) {
+      this.checkedPrincipalId = checkedPrincipalId;
+    }
   }
 }
+
+/**
+ * A denial about the caller's own account, session or role in a job, not a missing grant: a
+ * disabled account, a session that is no longer current, or another actor's provisioning job.
+ * Its message is fixed text about the caller's own state, so HTTP returns it as written.
+ */
+export class CallerStateDeniedError extends AuthorizationDeniedError {}
 
 /**
  * The Agent's own service principal, not the caller, lacks a grant that deployment needs.

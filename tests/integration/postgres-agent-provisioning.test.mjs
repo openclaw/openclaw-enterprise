@@ -2982,6 +2982,16 @@ test(
       session: secondSession,
     });
     assert.equal(status.status, 403, JSON.stringify(status.body));
+    assert.equal(
+      status.body.error.message,
+      "Only the initiating actor can read provisioning status.",
+    );
+    // A retry says what was refused (finding 2588).
+    const retry = await fixture.request("POST", `${admitted.data.provisioning.url}/retry`, {
+      session: secondSession,
+    });
+    assertApiError(retry, 403, "FORBIDDEN");
+    assert.equal(retry.body.error.message, "Only the initiating actor can retry provisioning.");
 
     const secretPath = `/namespaces/${namespace.id}/secrets/${secrets.modelKey.id}`;
     const own = await fixture.request("GET", secretPath);

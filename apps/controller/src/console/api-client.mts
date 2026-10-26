@@ -51,6 +51,23 @@ export function requestFailure(cause: unknown) {
   };
 }
 
+// The API's denial of a caller's own request when it names no grant. An API from before finding
+// 2534 sends it for every such denial. It names nothing the caller can act on, so views keep their
+// own guidance instead of showing it.
+export const GENERIC_DENIAL = "The exact platform operation was not authorized.";
+
+/**
+ * The API's denial of a caller's own request that names the grant the request checked and who
+ * grants it (finding 2534), or undefined. The API words it from the request alone, never from
+ * whether the resource exists, so views show it as written.
+ */
+export function namedDenial(cause: unknown): string | undefined {
+  const { status, code, serverMessage } = requestFailure(cause);
+  return status === 403 && code === "FORBIDDEN" && serverMessage?.startsWith("Not authorized: ")
+    ? serverMessage
+    : undefined;
+}
+
 function validDetail(value: unknown): value is ErrorDetail {
   const { path, code, message } = responseFields(value);
   return (

@@ -23,7 +23,7 @@ import {
   verifyPlatformStateStoreContract,
 } from "../helpers/postgres-platform-state.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
-import { AGENT_NAME_CONFLICT, GENERIC_DENIAL } from "../helpers/refusal-text.mjs";
+import { AGENT_NAME_CONFLICT, callerDenied } from "../helpers/refusal-text.mjs";
 
 async function ensureInstallation(state, name) {
   const existing = await state.loadInstallation();
@@ -2118,15 +2118,16 @@ test(
 
     // The degraded response has the same exact-resource IAM boundary as a
     // healthy response; neither metadata nor decode errors may leak on denial.
-    for (const [resourceKind, resourceId, listPath, detailPath, visible] of [
+    for (const [resourceKind, kindLabel, resourceId, listPath, detailPath, visible] of [
       [
         "agent_revision",
+        "AgentRevision",
         malformedRevisionId,
         revisionPath,
         `${revisionPath}/${malformedRevisionId}`,
         [revisionSummary(healthyRevision.data, "queued")],
       ],
-      ["agent", agent.id, `/namespaces/${namespaceId}/agents`, agentPath, [healthyAgent]],
+      ["agent", "Agent", agent.id, `/namespaces/${namespaceId}/agents`, agentPath, [healthyAgent]],
     ]) {
       await pool.query(
         `INSERT INTO occ.iam_restrictions
@@ -2139,9 +2140,10 @@ test(
       assert.deepEqual(filtered.data, visible);
       const denied = await request(api, "GET", detailPath);
       assert.equal(denied.status, 403);
+      // The Restriction reads as any missing grant on the ID the path named.
       assert.deepEqual(denied.error, {
         code: "FORBIDDEN",
-        message: GENERIC_DENIAL,
+        message: callerDenied(`${kindLabel} read`, `${kindLabel} ${resourceId}`),
       });
       assert.equal(denied.data, undefined);
     }

@@ -6,6 +6,7 @@ import {
   AgentDeletingError,
   AgentPrincipalAuthorizationError,
   AuthorizationDeniedError,
+  CallerStateDeniedError,
   DeletionRetryOwnedError,
   ChannelDirectoryError,
   ChannelCredentialError,
@@ -52,6 +53,7 @@ import {
   ConfigurationValidationError,
 } from "../drivers/configuration/kubernetes/index.ts";
 import { loggedErrorText, resemblesCredential } from "../logging.ts";
+import { callerDenialMessage, GENERIC_DENIAL, type DeniedRequest } from "./caller-denial.ts";
 import {
   collapseScalarUnions,
   jsonPointer,
@@ -643,7 +645,11 @@ function discoveryFailure<Reason extends DiscoveryFailureReason>(
   );
 }
 
-export function requestFailure(error: unknown): RequestFailure {
+/**
+ * Maps an error to its client answer. `denied` describes the request for a caller's denial;
+ * without it the denial names no resource ID.
+ */
+export function requestFailure(error: unknown, denied?: DeniedRequest): RequestFailure {
   if (error instanceof RequestFailure) {
     return error;
   }
@@ -863,11 +869,28 @@ export function requestFailure(error: unknown): RequestFailure {
     return failure(403, "FORBIDDEN", error.message);
   }
   if (error instanceof AgentPrincipalAuthorizationError) {
-    // Only the Agent's own principal is named; caller denials stay generic below.
+    // The Agent's own principal and its grant are named; the caller's denial is below.
+    return failure(403, "FORBIDDEN", error.message);
+  }
+  if (error instanceof CallerStateDeniedError) {
+    // Fixed text about the caller's own account, session or job, not about a grant.
     return failure(403, "FORBIDDEN", error.message);
   }
   if (isAuthorizationDenied(error)) {
-    return failure(403, "FORBIDDEN", "The exact platform operation was not authorized.");
+    // The caller's own denial names the grant it checked, never the IAM decision's reason, so a
+    // Restriction and a missing grant read the same (finding 2534). Only a check of the caller's
+    // own grant is named: a decision for another principal, such as an Agent's service principal
+    // checked without naming it, stays generic, since its grant would read as the caller's own
+    // (finding 2586).
+    const own =
+      error.checkedPrincipalId !== undefined && error.checkedPrincipalId === denied?.actorId;
+    return failure(
+      403,
+      "FORBIDDEN",
+      error.authorization === undefined || !own
+        ? GENERIC_DENIAL
+        : capped(callerDenialMessage(error.authorization, denied?.requested)),
+    );
   }
   if (error instanceof Error) {
     const candidate = error as FastifyError;
@@ -888,7 +911,7 @@ export function requestFailure(error: unknown): RequestFailure {
         return failure(401, "UNAUTHENTICATED", "The caller did not provide valid credentials.");
       }
       if (status === 403) {
-        return failure(403, "FORBIDDEN", "The exact platform operation was not authorized.");
+        return failure(403, "FORBIDDEN", GENERIC_DENIAL);
       }
       return failure(
         503,

@@ -40,7 +40,12 @@ import { createTestConfigurationDriver } from "../helpers/configuration-driver.m
 import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { jsonLineDestination } from "../helpers/json-lines.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
-import { AGENT_NAME_CONFLICT, referenceFormRefusal } from "../helpers/refusal-text.mjs";
+import {
+  AGENT_NAME_CONFLICT,
+  callerDenied,
+  referenceFormRefusal,
+  sentIdHidden,
+} from "../helpers/refusal-text.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { availablePort } from "../helpers/available-port.mjs";
@@ -4579,7 +4584,13 @@ test("a forced ServiceAccount delete without a ChatGPT Backend removes an accoun
       session: outsider.session,
     });
     assert.equal(denied.status, 403, JSON.stringify(denied.body));
-    denials.push({ ...denied.body.error });
+    // The denial names the account ID this request sent, and nothing else about it.
+    const sent = path.split("/").at(-1);
+    assert.equal(
+      denied.body.error.message,
+      callerDenied("ServiceAccount delete", `ServiceAccount ${sent}`),
+    );
+    denials.push({ ...denied.body.error, message: sentIdHidden(denied.body.error.message, sent) });
   }
   assert.deepEqual(denials[0], denials[1]);
   const unknown = await controller.request("DELETE", `${missingPath}?force=true`);

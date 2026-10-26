@@ -60,6 +60,7 @@ import {
 } from "./console-agents-test-support.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import {
+  callerDenied,
   DEPENDENCY_UNAVAILABLE,
   GENERIC_DENIAL,
   MALFORMED_REQUEST,
@@ -983,7 +984,10 @@ test("Agent delete denial keeps the Agent visible with permission feedback", asy
   await dialog.getByRole("button", { name: "Permanently delete Agent" }).click();
   assert.equal((await denied).status(), 403);
 
-  await page.getByText("You do not have permission to delete this Agent").waitFor();
+  // The API names the grant the delete checked on the Agent it named (finding 2534).
+  await page
+    .getByText(callerDenied("Agent delete", `Agent ${agent.id}`), { exact: true })
+    .waitFor();
   await page.getByRole("heading", { name: "Denied Candidate" }).waitFor();
   assert.match(page.url(), new RegExp(`/console/agents/${agent.id}`));
   assert.equal(agentDeleteRequests(requests, namespace.id, agent.id).length, 1);

@@ -154,7 +154,7 @@ grant. When only the Agent principal's grant is missing, the `403` names that
 for example `The Agent service principal <id> is not authorized to operate
 secret <id>`. Its audit event records your own request with reason code
 `AGENT_PRINCIPAL_NOT_AUTHORIZED` and names that principal, action, resource and
-IAM evidence in its details. Denials of your own permissions stay generic.
+IAM evidence in its details. Your own denials name your missing grant.
 Admission then asks Compute to check the Configuration's gateway settings. On
 Kubernetes, a gateway setting it refuses answers `409 RESOURCE_CONFLICT` naming
 the setting and what is accepted, never its value, before any version is created

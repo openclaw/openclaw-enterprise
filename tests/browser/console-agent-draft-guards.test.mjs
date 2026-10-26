@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { NAMESPACE_NOT_READY_MESSAGE } from "../../apps/controller/src/console/agents/list.mts";
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
+import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
 import { createConsoleRepositoryLaunchFixture } from "../helpers/console-repository-launch.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -44,6 +45,7 @@ import { createPolicyConsole } from "./console-sandbox-policy-fixture.ts";
 import {
   AGENT_SAVE_DENIED,
   askForGrant,
+  callerDenied,
   CHANNEL_SECRETS_CONFIGURATION_CHANGED,
   CONFIGURATION_SAVE_DENIED,
   DEPENDENCY_UNAVAILABLE,
@@ -1469,7 +1471,8 @@ test("Deploy names the bound Secrets an operator may not operate", async (t) => 
   }
 
   // Unknown answer: the first Secret answer fails, so Deploy stays enabled and the API decides.
-  // Its plain 403 says nothing about which grant failed; the answer, read again, names it.
+  // Its 403 names the grant but no Secret the request did not send; the answer, read again,
+  // names the Secret.
   {
     const { page } = await newPage(t, fixture);
     let failed = false;
@@ -1493,7 +1496,10 @@ test("Deploy names the bound Secrets an operator may not operate", async (t) => 
     await deploy.click();
     const response = await refused;
     assert.equal(response.status(), 403);
-    assert.equal((await response.json()).error.message, GENERIC_DENIAL);
+    assert.equal(
+      (await response.json()).error.message,
+      callerDenied("Secret operate", "a Secret this request uses"),
+    );
     const alert = page.getByRole("alert").filter({ hasText: reason });
     await alert.waitFor();
     assert.equal(await alert.textContent(), reason);
@@ -1585,8 +1591,8 @@ test("Agent deployment shows the API's typed 403 and 409 refusals", async (t) =>
   assert.equal(revisions.status, 200);
   assert.equal(revisions.data.length, 0, "a refused deployment creates no version");
 
-  // The caller's own denial is generic by design: it names nothing the caller may not read,
-  // and nothing to fix, so the console keeps its guidance about the grants deploy needs.
+  // The caller's own denial names the grant deploy checked on the Agent the request named, and
+  // who grants it (finding 2534); a Restriction reads as a missing grant. The console shows it.
   fixture.policy.restrictions.push({
     id: "deny-typed-refusal-deploy",
     namespaceId: namespace.id,
@@ -1595,15 +1601,24 @@ test("Agent deployment shows the API's typed 403 and 409 refusals", async (t) =>
     action: "deploy",
     effect: "deny",
   });
-  assert.equal(await refusal(403), GENERIC_DENIAL);
-  // Granting these writes IAM policy, which only an Installation administrator can do (finding
-  // 2260).
+  const ownDenial = await refusal(403);
+  assert.equal(ownDenial, callerDenied("Agent deploy", `Agent ${agent.id}`));
+  await page.getByText(ownDenial, { exact: true }).waitFor();
+  await waitForEnabled(deploy);
+  // An older API's generic denial names nothing, so the console keeps its guidance about the
+  // grants deploy needs. Granting them writes IAM policy, which only an Installation
+  // administrator can do (finding 2260).
+  await page.route(`${fixture.origin}${path}/deploy`, (route) =>
+    route.fulfill(apiErrorResponse(403, "FORBIDDEN", GENERIC_DENIAL)),
+  );
+  await deploy.click();
   await page
     .getByText(
       "Deployment denied. Check Agent deploy permission and access to selected Secrets. First deployment also needs Agent read and operate permissions to create connection credentials. Ask an Installation administrator to check these grants.",
       { exact: true },
     )
     .waitFor();
+  await page.unroute(`${fixture.origin}${path}/deploy`);
   await waitForEnabled(deploy);
   fixture.policy.restrictions.pop();
 

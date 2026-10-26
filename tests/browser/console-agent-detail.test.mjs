@@ -71,10 +71,10 @@ import {
   AGENT_SAVE_DENIED,
   AGENT_SOURCES_DENIED,
   askForGrant,
+  callerDenied,
   CONFIGURATION_EDITS_PENDING,
   CONFIGURATION_UPDATE_DENIED,
   CONFIGURATION_SAVE_DENIED,
-  CONSOLE_ACCESS_DENIED,
   NAMESPACE_NOT_READY,
   NEW_SECRET_OPERATE_DENIED,
   NEW_SECRET_OPERATE_REMEDY,
@@ -2622,11 +2622,12 @@ test("Agent credentials report partial harness Secret grant failure", async (t) 
   });
   requests.length = 0;
   await page.getByRole("button", { name: "Retry credential access" }).click();
-  // The read's own refusal, not grant advice such as "this write may have succeeded".
+  // The read's own refusal, named by the API (finding 2534), not grant advice such as "this
+  // write may have succeeded".
   await page
     .getByText(
       new RegExp(
-        `^${escapeRegExp(`Authentication source saved, but this Agent could not be read before retrying its credential access. ${CONSOLE_ACCESS_DENIED}`)} Request ID: req_[0-9a-f-]{36} Select Retry credential access once the Agent can be read\\.$`,
+        `^${escapeRegExp(`Authentication source saved, but this Agent could not be read before retrying its credential access. ${callerDenied("Agent read", `Agent ${agent.id}`)}`)} Request ID: req_[0-9a-f-]{36} Select Retry credential access once the Agent can be read\\.$`,
       ),
     )
     .waitFor();

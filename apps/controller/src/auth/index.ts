@@ -17,7 +17,7 @@ import {
 } from "@openclaw-enterprise/iam";
 import {
   PostgresHumanAuthentication,
-  AuthorizationDeniedError,
+  CallerStateDeniedError,
   ScopeViolationError,
   type HumanAuthenticationActivation,
   type HumanAuthenticationActivationHooks,
@@ -1753,7 +1753,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
     holdSession: async (_unit, session, request) => {
       const current = await resolveSession(request);
       if (current?.id !== session.id || current.userId !== session.userId) {
-        throw new AuthorizationDeniedError("The assigning session is no longer current.");
+        throw new CallerStateDeniedError("The assigning session is no longer current.");
       }
     },
     async createServiceKey({ principal, name, expiresIn }) {
@@ -2053,7 +2053,7 @@ export async function createPostgresControllerAuth(
         await persistence!.holdSession(unit, session.userId, session.id);
       }
       if (!(await unit.installations.holdAuthenticationSession(session.id, session.userId))) {
-        throw new AuthorizationDeniedError("The assigning session is no longer current.");
+        throw new CallerStateDeniedError("The assigning session is no longer current.");
       }
     },
     ...(activationSkipped.length === 0 ? {} : { activationSkipped }),

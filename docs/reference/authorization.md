@@ -380,7 +380,8 @@ ambiguous identity fails closed.
 
 - `401`: The session cookie or service key is missing, invalid, expired, or revoked.
 - `403`: The principal lacks an exact grant, belongs to another Namespace, or
-  matches a deny Restriction.
+  matches a deny Restriction. The message names the grant; see
+  [denial messages](cheatsheets/permissions.md#denial-messages).
 - `404`: The requested resource does not exist under its exact parent.
 - `503 DEPENDENCY_UNAVAILABLE`: The selected IAM or audit dependency is
   unavailable; no fallback authorization provider is used.
@@ -389,8 +390,6 @@ ambiguous identity fails closed.
 - `400` creating a Role or binding: the detail path names the invalid field.
 - `409` deleting a Role: the Role is referenced by AccessBindings; remove them
   explicitly first.
-- Group or broad-grant mutation is rejected: Namespace policy APIs support
-  identity subjects and exact resource targets only.
 
 ## Evidence and related references
 

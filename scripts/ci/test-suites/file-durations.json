@@ -149,6 +149,7 @@
     "tests/integration/auth-maintain.test.mjs": 4700,
     "tests/integration/bootstrap-output.test.mjs": 100,
     "tests/integration/bootstrap-volume.test.mjs": 5000,
+    "tests/integration/caller-denial-api.test.ts": 1200,
     "tests/integration/ci-cleanup.test.mjs": 17100,
     "tests/integration/ci-download-pinned.test.mjs": 7200,
     "tests/integration/ci-image-config-digest.test.mjs": 100,

@@ -6,6 +6,25 @@
 // The API's generic error messages (apps/controller/src/http/errors.ts). Console tests use them
 // as the server's answer in fulfilled routes, and API tests expect them in error envelopes.
 export const GENERIC_DENIAL = "The exact platform operation was not authorized.";
+// A caller's own denial names the grant the request checked and who grants it (finding 2534,
+// apps/controller/src/http/caller-denial.ts). `target` is "<Kind> <id>" for an ID the request
+// carried, otherwise "a <Kind> this request uses".
+export const callerDenied = (grant, target) =>
+  `Not authorized: this needs ${grant} on ${target}. Ask an Installation administrator to grant it.`;
+// A denial echoes the ID its request sent, so a real and an unknown ID get answers that match once
+// each answer's own ID is hidden: the text never says whether the resource exists.
+export const sentIdHidden = (text, id) => text.replaceAll(id, "<id>");
+// A create needs the collection grant, which no Role can hold: only an Installation
+// administrator creates one. `kinds` is the plural, such as "Secrets".
+export const createDenied = (kind, namespaceId, kinds = `${kind}s`) =>
+  `Not authorized: this needs ${kind} create in Namespace ${namespaceId}. Only an Installation administrator can create ${kinds}: ask one to create it.`;
+export const NAMESPACE_CREATE_DENIED =
+  "Not authorized: this needs Namespace create. Only an Installation administrator can create Namespaces: ask one to create it.";
+export const INSTALLATION_ADMINISTER_DENIED =
+  "Not authorized: this needs Installation administer. Ask an Installation administrator to do it for you or to grant it.";
+// The native admin host names the grant but no Agent: the host, not the caller, names the Agent.
+export const NATIVE_ADMIN_DENIED =
+  "Not authorized: opening this Agent's native admin UI needs Agent administer on it. Ask an Installation administrator to grant it.";
 export const DEPENDENCY_UNAVAILABLE = "A required platform dependency is unavailable.";
 export const RESOURCE_CONFLICT = "The requested platform resource already exists.";
 export const RESOURCE_NOT_FOUND = "The requested platform resource was not found.";
@@ -25,7 +44,7 @@ export const AGENT_CREATE_DENIED =
 // Secrets and Namespaces follow the same rule: Namespace Roles cannot grant people create.
 export const SECRET_CREATE_DENIED =
   "Your access does not include creating Secrets in this Namespace. Only an Installation administrator can create Secrets: ask one to create it and to give you Secret read and operate on it.";
-export const NAMESPACE_CREATE_DENIED =
+export const CONSOLE_NAMESPACE_CREATE_DENIED =
   "Your access does not include creating Namespaces in this Installation. Only an Installation administrator can create Namespaces: ask one to create a Namespace or to give you access to an existing one.";
 
 // The console's reasons for a control disabled, or a request refused, for lack of a grant

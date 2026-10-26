@@ -74,6 +74,7 @@ import {
 } from "./console-agents-test-support.mjs";
 import {
   AGENT_NAME_CONFLICT,
+  callerDenied,
   READ_UNAVAILABLE,
   namespaceListDenied,
 } from "../helpers/refusal-text.mjs";
@@ -3899,7 +3900,11 @@ test("denied Preset reads do not automatically start an Agent form", async (t) =
   );
   await page.getByRole("button", { name: "Start with default Preset" }).click();
   assert.equal((await denied).status(), 403);
-  await page.getByRole("alert").filter({ hasText: "Access denied" }).waitFor();
+  // The API's named denial (finding 2534) names the Preset the request sent.
+  await page
+    .getByRole("alert")
+    .filter({ hasText: callerDenied("Preset read", `Preset ${starter.id}`) })
+    .waitFor();
   assert.equal(await page.locator("#create-agent-form").count(), 0);
   await page.getByRole("button", { name: "Start without Preset" }).click();
   assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "");
