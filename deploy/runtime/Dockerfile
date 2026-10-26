@@ -197,7 +197,10 @@ RUN --network=none --mount=type=tmpfs,target=/source/.artifacts \
 RUN --network=none cd ui && node ../scripts/run-node-package-bin.mts vitest run --config vitest.config.ts \
     --project unit --project unit-node \
     src/api/gateway-reachability.node.test.ts src/app/gateway-store.observers.test.ts src/app/app-shell-view.test.ts
-RUN --network=none OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
+# The test runner restores its cache by renaming directories. A fresh mount
+# keeps those renames off the previous test layer.
+RUN --network=none --mount=type=tmpfs,target=/source/.artifacts \
+    OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
     node --import ./scripts/tsx.mjs scripts/test-projects.mts src/infra/gateway-lock-recovery.test.ts
 
 FROM openclaw-patched-source AS openclaw-build
