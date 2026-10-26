@@ -2923,9 +2923,9 @@ test("a restored operate grant shows status on Back, and a new sign-in asks for 
   const logReads = () => logRequests(requests, logs.revisionId).length;
   const permissionReads = () =>
     requests.filter(({ path }) => path.endsWith(`/agents/${logs.agent.id}/permissions`)).length;
-  // The answer says no operate, so status is not asked (finding 2454).
+  // The answer says no operate and no log text, so neither is asked (findings 2454, D758).
   assert.equal(statusReads(), 0);
-  assert.equal(logReads(), 1);
+  assert.equal(logReads(), 0);
 
   // Each Back that rebuilds the page reads the answer twice: Back's check and the page's own
   // read, which the rebuilt Logs view reuses while it is in flight.
@@ -2937,8 +2937,8 @@ test("a restored operate grant shows status on Back, and a new sign-in asks for 
   await waitForIdleFetches(page);
   assert.equal(statusReads(), 1);
   assert.equal(permissionReads() - permissionsBefore, 2);
-  // The permission answer has no read_logs bit, so the log text denial stands for this sign-in.
-  assert.equal(logReads(), 1);
+  // The log text denial stands for this sign-in, still without a read.
+  assert.equal(logReads(), 0);
   await page.getByText(/Log text requires Agent read_logs/).waitFor();
 
   // Operate revoked: Back's check of the shown status is refused once; the rebuilt view takes

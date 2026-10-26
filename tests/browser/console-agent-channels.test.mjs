@@ -243,8 +243,11 @@ describe("Agent channels", { concurrency: 3 }, () => {
     await appSecretLink.click();
     const appSecretPopup = await appSecretPopupPromise;
     await appSecretPopup.waitForLoadState("domcontentloaded");
-    assert.equal(new URL(appSecretPopup.url()).pathname, appSecretPath);
-    await appSecretPopup.getByText("Slack app token").waitFor();
+    const popupUrl = new URL(appSecretPopup.url());
+    assert.equal(`${popupUrl.pathname}${popupUrl.search}`, appSecretPath);
+    // The Secrets page opens the linked Secret's metadata.
+    const appSecretDialog = appSecretPopup.getByRole("dialog", { name: "Slack app token" });
+    await appSecretDialog.getByText(slackAppSecret.id, { exact: true }).waitFor();
     const secretMetadataText = await appSecretPopup.locator("body").textContent();
     assert.match(secretMetadataText, new RegExp(slackAppSecret.id));
     assert.doesNotMatch(secretMetadataText, new RegExp(slackAppSecretValue));

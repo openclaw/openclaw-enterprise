@@ -4054,6 +4054,7 @@ test("a version editor without Agent update can recover a failed deployment from
     configurationSecretsOperateDeniedBindings: [],
     agentSourcesOperate: false,
     sandboxPolicyRead: false,
+    readLogs: false,
   });
 
   // The header label confirms the page applied the permission answer before recovery is used.
@@ -4180,6 +4181,7 @@ test("a reader without update views the version draft read-only", async (t) => {
     configurationSecretsOperateDeniedBindings: [],
     agentSourcesOperate: false,
     sandboxPolicyRead: false,
+    readLogs: false,
   });
   await page.getByText(CONFIGURATION_READ_ONLY, { exact: true }).waitFor();
   await page.getByText("View native Configuration", { exact: true }).waitFor();
@@ -4323,6 +4325,7 @@ test("an Agent editor without Configuration update sees the Configuration read-o
     configurationSecretsOperateDeniedBindings: [],
     agentSourcesOperate: true,
     sandboxPolicyRead: false,
+    readLogs: false,
   });
   await page.getByText(CONFIGURATION_READ_ONLY, { exact: true }).waitFor();
   assert.equal(await page.getByRole("button", { name: "Edit Configuration" }).count(), 0);
@@ -4394,6 +4397,7 @@ test("an editor without operate on a bound Secret views the version draft read-o
     configurationSecretsOperateDeniedBindings: ["EXTERNAL_API_TOKEN"],
     agentSourcesOperate: false,
     sandboxPolicyRead: false,
+    readLogs: false,
   });
   await page.getByText(READ_ONLY_DRAFT_NOTICE, { exact: true }).waitFor();
   assert.equal(await page.getByText(/New version\. Changes affect/).count(), 0);
@@ -4431,9 +4435,13 @@ test("a deployer without update keeps the draft checklist", async (t) => {
     nativeValues("slack", { harnessId: "codex", channels: { slack: SOCKET_SLACK } }),
     { executionMode: "dedicated" },
   );
+  // Read and operate on the model credential Secret, so Deploy waits on the draft, not on a
+  // Secret this member cannot read (finding D756).
   const deployer = await fixture.createNamespaceMember("draft-deployer", namespace.id, [
     ...AGENT_READ,
     ["deploy", "agent"],
+    ["read", "secret"],
+    ["operate", "secret"],
   ]);
   const path = "/namespaces/" + namespace.id + "/agents/" + agent.id;
   const { page } = await newPage(t, fixture);
@@ -5129,6 +5137,7 @@ test("a negative permission answer reaching an open Stop or Delete dialog preven
           configurationSecretsOperateDeniedBindings: [],
           agentSourcesOperate: false,
           sandboxPolicyRead: false,
+          readLogs: false,
         },
       },
     );
