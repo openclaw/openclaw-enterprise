@@ -105,8 +105,9 @@ rolls back all three so a later worker can retry recovery. Refresh, inspect, and
 retry explicitly. Failure never triggers automatic redeployment.
 
 A `failed` application carries a `reason` code. The console shows its meaning
-and next step. Every code except `SANDBOX_POLICY_UNCONFIRMED` fails before the
-worker changes the Sandbox:
+and next step. The worker repeats its checks on every pass, including passes
+after it sent the policy. A failure after a send can leave the Sandbox running
+that policy, and the worker does not send it again:
 
 | `reason`                               | Cause and next step                                                                                    |
 | -------------------------------------- | ------------------------------------------------------------------------------------------------------ |

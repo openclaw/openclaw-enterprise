@@ -56,23 +56,20 @@ function grantText(grant: SandboxNetworkGrant) {
 }
 
 // What a failed live application's reason code (`worker/sandbox-policy.ts`) means and what to do
-// next; the page showed the bare code (finding 2537). Every code but the unconfirmed one fails
-// before the worker sends anything to the Sandbox.
+// next; the page showed the bare code (finding 2537). The worker repeats its checks on every pass,
+// also after it sent the policy and the Sandbox reported it pending, so a failure does not mean the
+// Sandbox runs none of it (finding 2570). Refresh policy reads only the stored record.
+const NOT_SENT_AGAIN =
+  "The controller does not send this policy again, and it did not confirm whether the Sandbox runs it.";
 const APPLICATION_FAILURES: Readonly<Record<string, string>> = {
-  SANDBOX_POLICY_REVISION_CHANGED:
-    "The Agent’s current version changed, or the Agent stopped, before the policy reached its Sandbox, so nothing was applied. Apply the saved policy to the current version again.",
-  AUTHORIZATION_DENIED:
-    "The account that applied the policy no longer has Agent manage_policy and SandboxPolicy update, so nothing was applied. Ask an Installation administrator for that access, then apply again.",
-  SANDBOX_POLICY_CEILING_CHANGED:
-    "The Installation delegation ceiling changed and no longer covers every saved rule, so nothing was applied. Remove the rules outside the ceiling, save, then apply again.",
-  SANDBOX_POLICY_UNSUPPORTED:
-    "The Sandbox Driver running this version cannot apply Agent network policy, or refused these rules, so nothing was applied. Check the rules with Review changes; if they pass, deploy a new version to put the saved policy into effect.",
-  SANDBOX_POLICY_PROTECTED_EXECUTION:
-    "This version runs under protected execution, whose egress policy an Agent network policy cannot replace, so nothing was applied. Remove the saved rules so that they do not block the next deploy.",
-  SANDBOX_POLICY_VALIDATION_FAILED:
-    "The Sandbox Driver’s settings refused the saved rules, so nothing was applied. Review changes shows each problem: correct the rules, save, then apply again.",
+  SANDBOX_POLICY_REVISION_CHANGED: `The Agent’s current version changed, or the Agent stopped, before the policy was confirmed. ${NOT_SENT_AGAIN} Apply the saved policy to the current version again.`,
+  AUTHORIZATION_DENIED: `The account that applied the policy no longer has Agent manage_policy and SandboxPolicy update. ${NOT_SENT_AGAIN} Ask an Installation administrator for that access, then apply again.`,
+  SANDBOX_POLICY_CEILING_CHANGED: `The Installation delegation ceiling changed and no longer covers every saved rule. ${NOT_SENT_AGAIN} Remove the rules outside the ceiling, save, then apply again.`,
+  SANDBOX_POLICY_UNSUPPORTED: `The Sandbox Driver running this version cannot apply Agent network policy, or refused these rules. ${NOT_SENT_AGAIN} Check the rules with Review changes; if they pass, deploy a new version to put the saved policy into effect.`,
+  SANDBOX_POLICY_PROTECTED_EXECUTION: `This version runs under protected execution, whose egress policy an Agent network policy cannot replace. ${NOT_SENT_AGAIN} Remove the saved rules so that they do not block the next deploy.`,
+  SANDBOX_POLICY_VALIDATION_FAILED: `The Sandbox Driver’s settings refused the saved rules. ${NOT_SENT_AGAIN} Review changes shows each problem: correct the rules, save, then apply again.`,
   SANDBOX_POLICY_PLACEMENT_UNAVAILABLE:
-    "The Installation’s Compute Driver changed since this version was deployed, so the controller cannot reach its Sandbox and nothing was applied. Deploy a new version to put the saved policy into effect.",
+    "The Installation’s Compute Driver changed since this version was deployed, so the controller cannot reach its Sandbox to apply or check the policy. Deploy a new version to put the saved policy into effect.",
   SANDBOX_POLICY_PROVIDER_FAILED:
     "The Sandbox reported that applying the policy failed. Refresh policy, then apply again; if it fails again, ask an operator to check the Sandbox gateway.",
 };

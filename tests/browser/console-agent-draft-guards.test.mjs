@@ -807,7 +807,9 @@ test("overlapping policy refreshes retain the newest read and continue pending p
 for (const c of [
   {
     reason: "SANDBOX_POLICY_CEILING_CHANGED",
-    text: "The Installation delegation ceiling changed and no longer covers every saved rule, so nothing was applied. Remove the rules outside the ceiling, save, then apply again.",
+    // The worker repeats this check after it sent the policy, so the text never claims that
+    // nothing was applied (finding 2570).
+    text: "The Installation delegation ceiling changed and no longer covers every saved rule. The controller does not send this policy again, and it did not confirm whether the Sandbox runs it. Remove the rules outside the ceiling, save, then apply again.",
   },
   {
     reason: "SANDBOX_POLICY_UNCONFIRMED",
