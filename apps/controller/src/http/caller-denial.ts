@@ -137,3 +137,30 @@ export function requestedValues(request: {
   visit(request.body, 0);
   return (value) => found.has(value);
 }
+
+/**
+ * The text when an Agent's own service principal, not the caller, lacks a grant that deployment
+ * needs (finding 2592). The caller cannot fix it, so it asks an Installation administrator to give
+ * the Agent access. The resource comes from the Agent's stored bindings: the text names it only when
+ * the request carried its ID or the caller may read it, and names the Agent only when the request
+ * carried its ID. It never names the principal, which the audit event records.
+ */
+export function agentPrincipalDenialMessage(
+  denial: {
+    readonly agentId?: string;
+    readonly callerMayReadResource: boolean;
+    readonly authorization: { readonly action: PermissionAction; readonly resource: ResourceRef };
+  },
+  requested: (value: string) => boolean = () => false,
+): string {
+  const { action, resource } = denial.authorization;
+  const kind = KIND_LABELS[resource.kind] ?? resource.kind;
+  const shown = (id: string | undefined, readable: boolean) =>
+    id !== undefined && SHOWN_ID.test(id) && (readable || requested(id)) ? id : undefined;
+  const agentId = shown(denial.agentId, false);
+  const resourceId = shown(resource.id, denial.callerMayReadResource);
+  const agent = agentId === undefined ? "This Agent" : `Agent ${agentId}`;
+  const target =
+    resourceId === undefined ? `one of its bound ${pluralKind(kind)}` : `${kind} ${resourceId}`;
+  return `${agent} cannot use ${target}: the Agent itself needs ${kind} ${action} on it. Ask an Installation administrator to give the Agent access, then deploy again.`;
+}

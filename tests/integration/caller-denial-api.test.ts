@@ -6,6 +6,7 @@ import { assertApiError } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
+  agentPrincipalDenied,
   callerDenied,
   createDenied,
   INSTALLATION_ADMINISTER_DENIED,
@@ -147,4 +148,57 @@ test("a caller's own denial names the missing grant without disclosing what the 
     stored.message,
     callerDenied("Configuration read", "a Configuration this request uses"),
   );
+});
+
+// Finding 2592: when the Agent's own service principal lacks Secret operate on its model
+// credential, deploy is refused for the Agent, not the caller. That Secret comes from the Agent's
+// stored binding, so the refusal names it only to a caller who may read it, and never names the
+// principal. A deployer who holds Secret operate but not Secret read learns no Secret ID.
+test("an Agent principal's deploy refusal names its bound Secret only to a caller who may read it", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Agent principal denials", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Principal denied Agent",
+    createHarnessConfiguration("openclaw", "gpt-4.1"),
+  );
+  const secretId = agent.harnessAuth.source.id;
+  // The Agent's principal loses its grant on the model credential; the callers below keep theirs.
+  const agentGrants = fixture.policy.bindings.filter(
+    (binding: { subjectId?: string }) => binding.subjectId === agent.servicePrincipalId,
+  );
+  assert.ok(agentGrants.length > 0);
+  fixture.policy.bindings.splice(
+    0,
+    Infinity,
+    ...fixture.policy.bindings.filter(
+      (binding: { subjectId?: string }) => binding.subjectId !== agent.servicePrincipalId,
+    ),
+  );
+  const deployPath = `/namespaces/${namespace.id}/agents/${agent.id}/deploy`;
+  const deployGrants: [string, string][] = [
+    ["read", "namespace"],
+    ["deploy", "agent"],
+    ["read", "configuration"],
+    ["operate", "secret"],
+  ];
+  const refusal = async (label: string, grants: [string, string][]) => {
+    const member = await fixture.createNamespaceMember(label, namespace.id, grants as never);
+    const response = await fixture.request("POST", deployPath, {
+      session: await fixture.signIn(member.credentials),
+    });
+    assertApiError(response, 403, "FORBIDDEN", label);
+    return response.body.error.message as string;
+  };
+
+  // Deploy-only: the caller's own grants pass, but it cannot read the Secret, so the text names
+  // the Agent it sent and no Secret.
+  const hidden = await refusal("deploy-only", deployGrants);
+  assert.equal(hidden, agentPrincipalDenied(`Agent ${agent.id}`, "one of its bound Secrets"));
+  assert.equal(hidden.includes(secretId), false);
+  assert.equal(hidden.includes(agent.servicePrincipalId), false);
+  // The same grants plus Secret read: the caller can already see the Secret, so it is named.
+  const named = await refusal("deploy-and-secret-read", [...deployGrants, ["read", "secret"]]);
+  assert.equal(named, agentPrincipalDenied(`Agent ${agent.id}`, `Secret ${secretId}`));
 });

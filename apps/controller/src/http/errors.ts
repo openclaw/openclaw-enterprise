@@ -53,7 +53,12 @@ import {
   ConfigurationValidationError,
 } from "../drivers/configuration/kubernetes/index.ts";
 import { loggedErrorText, resemblesCredential } from "../logging.ts";
-import { callerDenialMessage, GENERIC_DENIAL, type DeniedRequest } from "./caller-denial.ts";
+import {
+  agentPrincipalDenialMessage,
+  callerDenialMessage,
+  GENERIC_DENIAL,
+  type DeniedRequest,
+} from "./caller-denial.ts";
 import {
   collapseScalarUnions,
   jsonPointer,
@@ -869,8 +874,9 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
     return failure(403, "FORBIDDEN", error.message);
   }
   if (error instanceof AgentPrincipalAuthorizationError) {
-    // The Agent's own principal and its grant are named; the caller's denial is below.
-    return failure(403, "FORBIDDEN", error.message);
+    // The Agent's own principal lacks the grant; the caller's denial is below. The text names a
+    // stored resource only when the caller sent or may read it (finding 2592).
+    return failure(403, "FORBIDDEN", capped(agentPrincipalDenialMessage(error, denied?.requested)));
   }
   if (error instanceof CallerStateDeniedError) {
     // Fixed text about the caller's own account, session or job, not about a grant.
