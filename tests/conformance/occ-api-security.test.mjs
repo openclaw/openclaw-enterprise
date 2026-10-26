@@ -11,6 +11,7 @@ import {
 import { assertApiError } from "../helpers/api-error.mjs";
 import { authenticatedHeaders, cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
+import { grantRole } from "../helpers/iam-grants.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import {
   administerGrants,
@@ -136,15 +137,10 @@ test("existing namespace adoption requires installation administration and waits
   await bootstrap(fixture);
 
   // Ordinary namespace creation does not authorize claiming an operator-owned Kubernetes namespace.
-  fixture.state.roles.push({
+  grantRole(fixture.state, fixture.tenantAReader.id, {
     id: "role-namespace-creator",
-    permissions: [{ action: "create", resourceKind: "namespace" }],
-  });
-  fixture.state.bindings.push({
-    id: "binding-namespace-creator",
-    subjectKind: "identity",
-    subjectId: fixture.tenantAReader.id,
-    roleId: "role-namespace-creator",
+    bindingId: "binding-namespace-creator",
+    permissions: { namespace: ["create"] },
   });
   const creator = fixture.createApp(fixture.tenantAReader);
   const managed = await request(creator, "/namespaces", {
@@ -2451,20 +2447,14 @@ test("runtime log reads are rate limited per principal and Agent with Retry-Afte
   assert.equal(fixture.computeDriver.calls.length, 0);
   // The denials took no token: once granted, the same principal still has its full burst.
   for (const grant of operateGrants) {
-    const id = `runtime-outsider-${grant.resourceKind}-${grant.action}`;
-    fixture.policy.roles.push({
-      id,
+    grantRole(fixture.policy, outsider.principal.id, {
+      id: `runtime-outsider-${grant.resourceKind}-${grant.action}`,
       namespaceId: target.namespace.id,
-      permissions: [{ action: grant.action, resourceKind: grant.resourceKind }],
-    });
-    fixture.policy.bindings.push({
-      id,
-      namespaceId: target.namespace.id,
-      subjectKind: "identity",
-      subjectId: outsider.principal.id,
-      roleId: id,
-      resourceKind: grant.resourceKind,
-      resourceId: grant.resourceKind === "agent_revision" ? target.revisionId : target.agent.id,
+      permissions: { [grant.resourceKind]: [grant.action] },
+      resource: {
+        kind: grant.resourceKind,
+        id: grant.resourceKind === "agent_revision" ? target.revisionId : target.agent.id,
+      },
     });
   }
   for (let attempt = 0; attempt < 10; attempt += 1) {

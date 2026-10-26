@@ -13,6 +13,7 @@ import {
   NATIVE_ADMIN_DENIED,
   nativeAdminOffDenied,
 } from "../helpers/refusal-text.mjs";
+import { grantRole } from "../helpers/iam-grants.mjs";
 import { createControllerAuth } from "../helpers/password-hasher.mjs";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
@@ -266,39 +267,31 @@ function sessionCookieName(cookieHeader) {
   return name;
 }
 
-async function createAgentPermissionSession(context, label, permissions, bindingScope = {}) {
+// A signed-in account whose one Role holds `permissions` in the Namespace, bound across it or,
+// with `resource`, to that one resource.
+async function createAgentPermissionSession(context, label, permissions, resource) {
   const limited = await context.fixture.createAccountWithPolicy(label, (principal) => {
-    const roleId = `role-${label}-${randomUUID()}`;
-    context.fixture.policy.roles.push({
-      id: roleId,
+    grantRole(context.fixture.policy, principal.id, {
+      id: `role-${label}-${randomUUID()}`,
+      bindingId: `binding-${label}-${randomUUID()}`,
       namespaceId: context.namespace.id,
       permissions,
-    });
-    context.fixture.policy.bindings.push({
-      id: `binding-${label}-${randomUUID()}`,
-      namespaceId: context.namespace.id,
-      subjectKind: "identity",
-      subjectId: principal.id,
-      roleId,
-      ...bindingScope,
+      resource,
     });
   });
   return context.fixture.signIn(limited.credentials);
 }
 
 async function createReadOperateSession(context, label = "native-admin-read-operate") {
-  return createAgentPermissionSession(context, label, [
-    { action: "read", resourceKind: "agent" },
-    { action: "operate", resourceKind: "agent" },
-  ]);
+  return createAgentPermissionSession(context, label, { agent: ["read", "operate"] });
 }
 
 async function createExactAgentAdministerSession(context, label = "native-admin-exact-administer") {
   return createAgentPermissionSession(
     context,
     label,
-    [{ action: "administer", resourceKind: "agent" }],
-    { resourceKind: "agent", resourceId: context.agent.id },
+    { agent: ["administer"] },
+    { kind: "agent", id: context.agent.id },
   );
 }
 
@@ -489,21 +482,13 @@ async function issueServiceKeyForNativeAgent(context) {
     kind: "service_principal",
     namespaceId: context.namespace.id,
   };
-  const roleId = `native-admin-service-role-${randomUUID()}`;
   context.fixture.policy.identities.push(principal);
-  context.fixture.policy.roles.push({
-    id: roleId,
+  grantRole(context.fixture.policy, principal.id, {
+    id: `native-admin-service-role-${randomUUID()}`,
+    bindingId: `native-admin-service-binding-${randomUUID()}`,
     namespaceId: context.namespace.id,
-    permissions: [{ action: "administer", resourceKind: "agent" }],
-  });
-  context.fixture.policy.bindings.push({
-    id: `native-admin-service-binding-${randomUUID()}`,
-    namespaceId: context.namespace.id,
-    subjectKind: "identity",
-    subjectId: principal.id,
-    roleId,
-    resourceKind: "agent",
-    resourceId: context.agent.id,
+    permissions: { agent: ["administer"] },
+    resource: { kind: "agent", id: context.agent.id },
   });
   const issued = await context.fixture.request("POST", "/api/auth/service-keys", {
     body: {
