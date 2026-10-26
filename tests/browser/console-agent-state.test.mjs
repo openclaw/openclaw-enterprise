@@ -4,7 +4,7 @@ import test from "node:test";
 import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/deployment-evidence.mts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
-import { createConsoleAppFixture, fileConsoleApp } from "../helpers/console-app.mjs";
+import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   AGENT_READ,
   apiRequests,
@@ -37,7 +37,7 @@ import {
   openFailureDetails,
 } from "./console-deployment-activity-helpers.mjs";
 import { agentDeleteRequests, agentStopRequests } from "./console-agents-test-support.mjs";
-import { fileReadyNamespace } from "./console-ready-namespace.mjs";
+import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
 import {
   ACCESS_TAB_UNAVAILABLE,
   AGENT_CREATE_RESTRICTED,
@@ -61,12 +61,6 @@ import {
   VERSION_UNAVAILABLE,
   VERSION_READ_DENIED_HEADING,
 } from "../helpers/refusal-text.mjs";
-
-// Tests that need no app of their own share one (fileConsoleApp); each makes its own Namespace.
-// Tests that read the audit sink, expire sessions, or pass fixture options keep an app of their
-// own.
-const stateApp = fileConsoleApp();
-const readyNamespace = fileReadyNamespace(stateApp);
 
 function deploymentBody(
   namespaceId,
@@ -94,7 +88,8 @@ function deploymentBody(
 const authenticationFailure = persistedDeploymentError("RUNTIME_AUTHENTICATION_FAILED");
 
 test("Refresh deployment also refreshes the viewed version's deployment record", async (t) => {
-  const fixture = await stateApp(t);
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Record refresh", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Record Agent", nativeValues("v1"));
   const revision = await fixture.deployAgent(namespace.id, agent.id);
@@ -143,7 +138,8 @@ test("Refresh deployment also refreshes the viewed version's deployment record",
 });
 
 test("Deployment activity follows pending work until it records a result", async (t) => {
-  const fixture = await stateApp(t);
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Activity follow", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Follow Agent", nativeValues("v1"));
   const revision = await fixture.deployAgent(namespace.id, agent.id);
@@ -186,7 +182,8 @@ test("Deployment activity follows pending work until it records a result", async
 });
 
 test("Deployment activity names retire cleanup as revision cleanup and follows it", async (t) => {
-  const fixture = await stateApp(t);
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Cleanup follow", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Cleanup Agent", nativeValues("v1"));
   const revision = await fixture.deployAgent(namespace.id, agent.id);
@@ -243,7 +240,8 @@ test("Deployment activity names retire cleanup as revision cleanup and follows i
 // Rewriting the summary cards and status line with the same text repainted them on every
 // poll (finding 1424); only the changed attempt details in Deployment activity may change.
 test("Deployment polls leave an unchanged summary and status line untouched", async (t) => {
-  const fixture = await stateApp(t);
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Quiet polls", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Quiet Agent", nativeValues("v1"));
   const revision = await fixture.deployAgent(namespace.id, agent.id);
@@ -308,7 +306,8 @@ test("Deployment polls leave an unchanged summary and status line untouched", as
 });
 
 test("Deployment activity keeps following after Back restores the cached Agent view", async (t) => {
-  const fixture = await stateApp(t);
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Activity restore", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Restore Agent", nativeValues("v1"));
   const revision = await fixture.deployAgent(namespace.id, agent.id);
@@ -355,7 +354,8 @@ test("Deployment activity keeps following after Back restores the cached Agent v
 });
 
 test("Diagnostics explain UNAVAILABLE checks and point at the recorded failure", async (t) => {
-  const fixture = await stateApp(t);
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Diagnostics explain", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Diagnostics Agent", nativeValues("v1"));
   // Diagnostics are offered for the current version: an Embedded version is selected before its
@@ -410,7 +410,8 @@ test("Diagnostics explain UNAVAILABLE checks and point at the recorded failure",
 // A fast answer painted "Waiting for diagnostic results…" for a frame and moved focus to it and
 // back (finding 1714). The waiting line, the disabled button and the focus move now wait 250 ms.
 test("A fast diagnostics answer neither shows the waiting line nor moves focus", async (t) => {
-  const fixture = await stateApp(t);
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Diagnostics fast", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Fast Agent", nativeValues("v1"));
   const revision = await fixture.deployAgent(namespace.id, agent.id);
@@ -549,7 +550,8 @@ test("A fast diagnostics answer neither shows the waiting line nor moves focus",
 });
 
 test("Diagnostics explain a missing Slack channel and keep the recorded failure in view", async (t) => {
-  const fixture = await stateApp(t);
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Diagnostics scope", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Embedded Agent", nativeValues("v1"));
   // Diagnostics are offered for the current version: an Embedded version is selected before its
@@ -623,7 +625,8 @@ test("Diagnostics explain a missing Slack channel and keep the recorded failure 
 });
 
 test("Agent detail returns to the Agents list once background deletion finishes", async (t) => {
-  const fixture = await stateApp(t);
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Delete finish", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Finish Candidate", nativeValues("go"));
   const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
@@ -651,7 +654,8 @@ test("Agent detail returns to the Agents list once background deletion finishes"
 });
 
 test("Agent detail hides sharing instead of showing an error to non-administrators", async (t) => {
-  const fixture = await stateApp(t);
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Sharing denied", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Shared Agent", nativeValues("x"));
   const { page } = await newPage(t, fixture);
@@ -1532,7 +1536,8 @@ const FORBIDDEN = {
 // Access tab out, so an administrator keeps it. The tab is about the whole Agent, so the viewed
 // version's evidence steps aside while it is open.
 test("An unknown Installation access answer keeps the Access tab", async (t) => {
-  const fixture = await stateApp(t);
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Access unknown", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Unknown Agent", nativeValues("v1"));
   const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
@@ -1559,7 +1564,8 @@ test("An unknown Installation access answer keeps the Access tab", async (t) => 
 // A refused policy read with focus on the Access tab hides the tab, moves focus to
 // Configuration's and replaces the Access entry in history, so Back does not return to it.
 test("A refused sharing read moves focus off the hidden Access tab", async (t) => {
-  const fixture = await stateApp(t);
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Sharing refused", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Refused Agent", nativeValues("x"));
   const { page } = await newPage(t, fixture);
@@ -1590,7 +1596,8 @@ test("A refused sharing read moves focus off the hidden Access tab", async (t) =
 // The read is refused after the reader left the tab: Back to it opens Configuration in its
 // place, never the hidden panel.
 test("Back to a refused Access tab opens Configuration", async (t) => {
-  const fixture = await stateApp(t);
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Sharing left", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Left Agent", nativeValues("x"));
   const { page } = await newPage(t, fixture);
@@ -1625,7 +1632,8 @@ function routeDeploymentStatus(page, fixture, namespace, agent, revision, status
 }
 
 test("Agent detail says when the current or requested version cannot be read", async (t) => {
-  const fixture = await stateApp(t);
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Hidden versions", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Hidden Agent", nativeValues("v1"));
   const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
@@ -1683,7 +1691,8 @@ test("Agent detail says when the current or requested version cannot be read", a
 });
 
 test("Agent detail says an Agent's versions are hidden, not missing, when none is readable", async (t) => {
-  const fixture = await stateApp(t);
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Unreadable versions", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Hidden history", nativeValues("v1"));
   const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
@@ -1742,7 +1751,8 @@ test("Agent detail says an Agent's versions are hidden, not missing, when none i
 });
 
 test("Agent detail reports a failed dedicated replacement as probably not serving", async (t) => {
-  const fixture = await stateApp(t);
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Failed replacement", { ready: true });
   const agent = await fixture.createAgent(
     namespace.id,
@@ -1778,7 +1788,8 @@ test("Agent detail reports a failed dedicated replacement as probably not servin
 // Embedded activation selects the new version before its gateway is ready, so a failed
 // embedded redeploy leaves the failed version selected and nothing else serving (D225).
 test("Agent detail reports a failed selected version as probably not serving", async (t) => {
-  const fixture = await stateApp(t);
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Failed selection", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Embedded Agent", nativeValues("v1"));
   const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
@@ -1819,7 +1830,8 @@ test("Agent detail reports a failed selected version as probably not serving", a
 // The API's message carries the next step, so occ and HTTP clients get it too (finding 1393);
 // the console shows that message once and adds only the link to the page that holds the fix.
 test("Deployment activity guides a failed model check or an unauthorized gateway cli", async (t) => {
-  const fixture = await stateApp(t);
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Model check", { ready: true });
   const { page } = await newPage(t, fixture);
   const cases = [
@@ -1948,7 +1960,8 @@ test("Deployment activity guides a failed model check or an unauthorized gateway
 });
 
 test("Agent detail keeps an embedded Agent's failed redeploy separate from serving", async (t) => {
-  const fixture = await stateApp(t);
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Embedded redeploy", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Embedded Agent", nativeValues("v1"));
   const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
@@ -2022,7 +2035,8 @@ const neutralDeployments = [
 ];
 
 test("Agent detail and list show superseded and stopped deployments as neutral, not failed", async (t) => {
-  const fixture = await stateApp(t);
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Neutral deploys", { ready: true });
   const { page } = await newPage(t, fixture);
   // Each Agent's recorded deployment error and detail page, by Agent name.
@@ -2181,7 +2195,8 @@ test("Agent detail and list show superseded and stopped deployments as neutral, 
 });
 
 test("Agent detail reads the selected version's deployment record once on load", async (t) => {
-  const fixture = await stateApp(t);
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Single record read", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Single read Agent", nativeValues("v1"));
   const revision = await fixture.deployAgent(namespace.id, agent.id);
@@ -2219,7 +2234,8 @@ test("Agent detail reads the selected version's deployment record once on load",
 });
 
 test("Agent detail does not move shown sections when Deployment activity first settles", async (t) => {
-  const fixture = await stateApp(t);
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Steady detail", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Steady detail Agent", nativeValues("v1"));
   const revision = await fixture.deployAgent(namespace.id, agent.id);
@@ -2272,7 +2288,7 @@ const listUrl = (namespaceId) => `/console/agents?namespace=${namespaceId}`;
 
 for (const width of [1440, 390]) {
   test(`Agent row content opens its detail at ${width}px and Back restores the list`, async (t) => {
-    const { fixture, namespace } = await readyNamespace(t, `Row navigation ${width}`);
+    const { fixture, namespace } = await createReadyConsoleNamespace(t, `Row navigation ${width}`);
     const agent = await fixture.createAgent(namespace.id, "Clickable Agent", nativeValues("row"));
     const { page } = await newPage(t, fixture);
     await page.setViewportSize({ width, height: 900 });
@@ -2300,7 +2316,8 @@ for (const width of [1440, 390]) {
 }
 
 test("Agents list row actions stop and delete an Agent through the real API", async (t) => {
-  const fixture = await stateApp(t);
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Row actions", { ready: true });
   const running = await fixture.createAgent(namespace.id, "Running Agent", nativeValues("run"));
   const active = await fixture.seedActiveAgentRevision(namespace.id, running.id);
@@ -2411,7 +2428,7 @@ test("Agents list row actions stop and delete an Agent through the real API", as
 
 for (const action of ["Stop", "Delete"]) {
   test(`Agents list cannot confirm ${action} from a response naming a different Agent`, async (t) => {
-    const { fixture, namespace } = await readyNamespace(t, `Uncertain ${action}`);
+    const { fixture, namespace } = await createReadyConsoleNamespace(t, `Uncertain ${action}`);
     const target = await fixture.createAgent(
       namespace.id,
       "Selected Agent",
@@ -2485,7 +2502,8 @@ for (const action of ["Stop", "Delete"]) {
 // typed 409 shows the API's sentence, and a conflict the API does not explain keeps the list's own
 // sentence (findings 2538, 2561).
 test("Agents list row Stop and Delete show the API's 400 and 409 reasons", async (t) => {
-  const fixture = await stateApp(t);
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Row refusals", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Refused Row", nativeValues("row"));
   await fixture.seedActiveAgentRevision(namespace.id, agent.id);
