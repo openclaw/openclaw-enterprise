@@ -98,8 +98,9 @@ NetworkPolicy does not police (finding 1356):
   `<service>.<namespace>.svc[.<domain>]` or a dotted `serviceName` names one
   namespace at save. A bare `serviceName` runs in each tenant namespace, so only
   registration and attach know it. Registration refuses the name before any
-  gateway write with `400` naming `/config/token_url`; attach refuses a stored
-  one with `409`, which names the replacement. An IP address, node address, two-label
+  gateway write with `400` naming `/config/token_url`. Attach runs only in the
+  worker: it refuses a stored one with a message that names the replacement, and
+  the worker retries the revision. An IP address, node address, two-label
   `<service>.<namespace>` or other `endpoint` host names no namespace, and only
   Pod names are refused.
 
