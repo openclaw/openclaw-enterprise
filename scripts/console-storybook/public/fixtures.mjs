@@ -1644,13 +1644,23 @@ export function installFixture(scenario, evidence) {
                       },
                     ],
                   },
+            // The candidate version was deployed with policy v1; later saves need an application
+            // (D773).
             ...(scenario.policyState === "unsupported" || scenario.policyState === "protected"
               ? {}
-              : { defaultsRevisionId: candidateRevisionId }),
+              : { defaultsRevisionId: candidateRevisionId, deployedPolicyVersion: 1 }),
             capability:
               scenario.policyState === "unsupported"
                 ? null
                 : { live: true, wildcards: true, portRanges: true },
+            // The API names why per-Agent network policy is unavailable (D774).
+            ...(scenario.policyState === "unsupported"
+              ? {
+                  unavailableReason: scenario.policyNoSandboxDriver
+                    ? "This Installation selects no Sandbox Driver, so Agents run without a Sandbox: there are no policy denials, suggestions or Agent network rules."
+                    : "The selected Sandbox Driver does not support per-Agent network policy.",
+                }
+              : {}),
           });
           if (scenario.policyState === "refreshRace" && (read === 2 || read === 3)) {
             await new Promise((resolve) => setTimeout(resolve, read === 2 ? 300 : 1500));

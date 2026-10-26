@@ -43,6 +43,13 @@ function denial(grant: SandboxNetworkGrant, index: number, port = 443): RuntimeL
   };
 }
 
+// The status lines of the collapsed Policy details, after the Installation defaults.
+function policyDetailLines(page: Page) {
+  return page
+    .locator(".sandbox-policy-versions > p.hint")
+    .evaluateAll((nodes) => nodes.map((node) => node.textContent));
+}
+
 async function logWindow(
   page: Page,
   origin: string,
@@ -578,6 +585,13 @@ test("unconfirmed application requires status inspection before an explicit retr
   const card = page.locator(".sandbox-network-card");
   const outcome = card.locator(".sandbox-application-feedback");
   await outcome.getByRole("heading", { name: "Application unconfirmed", exact: true }).waitFor();
+  // The failed apply sent the deployed v1 again. A requested application keeps its own status:
+  // Policy details does not say that no live change was requested (D773).
+  assert.deepEqual(await policyDetailLines(page), [
+    `Application: failed · Revision ${revision.id} · SANDBOX_POLICY_UNCONFIRMED`,
+    "Saved version: v1",
+    "Live version unconfirmed",
+  ]);
   assert.equal(
     await card.getByRole("button", { name: "Retry application", exact: true }).count(),
     0,
@@ -596,4 +610,43 @@ test("unconfirmed application requires status inspection before an explicit retr
     .waitFor();
   assert.equal(pathRequests(requests, "POST", `${base}/apply`).length, 1);
   assert.equal((await fixture.request("GET", base)).data.policy.application.state, "pending");
+});
+
+// D773 says "Deployed" only for the running version deployed with the saved policy and with no
+// live application requested for it. An older version's tab and a pending apply of the same
+// version keep the unconfirmed and applying states.
+test("an older version and a same-version apply do not claim the deployed policy", async (t) => {
+  const { fixture, namespace, agent, base } = await createPolicyConsole(t);
+  const { revision: older } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id, older.id);
+  const view = (await fixture.request("GET", base)).data;
+  assert.deepEqual(
+    [view.defaultsRevisionId, view.deployedPolicyVersion, view.policy.version],
+    [revision.id, 1, 1],
+  );
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, older.id, "policy"));
+  const status = page.locator(".sandbox-policy-rule-status").getByRole("status");
+  await status.getByText("Application unconfirmed", { exact: true }).waitFor();
+  assert.deepEqual(await policyDetailLines(page), [
+    "Saved version: v1",
+    "Live version unconfirmed",
+  ]);
+
+  // A pending live application of the deployed v1 to the running version.
+  assert.equal(
+    (
+      await fixture.request("POST", `${base}/apply`, {
+        body: { expectedVersion: 1, revisionId: revision.id },
+      })
+    ).status,
+    202,
+  );
+  await page.goto(detailUrl(fixture, namespace.id, agent.id, revision.id, "policy").href);
+  await status.getByText("Applying…", { exact: true }).waitFor();
+  assert.deepEqual(await policyDetailLines(page), [
+    `Application: pending · Revision ${revision.id}`,
+    "Saved version: v1",
+    "Live version unconfirmed",
+  ]);
 });

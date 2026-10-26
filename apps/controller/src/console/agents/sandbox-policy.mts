@@ -56,12 +56,14 @@ const PLACEHOLDER_DESTINATION =
 type LogLine = Extract<RuntimeLogRecord, { type: "line" }>;
 
 // The tab's version was deployed with the saved policy version, so its Sandbox enforces those
-// rules and no live application was requested (D773).
+// rules, and no live application was requested for it (D773). A pending or failed application
+// to this revision, even of the same version, keeps its own status.
 function deployedWithSavedPolicy(view: SandboxPolicyViewWire | undefined, revisionId: string) {
   return (
     view !== undefined &&
     view.defaultsRevisionId === revisionId &&
-    view.deployedPolicyVersion === view.policy.version
+    view.deployedPolicyVersion === view.policy.version &&
+    view.policy.application?.revisionId !== revisionId
   );
 }
 
