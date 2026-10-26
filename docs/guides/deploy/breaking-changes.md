@@ -32,7 +32,8 @@ has `enabled: false`, a `mode` other than `limited` or `full`, a non-boolean
 `allow` or `deny`. Earlier builds saved and admitted it, and Kubernetes
 preparation refused it; a dedicated deploy had stopped the running version
 first. Configuration save still accepts it, because a Configuration does not
-know which Agents use it.
+know which Agents use it. A stored such Agent still reads, but each update or
+deploy is refused.
 
 **Who is affected.** Agents with repository bindings whose Configuration has
 such a setting. They could not deploy before either.
