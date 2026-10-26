@@ -64,6 +64,10 @@ const IF_NEEDED_VERSION_READ = `If you need it, ${ASK_INSTALLATION_ADMINISTRATOR
 export const VERSION_UNAVAILABLE = `This version does not exist or your access does not include it. ${IF_NEEDED_VERSION_READ}`;
 export const requestedVersionUnavailable = (version: string) =>
   `Version ${version} does not exist or your access does not include it, so this page shows no progress or outcome for it. ${IF_NEEDED_VERSION_READ}`;
+// A version this tab's own Deploy created exists: the API accepted it. A deployer without read on
+// it is told that, not that it may not exist (finding D751).
+export const deployAcceptedVersionUnreadable = (version: string) =>
+  `Deployment accepted. You cannot read version ${version}, so its progress and outcome are not shown here; ${ASK_INSTALLATION_ADMINISTRATOR} for AgentRevision read on it.`;
 
 // A rejected model credential is fixed in the Agent's Credentials, which needs Agent update. A
 // Secret-backed credential can also be replaced in place, which needs Secret update on that
