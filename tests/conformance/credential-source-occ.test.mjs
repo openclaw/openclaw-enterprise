@@ -25,6 +25,7 @@ import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
   credentialSourceFieldRequired,
   credentialSourceFieldUnknown,
+  registrationFenceRetry,
   RESOURCE_NOT_FOUND,
   sentIdHidden,
 } from "../helpers/refusal-text.mjs";
@@ -1399,10 +1400,20 @@ test("a timed-out registration keeps its record until a late gateway create is r
   gateway.completeLateCreates();
   assert.equal(gateway.stored.has(orphan.id), true);
 
-  // Within the fence, DELETE removes the copy but keeps the record for a later retry.
+  // Within the fence, DELETE removes the copy but keeps the record for a later retry. The 503
+  // names the wait instead of the generic text (finding 2536).
+  const fenced = (seconds) => (error) => {
+    assert.ok(error instanceof DependencyUnavailableError);
+    const { status, code, message } = requestFailure(error);
+    assert.deepEqual(
+      { status, code, message },
+      { status: 503, code: "DEPENDENCY_UNAVAILABLE", message: registrationFenceRetry(seconds) },
+    );
+    return true;
+  };
   await assert.rejects(
     controller.deleteCredentialSource(administrator, namespace.id, orphan.id),
-    DependencyUnavailableError,
+    fenced(70),
   );
   assert.equal(gateway.stored.has(orphan.id), false);
   assert.equal(
@@ -1413,7 +1424,7 @@ test("a timed-out registration keeps its record until a late gateway create is r
   advanceClock(69_999);
   await assert.rejects(
     controller.deleteCredentialSource(administrator, namespace.id, orphan.id),
-    /may still be completing/,
+    fenced(1),
   );
   advanceClock(1);
   await controller.deleteCredentialSource(administrator, namespace.id, orphan.id);
@@ -3494,10 +3505,11 @@ test("update and delete without a Credential Gateway are a 409 after the grant, 
   assert.equal(after.state, "ready");
 });
 
-test("a catalog field refusal follows the source grant: a missing and an unreadable ID answer alike", async () => {
-  // Finding 2536 names the catalog field in a 400. The type comes from the stored source on an
-  // update, so the refusal must wait for the caller's grant: a caller without it gets the same
-  // denial for a source that exists and for one that does not, with each request's own ID hidden.
+test("named source refusals follow the source grant: a missing and an unreadable ID answer alike", async () => {
+  // Finding 2536 names the catalog field in a 400, a protected source's update or rotation in a
+  // 409 and the deletion fence's wait in a 503. Each reads the stored source, so it must wait for
+  // the caller's grant: a caller without it gets the same denial for a source that exists and for
+  // one that does not, with each request's own ID hidden.
   const { controller, makeReady, modelSecret, namespace } = await fixture();
   await makeReady();
   const secret = await modelSecret();
@@ -3527,9 +3539,17 @@ test("a catalog field refusal follows the source grant: a missing and an unreada
       credentialSourceId: id,
       secrets,
     });
-  const existingUpdate = await answer(update(source.id), source.id);
-  assert.equal(existingUpdate.status, 403);
-  assert.deepEqual(await answer(update(missingSource), missingSource), existingUpdate);
+  const rotate = (id) => () =>
+    controller.rotateCredentialSource(zeroGrant, {
+      namespaceId: namespace.id,
+      credentialSourceId: id,
+    });
+  const remove = (id) => () => controller.deleteCredentialSource(zeroGrant, namespace.id, id);
+  for (const call of [update, rotate, remove]) {
+    const existing = await answer(call(source.id), source.id);
+    assert.equal(existing.status, 403);
+    assert.deepEqual(await answer(call(missingSource), missingSource), existing);
+  }
   const create = (namespaceId) => () =>
     controller.createCredentialSource(zeroGrant, {
       namespaceId,

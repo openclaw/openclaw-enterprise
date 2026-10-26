@@ -12,9 +12,22 @@ import {
   SECRET_READ_DENIED,
   SECRET_UPDATE_DENIED,
 } from "./agents/access-reasons.mjs";
-import { describeFailure, explainedConflict } from "./agents/list.mjs";
+import {
+  describeFailure,
+  explainedConflict,
+  NAMESPACE_NOT_READY_MESSAGE,
+  readFailureReason,
+} from "./agents/list.mjs";
 import { requestFailure, responseFields } from "./api-client.mjs";
-import { button, dismissOnBackdrop, element, field, statusBlock, validateFields } from "./dom.mjs";
+import {
+  button,
+  dismissOnBackdrop,
+  element,
+  field,
+  statusBlock,
+  validateFields,
+  requestIdLine,
+} from "./dom.mjs";
 import { namespaceNameProblem, type NamespacePageContext } from "./namespaces.mjs";
 import type { createNavigation } from "./navigation.mjs";
 
@@ -347,9 +360,7 @@ export function renderSecrets(
     }
     current.feedback.replaceChildren(statusBlock(tone, null, description));
     if (error.requestId) {
-      current.feedback.append(
-        element("p", { className: "request-id" }, `Request ID: ${error.requestId}`),
-      );
+      current.feedback.append(requestIdLine(error.requestId));
     }
   }
 
@@ -624,7 +635,7 @@ export function renderSecrets(
         } else if (status === 409) {
           description =
             code === "NAMESPACE_NOT_READY"
-              ? "This Namespace is not ready for Secret changes. Close and Refresh to check its current state."
+              ? NAMESPACE_NOT_READY_MESSAGE
               : describeFailure(cause, {
                   mutation: true,
                   conflict: "The Secret cannot be saved in its current state.",
@@ -760,10 +771,13 @@ export function renderSecrets(
             ),
           );
         } else {
+          // A refused or failed read says which, instead of guessing that access changed.
           showError(
             current,
             error,
-            "Could not confirm deletion. Your access may have changed. Close and Refresh the list.",
+            `Could not confirm deletion. ${
+              error.status === 403 ? SECRET_READ_DENIED : readFailureReason(cause)
+            }`,
           );
         }
       } finally {

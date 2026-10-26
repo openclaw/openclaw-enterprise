@@ -76,7 +76,9 @@ import {
   callerDenied,
   CONFIGURATION_EDITS_PENDING,
   CONFIGURATION_UPDATE_DENIED,
+  CONSOLE_NAMESPACE_NOT_READY,
   CONFIGURATION_SAVE_DENIED,
+  GENERIC_DENIAL,
   NAMESPACE_NOT_READY,
   NEW_SECRET_OPERATE_DENIED,
   NEW_SECRET_OPERATE_REMEDY,
@@ -87,10 +89,12 @@ import {
   SECRET_NAME_CONFLICT,
   SECRET_OPERATE_DENIED,
   STOP_CONFIRMATION,
+  STOP_REQUESTED,
   STOP_RUNNING_VERSION,
   WORKSPACE_FILES_UNAVAILABLE,
   credentialCheckedAtDeploy,
   namespaceListDenied,
+  notIncluded,
   secretOperateRefused,
   stopRefused,
 } from "../helpers/refusal-text.mjs";
@@ -157,7 +161,10 @@ test("Agent detail separates the current version, viewed version, and latest dep
   await overview.nth(1).getByText("v2 · Queued").waitFor();
   await overview.nth(2).getByText("Not verified").waitFor();
   // A running version's unverified serving says why (finding 2367).
-  await overview.nth(2).getByText("OCC sends no test request.", { exact: true }).waitFor();
+  await overview
+    .nth(2)
+    .getByText("OpenClaw Enterprise sends no test request.", { exact: true })
+    .waitFor();
   const activity = await expectDeploymentOutcome(page, "Queued");
   await activity.getByText("Most recent visible deployment · v2").waitFor();
   await activity.getByText("Waiting for a worker claim.").waitFor();
@@ -2484,7 +2491,7 @@ test("Agent credential Secret picker searches, validates, and preserves duplicat
   await page.route(`**/namespaces/${namespace.id}/secrets`, failSecretCreate);
   await dialog.getByLabel("Name", { exact: true }).fill("Namespace not ready picker Secret");
   await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
-  await dialog.getByRole("alert").filter({ hasText: "cannot store Secrets yet" }).waitFor();
+  await dialog.getByRole("alert").filter({ hasText: CONSOLE_NAMESPACE_NOT_READY }).waitFor();
   assert.equal(
     await dialog.getByLabel("Name", { exact: true }).inputValue(),
     "Namespace not ready picker Secret",
@@ -3060,7 +3067,7 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
   assert.equal(stoppedBody.data.activeRevisionId, active.revision.id);
 
   await page.getByRole("status").getByText("Stop requested.").waitFor();
-  await page.getByText(/Runtime shutdown completion is not exposed in Console/).waitFor();
+  await page.getByText(STOP_REQUESTED, { exact: true }).waitFor();
   // The card names the version as the page does, and the overview reports the request
   // (finding 1899).
   const stopRegion = page.getByRole("region", { name: "Stop Agent", exact: true });
@@ -3458,6 +3465,21 @@ test("Agent stop uncertainty requires refresh before another stop request", asyn
   );
   await page.getByRole("button", { name: "Refresh stop status" }).click();
   await page.getByText("Could not refresh stop status.").waitFor();
+  assert.deepEqual(await stopControls.allTextContents(), ["Refresh stop status"]);
+
+  // A refused status read names the Agent read it checks, not a bare denial (finding 2538).
+  await page.route(
+    fixture.origin + agentPath,
+    (route) => route.fulfill(apiErrorResponse(403, "FORBIDDEN", GENERIC_DENIAL)),
+    { times: 1 },
+  );
+  await page.getByRole("button", { name: "Refresh stop status" }).click();
+  await page
+    .getByText(
+      `Could not refresh stop status. ${notIncluded("reading this Agent's status", "Agent read on it")}`,
+      { exact: true },
+    )
+    .waitFor();
   assert.deepEqual(await stopControls.allTextContents(), ["Refresh stop status"]);
 
   // Even this Agent's active status cannot tell us whether it is requested to run or stop.

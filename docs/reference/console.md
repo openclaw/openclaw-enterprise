@@ -180,8 +180,11 @@ update to choose another credential, or, for a Secret-backed credential, Secret 
 Secret to replace its value. It also says who gives them.
 A refusal the API explains, such as an invalid field, a name already in use or a
 lifecycle change, shows the API's sentence; a rate limit says how long to wait.
-Other backend error text is not rendered; include any displayed request
-ID when reporting an API failure. A current protected `401` clears private
+The console also shows named dependency refusals, recorded deployment and policy
+outcomes, and field errors, with each setting as a dotted path. A generic answer,
+such as an unnamed outage, gets the console's own sentence: what failed, and who to
+ask if it continues. Include the displayed **Request ID** when you report an API
+failure. A current protected `401` clears private
 content and closes open channel editors and harness authentication controls.
 Interrupted response bodies and request deadlines keep the interrupted-read
 recovery path. View cancellation does not show a new failure, and a failed

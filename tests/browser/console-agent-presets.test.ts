@@ -1472,7 +1472,12 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
   } finally {
     detailRelease.resolve();
   }
-  await dialog.getByText(/credential was rejected or cannot access plugins/).waitFor();
+  // The request ID uses the one label every console failure uses (finding 2538).
+  await dialog
+    .getByText(
+      /credential was rejected or cannot access plugins\. Check its permissions\. Request ID: req_/,
+    )
+    .waitFor();
   assert.equal(await heading.evaluate((node) => node === node.ownerDocument.activeElement), true);
   assert.equal((await dialog.textContent())?.includes("private upstream response"), false);
   failTools = false;

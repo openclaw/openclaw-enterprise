@@ -45,6 +45,7 @@ import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
 import {
   AGENT_NAME_CONFLICT,
   CHANNEL_BINDING_FORM_REMEDY,
+  CONSOLE_NAMESPACE_NOT_READY,
   CODEX_PLACEMENT_REFUSAL,
   DEDICATED_PLACEMENT_REQUIREMENT,
   DEPENDENCY_UNAVAILABLE,
@@ -55,6 +56,7 @@ import {
   unboundReferenceRefusal,
   POD_QUOTA_FULL,
   codexApiKeyRefusal,
+  notIncluded,
 } from "../helpers/refusal-text.mjs";
 
 // Every test opens its own context in one Chromium per file.
@@ -803,6 +805,25 @@ test("Credential registration removal preserves the safety fence and retries the
       (response) =>
         response.url() === fixture.origin + sourcePath && response.request().method() === "DELETE",
     );
+  // A refused removal names the grant DELETE checks and who grants it, not a bare denial
+  // followed by an outage hint (finding 2538).
+  await page.route(
+    fixture.origin + sourcePath,
+    (route) =>
+      route.request().method() === "DELETE"
+        ? route.fulfill(apiErrorResponse(403, "FORBIDDEN", GENERIC_DENIAL))
+        : route.fallback(),
+    { times: 1 },
+  );
+  const refused = deleted();
+  await remove.click();
+  assert.equal((await refused).status(), 403);
+  await page
+    .getByText(
+      `${notIncluded("removing this credential registration", "credential source delete on it")} The model Secret remains saved.`,
+      { exact: true },
+    )
+    .waitFor();
   const first = deleted();
   await remove.click();
   assert.equal((await first).status(), 503);
@@ -841,7 +862,8 @@ test("Credential registration removal preserves the safety fence and retries the
   assert.notEqual(calls[1].sourceId, sourceId);
   assert.deepEqual(calls[0].input, calls[1].input);
   assert.deepEqual(removals, [sourceId, sourceId, sourceId]); // Initial abandonment, then both DELETEs.
-  assert.equal(pathRequests(requests, "DELETE", sourcePath).length, 2);
+  // The refused DELETE (answered in the page), then the two that reached the API.
+  assert.equal(pathRequests(requests, "DELETE", sourcePath).length, 3);
   assert.deepEqual(
     pathRequests(requests, "POST", `/namespaces/${namespace.id}/credential-sources`)[1].body
       .secrets,
@@ -1009,7 +1031,7 @@ test("Dedicated Agent provisioning names a Namespace that is not ready", async (
   await feedback.waitFor();
   assert.equal(
     await feedback.textContent(),
-    "This Namespace is not ready yet. Check its status on the Namespaces page: a provisioning Namespace becomes ready when its Kubernetes setup completes (on Kubernetes installs, after an operator grants the tenant RoleBindings). Request ID: req_00000000-0000-4000-8000-000000000409",
+    `${CONSOLE_NAMESPACE_NOT_READY} Request ID: req_00000000-0000-4000-8000-000000000409`,
   );
 });
 

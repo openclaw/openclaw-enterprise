@@ -1,8 +1,21 @@
 import type { AgentRead } from "@openclaw-enterprise/contracts";
-import { type createApiClient, requestFailure, responseFields } from "../api-client.mjs";
-import { element, button, setFieldError, statusBlock, validateFields } from "../dom.mjs";
+import {
+  type createApiClient,
+  namedDenial,
+  requestFailure,
+  responseFields,
+} from "../api-client.mjs";
+import {
+  element,
+  button,
+  setFieldError,
+  statusBlock,
+  validateFields,
+  withRequestId,
+} from "../dom.mjs";
 import type { createDraftStore } from "../drafts.mjs";
-import { askForGrant, WORKSPACE_SAVE_DENIED } from "./access-reasons.mjs";
+import { askForGrant, WORKSPACE_READ_DENIED, WORKSPACE_SAVE_DENIED } from "./access-reasons.mjs";
+import { describeFailure } from "./list.mjs";
 
 const filenames = ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"];
 // Shown when the caller's permission answer denies Agent operate, which saving a file needs.
@@ -43,13 +56,28 @@ export function workspaceFileProblem(name: string, content: string) {
   return "";
 }
 
-function fileError(error: FileFailure, writing: boolean) {
-  let text = "Workspace access is unavailable. Check the Agent gateway and try reloading.";
+const WORKSPACE_GATEWAY_UNAVAILABLE =
+  "Workspace files could not be reached: the Agent's gateway did not answer. Check that the Agent is running, then reload this file. If it continues, ask an operator to check the gateway.";
+const WORKSPACE_API_UNREACHABLE =
+  "The request did not reach the API. Check your connection, then reload this file.";
+
+function fileError(error: FileFailure, writing: boolean, failure: unknown) {
+  // A failure without its own text below says why by status (finding 2538): a rate limit how
+  // long to wait, a conflict the API's reason, a request that never reached the API that, and
+  // anything else that the gateway did not answer.
+  const { name } = responseFields(failure);
+  let text =
+    error.status === 409 || error.status === 429
+      ? describeFailure(error)
+      : error.status === undefined && (name === "TypeError" || name === "TimeoutError")
+        ? WORKSPACE_API_UNREACHABLE
+        : WORKSPACE_GATEWAY_UNAVAILABLE;
   if (error.status === 403) {
-    // Saving a file is an Agent operate action (finding 1540).
+    // Saving a file is an Agent operate action (finding 1540); reading one is Agent read, unless
+    // the API names another grant.
     text = writing
       ? `You do not have permission to save this file. ${askForGrant("Agent operate on it")}`
-      : "Access denied. You do not have permission for this file operation.";
+      : (namedDenial(error) ?? WORKSPACE_READ_DENIED);
   }
   if (error.status === 404) {
     text = "File unavailable or missing. Check Agent access before creating it.";
@@ -62,7 +90,7 @@ function fileError(error: FileFailure, writing: boolean) {
     text =
       "Outcome unknown. Your write may have succeeded. Reload this file and review its current contents before saving again.";
   }
-  return text + (error.requestId ? ` Request ID: ${error.requestId}` : "");
+  return withRequestId(text, error.requestId);
 }
 
 // Only this answer confirms the file itself is absent. A resource or scope 404 does not establish
@@ -290,7 +318,7 @@ export function renderWorkspaceFiles(
           loaded = false;
         }
         status.textContent = canCreate ? missingText() : "";
-        errorNotice.textContent = canCreate ? "" : fileError(cause, false);
+        errorNotice.textContent = canCreate ? "" : fileError(cause, false, failure);
       } finally {
         if (context.isCurrent()) {
           pending = false;
@@ -361,7 +389,7 @@ export function renderWorkspaceFiles(
         }
         outcomeUnknown = writeOutcomeUnknown(cause.status);
         status.textContent = "";
-        errorNotice.textContent = fileError(cause, true);
+        errorNotice.textContent = fileError(cause, true, failure);
       } finally {
         if (context.isCurrent()) {
           pending = false;

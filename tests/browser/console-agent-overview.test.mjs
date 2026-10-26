@@ -497,7 +497,7 @@ test("Stop stays enabled and says it cancels a first deployment that is queued",
   await dialog.getByRole("button", { name: "Stop Agent", exact: true }).click();
   await stopRegion
     .getByText(
-      "Stop requested. The deployment in progress is cancelled, and OCC will not start this Agent until you deploy a new version.",
+      "Stop requested. The deployment in progress is cancelled, and this Agent will not start until you deploy a new version.",
       { exact: true },
     )
     .waitFor();
@@ -768,7 +768,9 @@ test("Live serving shows a lost Sandbox and its next step without moving the pag
     delete sandboxDriver.observeHarness;
     try {
       const { page } = await openOverview(consoleViewports[0]);
-      await liveServing(page).getByText("OCC sends no test request.", { exact: true }).waitFor();
+      await liveServing(page)
+        .getByText("OpenClaw Enterprise sends no test request.", { exact: true })
+        .waitFor();
       assert.equal(await liveServing(page).locator(".badge").textContent(), "Not verified");
     } finally {
       sandboxDriver.observeHarness = observeHarness;

@@ -26,7 +26,11 @@ import {
 } from "./console-deployment-activity-helpers.mjs";
 import { replyWithDifferentAgentId } from "./console-agents-test-support.mjs";
 import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
-import { GENERIC_DENIAL } from "../helpers/refusal-text.mjs";
+import {
+  GENERIC_DENIAL,
+  OVERVIEW_REFRESH_FAILED,
+  READ_OUTAGE_REASON,
+} from "../helpers/refusal-text.mjs";
 
 // Failed-version recovery's Deploy again: the API's DEPENDENCY_UNAVAILABLE message says to deploy
 // again, and the link opens the draft at its Deploy new version. That button is built only from a
@@ -594,11 +598,7 @@ test("A completed deployment whose Agent reread fails is labelled Deployed, not 
   record.status = "succeeded";
   record.agentFail = true;
   await page.clock.runFor(DEPLOYMENT_POLL_MS);
-  await page
-    .getByText(
-      "Current version and version history could not be refreshed. Use the page Refresh control to retry.",
-    )
-    .waitFor();
+  await page.getByText(`${OVERVIEW_REFRESH_FAILED} ${READ_OUTAGE_REASON}`).waitFor();
   await summary.getByText("v2 · Completed", { exact: true }).waitFor();
   await page
     .getByText(
@@ -743,11 +743,7 @@ test("A failed reread leaves the newest readable version Historical under a hidd
   await page.getByText(/^Historical version · read-only admitted snapshot/).waitFor();
   agentFail = true;
   await page.getByRole("button", { name: "Refresh deployment" }).click();
-  await page
-    .getByText(
-      "Current version and version history could not be refreshed. Use the page Refresh control to retry.",
-    )
-    .waitFor();
+  await page.getByText(`${OVERVIEW_REFRESH_FAILED} ${READ_OUTAGE_REASON}`).waitFor();
   await page.getByText(/^Historical version · read-only admitted snapshot/).waitFor();
   assert.equal(await page.getByText(/^Deployed version/).count(), 0);
 });
@@ -762,9 +758,7 @@ test("A failure read by a refresh that cannot reread the Agent keeps its warning
   await page.getByRole("button", { name: "Refresh deployment" }).click();
   const recovery = page.getByRole("region", { name: "Deployment needs attention" });
   await recovery.waitFor();
-  const warning = page.getByText(
-    "Current version and version history could not be refreshed. Use the page Refresh control to retry.",
-  );
+  const warning = page.getByText(`${OVERVIEW_REFRESH_FAILED} ${READ_OUTAGE_REASON}`);
   // The panel renders the warning and the card folds the details in one task, so once the
   // warning is in the page the details' state is settled.
   await warning.waitFor({ state: "attached" });

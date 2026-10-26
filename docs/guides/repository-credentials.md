@@ -87,8 +87,8 @@ authentication are separate. If repository discovery fails, **Create Agent**
 stays blocked until discovery succeeds. The exception is an Installation without
 repository access or `503 REPOSITORY_OPTIONS_UNAVAILABLE`, with no repositories selected: you can save
 an ordinary draft, but cannot start guided provisioning. Other errors still
-block creation. Creation and deployment recheck Namespace repository policy;
-see [repository discovery](../reference/console/repository-access.md#discover-and-select-repositories).
+block creation. Creation and deployment recheck Namespace repository policy: deploy refuses
+saved selections it no longer approves with `409 RESOURCE_CONFLICT`. See [repository discovery](../reference/console/repository-access.md#discover-and-select-repositories).
 
 For the API sequence, complete [Namespace and dedicated Codex preparation](deploy/production-agents.md#configure-the-agent-runtime)
 to prepare the Configuration and Namespace-owned model Secret `HARNESS_SECRET_ID`.

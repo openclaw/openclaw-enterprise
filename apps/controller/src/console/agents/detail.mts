@@ -28,6 +28,8 @@ import {
   setText,
   statusBlock,
   validateFields,
+  requestIdLine,
+  requestIdText,
 } from "../dom.mjs";
 import {
   configuredHarnessId,
@@ -67,6 +69,7 @@ import {
   secretOperateRefusal,
   channelBindingRefusal,
   agentSaveDenial,
+  describeFailure,
   message,
   rejectionMessage,
   assertReadableConfiguration,
@@ -250,7 +253,7 @@ function deployRefusedBeforeAdmission(error: unknown) {
 function deployFailureText(cause: unknown, submitted: boolean) {
   const error = requestFailure(cause);
   if (error.code === "RUNTIME_CREDENTIALS_CLUSTER_RBAC") {
-    return "Deployment refused: the cluster denied OCC access to this Agent's connection credentials. Ask a platform operator to grant the documented tenant RoleBindings, then deploy again.";
+    return "Deployment refused: the cluster denied the control plane access to this Agent's connection credentials. Ask an operator to grant the control plane the Kubernetes RoleBindings this Namespace needs, then deploy again.";
   }
   const refusal = submitted ? preAdmissionRefusal(error) : undefined;
   if (refusal !== undefined) {
@@ -342,9 +345,7 @@ function errorPanel(
           "This tab remembers the earlier denial. Retry checks your access again.",
         )
       : null,
-    !settled && error.requestId
-      ? element("p", { className: "request-id" }, `Request ID: ${error.requestId}`)
-      : null,
+    !settled && error.requestId ? requestIdLine(error.requestId) : null,
     settled ? null : button("Retry", retry),
   );
 }
@@ -1012,7 +1013,7 @@ export async function renderAgentDetail(
     // (finding 2367); a Sandbox note takes its place.
     const unchecked =
       tone === undefined && !deleting && currentRuntimeState === "running" && currentRevisionId
-        ? "OCC sends no test request."
+        ? "OpenClaw Enterprise sends no test request."
         : "";
     if (!expected) {
       setText(liveServingNote, unchecked);
@@ -3048,7 +3049,7 @@ export async function renderAgentDetail(
           // A rejected operator-managed credential is fixed on the runtime host, not by Deploy.
           deployStatus.textContent = credentialRejected()
             ? "The last deployment's model credential was rejected; ask an operator to replace it on the runtime host before deploying again."
-            : "Configured on the runtime host; not validated by OCC. Gateway readiness does not confirm model access.";
+            : "Configured on the runtime host; OpenClaw Enterprise does not check it. Gateway readiness does not confirm model access.";
         } else {
           const gate =
             credentials?.deployGateMessage() ?? "Credential readiness could not be confirmed.";
@@ -4624,7 +4625,7 @@ export async function renderAgentDetail(
             context.onExpired();
           } else if (savedAuthentication) {
             const { status, requestId } = requestFailure(error);
-            const requestNote = requestId ? ` Request ID: ${requestId}` : "";
+            const requestNote = requestId ? ` ${requestIdText(requestId)}` : "";
             if (!grantRequested) {
               // A retry rereads the Agent before any grant request: its failure is about that
               // read, not the grant, and Retry stays for when the Agent reads again.
@@ -4639,7 +4640,8 @@ export async function renderAgentDetail(
               grantProblem = grantProblemFor(status) ?? "unconfirmed";
               say(
                 grantText(grantProblem) +
-                  (grantProblem === "refused" ? "" : ` ${message(error)}`) +
+                  // The grant request's own reason, never a form's "entered values".
+                  (grantProblem === "refused" ? "" : ` ${describeFailure(error)}`) +
                   requestNote,
                 "warning",
               );

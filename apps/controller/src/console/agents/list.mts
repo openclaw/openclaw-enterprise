@@ -36,8 +36,9 @@ export function link(label: string, target: string, context: AgentNavigation) {
 // A Namespace that is still provisioning (or failed to) refuses Agent, Configuration and
 // deployment writes with NAMESPACE_NOT_READY; "conflicts with the saved state" would send the
 // operator to the wrong place.
+// Every view that meets NAMESPACE_NOT_READY shows this one sentence (finding 2538).
 export const NAMESPACE_NOT_READY_MESSAGE =
-  "This Namespace is not ready yet. Check its status on the Namespaces page: a provisioning Namespace becomes ready when its Kubernetes setup completes (on Kubernetes installs, after an operator grants the tenant RoleBindings).";
+  "This Namespace is not ready yet. Check its status on the Namespaces page: a provisioning Namespace becomes ready when its Kubernetes setup completes. If it stays provisioning, ask an operator to finish that setup.";
 
 // Why a Namespace can't take new Agents, by status. Neither becomes ready by waiting.
 const NOT_READY_REASONS: Partial<Record<Namespace["status"], string>> = {
@@ -114,6 +115,12 @@ export const namespaceListNeed = (items: string): AccessNeed => ({
   task: `listing ${items} in this Namespace`,
   grant: "Namespace read",
 });
+
+// The Stop and Delete pages reread the Agent for its status, which authorizes Agent read.
+export const AGENT_STATUS_READ_NEED: AccessNeed = {
+  task: "reading this Agent's status",
+  grant: "Agent read on it",
+};
 
 // A 403 that names no grant. message() adds who grants access; administratorMessage() does not.
 const PLAIN_ACCESS_DENIED = "Access denied. You do not have permission for this operation.";
@@ -425,11 +432,13 @@ export function describeFailure(
     form = false,
     next,
     conflict = "The request conflicts with the current state.",
+    need,
   }: {
     mutation?: boolean;
     form?: boolean;
     next?: string;
     conflict?: string;
+    need?: AccessNeed;
   } = {},
 ): string {
   const error = requestFailure(cause);
@@ -457,8 +466,36 @@ export function describeFailure(
   if (error.status === 429) {
     return tooManyRequests(cause);
   }
-  return message(cause, mutation);
+  return message(cause, mutation, need);
 }
+
+// An outage names who acts if it continues, as sign-in's 503 does.
+const READ_OUTAGE =
+  "The service did not answer. Try again; if it continues, ask an operator to check the API.";
+
+// Why a read failed and what to do next, by status, for the views whose catch once said
+// "unavailable, retry" for a denial and an outage alike (finding 2538): a 403 names the grant
+// (`need`) and who grants it, a 429 how long to wait, and an outage who to ask if it continues.
+export function readFailureReason(cause: unknown, need?: AccessNeed): string {
+  const error = requestFailure(cause);
+  if (error.status === 403) {
+    return message(cause, false, need);
+  }
+  if (error.status === 404) {
+    return "It is no longer available. Refresh the page.";
+  }
+  if (error.status === 400 || error.status === 409 || error.status === 429) {
+    return describeFailure(cause);
+  }
+  const { name } = responseFields(cause);
+  return name === "TypeError" || name === "TimeoutError"
+    ? "The request was interrupted. Try again."
+    : READ_OUTAGE;
+}
+
+/** "<subject> could not be read. <reason>" for a failed read (readFailureReason). */
+export const readFailure = (subject: string, cause: unknown, need?: AccessNeed) =>
+  `${subject} could not be read. ${readFailureReason(cause, need)}`;
 
 // A channel credential value that Configuration save or provisioning refuses: a reference without
 // a Secret binding, a `${` the runtime does not substitute, or a value the setting "holds" that is

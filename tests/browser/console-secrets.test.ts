@@ -19,6 +19,7 @@ import type {
 } from "../../packages/contracts/src/api/resources.ts";
 import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
 import {
+  CONSOLE_NAMESPACE_NOT_READY,
   RESOURCE_NOT_FOUND,
   SECRET_CREATE_DENIED,
   SECRET_NAME_CONFLICT,
@@ -533,10 +534,7 @@ test("a Secret name conflict allows correction, but a Namespace that stops being
     const { error }: ErrorResponse = await response.json();
     assert.equal(error.code, "NAMESPACE_NOT_READY");
     // Both writes were refused because the Namespace changed, not because the name is taken.
-    await form
-      .getByRole("alert")
-      .filter({ hasText: /Namespace.*not ready.*Close and Refresh/ })
-      .waitFor();
+    await form.getByRole("alert").filter({ hasText: CONSOLE_NAMESPACE_NOT_READY }).waitFor();
     const value = form.getByLabel("Value", { exact: true });
     assert.equal(await value.inputValue(), "");
     assert.equal(await value.isDisabled(), true, "a Namespace conflict needs a fresh read");

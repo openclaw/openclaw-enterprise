@@ -49,7 +49,9 @@ import { expireWorkLease, makeWorkDue } from "../helpers/postgres-worker-revisio
 import {
   AGENT_NAME_CONFLICT,
   BROKER_PROXY_DISABLED,
+  COMPUTE_REPOSITORY_UNSUPPORTED,
   DEPENDENCY_UNAVAILABLE,
+  SAVED_REPOSITORY_SELECTION_NOT_APPROVED,
 } from "../helpers/refusal-text.mjs";
 
 const adminEmail = "postgres-agent-provisioning-v2@example.test";
@@ -925,6 +927,37 @@ test(
   },
 );
 
+// The GitHub repository policy the provisioning tests compose: one repository, `project`,
+// approved in `namespaceId` for `profiles`.
+function provisioningRepositoryPolicy(namespaceId, profiles) {
+  return new GitHubRepositoryPolicy(
+    {
+      id: "provisioning-repositories",
+      client: new UnixRepositoryCredentialControlClient({
+        controlSocket: "/unused/provisioning/control.sock",
+      }),
+      drivers: { repo: "provisioning-repo" },
+    },
+    {
+      version: 1,
+      backendId: "provisioning-repositories",
+      providerInstanceId: "provisioning-github",
+      appId: "123",
+      githubInstallationId: "456",
+      maximumDurationSeconds: 3600,
+      repositories: [
+        {
+          repositoryRef: "project",
+          repositoryId: "789",
+          repository: "example/project",
+          namespaces: [{ namespaceId, profiles }],
+        },
+      ],
+    },
+    { sessionDurationSeconds: 600 },
+  );
+}
+
 test(
   "provisioning worker creates Configuration and Agent from existing Secrets, then hands off one revision",
   { ...requiresPostgres, timeout: 60_000 },
@@ -936,32 +969,7 @@ test(
       defaultProfile: "git-read",
       repositories: [{ repositoryRef: "project" }],
     };
-    const repoDriver = new GitHubRepositoryPolicy(
-      {
-        id: "provisioning-repositories",
-        client: new UnixRepositoryCredentialControlClient({
-          controlSocket: "/unused/provisioning/control.sock",
-        }),
-        drivers: { repo: "provisioning-repo" },
-      },
-      {
-        version: 1,
-        backendId: "provisioning-repositories",
-        providerInstanceId: "provisioning-github",
-        appId: "123",
-        githubInstallationId: "456",
-        maximumDurationSeconds: 3600,
-        repositories: [
-          {
-            repositoryRef: "project",
-            repositoryId: "789",
-            repository: "example/project",
-            namespaces: [{ namespaceId: namespace.id, profiles: ["git-read", "git-write"] }],
-          },
-        ],
-      },
-      { sessionDurationSeconds: 600 },
-    );
+    const repoDriver = provisioningRepositoryPolicy(namespace.id, ["git-read", "git-write"]);
     // Reuse the established runtime fixture, but exercise real repository policy and
     // Kubernetes topology admission without contacting either external system.
     const topology = createTestKubernetesComputeDriver("provisioning-topology", {
@@ -1114,6 +1122,79 @@ test(
   },
 );
 
+// Finding 2536: accepted work whose repository access the Installation can no longer deliver
+// fails permanently, and its status names why instead of "could not complete". Both refusals
+// have fixed text that names no repository: the Compute Driver lost repository credentials, or
+// the repository policy no longer approves the saved selection (a 409 about saved state, not
+// the request's 400).
+test(
+  "a provisioning job whose saved repository access can no longer be delivered names the refusal in its status",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    for (const [change, message] of [
+      ["compute", COMPUTE_REPOSITORY_UNSUPPORTED],
+      ["policy", SAVED_REPOSITORY_SELECTION_NOT_APPROVED],
+    ]) {
+      const initial = await createFixture(context);
+      const namespace = await initial.bootstrapNamespace();
+      const repoDriver = provisioningRepositoryPolicy(namespace.id, ["git-read"]);
+      const topology = createTestKubernetesComputeDriver(`provisioning-saved-${change}`, {
+        repositoryCredentials: true,
+      });
+      const computeDriver = initial.computeDriver;
+      computeDriver.validateRepositoryCredentials =
+        topology.validateRepositoryCredentials.bind(topology);
+      const fixture = await createFixture(context, {
+        computeDriver,
+        configurationDriver: initial.configurationDriver,
+        secretDriver: initial.secretDriver,
+        repoDriver,
+      });
+      const secrets = await createProvisioningSecrets(fixture, namespace.id);
+      const body = {
+        ...provisioningBody(namespace.id, secrets, {
+          repositoryAccess: {
+            defaultProfile: "git-read",
+            repositories: [{ repositoryRef: "project" }],
+          },
+        }),
+        pluginApprovers: [],
+      };
+      const admitted = await fixture.request(
+        "POST",
+        `/namespaces/${namespace.id}/agents/provision`,
+        { body },
+      );
+      assert.equal(admitted.status, 202, `${change}: ${JSON.stringify(admitted.body)}`);
+      if (change === "compute") {
+        // The Installation now selects a Compute Driver without repository credentials.
+        delete computeDriver.validateRepositoryCredentials;
+      } else {
+        // An Installation administrator withdrew the approval after the request was accepted.
+        // The policy refuses the selection as the Driver contract allows: without a reason.
+        repoDriver.resolve = () => {
+          throw new Error("synthetic withdrawn approval");
+        };
+      }
+      await fixture.startWorker();
+      const failed = await waitFor(
+        `the worker to refuse the saved access (${change})`,
+        async () => {
+          const row = await provisioningRow(fixture.pool, namespace.id, body.requestId);
+          return row.progress.error === undefined ? undefined : row;
+        },
+      );
+      await fixture.stopWorker();
+      assert.equal(failed.status, "failed", change);
+      assert.deepEqual(failed.progress.error, { code: "PROVISIONING_REJECTED", message }, change);
+      assert.equal(failed.agent_id, null, `${change}: refused before the work creates its Agent`);
+      const status = await fixture.request("GET", admitted.data.provisioning.url);
+      assert.equal(status.status, 200, `${change}: ${JSON.stringify(status.body)}`);
+      assert.deepEqual(status.data.error, { code: "PROVISIONING_REJECTED", message }, change);
+    }
+  },
+);
+
 // Finding 1145: the request refuses repository bindings the Compute topology cannot deliver.
 // Work it already accepted is rechecked by the worker and retry until the Agent exists, so a
 // topology change after admission fails the work before it creates the Agent.
@@ -1123,32 +1204,7 @@ test(
   async (context) => {
     const initial = await createFixture(context);
     const namespace = await initial.bootstrapNamespace();
-    const repoDriver = new GitHubRepositoryPolicy(
-      {
-        id: "provisioning-repositories",
-        client: new UnixRepositoryCredentialControlClient({
-          controlSocket: "/unused/provisioning/control.sock",
-        }),
-        drivers: { repo: "provisioning-repo" },
-      },
-      {
-        version: 1,
-        backendId: "provisioning-repositories",
-        providerInstanceId: "provisioning-github",
-        appId: "123",
-        githubInstallationId: "456",
-        maximumDurationSeconds: 3600,
-        repositories: [
-          {
-            repositoryRef: "project",
-            repositoryId: "789",
-            repository: "example/project",
-            namespaces: [{ namespaceId: namespace.id, profiles: ["git-read"] }],
-          },
-        ],
-      },
-      { sessionDurationSeconds: 600 },
-    );
+    const repoDriver = provisioningRepositoryPolicy(namespace.id, ["git-read"]);
     const topology = createTestKubernetesComputeDriver("provisioning-topology-change", {
       repositoryCredentials: true,
     });
@@ -1212,32 +1268,7 @@ test(
   async (context) => {
     const initial = await createFixture(context);
     const namespace = await initial.bootstrapNamespace();
-    const repoDriver = new GitHubRepositoryPolicy(
-      {
-        id: "provisioning-repositories",
-        client: new UnixRepositoryCredentialControlClient({
-          controlSocket: "/unused/provisioning/control.sock",
-        }),
-        drivers: { repo: "provisioning-repo" },
-      },
-      {
-        version: 1,
-        backendId: "provisioning-repositories",
-        providerInstanceId: "provisioning-github",
-        appId: "123",
-        githubInstallationId: "456",
-        maximumDurationSeconds: 3600,
-        repositories: [
-          {
-            repositoryRef: "project",
-            repositoryId: "789",
-            repository: "example/project",
-            namespaces: [{ namespaceId: namespace.id, profiles: ["git-read"] }],
-          },
-        ],
-      },
-      { sessionDurationSeconds: 600 },
-    );
+    const repoDriver = provisioningRepositoryPolicy(namespace.id, ["git-read"]);
     // This case ends before the worker reaches the Sandbox: only that it has a repository path
     // matters, so every Sandbox operation fails the test.
     const sandboxDriver = {

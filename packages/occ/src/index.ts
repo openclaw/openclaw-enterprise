@@ -271,10 +271,12 @@ import {
   ChannelCredentialError,
   ComputeGatewaySettingError,
   ComputeProvisioningRefusedError,
+  ComputeRepositoryCredentialsUnsupportedError,
   ConfigurationGenerationConflictError,
   ConfigurationHarnessError,
   configurationSettingMessage,
   CredentialGatewayNotConfiguredError,
+  CredentialProxyAdmissionError,
   CredentialProxyRepositoryOnlyError,
   CredentialSourceConfigError,
   CredentialSourceDriverError,
@@ -297,7 +299,9 @@ import {
   RepositoryGitProfileUnsupportedError,
   RepositoryOptionsUnavailableError,
   RepositoryDriverNotConfiguredError,
+  RetryLaterError,
   SandboxRepositoryRecipientUnverifiedError,
+  SavedRepositorySelectionError,
   ResourceConflictError,
   ResourceStateConflictError,
   ProtectedExecutionNetworkPolicyError,
@@ -427,11 +431,13 @@ export {
   ChannelCredentialError,
   ComputeGatewaySettingError,
   ComputeProvisioningRefusedError,
+  ComputeRepositoryCredentialsUnsupportedError,
   ConfigurationGenerationConflictError,
   ConfigurationHarnessError,
   ConfigurationSizeError,
   configurationSettingMessage,
   CredentialGatewayNotConfiguredError,
+  CredentialProxyAdmissionError,
   CredentialProxyRepositoryOnlyError,
   CredentialSourceConfigError,
   CredentialSourceDriverError,
@@ -465,6 +471,7 @@ export {
   RepositoryDriverNotConfiguredError,
   ResourceConflictError,
   ResourceStateConflictError,
+  RetryLaterError,
   RuntimeCredentialsForbiddenByClusterError,
   RuntimeLogsError,
   RuntimeLogsForbiddenByClusterError,
@@ -478,6 +485,7 @@ export {
   SandboxRevisionUnsupportedError,
   SandboxRepositoryRecipientUnverifiedError,
   SandboxWorkspaceSetupRefusedError,
+  SavedRepositorySelectionError,
   ScopeViolationError,
   SecretBindingDriverError,
   ServiceAccountCredentialSecretExistsError,
@@ -1390,8 +1398,20 @@ const STANDING_APPROVAL_REFUSALS = Object.freeze({
 });
 
 /**
+ * Prepared and credential-free sources hold a protected grant admitted once, at create
+ * (finding 2536): an update or rotation cannot change it in place.
+ */
+const FIXED_PROTECTED_SOURCE_REFUSALS = Object.freeze({
+  update:
+    "This credential source holds a prepared or credential-free protected grant, which cannot change in place. Create a new source with the new values, bind it in place of this one, then delete this one.",
+  rotate:
+    "This credential source holds a prepared or credential-free protected grant, which is not rotated in place. To replace it, create a new source, bind it in place of this one, then delete this one.",
+});
+
+/**
  * The provisioning status message for a worker failure. Only the shared duplicate-name,
- * Compute refusal, Secret Driver ownership and missing ChatGPT Backend texts and the
+ * Compute refusal, Secret Driver ownership, missing ChatGPT Backend, repository and Credential
+ * Proxy texts and the
  * plugin-policy, native-support and Configuration Harness refusals pass through; other error
  * messages stay internal. Those refusals name only Installation configuration, the work's own
  * plugin selection and settings in its own Configuration, and HTTP returns them verbatim. The
@@ -1411,7 +1431,14 @@ function provisioningFailureMessage(code: string, error: unknown): string {
       // Fixed, id-free text naming the missing ChatGPT Backend.
       error instanceof ServiceAccountDriverNotConfiguredError ||
       // Fixed, id-free text naming the missing repository settings (finding 2362).
-      error instanceof RepositoryDriverNotConfiguredError
+      error instanceof RepositoryDriverNotConfiguredError ||
+      // Fixed, id-free repository and protected admission texts (finding 2536): a Compute
+      // Driver without repository credentials, selections the request or the queued work holds
+      // that are not (or no longer) approved, and a Credential Proxy that cannot start the Agent.
+      error instanceof ComputeRepositoryCredentialsUnsupportedError ||
+      error instanceof RepositoryBindingSelectionError ||
+      error instanceof SavedRepositorySelectionError ||
+      error instanceof CredentialProxyAdmissionError
     ) {
       return error.message;
     }
@@ -1529,9 +1556,7 @@ function validateRepositoryTopology(
   if (compute.validateRepositoryCredentials === undefined) {
     // An Installation property every attempt meets the same way, not an outage to retry
     // (finding 2536); RepositoryDriverNotConfiguredError words the sibling rule.
-    throw new ResourceStateConflictError(
-      "This Installation's Compute Driver cannot deliver repository credentials, so this Agent cannot use repository access. Remove its repository bindings, or ask an Installation administrator to select Kubernetes Compute.",
-    );
+    throw new ComputeRepositoryCredentialsUnsupportedError();
   }
   try {
     compute.validateRepositoryCredentials(harness, sandboxDriverId);
@@ -5936,17 +5961,16 @@ export class OpenClawController {
         harnessCredentialSource = harnessAuth;
       }
     }
+    // Each refusal below is an Installation property or the Agent's saved bindings, after the
+    // deploy grant and the authorization of every bound source: a retry never helps, so each is a
+    // 409 with fixed text that names no source or repository (finding 2536).
     const installationAccess = isInstallationRepositoryProfile(repositoryGit?.bindings[0]?.profile);
     if (!this.selections.has("credential_proxy")) {
       if (installationAccess) {
-        throw new DependencyUnavailableError(
-          "Installation-wide repository access requires the protected Credential Proxy.",
-        );
+        throw new CredentialProxyAdmissionError("installationAccess");
       }
       if (sources.length > 0) {
-        throw new DependencyUnavailableError(
-          "Protected sources require the selected egress Driver.",
-        );
+        throw new CredentialProxyAdmissionError("sourcesWithoutProxy");
       }
       return undefined;
     }
@@ -5968,12 +5992,12 @@ export class OpenClawController {
       throw new CredentialSourceUnprotectedError();
     }
     if (sourceCount > 1 && !repositoryGit && driver.policyReduction?.version !== 1) {
-      throw new ScopeViolationError(
-        "Multiple credential sources require a Credential Proxy that can verify a reduced policy.",
-      );
+      throw new CredentialProxyAdmissionError("oneSource");
     }
+    // Deploy refuses a selected Sandbox with another execution mode first
+    // (requireSandboxExecutionMode), so this is an Installation without a Sandbox Driver.
     if (!sandboxDriverId || agent.executionMode !== "dedicated") {
-      throw new ScopeViolationError("Protected egress requires a dedicated enforcing Sandbox.");
+      throw new CredentialProxyAdmissionError("dedicatedSandbox");
     }
     if (installationAccess) {
       owner.requireRepositoryGitTransport();
@@ -6001,9 +6025,7 @@ export class OpenClawController {
       gitAuthorization === "exact-dispatch" &&
       driver.policyReduction?.version === 2;
     if (repositoryGit && sources.length && !reducibleGit) {
-      throw new ScopeViolationError(
-        "Repository Credential Proxy does not admit unrelated credential routes.",
-      );
+      throw new CredentialProxyAdmissionError("gitAlone");
     }
     if (reducibleGit && driver.policyReduction?.version === 2) {
       await driver.policyReduction.assertAvailable(
@@ -6020,8 +6042,10 @@ export class OpenClawController {
       sources.some((source) => source.egress?.adoption === "live") &&
       (typeof model !== "string" || !model.includes("/"))
     ) {
-      throw new ScopeViolationError(
-        "Protected inference requires an explicit provider/model selection.",
+      // The caller holds read on the Agent's Configuration (deploy checked it), so the refusal
+      // names the setting, as other Configuration Harness refusals do (finding 2536).
+      throw new ConfigurationHarnessError(
+        "Configuration setting agents.defaults.model must name a provider/model: a live-adopted credential source routes protected inference only to an explicit provider. Set it in the Agent's Configuration, then deploy again.",
       );
     }
     const modelId = typeof model === "string" ? model.slice(model.indexOf("/") + 1) : "";
@@ -6379,9 +6403,8 @@ export class OpenClawController {
         throw new ResourceStateConflictError("Only a ready credential source can be updated.");
       }
       if (source.egress?.adoption === "prepared" || source.egress?.adoption === "credential_free") {
-        throw new ScopeViolationError(
-          "A different protected source or grant requires explicit new admission.",
-        );
+        // After the update grant and lookup: the caller may change this source (finding 2536).
+        throw new ResourceStateConflictError(FIXED_PROTECTED_SOURCE_REFUSALS.update);
       }
       const gateway = this.ownedCredentialGatewayDriver(source);
       const type = await this.credentialSourceType(gateway, source.type);
@@ -6547,9 +6570,7 @@ export class OpenClawController {
         throw new ResourceStateConflictError("Only a ready credential source can be rotated.");
       }
       if (source.egress?.adoption === "prepared" || source.egress?.adoption === "credential_free") {
-        throw new ScopeViolationError(
-          "A different protected source or grant requires explicit new admission.",
-        );
+        throw new ResourceStateConflictError(FIXED_PROTECTED_SOURCE_REFUSALS.rotate);
       }
       const gateway = this.ownedCredentialGatewayDriver(source);
       const type = await this.credentialSourceType(gateway, source.type);
@@ -6812,10 +6833,11 @@ export class OpenClawController {
       }
       await this.credentialGatewayOperation(() => gateway.removeSource(context()));
     }
-    if (this.clock().getTime() < Date.parse(source.createdAt) + CREDENTIAL_REGISTRATION_FENCE_MS) {
-      throw new DependencyUnavailableError(
-        "The credential source registration may still be completing; retry the deletion shortly.",
-      );
+    const fenceMs =
+      Date.parse(source.createdAt) + CREDENTIAL_REGISTRATION_FENCE_MS - this.clock().getTime();
+    if (fenceMs > 0) {
+      // After the delete grant and lookup; the text names only the wait (finding 2536).
+      throw new RetryLaterError("registrationFence", fenceMs / 1000);
     }
     // The success event commits with the final removal, so a completed deletion is always audited.
     await this.mutate(async (state) => {
@@ -7640,7 +7662,7 @@ export class OpenClawController {
           JSON.stringify({ ...session, phase: "cancelled", privateState: undefined }),
         ),
       );
-      throw new DependencyUnavailableError("Could not complete device login. Connect again.");
+      throw new RetryLaterError("deviceLoginFailed");
     }
     await this.authorizeDeviceAuthorizationScope(principalId, namespaceId, agentId);
     await this.authorize(principalId, "operate", { kind: "secret", id: secretId, namespaceId });
@@ -9261,7 +9283,11 @@ export class OpenClawController {
       if (agent.repositoryBindings?.length !== 1 || !this.selections.has("repo")) {
         return [];
       }
-      const resolved = this.resolveRepositoryBindings(namespaceId, agent.repositoryBindings);
+      const resolved = this.resolveRepositoryBindings(
+        namespaceId,
+        agent.repositoryBindings,
+        "saved",
+      );
       return (resolved?.resolution.bindings ?? []).flatMap((binding) => {
         const scope = resolved!.driver.standingApprovalScope?.({ namespaceId, binding });
         return scope
@@ -9528,7 +9554,9 @@ export class OpenClawController {
           const selected = updated.repositoryBindings?.find(
             (b) => b.repositoryRef === requested.repositoryRef,
           );
-          const resolved = selected && this.resolveRepositoryBindings(namespace.id, [selected]);
+          // The request's own selections resolved above, so only saved ones can fail here.
+          const resolved =
+            selected && this.resolveRepositoryBindings(namespace.id, [selected], "saved");
           const binding = resolved?.resolution.bindings[0];
           const scope =
             binding &&
@@ -9925,9 +9953,11 @@ export class OpenClawController {
           binding.repositoryRef,
         );
         if (approval) {
-          const driver = this.resolveRepositoryBindings(namespace.id, [
-            { repositoryRef: binding.repositoryRef, profile: binding.profile },
-          ])!.driver;
+          const driver = this.resolveRepositoryBindings(
+            namespace.id,
+            [{ repositoryRef: binding.repositoryRef, profile: binding.profile }],
+            "saved",
+          )!.driver;
           if (
             !driver.allowsStandingApproval?.({ namespaceId: namespace.id, binding }) ||
             !isDeepStrictEqual(approval.binding, binding) ||
@@ -12457,6 +12487,7 @@ export class OpenClawController {
       const repositoryBindings = this.repositoryBindingSelections(
         namespace.id,
         planRecord.repositoryBindings as readonly RepositoryBindingRequest[] | undefined,
+        "saved",
       );
       const repositoryAccess = normalizedRepositoryAccess(
         planRecord.repositoryAccess,
@@ -14029,9 +14060,15 @@ export class OpenClawController {
     };
   }
 
+  /**
+   * `origin` says whether the request sent `bindings` or they are saved state (an Agent's
+   * bindings, or queued provisioning work): a selection the Driver refuses is a 400 about the
+   * request, or a 409 about saved state the request did not send (finding 2536).
+   */
   private resolveRepositoryBindings(
     namespaceId: string,
     bindings: readonly RepositoryBindingRequest[] | undefined,
+    origin: "request" | "saved",
   ):
     | {
         readonly driver: RepositoryPolicyDriver;
@@ -14065,8 +14102,10 @@ export class OpenClawController {
       resolution = driver.resolve(immutableCopy({ namespaceId, bindings }));
     } catch {
       // Every caller holds the Agent's or Namespace's grant, and the fixed text names no
-      // repository or Driver reason, so it is a request error rather than a scope miss.
-      throw new RepositoryBindingSelectionError(RepositoryBindingSelectionError.notApproved);
+      // repository or Driver reason, so it is a request or saved-state error, not a scope miss.
+      throw origin === "request"
+        ? new RepositoryBindingSelectionError(RepositoryBindingSelectionError.notApproved)
+        : new SavedRepositorySelectionError();
     }
     const selected = this.selections.get("repo");
     if (
@@ -14117,8 +14156,9 @@ export class OpenClawController {
   private repositoryBindingSelections(
     namespaceId: string,
     bindings: readonly RepositoryBindingRequest[] | undefined,
+    origin: "request" | "saved" = "request",
   ): readonly RepositoryBindingSelection[] | undefined {
-    const resolved = this.resolveRepositoryBindings(namespaceId, bindings);
+    const resolved = this.resolveRepositoryBindings(namespaceId, bindings, origin);
     if (resolved === undefined || bindings === undefined) {
       return undefined;
     }
@@ -14138,7 +14178,11 @@ export class OpenClawController {
     sandboxDriverId: string | undefined,
     admittedAtWallMs: number,
   ): RepositoryRevisionState | undefined {
-    const resolved = this.resolveRepositoryBindings(agent.namespaceId, agent.repositoryBindings);
+    const resolved = this.resolveRepositoryBindings(
+      agent.namespaceId,
+      agent.repositoryBindings,
+      "saved",
+    );
     if (resolved === undefined) {
       return undefined;
     }
