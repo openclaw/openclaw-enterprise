@@ -1719,6 +1719,8 @@ async function loadPage({
       owner && observabilityOwner === owner
         ? null
         : installationAccess(owner, permissionsRead, permissionsPath);
+    // Awaited after the first reads; a first read that fails first leaves it unawaited.
+    accessRead?.catch(() => {});
     let firstPermissions = null;
     if (!scopedNamespaceUnavailable && current.feature !== "settings" && !current.creating) {
       if (current.agentId) {
