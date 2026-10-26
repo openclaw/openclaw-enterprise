@@ -2466,8 +2466,9 @@ const refusedRoute = (status: number) => ({
 });
 
 // A follow poll refused on the page drops the output read before the refusal, and Back
-// rebuilds the view rather than mount it again (findings 1562, 1565).
-test("a refused follow poll clears the shown output, and Back rebuilds the view", async (t) => {
+// rebuilds the view rather than mount it again (findings 1562, 1565). Refresh asks again
+// (finding 2566).
+test("a refused follow poll clears the shown output, Back rebuilds the view, and Refresh reads again", async (t) => {
   const logs = await logsFixture(t);
   logs.computeDriver.state.lines = [line(1, "read before revoke")];
   const { account, role } = await logsMember(logs.fixture, logs.namespace, "refused-poll", [
@@ -2498,6 +2499,15 @@ test("a refused follow poll clears the shown output, and Back rebuilds the view"
   assert.equal(await wasPainted(), false);
   // The refusal is remembered: neither Back's check nor the rebuilt view asks again.
   assert.equal(logReads(), readsAfterRefusal);
+
+  // The message says Refresh checks access again: with the grant restored, the console Refresh
+  // reads the logs instead of reusing the remembered refusal (finding 2566).
+  changeGrant(role, "read_logs", true);
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await pane.getByText("read before revoke").waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(await page.getByText(LOGS_CHANGED).count(), 0);
+  assert.ok(logReads() > readsAfterRefusal, "Refresh reads the logs again");
 });
 
 // Hold a real, authorized response in transit. The other read then gets a real 403 after

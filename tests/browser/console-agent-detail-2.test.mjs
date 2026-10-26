@@ -1590,7 +1590,8 @@ test("Agent detail refocus checks access once without reloading an unfinished re
 
 // A link to a tab this version or this reader does not have silently showed Configuration and
 // kept tab=… in the address (finding 2552). The page now names the tab and why, shows
-// Configuration, and drops the note once another tab is chosen.
+// Configuration, and drops the note once another tab is chosen. The address then names
+// Configuration, so a reload or a shared link does not repeat the note (finding 2567).
 test("a link to an unavailable Agent tab names it and shows Configuration", async (t) => {
   const fixture = await detailApp(t);
   const namespace = await fixture.createNamespace("Unavailable tab links", { ready: true });
@@ -1618,6 +1619,7 @@ test("a link to an unavailable Agent tab names it and shows Configuration", asyn
     ["draft", "bogus", "This Agent has no “bogus” tab. Showing Configuration."],
   ]) {
     const { page } = await newPage(t, fixture);
+    await trackSettledFetches(page);
     await login(
       page,
       fixture,
@@ -1627,21 +1629,39 @@ test("a link to an unavailable Agent tab names it and shows Configuration", asyn
     await page.getByRole("tab", { name: "Configuration", selected: true }).waitFor();
     await notice(page).getByText(text, { exact: true }).waitFor();
     assert.equal(await notice(page).getAttribute("role"), "status");
+    // The address names the tab shown, in place: the page and its note stay.
+    await page.waitForURL((url) => url.searchParams.get("tab") === "configuration");
+    assert.equal(new URL(page.url()).searchParams.get("revision"), revisionId);
+    await notice(page).getByText(text, { exact: true }).waitFor();
+    if (tab === "bogus") {
+      // A reload opens Configuration from the corrected address, without the note.
+      await page.reload();
+      await page.getByRole("tab", { name: "Configuration", selected: true }).waitFor();
+      await waitForIdleFetches(page);
+      assert.equal(await notice(page).isHidden(), true);
+      continue;
+    }
     // Choosing a tab answers the note.
     await page.getByRole("tab", { name: "Plugins", exact: true }).click();
     await page.getByRole("tab", { name: "Plugins", selected: true }).waitFor();
     assert.equal(await notice(page).isHidden(), true);
   }
-  // A tab the reader has shows no note.
-  const { page } = await newPage(t, fixture);
-  await login(
-    page,
-    fixture,
-    detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"),
-    reader.credentials,
-  );
-  await page.getByRole("tab", { name: "Plugins", selected: true }).waitFor();
-  assert.equal(await notice(page).isHidden(), true);
+  // A tab the reader has, or an empty tab, shows no note.
+  for (const tab of ["plugins", ""]) {
+    const { page } = await newPage(t, fixture);
+    await trackSettledFetches(page);
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, "draft", tab),
+      reader.credentials,
+    );
+    await page
+      .getByRole("tab", { name: tab ? "Plugins" : "Configuration", selected: true })
+      .waitFor();
+    await waitForIdleFetches(page);
+    assert.equal(await notice(page).isHidden(), true);
+  }
 });
 
 for (const kind of ["agent", "configuration", "namespace"]) {

@@ -7,7 +7,7 @@ import {
   renderCreateAgent,
   renderAgentDetail,
 } from "./agents.mjs";
-import { clearRuntimeDenials } from "./agents/logs.mjs";
+import { clearRuntimeDenials, forgetRuntimeDenials } from "./agents/logs.mjs";
 import { createApiClient } from "./api-client.mjs";
 import { createViewLifetime } from "./view-lifetime.mjs";
 import { createNavigation, pages } from "./navigation.mjs";
@@ -1269,6 +1269,11 @@ async function loadPage({
     reuseView = false;
   }
   namespaceId = current.namespace;
+  if (fromRefresh && current.agentId && current.namespace) {
+    // Refresh checks access again: an Agent's Logs view asks again instead of reusing a denial
+    // remembered earlier in this sign-in (finding 2566).
+    forgetRuntimeDenials(current.namespace, current.agentId);
+  }
   const active = resetReads({
     retainView: knownPrivateState,
     // A Namespaces row link marks itself too, so Back returns focus to that row.

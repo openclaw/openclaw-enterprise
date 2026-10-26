@@ -53,7 +53,7 @@ const FIRST_VIEW_WAIT_MS = 2_000;
 // time the Logs tab reopens. A status denial also keeps whether the caller's permission answer
 // allowed operate when it was last shown (null until an answer is compared): once a later
 // answer allows operate where it did not, the view asks once more. The answer has no read_logs
-// bit, so a log text denial lasts until sign-out.
+// bit, so a log text denial lasts until the console Refresh or sign-out.
 const deniedLogViews = new Set<string>();
 const deniedStatusViews = new Map<string, boolean | null>();
 // Denials that came after this page session read the same output: the caller's access changed,
@@ -67,6 +67,21 @@ const logViewKey = (context: LogViewIdentity, agentId: string) =>
 /** Whether this page session already saw the Agent's log text read denied. */
 export function logTextDenied(context: LogViewIdentity, agentId: string) {
   return deniedLogViews.has(logViewKey(context, agentId));
+}
+
+/**
+ * Forgets the Agent's remembered runtime denials: the console Refresh calls this, so the rebuilt
+ * Logs view reads again and an access change can be checked (finding 2566).
+ */
+export function forgetRuntimeDenials(namespaceId: string, agentId: string) {
+  for (const views of [deniedLogViews, deniedStatusViews, revokedLogViews, revokedStatusViews]) {
+    for (const key of views.keys()) {
+      const [, keyNamespace, keyAgent] = JSON.parse(key) as unknown[];
+      if (keyNamespace === namespaceId && keyAgent === agentId) {
+        views.delete(key);
+      }
+    }
+  }
 }
 
 /** Forgets every remembered runtime denial: sign-out calls this, so a new sign-in asks again. */
