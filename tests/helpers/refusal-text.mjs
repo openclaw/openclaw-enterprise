@@ -23,6 +23,10 @@ export const sentIdHidden = (text, id) => text.replaceAll(id, "<id>");
 // administrator creates one. `kinds` is the plural, such as "Secrets".
 export const createDenied = (kind, namespaceId, kinds = `${kind}s`) =>
   `Not authorized: this needs ${kind} create in Namespace ${namespaceId}. Only an Installation administrator can create ${kinds}: ask one to create it.`;
+// The same create refused by a Restriction to a caller who administers the Installation, as the
+// console's AGENT_CREATE_RESTRICTED says (finding D769). Other callers get createDenied.
+export const createRestricted = (kind, namespaceId) =>
+  `Not authorized: a Restriction in Namespace ${namespaceId} denies ${kind} create, even for Installation administrators. Ask whoever manages IAM Restrictions to lift it, or create the ${kind} in another Namespace.`;
 export const NAMESPACE_CREATE_DENIED =
   "Not authorized: this needs Namespace create. Only an Installation administrator can create Namespaces: ask one to create it.";
 export const INSTALLATION_ADMINISTER_DENIED =
@@ -234,9 +238,9 @@ export const modelCredentialRejectedAsk = (secretBacked) =>
 export const modelCredentialRejectedReadOnly = (secretBacked) =>
   `The last deployment's model credential was rejected. ${credentialFixGrants(secretBacked, "deploy again")}`;
 // The API has no route to Slack (SlackRouteNotConfiguredError, apps/controller/src/drivers/channel/
-// slack.ts). Helm settings belong to whoever operates the Installation (finding D750).
+// slack.ts). A member reads who to ask, not Helm keys; the guide lists them (findings D750, D753).
 export const SLACK_ROUTE_NOT_CONFIGURED =
-  "OCC could not reach Slack, and the API has no Slack proxy. If the API has another approved route to Slack, try again. Otherwise ask the Installation operator to set Helm slackProxy.enabled or api.channelDirectoryProxyUrl; see the Slack integration guide.";
+  "The API could not reach Slack and has no Slack proxy. If the API has another approved route to Slack, try again. Otherwise ask an Installation administrator to give the API a route to Slack; the Slack integration guide lists the Helm settings.";
 // Agent-side save controls, from the caller's permission answer (findings 2441, 2459).
 export const AGENT_UPDATE_DENIED = notIncluded(
   "saving these settings",
@@ -279,9 +283,9 @@ export const DEPLOY_CLUSTER_RBAC_REFUSED =
 // Deployment progress that asks an administrator to act, in fixed copy that never shows the
 // quota's numbers or the image reference (packages/occ/src/state/controller-work.ts).
 export const POD_QUOTA_FULL =
-  "The Namespace's Pod quota is full. Stop or delete an Agent, or ask an administrator to raise the quota.";
+  "The Namespace's Pod quota is full. Stop or delete an Agent, or ask an Installation administrator to raise the quota.";
 export const IMAGE_PULL_FAILING =
-  "Kubernetes cannot pull a container image for this Agent and keeps retrying. Ask an administrator to check the runtime image reference and that the cluster's nodes can pull from its registry.";
+  "Kubernetes cannot pull a container image for this Agent and keeps retrying. Ask an Installation administrator to check the runtime image reference and that the cluster's nodes can pull from its registry.";
 
 // Console refusals for a save the caller may not make, when the API names no grant.
 export const AGENT_SAVE_DENIED =
@@ -352,7 +356,7 @@ export const stopStatusRefreshFailed = (reason) => `${STOP_STATUS_REFRESH_FAILED
 
 // The Agent page's Workspace tab without a deployed, reachable gateway.
 export const WORKSPACE_FILES_UNAVAILABLE =
-  "Workspace files require a deployed Agent with a current version and a reachable gateway.";
+  "Workspace files require a deployed Agent with a current version and a reachable gateway. Deploy the Agent to read or edit them.";
 
 // Saves refused because the saved state changed under the editor. SAVED_CONFIGURATION_CHANGED
 // also opens the channel editor's variant, so a check that reads only it matches both.
@@ -514,6 +518,10 @@ export const BOUND_SECRET_UNLISTED = `A Secret is bound. Its name is unavailable
 export const BOUND_SECRET_READ_REFUSED = `A Secret is bound. Its name is hidden because your access does not include reading it. ${askForGrant("Secret read on it")}`;
 // Finding D761. A link to a Secret the readable list leaves out: missing and unreadable alike.
 export const SECRET_LINK_UNLISTED = `This Secret is not in your readable list: it may not exist, or your access does not include reading it. ${askForGrant("Secret read on it")}`;
+// The same link for an Installation administrator, with no ask (finding D769). `shown` is
+// "Secret <id>" for a well-formed linked ID, otherwise "such Secret".
+export const secretLinkUnlistedAdministrator = (shown) =>
+  `No ${shown} is in your readable list for this Namespace.`;
 // A disabled Secret field's hint for a bound Secret the caller may read (finding 2646: a check
 // that it is absent must use this text, not a pasted fragment).
 export const BOUND_SECRET_METADATA = "Secret metadata is bound. Values are never shown.";
@@ -620,3 +628,9 @@ export const CREDENTIAL_GATEWAY_NOT_CONFIGURED =
   "This Installation has no Credential Gateway, so credential sources are unavailable. An Installation administrator must select the OpenShell Credential Gateway Driver; see https://docs-enterprise.openclaw.org/reference/credential-sources/";
 export const CREDENTIAL_SOURCE_DRIVER_CHANGED =
   "The selected Credential Gateway Driver did not register this credential source. Bind a replacement registered through the selected driver. To update or delete this source, an Installation administrator must first re-select the driver that registered it.";
+// A workspace file read or write on an Agent with no running version, after the Agent grant
+// (finding D768): stopped or never deployed, or a deployment still starting.
+export const workspaceWithoutRunningVersion = (agentId) =>
+  `Agent ${agentId} has no running version, so its workspace files cannot be read or written. Deploy it, then try again.`;
+export const workspaceVersionStarting = (agentId) =>
+  `Agent ${agentId} has no running version yet: its deployment is still starting, so its workspace files cannot be read or written. Try again when the deployment finishes.`;

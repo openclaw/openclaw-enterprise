@@ -820,12 +820,14 @@ test("service API keys authenticate scoped automation without replacing sessions
         assert.match(error.stderr, /FORBIDDEN/);
         assert.match(error.stderr, /HTTP 403/);
         // The hint names the Namespace of the key this request sent, not the rotated one, and
-        // asks for an Installation-scoped key rather than a --namespace (finding D740).
+        // asks for an Installation-scoped key rather than a --namespace (finding D740), without
+        // repeating OCC's own sentence (finding D770).
         assert.ok(
           error.stderr.includes(
-            `"occ installation get" needs an Installation-scoped key. This service key works only in Namespace ${namespaceId} `,
+            `"occ installation get" needs an Installation-scoped key; no --namespace value helps. Read this key's Namespace with "occ namespace get ${namespaceId}".`,
           ),
         );
+        assert.equal(error.stderr.split("works only in").length, 2);
         return true;
       },
     );

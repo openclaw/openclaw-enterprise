@@ -770,6 +770,15 @@ export const requestIdLine = (requestId: string) =>
   element("p", { className: "request-id" }, requestIdText(requestId));
 export const withRequestId = (text: string, requestId: string | undefined) =>
   requestId ? `${text} ${requestIdText(requestId)}` : text;
+// A settled permission refusal keeps its request ID for whoever traces the denial, behind a
+// disclosure, so it is not read as part of the reason (finding D770).
+export const requestIdDisclosure = (requestId: string) =>
+  element(
+    "details",
+    { className: "disclosure" },
+    element("summary", {}, "Request details"),
+    requestIdLine(requestId),
+  );
 
 /**
  * Gives a feedback line that switches between a quiet hint and a refusal its look: a status

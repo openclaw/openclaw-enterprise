@@ -149,7 +149,7 @@ export function renderWorkspaceFiles(
       element(
         "p",
         { className: "muted", role: "status" },
-        "Workspace files require a deployed Agent with a current version and a reachable gateway.",
+        "Workspace files require a deployed Agent with a current version and a reachable gateway. Deploy the Agent to read or edit them.",
       ),
     );
     return { section, refresh: () => {} };

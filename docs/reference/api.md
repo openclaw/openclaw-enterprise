@@ -4757,6 +4757,7 @@ Read an allowed workspace file from one active Agent
 | `401` | Unauthorized |
 | `403` | Forbidden |
 | `404` | Not Found |
+| `409` | Conflict. The Agent has no running version: deploy it, or wait until its deployment finishes. |
 | `500` | Internal Server Error |
 | `503` | Service Unavailable |
 

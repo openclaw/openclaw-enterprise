@@ -10,6 +10,7 @@ import {
   SECRET_CREATE_DENIED,
   SECRET_DELETE_DENIED,
   SECRET_LINK_UNLISTED,
+  secretLinkUnlistedForAdministrator,
   SECRET_READ_DENIED,
   SECRET_UPDATE_DENIED,
 } from "./agents/access-reasons.mjs";
@@ -882,6 +883,11 @@ export function renderSecrets(
   if (linked) {
     void openDetail(linked);
   } else if (context.openSecretId) {
-    list.before(statusBlock("warning", null, SECRET_LINK_UNLISTED, [], { role: "status" }));
+    // An administrator is the one the member text sends the reader to, so she gets no ask.
+    const unlisted =
+      context.permissions?.installation?.administer === true
+        ? secretLinkUnlistedForAdministrator(context.openSecretId)
+        : SECRET_LINK_UNLISTED;
+    list.before(statusBlock("warning", null, unlisted, [], { role: "status" }));
   }
 }

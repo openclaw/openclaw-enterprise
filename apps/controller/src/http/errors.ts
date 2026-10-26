@@ -101,6 +101,22 @@ export function dependencyUnavailable(): RequestFailure {
 }
 
 /**
+ * A workspace file read or write on an Agent with no active version: a lifecycle state the caller
+ * can change, not an outage (finding D768). `stopped` is an Agent that is stopped or was never
+ * deployed; otherwise its deployment is still activating. Raised only after the Agent grant, for
+ * the Agent ID the request named.
+ */
+export function workspaceWithoutRunningVersion(agentId: string, stopped: boolean): RequestFailure {
+  return failure(
+    409,
+    "RESOURCE_CONFLICT",
+    stopped
+      ? `Agent ${agentId} has no running version, so its workspace files cannot be read or written. Deploy it, then try again.`
+      : `Agent ${agentId} has no running version yet: its deployment is still starting, so its workspace files cannot be read or written. Try again when the deployment finishes.`,
+  );
+}
+
+/**
  * One INVALID_VALUE detail for a submitted object key under `parent`. The error contract
  * caps detail paths at 512 characters; a key too long to fit points at `parent` instead.
  */
@@ -931,7 +947,11 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
             callerDenialMessage(
               error.authorization,
               denied?.requested,
-              error instanceof QualifiedAuthorizationDeniedError ? error.qualifier : undefined,
+              error instanceof QualifiedAuthorizationDeniedError
+                ? error.qualifier
+                : denied?.administratorRestricted === true
+                  ? "administrator_restricted"
+                  : undefined,
             ),
           ),
     );
