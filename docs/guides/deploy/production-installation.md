@@ -44,10 +44,10 @@ The base image follows the [runtime recipe](../../../deploy/runtime/README.md).
 Authenticate the builder with `docker login <registry-host>` and approved
 credentials; for private ECR, follow [ECR authentication](eks.md#authenticate-the-image-builder-to-ecr).
 
-In a fresh Bash shell, [resolve the OpenClaw build arguments](../../../deploy/runtime/README.md#resolve-openclaw-build-arguments)
-before running this push. On failure, stop and retain the metadata.
-The standard runtime packages Slack and Codex; use it for both slots unless you
-have separately verified a gateway/Codex pair. Installing packages at gateway
+In a fresh Bash shell, [resolve the OpenClaw build arguments](../../../deploy/runtime/README.md#resolve-openclaw-build-arguments).
+Stop on failure; retain metadata.
+Use the standard Slack/Codex runtime for both slots unless you separately verified
+another gateway/Codex pair. Installing packages at gateway
 startup is unsupported.
 
 ```bash

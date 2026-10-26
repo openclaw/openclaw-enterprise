@@ -87,14 +87,11 @@ Before Buildx runs, the workflow derives `SOURCE_DATE_EPOCH` from the exact
 OCE source commit. BuildKit rewrites image and filesystem timestamps to that epoch,
 so wall-clock time does not change the image manifests on a cold-cache rebuild.
 
-For the runtime build, `scripts/lib/openclaw-source.mjs:readOpenclawSource` reads
-`deploy/runtime/openclaw-source.json` from the checked-out OCE source. The workflow
-passes its OpenClaw commit, archive checksum, and fixed upstream build timestamp
-as build arguments. The Dockerfile checks those arguments against the manifest
-before downloading source; missing, malformed, or conflicting inputs fail.
-Both the manifest and arguments participate in the build cache. Cache scopes
-remain per image and architecture, and the cache workflow watches the manifest's
-directory. Repository-credential service targets do not use OpenClaw source.
+`scripts/lib/openclaw-source.mjs:readOpenclawSource` resolves the runtime's commit,
+archive checksum, and build timestamp from `deploy/runtime/openclaw-source.json`.
+The Dockerfile rejects missing, malformed, or conflicting build arguments before
+downloading source. Manifest changes invalidate build caches; credential-service
+targets remain independent.
 
 `deploy/runtime/Dockerfile:openclaw-source` verifies the OpenClaw source archive
 and applies the checksum-verified patches described in the
@@ -106,27 +103,19 @@ use a separately pinned Node 24 Bookworm slim base. Both bases apply available
 Debian package updates when their recipe layers build. The Node digest identifies
 the upstream image; it does not freeze Debian package repositories.
 
-`deploy/runtime/Dockerfile:runtime` disables npm's background update notifier in
-the final image environment. Harness child processes inherit that default, so
-local npm scripts do not trigger a separate version-check network request.
-See the [runtime defaults](../../deploy/runtime/README.md) for scope.
+`deploy/runtime/Dockerfile:runtime` disables npm background update checks;
+see [runtime defaults](../../deploy/runtime/README.md).
 
-`scripts/build-runtime-assets.mjs` removes development/QA source, extension tests,
-and documentation media, while retaining runtime templates, skills, and help.
-It follows importer-relative runtime dependencies to remove unreachable pnpm
-store entries without collapsing distinct package versions. It writes initial
-provenance containing the manifest's source commit and archive checksum, plus
-patch, lockfile, and inventory hashes. The runtime
-copies the assembled directory directly; there is no gzip archive or second
-Codex installation. After final-stage permission normalization, the inventory
-helper rewrites `contents.json` from `/app/node_modules/openclaw` and updates
-`runtimeContentsSha256` and the stock `codex` package/binary identity. Provenance
-therefore describes the final runtime tree. Upstream
-import-closure and native-addon checks remain. See the
-[runtime recipe](../../deploy/runtime/README.md).
-The final image checks that `org.openclaw.image.revision` matches this upstream
-commit. The separate `org.opencontainers.image.revision` label and release
-receipt's `sourceSha` continue to identify OCE.
+`scripts/build-runtime-assets.mjs` prunes development/QA files and unreachable
+pnpm entries, retaining runtime templates, skills, help, and importer-specific
+dependencies. It writes provenance with the manifest's commit and archive
+checksum plus patch, lockfile, and inventory hashes. The runtime copies this
+tree without gzip or a second Codex installation. After permission normalization,
+inventory mode updates `contents.json`, `runtimeContentsSha256`, and Codex
+package/binary identity. Upstream import-closure and native-addon checks remain;
+see the [runtime recipe](../../deploy/runtime/README.md).
+`org.openclaw.image.revision` must match packaged provenance;
+`org.opencontainers.image.revision` and receipt `sourceSha` identify OCE.
 
 ### 2. Verify and assemble both platform variants
 
@@ -218,8 +207,8 @@ owns package-write access and coordination.
 
 ## Debugging and Verification
 
-- For rejected OpenClaw source arguments, [resolve them from the checked-out manifest](../../deploy/runtime/README.md#resolve-openclaw-build-arguments)
-  and rerun the build. Do not bypass the archive checksum or substitute an environment default.
+- For rejected source arguments, [resolve the manifest values](../../deploy/runtime/README.md#resolve-openclaw-build-arguments)
+  and rebuild without bypassing checksum verification.
 - Run `node --test tests/integration/container-{release,resume,promote}.test.mjs`
   for platform/archive validation and release gate coverage. The archive case uses
   real OCI blobs and tar; recovery uses transport fixtures.
@@ -248,7 +237,7 @@ owns package-write access and coordination.
 
 ## Changelog
 
-- 2026-10-26 10:23: Resolve runtime source identity from one manifest, verify build arguments against it, and retain separate OpenClaw and OCE provenance. (authoring-run/3032d748-8d18-4cef-a903-f9a72ed8cda9 - 37d28e211ed5831dc201433d36bb23eadd834f6b)
+- 2026-10-26 10:23: Read OpenClaw source metadata from one manifest; validate build arguments and provenance. (authoring-run/3032d748-8d18-4cef-a903-f9a72ed8cda9 - 37d28e211ed5831dc201433d36bb23eadd834f6b)
 
 - 2026-10-10 03:00: Pin stock Codex 0.163.0-alpha.2; alpha.1 sent metadata the backend rejects. (fix-992-pin)
 
