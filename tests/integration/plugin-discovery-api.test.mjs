@@ -4,6 +4,7 @@ import test from "node:test";
 
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
+import { callerDenied, GENERIC_DENIAL } from "../helpers/refusal-text.mjs";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { codexRuntimeArtifact } from "../../apps/controller/src/drivers/plugin/runtime-translator.ts";
@@ -426,13 +427,14 @@ test("Saved Agent plugin discovery requires exact Agent and Secret grants before
   );
   assert.ok(agentSecretBinding);
 
-  async function expectDenied(action, principalId, resource) {
+  async function expectDenied(action, principalId, resource, message) {
     for (const [suffix, body] of [
       ["", {}],
       ["/details", { pluginId: remoteId }],
     ]) {
       const result = await fixture.request("POST", `${path}${suffix}`, { session, body });
       assertApiError(result, 403, "FORBIDDEN");
+      assert.equal(result.body.error.message, message);
       const denial = fixture.auditSink.events.at(-1);
       assert.equal(denial.kind, "authorization_denial");
       assert.deepEqual(denial.authorization, { principalId, action, resource });
@@ -442,24 +444,35 @@ test("Saved Agent plugin discovery requires exact Agent and Secret grants before
   }
 
   // Each permission is checked independently before the stored PAT can reach the Plugin Driver.
-  await expectDenied("read", actor.principal.id, {
-    kind: "agent",
-    id: agent.id,
-    namespaceId: fixture.namespace.id,
-  });
+  // The caller's own denials name the grant (finding 2534): the Agent by the ID the path sent, the
+  // stored Secret by no ID.
+  const agentRef = { kind: "agent", id: agent.id, namespaceId: fixture.namespace.id };
+  await expectDenied(
+    "read",
+    actor.principal.id,
+    agentRef,
+    callerDenied("Agent read", `Agent ${agent.id}`),
+  );
   agentRole.permissions = [{ action: "read", resourceKind: "agent" }];
-  await expectDenied("update", actor.principal.id, {
-    kind: "agent",
-    id: agent.id,
-    namespaceId: fixture.namespace.id,
-  });
+  await expectDenied(
+    "update",
+    actor.principal.id,
+    agentRef,
+    callerDenied("Agent update", `Agent ${agent.id}`),
+  );
   agentRole.permissions.push({ action: "update", resourceKind: "agent" });
   fixture.policy.bindings.splice(fixture.policy.bindings.indexOf(actorSecretBinding), 1);
-  await expectDenied("operate", actor.principal.id, secret.ref);
+  await expectDenied(
+    "operate",
+    actor.principal.id,
+    secret.ref,
+    callerDenied("Secret operate", "a Secret this request uses"),
+  );
   fixture.policy.bindings.push(actorSecretBinding);
   fixture.policy.bindings.splice(fixture.policy.bindings.indexOf(agentSecretBinding), 1);
-  // The request audit attributes the failed subordinate grant to the authenticated actor.
-  await expectDenied("operate", actor.principal.id, secret.ref);
+  // The request audit attributes the failed subordinate grant to the authenticated actor. The
+  // Agent's own principal was denied, not the caller, so the text names no grant.
+  await expectDenied("operate", actor.principal.id, secret.ref, GENERIC_DENIAL);
   fixture.policy.bindings.push(agentSecretBinding);
 
   const allowed = await fixture.request("POST", path, { session, body: {} });

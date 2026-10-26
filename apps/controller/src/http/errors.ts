@@ -53,7 +53,7 @@ import {
   ConfigurationValidationError,
 } from "../drivers/configuration/kubernetes/index.ts";
 import { loggedErrorText, resemblesCredential } from "../logging.ts";
-import { callerDenialMessage, GENERIC_DENIAL } from "./caller-denial.ts";
+import { callerDenialMessage, GENERIC_DENIAL, type DeniedRequest } from "./caller-denial.ts";
 import {
   collapseScalarUnions,
   jsonPointer,
@@ -646,13 +646,10 @@ function discoveryFailure<Reason extends DiscoveryFailureReason>(
 }
 
 /**
- * Maps an error to its client answer. `requested` tells whether the request carried a value
- * (requestedValues in caller-denial.ts); without it a caller's denial names no resource ID.
+ * Maps an error to its client answer. `denied` describes the request for a caller's denial;
+ * without it the denial names no resource ID.
  */
-export function requestFailure(
-  error: unknown,
-  requested?: (value: string) => boolean,
-): RequestFailure {
+export function requestFailure(error: unknown, denied?: DeniedRequest): RequestFailure {
   if (error instanceof RequestFailure) {
     return error;
   }
@@ -881,13 +878,18 @@ export function requestFailure(
   }
   if (isAuthorizationDenied(error)) {
     // The caller's own denial names the grant it checked, never the IAM decision's reason, so a
-    // Restriction and a missing grant read the same (finding 2534).
+    // Restriction and a missing grant read the same (finding 2534). A decision for another
+    // principal, such as an Agent's service principal checked without naming it, stays generic:
+    // its grant would read as the caller's own.
+    const decidedFor = error.evidence?.identityId;
+    const another =
+      decidedFor !== undefined && denied?.actorId !== undefined && decidedFor !== denied.actorId;
     return failure(
       403,
       "FORBIDDEN",
-      error.authorization === undefined
+      error.authorization === undefined || another
         ? GENERIC_DENIAL
-        : capped(callerDenialMessage(error.authorization, requested)),
+        : capped(callerDenialMessage(error.authorization, denied?.requested)),
     );
   }
   if (error instanceof Error) {

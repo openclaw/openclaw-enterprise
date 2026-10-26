@@ -4327,10 +4327,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
   app.setErrorHandler(async (error, request, reply) => {
     // A caller's own denial names a resource ID only when this request carried it.
-    let mapped = requestFailure(
-      error,
-      requestedValues(request.params, request.query, request.body),
-    );
+    const actorId = contexts.get(request)?.actorId;
+    let mapped = requestFailure(error, {
+      requested: requestedValues(request.params, request.query, request.body),
+      ...(actorId === undefined ? {} : { actorId }),
+    });
     if (error instanceof RuntimeLogsError && error.retryAfterSeconds !== undefined) {
       reply.header("retry-after", String(error.retryAfterSeconds));
     }

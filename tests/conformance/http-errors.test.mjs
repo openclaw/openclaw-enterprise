@@ -1441,24 +1441,31 @@ test("a contract message shows fewer problems rather than cut a path below 32 ch
 // for a Restriction as for a missing grant.
 test("a caller denial names each checked grant without disclosing a Restriction or an unsent ID", () => {
   const id = `id_${"a".repeat(125)}`;
+  const evidence = (identityId, restrictionIds = []) => ({
+    identityId,
+    groupIds: [],
+    bindingIds: restrictionIds.length > 0 ? ["binding-1"] : [],
+    roleIds: restrictionIds.length > 0 ? ["role-1"] : [],
+    restrictionIds,
+  });
   for (const kind of RESOURCE_KINDS) {
     for (const action of SUPPORTED_PERMISSION_ACTIONS[kind]) {
       const resource = { kind, id, namespaceId: "ns_1" };
       const label = `${kind}:${action}`;
-      const denied = (reason, evidence, requested) =>
-        requestFailure(
-          new AuthorizationDeniedError(reason, evidence, { action, resource }),
+      const denied = (reason, decided, requested) =>
+        requestFailure(new AuthorizationDeniedError(reason, decided, { action, resource }), {
           requested,
-        ).message;
+          actorId: "prn_caller",
+        }).message;
       const sent = requestedValues({ namespaceId: "ns_1", id }, {}, undefined);
       const restricted = denied(
         "A matching Restriction denied the operation.",
-        { bindingIds: ["binding-1"], roleIds: ["role-1"], restrictionIds: ["restriction-1"] },
+        evidence("prn_caller", ["restriction-1"]),
         sent,
       );
       const ungranted = denied(
         "No explicit scoped binding grants the exact action and resource.",
-        { bindingIds: [], roleIds: [], restrictionIds: [] },
+        evidence("prn_caller"),
         sent,
       );
       assert.equal(restricted, ungranted, label);
@@ -1466,7 +1473,7 @@ test("a caller denial names each checked grant without disclosing a Restriction 
       assert.ok(restricted.length <= 256, label);
       assert.doesNotMatch(
         restricted,
-        /restriction-1|binding-1|role-1|matching|binding grants/,
+        /restriction-1|binding-1|role-1|prn_caller|matching|binding grants/,
         label,
       );
       // An exact resource is named only when the request carried its ID; a create names the
@@ -1476,6 +1483,8 @@ test("a caller denial names each checked grant without disclosing a Restriction 
       const unsent = denied("", undefined, requestedValues({ other: "value" }));
       assert.equal(unsent.includes(id), false, label);
       assert.equal(unsent.includes("ns_1"), false, label);
+      // A decision for another principal, such as an Agent's own, names no grant at all.
+      assert.equal(denied("", evidence("prn_agent"), sent), GENERIC_DENIAL, label);
     }
   }
   // An ID outside the plain shape is never echoed, even when the request carried it.
@@ -1486,7 +1495,7 @@ test("a caller denial names each checked grant without disclosing a Restriction 
         action: "read",
         resource: { kind: "agent", id: odd, namespaceId: "ns_1" },
       }),
-      requestedValues({ agentId: odd }),
+      { requested: requestedValues({ agentId: odd }) },
     ).message,
     callerDenied("Agent read", "an Agent this request uses"),
   );

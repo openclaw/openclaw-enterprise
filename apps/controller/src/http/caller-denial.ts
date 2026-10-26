@@ -75,6 +75,14 @@ export function callerDenialMessage(
   return `${NAMED_DENIAL_PREFIX} this needs ${grant} on ${target}. ${ASK}`;
 }
 
+/** What a denial's text may use from the request that was denied. */
+export interface DeniedRequest {
+  /** Whether the request carried a value (`requestedValues`). */
+  readonly requested: (value: string) => boolean;
+  /** The acting principal: a denial decided for another principal names no grant. */
+  readonly actorId?: string;
+}
+
 /**
  * The string values a request carried in its path, query and body, for `callerDenialMessage`.
  * The walk is bounded: a value past the bounds is simply not named.
