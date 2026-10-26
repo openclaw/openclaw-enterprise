@@ -156,8 +156,22 @@ func TestRefusedCommandsNameTheGrantTheyNeed(t *testing.T) {
 	}
 	// Three or more permissions read as a list.
 	err = runRefused(t, keyFile, denied, "--namespace", testNamespaceID, "agent", "runtime", testAgentID)
-	if err == nil || !strings.HasSuffix(err.Error(), grantHint("agent runtime", "Agent operate, Agent read and revision read", true)) {
+	if err == nil || !strings.HasSuffix(err.Error(), grantHint("agent runtime", "Agent operate, Agent read and AgentRevision read", true)) {
 		t.Fatalf("runtime refusal = %v", err)
+	}
+	// No Role can hold create, so a create says who creates it, as OCC and the
+	// console do, instead of asking for a grant nobody can give (finding 2607).
+	err = runRefused(t, keyFile, denied, "namespace", "create", "team")
+	if want := createHint("namespace create", "Namespace create, plus Installation administer with --existing-namespace", "Namespaces"); err == nil || !strings.HasSuffix(err.Error(), "\n"+want) {
+		t.Fatalf("namespace create refusal = %v, want suffix %q", err, want)
+	}
+	secretFile := filepath.Join(t.TempDir(), "secret.json")
+	if err := os.WriteFile(secretFile, []byte(`{"name":"Refused","value":"synthetic-value"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err = runRefused(t, keyFile, denied, "--namespace", testNamespaceID, "secret", "create", "--file", secretFile)
+	if want := createHint("secret create", "Secret create", "Secrets"); err == nil || !strings.HasSuffix(err.Error(), "\n"+want) {
+		t.Fatalf("secret create refusal = %v, want suffix %q", err, want)
 	}
 	// OCC filters this list by what the caller can read. Keep its refusal intact;
 	// the CLI cannot name a missing grant for the list itself.

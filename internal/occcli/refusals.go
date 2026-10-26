@@ -94,7 +94,7 @@ var permissionKinds = map[string]string{
 	"installation":      "Installation",
 	"namespace":         "Namespace",
 	"agent":             "Agent",
-	"agent_revision":    "revision",
+	"agent_revision":    "AgentRevision",
 	"configuration":     "Configuration",
 	"secret":            "Secret",
 	"preset":            "Preset",
@@ -165,9 +165,13 @@ func (app *application) refusalHint(command *cobra.Command, path string, err err
 		return ""
 	}
 	parts := make([]string, 0, len(permission.needs))
+	created := ""
 	for _, need := range permission.needs {
 		kind, action, _ := strings.Cut(need, ".")
 		parts = append(parts, permissionKinds[kind]+" "+action)
+		if action == "create" {
+			created = permissionKinds[kind]
+		}
 	}
 	also := permission.also
 	if strings.HasPrefix(also, "(") && len(parts) > 0 {
@@ -187,6 +191,11 @@ func (app *application) refusalHint(command *cobra.Command, path string, err err
 		needs += ", plus " + also
 	}
 	hint := fmt.Sprintf("hint: \"occ %s\" needs %s; ask an Installation administrator to grant what is missing.", path, needs)
+	if created != "" {
+		// No Role can hold create, so a create asks for the resource, as OCC and
+		// the console do, instead of a grant nobody can give (finding 2607).
+		hint = fmt.Sprintf("hint: \"occ %s\" needs %s. Only an Installation administrator can create %ss: ask one to create it.", path, needs, created)
+	}
 	if strings.Contains(command.Use, "ID") {
 		hint += " OCC refuses an ID that does not exist the same way."
 	}

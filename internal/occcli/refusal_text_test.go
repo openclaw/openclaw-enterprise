@@ -34,6 +34,12 @@ func grantHint(path, needs string, takesID bool) string {
 	return hint
 }
 
+// createHint is the hint for a refused create: no Role can hold create, so it
+// says who creates the resource instead of asking for a grant (finding 2607).
+func createHint(path, needs, kinds string) string {
+	return fmt.Sprintf("hint: \"occ %s\" needs %s. Only an Installation administrator can create %s: ask one to create it.", path, needs, kinds)
+}
+
 // revisionReadAdvice ends the refusal for an Agent with no revision the
 // caller can read.
 const revisionReadAdvice = "listing revisions needs AgentRevision read (ask an Installation administrator to grant it)"

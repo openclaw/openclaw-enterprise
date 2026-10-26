@@ -203,7 +203,8 @@ the server's request ID. To capture that ID for a failed request, use the
 
 OCC's `403` names the grant you lack. A generic `403` from an older OCC gets a
 `hint:` line naming the grants the command needs, and a Namespace-scoped key
-used elsewhere gets one naming its Namespace. OCC refuses a missing ID the same
+used elsewhere gets one naming its Namespace. A create's hint says only an
+Installation administrator can create that resource. OCC refuses a missing ID the same
 way as one you cannot read.
 
 ## Local development

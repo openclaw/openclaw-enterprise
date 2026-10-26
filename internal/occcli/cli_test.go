@@ -435,7 +435,7 @@ func TestAgentLogsNameTheRevisionGrantWhenNoRevisionIsReadable(t *testing.T) {
 	if !strings.Contains(out, "active output") || !slices.Contains(stub.paths, "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/deployments/rev_00000000-0000-4000-8000-000000000001/runtime/logs") {
 		t.Fatalf("logs output = %q, requests = %v", out, stub.paths)
 	}
-	if want := "notice: reading the active revision rev_00000000-0000-4000-8000-000000000001; you can read none of agent agt_00000000-0000-4000-8000-000000000001's revisions, so a newer or failed revision was not checked (listing revisions needs revision read)\n"; errOut != want {
+	if want := "notice: reading the active revision rev_00000000-0000-4000-8000-000000000001; you can read none of agent agt_00000000-0000-4000-8000-000000000001's revisions, so a newer or failed revision was not checked (listing revisions needs AgentRevision read)\n"; errOut != want {
 		t.Fatalf("logs notice = %q, want %q", errOut, want)
 	}
 

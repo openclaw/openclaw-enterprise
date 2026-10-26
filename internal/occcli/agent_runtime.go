@@ -121,7 +121,7 @@ func (app *application) agentRevision(
 		// command that itself needs revision read is refused with a hint instead.
 		noticef(
 			notices,
-			"notice: reading the active revision %s; you can read none of agent %s's revisions, so a newer or failed revision was not checked (listing revisions needs revision read)",
+			"notice: reading the active revision %s; you can read none of agent %s's revisions, so a newer or failed revision was not checked (listing revisions needs AgentRevision read)",
 			active, agentID,
 		)
 	default:
