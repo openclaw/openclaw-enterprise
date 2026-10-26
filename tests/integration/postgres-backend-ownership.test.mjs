@@ -24,6 +24,7 @@ import {
 import { reservePort } from "../helpers/available-port.mjs";
 import { stopProcess } from "../helpers/stop-process.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
+import { assertSameAnswer, refusedAnswer } from "../helpers/refusal-answers.mjs";
 import { claimIsolatedWork } from "../helpers/postgres-work-claim.mjs";
 import {
   SERVICE_ACCOUNT_BACKEND_MISMATCH,
@@ -763,5 +764,32 @@ test(
       );
       await fixture.cleanup(namespace);
     }
+
+    // A Restriction denies ServiceAccount read in this Namespace. The read check runs before the
+    // account and its Backend binding are looked up, so the caller gets one denial for a
+    // mismatched account and for an ID that names none, never the 409 (finding 2624). OCC has no
+    // API that writes Restrictions, so insert it directly.
+    const restricted = await createReadyNamespace(fixture, "provisioning-restricted");
+    const hidden = await createAccessTokenServiceAccount(
+      fixture.state,
+      restricted.id,
+      "provisioning-restricted",
+    );
+    await seedBackendBinding(fixture.pool, hidden, { workspaceId: alternateWorkspaceId });
+    await fixture.pool.query(
+      `INSERT INTO occ.iam_restrictions (id, namespace_id, action, resource_kind, resource_id)
+       VALUES ($1, $2, 'read', 'service_account', NULL)`,
+      [`restriction_${randomUUID()}`, restricted.id],
+    );
+    await assertSameAnswer(
+      (id) =>
+        refusedAnswer(
+          () => provision(restricted, { namespaceId: restricted.id, id }, "restricted"),
+          { requested: (value) => value === id, actorId: fixture.actor.id },
+        ),
+      [hidden.id, `sa_${randomUUID()}`],
+    );
+    assert.equal(await pendingWork(restricted), 0);
+    await fixture.cleanup(restricted);
   },
 );

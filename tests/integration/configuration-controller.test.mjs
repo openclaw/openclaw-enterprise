@@ -24,10 +24,10 @@ import {
   signInToControllerApp,
 } from "../helpers/auth-session.mjs";
 import { bindRole } from "../helpers/iam-grants.mjs";
+import { assertSameAnswer } from "../helpers/refusal-answers.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import {
   referenceFormRefusal,
-  sentIdHidden,
   unboundReferenceRefusal,
   unreadableSlackTokenRefusal,
   unsubstitutedFallbackRefusal,
@@ -2100,36 +2100,28 @@ test("Configuration save refuses a model selection or apiKey off the primary mod
     });
     assert.equal(unused.status, 201, JSON.stringify(unused.body));
     const role = context.roles.find(({ id }) => id === "role-configuration-integration");
-    const answers = async (values) => {
-      const responses = [];
-      for (const path of [item, `${collection}/${unused.body.data.id}`]) {
-        const { status, body } = await request(context.app, "PATCH", path, { body: { values } });
-        // A denial names the Configuration ID this request sent, and nothing else about it.
-        const error =
-          body.error === undefined
-            ? undefined
-            : { ...body.error, message: sentIdHidden(body.error.message, path.split("/").at(-1)) };
-        responses.push({ status, error });
-      }
-      assert.deepEqual(responses[0], responses[1], JSON.stringify(values));
-      return responses[0];
-    };
+    // The same PATCH to the used and the unused Configuration; a denial may name only the ID
+    // its request sent.
+    const answers = (values, status) =>
+      assertSameAnswer(
+        (id) => request(context.app, "PATCH", `${collection}/${id}`, { body: { values } }),
+        [item.split("/").at(-1), unused.body.data.id],
+        { status, label: JSON.stringify(values) },
+      );
     role.permissions = [
       { action: "read", resourceKind: "configuration" },
       { action: "update", resourceKind: "configuration" },
     ];
     const memberAgentRead = await request(context.app, "GET", agentPath);
     assert.equal(memberAgentRead.status, 403, JSON.stringify(memberAgentRead.body));
-    const refused = await answers(offProvider[1][0]);
-    assert.equal(refused.status, 400);
-    assert.equal(refused.error.message, offProvider[1][1]);
-    assert.equal((await answers(valid)).status, 200);
+    const refused = await answers(offProvider[1][0], 400);
+    assert.equal(refused.message, offProvider[1][1]);
+    await answers(valid, 200);
     // A zero-grant member gets the uniform 403, whatever the values.
     role.permissions = [];
     for (const values of [valid, offProvider[1][0]]) {
       const denied = await answers(values);
-      assert.equal(denied.status, 403);
-      assert.equal(denied.error.code, "FORBIDDEN");
+      assert.equal(denied.code, "FORBIDDEN");
     }
   });
 });

@@ -45,11 +45,11 @@ import {
   callerDenied,
   referenceFormRefusal,
   SERVICE_ACCOUNT_CROSS_NAMESPACE,
-  sentIdHidden,
   SLACK_ROUTE_NOT_CONFIGURED,
   unboundReferenceRefusal,
   unsubstitutedReferenceRefusal,
 } from "../helpers/refusal-text.mjs";
+import { assertSameAnswer } from "../helpers/refusal-answers.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { availablePort } from "../helpers/available-port.mjs";
@@ -4582,21 +4582,17 @@ test("a forced ServiceAccount delete without a ChatGPT Backend removes an accoun
   // account, and the grant holder the usual 404 for an unknown one.
   const outsider = await controller.fixture.createAuthPrincipal("service-account-force-outsider");
   controller.fixture.state.identities.push(outsider.principal);
-  const denials = [];
-  for (const path of [accountPath, missingPath]) {
-    const denied = await controller.request("DELETE", `${path}?force=true`, {
-      session: outsider.session,
-    });
-    assert.equal(denied.status, 403, JSON.stringify(denied.body));
-    // The denial names the account ID this request sent, and nothing else about it.
-    const sent = path.split("/").at(-1);
-    assert.equal(
-      denied.body.error.message,
-      callerDenied("ServiceAccount delete", `ServiceAccount ${sent}`),
-    );
-    denials.push({ ...denied.body.error, message: sentIdHidden(denied.body.error.message, sent) });
-  }
-  assert.deepEqual(denials[0], denials[1]);
+  const denied = await assertSameAnswer(
+    (id) =>
+      controller.request(
+        "DELETE",
+        `/namespaces/${namespace.id}/service-accounts/${id}?force=true`,
+        { session: outsider.session },
+      ),
+    [account.id, missingPath.split("/").at(-1)],
+  );
+  // The denial names the account ID its request sent, and nothing else about it.
+  assert.equal(denied.message, callerDenied("ServiceAccount delete", "ServiceAccount <id>"));
   const unknown = await controller.request("DELETE", `${missingPath}?force=true`);
   assert.equal(unknown.status, 404, JSON.stringify(unknown.body));
 

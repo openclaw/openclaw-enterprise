@@ -5,6 +5,7 @@ import test from "node:test";
 import { assertApiError } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { assertSameAnswer } from "../helpers/refusal-answers.mjs";
 import {
   agentPrincipalDenied,
   callerDenied,
@@ -373,6 +374,20 @@ test("a stored binding's denial names its Secret only to a caller who may read t
       await refusal("secret-and-record-read", [["read", kind]]),
       callerDenied("Secret operate", `Secret ${secret.id}`),
       label,
+    );
+    // Without update on the record, the stored-binding check never runs: the caller who reads
+    // both gets one denial for this record and for an ID that names none (finding 2624).
+    const reader = await memberSession(fixture, `${label}-reader`, namespace.id, [
+      ["read", "namespace"],
+      ["read", kind],
+      ["read", "secret"],
+    ]);
+    const recordId = path.split("/").at(-1) as string;
+    const collection = path.slice(0, -recordId.length);
+    await assertSameAnswer(
+      (id: string) => fixture.request("PATCH", `${collection}${id}`, { session: reader, body }),
+      [recordId, `${recordId.split("_")[0]}_${randomUUID()}`],
+      { label },
     );
   }
 });

@@ -14,6 +14,7 @@ import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { storedCredentialSourceConfig } from "../helpers/refusal-text.mjs";
+import { assertSameAnswer } from "../helpers/refusal-answers.mjs";
 
 // Tool source types, the Secret field each takes, and a valid config each starts from.
 const SECRET_FIELD = {
@@ -204,16 +205,18 @@ async function fixture(
       });
       return source;
     },
+    /** A tool source create body, with `config` over the type's valid config. */
+    toolBody(type, config, name = "tool") {
+      return {
+        name,
+        type,
+        config: toolConfig(type, config),
+        secrets: { [SECRET_FIELD[type]]: toolSecret.ref },
+      };
+    },
     /** Saves a tool source through the API, with `config` over the type's valid config. */
     saveTool(type, config, name = "tool") {
-      return app.request("POST", path, {
-        body: {
-          name,
-          type,
-          config: toolConfig(type, config),
-          secrets: { [SECRET_FIELD[type]]: toolSecret.ref },
-        },
-      });
+      return app.request("POST", path, { body: this.toolBody(type, config, name) });
     },
     validate(type, config) {
       return driver.validateSourceConfig({ type, config: toolConfig(type, config) });
@@ -601,6 +604,19 @@ test("credential source endpoints require an exact DNS host name", async (t) => 
   assert.equal(replaced.status, 409, JSON.stringify(replaced.body));
   assert.equal(replaced.body.error.code, "RESOURCE_CONFLICT");
   assert.equal(replaced.body.error.message, storedCredentialSourceConfig("base_url"));
+  // Only a caller who may update the source meets that 409. One who may read it but not update
+  // it gets the same denial for it and for an ID that names no source (finding 2624).
+  const reader = await f.createNamespaceMember("stored-source-reader", f.namespace.id, [
+    ["read", "namespace"],
+    ["read", "credential_source"],
+    ["read", "secret"],
+    ["operate", "secret"],
+  ]);
+  const session = await f.signIn(reader.credentials);
+  await assertSameAnswer(
+    (id) => f.request("PATCH", `${f.path}/${id}`, { session, body: { secrets: stored.secrets } }),
+    [stored.id, `cs_${randomUUID()}`],
+  );
   assert.equal(f.profiles.size, 0);
   assert.ok(!f.mutations.includes("updateProvider"));
 });
@@ -941,6 +957,26 @@ test("OAuth2 token_url hosts must not name the OpenShell gateway's own namespace
     // Backend names, where it was a 404 (finding 2536).
     assertRefused(response, "token_url", message("oauth2-client-credentials"), token_url);
   }
+  // Registration refuses only after the create grant: a caller without it gets the same denial
+  // for this Namespace and for one that does not exist (finding 2624).
+  const member = await f.createNamespaceMember("issuer-reader", f.namespace.id, [
+    ["read", "namespace"],
+    ["read", "credential_source"],
+  ]);
+  const session = await f.signIn(member.credentials);
+  const refusedBody = f.toolBody(
+    "oauth2-client-credentials",
+    { token_url: tenantOwn[0] },
+    "denied",
+  );
+  await assertSameAnswer(
+    (namespaceId) =>
+      f.request("POST", `/namespaces/${namespaceId}/credential-sources`, {
+        session,
+        body: refusedBody,
+      }),
+    [f.namespace.id, `ns_${randomUUID()}`],
+  );
   // Refused before the profile or provider is written, so no refresh is configured either.
   assert.deepEqual(
     f.mutations.filter((mutation) => mutation === "importProfile" || mutation === "createProvider"),
