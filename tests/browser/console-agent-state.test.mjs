@@ -1760,7 +1760,7 @@ test("Agents list row actions explain missing access and still report a refused 
   await row.getByText(bothDenied, { exact: true }).waitFor();
   const note = row.locator(".row-action-note");
   const line = note.locator("[aria-hidden=true]");
-  assert.equal(await line.textContent(), "Needs Agent operate and delete");
+  assert.equal(await line.textContent(), "Needs operate and delete");
   // The reserved line fits the grant: it is not cut short with an ellipsis.
   assert.equal(
     await note.evaluate((node) => node.scrollWidth <= node.clientWidth),

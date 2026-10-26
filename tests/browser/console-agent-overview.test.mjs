@@ -471,9 +471,11 @@ test("the Agents list hides Stop when a failed first deployment left nothing run
   await row.getByRole("link", { name: "Failed list", exact: true }).click();
   await page.getByRole("region", { name: "Agent state at a glance" }).waitFor();
   const retried = await fixture.deployAgent(namespace.id, agent.id);
-  assert.equal(retried.revision, 2);
+  await page.route(deploymentRecordUrl(fixture, namespace.id, agent.id, retried.id), (route) =>
+    route.fulfill(deploymentStatusResponse(retried, { status: "queued" })),
+  );
   await page.goBack();
-  await row.getByText(/^v2 · /).waitFor();
+  await row.getByText("v2 · Queued", { exact: true }).waitFor();
   await waitForEnabled(row.getByRole("button", { name: "Stop Failed list", exact: true }));
 });
 

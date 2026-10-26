@@ -695,7 +695,9 @@ export function renderAgentList(context: AgentListContext) {
         "stopping or deleting this Agent",
         "Agent operate and Agent delete on it",
       );
-      grant = "Needs Agent operate and delete";
+      // "Needs Agent operate and delete" overflows the reserved line on a 1280-pixel viewport;
+      // the tooltip and the description name both grants in full.
+      grant = "Needs operate and delete";
     } else if (!canStop) {
       restriction = AGENT_STOP_DENIED;
       grant = "Needs Agent operate";

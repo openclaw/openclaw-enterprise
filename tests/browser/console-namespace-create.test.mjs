@@ -494,7 +494,16 @@ test("an unknown administrator answer keeps Create Namespace the primary action"
   await page.locator(settledView).locator(".namespace-toolbar").waitFor();
   const opener = page.getByRole("button", { name: "Create Namespace", exact: true });
   assert.equal(await isPrimary(opener), true);
-  // The caller may be a member, so the empty list still says who gives access (finding 2583).
+  // With no readable Namespace (the bootstrapped one is denied), the caller may be a member, so
+  // the empty list still says who gives access (finding 2583).
+  fixture.policy.restrictions.push({
+    id: "deny-namespace-read",
+    resourceKind: "namespace",
+    action: "read",
+    effect: "deny",
+  });
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await page.getByRole("heading", { name: "No accessible namespaces", exact: true }).waitFor();
   assert.equal(
     await page.locator(settledView).locator(".state-panel p").textContent(),
     "Create a Namespace if your access allows it, or ask an Installation administrator to give you access to one.",
