@@ -13,7 +13,7 @@ export const callerDenied = (grant, target) =>
   `Not authorized: this needs ${grant} on ${target}. Ask an Installation administrator to grant it.`;
 // An Agent's own service principal lacks a grant deployment needs (finding 2592). `agent` is
 // "Agent <id>" when the request carried its ID, otherwise "This Agent"; `target` is "Secret <id>"
-// when the caller sent or may read it, otherwise "one of its bound Secrets".
+// when the caller sent it or may read both it and the Agent, otherwise "one of its bound Secrets".
 export const agentPrincipalDenied = (agent, target, grant = "Secret operate") =>
   `${agent} cannot use ${target}: the Agent itself needs ${grant} on it. Ask an Installation administrator to give the Agent access, then deploy again.`;
 // A denial echoes the ID its request sent, so a real and an unknown ID get answers that match once
@@ -64,6 +64,11 @@ export const CONSOLE_NAMESPACE_CREATE_DENIED =
 export const askForGrant = (grant) => `Ask an Installation administrator for ${grant}.`;
 export const notIncluded = (task, grant) =>
   `Your access does not include ${task}. ${askForGrant(grant)}`;
+// A member's console sends no credential grant, so a saved authentication source says the deploy
+// checks the Agent's own access, and who gives it (finding D748). `noun` is "Secret" or
+// "credential source".
+export const credentialCheckedAtDeploy = (noun) =>
+  `Deploying checks that this Agent can use the selected ${noun}. If it cannot, ask an Installation administrator to give the Agent ${noun} operate on it.`;
 export const AGENT_STOP_DENIED = notIncluded("stopping this Agent", "Agent operate on it");
 export const AGENT_DELETE_DENIED = notIncluded("deleting this Agent", "Agent delete on it");
 export const AGENT_STOP_AND_DELETE_DENIED = notIncluded(

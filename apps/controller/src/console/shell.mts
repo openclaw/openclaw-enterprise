@@ -1,6 +1,6 @@
 import type { BackendSummary, Namespace } from "@openclaw-enterprise/contracts";
 import { displayDate } from "./agents/list.mjs";
-import { button, element, type statusBlock } from "./dom.mjs";
+import { button, describeDisabled, element, type statusBlock } from "./dom.mjs";
 import type { createNavigation, pages } from "./navigation.mjs";
 
 interface Account {
@@ -51,6 +51,10 @@ export function brandContents(placement: "navigation" | "sign-in") {
       : image;
   return [logo, element("span", { className: "brand-name", title: displayName }, displayName)];
 }
+
+// The page panel's sentence that says why no Namespace can be selected. The header's disabled
+// selector is described by it (finding D749); the panel renders below the header afterwards.
+export const NAMESPACE_ACCESS_REASON_ID = "namespace-access-reason";
 
 export function panel(
   target: HTMLElement,
@@ -352,6 +356,12 @@ export function createShell({
   function updateNamespaceSelector(select: HTMLSelectElement) {
     const readable = namespaceAdmissionPending ? [] : namespaces;
     select.disabled = namespaceAdmissionPending || !session || readable.length === 0;
+    describeDisabled(
+      select,
+      session && !namespaceAdmissionPending && readable.length === 0
+        ? NAMESPACE_ACCESS_REASON_ID
+        : null,
+    );
     select.replaceChildren();
     if (!readable.some((item) => item.id === namespaceId)) {
       // Once this session knows the Namespace list, admission names the selection instead of

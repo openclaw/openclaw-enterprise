@@ -28,6 +28,7 @@
     "tests/browser/console-drafts-kept.test.mjs",
     "tests/browser/console-button-hierarchy.test.ts",
     "tests/browser/console-status-block.test.ts",
+    "tests/browser/console-disabled-reasons.test.mjs",
     "tests/browser/console-page-header.test.ts"
   ],
   "files": [
@@ -105,6 +106,9 @@
     },
     {
       "path": "tests/browser/console-page-header.test.ts"
+    },
+    {
+      "path": "tests/browser/console-disabled-reasons.test.mjs"
     }
   ]
 }

@@ -415,13 +415,14 @@ async function deleteOwnedK3dCluster(resource, { execFile: run = execFile } = {}
     ) {
       throw new Error(`Invalid k3d ${kind} inventory: ${resource.name}`);
     }
+    let remaining = false;
+    // An empty labelled list already shows none remain: list them again only after a removal.
+    // The name check catches an unlabelled leftover either way.
     if (labelled.length) {
       await run(docker, [...remove, ...labelled]);
+      remaining = (await list(`label=k3d.cluster=${resource.name}`)).length > 0;
     }
-    if (
-      (await list(`label=k3d.cluster=${resource.name}`)).length ||
-      (await list(`name=k3d-${resource.name}`)).length
-    ) {
+    if (remaining || (await list(`name=k3d-${resource.name}`)).length) {
       throw new Error(`Possible owned k3d ${kind} remain after deletion: ${resource.name}`);
     }
   }

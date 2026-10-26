@@ -10874,11 +10874,13 @@ export class OpenClawController {
   /**
    * Authorizes an Agent's own service principal and names it and the grant when denied. The
    * resource comes from the Agent's stored bindings, so the denial records whether the caller
-   * may read it: HTTP names it only then, or when the request sent its ID (finding 2592).
+   * may read both it and the Agent: HTTP names it only then, or when the request sent its ID
+   * (finding 2592). Secret read alone does not show that this Agent uses the Secret; the binding
+   * is part of the Agent record.
    */
   private async authorizeAgentPrincipal(
     callerId: string,
-    agent: Pick<Agent, "id" | "servicePrincipalId">,
+    agent: Pick<Agent, "id" | "namespaceId" | "servicePrincipalId">,
     action: AuthorizationRequest["action"],
     resource: ResourceRef,
   ): Promise<void> {
@@ -10889,8 +10891,13 @@ export class OpenClawController {
         error instanceof AuthorizationDeniedError &&
         !(error instanceof DependencyUnavailableError)
       ) {
-        // An outage while checking the caller's read only hides the ID.
-        const callerMayReadResource = await this.canRead(callerId, resource).catch(() => false);
+        // An outage while checking the caller's reads only hides the ID.
+        const callerMayReadResource =
+          (await this.canRead(callerId, {
+            kind: "agent",
+            id: agent.id,
+            namespaceId: agent.namespaceId,
+          }).catch(() => false)) && (await this.canRead(callerId, resource).catch(() => false));
         throw new AgentPrincipalAuthorizationError(
           agent.servicePrincipalId,
           action,

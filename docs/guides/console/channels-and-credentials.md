@@ -87,11 +87,11 @@ that the Agent and its Configuration bind, and `read` on a ChatGPT service accou
 without them, the source is read-only and a note names what is missing.
 For API keys and Service Accounts tokens, it also grants the Agent access to
 that exact Secret. Granting needs Installation `administer`. When a member saves
-the source, the binding saves, but the member's session sends no grant, so it
-does not verify the Agent's access. The console asks an Installation administrator
-to open the Agent's Credentials and select **Save authentication source**, which
-grants it. **Deploy new version** stays available: the API checks the Agent's access
-when it deploys. When an administrator opens Credentials, the tab reads Namespace IAM, says
+the source, the binding saves, but the member's session sends no grant. The form
+stays editable and says that deploying checks the Agent's access: if the Agent
+cannot use the Secret, ask an Installation administrator to give the Agent
+`operate` on it, for example by opening the Agent's Credentials and selecting
+**Save authentication source**. **Deploy new version** stays available. When an administrator opens Credentials, the tab reads Namespace IAM, says
 when that grant is missing and holds **Deploy new version** until it is granted.
 If the grant was already in place, **Reload authentication source** clears the
 warning. If a grant request is refused or its outcome is lost, the console says

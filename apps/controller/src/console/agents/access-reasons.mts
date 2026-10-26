@@ -67,6 +67,11 @@ export const SECRET_UPDATE_DENIED = notIncluded(
 );
 export const SECRET_DELETE_DENIED = notIncluded("deleting this Secret", "Secret delete on it");
 export const SECRET_OPERATE_NEEDED = askForGrant("Secret operate on it");
+// Only Installation administration writes the IAM policy that lets an Agent use a credential, so
+// a member's console sends no grant. The deploy checks the Agent's own access and names the grant
+// if it is missing (finding 2592), so a saved source says that, and who gives it (finding D748).
+export const credentialCheckedAtDeploy = (noun: "Secret" | "credential source") =>
+  `Deploying checks that this Agent can use the selected ${noun}. If it cannot, ${ASK_INSTALLATION_ADMINISTRATOR} to give the Agent ${noun} operate on it.`;
 
 // The network policy and its suggestions authorize Agent read and SandboxPolicy read on the
 // Agent's own policy; previews and saves authorize Agent manage_policy and SandboxPolicy update.
