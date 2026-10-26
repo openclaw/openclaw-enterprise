@@ -26,7 +26,7 @@ import {
   ResourceConflictError,
 } from "../../packages/occ/src/index.ts";
 import { signInToControllerApp } from "../helpers/auth-session.mjs";
-import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { createConsoleAppFixture, denialsDuring } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { sharedRsaPrivateKeyPem } from "../fixtures/repository-credentials/shared-keys.mjs";
 import { selfSigned } from "../helpers/certificates.mjs";
@@ -195,9 +195,28 @@ async function createNativeAdminFixture(t, options = {}) {
   const namespace = await fixture.createNamespace("Native admin", {
     ready: true,
   });
+  const { agent, revision } = await createLiveNativeAgent(
+    fixture,
+    namespace,
+    "Native admin Agent",
+    options,
+  );
+  const session = await fixture.signIn();
+  return {
+    fixture,
+    upstream,
+    namespace,
+    agent,
+    revision,
+    session,
+  };
+}
+
+// An Agent in `namespace` whose active revision serves the native admin UI at its own origin.
+async function createLiveNativeAgent(fixture, namespace, name, options = {}) {
   const agent = await fixture.createAgent(
     namespace.id,
-    "Native admin Agent",
+    name,
     createHarnessConfiguration("openclaw", "gpt-4.1"),
   );
   const nativeOrigin = nativeOriginForAgent(
@@ -220,15 +239,7 @@ async function createNativeAdminFixture(t, options = {}) {
   await fixture.activateRevision(namespace.id, agent.id, revision.id, undefined);
   const current = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
   assert.equal(current.data.desiredRuntimeState, "running");
-  const session = await fixture.signIn();
-  return {
-    fixture,
-    upstream,
-    namespace,
-    agent: current.data,
-    revision,
-    session,
-  };
+  return { agent: current.data, revision };
 }
 
 function adminPrincipal(fixture) {
@@ -295,6 +306,27 @@ async function createExactAgentAdministerSession(context, label = "native-admin-
   );
 }
 
+// A second Agent in the fixture's Namespace, beside the one its exact bindings name.
+function createSiblingAgent(context) {
+  return context.fixture.createAgent(
+    context.namespace.id,
+    "Native admin sibling Agent",
+    createHarnessConfiguration("openclaw", "gpt-4.1"),
+  );
+}
+
+// An exact Agent administer binding names one Agent: the same session asking for a second
+// Agent's status in the Namespace gets `deniedText` for it, audited once for that Agent.
+async function assertSiblingStatusDenied(context, session, deniedText) {
+  const sibling = await createSiblingAgent(context);
+  const { response, denials } = await denialsDuring(context.fixture.auditSink, () =>
+    nativeStatus({ ...context, agent: sibling }, { session }),
+  );
+  assertApiError(response, 403, "FORBIDDEN");
+  assert.equal(response.body.error.message, deniedText(`Agent ${sibling.id}`));
+  assert.deepEqual(denials, [{ action: "administer", kind: "agent", id: sibling.id }]);
+}
+
 function trustLocalUpstreamCertificate(t, cert) {
   const previous = getCACertificates("default");
   setDefaultCACertificates([...previous, cert]);
@@ -320,6 +352,9 @@ test("native admin status requires exact Agent administer and reports lifecycle 
   const exactAvailable = await nativeStatus(context, { session: exactAdministerOnlySession });
   assert.equal(exactAvailable.status, 200);
   assert.equal(exactAvailable.data.status, "available");
+  await assertSiblingStatusDenied(context, exactAdministerOnlySession, (target) =>
+    callerDenied("Agent administer", target),
+  );
 
   // An IAM outage is a dependency failure, never an Agent lifecycle state: the console must
   // not read it as "unavailable" (deploying) for an Agent the caller may not even administer.
@@ -461,6 +496,7 @@ test("native admin disabled status still requires exact Agent administer", async
   const administerOnlyDisabled = await nativeStatus(context, { session: administerOnlySession });
   assert.equal(administerOnlyDisabled.status, 200);
   assert.equal(administerOnlyDisabled.data.status, "disabled");
+  await assertSiblingStatusDenied(context, administerOnlySession, nativeAdminOffDenied);
 
   const limitedSession = await createReadOperateSession(context, "native-admin-disabled-reader");
   const denied = await nativeStatus(context, { session: limitedSession });
@@ -920,6 +956,30 @@ test("native admin proxy strips browser credentials and preserves the Agent gate
   assert.equal(reservedRedirect.headers.location, undefined);
   assert.equal(context.upstream.requests.length, 7);
 
+  // The session's binding names one Agent. A second, live Agent of the Namespace has its own
+  // host; the same session is refused there by IAM (audited once for that Agent), and nothing
+  // reaches the gateway.
+  const sibling = await createLiveNativeAgent(
+    context.fixture,
+    context.namespace,
+    "Native admin sibling Agent",
+  );
+  const siblingNative = (await nativeStatus({ ...context, agent: sibling.agent })).data;
+  assert.notEqual(siblingNative.host, status.data.host);
+  const { response: siblingDenied, denials } = await denialsDuring(context.fixture.auditSink, () =>
+    injectJson(context.fixture, "GET", "/settings/profile", {
+      headers: {
+        host: nativeAuthority(siblingNative),
+        origin: siblingNative.origin,
+        cookie: nativeCookie,
+      },
+    }),
+  );
+  assert.equal(siblingDenied.statusCode, 403, siblingDenied.body);
+  assert.equal(siblingDenied.json().error.message, NATIVE_ADMIN_DENIED);
+  assert.deepEqual(denials, [{ action: "administer", kind: "agent", id: sibling.agent.id }]);
+  assert.equal(context.upstream.requests.length, 7);
+
   context.fixture.policy.restrictions.push({
     id: `restriction-native-admin-proxy-${randomUUID()}`,
     namespaceId: context.namespace.id,
@@ -1122,6 +1182,22 @@ test("session mutations reject sibling origins before changing Agent or audit st
     headers: { "x-api-key": key },
   });
   assert.equal(keyStop.statusCode, 202, keyStop.body);
+  // The key's binding names this Agent alone: a second Agent of the Namespace is refused.
+  const sibling = await createSiblingAgent(context);
+  const { response: siblingStop, denials } = await denialsDuring(auditSink, () =>
+    injectJson(
+      context.fixture,
+      "POST",
+      `/namespaces/${context.namespace.id}/agents/${sibling.id}/stop`,
+      { headers: { "x-api-key": key } },
+    ),
+  );
+  assert.equal(siblingStop.statusCode, 403, siblingStop.body);
+  assert.equal(
+    siblingStop.json().error.message,
+    callerDenied("Agent operate", `Agent ${sibling.id}`),
+  );
+  assert.deepEqual(denials, [{ action: "operate", kind: "agent", id: sibling.id }]);
   const deployed = await injectJson(context.fixture, "POST", `${agentPath}/deploy`, {
     headers: { cookie, origin: publicOrigin, "sec-fetch-site": "same-origin" },
   });

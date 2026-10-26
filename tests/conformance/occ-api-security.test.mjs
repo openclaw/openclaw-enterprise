@@ -10,6 +10,7 @@ import {
 } from "../../packages/occ/src/index.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
 import { authenticatedHeaders, cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { denialsDuring } from "../helpers/console-app.mjs";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { grantRole } from "../helpers/iam-grants.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
@@ -26,6 +27,7 @@ import {
 } from "../helpers/tenant-reader-app.mjs";
 import {
   BODY_NOT_JSON,
+  callerDenied,
   POLICY_RECOMMENDATIONS_NO_SANDBOX,
   RESOURCE_NOT_FOUND,
   ROUTE_NOT_FOUND,
@@ -36,6 +38,8 @@ import {
 const installationId = "ins_3033697e-6397-4cc6-9b04-8ec17af78cf1";
 const missingRevisionId = "rev_3dd29693-ce8b-4b4c-97c4-14b4c68c6e9c";
 const bootstrapDefaultNamespaceId = "ns_00000000-0000-4000-8000-000000000001";
+// The grant a refused log read names: either action admits log text.
+const LOGS_GRANT = "Agent read_logs (or Agent administer)";
 
 const permissions = [
   { action: "administer", resourceKind: "installation" },
@@ -1579,6 +1583,44 @@ test("runtime status and log reads enforce their permission tiers before any Dri
     serviceKey: service.serviceKey,
   });
   assert.equal(serviceLogs.status, 200, serviceLogs.text);
+
+  // Every grant above is bound to the exact Agent and revision. A second Agent of the same
+  // Namespace is refused to each caller for each tier, audited once for its first unmet check,
+  // and no refused request reaches the Driver.
+  const sibling = await fixture.deployAgent("runtime-sibling", { namespace: target.namespace });
+  const logsRefusal = {
+    grant: LOGS_GRANT,
+    target: `Agent ${sibling.agent.id}`,
+    denial: { action: "read_logs", kind: "agent", id: sibling.agent.id },
+  };
+  fixture.computeDriver.calls.length = 0;
+  for (const [caller, path, refusal] of [
+    // The status tier resolves the exact revision first.
+    [
+      { session: operator.session },
+      sibling.runtimePath,
+      {
+        grant: "AgentRevision read",
+        target: `AgentRevision ${sibling.revisionId}`,
+        denial: { action: "read", kind: "agent_revision", id: sibling.revisionId },
+      },
+    ],
+    [{ session: administrator.session }, sibling.logsPath(), logsRefusal],
+    [
+      { session: administrator.session },
+      sibling.logsPath("source=gateway&download=true"),
+      logsRefusal,
+    ],
+    [{ serviceKey: service.serviceKey }, sibling.logsPath(), logsRefusal],
+  ]) {
+    const { response, denials } = await denialsDuring(fixture.auditSink, () =>
+      fixture.request("GET", path, caller),
+    );
+    assertApiError(response, 403, "FORBIDDEN", path);
+    assert.equal(response.body.error.message, callerDenied(refusal.grant, refusal.target), path);
+    assert.deepEqual(denials, [refusal.denial], path);
+  }
+  assert.equal(fixture.computeDriver.calls.length, 0);
 });
 
 test("a delegated read_logs principal reads and downloads logs without administer", async () => {
@@ -1633,12 +1675,18 @@ test("a delegated read_logs principal reads and downloads logs without administe
   );
   assert.equal(JSON.stringify(accessEvents()).includes("gateway output 1"), false);
 
-  // The grant is still exact-Agent: a sibling Agent's logs are denied.
-  const sibling = await fixture.deployAgent("runtime-log-sibling");
-  const siblingLogs = await fixture.request("GET", sibling.logsPath(), {
-    session: delegate.session,
-  });
-  assert.equal(siblingLogs.status, 403);
+  // The grant is still exact-Agent: a sibling Agent's logs in the same Namespace are denied,
+  // audited once for that Agent.
+  const sibling = await fixture.deployAgent("runtime-log-sibling", { namespace: target.namespace });
+  const { response: siblingLogs, denials } = await denialsDuring(fixture.auditSink, () =>
+    fixture.request("GET", sibling.logsPath(), { session: delegate.session }),
+  );
+  assertApiError(siblingLogs, 403, "FORBIDDEN");
+  assert.equal(
+    siblingLogs.body.error.message,
+    callerDenied(LOGS_GRANT, `Agent ${sibling.agent.id}`),
+  );
+  assert.deepEqual(denials, [{ action: "read_logs", kind: "agent", id: sibling.agent.id }]);
 
   // A read_logs Restriction wins even over administer, so it cannot be bypassed.
   const both = await fixture.createPrincipal("runtime-log-both", target, [
@@ -1709,7 +1757,9 @@ test("an Agent-level read_logs grant covers every revision, including later depl
   // never reachable through this Agent's path.
   const status = await fixture.request("GET", target.runtimePath, { session: delegate.session });
   assert.equal(status.status, 403);
-  const sibling = await fixture.deployAgent("runtime-log-agent-only-sibling");
+  const sibling = await fixture.deployAgent("runtime-log-agent-only-sibling", {
+    namespace: target.namespace,
+  });
   const crossed = await fixture.request(
     "GET",
     `/namespaces/${target.namespace.id}/agents/${target.agent.id}/deployments/${sibling.revisionId}/runtime/logs?source=gateway`,

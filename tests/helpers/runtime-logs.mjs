@@ -360,17 +360,28 @@ export async function createRuntimeLogFixture(options = {}) {
   });
   assert.equal(bootstrap.status, 201, bootstrap.text);
 
-  async function deployAgent(label = "runtime-logs") {
+  async function createReadyNamespace(label) {
     const namespace = await request("POST", "/namespaces", {
       body: { name: `${label}-${randomUUID().slice(0, 8)}` },
     });
     assert.equal(namespace.status, 201, namespace.text);
     await controller.handleNamespaceLifecycle(admin.seed.principal.id, namespace.data.id, "ready");
-    const secret = await request("POST", `/namespaces/${namespace.data.id}/secrets`, {
-      body: { name: "Model API key", value: `model-key-${randomUUID()}` },
+    return namespace.data;
+  }
+
+  /**
+   * Deploys an embedded Agent in a new ready Namespace or, with `namespace`, beside the Agents
+   * already there: a sibling of the same kind and Namespace that an exact grant must not reach.
+   */
+  async function deployAgent(label = "runtime-logs", { namespace: shared } = {}) {
+    const namespace = shared ?? (await createReadyNamespace(label));
+    // Secret and Agent names are unique within a Namespace, so a sibling's carry its label.
+    const suffix = shared === undefined ? "" : ` ${label}`;
+    const secret = await request("POST", `/namespaces/${namespace.id}/secrets`, {
+      body: { name: `Model API key${suffix}`, value: `model-key-${randomUUID()}` },
     });
     assert.equal(secret.status, 201, secret.text);
-    const configuration = await request("POST", `/namespaces/${namespace.data.id}/configurations`, {
+    const configuration = await request("POST", `/namespaces/${namespace.id}/configurations`, {
       // Dedicated revisions under a Sandbox Driver run the Codex Harness.
       body: {
         kind: "agent",
@@ -381,9 +392,9 @@ export async function createRuntimeLogFixture(options = {}) {
       },
     });
     assert.equal(configuration.status, 201, configuration.text);
-    const agent = await request("POST", `/namespaces/${namespace.data.id}/agents`, {
+    const agent = await request("POST", `/namespaces/${namespace.id}/agents`, {
       body: {
-        name: "Runtime log Agent",
+        name: `Runtime log Agent${suffix}`,
         configurationId: configuration.data.id,
         // A selected Sandbox Driver provisions dedicated Harnesses only.
         executionMode: options.sandboxDriver === undefined ? "embedded" : "dedicated",
@@ -394,23 +405,23 @@ export async function createRuntimeLogFixture(options = {}) {
     policy.identities.push({
       id: `service-agent-${agent.data.id}`,
       kind: "service_principal",
-      namespaceId: namespace.data.id,
+      namespaceId: namespace.id,
       agentId: agent.data.id,
     });
     grantRole(policy, `service-agent-${agent.data.id}`, {
       id: `auth-${agent.data.id}`,
-      namespaceId: namespace.data.id,
+      namespaceId: namespace.id,
       permissions: { secret: ["operate"] },
       resource: { kind: "secret", id: secret.data.id },
     });
     const deployed = await request(
       "POST",
-      `/namespaces/${namespace.data.id}/agents/${agent.data.id}/deploy`,
+      `/namespaces/${namespace.id}/agents/${agent.data.id}/deploy`,
     );
     assert.equal(deployed.status, 202, deployed.text);
-    const base = `/namespaces/${namespace.data.id}/agents/${agent.data.id}/deployments/${deployed.data.id}`;
+    const base = `/namespaces/${namespace.id}/agents/${agent.data.id}/deployments/${deployed.data.id}`;
     return {
-      namespace: namespace.data,
+      namespace,
       agent: agent.data,
       revisionId: deployed.data.id,
       runtimePath: `${base}/runtime`,
