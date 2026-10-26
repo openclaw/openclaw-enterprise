@@ -14,8 +14,8 @@ import {
   RESOURCE_NOT_FOUND,
   WITHDRAWAL_SOURCE_NOT_USED,
   protectedSourceTypeRefused,
-  sentIdHidden,
 } from "../helpers/refusal-text.mjs";
+import { assertSameAnswer, refusedAnswer } from "../helpers/refusal-answers.mjs";
 
 // Finding 2536: these refusals answered a generic 404 (or a 500), though each comes after the
 // caller's grants and is about the request or an Installation property. Each now names its
@@ -79,17 +79,10 @@ test("protected credential source create names the type, the foreign Secret or t
     ["create", "credential_source"],
   ]);
   const session = await f.signIn(member.credentials);
-  const answers = [];
-  for (const agentId of [embedded.id, missingId]) {
-    const denied = await create(credentialFree(agentId), session);
-    answers.push({
-      status: denied.status,
-      code: denied.body.error.code,
-      message: sentIdHidden(denied.body.error.message, agentId),
-    });
-  }
-  assert.equal(answers[0].status, 403, JSON.stringify(answers[0]));
-  assert.deepEqual(answers[1], answers[0]);
+  await assertSameAnswer(
+    (agentId) => create(credentialFree(agentId), session),
+    [embedded.id, missingId],
+  );
   assert.deepEqual(
     (await f.request("GET", f.path)).data.map(({ id }) => id),
     [f.source.id],
@@ -150,7 +143,7 @@ test("deploy names a live-adopted source without a provider/model and Proxy sour
   // cannot help, so each is a 409 that names no source.
   const restarted = f.restart(["sandbox", "credential_gateway"]);
   for (const agentId of [f.agent.id, metadataAgent.data.id]) {
-    assert.deepEqual(await f.answer(() => f.deploy(restarted, agentId)), {
+    assert.deepEqual(await refusedAnswer(() => f.deploy(restarted, agentId)), {
       status: 409,
       code: "RESOURCE_CONFLICT",
       message: CREDENTIAL_PROXY_SOURCES_WITHOUT_PROXY,
