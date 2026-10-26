@@ -163,6 +163,7 @@ test("Policy denials says once that the Installation selects no Sandbox Driver",
     await fixture.request("POST", `${base}/validate`, {
       body: { expectedVersion: 1, additions: [] },
     }),
+    await fixture.request("PUT", base, { body: { expectedVersion: 1, additions: [] } }),
     await fixture.request("POST", `${base}/apply`, {
       body: { expectedVersion: 1, revisionId: revision.id },
     }),
