@@ -499,7 +499,14 @@ function administrationRead(path, options) {
     return sendRequest(path, options);
   }
   if (administrationCheck) {
-    return administrationCheck.then(() => administrationRead(path, options));
+    // A read waiting behind the check belongs to this page: leaving it or signing out aborts the
+    // check's read, which settles nothing, so the waiter is aborted too instead of being sent
+    // under the next page (finding 2643).
+    const pageReads = lifetime.signal;
+    return administrationCheck.then(() => {
+      pageReads.throwIfAborted();
+      return administrationRead(path, options);
+    });
   }
   const owner = sessionOwnerKey(session);
   const read = sendRequest(path, options);
@@ -700,16 +707,35 @@ function takeNativeFragment(current) {
 }
 
 // An Agent page's Secret link (finding D757) opens that Secret on the Secrets page once. Drop the
-// parameter in place before the page loads, so the header's Refresh does not reopen it.
-function takeLinkedSecret() {
+// parameter in place before the page loads, so the header's Refresh does not reopen it, and keep
+// the Secret until the Secrets page shows it or says it is unlisted: a load that ends at sign-in,
+// an expired session or a failed load's Retry still opens it (finding 2645). Another navigation
+// forgets it.
+let linkedSecret = null;
+
+function takeLinkedSecret(fromNavigation) {
   const { url } = route();
   const secretId = url.searchParams.get("secret");
-  if (url.pathname !== "/console/secrets" || secretId === null) {
-    return null;
+  const namespace = url.searchParams.get("namespace");
+  if (url.pathname !== "/console/secrets") {
+    linkedSecret = null;
+  } else if (secretId !== null) {
+    url.searchParams.delete("secret");
+    replaceUrl(url.pathname + url.search);
+    linkedSecret = { id: secretId, namespace };
+  } else if (fromNavigation || linkedSecret?.namespace !== namespace) {
+    linkedSecret = null;
   }
-  url.searchParams.delete("secret");
-  replaceUrl(url.pathname + url.search);
-  return secretId;
+  return linkedSecret?.id ?? null;
+}
+
+// The sign-in destination for a page: its route, with a Secrets page link's Secret not yet shown.
+function loginDestination(current) {
+  const url = new URL(pageUrl(current.target, current.namespace), location.origin);
+  if (current.feature === "secrets" && linkedSecret?.namespace === current.namespace) {
+    url.searchParams.set("secret", linkedSecret.id);
+  }
+  return captureIntent(url.pathname + url.search);
 }
 
 const shellUI = createShell({ app, pages, route, pageUrl, navigate, loadPage, logout });
@@ -1141,7 +1167,7 @@ function clearDrafts() {
 function showExpiredLogin() {
   const current = route();
   // Keep only a validated read destination; reset private views and drafts in showLogin.
-  const destination = pendingIntent ?? captureIntent(pageUrl(current.target, current.namespace));
+  const destination = pendingIntent ?? loginDestination(current);
   showLogin("Your session has expired.", destination);
 }
 
@@ -1429,7 +1455,7 @@ async function loadPage({
   }
   // A refocus or visibility recheck of the shown page, as opposed to a navigation.
   const resumingView = reuseView && !fromNavigation;
-  const linkedSecretId = takeLinkedSecret();
+  const linkedSecretId = takeLinkedSecret(fromNavigation);
   const current = route();
   const nativeIntent = takeNativeFragment(current);
   if (fromNavigation && nativeIntent === null) {
@@ -1714,7 +1740,7 @@ async function loadPage({
       const destination =
         providerError !== null || current.feature === "login"
           ? null
-          : (pendingIntent ?? captureIntent(pageUrl(current.target, current.namespace)));
+          : (pendingIntent ?? loginDestination(current));
       showLogin(
         providerError !== null
           ? (reasonFailure ?? providerFailure(providerError.label))
@@ -2441,6 +2467,8 @@ async function loadPage({
         permissions: firstPermissions,
         openSecretId: linkedSecretId,
       });
+      // Shown (its dialog opened or the unlisted note), so a later load does not reopen it.
+      linkedSecret = null;
     } else {
       if (current.feature === "backends" && backendsDenied) {
         backendsDenied = false;

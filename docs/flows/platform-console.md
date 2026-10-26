@@ -136,10 +136,9 @@ stops reads. Missing provenance stays explicit.
 
 `apps/controller/src/console/console.mjs:loadPage`
 
-`agents/collection.mts:renderAgentList` forwards plain clicks on row content to
-its Agent-name link. It ignores links, buttons (including disabled buttons),
-modified clicks, and selected text. Focusing the name before activation preserves
-the same return-focus target. Keyboard users activate the existing name link.
+`agents/collection.mts:renderAgentList` sends plain clicks on row content to the
+Agent-name link, focused first to keep its return-focus target; links, buttons
+(even disabled), modified clicks and selected text are ignored.
 
 `loadPage` starts with `GET /api/auth/session`. Opening an Agent from the list
 immediately shows **Loading agent details…** and **Back to Agents**. Its name,
@@ -176,10 +175,6 @@ private reads. Missing sessions open login; failed reads offer Retry.
 The [console sign-in flow](platform-console/sign-in-return.md) covers provider
 discovery, one-use session binding, and requested destination recovery.
 
-`apps/controller/src/auth/index.ts:requireTrustedBrowserOrigin` checks Origin
-before sign-in/out, even for SDK calls bypassing Better Auth middleware; headerless
-CLI requests remain supported. The browser stores no credentials.
-
 After authentication, `loadPage` reads `GET /namespaces`, preserving URL
 selection or choosing the first ready/readable Namespace. Unreadable IDs stay
 unavailable; selection never becomes an API query selector.
@@ -207,13 +202,12 @@ returning safe startup summaries. Empty configuration returns an empty list;
 missing wiring or failed dependencies return errors.
 
 `apps/controller/src/console/secrets.mts:renderSecrets` lists metadata and reads
-the exact Secret's `consumers` before showing actions. Agents link to their
-pages by name, from the readable Agent list; hidden counts and truncation remain
-visible. Known references disable Delete; the server rechecks them. The read's
-advisory `callerPermissions` disable Replace and Delete with their reason. A
-`secret` link the readable list leaves out opens nothing and says why. Create and replacement wait for Namespace
-readiness; false `secrets.create` disables Create with its reason. Mutations use
-the tracked request client and Secret API, never a Driver.
+the exact Secret's `consumers` and advisory `callerPermissions` before showing
+actions, as the [Secrets guide](../guides/console/secrets.md) describes. Agent
+names come from the readable Agent list. Known references disable Delete; the
+server rechecks them. `console.mjs:takeLinkedSecret` keeps a `secret` link's ID
+until the page shows it. Create and replacement wait for Namespace readiness.
+Mutations use the tracked request client and Secret API, never a Driver.
 
 `secrets.mjs:editValue` masks new input, preserves whitespace (CRLF becomes LF),
 and clears it after the request, dismissal, or view retention
@@ -280,7 +274,8 @@ Stop and Delete stay put. Direct navigation focuses and scrolls to the output; s
 the tab leaves visible output in place. Recovery links scroll their version tab into view
 and focus its tab control, smoothly unless the page rebuilds or motion is reduced.
 
-[Runtime logs](agent-runtime-logs.md) explains access. Status `403` hides Pod details, not
+[Runtime logs](agent-runtime-logs.md) explains access. A false `readLogs` in the Agent
+permission answer skips the audited log read. Status `403` hides Pod details, not
 separately authorized logs. Denials last until logout; newly granted `operate` permits another
 status read. Refused reads or downloads clear the rows; late successes cannot restore them or
 download. Refusing allowed log text rereads status at once, superseding stale reads. Back
@@ -326,16 +321,13 @@ this client never infers it from a network error.
 
 ## Deploy the new version
 
-The **Create new version** draft exposes **Deploy new version**.
-**Operator-managed credentials** persist `{ "method": "runtime" }` and bypass
-managed credential setup in Console; OCC does not validate host credentials.
-Deployment checks the Agent, Configuration association, and generation, then sends
-bodyless
-`POST /namespaces/:namespaceId/agents/:agentId/deploy`. The server authorizes
-and saves the version. Its read-only details open while **Deployment
-activity** follows the latest visible deployment. Workspace reads check gateway
-startup and file availability. An uncertain response disables replay until
-refresh and inspection.
+**Deploy new version** on the **Create new version** draft sends bodyless
+`POST /namespaces/:namespaceId/agents/:agentId/deploy` after the checks and
+uncertain-response handling that [Agent editing](platform-console/agent-editing.md#4-render-draft-revision-or-channels) traces.
+**Operator-managed credentials** (`{ "method": "runtime" }`) skip managed setup; OCC
+does not validate host credentials. The server saves the version; its read-only
+details open while **Deployment activity** follows it. Workspace reads check
+gateway startup and file availability.
 
 ## Debugging and Verification
 

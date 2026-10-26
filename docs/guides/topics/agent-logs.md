@@ -12,8 +12,6 @@ SSH Compute, and Drivers that own their runtime logging (`runtimeLogging:
 
 1. Open the Agent and select a deployed version. The editable draft is not a
    version and has no runtime; a version without a running Pod shows no Pod.
-   When the latest deployment failed, **Deployment activity** links straight to
-   that version's Logs tab.
 2. Select **Logs**. The runtime strip refreshes every 10 seconds. Each Pod card
    lists every main and init container's state and recent warning Events, prefixed
    with their container. Last termination
@@ -64,17 +62,16 @@ Container timestamps are in UTC, with their available nanosecond precision.
 
 `runtime/logs` accepts only `source` (`gateway`, `agent` or `sandbox`), `pod`, `container`, `previous`,
 `tailLines` (1 to 1000, default 200), `sinceSeconds` (1 to 86400), `cursor`,
-`download` and `minLevel` (`error`, `warn`, `info` or `debug`: drop lines below it;
-unknown-level lines, gaps and withheld counts stay). Pass the returned `cursor` to
+`download` and `minLevel` (`error`, `warn`, `info` or `debug`: drops only lines
+of a known lower level). Pass the returned `cursor` to
 read only newer lines of the same view. Select an advertised main or init
 container; omission selects the first main container. Changing containers starts
-a new audited view. Container cursors count the lines delivered at their newest timestamp, so a
-later line at that timestamp is returned once, even with identical text. When a
-tail or Driver byte cut leaves unknown whether a read began at that timestamp's
-first line, or an older cursor lacks the count, such a line can stay hidden until
-a later timestamp: OCC cannot tell it from an older line the tail omitted.
-`download=true` answers `text/plain` with `Content-Disposition: attachment`,
-always reads 1000 lines, and cannot be combined with `cursor` (`400`). See the
+a new audited view. Container cursors count the lines delivered at their newest
+timestamp, so a later line at that timestamp is returned once, even with identical
+text. After a tail or Driver byte cut, or with an older cursor, such a line can
+stay hidden until a later timestamp.
+`download=true` answers `text/plain` as an attachment and cannot be combined
+with `cursor` (`400`). See the
 [API reference](../../reference/api.md).
 
 ## Command line
@@ -109,8 +106,7 @@ needs Namespace `read` (otherwise it shows "Namespace unavailable"). Runtime
 status needs `read` bound to each Agent revision by ID. A `read_logs`
 Restriction blocks log text even for administrators. Without `operate`, the Logs
 tab has no runtime strip or Pod picker; it reads each source's current Pod and
-says when one is missing. If the Agent permission answer's `readLogs` is false,
-the tab skips the audited read. Service principals use the same grants. Every
+says when one is missing. Service principals use the same grants. Every
 request and poll is authorized again, so revoking a grant stops the next poll.
 See [authorization](../../reference/authorization.md).
 
@@ -193,11 +189,9 @@ A page never silently skips output; it labels each gap:
 
 Limits per request: 1000 lines, 1 MiB read from the cluster, 32 KiB per input
 line, 512 KiB per response (including JSON escaping, cursor and metadata),
-the newest 100 Events per Pod, 10 seconds overall. A cut response retains progress through
-its observed rows, including untimed ones. Changed windows warn of possible skipped lines; timed reads continue from delivered
-progress, ambiguous ones restart. Identical replacement remains unobservable.
-Continue with the returned cursor for
-lines beyond a page limit. Each API
+the newest 100 Events per Pod, 10 seconds overall. A cut response keeps its
+progress; continue with the returned cursor for lines beyond a page limit. Output
+replaced by identical text cannot be detected. Each API
 replica allows each principal 2 requests per second per Agent with a burst of
 10 (`429` with `Retry-After`) and 16 concurrent reads (`503`). Both limits apply
 after [authorization](../../reference/security.md#console-and-api-runtime-log-reads),
@@ -242,9 +236,8 @@ RUNTIME_LOGS_POD_INVALID`).
   groups show **Lines skipped**.
 - OCC reads through the read-only `GetSandboxLogs` call. Its OpenShell identity
   needs the `sandbox:read` scope (otherwise `503 RUNTIME_LOGS_CLUSTER_RBAC`)
-  and Workspace role `user`. OpenShell hides sandboxes outside the identity's
-  Workspace, so a missing role answers `503 RUNTIME_LOGS_SANDBOX_NOT_FOUND`,
-  like a sandbox not yet provisioned or removed.
+  and Workspace role `user` (otherwise OpenShell hides the sandbox: `503
+RUNTIME_LOGS_SANDBOX_NOT_FOUND`).
 
 ### Which rule decided
 
