@@ -66,7 +66,8 @@ gateway `status`, never credential values. Request fields:
   the Namespace does not hold fails with `404`.
 
 OCC rejects unknown fields, missing required fields, and Driver-invalid configuration
-before reading Secrets through
+with `400 INVALID_REQUEST`, which names the field and points at `/config/<field>` or
+`/secrets/<field>`, before reading Secrets through
 the Secret Driver. It passes values to the owning Gateway or Refresh Driver and
 stores only references, recording `registering` before the call. After rejection, OCC deletes any copy and
 the record. An uncertain result, such as a timeout, leaves the record `deleting`
@@ -271,9 +272,9 @@ after the caller's grant and the source lookup. `GET` on such a source reports a
 
 | Status                                  | Meaning                                                                                                                                                                                                                                                 |
 | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `400 INVALID_REQUEST`                   | The body, field name, or configuration value is invalid, a Secret reference names another Namespace, or a credential-source `harnessAuth` is not listed.                                                                                                |
+| `400 INVALID_REQUEST`                   | The body, field name, or configuration value is invalid, a catalog field is unknown or missing, a Secret reference names another Namespace, or a credential-source `harnessAuth` is not listed.                                                         |
 | `403 FORBIDDEN`                         | A required `credential_source` or `secret` permission is missing.                                                                                                                                                                                       |
-| `404 NOT_FOUND`                         | The source or Secret is not in the exact Namespace, or a catalog field is invalid; or the Agent's selected version does not use the source or has no withdrawal for it.                                                                                 |
+| `404 NOT_FOUND`                         | The source or Secret is not in the exact Namespace, or the Agent's selected version does not use the source or has no withdrawal for it.                                                                                                                |
 | `409 NAMESPACE_NOT_READY`               | The Namespace is not `ready`.                                                                                                                                                                                                                           |
 | `409 RESOURCE_CONFLICT`                 | The source is still referenced, not `ready` for an update or rotation, static for a rotation, or changed during the request; the gateway does not offer its type; the Agent has no selected version to withdraw from; or sources need a Sandbox Driver. |
 | `409 CREDENTIAL_GATEWAY_NOT_CONFIGURED` | Registration, update, rotation, deletion, Agent binding, or deploying an Agent that binds a source, on an Installation that selects no Credential Gateway.                                                                                              |
