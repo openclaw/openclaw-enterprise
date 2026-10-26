@@ -196,6 +196,11 @@ export const VERSION_UNAVAILABLE =
   "This version does not exist or your access does not include it. If you need it, ask an Installation administrator for AgentRevision read on it.";
 export const requestedVersionUnavailable = (version) =>
   `Version ${version} does not exist or your access does not include it, so this page shows no progress or outcome for it. If you need it, ask an Installation administrator for AgentRevision read on it.`;
+// A version the reader's own Deploy created exists, so the page says it was accepted (finding D751).
+export const deployAcceptedVersionUnreadable = (version) =>
+  `Deployment accepted. You cannot read version ${version}, so its progress and outcome are not shown here; ask an Installation administrator for AgentRevision read on it.`;
+export const VERSION_READ_DENIED =
+  "Your access does not include this version, so its configuration and deployment outcome are hidden. Ask an Installation administrator for AgentRevision read on it.";
 // A rejected model credential for a caller known to lack Agent update names the grants that fix
 // it and who gives them (finding D750): the failure banner, and the draft's deploy line. A
 // Secret-backed credential can also be replaced in place with Secret update on its Secret.
