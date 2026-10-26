@@ -263,7 +263,10 @@ async function fixture(
     async seedStoredRecord(type, config) {
       const seeded = this.seedStored(type, config);
       await app.controller.transact(async (unit) => {
-        await unit.credentialSources.createCredentialSource({ ...seeded.stored, state: "registering" });
+        await unit.credentialSources.createCredentialSource({
+          ...seeded.stored,
+          state: "registering",
+        });
         await unit.credentialSources.markCredentialSourceReady(namespace.id, seeded.stored.id);
       });
       return seeded;

@@ -1887,7 +1887,10 @@ test("Deploy names the Proxy's limit when a protected source sits beside reposit
     // The gateway also registers the execution profile, so the Proxy can own a source.
     advertised: true,
   });
-  const agent = await f.createAgent({ executionMode: "dedicated", repositoryBindings: installation });
+  const agent = await f.createAgent({
+    executionMode: "dedicated",
+    repositoryBindings: installation,
+  });
   // Also registers the Agent's own principal.
   await f.prepareDeployment(agent);
   await f.state.transact((unit) =>
