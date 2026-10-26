@@ -4,6 +4,7 @@ import { validateInstallationTokenResponse } from "../../apps/controller/src/dri
 import { githubMetadataProvider } from "../../apps/controller/src/drivers/egress-proxy/github-metadata.ts";
 import { captureMetadata, dispatchMetadata } from "../helpers/github-metadata-exchange.mjs";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
+import { credentialSourceFieldRequired } from "../helpers/refusal-text.mjs";
 import { createPreparedStore } from "../fixtures/repository-credentials/github/prepared-store.mjs";
 import {
   startGitHubFixture,
@@ -125,8 +126,12 @@ test("consented protected repository read uses only exact, already prepared meta
         secrets: { private_key: secret.ref },
       };
       const missingConsent = await app.request("POST", path, { body: input });
-      // OCC intentionally hides out-of-scope catalog fields. No lifecycle was configured; the only added field is consent.
-      assert.equal(missingConsent.status, 404);
+      // No lifecycle was configured; the catalog requires consent, and the refusal names it.
+      assert.equal(missingConsent.status, 400);
+      assert.equal(
+        missingConsent.body.error.message,
+        credentialSourceFieldRequired("github-app-metadata", "config.authority"),
+      );
       assert.equal(owner, undefined);
       input.config.authority = "execution";
       const created = await app.request("POST", path, { body: input });
