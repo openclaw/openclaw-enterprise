@@ -216,7 +216,12 @@ The console has no form for these grants. **Share Agent** on the Agent's
 of the Agent, not this set, so use the CLI or HTTP API as in
 [Add a person](#add-a-person).
 
-The person still cannot create Agents, Secrets or Configurations. To message
+The person still cannot create Agents, Secrets or Configurations. Codex device
+login on the Agent needs Agent `update` and `read`, plus Secret and
+credential-source `create` in the Namespace, so only an Installation
+administrator can start it; see
+[Use a personal Codex login](../deploy/credential-lifecycle.md#use-a-personal-codex-login).
+To message
 the Agent, the person needs a channel its Configuration sets up or
 [native admin](../../reference/agent-native-admin.md) with Agent `administer`,
 which is unavailable on Installations with GitHub, Google or OIDC sign-in
