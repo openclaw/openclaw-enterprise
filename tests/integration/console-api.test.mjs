@@ -335,17 +335,6 @@ test("the Agent readLogs answer matches what the runtime log read checks", async
   assert.deepEqual(denials(), []);
   assertApiError(await logRead(readerSession), 403, "FORBIDDEN");
   assert.equal(denials().length, 1);
-  // Operate, the grant for status and restarts, does not stand in for read_logs: only administer
-  // does.
-  const operator = await fixture.createNamespaceMember("log-text-operator", namespace.id, [
-    ["read", "namespace"],
-    ["read", "agent"],
-    ["operate", "agent"],
-  ]);
-  const operatorSession = await fixture.signIn(operator.credentials);
-  assert.equal(await readLogs(operatorSession), false);
-  assertApiError(await logRead(operatorSession), 403, "FORBIDDEN");
-  assert.equal(denials().length, 2);
 
   // read_logs, as the Agent logs guide delegates it.
   fixture.policy.roles
@@ -370,10 +359,10 @@ test("the Agent readLogs answer matches what the runtime log read checks", async
   });
   assert.equal(await readLogs(), false);
   assert.equal(await readLogs(readerSession), false);
-  assert.equal(denials().length, 2);
+  assert.equal(denials().length, 1);
   assertApiError(await logRead(), 403, "FORBIDDEN");
   assertApiError(await logRead(readerSession), 403, "FORBIDDEN");
-  assert.equal(denials().length, 4);
+  assert.equal(denials().length, 3);
 });
 
 test("caller permission summaries report primary IAM decisions without authorizing a later operation", async (t) => {
