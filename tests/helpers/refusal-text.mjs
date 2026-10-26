@@ -210,7 +210,8 @@ export const referenceFormRefusal = (setting, form) =>
   `Configuration setting ${setting} ${REFERENCE_FORMS[form]}.`;
 // A channel credential's ${NAME} with no Configuration Secret binding for it, and a ${ the runtime
 // does not substitute (finding 2477): a lowercase ${name} shows as written, ${NAME-text} only by
-// its name, and other text (which may be the token) not at all (packages/occ/src/channel-secret-bindings.ts).
+// its name, and other text (which may be the token) not at all
+// (packages/occ/src/channel-secret-bindings.ts).
 export const unboundReferenceRefusal = (setting, name) =>
   `Configuration setting ${setting} references ${name} without a Configuration Secret binding: bind ${name} in secretBindings to an environment-backed Secret, or remove the reference.`;
 const USE_UPPERCASE =

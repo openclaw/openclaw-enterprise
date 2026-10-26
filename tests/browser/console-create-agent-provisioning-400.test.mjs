@@ -2138,7 +2138,6 @@ test("Create Agent shows a provisioning refusal's own reason and keeps catch-all
 // generic progress again once the reader can no longer read that deployment (finding 1637). A
 // denied read (403) loses access as surely as a missing one (404): the quota line must not stay.
 test("Create Agent drops the Pod quota line when the deployment read is denied", async (t) => {
-  const quotaFull = POD_QUOTA_FULL;
   const fixture = await createConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset] });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Pod quota denied", { ready: true });
@@ -2226,7 +2225,7 @@ test("Create Agent drops the Pod quota line when the deployment read is denied",
                     lastAttempt: {
                       at: updatedAt,
                       code: "NAMESPACE_POD_QUOTA_EXCEEDED",
-                      message: quotaFull,
+                      message: POD_QUOTA_FULL,
                     },
                     nextAttemptAt: updatedAt,
                   },
@@ -2283,7 +2282,7 @@ test("Create Agent drops the Pod quota line when the deployment read is denied",
     "Provisioning request accepted.",
     "Provisioning queued…",
     "Provisioning Agent…",
-    quotaFull,
+    POD_QUOTA_FULL,
     "Provisioning Agent…",
   ]);
 });
