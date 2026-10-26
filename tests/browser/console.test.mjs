@@ -524,21 +524,19 @@ test("console shows the external observability link only to Installation adminis
   // then opens the Console again instead of the login form.
   await page.waitForURL(/\/console\/login$/);
   // Restore the administrator's answer as an expiry would leave it: it belongs to another
-  // session owner, so the next sign-in must probe (a reused answer sends no probe below).
+  // session owner, so the next sign-in must not reuse it (a reused answer shows the link below).
   await page.evaluate((answer) => {
     globalThis.sessionStorage.setItem("occ.console.installationAccess", answer);
   }, adminAnswer);
-  // The shell renders before the probe is answered, so wait for the denial itself.
-  const limitedProbe = page.waitForResponse(
-    (response) => new URL(response.url()).pathname === "/observability",
-  );
   await login(page, fixture, "/console/", limited.credentials);
-  assert.equal((await limitedProbe).status(), 403);
   // The limited user reads no Agents. The empty list renders only after the page applied the
-  // denied probe, so the link checks below see the settled shell, not the loading one.
+  // Installation-access answer, so the link checks below see the settled shell, not the loading
+  // one. The Namespace permission answer refuses her Agent create, so she is no administrator and
+  // is not probed: the API would audit the probe's 403 as a denial (finding D45).
   await page.getByRole("heading", { name: "No Agents are shared with you", exact: true }).waitFor();
   assert.equal(await page.getByRole("link", { name: "Observability" }).count(), 0);
-  // A denied read is audited, so navigation must not repeat it.
+  assert.equal(probes, 1);
+  // Navigation does not probe either.
   await page.getByRole("link", { name: "Namespaces" }).click();
   await page.getByRole("list", { name: "Namespaces" }).getByText("Observability access").waitFor();
   const namespacesRead = page.waitForResponse(
@@ -548,12 +546,12 @@ test("console shows the external observability link only to Installation adminis
   await namespacesRead;
   await page.getByRole("heading", { name: "No Agents are shared with you", exact: true }).waitFor();
   assert.equal(await page.getByRole("link", { name: "Observability" }).count(), 0);
-  assert.equal(probes, 2);
-  // A reload in the same tab reuses the settled answer for this session owner.
+  assert.equal(probes, 1);
+  // Nor does a reload in the same tab.
   await page.reload();
   await page.getByRole("heading", { name: "No Agents are shared with you", exact: true }).waitFor();
   assert.equal(await page.getByRole("link", { name: "Observability" }).count(), 0);
-  assert.equal(probes, 2);
+  assert.equal(probes, 1);
 });
 
 test("a navigation while the Installation-access probe is answered does not ask again", async (t) => {
@@ -574,7 +572,12 @@ test("a navigation while the Installation-access probe is answered does not ask 
     fixture.policy.roles.push({
       id: "role-browser-probe-reader",
       namespaceId: namespace.id,
-      permissions: [{ action: "read", resourceKind: "namespace" }],
+      // A Namespace-wide Agent create grant: the permission answer cannot rule out
+      // Installation administration, so the Console probes.
+      permissions: [
+        { action: "read", resourceKind: "namespace" },
+        { action: "create", resourceKind: "agent" },
+      ],
     });
     fixture.policy.bindings.push({
       id: "binding-browser-probe-reader",

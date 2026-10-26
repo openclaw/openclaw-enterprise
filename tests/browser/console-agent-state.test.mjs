@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/deployment-evidence.mts";
+import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
+  AGENT_READ,
   apiRequests,
   detailUrl,
   hasFocus,
@@ -673,6 +675,69 @@ test("Agent detail hides sharing instead of showing an error to non-administrato
   assert.equal(await focused(), "Configuration");
   await page.keyboard.press("ArrowLeft");
   assert.equal(await focused(), "Policy denials");
+});
+
+// The API audits each refused read as an authorization denial, one nobody attempted. A member's
+// page loads therefore send no Installation-administration probe, and her Agent detail reads no
+// sharing policy; an administrator's session still asks both (finding D45).
+test("Only an administrator's session probes Installation administration and reads sharing policy", async (t) => {
+  const auditSink = new InMemoryAuditSink();
+  const url = "https://metrics.example.test/d/operations";
+  const fixture = await createConsoleAppFixture(t, { auditSink, observabilityUrl: url });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Audited access", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Audited Agent", nativeValues("x"));
+  const reader = await fixture.createNamespaceMember("audited-reader", namespace.id, AGENT_READ);
+  // A link to the Access tab, where sharing policy is read.
+  const access = detailUrl(fixture, namespace.id, agent.id, "draft", "access");
+  const adminReads = (requests) =>
+    requests
+      .filter(({ path }) => path === "/observability" || path.includes("/iam/"))
+      .map(({ method, path }) => `${method} ${path}`);
+  const adminDenials = () =>
+    auditSink
+      .list()
+      .filter(
+        (event) =>
+          event.kind === "authorization_denial" &&
+          /^openclaw\.(observability|iam)\./.test(event.action),
+      );
+
+  const { page: member } = await newPage(t, fixture);
+  await trackSettledFetches(member);
+  const memberRequests = apiRequests(member, fixture.origin);
+  await login(member, fixture, access, reader.credentials);
+  await member.getByRole("heading", { name: "Audited Agent" }).waitFor();
+  await member.getByRole("tab", { name: "Configuration", selected: true }).waitFor();
+  assert.equal(await member.getByRole("tab", { name: "Access" }).count(), 0);
+  // The Namespace permission answer is not kept as a settled answer, so a reload and another
+  // page ask it again; none of them probes.
+  await member.reload();
+  await member.getByRole("tab", { name: "Configuration", selected: true }).waitFor();
+  await member.goto(`${fixture.origin}/console/namespaces`);
+  await member.getByRole("list", { name: "Namespaces" }).getByText("Audited access").waitFor();
+  await waitForIdleFetches(member);
+  assert.equal(await member.getByRole("link", { name: "Observability", exact: true }).count(), 0);
+  assert.deepEqual(adminReads(memberRequests), []);
+  assert.deepEqual(adminDenials(), []);
+
+  const { page: admin } = await newPage(t, fixture);
+  const adminRequests = apiRequests(admin, fixture.origin);
+  await login(admin, fixture, access);
+  await admin
+    .getByRole("region", { name: "Share Agent", exact: true })
+    .getByText("Current policy loaded.", { exact: true })
+    .waitFor();
+  assert.equal(
+    await admin.getByRole("link", { name: "Observability", exact: true }).getAttribute("href"),
+    url,
+  );
+  assert.deepEqual([...new Set(adminReads(adminRequests))].sort(), [
+    `GET /namespaces/${namespace.id}/iam/access-bindings`,
+    `GET /namespaces/${namespace.id}/iam/roles`,
+    "GET /observability",
+  ]);
+  assert.deepEqual(adminDenials(), []);
 });
 
 const FORBIDDEN = {

@@ -400,6 +400,10 @@ export const CHANNEL_BINDING_CONSOLE_REMEDY =
 // The Slack card of an Embedded Agent, on Create Agent and the Agent page's Channels tab.
 export const CHANNELS_NEED_DEDICATED =
   "Channels require Dedicated execution. Embedded Agents can only keep channels disabled.";
+// The Slack card's setup step, shown until both token Secrets are bound (finding 2438), and never
+// on an Embedded Agent, which cannot have channels (finding D708).
+export const SLACK_SETUP_HINT =
+  "Provide SLACK_APP_TOKEN and SLACK_BOT_TOKEN through Secret bindings before deployment.";
 export const CHANNEL_BINDING_FORM_REMEDY =
   "On this form, the Slack channel settings bind SLACK_APP_TOKEN and SLACK_BOT_TOKEN to the Secrets you select there; bind other names through the Configuration API after the Agent exists.";
 // A Codex network proxy setting that blocks the repository credential broker for an Agent with

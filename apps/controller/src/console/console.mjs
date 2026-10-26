@@ -396,6 +396,36 @@ function probeInstallationAccess(owner) {
   return probe.answer;
 }
 
+// Whether the caller administers the Installation, for this page load. The observability read
+// is the probe, and the API audits its 403 as an authorization denial, so the console first asks
+// a readable Namespace's permission answer, which audits nothing. Agent create is held only by
+// the administrator Role and Namespace-wide grants: no Namespace policy Role can hold create
+// (docs/reference/cheatsheets/permissions.md). A caller refused Agent create is therefore no
+// Installation administrator, and is not probed (finding D45). That inference is not kept as the
+// settled answer: the next page load asks again, so an administrator whose Restriction denies
+// Agent create in one Namespace is probed from a Namespace that allows it. Gating only: the API
+// still authorizes every request. With no readable Namespace, or no answer, the console probes.
+function installationAccess(owner, selectedRead, selectedPath) {
+  const readableId = namespaces.some((item) => item.id === namespaceId)
+    ? namespaceId
+    : (namespaces[0]?.id ?? null);
+  const permissions =
+    readableId === null
+      ? Promise.resolve(null)
+      : selectedRead && readableId === namespaceId
+        ? selectedRead
+        : request(
+            readableId === namespaceId
+              ? selectedPath
+              : `/namespaces/${encodeURIComponent(readableId)}/permissions`,
+          ).catch(() => null);
+  return permissions.then((answer) =>
+    answer?.agents?.create === false
+      ? { url: null, admin: false, settled: false }
+      : probeInstallationAccess(owner),
+  );
+}
+
 function forgetInstallationAccess() {
   try {
     sessionStorage.removeItem(installationAccessStorageKey);
@@ -1628,19 +1658,11 @@ async function loadPage({
         loadingShownAt = performance.now();
       }
     }
-    // Read the admin-only destination once per session owner. Non-administrators
-    // get 403, which the API audits as a denial, so do not repeat it per navigation
-    // or, within this tab, per page load.
+    // A settled Installation-access answer is kept once per session owner (see
+    // installationAccess below for how it is asked).
     const recalled =
       owner && observabilityOwner !== owner ? recalledInstallationAccess(owner) : null;
-    const [readable, observability] = await Promise.all([
-      request("/namespaces"),
-      owner && observabilityOwner === owner
-        ? null
-        : recalled
-          ? { ...recalled, settled: true }
-          : probeInstallationAccess(owner),
-    ]);
+    const readable = await request("/namespaces");
     if (!lifetime.isCurrent(active)) {
       return;
     }
@@ -1650,10 +1672,10 @@ async function loadPage({
     clearRetainedViewsOutsideNamespaces(readable);
     setNamespaces(readable);
     accessResolved = true;
-    if (observability) {
-      observabilityUrl = observability.url;
-      installationAdmin = observability.admin;
-      observabilityOwner = observability.settled ? owner : null;
+    if (recalled) {
+      observabilityUrl = recalled.url;
+      installationAdmin = recalled.admin;
+      observabilityOwner = owner;
     }
     // The default pick prefers a ready Namespace and never a deleting one while another remains
     // (finding 1895); with only deleting Namespaces it shows the first, whose status the Agents
@@ -1693,6 +1715,10 @@ async function loadPage({
       !current.agentId
         ? request(permissionsPath).catch(() => null)
         : null;
+    const accessRead =
+      owner && observabilityOwner === owner
+        ? null
+        : installationAccess(owner, permissionsRead, permissionsPath);
     let firstPermissions = null;
     if (!scopedNamespaceUnavailable && current.feature !== "settings" && !current.creating) {
       if (current.agentId) {
@@ -1714,6 +1740,15 @@ async function loadPage({
       if (!lifetime.isCurrent(active)) {
         return;
       }
+    }
+    if (accessRead) {
+      const access = await accessRead;
+      if (!lifetime.isCurrent(active)) {
+        return;
+      }
+      observabilityUrl = access.url;
+      installationAdmin = access.admin;
+      observabilityOwner = access.settled ? owner : null;
     }
     const retainedState = retainedView?.state;
     let unchanged = false;

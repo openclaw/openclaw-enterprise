@@ -6,6 +6,7 @@ import {
   AGENT_DEPLOY_NOT_INCLUDED,
   CHANNELS_NEED_DEDICATED,
   DIAGNOSTICS_DENIED,
+  SLACK_SETUP_HINT,
 } from "../helpers/refusal-text.mjs";
 import {
   AGENT_READ,
@@ -71,6 +72,9 @@ test("Configure Slack on an embedded Agent is described by the execution mode", 
   await configure.waitFor();
   assert.equal(await configure.isDisabled(), true);
   assert.equal(await accessibleDescription(configure), CHANNELS_NEED_DEDICATED);
+  // An Embedded Agent cannot have channels, so the card asks for no Slack token Secrets
+  // (finding D708).
+  assert.equal(await page.getByText(SLACK_SETUP_HINT).count(), 0);
 });
 
 // The no-Namespace panel is the selector's only reason. A page without it, such as an

@@ -28,7 +28,7 @@ import {
   waitForInputValue,
   writeRequests,
 } from "./console-agents-browser-helpers.mjs";
-import { SECRET_CREATE_DENIED } from "../helpers/refusal-text.mjs";
+import { SECRET_CREATE_DENIED, SLACK_SETUP_HINT } from "../helpers/refusal-text.mjs";
 
 // The Agent's grant of a saved Slack Secret was refused, or the IAM policy shows none (finding 1920).
 const GRANT_REFUSED =
@@ -105,9 +105,6 @@ async function failMethod(page, pattern, method, answer) {
     await route.fulfill(answer);
   });
 }
-
-const SLACK_SETUP_HINT =
-  "Provide SLACK_APP_TOKEN and SLACK_BOT_TOKEN through Secret bindings before deployment.";
 
 // Every case builds its own Console and browser context, so cases run a few at a time.
 describe("Agent channels", { concurrency: 3 }, () => {
