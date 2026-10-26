@@ -138,6 +138,7 @@ whom a key was issued for, so start each key's `--name` with the person's name, 
 | Create or replace integration Secrets   | [Namespace Secrets](../reference/drivers/kubernetes-secret.md#create-a-namespace-owned-secret) and [Configuration bindings](../reference/configuration/secrets.md) |
 | Use a Credential Gateway                | [Credential sources](../reference/credential-sources.md), including the current OpenShell limits                                                                   |
 | Grant access to a Namespace resource    | [Namespace IAM](../reference/authorization.md#manage-namespace-policy)                                                                                             |
+| Let an Agent use a Secret               | [Grant the Agent's own identity Secret `operate`](topics/iam.md#let-an-agent-use-a-secret)                                                                         |
 | Inspect or upgrade the running fleet    | [Production image upgrades](deploy/production-upgrade.md) and the [CLI reference](../reference/cli.md)                                                             |
 | Run a local development installation    | [Local Setup](quickstart.md)                                                                                                                                       |
 
