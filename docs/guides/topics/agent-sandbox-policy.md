@@ -3,11 +3,14 @@
 Open an Agent in the OCE console, select its running version, and choose
 **Policy denials**. You need the Agent's existing Sandbox log permissions to see
 observed denials. A version that runs without a Sandbox records none, and the tab
-says so. Policy reads and changes have independent permissions; see the
+says so. On an Installation that selects no Sandbox Driver, the tab says that
+instead, and policy changes, including turning editing on, are refused. Policy reads and changes have independent permissions; see the
 [policy reference](../../reference/sandbox-policies.md).
 
 1. Check the **Network policy** card above the log. **Policy details** shows saved
-   and confirmed live versions and read-only Installation defaults. **View network
+   and confirmed live versions and read-only Installation defaults. **Deployed**
+   means the version runs the saved policy it was deployed with and no live change
+   was requested. **View network
    limits** opens the Installation ceiling, which grants no access by itself.
    Suggestions are untrusted candidates. The card shows three at a time; **Show all**
    expands the list. Expand **Full executable path** before reviewing a suggestion.
@@ -22,7 +25,9 @@ says so. Policy reads and changes have independent permissions; see the
    Selection carries across pages; the count includes selections outside the
    current page. Exact executable, host, and port requests become proposed rules.
    Repeated requests and requests covered by saved or proposed rules do not add
-   duplicate rules. Incomplete metadata cannot prefill a rule.
+   duplicate rules. Incomplete metadata cannot prefill a rule. A denial that
+   names only OpenShell's placeholder address, without the record of its
+   hostname, reads **Hostname not logged** and proposes nothing.
 4. Administrators can use the **Policy editing** switch beside **Manage rules**.
    Its **On** or **Off** label states the current setting. Disabling editing preserves
    saved rules. **View rules** remains available with editing off. To change rules,

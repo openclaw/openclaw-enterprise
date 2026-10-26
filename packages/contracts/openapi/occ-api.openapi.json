@@ -24469,6 +24469,12 @@
                           "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
                         },
+                        "deployedPolicyVersion": {
+                          "description": "The saved policy version the active revision (defaultsRevisionId) was deployed with. Its Sandbox enforces that version without a live application.",
+                          "maximum": 2147483647,
+                          "minimum": 1,
+                          "type": "integer"
+                        },
                         "editingEnabled": { "type": "boolean" },
                         "policy": {
                           "additionalProperties": false,
@@ -24606,6 +24612,10 @@
                         "protectedExecution": {
                           "description": "True while the active revision or the next deploy runs under protected execution. Saving network policy additions is then refused with SANDBOX_POLICY_PROTECTED_EXECUTION; saving an empty policy stays allowed.",
                           "type": "boolean"
+                        },
+                        "unavailableReason": {
+                          "description": "Why per-Agent network policy is unavailable, when capability is null: the sentence the save, validate, apply and editing refusals give.",
+                          "type": "string"
                         }
                       },
                       "required": [

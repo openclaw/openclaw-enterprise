@@ -1785,6 +1785,16 @@ const NAMESPACE_POLICY_RESOURCE_KINDS: ReadonlySet<ResourceKind> = new Set<Resou
 ]);
 
 /**
+ * Why an Agent has no per-Agent network policy (D774): the policy view, validate, save, apply
+ * and the editing switch all give the same sentence. Without a Sandbox Driver there is no
+ * Sandbox at all, so the cause is the Installation's selection, not a Driver capability.
+ */
+const NO_SANDBOX_DRIVER_NETWORK_POLICY =
+  "This Installation selects no Sandbox Driver, so Agents run without a Sandbox: there are no policy denials, suggestions or Agent network rules.";
+const SANDBOX_DRIVER_WITHOUT_NETWORK_POLICY =
+  "The selected Sandbox Driver does not support per-Agent network policy.";
+
+/**
  * Why the Namespace policy API refuses `create` Permissions. `create` is authorized against
  * the Namespace collection, never an existing resource, and this API binds only exact
  * resources, so such a Permission could never take effect through it. Role creation and
@@ -8537,6 +8547,8 @@ export class OpenClawController {
       id: `sbp_${agentId.slice(4)}`,
       namespaceId,
     });
+    // The cause comes before the editing setting and version checks it would otherwise hide (D774).
+    this.requireNetworkPolicyAvailable();
     return this.read(async (state) => {
       await this.exactNamespace(state, namespaceId);
       const agent = await state.agents.findAgent(namespaceId, agentId);
@@ -8628,6 +8640,7 @@ export class OpenClawController {
           ? undefined
           : await state.revisions.findRevision(namespaceId, agentId, agent.activeRevisionId);
       const driver = this.sandboxDriver();
+      const unavailableReason = this.networkPolicyUnavailable();
       const defaults =
         revision?.sandboxPolicy?.defaults ??
         driver?.admitNetworkPolicy?.([], policy.version).defaults ??
@@ -8644,9 +8657,17 @@ export class OpenClawController {
         editingEnabled: agent.sandboxPolicyEditing === true,
         protectedExecution: this.protectedExecutionApplies(revision),
         capability: this.sandboxDriver()?.networkPolicy ?? null,
+        ...(unavailableReason === undefined ? {} : { unavailableReason }),
         ceiling: this.sandboxNetworkPolicyCeiling,
         defaults,
-        ...(revision?.sandboxPolicy === undefined ? {} : { defaultsRevisionId: revision.id }),
+        // A fresh deploy carries the saved version into its Sandbox; no application is
+        // requested for it (D773).
+        ...(revision?.sandboxPolicy === undefined
+          ? {}
+          : {
+              defaultsRevisionId: revision.id,
+              deployedPolicyVersion: revision.sandboxPolicy.version,
+            }),
       };
     });
   }
@@ -8671,6 +8692,11 @@ export class OpenClawController {
       if (agent === undefined || agent.status !== "active") {
         throw new ResourceStateConflictError("The Agent is unavailable for policy configuration.");
       }
+      // Fail early (D774): editing could never save a rule. Turning it off stays allowed.
+      const unavailable = this.networkPolicyUnavailable();
+      if (enabled && unavailable !== undefined) {
+        throw new ResourceStateConflictError(unavailable);
+      }
       const updated = await state.agents.setSandboxPolicyEditing(namespaceId, agentId, enabled);
       if (updated === undefined) {
         throw new ResourceStateConflictError("The Agent changed.");
@@ -8688,7 +8714,7 @@ export class OpenClawController {
     const driver = this.sandboxDriver();
     if (driver?.networkPolicy === undefined || driver.admitNetworkPolicy === undefined) {
       throw new ResourceStateConflictError(
-        "The selected Sandbox Driver does not support per-Agent network policy.",
+        this.networkPolicyUnavailable() ?? SANDBOX_DRIVER_WITHOUT_NETWORK_POLICY,
       );
     }
     const { contribution } = this.configurations.resolve(
@@ -8839,6 +8865,8 @@ export class OpenClawController {
       id: `sbp_${agentId.slice(4)}`,
       namespaceId,
     });
+    // The cause comes before the editing setting and version checks it would otherwise hide (D774).
+    this.requireNetworkPolicyAvailable();
     return this.mutate(async (state) => {
       await this.lockNamespace(state, namespaceId);
       const agent = await state.agents.lockAgent(namespaceId, agentId);
@@ -8900,6 +8928,8 @@ export class OpenClawController {
       id: `sbp_${agentId.slice(4)}`,
       namespaceId,
     });
+    // The cause comes before the editing setting and version checks it would otherwise hide (D774).
+    this.requireNetworkPolicyAvailable();
     return this.mutate(async (state) => {
       const namespace = await this.lockNamespace(state, namespaceId);
       const agent = await state.agents.lockAgent(namespaceId, agentId);
@@ -13782,6 +13812,24 @@ export class OpenClawController {
       );
     }
     return driver?.id ?? this.configuredServiceAccountDriverId;
+  }
+
+  private requireNetworkPolicyAvailable(): void {
+    const unavailable = this.networkPolicyUnavailable();
+    if (unavailable !== undefined) {
+      throw new ResourceStateConflictError(unavailable);
+    }
+  }
+
+  /** Why this Installation has no per-Agent network policy, or undefined when it has one. */
+  private networkPolicyUnavailable(): string | undefined {
+    const driver = this.sandboxDriver();
+    if (driver === undefined) {
+      return NO_SANDBOX_DRIVER_NETWORK_POLICY;
+    }
+    return driver.networkPolicy === undefined || driver.admitNetworkPolicy === undefined
+      ? SANDBOX_DRIVER_WITHOUT_NETWORK_POLICY
+      : undefined;
   }
 
   private sandboxDriver(): SandboxDriver | undefined {

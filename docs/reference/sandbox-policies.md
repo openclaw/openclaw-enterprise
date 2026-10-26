@@ -45,6 +45,10 @@ these restrictions. Its controller and HTTP operation are named
 expect this API to change when Guardrails replaces it.
 Disabling editing preserves approved additions and previously admitted work.
 Revocation requires an explicit policy change or Agent shutdown.
+Without per-Agent network policy support, enabling editing returns HTTP 409;
+disabling it stays allowed. When the Installation selects no Sandbox Driver,
+validate, save and apply return the same 409 right after authorization. Policy GET
+then returns `capability: null` and the cause in `unavailableReason`.
 
 The trusted startup field `sandboxNetworkPolicyCeiling` bounds additions in both
 the API and worker. Each entry has `id`, an exact absolute `binary` path, a DNS
@@ -123,6 +127,10 @@ that policy, and the worker does not send it again:
 
 The last
 confirmed live version remains recorded separately when desired additions change.
+Policy GET returns the running revision as `defaultsRevisionId` and the saved
+policy version it was deployed with as `deployedPolicyVersion`. When that version
+is the saved version and no application targets that revision, the Sandbox
+enforces the saved rules without live application. The console shows **Deployed**.
 Revision snapshots and attributable audit evidence preserve the original admission.
 The console shows read-only defaults from the running revision, or the selected
 Driver before deployment, separately from the delegation ceiling and additions.

@@ -8786,6 +8786,19 @@ for (const [id, state, name] of [
   };
 }
 
+// An Installation that selects no Sandbox Driver: the API names that cause instead of the
+// Driver's missing capability (D774).
+scenarios.policyDenialsNoSandboxDriver = {
+  ...scenarios.policyDenialsUnsupported,
+  name: "Installation selects no Sandbox Driver",
+  policyNoSandboxDriver: true,
+  description:
+    "The Policy denials tab says once that Agents run without a Sandbox, and offers no policy editor.",
+  steps: [
+    "Confirm the single status sentence names the missing Sandbox Driver, and that the Policy editing switch and Manage rules are absent.",
+  ],
+};
+
 // The shell and assets are produced by the API's actual theme loader/renderer.
 for (const [id, source, name, theme] of [
   ["themeSignIn", "login", "Custom sign-in", "custom"],

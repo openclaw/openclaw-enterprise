@@ -195,6 +195,7 @@ export const PolicyRulesPopulated = story("policyRulesPopulated");
 export const PolicyDenialsEmpty = story("policyDenialsEmpty");
 export const PolicyDenialsDisabled = story("policyDenialsDisabled");
 export const PolicyDenialsUnsupported = story("policyDenialsUnsupported");
+export const PolicyDenialsNoSandboxDriver = story("policyDenialsNoSandboxDriver");
 export const PolicyDenialsGap = story("policyDenialsGap");
 export const PolicyDenialsMissingMetadata = story("policyDenialsMissingMetadata");
 export const PolicyDenialsFailed = story("policyDenialsFailed");

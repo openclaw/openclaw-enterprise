@@ -294,12 +294,33 @@ jobs:
         run: pnpm check:workspace
       - name: Run lint check
         run: pnpm lint
+      # Restore only on main: a pull request can have its own cache at the same key.
+      # Prettier's content cache also depends on the absolute checkout path.
+      - name: Restore Prettier's content cache
+        id: prettier-cache
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/prettier-cache
+          key: prettier-content-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.NODE_VERSION }}-${{ hashFiles('pnpm-lock.yaml', 'package.json', '.editorconfig', '.prettierignore', '.prettierrc.json') }}-${{ github.workspace }}
       - name: Check formatting
+        if: steps.prettier-cache.outcome != 'success'
         run: pnpm format:check
+      # Restore succeeds on a miss too. Prettier then checks every file and builds the cache.
+      - name: Check formatting with content cache
+        if: steps.prettier-cache.outcome == 'success'
+        run: pnpm format:check --cache --cache-strategy content --cache-location "$RUNNER_TEMP/prettier-cache"
       - name: Run OpenAPI check
         run: pnpm openapi:check
       - name: Check and build documentation
         run: pnpm docs:install && pnpm docs:check && pnpm docs:build
+      # Seed the cache only after Static Checks passes on a push to main.
+      - name: Save Prettier's content cache
+        if: steps.prettier-cache.outcome == 'success' && steps.prettier-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/prettier-cache
+          key: ${{ steps.prettier-cache.outputs.cache-primary-key }}
 
   affected-packages:
     name: Affected Packages (advisory)

@@ -49,7 +49,23 @@ const NO_SANDBOX_DENIALS =
   "This Agent version runs without a Sandbox, so no policy denials are recorded for it.";
 const NO_SANDBOX_SUGGESTIONS =
   "Suggestions come from policy denials. This Agent version runs without a Sandbox, so it has none.";
+// OpenShell logs a placeholder address for a connection whose host its policy DNS mapped, and the
+// host in a record just before it. Without that record nothing names the host (D771).
+const PLACEHOLDER_DESTINATION =
+  "OpenShell logged only a placeholder address for this connection, and the record that names its hostname is not in the loaded log, so this denial proposes no rule. Add a rule for the hostname in Manage rules.";
 type LogLine = Extract<RuntimeLogRecord, { type: "line" }>;
+
+// The tab's version was deployed with the saved policy version, so its Sandbox enforces those
+// rules, and no live application was requested for it (D773). A pending or failed application
+// to this revision, even of the same version, keeps its own status.
+function deployedWithSavedPolicy(view: SandboxPolicyViewWire | undefined, revisionId: string) {
+  return (
+    view !== undefined &&
+    view.defaultsRevisionId === revisionId &&
+    view.deployedPolicyVersion === view.policy.version &&
+    view.policy.application?.revisionId !== revisionId
+  );
+}
 
 // A 403 names what the refused request does, the grant it checks and who gives it (findings 2539,
 // D753).
@@ -113,15 +129,41 @@ function readableRules(value: unknown): value is SandboxNetworkGrant[] {
   );
 }
 
+// OpenShell's policy DNS answers lookups with placeholder addresses (198.18.0.0/15 and
+// fd23:6f70:656e::/48) and logs the host each one stands for. Such an address names no
+// destination a rule can allow (D771).
+function placeholderAddress(host: string) {
+  return /^198\.1[89]\.\d{1,3}\.\d{1,3}$/.test(host) || /^fd23:6f70:656e:/i.test(host);
+}
+
+// The destination a denial names: its host, or, when only OpenShell's placeholder address
+// was logged, the address marked as naming no host.
+function denialDestination(record: LogLine) {
+  const host = record.decision?.host ?? record.fields?.dst_host;
+  const placeholder = record.fields?.dst_placeholder_ip;
+  const port = record.decision?.port ?? record.fields?.dst_port;
+  const suffix = port ? `:${visibleText(port)}` : "";
+  if (typeof host === "string" && host && !placeholderAddress(host)) {
+    return { host, text: `${visibleText(host)}${suffix}`, placeholder: false };
+  }
+  const address = typeof placeholder === "string" ? placeholder : host;
+  return typeof address === "string" && address
+    ? {
+        host: undefined,
+        text: `Hostname not logged · ${visibleText(address)}${suffix}`,
+        placeholder: true,
+      }
+    : { host: undefined, text: `Unknown destination${suffix}`, placeholder: false };
+}
+
 function denialGrant(record: LogLine): SandboxNetworkGrant | undefined {
   const binary = record.decision?.binary ?? record.fields?.binary;
-  const host = record.decision?.host ?? record.fields?.dst_host;
+  const { host } = denialDestination(record);
   const port = Number(record.decision?.port ?? record.fields?.dst_port);
   if (
     typeof binary !== "string" ||
     !binary.startsWith("/") ||
-    typeof host !== "string" ||
-    !host ||
+    host === undefined ||
     !Number.isSafeInteger(port) ||
     port < 1 ||
     port > 65535
@@ -598,7 +640,9 @@ export function renderAgentSandboxPolicy(
         element(
           "p",
           { role: "status" },
-          "This Sandbox Driver does not support per-Agent network policy. Policy denials, suggestions and Agent network rules are not available for this Agent.",
+          // The API names the cause, such as an Installation with no Sandbox Driver (D774).
+          view.unavailableReason ??
+            "This Sandbox Driver does not support per-Agent network policy. Policy denials, suggestions and Agent network rules are not available for this Agent.",
         ),
       );
       return false;
@@ -667,14 +711,17 @@ export function renderAgentSandboxPolicy(
     const decision = record.decision;
     const fields = record.fields ?? {};
     const binary = decision?.binary ?? fields.binary;
-    const host = decision?.host ?? fields.dst_host;
-    const port = decision?.port ?? fields.dst_port;
+    // A DNS refusal names the lookup only; the connection attempt after it names the
+    // executable (D772).
+    const executable =
+      binary ?? (fields.activity === "NET:REFUSE" ? "DNS lookup" : "Unknown executable");
+    const destination = denialDestination(record);
     const reason = decision?.reason ?? fields.reason;
     const checkbox = element("input", {
       type: "checkbox",
       checked: selected.has(record),
       disabled: !editable() || !grant,
-      "aria-label": `Select denial ${visibleText(record.time ?? "time unknown")} ${visibleText(binary ?? "unknown executable")} to ${visibleText(host ?? "unknown destination")}${port ? `:${visibleText(port)}` : ""}`,
+      "aria-label": `Select denial ${visibleText(record.time ?? "time unknown")} ${visibleText(executable)} to ${destination.text}`,
     });
     const row = element("article", { className: "sandbox-decision" });
     row.classList.toggle("is-selected", selected.has(record));
@@ -693,8 +740,11 @@ export function renderAgentSandboxPolicy(
       element(
         "p",
         { className: "muted" },
-        `Executable path: ${visibleText(binary ?? "Unknown executable")} · Enforcement: ${visibleText(decision?.enforcement ?? "unknown")} · Rule: ${visibleText(decision?.rule ?? fields.rule_name ?? "unknown")} · Engine: ${visibleText(decision?.engine ?? fields.rule_type ?? "unknown")} · Policy generation: ${visibleText(decision?.policyGeneration ?? fields.policy_generation ?? "unknown")}`,
+        `Executable path: ${visibleText(executable)}${typeof fields.dst_placeholder_ip === "string" ? ` · OpenShell address: ${visibleText(fields.dst_placeholder_ip)}` : ""} · Enforcement: ${visibleText(decision?.enforcement ?? "unknown")} · Rule: ${visibleText(decision?.rule ?? fields.rule_name ?? "unknown")} · Engine: ${visibleText(decision?.engine ?? fields.rule_type ?? "unknown")} · Policy generation: ${visibleText(decision?.policyGeneration ?? fields.policy_generation ?? "unknown")}`,
       ),
+      ...(destination.placeholder
+        ? [element("p", { className: "hint" }, PLACEHOLDER_DESTINATION)]
+        : []),
       element("details", {}, element("summary", {}, "Sanitized Sandbox log"), recordRow(record)),
     );
     const toggle = button(
@@ -733,15 +783,11 @@ export function renderAgentSandboxPolicy(
           "span",
           {
             className: "resource-id sandbox-denial-binary",
-            title: visibleText(binary ?? "Unknown executable"),
+            title: visibleText(executable),
           },
-          visibleText(typeof binary === "string" ? binary.split("/").at(-1) : "Unknown executable"),
+          visibleText(typeof binary === "string" ? binary.split("/").at(-1) : executable),
         ),
-        element(
-          "span",
-          { className: "resource-id sandbox-denial-destination" },
-          `${visibleText(host ?? "Unknown destination")}${port ? `:${visibleText(port)}` : ""}`,
-        ),
+        element("span", { className: "resource-id sandbox-denial-destination" }, destination.text),
         element(
           "span",
           { className: "sandbox-denial-reason" },
@@ -1353,8 +1399,9 @@ export function renderAgentSandboxPolicy(
         changes = Math.max(1, addedOrChanged + removed);
       }
       const unapplied =
-        policy.applied?.revisionId !== revisionId ||
-        policy.applied?.policyVersion !== policy.version;
+        (policy.applied?.revisionId !== revisionId ||
+          policy.applied?.policyVersion !== policy.version) &&
+        !deployedWithSavedPolicy(view, revisionId);
       const failed = application?.state === "failed";
       footerStatus.textContent = "No unsaved changes";
       if (dirty) {
@@ -2004,6 +2051,9 @@ export function renderAgentSandboxPolicy(
         if (applied?.policyVersion === policy.version) {
           return { label: "Applied", tone: "success" };
         }
+        if (deployedWithSavedPolicy(view, revisionId)) {
+          return { label: "Deployed", tone: "success" };
+        }
         return {
           label: applied || policy.version > 1 ? "Saved for later" : "Application unconfirmed",
           tone: "warning",
@@ -2075,7 +2125,9 @@ export function renderAgentSandboxPolicy(
               { className: "hint" },
               applied
                 ? `Last confirmed live version: v${applied.policyVersion}`
-                : "Live version unconfirmed",
+                : deployedWithSavedPolicy(view, revisionId)
+                  ? `Deployed with policy v${policy.version}; no live change requested.`
+                  : "Live version unconfirmed",
             ),
           ),
         ),
@@ -2121,6 +2173,7 @@ export function renderAgentSandboxPolicy(
     } else if (
       currentPolicy &&
       !confirmed &&
+      !deployedWithSavedPolicy(view, revisionId) &&
       (currentPolicy.applied?.revisionId === revisionId ||
         currentPolicy.version > 1 ||
         outcomeRequested)
