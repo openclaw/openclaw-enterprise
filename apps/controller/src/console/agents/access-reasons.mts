@@ -89,9 +89,9 @@ export const modelCredentialRejectedAsk = (secretBacked: boolean) =>
 export const modelCredentialRejectedReadOnly = (secretBacked: boolean) =>
   `The last deployment's model credential was rejected. ${credentialFixGrants(secretBacked, "deploy again")}`;
 // The Agent no longer binds the credential the failed version was deployed with, so the recorded
-// failure asks for nothing more: the next deployment uses the new one (finding D752).
+// failure asks for nothing more, of any reader: the next deployment uses the new one (D752).
 export const MODEL_CREDENTIAL_REJECTED_REPLACED =
-  "The model provider rejected this version's credential (HTTP 401 or 403). The Agent now uses a different credential: deploy a new version to use it.";
+  "The model provider rejected this version's credential (HTTP 401 or 403). The Agent now uses a different credential, which the next deployment uses.";
 
 // A Secret field with nothing to choose for a caller who can neither create nor read a Secret.
 export const NO_SECRETS_CREATE_DENIED = `No Secrets you can read in this Namespace. ${SECRET_CREATE_DENIED} Or ask one for Secret read and operate on an existing Secret.`;

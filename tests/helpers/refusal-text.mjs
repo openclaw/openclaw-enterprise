@@ -33,7 +33,7 @@ export const NATIVE_ADMIN_DENIED =
 // An IAM AccessBinding subject that is an email, and one that is no eligible principal: an unknown
 // ID gets the same answer as an ineligible one (finding D753).
 export const BINDING_SUBJECT_EMAIL =
-  "The IAM AccessBinding subject is an email address, not a principal ID. Use the person's principalId (prn_…), which GET /api/auth/accounts/<userId> returns.";
+  "The IAM AccessBinding subject is an email address, not a principal ID. Use the person's principalId (prn_…): creating their account returns it; see the IAM guide.";
 export const BINDING_SUBJECT_INELIGIBLE =
   "The IAM AccessBinding subject must be a human Principal, a non-Agent ServicePrincipal of this Namespace, or the ServicePrincipal of a live Agent here.";
 export const DEPENDENCY_UNAVAILABLE = "A required platform dependency is unavailable.";
@@ -189,14 +189,14 @@ export const modelCredentialRejectedReadOnly = (secretBacked) =>
   `The last deployment's model credential was rejected. ${credentialFixGrants(secretBacked, "deploy again")}`;
 // The recorded failure once the Agent binds another credential than the failed version (D752).
 export const MODEL_CREDENTIAL_REJECTED_REPLACED =
-  "The model provider rejected this version's credential (HTTP 401 or 403). The Agent now uses a different credential: deploy a new version to use it.";
+  "The model provider rejected this version's credential (HTTP 401 or 403). The Agent now uses a different credential, which the next deployment uses.";
 // The API's recorded message for the same failure, which tells everyone to change the credential.
 export const MODEL_CREDENTIAL_REJECTED_RECORDED =
   "The model provider rejected this version's credential (HTTP 401 or 403). Check that the key or token is valid and can use the selected model, update or replace the Agent's model credential, then deploy a new version.";
 // The API has no route to Slack (SlackRouteNotConfiguredError, apps/controller/src/drivers/channel/
 // slack.ts). A member reads who to ask, not Helm keys; the guide lists them (findings D750, D753).
 export const SLACK_ROUTE_NOT_CONFIGURED =
-  "OCC could not reach Slack, and the API has no Slack proxy. If the API has another approved route to Slack, try again. Otherwise ask an Installation administrator to give the API a route to Slack; the Slack integration guide lists the Helm settings.";
+  "The API could not reach Slack and has no Slack proxy. If the API has another approved route to Slack, try again. Otherwise ask an Installation administrator to give the API a route to Slack; the Slack integration guide lists the Helm settings.";
 // Agent-side save controls, from the caller's permission answer (findings 2441, 2459).
 export const AGENT_UPDATE_DENIED = notIncluded(
   "saving these settings",

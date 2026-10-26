@@ -1193,7 +1193,7 @@ export function assertBindingSubjectNotEmail(subjectId: string): void {
   if (subjectId.includes("@")) {
     throw new IAMPolicyValidationError(
       "/subjectId",
-      "The IAM AccessBinding subject is an email address, not a principal ID. Use the person's principalId (prn_…), which GET /api/auth/accounts/<userId> returns.",
+      "The IAM AccessBinding subject is an email address, not a principal ID. Use the person's principalId (prn_…): creating their account returns it; see the IAM guide.",
     );
   }
 }
