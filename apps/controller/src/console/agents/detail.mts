@@ -719,6 +719,35 @@ export async function renderAgentDetail(
   }
   const tabsForSelection = new Set(tabLabels.map(([id]) => id));
   let selectedTab = tab && tabsForSelection.has(tab) ? tab : "configuration";
+  // A link to a tab this version or this reader does not have shows Configuration and says why,
+  // naming the tab (finding 2552).
+  function unavailableTabNotice(requested: string | null) {
+    if (requested === null || tabsForSelection.has(requested)) {
+      return "";
+    }
+    const reason =
+      requested === "access"
+        ? "The Access tab needs Installation administration, which your access does not include."
+        : requested === "repositories" || requested === "credentials"
+          ? `The ${requested === "credentials" ? "Credentials" : "Repositories"} tab is on the version draft only.`
+          : requested === "logs"
+            ? "The Logs tab is on deployed versions only."
+            : `This Agent has no “${requested.slice(0, 40)}” tab.`;
+    return `${reason} Showing Configuration.`;
+  }
+  const tabNotice = statusBlock("info", null, null, [], {
+    className: "agent-tab-notice",
+    role: "status",
+  });
+  function showTabNotice(text: string) {
+    tabNotice.textContent = text;
+    tabNotice.hidden = text === "";
+  }
+  showTabNotice(unavailableTabNotice(tab));
+  // Set when a Logs read is refused after the same read succeeded: the caller's access changed,
+  // so tab changes read the page again instead of showing tabs built from earlier reads
+  // (finding 2550).
+  let accessChanged = false;
   let deployInFlight = false;
   // The draft holds below are declared before a deleting Agent's early return: ← Agents and the
   // reload check read them on that page too (finding 2125).
@@ -1377,7 +1406,7 @@ export async function renderAgentDetail(
   };
   tabs.addEventListener("scroll", fadeTabEdges, { passive: true });
   versionSummary.append(detailHeading, versionEvidence);
-  detailPane.append(tabs, content);
+  detailPane.append(tabs, tabNotice, content);
   const nativeAdmin = renderNativeAdminAccess(context, path, () =>
     latestPermissionsRead.then((permissions) => permissions?.administer),
   );
@@ -3605,6 +3634,9 @@ export async function renderAgentDetail(
             renderLatestDeployment();
           }
         },
+        onAccessChanged: () => {
+          accessChanged = true;
+        },
       });
       content.append(logs.section);
       state.loading = false;
@@ -5222,11 +5254,12 @@ export async function renderAgentDetail(
       }
       return "blocked";
     }
-    if (nextRevision !== selected) {
+    if (nextRevision !== selected || accessChanged) {
       return false;
     }
     const linked = takeLinkedVersionView(linkedKey(nextRevision, nextTab));
     selectedTab = nextTab;
+    showTabNotice(unavailableTabNotice(requestedTab));
     // A Logs visit may have just been denied: the recovery stops offering its Logs link.
     if (!recovery.section.hidden) {
       renderLatestDeployment();

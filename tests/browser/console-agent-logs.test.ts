@@ -2449,6 +2449,12 @@ async function watchPainted(page: Page, target: { text: string } | { selector: s
   };
 }
 
+// What Logs says when a read is refused after the same read succeeded (finding 2550).
+const LOGS_ACCESS_CHANGED =
+  "Your access to this Agent changed, so its logs are no longer shown. Refresh to check your access, or ask an Installation administrator.";
+const STATUS_ACCESS_CHANGED =
+  "Your access to this Agent changed, so its runtime status is no longer shown. Refresh to check your access, or ask an Installation administrator.";
+
 const refusedRoute = (status: number) => ({
   status,
   contentType: "application/json",
@@ -2657,6 +2663,42 @@ test("a follow poll refused with operate revoked too clears the Pod cards at onc
   await page.clock.runFor(20_000);
   await waitForIdleFetches(page);
   assert.equal(statusReads(), before + 1);
+});
+
+// After an administrator removed a member's Agent grant mid-session, Logs restated the rule
+// ("Log text requires Agent read_logs ...") to a member who had it, and switching tabs showed the
+// Configuration read before the revoke (finding 2550). A refusal after the same read succeeded
+// now says the access changed, and the next tab reads the page again, as Refresh does.
+test("a revoke seen by Logs says access changed, and a tab change reads the page again", async (t) => {
+  const logs = await logsFixture(t);
+  logs.computeDriver.state.lines = [line(1, "read before the revoke")];
+  const { account, role } = await logsMember(logs.fixture, logs.namespace, "revoked-agent", [
+    "read",
+    "operate",
+    "read_logs",
+  ]);
+  const { page } = await openRetainedLogs(t, logs, account.credentials);
+  const pane = page.getByRole("log", { name: "Runtime log output" });
+  await pane.getByText("read before the revoke").waitFor();
+  await page.locator(".runtime-pod").first().waitFor();
+  await page.getByRole("button", { name: "Follow" }).click();
+
+  for (const permission of ["read", "operate", "read_logs"] satisfies PermissionAction[]) {
+    changeGrant(role, permission, false);
+  }
+  await page.clock.runFor(2_000);
+  await page.getByText(LOGS_ACCESS_CHANGED, { exact: true }).waitFor();
+  await page.getByText(STATUS_ACCESS_CHANGED, { exact: true }).waitFor();
+  assert.equal(await page.getByText(/Log text requires|Runtime status requires/).count(), 0);
+  assert.equal(await pane.locator(":scope > *").count(), 0);
+
+  // The page read the Configuration before the revoke. The tab change reads the Agent again
+  // and is refused, instead of showing that Configuration.
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await page.waitForURL((url) => url.searchParams.get("tab") === "configuration");
+  await page.clock.runFor(1_000);
+  await page.getByRole("heading", { name: "Access denied", exact: true }).waitFor();
+  assert.equal(await page.locator(".agent-tabs").count(), 0);
 });
 
 // A status read authorized before the revoke can answer after the log refusal. The refusal's
