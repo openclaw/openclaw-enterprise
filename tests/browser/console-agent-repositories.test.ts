@@ -1286,7 +1286,7 @@ for (const discoveryState of ["later page", "search filter", "dismissed results"
         response.request().method() === "POST",
     );
     await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-    assert.equal((await rejected).status(), 404);
+    assert.equal((await rejected).status(), 400);
     await page.getByRole("button", { name: "Reload repository choices" }).click();
     await page.getByText(/Repository choices reloaded/).waitFor();
     assert.equal(await search.count(), 0);

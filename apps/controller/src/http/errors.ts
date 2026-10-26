@@ -729,9 +729,14 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
     return failure(409, "RESOURCE_CONFLICT", error.message);
   }
   if (error instanceof CredentialSourceConfigError) {
-    return failure(400, "INVALID_REQUEST", error.message, [
-      { path: `/config/${error.field}`, code: "INVALID_VALUE" },
-    ]);
+    // OCC's catalog check names a submitted field, which can be any key: cap the message and
+    // escape the detail path.
+    return failure(
+      400,
+      "INVALID_REQUEST",
+      capped(error.message),
+      pointerDetail(`/${error.group}`, error.field),
+    );
   }
   if (error instanceof CredentialGatewayNotConfiguredError) {
     return failure(409, "CREDENTIAL_GATEWAY_NOT_CONFIGURED", error.message);

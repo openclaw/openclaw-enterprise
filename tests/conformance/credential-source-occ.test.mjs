@@ -22,7 +22,12 @@ import { createTestConfigurationDriver } from "../helpers/configuration-driver.m
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { grantRole } from "../helpers/iam-grants.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
-import { RESOURCE_NOT_FOUND } from "../helpers/refusal-text.mjs";
+import {
+  credentialSourceFieldRequired,
+  credentialSourceFieldUnknown,
+  RESOURCE_NOT_FOUND,
+  sentIdHidden,
+} from "../helpers/refusal-text.mjs";
 
 const administrator = "principal-source-administrator";
 const deployer = "principal-source-deployer";
@@ -1026,22 +1031,52 @@ test("registration validates the catalog and hands the gateway values OCC never 
   const secret = await modelSecret();
 
   // Unknown types, missing required inputs, and unknown fields fail before any gateway effect.
-  for (const [input, expected] of [
-    [{ type: "unknown" }, CredentialSourceTypeNotOfferedError],
-    [{ type: "openai" }, /secrets field api_key is required/],
+  await assert.rejects(
+    controller.createCredentialSource(administrator, {
+      namespaceId: namespace.id,
+      name: "invalid",
+      type: "unknown",
+    }),
+    CredentialSourceTypeNotOfferedError,
+  );
+  // A catalog field refusal is a request error that names the field and its fix, not the
+  // generic 404 (finding 2536). The detail points at the submitted member.
+  for (const [input, message, path] of [
+    [
+      { type: "openai" },
+      credentialSourceFieldRequired("openai", "secrets.api_key"),
+      "/secrets/api_key",
+    ],
     [
       { type: "openai", secrets: { api_key: secret.ref, extra: secret.ref } },
-      /extra is not supported/,
+      credentialSourceFieldUnknown("openai", "secrets.extra", "secrets", "api_key"),
+      "/secrets/extra",
     ],
-    [{ type: "registry" }, /config field host is required/],
+    [
+      { type: "openai", config: { region: "x" }, secrets: { api_key: secret.ref } },
+      credentialSourceFieldUnknown("openai", "config.region", "config", "none"),
+      "/config/region",
+    ],
+    [
+      { type: "registry" },
+      credentialSourceFieldRequired("registry", "config.host"),
+      "/config/host",
+    ],
   ]) {
-    await assert.rejects(
-      controller.createCredentialSource(administrator, {
+    const rejection = await controller
+      .createCredentialSource(administrator, {
         namespaceId: namespace.id,
         name: "invalid",
         ...input,
-      }),
-      expected,
+      })
+      .then(
+        () => assert.fail(`${message}: expected a rejection`),
+        (error) => error,
+      );
+    const { status, code, details } = requestFailure(rejection);
+    assert.deepEqual(
+      { status, code, message: requestFailure(rejection).message, details },
+      { status: 400, code: "INVALID_REQUEST", message, details: [{ path, code: "INVALID_VALUE" }] },
     );
   }
   assert.equal(gateway.calls.length, 0);
@@ -1613,7 +1648,10 @@ test("an update re-sends current or replacement Secret values and keeps config i
       credentialSourceId: source.id,
       secrets: { api_key: replacement.ref, extra: replacement.ref },
     }),
-    /extra is not supported/,
+    (error) =>
+      requestFailure(error).status === 400 &&
+      requestFailure(error).message ===
+        credentialSourceFieldUnknown("openai", "secrets.extra", "secrets", "api_key"),
   );
 });
 
@@ -3454,4 +3492,52 @@ test("update and delete without a Credential Gateway are a 409 after the grant, 
   }
   const [after] = await controller.listCredentialSources(administrator, namespace.id);
   assert.equal(after.state, "ready");
+});
+
+test("a catalog field refusal follows the source grant: a missing and an unreadable ID answer alike", async () => {
+  // Finding 2536 names the catalog field in a 400. The type comes from the stored source on an
+  // update, so the refusal must wait for the caller's grant: a caller without it gets the same
+  // denial for a source that exists and for one that does not, with each request's own ID hidden.
+  const { controller, makeReady, modelSecret, namespace } = await fixture();
+  await makeReady();
+  const secret = await modelSecret();
+  const source = await controller.createCredentialSource(administrator, {
+    namespaceId: namespace.id,
+    name: "existing-openai",
+    type: "openai",
+    secrets: { api_key: secret.ref },
+  });
+  const missingSource = "cs_00000000-0000-4000-8000-00000000aaaa";
+  const missingNamespace = "ns_00000000-0000-4000-8000-00000000aaaa";
+  const secrets = { api_key: secret.ref, extra: secret.ref };
+  const answer = async (call, id) => {
+    const error = await call().then(
+      () => assert.fail("expected a rejection"),
+      (rejection) => rejection,
+    );
+    const { status, code, message } = requestFailure(error, {
+      requested: (value) => value === id,
+      actorId: zeroGrant,
+    });
+    return { status, code, message: sentIdHidden(message, id) };
+  };
+  const update = (id) => () =>
+    controller.updateCredentialSource(zeroGrant, {
+      namespaceId: namespace.id,
+      credentialSourceId: id,
+      secrets,
+    });
+  const existingUpdate = await answer(update(source.id), source.id);
+  assert.equal(existingUpdate.status, 403);
+  assert.deepEqual(await answer(update(missingSource), missingSource), existingUpdate);
+  const create = (namespaceId) => () =>
+    controller.createCredentialSource(zeroGrant, {
+      namespaceId,
+      name: "refused-openai",
+      type: "openai",
+      secrets,
+    });
+  const existingCreate = await answer(create(namespace.id), namespace.id);
+  assert.equal(existingCreate.status, 403);
+  assert.deepEqual(await answer(create(missingNamespace), missingNamespace), existingCreate);
 });

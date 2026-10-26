@@ -276,6 +276,7 @@ import {
   configurationSettingMessage,
   CredentialGatewayNotConfiguredError,
   CredentialProxyRepositoryOnlyError,
+  CredentialSourceConfigError,
   CredentialSourceDriverError,
   CredentialSourceTypeNotOfferedError,
   CredentialSourceUnprotectedError,
@@ -283,6 +284,7 @@ import {
   HarnessAuthSecretDriverError,
   IAMAccessBindingRoleError,
   IAMPolicyValidationError,
+  keyedSettingPath,
   ModelProviderSettingError,
   NamespaceNotEmptyError,
   NamespaceNotReadyError,
@@ -1289,24 +1291,37 @@ function refuseIssuerRotatedResend(
   }
 }
 
-/** Rejects unknown and missing catalog fields before any Credential Gateway effect. */
+/**
+ * Rejects unknown and missing catalog fields before any Credential Gateway effect. Callers hold
+ * the source's grant and named its type, so the refusal names the type's catalog and the field
+ * as a request error (finding 2536). The HTTP schema bounds field names; HTTP caps the message.
+ */
 function credentialSourceFieldsMatch(
-  kind: "config" | "secrets",
-  specs: CredentialSourceType["config"],
+  type: Readonly<CredentialSourceType>,
+  group: "config" | "secrets",
   values: Readonly<Record<string, unknown>>,
 ): void {
+  const specs = type[group];
   const known = new Set(specs.map((spec) => spec.name));
+  const shown = (field: string) => keyedSettingPath(group, field);
   for (const field of Object.keys(values)) {
     if (!known.has(field)) {
-      throw new ScopeViolationError(
-        `The credential source ${kind} field ${field} is not supported.`,
+      const allowed = specs.length === 0 ? "none" : specs.map((spec) => spec.name).join(", ");
+      throw new CredentialSourceConfigError(
+        field,
+        `Credential source type ${type.type} has no field ${shown(field)}: remove it. Its ${group} fields: ${allowed}.`,
+        group,
       );
     }
   }
   for (const spec of specs) {
     if (spec.required && values[spec.name] === undefined) {
-      throw new ScopeViolationError(
-        `The credential source ${kind} field ${spec.name} is required.`,
+      throw new CredentialSourceConfigError(
+        spec.name,
+        group === "secrets"
+          ? `Credential source type ${type.type} requires ${shown(spec.name)}: add a reference to a Secret in this Namespace.`
+          : `Credential source type ${type.type} requires ${shown(spec.name)}: add it.`,
+        group,
       );
     }
   }
@@ -1353,6 +1368,26 @@ class ProvisioningConfigurationSettlingError extends DependencyUnavailableError 
     this.retryAfterMs = retryAfterMs;
   }
 }
+
+/**
+ * Standing repository approval refusals (finding 2536). Agent update and deploy raise them after
+ * the caller's grant on the Agent; approving needs Agent administer. None names an approval ID
+ * or a repository, so a caller without Agent administer learns only that an approval blocks.
+ */
+const STANDING_APPROVAL_REFUSALS = Object.freeze({
+  bindingLocked:
+    "A standing repository approval holds this Agent's repository binding, so the binding cannot change. Remove the approval first (this needs Agent administer on the Agent), then save again.",
+  oneBinding:
+    "A standing repository approval needs exactly one repository binding on the Agent. Keep one binding, then approve again.",
+  notPermitted:
+    "Team policy does not permit this standing approval: it must last until removed and name one of the Agent's repository bindings that the Installation allows standing approval for. Ask an Installation administrator to allow it.",
+  scopeChanged:
+    "The standing approval scope changed since you reviewed it. Read the current scope from repository-approval-scopes, review it, then approve again with its scopeFingerprint as expectedScopeFingerprint.",
+  deployOneBinding:
+    "This Agent has a standing repository approval but not exactly one repository binding. Keep one binding, or remove the approval (this needs Agent administer on the Agent), then deploy again.",
+  policyChanged:
+    "This Agent's standing repository approval no longer matches team policy. Remove it (this needs Agent administer on the Agent) and approve the current scope again, or deploy after an Installation administrator restores the policy.",
+});
 
 /**
  * The provisioning status message for a worker failure. Only the shared duplicate-name,
@@ -1492,8 +1527,10 @@ function validateRepositoryTopology(
   sandboxDriverId: string | undefined,
 ): void {
   if (compute.validateRepositoryCredentials === undefined) {
-    throw new DependencyUnavailableError(
-      "The selected Compute Driver does not support repository credentials.",
+    // An Installation property every attempt meets the same way, not an outage to retry
+    // (finding 2536); RepositoryDriverNotConfiguredError words the sibling rule.
+    throw new ResourceStateConflictError(
+      "This Installation's Compute Driver cannot deliver repository credentials, so this Agent cannot use repository access. Remove its repository bindings, or ask an Installation administrator to select Kubernetes Compute.",
     );
   }
   try {
@@ -1750,6 +1787,11 @@ function assertAccessBindingRoleApplies(role: Readonly<Role>, resourceKind: Reso
     );
   }
 }
+
+// A rule about the request alone, checked before any ServiceAccount grant or lookup, so the text
+// is the same whether the named account exists (finding 2536).
+const SERVICE_ACCOUNT_CROSS_NAMESPACE =
+  "Agent setting harnessAuth.source names a ServiceAccount in another Namespace. Harness authentication can use only a ServiceAccount in the Agent's own Namespace: select one from this Namespace.";
 
 /**
  * Rejects requested Secret references (bindings and Harness authentication) that name
@@ -6070,8 +6112,8 @@ export class OpenClawController {
         throw new NamespaceNotReadyError();
       }
       const type = protectedType?.type ?? (await this.credentialSourceType(selected!, input.type));
-      credentialSourceFieldsMatch("config", type.config, written);
-      credentialSourceFieldsMatch("secrets", type.secrets, secretRefs);
+      credentialSourceFieldsMatch(type, "config", written);
+      credentialSourceFieldsMatch(type, "secrets", secretRefs);
       // The Driver may return the configuration in the form it uses, such as a normalized URL:
       // the stored record, the response and the gateway then agree (finding 1292).
       const config = Object.freeze({
@@ -6079,7 +6121,7 @@ export class OpenClawController {
           ? written
           : (selected!.validateSourceConfig({ type: type.type, config: written }) ?? written)),
       });
-      credentialSourceFieldsMatch("config", type.config, config);
+      credentialSourceFieldsMatch(type, "config", config);
       const refreshDriver =
         type.rotation === "refresh" ? this.credentialRefreshDriver() : undefined;
       if (
@@ -6349,7 +6391,7 @@ export class OpenClawController {
         throw new ResourceStateConflictError("Reconnect by creating a new device-login source.");
       }
       const secretRefs = Object.freeze({ ...(input.secrets ?? source.secrets) });
-      credentialSourceFieldsMatch("secrets", type.secrets, secretRefs);
+      credentialSourceFieldsMatch(type, "secrets", secretRefs);
       if (type.rotation === "refresh") {
         refuseIssuerRotatedResend(type, source.secrets, secretRefs);
       }
@@ -9468,9 +9510,9 @@ export class OpenClawController {
               a.binding.profile !== updated.repositoryBindings![0]!.profile,
           ))
       ) {
-        throw new ResourceConflictError(
-          "Remove standing approval before changing its Agent binding.",
-        );
+        // The caller holds update on the Agent. Like SecretReferencedError, the text says what
+        // blocks without naming it: no approval ID, which only Agent administer reads.
+        throw new ResourceStateConflictError(STANDING_APPROVAL_REFUSALS.bindingLocked);
       }
       if (input.repositoryStandingApproval !== undefined) {
         const requested = input.repositoryStandingApproval;
@@ -9481,9 +9523,7 @@ export class OpenClawController {
         if (requested.approved) {
           // TODO: admit independent sessions before enabling approval for multiple bindings.
           if (updated.repositoryBindings?.length !== 1) {
-            throw new ResourceConflictError(
-              "Standing approval requires exactly one repository binding.",
-            );
+            throw new ResourceStateConflictError(STANDING_APPROVAL_REFUSALS.oneBinding);
           }
           const selected = updated.repositoryBindings?.find(
             (b) => b.repositoryRef === requested.repositoryRef,
@@ -9494,9 +9534,7 @@ export class OpenClawController {
             binding &&
             resolved?.driver.standingApprovalScope?.({ namespaceId: namespace.id, binding });
           if (requested.duration !== "until-removed" || !binding || !scope) {
-            throw new ScopeViolationError(
-              "Current team policy does not permit this standing approval.",
-            );
+            throw new ResourceStateConflictError(STANDING_APPROVAL_REFUSALS.notPermitted);
           }
           const scopeFingerprint = repositoryApprovalFingerprint({
             namespaceId: namespace.id,
@@ -9505,7 +9543,7 @@ export class OpenClawController {
             scope,
           });
           if (requested.expectedScopeFingerprint !== scopeFingerprint) {
-            throw new ResourceConflictError("Reviewed standing approval scope changed.");
+            throw new ResourceStateConflictError(STANDING_APPROVAL_REFUSALS.scopeChanged);
           }
           await state.repositorySessions.approveStanding({
             id: requested.approvalId,
@@ -9877,9 +9915,7 @@ export class OpenClawController {
           (a) => !a.revokedAt,
         )
       ) {
-        throw new ResourceConflictError(
-          "Standing approval requires exactly one repository binding.",
-        );
+        throw new ResourceStateConflictError(STANDING_APPROVAL_REFUSALS.deployOneBinding);
       }
       if (repositoryCredentials?.bindings.length === 1) {
         const binding = repositoryCredentials.bindings[0]!;
@@ -9900,9 +9936,7 @@ export class OpenClawController {
               driver.standingApprovalScope?.({ namespaceId: namespace.id, binding }),
             )
           ) {
-            throw new ScopeViolationError(
-              "Standing approval no longer matches current team policy.",
-            );
+            throw new ResourceStateConflictError(STANDING_APPROVAL_REFUSALS.policyChanged);
           }
           repositoryCredentials = {
             ...repositoryCredentials,
@@ -11295,7 +11329,7 @@ export class OpenClawController {
       this.ownedCredentialGatewayDriver(source);
     } else {
       if (binding.source.namespaceId !== namespaceId) {
-        throw new ScopeViolationError("Harness authentication sources cannot cross Namespaces.");
+        throw new SecretBindingValidationError(SERVICE_ACCOUNT_CROSS_NAMESPACE);
       }
       await this.authorize(principalId, "read", {
         kind: "service_account",
@@ -12703,7 +12737,7 @@ export class OpenClawController {
       await this.authorizeHarnessAuthSource(state, principalId, namespaceId, harnessAuth);
     } else if (isServiceAccountHarnessAuth(harnessAuth)) {
       if (harnessAuth.source.namespaceId !== namespaceId) {
-        throw new ScopeViolationError("Harness authentication sources cannot cross Namespaces.");
+        throw new SecretBindingValidationError(SERVICE_ACCOUNT_CROSS_NAMESPACE);
       }
       await this.authorize(principalId, "read", {
         kind: "service_account",
@@ -13982,9 +14016,7 @@ export class OpenClawController {
       };
     }
     if (input.repositoryBindings !== undefined || !validRepositoryAccess(input.repositoryAccess)) {
-      throw new ScopeViolationError(
-        "Provide valid repositoryAccess or repositoryBindings, not both.",
-      );
+      throw new RepositoryBindingSelectionError(RepositoryBindingSelectionError.accessOrBindings);
     }
     const requested = input.repositoryAccess.repositories.map((entry) => ({
       repositoryRef: entry.repositoryRef,
@@ -14032,9 +14064,9 @@ export class OpenClawController {
     try {
       resolution = driver.resolve(immutableCopy({ namespaceId, bindings }));
     } catch {
-      throw new ScopeViolationError(
-        "The requested repository selections are not approved for this Namespace.",
-      );
+      // Every caller holds the Agent's or Namespace's grant, and the fixed text names no
+      // repository or Driver reason, so it is a request error rather than a scope miss.
+      throw new RepositoryBindingSelectionError(RepositoryBindingSelectionError.notApproved);
     }
     const selected = this.selections.get("repo");
     if (

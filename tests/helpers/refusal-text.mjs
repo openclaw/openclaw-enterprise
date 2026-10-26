@@ -42,6 +42,35 @@ export const SECRET_NAME_CONFLICT =
   "A Secret with this name already exists in this Namespace. Choose a different name.";
 export const NAMESPACE_NAME_CONFLICT =
   "A Namespace with this name already exists. Choose a different name.";
+// Refusals that once read as the generic 404 or 409 and now say what to change (finding 2536).
+// A credential source field its type's catalog does not list, or a required one that is missing:
+// `field` is the request path, such as "secrets.api_key".
+export const credentialSourceFieldUnknown = (type, field, group, allowed) =>
+  `Credential source type ${type} has no field ${field}: remove it. Its ${group} fields: ${allowed}.`;
+export const credentialSourceFieldRequired = (type, field) =>
+  field.startsWith("secrets.")
+    ? `Credential source type ${type} requires ${field}: add a reference to a Secret in this Namespace.`
+    : `Credential source type ${type} requires ${field}: add it.`;
+// Agent save, provisioning and deploy (packages/occ/src/errors.ts RepositoryBindingSelectionError).
+export const REPOSITORY_SELECTION_NOT_APPROVED =
+  "These repository selections are not approved for this Namespace: each repository must be approved here for its profile and listed once, at most 16. Choose from the repository options, or ask an Installation administrator to approve it.";
+export const REPOSITORY_ACCESS_OR_BINDINGS =
+  "Send repositoryAccess or repositoryBindings, not both. In repositoryAccess, list each repository once, at most 16, with a defaultProfile other than github-installation.";
+export const COMPUTE_REPOSITORY_UNSUPPORTED =
+  "This Installation's Compute Driver cannot deliver repository credentials, so this Agent cannot use repository access. Remove its repository bindings, or ask an Installation administrator to select Kubernetes Compute.";
+export const SERVICE_ACCOUNT_CROSS_NAMESPACE =
+  "Agent setting harnessAuth.source names a ServiceAccount in another Namespace. Harness authentication can use only a ServiceAccount in the Agent's own Namespace: select one from this Namespace.";
+// Standing repository approval refusals (409 RESOURCE_CONFLICT); none names the approval.
+export const STANDING_APPROVAL_BINDING_LOCKED =
+  "A standing repository approval holds this Agent's repository binding, so the binding cannot change. Remove the approval first (this needs Agent administer on the Agent), then save again.";
+export const STANDING_APPROVAL_ONE_BINDING =
+  "A standing repository approval needs exactly one repository binding on the Agent. Keep one binding, then approve again.";
+export const STANDING_APPROVAL_NOT_PERMITTED =
+  "Team policy does not permit this standing approval: it must last until removed and name one of the Agent's repository bindings that the Installation allows standing approval for. Ask an Installation administrator to allow it.";
+export const STANDING_APPROVAL_SCOPE_CHANGED =
+  "The standing approval scope changed since you reviewed it. Read the current scope from repository-approval-scopes, review it, then approve again with its scopeFingerprint as expectedScopeFingerprint.";
+export const STANDING_APPROVAL_POLICY_CHANGED =
+  "This Agent's standing repository approval no longer matches team policy. Remove it (this needs Agent administer on the Agent) and approve the current scope again, or deploy after an Installation administrator restores the policy.";
 // The sign-in endpoints' 503 (apps/controller/src/auth/index.ts); the console words its own.
 export const SIGN_IN_UNAVAILABLE =
   "Sign-in is temporarily unavailable. Try again shortly. If it continues, ask an operator to check the API logs.";

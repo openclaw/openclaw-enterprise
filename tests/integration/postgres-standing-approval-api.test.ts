@@ -29,6 +29,13 @@ import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs
 import { cookieHeaderFromSetCookie, signInToControllerApp } from "../helpers/auth-session.mjs";
 import { injectJson } from "../helpers/inject-json.mjs";
 import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
+import {
+  STANDING_APPROVAL_BINDING_LOCKED,
+  STANDING_APPROVAL_NOT_PERMITTED,
+  STANDING_APPROVAL_ONE_BINDING,
+  STANDING_APPROVAL_POLICY_CHANGED,
+  STANDING_APPROVAL_SCOPE_CHANGED,
+} from "../helpers/refusal-text.mjs";
 
 const authSecret = "standing-approval-source-test-auth-secret-32";
 // Proves registered HTTP/IAM/State behavior. No Compute operation or provider call is executed.
@@ -263,6 +270,8 @@ test(
     await selectRepo(widenedBeforeApproval);
     const staleReview = await request("PATCH", path, grant);
     assert.equal(staleReview.statusCode, 409, staleReview.body);
+    // Each standing approval refusal names its fix instead of "already exists" (finding 2536).
+    assert.equal(staleReview.json().error.message, STANDING_APPROVAL_SCOPE_CHANGED);
     assert.deepEqual(
       await read(),
       [],
@@ -302,9 +311,11 @@ test(
       },
     ]) {
       await selectRepo(JSON.parse(JSON.stringify(changed)));
+      // The caller administers the Agent, so policy is a named conflict, not a 404.
       const denied = await request("PATCH", path, grant);
-      assert.equal(denied.statusCode, 404, denied.body);
-      assert.equal(denied.json().error.code, "NOT_FOUND");
+      assert.equal(denied.statusCode, 409, denied.body);
+      assert.equal(denied.json().error.code, "RESOURCE_CONFLICT");
+      assert.equal(denied.json().error.message, STANDING_APPROVAL_NOT_PERMITTED);
       assert.deepEqual(await read(), []);
     }
     await selectRepo(registry);
@@ -399,6 +410,7 @@ test(
       repositoryBindings: [...agent.repositoryBindings, secondBinding],
     });
     assert.equal(addBinding.statusCode, 409, addBinding.body);
+    assert.equal(addBinding.json().error.message, STANDING_APPROVAL_BINDING_LOCKED);
     assert.deepEqual(
       (await request("GET", path)).json().data.repositoryBindings,
       agent.repositoryBindings,
@@ -417,6 +429,7 @@ test(
     );
     const multiGrant = await request("PATCH", multiPath, grant);
     assert.equal(multiGrant.statusCode, 409, multiGrant.body);
+    assert.equal(multiGrant.json().error.message, STANDING_APPROVAL_ONE_BINDING);
     assert.deepEqual(
       (await request("GET", multiPath + "/repository-approvals")).json().data,
       [],
@@ -460,7 +473,13 @@ test(
     await selectRepo(widened);
     const broaden = await request("PATCH", path, grant);
     assert.equal(broaden.statusCode, 409, broaden.body);
+    assert.equal(broaden.json().error.message, STANDING_APPROVAL_SCOPE_CHANGED);
     assert.deepEqual(await read(), [first]);
+    // Deploy refuses the approval that no longer matches policy and says how to recover.
+    const staleDeploy = await request("POST", path + "/deploy");
+    assert.equal(staleDeploy.statusCode, 409, staleDeploy.body);
+    assert.equal(staleDeploy.json().error.message, STANDING_APPROVAL_POLICY_CHANGED);
+    assert.doesNotMatch(staleDeploy.body, new RegExp(approvalId));
     await selectRepo(registry);
     const savedConfig = configuration.stored({ namespaceId, id: configurationId });
     await configuration.delete({ namespaceId, id: configurationId });

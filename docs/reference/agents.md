@@ -323,20 +323,25 @@ The [OpenShell SandboxDriver](drivers/openshell-sandbox.md) requires Kubernetes 
 
 - `400 INVALID_REQUEST`: The Backend ID is malformed or empty, the plugin map is
   structurally invalid, or a runtime `modelApiKey` selector is supplied (use
-  `harnessAuth`).
+  `harnessAuth`). Also when the Namespace does not approve the repository
+  selections, the request sends both `repositoryAccess` and
+  `repositoryBindings`, or `harnessAuth.source` names a ServiceAccount in another
+  Namespace; the message names the rule.
 - `404 NOT_FOUND`: The nonempty Backend ID does not name a configured Backend.
 - `401`: The session cookie is missing, invalid, expired, or revoked.
 - `403`: Your principal lacks the exact permission for the Agent or Namespace.
 - `404`: The Namespace or Agent does not exist under the requested parent, or
-  the selected Configuration or associated service account is not in the Agent's
-  Namespace.
+  the selected Configuration or associated service account does not exist in the
+  Agent's Namespace.
 - `409 RESOURCE_CONFLICT`: Harness authentication is missing, the selected
   account has no issued access token, or its Backend binding or topology is incompatible.
 - `409 SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED`: The account has no access token,
   and the Installation has no ChatGPT Backend to issue one.
 - `409 RESOURCE_CONFLICT`: Another Agent already uses that name in the same
   Namespace, the Namespace cannot accept new Agents, or a stopping Agent cannot
-  accept the requested mutation.
+  accept the requested mutation. Also for a standing repository approval that
+  blocks the change, and for repository bindings on a Compute Driver that cannot
+  deliver repository credentials; the message names the fix.
 - `409 AGENT_DELETING`: The Agent is [deleting](#deletion) and rejects the
   mutation.
 - `409 NAMESPACE_NOT_READY`: The backing Namespace infrastructure is not ready

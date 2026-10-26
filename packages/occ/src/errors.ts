@@ -335,16 +335,25 @@ export class AgentCredentialSourceBindingError extends ScopeViolationError {
 }
 
 /**
- * An Agent's repository bindings combine Installation-wide access with another binding.
- * Raised only after the Repository Driver approved every requested binding, and the rule
- * depends only on the request, so HTTP reports it as an invalid request instead of hiding
- * it as a scope miss. Agent save and deploy admission share it (finding 2316).
+ * An Agent's repository selections break a rule that depends only on them and on the
+ * Installation's repository policy for the Namespace: Installation-wide access combined with
+ * another binding (finding 2316), both selection forms or an invalid `repositoryAccess`, or a
+ * selection the Repository Driver does not approve. Agent save, provisioning and deploy
+ * admission raise it after the caller's grant on the Agent or Namespace, and each text is
+ * fixed: it names no repository, Driver reason or other resource, so HTTP reports it as an
+ * invalid request instead of hiding it as a scope miss (finding 2536).
  */
 export class RepositoryBindingSelectionError extends ScopeViolationError {
-  constructor() {
-    super(
-      "Installation-wide repository access (profile github-installation) must be the Agent's only repository selection. Remove the other entries from repositoryBindings or repositoryAccess.repositories, or select each repository with its own profile instead.",
-    );
+  static readonly installationAccessAlone =
+    "Installation-wide repository access (profile github-installation) must be the Agent's only repository selection. Remove the other entries from repositoryBindings or repositoryAccess.repositories, or select each repository with its own profile instead.";
+  static readonly accessOrBindings =
+    "Send repositoryAccess or repositoryBindings, not both. In repositoryAccess, list each repository once, at most 16, with a defaultProfile other than github-installation.";
+  // The Driver refuses a whole selection without saying which entry; this text lists its rules.
+  static readonly notApproved =
+    "These repository selections are not approved for this Namespace: each repository must be approved here for its profile and listed once, at most 16. Choose from the repository options, or ask an Installation administrator to approve it.";
+
+  constructor(message: string = RepositoryBindingSelectionError.installationAccessAlone) {
+    super(message);
     this.name = "RepositoryBindingSelectionError";
   }
 }
@@ -355,7 +364,8 @@ export class RepositoryBindingSelectionError extends ScopeViolationError {
  * (including missing, runtime or credential-source Harness authentication in Agent
  * provisioning), or
  * any of those, an Agent's Harness authentication, a credential source, or plugin discovery
- * naming a Secret in another Namespace. Messages are static, so HTTP reports them as an
+ * naming a Secret in another Namespace, or Harness authentication naming a ServiceAccount in
+ * another Namespace (checked before any lookup). Messages are static, so HTTP reports them as an
  * invalid request instead of hiding them as a scope miss; Secret existence is still checked
  * later and stays a scope miss.
  */
@@ -1279,14 +1289,22 @@ export class CredentialGatewayNotConfiguredError extends Error {
   }
 }
 
-/** A Driver rejected nonsecret source configuration before registration. */
+/**
+ * A Driver rejected nonsecret source configuration before registration, or OCC rejected a
+ * `config` or `secrets` field the type's catalog does not list or a required one that is
+ * missing. Raised after the caller's grant; the message names only the type, the catalog and
+ * the submitted field (finding 2536).
+ */
 export class CredentialSourceConfigError extends Error {
   readonly field: string;
+  /** The request member that holds `field`. */
+  readonly group: "config" | "secrets";
 
-  constructor(field: string, message: string) {
+  constructor(field: string, message: string, group: "config" | "secrets" = "config") {
     super(message);
     this.name = "CredentialSourceConfigError";
     this.field = field;
+    this.group = group;
   }
 }
 

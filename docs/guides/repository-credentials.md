@@ -66,6 +66,11 @@ with a finite grant keeps its original deadline.
    Git and continues supervising the same execution if its independent permissions still allow it.
    Stopping the Agent ends that execution. Neither action recalls a request already authorized.
 
+A refusal answers `409 RESOURCE_CONFLICT` and names the step: review the scope again, keep one
+binding, remove the approval before you change the binding, or ask an Installation administrator
+to allow standing approval. Deploy refuses an approval that no longer matches policy until you
+remove and approve it again.
+
 The worker must recognize the same execution and account for its previous session and credential.
 If it returns after a known provider expiry, it waits out the clock allowance and records
 `expired` separately from confirmed revocation. An uncertain issuance, installation or retirement
