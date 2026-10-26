@@ -137,6 +137,12 @@ func TestMissingCommandsPointAtWhatOCCOffers(t *testing.T) {
 		// A one-letter typo of a subcommand gets a suggestion (finding D765).
 		{[]string{"agent", "lst"}, `unknown command "lst" for "occ agent"; did you mean "occ agent list"?`},
 		{[]string{"secrets"}, `unknown command "secrets" for "occ"; did you mean "occ secret"?`},
+		{[]string{"agent", "gat"}, `unknown command "gat" for "occ agent"; did you mean "occ agent get"?`},
+		// A prefix suggests only the one command it starts, and only from two characters.
+		{[]string{"agent", "revi"}, `unknown command "revi" for "occ agent"; did you mean "occ agent revisions"?`},
+		{[]string{"agent", "de"}, `unknown command "de" for "occ agent"`},
+		{[]string{"agent", "u"}, `unknown command "u" for "occ agent"`},
+		{[]string{"agent", ""}, `unknown command "" for "occ agent"`},
 		// Anything else keeps cobra's text: "lst" is two edits from "get".
 		{[]string{"configuration", "lst"}, `unknown command "lst" for "occ configuration"`},
 	} {
@@ -220,7 +226,8 @@ func TestStopOnAnAgentThatNeverRanSaysNothingRuns(t *testing.T) {
 		// A first deployment in progress has no active revision yet, but it runs.
 		{"first deploy", `{"id":"` + testAgentID + `","desiredRuntimeState":"running"}`, "notice: stop requested; run " + deploy + " to start the Agent again\n"},
 		// A second stop while the first still shuts down says so (finding D765).
-		{"stopping", `{"id":"` + testAgentID + `","desiredRuntimeState":"stopped","activeRevisionId":"` + testRevision1ID + `"}`, "notice: Agent " + testAgentID + " is already stopping; its runtime shuts down in the background. Run " + deploy + " to start the Agent again.\n"},
+		// The earlier stop may still run or may have failed, so the notice claims neither.
+		{"stopping", `{"id":"` + testAgentID + `","desiredRuntimeState":"stopped","activeRevisionId":"` + testRevision1ID + `"}`, "notice: a stop of Agent " + testAgentID + ` was already requested and has not finished; run "occ --namespace ` + testNamespaceID + ` agent get ` + testAgentID + `" to see its state, or ` + deploy + " to start it again\n"},
 		// A caller who cannot read the Agent learns nothing from the read.
 		{"unreadable", `raw:403 {"error":{"code":"FORBIDDEN","message":"Not authorized: this needs Agent read on Agent ` + testAgentID + `."}}`, "notice: stop requested; run " + deploy + " to start the Agent again\n"},
 	} {

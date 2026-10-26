@@ -890,8 +890,8 @@ func (app *application) agentCommand() *cobra.Command {
 			// Only an Agent the caller can already read tells whether anything ran:
 			// stopped with no active revision is a never-deployed or already
 			// stopped Agent (finding D746); stopped with an active revision is a
-			// stop still shutting down (finding D765). A failed read keeps the
-			// plain notice.
+			// stop requested earlier that has not finished, still running or
+			// failed (finding D765). A failed read keeps the plain notice.
 			idle, stopping := false, false
 			if before, readErr := client.GetAgent(namespace, args[0]); readErr == nil {
 				resource, _ := before.(map[string]any)
@@ -911,7 +911,7 @@ func (app *application) agentCommand() *cobra.Command {
 				return nil
 			}
 			if stopping {
-				fmt.Fprintf(command.ErrOrStderr(), "notice: Agent %s is already stopping; its runtime shuts down in the background. Run \"occ --namespace %s agent deploy %s\" to start the Agent again.\n", args[0], namespace, args[0])
+				fmt.Fprintf(command.ErrOrStderr(), "notice: a stop of Agent %s was already requested and has not finished; run \"occ --namespace %s agent get %s\" to see its state, or \"occ --namespace %s agent deploy %s\" to start it again\n", args[0], namespace, args[0], namespace, args[0])
 				return nil
 			}
 			fmt.Fprintf(command.ErrOrStderr(), "notice: stop requested; run \"occ --namespace %s agent deploy %s\" to start the Agent again\n", namespace, args[0])
@@ -1147,14 +1147,57 @@ func missingCommandArgs(missing map[string]string) cobra.PositionalArgs {
 			if explanation, ok := missing[args[0]]; ok {
 				return fmt.Errorf("unknown command %q for %q. %s", args[0], command.CommandPath(), explanation)
 			}
-			// Distance 1 (or a prefix) only: "lst" suggests "list", never "get".
-			command.SuggestionsMinimumDistance = 1
-			if suggestions := command.SuggestionsFor(args[0]); len(suggestions) > 0 {
-				return fmt.Errorf("unknown command %q for %q; did you mean %q?", args[0], command.CommandPath(), command.CommandPath()+" "+suggestions[0])
+			if suggestion := suggestSubcommand(command, args[0]); suggestion != "" {
+				return fmt.Errorf("unknown command %q for %q; did you mean %q?", args[0], command.CommandPath(), command.CommandPath()+" "+suggestion)
 			}
 		}
 		return cobra.NoArgs(command, args)
 	}
+}
+
+// suggestSubcommand returns the subcommand a typo most likely meant, or "".
+// It suggests only a name one edit away ("lst" for "list", never "get"), or
+// else the one name that a typed prefix of at least two characters starts
+// ("de" alone matches both delete and deploy, so it gets nothing). An empty
+// argument is never one edit from a name and is too short for a prefix.
+func suggestSubcommand(command *cobra.Command, typed string) string {
+	var prefixed []string
+	for _, child := range command.Commands() {
+		if !child.IsAvailableCommand() {
+			continue
+		}
+		if editDistance(typed, child.Name()) <= 1 {
+			return child.Name()
+		}
+		if len(typed) >= 2 && strings.HasPrefix(child.Name(), typed) {
+			prefixed = append(prefixed, child.Name())
+		}
+	}
+	if len(prefixed) == 1 {
+		return prefixed[0]
+	}
+	return ""
+}
+
+// editDistance is the Levenshtein distance between two command names.
+func editDistance(a, b string) int {
+	previous := make([]int, len(b)+1)
+	for j := range previous {
+		previous[j] = j
+	}
+	for i := 1; i <= len(a); i++ {
+		current := make([]int, len(b)+1)
+		current[0] = i
+		for j := 1; j <= len(b); j++ {
+			cost := 1
+			if a[i-1] == b[j-1] {
+				cost = 0
+			}
+			current[j] = min(previous[j]+1, current[j-1]+1, previous[j-1]+cost)
+		}
+		previous = current
+	}
+	return previous[len(b)]
 }
 
 // printsTextOnly reports commands that never call OCC: the root and command
