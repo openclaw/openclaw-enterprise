@@ -16,6 +16,7 @@ SSH Compute, and Drivers that own their runtime logging (`runtimeLogging:
    lists every main and init container's state and recent warning Events, prefixed
    with their container. Last termination
    shows the current exit for a terminated container, otherwise its prior exit.
+   If a refresh fails, the cards stay and the strip says when they were last observed.
 3. Choose a **Source**: **Gateway** (the OpenClaw Gateway container),
    **Agent (Harness)** (the dedicated Codex or OpenClaw Harness container, only
    for dedicated execution) or **Sandbox (policy decisions)** (see
@@ -221,8 +222,8 @@ RUNTIME_LOGS_POD_INVALID`).
   `dst_placeholder_ip`, `method`, `path`, `binary`, `pid`, `rule_name`,
   `rule_type`, `policy_generation`, `reason`, `source`, `cmd_line` and `url`.
   `dst_placeholder_ip` is the policy DNS placeholder address a denial named;
-  the decision's host comes from the policy DNS record for it in the same read,
-  and is absent when that record is not there. Command lines and URLs often carry tokens:
+  the decision's host, from the latest policy DNS record for it in the read, is
+  absent when that record is missing or names a placeholder. Command lines and URLs often carry tokens:
   they are redacted like every string and cut to 1 KiB. In command lines the
   value after a credential flag is masked too (`-p`, `-pass`, `--pass`,
   `--token`, `--with-token`, `--username`, `-u`, `--user`, `-U` or

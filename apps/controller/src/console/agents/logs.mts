@@ -152,7 +152,9 @@ function runtimeErrorText(
   if (error.status === 404) {
     return "This version is not available.";
   }
-  return "Runtime status or logs are unavailable. Try again shortly.";
+  return tier === "status"
+    ? "Current runtime status is unavailable. Checking again shortly."
+    : "Runtime status or logs are unavailable. Try again shortly.";
 }
 
 /**
@@ -732,10 +734,19 @@ export function renderAgentLogs(
           revokedStatusViews.add(statusKey);
           onAccessChanged();
         }
+        // The Pod cards stay after a failed refresh: say when they were observed, so they do
+        // not read as current. A refusal is not a stale view; its revocation path clears them.
+        const lastObserved = error.status === 403 ? null : description?.observedAt;
+        const failure = runtimeErrorText(error, "status");
         showStripStatus(
           error.status === 403 && revokedStatusViews.has(statusKey)
             ? STATUS_ACCESS_CHANGED
-            : withRequestId(runtimeErrorText(error, "status"), error.requestId),
+            : withRequestId(
+                lastObserved
+                  ? `Showing runtime status last observed ${displayDate(lastObserved)}. ${failure}`
+                  : failure,
+                error.requestId,
+              ),
         );
         if (error.status === 403) {
           offerLogsWithoutStatus();
