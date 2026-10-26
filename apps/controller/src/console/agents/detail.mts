@@ -410,10 +410,10 @@ const DEPLOYMENT_OUTCOME_TONES: Partial<Record<DeploymentOutcome, string>> = {
 const failedVersions = new Set<string>();
 const failedVersionKey = (agentPath: string, revisionId: string) =>
   JSON.stringify([agentPath, revisionId]);
-// Versions this tab's own Deploy created, keyed like failedVersions. The API accepted each, so a
-// deployer who cannot read one is told it exists and was accepted, not that a link may name a
-// version that does not exist (finding D751).
-const deployedVersions = new Set<string>();
+// Versions this tab's own Deploy created, keyed like failedVersions, with their version numbers.
+// The API accepted each, so a deployer who cannot read one is told it exists and was accepted,
+// not that a link may name a version that does not exist (finding D751).
+const deployedVersions = new Map<string, number>();
 
 // A recovery link opens a version tab far below the banner it sits in. Only the URL changed and
 // the page stayed at the top, so the link looked dead (finding 1586). The page the link opens,
@@ -1112,6 +1112,23 @@ export async function renderAgentDetail(
   }
   const deployedHere = (revisionId: string) =>
     deployedVersions.has(failedVersionKey(path, revisionId));
+  // The newest version this tab deployed for this Agent that the caller cannot read and that is
+  // newer than every version listed, whichever entry is viewed: the draft too (finding D751).
+  function acceptedHiddenVersion(newestListed: number) {
+    let accepted: { id: string; revision: number } | undefined;
+    for (const [key, revision] of deployedVersions) {
+      const [agentPath, id] = JSON.parse(key) as [string, string];
+      if (
+        agentPath === path &&
+        revision > newestListed &&
+        revision > (accepted?.revision ?? 0) &&
+        revisionHidden(id)
+      ) {
+        accepted = { id, revision };
+      }
+    }
+    return accepted?.id;
+  }
   // The rail's entry for a viewed version the caller cannot read.
   const unavailableVersionLabel = () =>
     deployedHere(selected) ? "Deployed version · not readable" : "Viewed version unavailable";
@@ -2254,7 +2271,8 @@ export async function renderAgentDetail(
         setDelayedText(latestDeploymentValue, "", "Loading…");
         setDelayedText(latestDeploymentNote, "", "Reading deployment history.");
       }
-      const hidden = [selected, currentRevisionId].find(revisionHidden);
+      const accepted = acceptedHiddenVersion(0);
+      const hidden = accepted ?? [selected, currentRevisionId].find(revisionHidden);
       setHidden(statusLine, hidden === undefined);
       // The current version is known to exist, and so is one this tab deployed; a requested one
       // that is neither, such as one from an edited link, may not (findings D750, D751).
@@ -2274,9 +2292,10 @@ export async function renderAgentDetail(
       stopPanel.setLatestDeployment(null);
       return;
     }
-    // This tab deployed the viewed version, which the caller cannot read: it is newer than every
-    // listed one, so the listed latest outcome is an earlier version's (finding D751).
-    const acceptedHidden = deployedHere(selected) && revisionHidden(selected);
+    // This tab deployed a version newer than every listed one, which the caller cannot read: the
+    // listed latest outcome is an earlier version's, whichever entry is viewed (finding D751).
+    const acceptedId = acceptedHiddenVersion(latest.revision);
+    const acceptedHidden = acceptedId !== undefined;
     // Stop hides only for a failed first deployment, and says it cancels one still queued or in
     // progress (findings 2385, 2580, D691). A failed read is unknown, not failed, and so is a
     // newer deployment the caller cannot read.
@@ -2359,18 +2378,19 @@ export async function renderAgentDetail(
     }
     // The accepted version may be the current one too (embedded activation selects it at once);
     // the page then says it once.
-    const currentIsAccepted = acceptedHidden && currentRevisionId === selected;
+    const currentIsAccepted = acceptedHidden && currentRevisionId === acceptedId;
     const hiddenNotice = requestedHidden || acceptedHidden || newerHidden || failureBehindHidden;
     setHidden(statusLine, !hiddenNotice && !failureBehindUnknown && !successBehindUnknown);
     if (!statusLine.hidden) {
       setText(
         statusLine,
         [
-          acceptedHidden
-            ? deployAcceptedVersionUnreadable(shortId(selected))
-            : requestedHidden
-              ? requestedVersionUnavailable(shortId(selected))
-              : null,
+          acceptedId ? deployAcceptedVersionUnreadable(shortId(acceptedId)) : null,
+          requestedHidden && selected !== acceptedId
+            ? deployedHere(selected)
+              ? deployAcceptedVersionUnreadable(shortId(selected))
+              : requestedVersionUnavailable(shortId(selected))
+            : null,
           newerHidden && !currentIsAccepted
             ? `The current version, ${shortId(currentRevisionId ?? "")}, is one you cannot read; v${latest.revision} is an older version.`
             : null,
@@ -3237,7 +3257,7 @@ export async function renderAgentDetail(
           ) {
             throw new Error("The admitted version could not be confirmed for this Configuration.");
           }
-          deployedVersions.add(failedVersionKey(path, revision.id));
+          deployedVersions.set(failedVersionKey(path, revision.id), revision.revision);
           if (context.isCurrent()) {
             deployInFlight = false;
             content.toggleAttribute("inert", false);

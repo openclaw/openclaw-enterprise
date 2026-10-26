@@ -295,4 +295,17 @@ test("a redeploy the member cannot read leads with the accepted deployment and k
   await stopButton(page).waitFor();
   assert.equal(await recovery.count(), 0);
   assert.equal(await page.getByText(/does not exist/).count(), 0);
+
+  // The draft entry says the same: the accepted deployment, not v1's failure, and Stop stays.
+  await page.getByRole("button", { name: "Open version draft", exact: true }).click();
+  await page.waitForURL(/revision=draft/);
+  // The URL changes before the draft page replaces the version page.
+  await page.getByText(/^Version draft · read-only with your access/).waitFor();
+  await page
+    .locator(".agent-status-line")
+    .getByText(deployAcceptedVersionUnreadable(shortId(id)), { exact: true })
+    .waitFor();
+  await summary.getByText("Deployment accepted", { exact: true }).waitFor();
+  await stopButton(page).waitFor();
+  assert.equal(await recovery.count(), 0);
 });
