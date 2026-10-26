@@ -8,6 +8,7 @@ import type { Static } from "typebox";
 import { requestFailure } from "../api-client.mjs";
 import { deploymentFailureStep } from "../deployment-failure-steps.mjs";
 import { element, setHidden, setText } from "../dom.mjs";
+import { MODEL_CREDENTIAL_REJECTED_ASK } from "./access-reasons.mjs";
 import { agentSaveDenial, namespacePath } from "./list.mjs";
 import { logTextDenied } from "./logs.mjs";
 
@@ -176,11 +177,20 @@ export function createDeploymentRecovery(
     const generic = logsAllowed
       ? "Check the failed version’s logs before deploying a new version."
       : "Ask someone with log access to check the failed version’s logs before deploying a new version.";
-    let impact = errorMessage || generic;
+    // The API's step for a rejected model credential is to update it in Credentials, which needs
+    // Agent update. A caller whose permission answer denies that is told who does it instead
+    // (finding D750). The API still authorizes the save.
+    const credentialFixDenied =
+      code === "RUNTIME_AUTHENTICATION_FAILED" &&
+      !("harnessAuth" in agent && agent.harnessAuth?.method === "runtime") &&
+      permissions !== null &&
+      !(permissions.update === true && agentSaveDenial(permissions) === undefined);
+    const failure = credentialFixDenied ? MODEL_CREDENTIAL_REJECTED_ASK : errorMessage;
+    let impact = failure || generic;
     if (servingImpact === "replacement-failed") {
-      impact = `${currentLabel} is still selected, but its runtime was probably stopped for this deployment.${errorMessage ? ` ${errorMessage}` : ""}`;
+      impact = `${currentLabel} is still selected, but its runtime was probably stopped for this deployment.${failure ? ` ${failure}` : ""}`;
     } else if (servingImpact === "selected-failed") {
-      impact = `${currentLabel} is still selected, but its runtime replaced the previous version before deployment finished.${errorMessage ? ` ${errorMessage}` : ""}`;
+      impact = `${currentLabel} is still selected, but its runtime replaced the previous version before deployment finished.${failure ? ` ${failure}` : ""}`;
     }
     if ((servingImpact || (errorMessage && step === "logs")) && !logsAllowed) {
       // Without the Logs link this is the reader's only way to the logs (finding 1484).

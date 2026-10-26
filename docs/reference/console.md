@@ -172,7 +172,10 @@ offer recovery. A denied Namespace list or draft Configuration read, and a contr
 disabled for lack of access, names the grant the API checks, such as Agent operate
 to stop an Agent or AgentRevision read on each new version. Other denials of your own
 permission show the API's sentence naming the missing grant; denials send you to an
-Installation administrator, who grants access.
+Installation administrator, who grants access. A version link the page cannot list says the
+version does not exist or your access does not include it, because the API answers both alike.
+A rejected model credential tells a person without Agent update to ask an Installation
+administrator to update it.
 A refusal the API explains, such as an invalid field, a name already in use or a
 lifecycle change, shows the API's sentence; a rate limit says how long to wait.
 Other backend error text is not rendered; include any displayed request

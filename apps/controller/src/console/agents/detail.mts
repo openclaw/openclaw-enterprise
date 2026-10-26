@@ -43,8 +43,11 @@ import {
   askAdministratorTo,
   askForGrant,
   CONFIGURATION_UPDATE_DENIED,
+  MODEL_CREDENTIAL_REJECTED_READ_ONLY,
   NEW_VERSIONS_READ,
+  requestedVersionUnavailable,
   VERSION_READ_DENIED,
+  VERSION_UNAVAILABLE,
 } from "./access-reasons.mjs";
 import { renderAgentPlugins } from "./plugins.mjs";
 import { repositoryProfile, repositoryWriteAccessHelp } from "./repository-profiles.mjs";
@@ -300,15 +303,19 @@ function errorPanel(
   cause: unknown,
   context: DetailContext,
   retry: () => void,
-  { version = false } = {},
+  { version = false, exists = false } = {},
 ) {
   const error = requestFailure(cause);
   if (error.status === 401) {
     context.onExpired();
     return element("div");
   }
-  // Revision read is granted per version; Agent access alone does not cover new versions.
+  // Revision read is granted per version; Agent access alone does not cover new versions. A
+  // version not known to exist, such as one from an edited link, is answered as one the caller
+  // may not read, so the text says it may not exist (finding D750).
   const versionDenied = version && error.status === 403;
+  const versionHeading = exists ? "You cannot read this version" : "Version unavailable";
+  const versionReason = exists ? VERSION_READ_DENIED : VERSION_UNAVAILABLE;
   return element(
     "section",
     { className: "state-panel", role: "alert" },
@@ -318,13 +325,13 @@ function errorPanel(
       error.code === "SAVED_CONFIGURATION_UNREADABLE"
         ? "Saved configuration unreadable"
         : versionDenied
-          ? "You cannot read this version"
+          ? versionHeading
           : "Configuration unavailable",
     ),
     element(
       "p",
       {},
-      versionDenied ? VERSION_READ_DENIED : message(cause, false, DRAFT_CONFIGURATION_NEED),
+      versionDenied ? versionReason : message(cause, false, DRAFT_CONFIGURATION_NEED),
     ),
     responseFields(cause).remembered === true
       ? element(
@@ -2325,9 +2332,7 @@ export async function renderAgentDetail(
       setText(
         statusLine,
         [
-          requestedHidden
-            ? `Version ${shortId(selected)} was requested, but you cannot read it, so its progress and outcome are not shown here.`
-            : null,
+          requestedHidden ? requestedVersionUnavailable(shortId(selected)) : null,
           newerHidden
             ? `The current version, ${shortId(currentRevisionId ?? "")}, is one you cannot read; v${latest.revision} is an older version.`
             : null,
@@ -2340,7 +2345,8 @@ export async function renderAgentDetail(
           successBehindUnknown
             ? `The current version, ${shortId(currentRevisionId ?? "")}, is not among the versions listed, so this page cannot tell whether it is newer than v${latest.revision}.${olderCursor ? " Show older versions to check." : ""}`
             : null,
-          hiddenNotice ? readAccessHint : null,
+          // The hint is about versions known to exist; a requested one may not (finding D750).
+          newerHidden || failureBehindHidden ? readAccessHint : null,
         ]
           .filter(Boolean)
           .join(" "),
@@ -2990,15 +2996,18 @@ export async function renderAgentDetail(
             credentials?.deployGateMessage() ?? "Credential readiness could not be confirmed.";
           // Secret values can be updated in place, so a rejected credential warns instead of
           // blocking. It never reads "Ready to deploy.": deploying again does not fix it.
-          const rejected =
-            "The last deployment's model credential was rejected; update or replace it in Credentials before deploying again.";
+          // A reader who cannot change the draft is told who updates it (finding D750).
+          const readOnly = draftReadOnly();
+          const rejected = readOnly
+            ? MODEL_CREDENTIAL_REJECTED_READ_ONLY
+            : "The last deployment's model credential was rejected; update or replace it in Credentials before deploying again.";
           const status = !credentialRejected()
             ? gate
             : gate === "Ready to deploy."
               ? rejected
               : `${gate} ${rejected}`;
           deployStatus.textContent =
-            draftReadOnly() && status !== "Ready to deploy."
+            readOnly && status !== "Ready to deploy." && !credentialRejected()
               ? `${status} Your access does not include changing this version draft.`
               : status;
         }
@@ -3859,7 +3868,7 @@ export async function renderAgentDetail(
             context.deniedReads?.forget(snapshotPath);
             context.navigate(target(selected, selectedTab), namespaceId, true);
           },
-          { version: selected !== "draft" },
+          { version: selected !== "draft", exists: selected === currentRevisionId },
         ),
       );
     } else if (data) {

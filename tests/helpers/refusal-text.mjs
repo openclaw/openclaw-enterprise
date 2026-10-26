@@ -101,6 +101,22 @@ export const LOG_TEXT_DENIED =
   "Log text requires Agent read_logs (or Agent administer) on this Agent. Ask an Installation administrator to grant it.";
 export const RUNTIME_STATUS_DENIED =
   "Runtime status requires Agent operate on this Agent and AgentRevision read on this version. Log text needs Agent read_logs (or Agent administer). Ask an Installation administrator for the access you need.";
+// A version link the page cannot list may name a version that does not exist: the API answers
+// both alike, so the console says either may be true (finding D750).
+export const VERSION_UNAVAILABLE =
+  "This version does not exist or your access does not include it. If you need it, ask an Installation administrator for AgentRevision read on it.";
+export const requestedVersionUnavailable = (version) =>
+  `Version ${version} does not exist or your access does not include it, so this page shows no progress or outcome for it. If you need it, ask an Installation administrator for AgentRevision read on it.`;
+// A rejected model credential for a caller known to lack Agent update names who fixes it
+// (finding D750): the failure banner, and the draft's deploy line.
+export const MODEL_CREDENTIAL_REJECTED_ASK =
+  "The model provider rejected this version's credential (HTTP 401 or 403). Your access does not include changing it: ask an Installation administrator to update the Agent's model credential, then deploy a new version.";
+export const MODEL_CREDENTIAL_REJECTED_READ_ONLY =
+  "The last deployment's model credential was rejected. Your access does not include changing it: ask an Installation administrator to update it before deploying again.";
+// The API has no route to Slack (SlackRouteNotConfiguredError, apps/controller/src/drivers/channel/
+// slack.ts). Helm settings belong to whoever operates the Installation (finding D750).
+export const SLACK_ROUTE_NOT_CONFIGURED =
+  "OCC could not reach Slack, and the API has no Slack proxy. If the API has another approved route to Slack, try again. Otherwise ask the Installation operator to set Helm slackProxy.enabled or api.channelDirectoryProxyUrl; see the Slack integration guide.";
 // Agent-side save controls, from the caller's permission answer (findings 2441, 2459).
 export const AGENT_UPDATE_DENIED = notIncluded(
   "saving these settings",

@@ -45,6 +45,7 @@ import {
   callerDenied,
   referenceFormRefusal,
   sentIdHidden,
+  SLACK_ROUTE_NOT_CONFIGURED,
   unboundReferenceRefusal,
   unsubstitutedReferenceRefusal,
 } from "../helpers/refusal-text.mjs";
@@ -8790,8 +8791,7 @@ test("Slack validation with no Slack proxy names the setting at provision and de
         { configuration },
       ),
     });
-  const noRoute =
-    "OCC could not reach Slack, and the API has no Slack proxy. If the API has another approved route to Slack, try again. Otherwise an administrator must set Helm slackProxy.enabled or api.channelDirectoryProxyUrl; see the Slack integration guide.";
+  const noRoute = SLACK_ROUTE_NOT_CONFIGURED;
   // Checks that need no provider call keep their own answers: a wrong token role is still named.
   assertApiError(await provision(), 400, "CHANNEL_CREDENTIAL_ROLE_MISMATCH");
   assert.equal(calls, 0);

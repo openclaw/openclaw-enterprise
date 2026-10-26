@@ -35,8 +35,10 @@ import {
   askForGrant,
   MALFORMED_REQUEST,
   RESOURCE_CONFLICT,
+  requestedVersionUnavailable,
   stopRefused,
   NEW_VERSIONS_READ,
+  VERSION_UNAVAILABLE,
 } from "../helpers/refusal-text.mjs";
 
 function deploymentBody(
@@ -841,13 +843,16 @@ test("Agent detail says when the current or requested version cannot be read", a
   const requestedUrl = detailUrl(fixture, namespace.id, agent.id, requested.id, "configuration");
   await page.goto(requestedUrl.href);
   await page.getByRole("heading", { name: "Hidden Agent" }).waitFor();
-  await page
-    .locator(".agent-status-line")
+  // The page cannot tell a version it may not read from one that does not exist, so it says
+  // either may be true, and does not ask for read "after each deployment" (finding D750).
+  const statusLine = page.locator(".agent-status-line");
+  await statusLine
     .getByText(
-      /Version rev_.* was requested, but you cannot read it, so its progress and outcome are not shown here\./,
+      requestedVersionUnavailable(`${requested.id.slice(0, 12)}…${requested.id.slice(-6)}`),
     )
     .waitFor();
-  await page.getByRole("heading", { name: "You cannot read this version" }).waitFor();
+  await page.getByRole("heading", { name: "Version unavailable" }).waitFor();
+  await page.getByText(VERSION_UNAVAILABLE, { exact: true }).waitFor();
 });
 
 test("Agent detail says an Agent's versions are hidden, not missing, when none is readable", async (t) => {
