@@ -1789,6 +1789,9 @@ test("a tab refused after a revoke makes the next tab change read the page again
   // Configuration it read before the revoke.
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await page.getByRole("heading", { name: "Access denied", exact: true }).waitFor();
+  // The recheck reads the Agent, its versions and the shown version, so the API names the grant
+  // it lacked (finding D753).
+  await page.getByText(callerDenied("Agent read", `Agent ${agent.id}`), { exact: true }).waitFor();
   assert.equal(await page.locator(".agent-tabs").count(), 0);
   assert.equal(await page.locator(".version-selection-notice").count(), 0);
 });
@@ -2703,7 +2706,11 @@ test("an Agent reader meets no refused read on Repositories, Policy denials or L
       "The version draft selects no repositories. The Agent runs without repository access.",
     )
     .waitFor();
-  await expectNoText(page, /Repository choices are denied/, settle);
+  await expectNoText(
+    page,
+    /repository choices for this Agent|Repository choices are not shown/,
+    settle,
+  );
   assert.equal(await page.getByRole("button", { name: "Retry repository choices" }).count(), 0);
   assert.equal(await page.getByRole("button", { name: "Save repository access" }).count(), 0);
 
@@ -2718,7 +2725,7 @@ test("an Agent reader meets no refused read on Repositories, Policy denials or L
   await noPolicyAccess.first().waitFor();
   await expectNoText(
     page,
-    /Deploy an Agent to load Sandbox policy decisions|permission to read|Suggestions come from|No Driver configurations/,
+    /Deploy an Agent to load Sandbox policy decisions|include reading (?:this Agent’s policy|policy suggestions|this Agent’s Sandbox logs)|Suggestions come from|No Driver configurations/,
     settle,
   );
   // The sentence names the suggestions too, so it is said once, on the network policy card: no
@@ -2745,7 +2752,7 @@ test("an Agent reader meets no refused read on Repositories, Policy denials or L
     .waitFor();
   await expectNoText(
     page,
-    /permission to read|no such runtime log source|window: unavailable|Denials in the loaded window/,
+    /include reading (?:this Agent’s policy|policy suggestions|this Agent’s Sandbox logs)|no such runtime log source|window: unavailable|Denials in the loaded window/,
     settle,
   );
   await sayOnce();

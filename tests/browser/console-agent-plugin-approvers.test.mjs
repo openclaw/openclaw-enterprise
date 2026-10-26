@@ -26,7 +26,7 @@ import {
 } from "./console-agents-browser-helpers.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import { enterManualModel, openAdvancedSettings } from "./console-agents-test-support.mjs";
-import { SECRET_CREATE_DENIED } from "../helpers/refusal-text.mjs";
+import { callerDenied, refusedNamed, SECRET_CREATE_DENIED } from "../helpers/refusal-text.mjs";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
@@ -427,12 +427,27 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
   const requests = apiRequests(page, fixture.origin);
   const directoryBodies = [];
   let directoryAvailable = true;
+  let directoryDenied = false;
   // The browser test owns Console selection and saved API state; only provider directory data is simulated.
   await page.route(
     `${fixture.origin}/namespaces/${namespace.id}/channel-directory/lookup`,
     async (route) => {
       const body = route.request().postDataJSON();
       directoryBodies.push(body);
+      if (directoryDenied) {
+        await route.fulfill({
+          status: 403,
+          contentType: "application/json",
+          body: JSON.stringify({
+            error: {
+              code: "FORBIDDEN",
+              message: callerDenied("Secret operate", "a Secret this request uses"),
+            },
+            meta: { requestId: "req_test_slack_directory_denied" },
+          }),
+        });
+        return;
+      }
       if (!directoryAvailable) {
         await route.fulfill({
           status: 501,
@@ -572,6 +587,13 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
   await picker
     .getByRole("button", { name: "Remove selected person 1 (name unavailable)", exact: true })
     .click();
+  // The lookup checks several grants, so a refusal shows the one the API names (finding D753).
+  directoryDenied = true;
+  await people.fill("UTEST998");
+  await picker
+    .getByText(refusedNamed("Slack lookup", "Secret operate", "a Secret this request uses"))
+    .waitFor();
+  directoryDenied = false;
   directoryAvailable = true;
   await people.fill("Alex");
   await picker.getByRole("option", { name: /Alex.*@alex/ }).click();

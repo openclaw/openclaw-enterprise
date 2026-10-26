@@ -37,7 +37,12 @@ import {
 import { WORKSPACE_DEFAULTS, WORKSPACE_DEFAULTS_ID } from "../workspace-defaults.mjs";
 import { configuredHarnessId, harnessAuthDescription } from "./harness-auth.mjs";
 import { type DeviceLogin, createDeviceLogin } from "./device-login.mjs";
-import { AGENT_CREATE_DENIED, askAdministratorTo, notIncluded } from "./access-reasons.mjs";
+import {
+  AGENT_CREATE_DENIED,
+  askAdministratorTo,
+  CONFIGURATION_CREATE_REFUSED,
+  notIncluded,
+} from "./access-reasons.mjs";
 import { createRepositoryFields } from "./repositories.mjs";
 import { ensureCredentialOperateBinding, secretOperateAnswer } from "./credential-access.mjs";
 import {
@@ -741,9 +746,6 @@ const INSTALLATION_REFUSAL = `Creating an Agent needs Installation access that y
 // failed), so whether this account may create Agents here is not known (finding 2110).
 const PERMISSIONS_UNREAD =
   "Your permissions in this Namespace could not be checked, and Installation-wide capabilities are not readable with your access. Retry the permission check before creating an Agent.";
-// A refused Configuration create names the grants it needs, as a refused save does
-// (SAVE_REFUSALS): one fixed text for every 403 (finding 2111).
-const CONFIGURATION_CREATE_REFUSAL = `You do not have permission to create this Agent's Configuration. It needs Configuration create in this Namespace, which only an Installation administrator holds, plus Secret operate on each Secret it binds. ${askAdministratorTo("create this Agent")}`;
 // This form saves Secret bindings only from its Slack channel settings. A channel refusal that
 // asks for a binding gets where to add one, as on the Agent page (findings 2494, 2506).
 const CHANNEL_BINDING_FORM_REMEDY =
@@ -3539,7 +3541,9 @@ function renderAgentForm(
           },
         }).catch((error: unknown) => {
           if (requestFailure(error).status === 403) {
-            responseFields(error).refusal = CONFIGURATION_CREATE_REFUSAL;
+            // A refused Configuration create names the grants it needs: one fixed text for
+            // every 403, since only an Installation administrator can create one (finding 2111).
+            responseFields(error).refusal = CONFIGURATION_CREATE_REFUSED;
           }
           throw error;
         });

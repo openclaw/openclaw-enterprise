@@ -54,7 +54,8 @@ import {
   READ_UNAVAILABLE,
   REPOSITORY_EDITS_PENDING,
   RESOURCE_CONFLICT,
-  permissionRefused,
+  notIncluded,
+  POLICY_EDITING_SETTING_REFUSED,
   GRANT_EXCEEDS_CEILING,
 } from "../helpers/refusal-text.mjs";
 
@@ -211,6 +212,33 @@ test("Policy denials reads the Sandbox log of a version a Sandbox Driver provisi
   }
 });
 
+// The editing setting needs Installation administer and Agent administer, which no Namespace Role
+// grants. An administrator whose Restriction denies Agent administer on this Agent is told who
+// can change it, not "You do not have permission" (finding D753).
+test("A refused policy editing change says who can change it", async (t) => {
+  const { fixture, namespace, agent } = await createPolicyConsole(t);
+  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  fixture.policy.restrictions.push({
+    id: "deny-agent-administer",
+    namespaceId: namespace.id,
+    resourceKind: "agent",
+    resourceId: agent.id,
+    action: "administer",
+    effect: "deny",
+  });
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revision.id, "policy"));
+  const tab = page.locator(".sandbox-policy");
+  const refused = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/agents/${agent.id}/sandbox-policy/networking/editing`) &&
+      response.request().method() === "PATCH",
+  );
+  await tab.getByRole("button", { name: "Disable policy editing", exact: true }).click();
+  assert.equal((await refused).status(), 403);
+  await tab.getByText(POLICY_EDITING_SETTING_REFUSED, { exact: true }).waitFor();
+});
+
 // A member whose grants do not include the Agent's SandboxPolicy gets a refusal; Retry would only
 // ask again for the same answer (finding 2060). With a permission answer the console skips the
 // read instead (finding 2454), so the answer is withheld here to reach the API's refusal.
@@ -245,11 +273,11 @@ test("A refused policy read offers no Retry", async (t) => {
   await tab
     .getByRole("alert")
     .filter({
-      hasText: permissionRefused("read this Agent’s policy", "SandboxPolicy read on it"),
+      hasText: notIncluded("reading this Agent’s policy", "SandboxPolicy read on it"),
     })
     .waitFor();
   await tab
-    .getByText(permissionRefused("read policy suggestions", "SandboxPolicy read on it"))
+    .getByText(notIncluded("reading policy suggestions", "SandboxPolicy read on it"))
     .waitFor();
   assert.equal(await tab.getByRole("button", { name: "Retry policy read" }).count(), 0);
   assert.equal(await tab.getByRole("button", { name: "Refresh suggestions" }).count(), 0);

@@ -16,7 +16,13 @@ import {
 } from "../configuration-fields.mjs";
 import { button, element } from "../dom.mjs";
 import type { NamespacePageContext } from "../namespaces.mjs";
-import { askForGrant, LOG_TEXT_GRANT, SANDBOX_POLICY_READ_DENIED } from "./access-reasons.mjs";
+import {
+  askForGrant,
+  LOG_TEXT_GRANT,
+  notIncluded,
+  POLICY_EDITING_SETTING_REFUSED,
+  SANDBOX_POLICY_READ_DENIED,
+} from "./access-reasons.mjs";
 import { namespacePath, rejectionMessage } from "./list.mjs";
 import { recordRow, visibleText } from "./logs-view.mjs";
 
@@ -30,10 +36,6 @@ const POLICY_READ_DENIED = SANDBOX_POLICY_READ_DENIED;
 const LOG_GRANT = `${LOG_TEXT_GRANT} on it`;
 const POLICY_READ_GRANT = "SandboxPolicy read on it";
 const POLICY_CHANGE_GRANT = "Agent manage_policy and SandboxPolicy update on it";
-// The editing setting needs Installation administer and Agent administer, which no Namespace Role
-// can grant, so the reason names who can change it instead.
-const EDITING_SETTING_DENIED =
-  "You do not have permission to change the editing setting. Only an Installation administrator who also administers this Agent can change it.";
 // A draft of an Agent with no current version: never deployed, stopped, or first deployment
 // still running. The copy fits each, and a reader who cannot deploy is not told to.
 const NO_CURRENT_VERSION_DENIALS =
@@ -48,11 +50,12 @@ const NO_SANDBOX_SUGGESTIONS =
   "Suggestions come from policy denials. This Agent version runs without a Sandbox, so it has none.";
 type LogLine = Extract<RuntimeLogRecord, { type: "line" }>;
 
-// A 403 names the grant the refused request checks and who gives it (finding 2539).
-function errorText(cause: unknown, subject: string, grant: string) {
+// A 403 names what the refused request does, the grant it checks and who gives it (findings 2539,
+// D753).
+function errorText(cause: unknown, task: string, grant: string) {
   const { status, serverMessage } = requestFailure(cause);
   if (status === 403) {
-    return `You do not have permission to ${subject}. ${askForGrant(grant)}`;
+    return notIncluded(task, grant);
   }
   if (status === 409 && serverMessage) {
     return serverMessage;
@@ -411,7 +414,7 @@ export function renderAgentSandboxPolicy(
         return;
       }
       follow.checked = false;
-      logStatus.textContent = errorText(error, "read this Agent’s Sandbox logs", LOG_GRANT);
+      logStatus.textContent = errorText(error, "reading this Agent’s Sandbox logs", LOG_GRANT);
       if (records.length === 0) {
         count.textContent = "Denials in the loaded window: unavailable";
         logRows.replaceChildren();
@@ -526,7 +529,11 @@ export function renderAgentSandboxPolicy(
       }
       recommendations = [];
       suggestionsDenied = requestFailure(error).status === 403;
-      suggestionStatus.textContent = errorText(error, "read policy suggestions", POLICY_READ_GRANT);
+      suggestionStatus.textContent = errorText(
+        error,
+        "reading policy suggestions",
+        POLICY_READ_GRANT,
+      );
     }
     suggestionsReading = false;
     renderSuggestions();
@@ -543,7 +550,7 @@ export function renderAgentSandboxPolicy(
     operation: () => Promise<void>,
     requiresEditAuthority = true,
     failureMessage = (error: unknown) =>
-      errorText(error, "change this Agent’s policy", POLICY_CHANGE_GRANT),
+      errorText(error, "changing this Agent’s policy", POLICY_CHANGE_GRANT),
   ) {
     if (mutation || unknownOutcome) {
       return;
@@ -693,8 +700,8 @@ export function renderAgentSandboxPolicy(
             false,
             (error) =>
               requestFailure(error).status === 403
-                ? EDITING_SETTING_DENIED
-                : errorText(error, "change the editing setting", POLICY_CHANGE_GRANT),
+                ? POLICY_EDITING_SETTING_REFUSED
+                : errorText(error, "changing the editing setting", POLICY_CHANGE_GRANT),
           ),
         { disabled: mutation },
       ),
@@ -865,7 +872,7 @@ export function renderAgentSandboxPolicy(
           return;
         }
         validationDetails = requestErrorDetails(error);
-        feedback.textContent = `${errorText(error, "validate this Agent’s policy", POLICY_CHANGE_GRANT)} Your draft is retained. Reload policy to review a conflict.`;
+        feedback.textContent = `${errorText(error, "validating this Agent’s policy", POLICY_CHANGE_GRANT)} Your draft is retained. Reload policy to review a conflict.`;
         feedback.className = "error";
         feedback.setAttribute("role", "alert");
         renderPolicy();
@@ -925,7 +932,7 @@ export function renderAgentSandboxPolicy(
             if (error === unconfirmedSave) {
               return unconfirmedSave.message;
             }
-            const reason = errorText(error, "change this Agent’s policy", POLICY_CHANGE_GRANT);
+            const reason = errorText(error, "changing this Agent’s policy", POLICY_CHANGE_GRANT);
             return savedVersion === undefined
               ? reason
               : `Policy v${savedVersion} was saved, but application to the current revision was not confirmed. ${reason}`;
@@ -1087,7 +1094,7 @@ export function renderAgentSandboxPolicy(
         element(
           "p",
           { role: "alert" },
-          errorText(error, "read this Agent’s policy", POLICY_READ_GRANT),
+          errorText(error, "reading this Agent’s policy", POLICY_READ_GRANT),
         ),
         ...(requestFailure(error).status === 403
           ? []

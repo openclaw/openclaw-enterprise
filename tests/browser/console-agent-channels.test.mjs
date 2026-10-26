@@ -28,7 +28,11 @@ import {
   waitForInputValue,
   writeRequests,
 } from "./console-agents-browser-helpers.mjs";
-import { SECRET_CREATE_DENIED, SLACK_SETUP_HINT } from "../helpers/refusal-text.mjs";
+import {
+  CONFIGURATION_SAVE_DENIED,
+  SECRET_CREATE_DENIED,
+  SLACK_SETUP_HINT,
+} from "../helpers/refusal-text.mjs";
 
 // The Agent's grant of a saved Slack Secret was refused, or the IAM policy shows none (finding 1920).
 const GRANT_REFUSED =
@@ -749,7 +753,7 @@ describe("Agent channels", { concurrency: 3 }, () => {
     assert.equal(await allowedUsers.isVisible(), false);
     await selectSecret(dialog, "Slack app token", slackAppSecret);
     await page.getByRole("button", { name: "Save configuration" }).click();
-    await dialog.getByText(/Access denied|permission/i).waitFor();
+    await dialog.getByText(CONFIGURATION_SAVE_DENIED).waitFor();
     assert.equal(await allowEveryone.inputValue(), "everyone");
     await waitForEnabled(allowEveryone);
     assert.equal(await allowedUsers.isVisible(), false);

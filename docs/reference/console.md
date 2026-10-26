@@ -170,9 +170,11 @@ An authorized empty list differs from a failed read. Access denials, unavailable
 dependencies, missing resources, and network failures clear affected rows and
 offer recovery. A denied Namespace list or draft Configuration read, and a control
 disabled for lack of access, names the grant the API checks, such as Agent operate
-to stop an Agent or AgentRevision read on each new version. Other denials of your own
-permission show the API's sentence naming the missing grant; denials send you to an
-Installation administrator, who grants access. A version link the page cannot list says the
+to stop an Agent or AgentRevision read on each new version. A refused save says so and
+lists the grants the save checks, such as "Save was refused: your access does not include
+saving this Configuration." Other denials of your own permission, such as a recheck of an open
+Agent or a Slack lookup, show the API's sentence naming the missing grant; denials send you to
+an Installation administrator, who grants access. A version link the page cannot list says the
 version does not exist or your access does not include it, because a reader granted read per
 version cannot tell the two apart.
 A rejected model credential tells a person without Agent update which grants fix it: Agent
