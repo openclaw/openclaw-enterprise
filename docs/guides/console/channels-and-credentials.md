@@ -90,14 +90,17 @@ that exact Secret. Granting needs Installation `administer`. When a member saves
 the source, the binding saves, but the member's session sends no grant, so it
 does not verify the Agent's access. The console asks an Installation administrator
 to open the Agent's Credentials and select **Save authentication source**, which
-grants it. When an administrator opens Credentials, the tab reads Namespace IAM, says
+grants it. **Deploy new version** stays available: the API checks the Agent's access
+when it deploys. When an administrator opens Credentials, the tab reads Namespace IAM, says
 when that grant is missing and holds **Deploy new version** until it is granted.
 If the grant was already in place, **Reload authentication source** clears the
 warning. If a grant request is refused or its outcome is lost, the console says
 so and offers **Retry credential access**.
 The retry checks the saved binding and does not resave it. If the
 binding changed, or the save outcome is unknown, use **Reload authentication source** first.
-Deployment authorization failures remain visible beside **Deploy new version**;
+Deploying needs Secret `operate` on each Secret the draft binds. When your access
+does not include it, **Deploy new version** is disabled and names those Secrets.
+Other deployment authorization failures remain visible beside **Deploy new version**;
 check both your deployment permission and the Agent's credential access.
 Changing between **API key** and **Service Accounts** clears the selected Secret
 so a token is not silently reused for another authentication method. The account
@@ -130,8 +133,9 @@ failure can leave partial progress. Granting the Agent a Secret needs Installati
 `administer`: when a member saves a token, the Configuration saves, but the member's session
 sends no grant, so it does not verify the Agent's access. The console asks an Installation
 administrator to open the Agent's Credentials and select **Retry Secret access**, and offers
-no retry itself. Deploy waits only until **Reload draft** or a browser reload: the member's
-console cannot read the grant, so the API refuses a deployment it does not cover. **Outcome unknown** means refresh and inspect
+no retry itself. **Deploy new version** stays available, and **Reload draft** clears the
+warning: the member's console cannot read the grant, so the API refuses a deployment it does
+not cover. **Outcome unknown** means refresh and inspect
 saved state before retrying. Save requires at least one changed selection and a
 bound Secret for each token. Changing the picker switches the referenced Secret;
 it does not overwrite an existing shared Secret value. Existing values are never

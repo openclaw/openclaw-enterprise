@@ -71,6 +71,7 @@ import {
   AGENT_SAVE_DENIED,
   CONFIGURATION_EDITS_PENDING,
   CONFIGURATION_SAVE_DENIED,
+  CONSOLE_ACCESS_DENIED,
   NAMESPACE_NOT_READY,
   NEW_SECRET_OPERATE_DENIED,
   NEW_SECRET_OPERATE_REMEDY,
@@ -2545,6 +2546,9 @@ const HARNESS_GRANT_MISSING =
 const HARNESS_GRANT_UNVERIFIED =
   "Authentication source saved, but this session did not verify that this Agent can use the selected Secret. Granting access needs Installation administration access: ask an Installation administrator to open this Agent's Credentials and select Save authentication source.";
 
+// Matches a fixed sentence inside a pattern that also matches a random request ID.
+const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 test("Agent credentials report partial harness Secret grant failure", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -2622,9 +2626,12 @@ test("Agent credentials report partial harness Secret grant failure", async (t) 
   });
   requests.length = 0;
   await page.getByRole("button", { name: "Retry credential access" }).click();
+  // The read's own refusal, not grant advice such as "this write may have succeeded".
   await page
     .getByText(
-      /^Authentication source saved, but this Agent could not be read before retrying its credential access\. .+ Select Retry credential access once the Agent can be read\.$/,
+      new RegExp(
+        `^${escapeRegExp(`Authentication source saved, but this Agent could not be read before retrying its credential access. ${CONSOLE_ACCESS_DENIED}`)} Request ID: req_[0-9a-f-]{36} Select Retry credential access once the Agent can be read\\.$`,
+      ),
     )
     .waitFor();
   assert.deepEqual(accessBindingPostRequests(requests, namespace.id), []);
@@ -2713,16 +2720,21 @@ test("Agent credentials name the administrator step for a member's harness Secre
       requests.filter(({ path }) => path.includes("/iam/")),
       [],
     );
-    // No dead Retry: only Reload remains, and Deploy waits until the access is confirmed.
+    // No dead Retry: only Reload remains. The save finished and nothing this member can do
+    // confirms the grant, so Deploy is not held: the API checks the Agent's access when it
+    // deploys (finding 2547).
     assert.equal(await page.getByRole("button", { name: "Retry credential access" }).count(), 0);
     assert.equal(await page.getByRole("button", { name: "Save authentication source" }).count(), 0);
     await waitForEnabled(page.getByRole("button", { name: "Reload authentication source" }));
-    assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
-    // The rebuilt tab keeps the same words and still offers no Retry.
+    const deploy = page.getByRole("button", { name: "Deploy new version" });
+    await waitForEnabled(deploy);
+    await expectNoText(page, "Confirm authentication and Secret access in Credentials");
+    // The rebuilt tab keeps the same words, still offers no Retry and still holds nothing.
     await page.getByRole("tab", { name: "Configuration", exact: true }).click();
     await page.getByRole("tab", { name: "Credentials", exact: true }).click();
     await page.getByRole("alert").filter({ hasText: HARNESS_GRANT_UNVERIFIED }).waitFor();
     assert.equal(await page.getByRole("button", { name: "Retry credential access" }).count(), 0);
+    assert.equal(await deploy.isDisabled(), false);
   }
 
   // The administrator the warning names opens the Agent's Credentials: its IAM policy read finds
@@ -4774,6 +4786,8 @@ test("Secret fields refuse a readable Secret the editor cannot operate", async (
   const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
+  // The draft reads the answer when it opens, for its Deploy gate; the pickers reuse it.
+  const answer = page.waitForResponse((r) => r.url().endsWith(path + "/permissions/secrets"));
   await login(
     page,
     fixture,
@@ -4782,7 +4796,6 @@ test("Secret fields refuse a readable Secret the editor cannot operate", async (
   );
   const save = page.getByRole("button", { name: "Save channel Secrets" });
   await waitForEnabled(page.getByLabel("Slack bot token", { exact: true }));
-  const answer = page.waitForResponse((r) => r.url().endsWith(path + "/permissions/secrets"));
   const denied = await operateDeniedSecretOption(page, "Slack bot token", spare);
   assert.deepEqual((await (await answer).json()).data, { operateDenied: [spare.id] });
   // A forced click skips the disabled check: choosing it still stages nothing.

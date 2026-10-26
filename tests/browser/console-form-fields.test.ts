@@ -650,6 +650,21 @@ for (const viewport of consoleViewports) {
       await focusedId(page),
       await dialog.getByLabel("Name", { exact: true }).getAttribute("id"),
     );
+    // A conflict that names no reason, either with no message at all (a body without the API's
+    // envelope) or with the API's generic text, keeps the dialog's name and Namespace guidance
+    // instead of the generic "Refresh, then try again" (review of #3690).
+    const unexplained =
+      "Secret creation conflicted. A Secret with this name may already exist in this Namespace. Check the name and Namespace state before trying again.";
+    for (const response of [
+      proxyErrorResponse(409),
+      apiErrorResponse(409, "RESOURCE_CONFLICT", "The requested platform resource already exists."),
+    ]) {
+      refusal = response;
+      await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
+      await dialog.getByRole("alert").filter({ hasText: unexplained }).waitFor();
+      assert.equal(await dialog.getByText(/Refresh, then try again/).count(), 0);
+      assert.equal(await dialog.getByText(SECRET_NAME_CONFLICT).count(), 0);
+    }
     // An unknown outcome disables Name, Value and the submit, so its message takes focus like a
     // refusal (finding 2075). It is last: the dialog refuses another try until a refresh.
     refusal = apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "refused");
