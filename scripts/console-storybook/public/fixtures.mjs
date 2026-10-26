@@ -174,6 +174,10 @@ function candidateDeploymentError(scenario, checkedAt) {
       },
     };
   }
+  // A scenario can name any failure code with the message OCC returns for it.
+  if (scenario.candidateFailure) {
+    return scenario.candidateFailure;
+  }
   if (scenario.candidateDependencyUnavailable) {
     return {
       code: "DEPENDENCY_UNAVAILABLE",
@@ -184,7 +188,8 @@ function candidateDeploymentError(scenario, checkedAt) {
   if (scenario.candidateSelected) {
     return {
       code: "REVISION_FINALIZATION_INCOMPLETE",
-      message: "Deployment reconciliation failed.",
+      message:
+        "Deployment failed. Check this version's logs; if they show nothing, ask an Installation administrator to check the controller worker log for this code.",
     };
   }
   return {
@@ -733,7 +738,7 @@ export function installFixture(scenario, evidence) {
     version: 1,
     additions: scenario.policyState === "protected" ? [policyGrant] : [],
   };
-  if (scenario.policyState === "failed") {
+  if (scenario.policyState === "failed" || scenario.policyState === "failedCeiling") {
     sandboxPolicy.application = {
       id: "00000000-0000-4000-8000-000000000009",
       revisionId: candidateRevisionId,
@@ -741,7 +746,10 @@ export function installFixture(scenario, evidence) {
       state: "failed",
       requestedBy: "identity_demo",
       requestedAt: createdAt,
-      reason: "SANDBOX_POLICY_UNCONFIRMED",
+      reason:
+        scenario.policyState === "failed"
+          ? "SANDBOX_POLICY_UNCONFIRMED"
+          : "SANDBOX_POLICY_CEILING_CHANGED",
     };
   }
   const response = (data, status = 200, errorCode, meta = {}, errorMessage, details) =>
@@ -1339,7 +1347,8 @@ export function installFixture(scenario, evidence) {
                     }
                   : {
                       code: "DEPENDENCY_UNAVAILABLE",
-                      message: "Deployment reconciliation failed.",
+                      message:
+                        "A dependency the controller needs stayed unavailable through every attempt. Deploy again; if it keeps failing, ask an admin to check the controller worker log.",
                     },
             warnings: [],
           });

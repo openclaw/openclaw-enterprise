@@ -5475,6 +5475,45 @@ export const scenarios = {
     ],
     gap: "The failure is simulated; this story does not verify a live deployment.",
   },
+  // Finding 2537: these codes read "Deployment reconciliation failed." and got the generic logs
+  // advice. Messages copy deploymentErrorMessage in packages/occ/src/state/controller-work.ts.
+  deploymentFailedAdmissionUnavailable: {
+    group: "Pages/Agent detail",
+    name: "New version failed, protected admission changed",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    candidateFailure: {
+      code: "EXECUTION_ADMISSION_UNAVAILABLE",
+      message:
+        "This version was admitted for protected execution that the Installation can no longer provide, for example after its Credential Proxy changed. Deploy again; if the deploy is refused, ask an Installation administrator to check the Credential Proxy.",
+    },
+    description:
+      "v7 failed because the Installation's protected execution changed after admission. OCC's step table says deploying again can help, so the recovery offers Deploy again first and adds no logs advice.",
+    steps: [
+      "At 1440 and 390 wide, read the message ending with the administrator step, with no 'check the failed version's logs' sentence after it.",
+      "Deploy again is the one filled button and Open v7 Logs an edged secondary button.",
+    ],
+    gap: "The failure is simulated; this story does not verify a live deployment.",
+  },
+  deploymentFailedStoredInconsistent: {
+    group: "Pages/Agent detail",
+    name: "New version failed, stored records inconsistent",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    candidateFailure: {
+      code: "INVALID_REVISION_OWNER",
+      message:
+        "The stored records for this version are inconsistent with its Agent or Namespace, so the controller did not start it and it has no runtime logs. Ask an Installation administrator to check the controller worker log for this deployment.",
+    },
+    description:
+      "v7 failed before any runtime started because its stored records disagree with its Agent. The recovery sends the reader to an administrator and offers no Deploy again.",
+    steps: [
+      "At 1440 and 390 wide, confirm the message names the administrator step with no logs advice after it, and that the only action is Open v7 Logs.",
+    ],
+    gap: "The failure is simulated; this story does not verify a live deployment.",
+  },
   deploymentFailedDeployAgainUnreadable: {
     group: "Pages/Agent detail",
     name: "New version failed, Configuration unreadable",
@@ -6025,6 +6064,15 @@ export const scenarios = {
     actions: [click("Deploy new version")],
     description:
       "A rejected deployment reports failure and re-enables the action. Focus returns to Deploy new version, described by the failure.",
+  },
+  tabLinkUnavailable: {
+    group: "Pages/Agent detail",
+    name: "Link to an unavailable tab",
+    path: `${draft}&tab=bogus`,
+    description:
+      "A link names a tab this Agent page does not have. The page shows Configuration with a note above it that names the tab and says Configuration is shown instead.",
+    steps: ["Read the note above the panel, then choose Plugins: the note goes away."],
+    gap: "The link is simulated; a reader without Installation administration gets the same note for the Access tab.",
   },
   deploySecretOperateDenied: {
     group: "Pages/Agent detail",
@@ -8479,6 +8527,11 @@ for (const [id, state, name] of [
   ["policyDenialsGap", "gap", "Policy denial window has a buffer gap"],
   ["policyDenialsMissingMetadata", "missingMetadata", "Policy denial with unknown metadata"],
   ["policyDenialsFailed", "failed", "Policy application unconfirmed"],
+  [
+    "policyApplicationCeilingChanged",
+    "failedCeiling",
+    "Policy application refused by a changed ceiling",
+  ],
   ["policyDenialsApplyRejected", "applyRejected", "Policy saved but live application rejected"],
   ["policyIncompletePreview", "incompletePreview", "Policy preview omits the validated rules"],
   ["policyUnconfirmedSave", "unconfirmedSave", "Policy save returns different rules than reviewed"],

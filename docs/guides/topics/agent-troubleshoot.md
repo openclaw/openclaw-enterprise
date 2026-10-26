@@ -36,7 +36,7 @@ GET /namespaces/:namespaceId/agents/:agentId/deployments/:revisionId
 | ----------- | ------------------------------------------------------------------------------------------------------------------------------ |
 | `queued`    | If it stays queued, ask the operator whether a worker is available.                                                            |
 | `running`   | A worker started the work. If it stays running, ask the operator to check workload startup, storage, and required credentials. |
-| `failed`    | Give the returned error code and version ID to the operator. Correct the reported cause before requesting a new deployment.    |
+| `failed`    | Follow the next step in `error.message`. If it names an administrator or operator, give them the error code and version ID.    |
 | `succeeded` | The requested work completed; this does not establish live model availability. Verify a model response separately.             |
 
 For Kubernetes workload problems, operators can use the
