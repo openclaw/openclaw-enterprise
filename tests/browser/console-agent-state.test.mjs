@@ -741,7 +741,8 @@ test("Only an administrator's session probes Installation administration and rea
 
 // Finding 2619. A member's Agent detail shows a bound Secret she may not read from the
 // Namespace's Secret list, which leaves it out and audits nothing, instead of reading the Secret,
-// which the API audits as a denial nobody attempted. An administrator still reads it.
+// which the API audits as a denial nobody attempted. An administrator still reads it, without
+// the list read (finding 2623).
 test("A member's Agent detail reads no bound Secret her Secret list leaves out", async (t) => {
   const auditSink = new InMemoryAuditSink();
   const fixture = await createConsoleAppFixture(t, { auditSink });
@@ -756,6 +757,8 @@ test("A member's Agent detail reads no bound Secret her Secret list leaves out",
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
   const secretPath = `/namespaces/${namespace.id}/secrets/${secret.id}`;
   const secretReads = (requests) => requests.filter(({ path }) => path === secretPath);
+  const listReads = (requests) =>
+    requests.filter(({ path }) => path === `/namespaces/${namespace.id}/secrets`);
   const secretDenials = () => authorizationDenials(auditSink, /^openclaw\.secrets\./);
 
   const { page: member } = await newPage(t, fixture);
@@ -772,9 +775,12 @@ test("A member's Agent detail reads no bound Secret her Secret list leaves out",
 
   const { page: admin } = await newPage(t, fixture);
   const adminRequests = apiRequests(admin, fixture.origin);
+  await trackSettledFetches(admin);
   await login(admin, fixture, url);
   await admin.getByRole("link", { name: "Bound model key", exact: true }).waitFor();
+  await waitForIdleFetches(admin);
   assert.equal(secretReads(adminRequests).length, 1);
+  assert.deepEqual(listReads(adminRequests), []);
   assert.deepEqual(secretDenials(), []);
 });
 

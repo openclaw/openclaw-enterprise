@@ -28,7 +28,11 @@ import {
   waitForInputValue,
   writeRequests,
 } from "./console-agents-browser-helpers.mjs";
-import { SECRET_CREATE_DENIED, SLACK_SETUP_HINT } from "../helpers/refusal-text.mjs";
+import {
+  BOUND_SECRET_UNLISTED,
+  SECRET_CREATE_DENIED,
+  SLACK_SETUP_HINT,
+} from "../helpers/refusal-text.mjs";
 
 // The Agent's grant of a saved Slack Secret was refused, or the IAM policy shows none (finding 1920).
 const GRANT_REFUSED =
@@ -1180,6 +1184,55 @@ describe("Agent channels", { concurrency: 3 }, () => {
       );
     });
   }
+
+  // Finding 2623. A member's channel card names a bound Secret from the view's readable Secret
+  // list, which the view reads once (finding 2619). A Secret she creates inline is not in that
+  // list, so binding it drops the list and the card reads it again: it shows the new Secret's
+  // name, not the "not listed" refusal. The member reads the Namespace's Secrets: no grant lets a
+  // member read a Secret she creates and not one already bound.
+  test("A member's Slack card names a Secret she creates inline after the Secret list was read", async (t) => {
+    const { fixture, namespace } = await readyNamespace(t, "Member inline Secret");
+    const botSecret = await fixture.createSecret(
+      namespace.id,
+      "Listed Slack bot token",
+      "hidden-listed-bot",
+    );
+    const { agent } = await createSlackAgent(fixture, namespace, {
+      name: "Member Inline Agent",
+      slug: "member-inline",
+      secretBindings: { SLACK_BOT_TOKEN: { source: botSecret.ref, delivery: { type: "env" } } },
+    });
+    const writer = await fixture.createNamespaceMember("inline-writer", namespace.id, MEMBER_WRITE);
+    const { page } = await newPage(t, fixture, { browser });
+    const requests = apiRequests(page, fixture.origin);
+    const secretsPath = `/namespaces/${namespace.id}/secrets`;
+    const listReads = () =>
+      requests.filter(({ method, path }) => method === "GET" && path === secretsPath).length;
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, "draft", "channels"),
+      writer.credentials,
+    );
+    const card = page.locator(".configuration-summary");
+    // The bound bot token's name comes from the list, read before the create.
+    await card.getByRole("link", { name: botSecret.name, exact: true }).waitFor();
+    assert.ok(listReads() > 0);
+
+    await page.getByRole("button", { name: "Edit Slack" }).click();
+    const drawer = page.getByRole("dialog", { name: "Edit Slack" });
+    await drawer.getByLabel("Slack app token", { exact: true }).fill("Create a new Secret");
+    await drawer.getByRole("option", { name: "Create new Secret...", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Create Slack app token Secret" });
+    await dialog.getByLabel("Name", { exact: true }).fill("Inline Slack app token");
+    await dialog.getByLabel("Value", { exact: true }).fill("hidden-inline-app");
+    await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
+    await dialog.waitFor({ state: "hidden" });
+    await drawer.getByRole("button", { name: "Save configuration", exact: true }).click();
+    await drawer.waitFor({ state: "hidden" });
+    await card.getByRole("link", { name: "Inline Slack app token", exact: true }).waitFor();
+    assert.equal(await card.getByText(BOUND_SECRET_UNLISTED, { exact: true }).count(), 0);
+  });
 
   test("Agent credentials retry outstanding Slack Secret grants after changing one token", async (t) => {
     const { fixture, namespace } = await readyNamespace(t, "Runtime Slack retained grant");
