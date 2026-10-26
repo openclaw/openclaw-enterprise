@@ -43,6 +43,7 @@ import {
   waitForEnabled,
   waitForIdleFetches,
   waitForInputValue,
+  waitForShownInputValue,
   secretOptionLabel,
 } from "./console-agents-browser-helpers.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
@@ -674,7 +675,7 @@ test("the Credentials and Repositories tabs are one card each with a heading gap
   );
   const page = await openTab(t, fixture, namespace, agent, "credentials");
   const secretField = page.getByLabel("API key Secret");
-  await waitForInputValue(secretField, secretOptionLabel(first));
+  await waitForShownInputValue(secretField, secretOptionLabel(first));
   const gap = await page
     .locator("fieldset.harness-auth-fields")
     .evaluate(

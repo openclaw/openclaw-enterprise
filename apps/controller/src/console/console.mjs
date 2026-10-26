@@ -363,6 +363,11 @@ function probeInstallationAccess(owner) {
   if (owner && installationAccessProbe?.owner === owner) {
     return installationAccessProbe.answer;
   }
+  // A page load asks the permission answer first, so an earlier view's probe can settle while
+  // that read runs: reuse its answer instead of sending (and auditing) the probe again.
+  if (owner && observabilityOwner === owner) {
+    return Promise.resolve({ url: observabilityUrl, admin: installationAdmin, settled: true });
+  }
   const probe = { owner };
   probe.answer = request("/observability", { outlivesView: true })
     .then(
