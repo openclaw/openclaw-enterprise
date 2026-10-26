@@ -56,6 +56,11 @@ import {
   CONFIGURATION_EDITS_PENDING,
   LOG_TEXT_DENIED,
   NEW_VERSIONS_READ,
+  STOP_CANCELS_FIRST_DEPLOYMENT,
+  STOP_CONFIRMATION,
+  STOP_FIRST_DEPLOYMENT_CONFIRMATION,
+  STOP_RUNNING_VERSION,
+  STOP_UNKNOWN_DEPLOYMENT_CONFIRMATION,
 } from "../helpers/refusal-text.mjs";
 
 // The Agent page's first screen while its reads settle and its polls run: loading cues, quiet
@@ -484,19 +489,10 @@ test("Stop stays enabled and says it cancels a first deployment that is queued",
   const stop = stopRegion.getByRole("button", { name: "Stop Agent", exact: true });
   await waitForEnabled(stop);
   assert.equal(await stopRegion.getByText(/nothing to stop/).count(), 0);
-  await stopRegion
-    .getByText("Cancels the deployment in progress. The Agent stays and can be deployed again.", {
-      exact: true,
-    })
-    .waitFor();
+  await stopRegion.getByText(STOP_CANCELS_FIRST_DEPLOYMENT, { exact: true }).waitFor();
   await stop.click();
   const dialog = page.getByRole("dialog", { name: "Stop this Agent?" });
-  await dialog
-    .getByText(
-      "No version is serving yet, so this cancels the deployment in progress. Configuration, versions, Credentials, and workspace data are retained. Deploy a new version to start the Agent again.",
-      { exact: true },
-    )
-    .waitFor();
+  await dialog.getByText(STOP_FIRST_DEPLOYMENT_CONFIRMATION, { exact: true }).waitFor();
   assert.equal(await dialog.getByText(/runtime gateway/).count(), 0);
   await dialog.getByRole("button", { name: "Stop Agent", exact: true }).click();
   await stopRegion
@@ -535,7 +531,7 @@ test("Stop stays when the Agents list's Agent read is older than a first deploym
   await waitForEnabled(stop);
   await stop.click();
   const dialog = page.getByRole("dialog", { name: "Stop Stale list?" });
-  await dialog.getByText(/^This interrupts the current runtime gateway/).waitFor();
+  await dialog.getByText(STOP_CONFIRMATION, { exact: true }).waitFor();
   assert.equal(await dialog.getByText(/No version is serving yet/).count(), 0);
 });
 
@@ -570,14 +566,10 @@ test("Agent detail keeps Stop when its Agent reread fails after a first deployme
   await summary.getByText("v1 · Completed", { exact: true }).waitFor();
   const stop = stopRegion.getByRole("button", { name: "Stop Agent", exact: true });
   await waitForEnabled(stop);
-  await stopRegion
-    .getByText("Stops the running version. The Agent stays and can be deployed again.", {
-      exact: true,
-    })
-    .waitFor();
+  await stopRegion.getByText(STOP_RUNNING_VERSION, { exact: true }).waitFor();
   await stop.click();
   const dialog = page.getByRole("dialog", { name: "Stop this Agent?" });
-  await dialog.getByText(/^This interrupts the current runtime gateway/).waitFor();
+  await dialog.getByText(STOP_CONFIRMATION, { exact: true }).waitFor();
 });
 
 test("Stop stays when a first deployment's record cannot be read", async (t) => {
@@ -586,9 +578,6 @@ test("Stop stays when a first deployment's record cannot be read", async (t) => 
   await page.route(deploymentRecordUrl(fixture, namespace.id, agent.id, first.id), (route) =>
     route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Service unavailable.")),
   );
-  // Without the outcome, the dialog names both things Stop may do.
-  const unknownOutcome =
-    "This cancels a deployment in progress or, if a version already started, interrupts its runtime gateway and ends any reply in progress. Configuration, versions, Credentials, and workspace data are retained. Deploy a new version to start the Agent again.";
 
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
   const row = page.getByRole("row").filter({ hasText: "Unread first" });
@@ -597,7 +586,8 @@ test("Stop stays when a first deployment's record cannot be read", async (t) => 
   await waitForEnabled(rowStop);
   await rowStop.click();
   let dialog = page.getByRole("dialog", { name: "Stop Unread first?" });
-  await dialog.getByText(unknownOutcome, { exact: true }).waitFor();
+  // Without the outcome, the dialog names both things Stop may do.
+  await dialog.getByText(STOP_UNKNOWN_DEPLOYMENT_CONFIRMATION, { exact: true }).waitFor();
   await dialog.getByRole("button", { name: "Cancel" }).click();
   await dialog.waitFor({ state: "hidden" });
 
@@ -608,7 +598,7 @@ test("Stop stays when a first deployment's record cannot be read", async (t) => 
   await waitForEnabled(stop);
   await stop.click();
   dialog = page.getByRole("dialog", { name: "Stop this Agent?" });
-  await dialog.getByText(unknownOutcome, { exact: true }).waitFor();
+  await dialog.getByText(STOP_UNKNOWN_DEPLOYMENT_CONFIRMATION, { exact: true }).waitFor();
 });
 
 // The failed first version's own page (finding 2403) said "Not verified" for Live serving while

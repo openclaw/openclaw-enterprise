@@ -11,6 +11,7 @@ import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
   accessBindingPostRequests,
+  accessibleDescription,
   AGENT_READ,
   apiRequests,
   deniedCreateSecretOption,
@@ -68,6 +69,7 @@ import {
   waitForLiveControls,
 } from "./console-agents-test-support.mjs";
 import {
+  AGENT_DEPLOY_NOT_INCLUDED,
   AGENT_SAVE_DENIED,
   AGENT_SOURCES_DENIED,
   askForGrant,
@@ -84,6 +86,8 @@ import {
   SECRET_CREATE_DENIED,
   SECRET_NAME_CONFLICT,
   SECRET_OPERATE_DENIED,
+  STOP_CONFIRMATION,
+  STOP_RUNNING_VERSION,
   WORKSPACE_FILES_UNAVAILABLE,
   credentialCheckedAtDeploy,
   namespaceListDenied,
@@ -3034,16 +3038,7 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
     .waitFor();
   // The dialog names its target Agent as text, and in its accessible description.
   await dialog.getByText("Stop Candidate", { exact: true }).waitFor();
-  assert.match(
-    await dialog.evaluate((node) =>
-      node
-        .getAttribute("aria-describedby")
-        .split(" ")
-        .map((id) => node.ownerDocument.getElementById(id)?.textContent)
-        .join(" "),
-    ),
-    /^Agent: Stop Candidate This interrupts the current runtime gateway/,
-  );
+  assert.equal(await accessibleDescription(dialog), `Agent: Stop Candidate ${STOP_CONFIRMATION}`);
   await dialog.getByRole("button", { name: "Cancel" }).click();
   await dialog.waitFor({ state: "hidden" });
   assert.equal(agentStopRequests(requests, namespace.id, agent.id).length, 0);
@@ -3136,7 +3131,7 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
   // stop intent must not say it cancels one, nor report one cancelled (finding D691).
   await page.getByRole("button", { name: "Request Stop again", exact: true }).click();
   dialog = page.getByRole("dialog", { name: "Stop this Agent?" });
-  await dialog.getByText(/^This interrupts the current runtime gateway/).waitFor();
+  await dialog.getByText(STOP_CONFIRMATION, { exact: true }).waitFor();
   assert.equal(await dialog.getByText(/deployment in progress/).count(), 0);
   const repeated = page.waitForResponse(
     (response) =>
@@ -3671,7 +3666,7 @@ test("a read-only principal sees Agent mutation controls disabled or absent befo
 
   const draft = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
   await page.goto(draft.href);
-  await page.getByText("Your access does not include deploying this Agent.").waitFor();
+  await page.getByText(AGENT_DEPLOY_NOT_INCLUDED, { exact: true }).waitFor();
   assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
 
   // The summary is a probe, not an attempted operation: no write was sent and nothing was
@@ -3748,7 +3743,7 @@ for (const viewport of [
     const rows = [
       {
         name: "Stop Agent",
-        sentence: "Stops the running version. The Agent stays and can be deployed again.",
+        sentence: STOP_RUNNING_VERSION,
         dialog: "Stop this Agent?",
         confirm: "Stop Agent",
         prose: /Configuration, versions, Credentials, and workspace data are retained\./,
@@ -4183,7 +4178,7 @@ test("a reader without update views the version draft read-only", async (t) => {
     await page.getByText("Edit and save Configuration, plugins, or Channels").isVisible(),
     false,
   );
-  await page.getByText("Your access does not include deploying this Agent.").waitFor();
+  await page.getByText(AGENT_DEPLOY_NOT_INCLUDED, { exact: true }).waitFor();
   const entry = page.getByRole("button", { name: "View version draft", exact: true });
   await entry.getByText("Read-only Configuration", { exact: true }).waitFor();
 
@@ -4491,7 +4486,7 @@ test("a late permission answer turns a reader's Channels and Channel Secrets rea
   await page
     .getByRole("button", { name: "Set up credentials", exact: true })
     .waitFor({ state: "hidden" });
-  await page.getByText("Your access does not include deploying this Agent.").waitFor();
+  await page.getByText(AGENT_DEPLOY_NOT_INCLUDED, { exact: true }).waitFor();
 
   // The Channel Secrets panel was built before the answer, with enabled pickers.
   await page.getByRole("tab", { name: "Credentials", exact: true }).click();
