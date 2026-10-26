@@ -674,8 +674,11 @@ test("service API keys authenticate scoped automation without replacing sessions
       { env: adminEnv },
     );
     assert.deepEqual(JSON.parse(revokedRotated.stdout), { id: rotatedDetails.id, revoked: true });
+    // A revoked key's 401 names the key file and who issues a new key, not OCC's cookie and
+    // header advice (finding D745).
     await assert.rejects(run(occCli, ["iam", "service-principal", "list"], { env: rotatedEnv }), {
-      stderr: /HTTP 401/,
+      stderr:
+        /^Error: OCC rejected the service key in \S+rotated-admin-key\.json: it is invalid, expired or revoked\. Ask an Installation administrator for a new key\.\n$/,
     });
     // A secret Role bound to the Namespace could never grant anything there: the CLI shows
     // the API's refusal naming the Permissions instead of reporting a created binding.
