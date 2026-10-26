@@ -119,8 +119,9 @@ requires registry access.
 
 [openclaw-source.json](openclaw-source.json) selects the OpenClaw commit, source
 archive checksum, and fixed upstream build timestamp. Update these values
-together when changing the selected source. The runtime Dockerfile has no source
-defaults: missing or invalid arguments, or arguments that differ from this
+together when changing the selected source; follow the
+[contributor cookbook](../../docs/contributing/cookbook.md#update-the-pinned-openclaw-source).
+The runtime Dockerfile has no source defaults: missing or invalid arguments, or arguments that differ from this
 manifest, fail the build before the source archive download. Archive checksum
 verification remains required.
 

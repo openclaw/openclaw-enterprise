@@ -26,6 +26,8 @@ assign existing issues to a two-week iteration in the project.
 
 ## Build, test, and debug
 
+- [Cookbook](cookbook.md) gives maintenance recipes, including how to update
+  the pinned OpenClaw source and qualify the resulting images.
 - [Local development](local-development.md) covers the checkout, a running local
   platform, and how to choose checks for your change.
 - [Console components and styles](console-ui.md) shows how to build a page with
