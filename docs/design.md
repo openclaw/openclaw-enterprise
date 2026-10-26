@@ -27,7 +27,7 @@ state into infrastructure and runtime operations.
 See [OpenClaw Enterprise concepts](guides/concepts.md) for detailed explanations
 of Installations, Namespaces, Agents, Harnesses, configuration, and identity.
 
-The diagram shows the target architecture. **Agent Gateway, Agent Identity,
+The diagram shows the target architecture. **Tool Gateway, Agent Identity,
 Model Registry, Router, and the shared context layer are planned additions.**
 Dashed boxes labeled “Planned” and dashed arrows identify these additions and
 their pending connections. Solid arrows show implemented relationships, subject
@@ -35,7 +35,7 @@ to the [implementation status](#implementation-status) and Driver limits below.
 
 ![OCE target architecture: control plane on the left, data plane on the right, and shared context and observability layers below. Dashed components and connections are planned.](assets/oce-architecture.svg)
 
-The planned Agent Gateway and Agent Identity components are distinct from the
+The planned Tool Gateway and Agent Identity components are distinct from the
 per-Agent OpenClaw gateways, ServicePrincipals, and Kubernetes identities that
 exist today. The Sandbox boundary depends on the selected Compute and Sandbox
 Drivers. The shared context layer will cover knowledge retrieval and grounding,
@@ -92,7 +92,7 @@ These approved requirements are not established by the implemented architecture:
 
 | Area                         | Current boundary and remaining work                                                                                                                                                                                                                                                                                                                    |
 | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Agent Gateway                | The Agent Gateway component and its tool connections in the target diagram are planned additions. Existing per-Agent OpenClaw gateways remain part of the supported runtime.                                                                                                                                                                           |
+| Tool Gateway                 | The Tool Gateway component and its tool connections in the target diagram are planned additions. Existing per-Agent OpenClaw gateways remain part of the supported runtime.                                                                                                                                                                            |
 | Shared context               | The shared layer for knowledge retrieval, grounding, session history, and long-term memory is planned.                                                                                                                                                                                                                                                 |
 | External admission           | Sessions and service keys authenticate to OCC. The separate OpenClaw Access Gateway (OAG) and trusted-ingress admission protocol remain planned. See [access design](design/access.md).                                                                                                                                                                |
 | Agent Identity               | The Agent Identity component is planned. Agents own ServicePrincipals and may receive projected Kubernetes tokens. OCC token verification, identity exchange, and workload API authentication remain deferred. See [authorization](reference/authorization.md#principals).                                                                             |
