@@ -279,19 +279,19 @@ The logs cannot tell you, and you should not infer:
 
 ## Errors
 
-| Response                              | Meaning and action                                                                                                                     |
-| ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `403 FORBIDDEN`                       | Missing grants for that tier. The console names the grants and stops asking for this page; after a revoke it says your access changed. |
-| `400 RUNTIME_LOGS_CURSOR_INVALID`     | The cursor belongs to another principal, version or source, or was altered. Start a new view.                                          |
-| `400 RUNTIME_LOGS_POD_INVALID`        | The Pod is not a current Pod of this version and source.                                                                               |
-| `400 RUNTIME_LOGS_SOURCE_UNAVAILABLE` | This version has no such source, for example no Sandbox log or no dedicated Harness.                                                   |
-| `429 RUNTIME_LOGS_RATE_LIMITED`       | Wait for `Retry-After`.                                                                                                                |
-| `501 NOT_IMPLEMENTED`                 | The Compute Driver does not expose runtime logs, or an operator disabled them.                                                         |
-| `503 RUNTIME_LOGS_CLUSTER_RBAC`       | The cluster or OpenShell denied the read. An operator must grant the roles or scope.                                                   |
-| `503 RUNTIME_LOGS_SANDBOX_NOT_FOUND`  | OpenShell reports no such sandbox: not provisioned yet, removed, or outside OCC's Workspace.                                           |
-| `503 RUNTIME_LOGS_AUDIT_UNAVAILABLE`  | The view could not be audited, so nothing was read. Retry.                                                                             |
-| `503 RUNTIME_LOGS_UNAVAILABLE`        | The runtime or cluster is unreachable. Retry.                                                                                          |
-| `504 RUNTIME_LOGS_TIMEOUT`            | The read exceeded 10 seconds. Retry or read fewer lines.                                                                               |
+| Response                              | Meaning and action                                                                            |
+| ------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `403 FORBIDDEN`                       | Missing grants for that tier. The console names the grants and stops asking for this page.    |
+| `400 RUNTIME_LOGS_CURSOR_INVALID`     | The cursor belongs to another principal, version or source, or was altered. Start a new view. |
+| `400 RUNTIME_LOGS_POD_INVALID`        | The Pod is not a current Pod of this version and source.                                      |
+| `400 RUNTIME_LOGS_SOURCE_UNAVAILABLE` | This version has no such source, for example no Sandbox log or no dedicated Harness.          |
+| `429 RUNTIME_LOGS_RATE_LIMITED`       | Wait for `Retry-After`.                                                                       |
+| `501 NOT_IMPLEMENTED`                 | The Compute Driver does not expose runtime logs, or an operator disabled them.                |
+| `503 RUNTIME_LOGS_CLUSTER_RBAC`       | The cluster or OpenShell denied the read. An operator must grant the roles or scope.          |
+| `503 RUNTIME_LOGS_SANDBOX_NOT_FOUND`  | OpenShell reports no such sandbox: not provisioned yet, removed, or outside OCC's Workspace.  |
+| `503 RUNTIME_LOGS_AUDIT_UNAVAILABLE`  | The view could not be audited, so nothing was read. Retry.                                    |
+| `503 RUNTIME_LOGS_UNAVAILABLE`        | The runtime or cluster is unreachable. Retry.                                                 |
+| `504 RUNTIME_LOGS_TIMEOUT`            | The read exceeded 10 seconds. Retry or read fewer lines.                                      |
 
 ## Enable or disable (operators)
 
