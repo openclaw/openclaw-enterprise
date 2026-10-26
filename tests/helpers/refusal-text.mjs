@@ -493,6 +493,11 @@ export const GRANT_EXCEEDS_CEILING = "The grant exceeds the Installation delegat
 // Plugin discovery with a credential the plugin service rejected (agents/plugin-discovery.mts).
 export const PLUGIN_CREDENTIALS_REJECTED =
   "The credential was rejected or cannot access plugins. Check its permissions.";
+
+// Finding 2619. A bound Secret the caller's readable Secret list leaves out, shown without the
+// audited metadata read; and the Backends refusal a non-administrator gets without the read.
+export const BOUND_SECRET_UNLISTED = `A Secret is bound. Its name is unavailable: your access does not include reading it, or it was deleted. ${askForGrant("Secret read on it")}`;
+export const BACKENDS_DENIED = `Your account does not have access to Backends. Backends apply to the whole Installation, so choosing another Namespace would not change this. ${askForGrant("access")}`;
 // A write the console names after the API refused it, where it was tried (errcopy-console-1026b).
 export const actionRefused = (action, task, grant) =>
   `${action} was refused: your access does not include ${task}. ${askForGrant(grant)}`;

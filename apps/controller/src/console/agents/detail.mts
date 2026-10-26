@@ -4046,6 +4046,10 @@ export async function renderAgentDetail(
             servicePrincipalId,
           ]),
           operatorId: context.operatorId,
+          ...(context.installationAdmin === null
+            ? {}
+            : { installationAdmin: context.installationAdmin }),
+          namespace: context.namespace,
           namespaceId,
           request,
           agentName: agent.name,

@@ -39,6 +39,8 @@ import {
   AGENT_STOP_AND_DELETE_DENIED,
   AGENT_STOP_DENIED,
   askForGrant,
+  BACKENDS_DENIED,
+  BOUND_SECRET_UNLISTED,
   MALFORMED_REQUEST,
   RESOURCE_CONFLICT,
   requestedVersionUnavailable,
@@ -735,6 +737,89 @@ test("Only an administrator's session probes Installation administration and rea
     "GET /observability",
   ]);
   assert.deepEqual(adminDenials(), []);
+});
+
+// Finding 2619. A member's Agent detail shows a bound Secret she may not read from the
+// Namespace's Secret list, which leaves it out and audits nothing, instead of reading the Secret,
+// which the API audits as a denial nobody attempted. An administrator still reads it.
+test("A member's Agent detail reads no bound Secret her Secret list leaves out", async (t) => {
+  const auditSink = new InMemoryAuditSink();
+  const fixture = await createConsoleAppFixture(t, { auditSink });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Bound Secrets", { ready: true });
+  const secret = await fixture.createSecret(namespace.id, "Bound model key", "hidden-model");
+  const agent = await fixture.createAgent(namespace.id, "Bound Agent", nativeValues("x"), {
+    harnessAuth: { method: "api_key", source: secret.ref },
+  });
+  // Agent and Configuration read, no Secret read.
+  const reader = await fixture.createNamespaceMember("bound-reader", namespace.id, AGENT_READ);
+  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
+  const secretPath = `/namespaces/${namespace.id}/secrets/${secret.id}`;
+  const secretReads = (requests) => requests.filter(({ path }) => path === secretPath);
+  const secretDenials = () => authorizationDenials(auditSink, /^openclaw\.secrets\./);
+
+  const { page: member } = await newPage(t, fixture);
+  await trackSettledFetches(member);
+  const memberRequests = apiRequests(member, fixture.origin);
+  await login(member, fixture, url, reader.credentials);
+  const unlisted = member.getByText(BOUND_SECRET_UNLISTED, { exact: true });
+  await unlisted.waitFor();
+  // The ID stays in the title for the administrator who grants read on it.
+  assert.equal(await unlisted.getAttribute("title"), secret.id);
+  await waitForIdleFetches(member);
+  assert.deepEqual(secretReads(memberRequests), []);
+  assert.deepEqual(secretDenials(), []);
+
+  const { page: admin } = await newPage(t, fixture);
+  const adminRequests = apiRequests(admin, fixture.origin);
+  await login(admin, fixture, url);
+  await admin.getByRole("link", { name: "Bound model key", exact: true }).waitFor();
+  assert.equal(secretReads(adminRequests).length, 1);
+  assert.deepEqual(secretDenials(), []);
+});
+
+// Finding 2619. Backends need Installation administration. A member's Backends page shows the
+// refusal without reading Backends, which the API audits as a denial nobody attempted, on each
+// page load; an administrator still reads them.
+test("Only an administrator's Backends page reads Backends", async (t) => {
+  const auditSink = new InMemoryAuditSink();
+  const fixture = await createConsoleAppFixture(t, { auditSink });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Backends access", { ready: true });
+  const reader = await fixture.createNamespaceMember("backends-reader", namespace.id, AGENT_READ);
+  const backendsPage = `/console/backends?namespace=${namespace.id}`;
+  const backendsReads = (requests) => requests.filter(({ path }) => path === "/backends");
+  const backendsDenials = () => authorizationDenials(auditSink, /^openclaw\.backends\./);
+
+  const { page: member } = await newPage(t, fixture);
+  await trackSettledFetches(member);
+  const memberRequests = apiRequests(member, fixture.origin);
+  await login(member, fixture, backendsPage, reader.credentials);
+  const denial = member.locator(".state-panel");
+  await denial.getByText(BACKENDS_DENIED, { exact: true }).waitFor();
+  // The member answer is not kept as settled, so the header's Refresh asks it again; it still
+  // reads no Backends.
+  const oldPanel = await denial.elementHandle();
+  await member.getByRole("button", { name: "Refresh", exact: true }).click();
+  await member.waitForFunction((panel) => !panel.isConnected, oldPanel);
+  await member.locator(".state-panel").getByText(BACKENDS_DENIED, { exact: true }).waitFor();
+  await waitForIdleFetches(member);
+  assert.equal(await member.getByRole("combobox", { name: "Namespace", exact: true }).count(), 0);
+  assert.deepEqual(backendsReads(memberRequests), []);
+  assert.deepEqual(backendsDenials(), []);
+
+  const { page: admin } = await newPage(t, fixture);
+  await trackSettledFetches(admin);
+  const adminRequests = apiRequests(admin, fixture.origin);
+  const adminRead = admin.waitForResponse(
+    (response) => new URL(response.url()).pathname === "/backends" && response.status() === 200,
+  );
+  await login(admin, fixture, backendsPage);
+  await adminRead;
+  await waitForIdleFetches(admin);
+  assert.equal(backendsReads(adminRequests).length, 1);
+  assert.equal(await admin.getByText(BACKENDS_DENIED, { exact: true }).count(), 0);
+  assert.deepEqual(backendsDenials(), []);
 });
 
 const FORBIDDEN = {

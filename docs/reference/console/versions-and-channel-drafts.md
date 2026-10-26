@@ -67,7 +67,10 @@ provider readiness.
 Configuration and Slack summaries show bound Secret names and IDs for the viewed
 draft or version. Names require exact same-Namespace Secret `read`; a denied
 read says a Secret is bound and its name is hidden, with the ID in the tooltip, and
-missing or failed reads show the ID with **Metadata unavailable**. **No Secret
+missing or failed reads show the ID with **Metadata unavailable**. For a caller
+who is not an Installation administrator, a Secret that the readable Secret list
+leaves out is not read: it shows as unavailable, because the caller cannot read
+it or it was deleted, with the ID in the tooltip. **No Secret
 bound** means no binding. Values are never read, and metadata does not prove
 credential validity.
 

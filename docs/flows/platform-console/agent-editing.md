@@ -163,7 +163,11 @@ owns Slack requirements and rejected native shapes; Teams remains native JSON.
 `agents/detail.mts:renderConfigurationTab` reads draft Harness authentication
 from the Agent, or admitted authentication and channel `secretBindings` from the
 version. `agents/secret-picker.mjs:renderSecretReference` checks the source
-Namespace and reads exact Secret metadata. Successful reads link names and IDs;
+Namespace and reads exact Secret metadata. On Agent detail, unless the session
+is an Installation administrator, it first reads the readable Namespace's Secret
+list once per view: the list audits nothing it leaves out, while each refused
+exact read is an audited denial. A Secret it leaves out shows as unavailable
+without the exact read (finding 2619). Successful reads link names and IDs;
 absent, loading, and unavailable states remain distinct. Failures retain IDs;
 stale responses are ignored and current 401s expire the session. Summaries need
 neither collection permission nor Secret values.

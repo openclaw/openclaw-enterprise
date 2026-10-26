@@ -35,11 +35,18 @@ import { secretValueControl } from "../secrets.mjs";
 
 // A preview can show an existing reference without a live Namespace or request function.
 type SecretContext = Partial<AgentAccessContext> & {
+  // The selected Namespace when this session can read it (the console's Namespace list has it),
+  // so its Secret list answers without an audited refusal; undefined otherwise.
+  namespace?: { id: string } | undefined;
   operatorId?: string;
   installationAdmin?: boolean | null;
   // The Namespace permission answer's secrets.create: undefined when it is unknown.
   secretsCreateAllowed?: (() => Promise<boolean | undefined>) | undefined;
 };
+
+// A bound Secret the caller's readable Secret list leaves out (finding 2619).
+export const SECRET_UNLISTED =
+  "A Secret is bound. Its name is unavailable: your access does not include reading it, or it was deleted.";
 
 // Shown on a listed Secret the caller may read but not operate: a save that binds it would be
 // refused (finding 2453).
@@ -148,7 +155,49 @@ const secretNameKey = (context: SecretContext, secretId: string) =>
 // reads again. A failed read is dropped, so the next render asks again.
 type SecretRequest = NonNullable<SecretContext["request"]>;
 const secretMetadataReads = new WeakMap<SecretRequest, Map<string, Promise<unknown>>>();
-function readSecretMetadata(request: SecretRequest, href: string) {
+// The IDs of the Secrets the caller may read, per view, from the readable Namespace's Secret
+// list. The list returns only Secrets with exact read and audits nothing it leaves out, while each
+// refused metadata read is audited as an authorization denial nobody attempted (finding 2619). A
+// Secret the list leaves out is one the caller may not read, or one a historical version still
+// names after it was deleted: it shows as unavailable without the read. Installation
+// administrators read each Secret as before: no extra list read, and a deleted one still shows
+// as missing. Null when the list is not used or unknown (no readable Namespace, or a failed read,
+// which is dropped so the next render asks again); then each Secret is read.
+const readableSecretLists = new WeakMap<SecretRequest, Promise<ReadonlySet<string> | null>>();
+function readableSecretIds(context: SecretContext, request: SecretRequest) {
+  const { namespaceId } = context;
+  if (!namespaceId || context.namespace?.id !== namespaceId || context.installationAdmin === true) {
+    return Promise.resolve(null);
+  }
+  const known = readableSecretLists.get(request);
+  if (known) {
+    return known;
+  }
+  const read = request(`${namespacePath(namespaceId)}/secrets`).then(
+    (items) =>
+      Array.isArray(items)
+        ? new Set(
+            items
+              .map((item: unknown) => secretMetadata(item, namespaceId)?.id)
+              .filter((id) => id !== undefined),
+          )
+        : null,
+    () => null,
+  );
+  readableSecretLists.set(request, read);
+  void read.then((ids) => {
+    if (ids === null && readableSecretLists.get(request) === read) {
+      readableSecretLists.delete(request);
+    }
+  });
+  return read;
+}
+function readSecretMetadata(
+  context: SecretContext,
+  request: SecretRequest,
+  href: string,
+  secretId: string,
+) {
   let reads = secretMetadataReads.get(request);
   if (!reads) {
     reads = new Map();
@@ -158,7 +207,11 @@ function readSecretMetadata(request: SecretRequest, href: string) {
   if (known) {
     return known;
   }
-  const read = request(href);
+  const read = readableSecretIds(context, request).then((readable) =>
+    readable && !readable.has(secretId)
+      ? Promise.reject(Object.assign(new Error("Secret not listed."), { unlisted: true }))
+      : request(href),
+  );
   reads.set(href, read);
   read.catch(() => {
     if (reads.get(href) === read) {
@@ -167,9 +220,13 @@ function readSecretMetadata(request: SecretRequest, href: string) {
   });
   return read;
 }
-/** Drops the view's answer for a Secret a field just bound, so its summary reads it fresh. */
+/**
+ * Drops the view's answer for a Secret a field just bound, so its summary reads it fresh, and
+ * the view's Secret list, which predates a Secret created inline.
+ */
 function forgetSecretMetadata(context: SecretContext, secretId: string) {
   if (typeof context.request === "function" && context.namespaceId) {
+    readableSecretLists.delete(context.request);
     secretMetadataReads
       .get(context.request)
       ?.delete(secretMetadataPath(context.namespaceId, secretId));
@@ -213,7 +270,7 @@ export function renderSecretReference(context: SecretContext, source?: SecretRef
   } else {
     node.replaceChildren(secretMetadataLink(href, known));
   }
-  readSecretMetadata(context.request, href)
+  readSecretMetadata(context, context.request, href, source.id)
     .then((value) => {
       if (context.isCurrent && !context.isCurrent()) {
         return;
@@ -243,8 +300,12 @@ export function renderSecretReference(context: SecretContext, source?: SecretRef
       }
       const { status } = requestFailure(cause);
       // A refused read hides the Secret's name; the ID stays in the title for the administrator
-      // who grants read on it (finding 2549).
-      if (status === 403) {
+      // who grants read on it (finding 2549). A Secret the readable list leaves out was not read:
+      // it is unreadable, or deleted after a historical version bound it (finding 2619).
+      if (responseFields(cause).unlisted === true) {
+        node.textContent = `${SECRET_UNLISTED} ${askForGrant("Secret read on it")}`;
+        node.title = source.id;
+      } else if (status === 403) {
         node.textContent = `A Secret is bound. Its name is hidden because your access does not include reading it. ${askForGrant("Secret read on it")}`;
         node.title = source.id;
       } else {

@@ -44,6 +44,8 @@ interface ChannelDraft {
 export interface ChannelDrawerContext extends SlackDirectoryContext {
   drafts?: Drafts;
   baseline?: string;
+  // The selected Namespace when readable: bound Secret summaries check its Secret list first.
+  namespace?: { id: string } | undefined;
   operatorId?: string;
   installationAdmin?: boolean;
   agentName?: string | (() => string);
