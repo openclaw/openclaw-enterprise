@@ -52,6 +52,16 @@ another Namespace or Installation endpoints. An Installation-scoped key still
 needs its principal’s own grants; it does not inherit the issuer’s. See
 [service key scope](../authentication/service-api-keys.md#request-admission-and-scope).
 
+## Denial messages
+
+A `403 FORBIDDEN` for a grant you lack names it and who grants it, for example
+`Not authorized: this needs Agent deploy on Agent agt_1. Ask an Installation
+administrator to grant it.` A create names its Namespace and says that
+Namespace Roles cannot grant create. The message names a resource ID only when
+your request sent it, never a binding, Role or Restriction. A Restriction, a
+missing grant and a resource that does not exist get the same message. A denial
+that names no grant says `The exact platform operation was not authorized.`
+
 ## Additional checks
 
 - [Experimental personal Codex login](../../guides/deploy/credential-lifecycle.md#use-a-personal-codex-login)
