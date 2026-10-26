@@ -120,9 +120,9 @@ export class SlackChannelDriver implements ChannelDriver {
   readonly implementation = "occ/slack-channel";
   private readonly request: typeof fetch;
   private readonly proxy?: ProxyAgent;
-  // Production sets expectProxy: its default-deny API egress reaches Slack through a configured
-  // proxy. Without one, an unanswered check names that setting; a route an operator approved
-  // instead still works.
+  // Production sets expectProxy unless Helm reports open HTTPS egress: its default-deny API
+  // egress reaches Slack through a configured proxy. Without one, an unanswered check names that
+  // setting; a route an operator approved instead still works.
   private readonly proxyMissing: boolean;
 
   constructor(
