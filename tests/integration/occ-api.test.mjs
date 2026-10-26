@@ -3135,7 +3135,7 @@ test("a refused deployment's status names its cause and remedy without naming pr
     INVALID_REVISION_OWNER:
       "The stored records for this version are inconsistent with its Agent or Namespace, so the controller did not start it and it has no runtime logs. Ask an Installation administrator to check the controller worker log for this deployment.",
     INVALID_HARNESS_AUTH:
-      "This version's Harness authentication cannot be used: its Secret or ServiceAccount is outside the Agent's Namespace, or its method is not supported. Choose the Harness authentication again on the Agent's Credentials, then deploy a new version.",
+      "This version's Harness authentication cannot be used: its Secret or ServiceAccount is outside the Agent's Namespace, or its method is not supported. Choose the Harness authentication again in the Agent's Credentials, then deploy a new version.",
     EXECUTION_ADMISSION_UNAVAILABLE:
       "This version was admitted for protected execution that the Installation can no longer provide, for example after its Credential Proxy changed. Deploy again to admit a version for the current setup; if the deploy is refused, ask an Installation administrator to check the Installation's Credential Proxy.",
     REPOSITORY_PROXY_ADMISSION_MISMATCH:

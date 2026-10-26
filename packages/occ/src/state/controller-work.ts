@@ -813,7 +813,7 @@ function deploymentErrorMessage(code: string): string {
       return "The Sandbox gateway still did not answer the controller at the deployment deadline. Deploy again; if it keeps failing, ask an operator to check the Sandbox gateway.";
     // These codes used to fall through to the fallback below, which named no step (finding 2537).
     case "INVALID_HARNESS_AUTH":
-      return "This version's Harness authentication cannot be used: its Secret or ServiceAccount is outside the Agent's Namespace, or its method is not supported. Choose the Harness authentication again on the Agent's Credentials, then deploy a new version.";
+      return "This version's Harness authentication cannot be used: its Secret or ServiceAccount is outside the Agent's Namespace, or its method is not supported. Choose the Harness authentication again in the Agent's Credentials, then deploy a new version.";
     case "INVALID_AGENT_PRINCIPAL":
       return "The Agent's own identity, which this version runs as, is missing from the Installation, so the controller did not start the version. Ask an Installation administrator to check the Agent and the controller worker log.";
     case "INVALID_SECRET_BINDINGS":
