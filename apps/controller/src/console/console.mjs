@@ -2346,6 +2346,18 @@ async function loadPage({
     focusAgentResult =
       document.activeElement === pendingAgentHeading ||
       (focusAgentResult && document.activeElement === app.querySelector(".content h1"));
+    if (current.feature === "backends" && error.status === 403) {
+      // Backends need Installation administration, so their 403 settles that answer as false,
+      // as a denied probe would. An administrator revoked mid-session kept a settled true: every
+      // Refresh or reload read /backends again and the API audited a denial each time, and the
+      // Observability link stayed (finding 2627). Now the shell below drops the link, the
+      // refusal's Refresh asks the permission answer again, and a reload, without the tab's
+      // stored answer, asks it too. Neither is audited.
+      forgetInstallationAccess();
+      observabilityUrl = null;
+      installationAdmin = false;
+      observabilityOwner = sessionOwnerKey(session);
+    }
     shell = renderShell(current.feature);
     if (current.agentId && error.status === 404 && current.namespace === null) {
       // A typed or shared link has no Namespace, so the console read the Agent in

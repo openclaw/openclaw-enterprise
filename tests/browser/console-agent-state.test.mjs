@@ -988,6 +988,84 @@ test("Refresh and reload on the Backends refusal check Installation administrati
   );
 });
 
+// Finding 2627. An administrator whose administration is revoked while signed in reads Backends
+// once more, and the API audits that one refusal. The refusal settles the console's answer, so the
+// Observability link goes away, and the next reload or Refresh asks the permission answer, which
+// audits nothing, instead of reading Backends again. Each recheck runs right after a refusal: a
+// reload depends on the tab's stored answer, a Refresh on the in-memory one. A grant in between
+// reaches the console at Refresh, as before.
+test("A Backends refusal after administration is revoked is read and audited once", async (t) => {
+  const auditSink = new InMemoryAuditSink();
+  const url = "https://metrics.example.test/d/operations";
+  const fixture = await createConsoleAppFixture(t, { auditSink, observabilityUrl: url });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Revoked later", { ready: true });
+  const account = await fixture.createNamespaceMember("revoked-administrator", namespace.id, [
+    ["read", "namespace"],
+  ]);
+  let revoke = grantInstallationAdministration(fixture, account.principal);
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  const requests = apiRequests(page, fixture.origin);
+  const reads = (path) => requests.filter((request) => request.path === path).length;
+  const permissionsPath = `/namespaces/${namespace.id}/permissions`;
+  const observability = page.getByRole("link", { name: "Observability", exact: true });
+  const refresh = () => page.getByRole("button", { name: "Refresh", exact: true }).click();
+  const backendsAnswer = (status) =>
+    page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname === "/backends" && response.status() === status,
+    );
+
+  let read = backendsAnswer(200);
+  await login(page, fixture, `/console/backends?namespace=${namespace.id}`, account.credentials);
+  await read;
+  for (const [index, recheck] of ["reload", "refresh"].entries()) {
+    if (index > 0) {
+      revoke = grantInstallationAdministration(fixture, account.principal);
+      read = backendsAnswer(200);
+      await refresh();
+      await read;
+    }
+    await waitForIdleFetches(page);
+    assert.equal(await observability.getAttribute("href"), url, recheck);
+
+    revoke();
+    // The first Refresh after the revoke cannot know it: it reads Backends, which the API refuses.
+    read = backendsAnswer(403);
+    await refresh();
+    await read;
+    await page.locator(".state-panel").getByText(BACKENDS_DENIED, { exact: true }).waitFor();
+    await waitForIdleFetches(page);
+    assert.equal(await observability.count(), 0, recheck);
+    const refused = reads("/backends");
+
+    const asked = reads(permissionsPath);
+    // The settled refusal asks the permission answer; a stale one would read Backends.
+    const answered = page.waitForResponse((response) =>
+      [permissionsPath, "/backends"].includes(new URL(response.url()).pathname),
+    );
+    if (recheck === "refresh") {
+      await refresh();
+    } else {
+      await page.reload();
+    }
+    await answered;
+    await page.locator(".state-panel").getByText(BACKENDS_DENIED, { exact: true }).waitFor();
+    await waitForIdleFetches(page);
+    assert.ok(reads(permissionsPath) > asked, `${recheck} asks the permission answer`);
+    assert.equal(reads("/backends"), refused, recheck);
+    assert.equal(await observability.count(), 0, recheck);
+  }
+  // One audited refusal per revocation.
+  assert.deepEqual(
+    authorizationDenials(auditSink, /^openclaw\.(observability|backends)\./).map(
+      (event) => event.action,
+    ),
+    ["openclaw.backends.list", "openclaw.backends.list"],
+  );
+});
+
 const FORBIDDEN = {
   status: 403,
   contentType: "application/json",

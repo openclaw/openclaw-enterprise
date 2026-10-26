@@ -97,18 +97,23 @@ export function revokeAdministratorGrant(fixture, grant) {
 
 /**
  * Binds the Installation administrator Role the fixture seeds to `principal`, as another
- * administrator grants Installation administration while that account is signed in.
+ * administrator grants Installation administration while that account is signed in. Returns a
+ * function that removes that binding again, as another administrator revokes it.
  */
 export function grantInstallationAdministration(fixture, principal) {
   const role = fixture.policy.roles.find(({ name }) => name === "Installation administrator");
   assert.ok(role, "the fixture's administrator has a Role");
   const binding = fixture.policy.bindings.find(({ roleId }) => roleId === role.id);
   assert.ok(binding, "the fixture's administrator holds the Role through a binding");
-  fixture.policy.bindings.push({
+  const granted = {
     ...binding,
     id: `installation-administrator-${principal.id}`,
     subjectId: principal.id,
-  });
+  };
+  fixture.policy.bindings.push(granted);
+  return () => {
+    fixture.policy.bindings.splice(fixture.policy.bindings.indexOf(granted), 1);
+  };
 }
 
 function revokeRoleGrant(role, holder, [action, resourceKind]) {
