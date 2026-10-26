@@ -21,6 +21,26 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-26: OpenShell Proxy and Gateway refusals name their fix
+
+**What breaks.** More refusals name the fix instead of a generic answer:
+
+- Deploy of an Agent with `github-installation` access when the OpenShell
+  Credential Proxy has no `observedHookPreviewWorkspace`: `409
+RESOURCE_CONFLICT` (was `503`).
+- Credential source create whose `token_url` names the tenant's own OpenShell
+  gateway: `400 INVALID_REQUEST` naming `/config/token_url` (was `404`).
+- Update of a stored source whose `host` or `base_url` breaks a later
+  OpenShell Gateway rule: `409 RESOURCE_CONFLICT` (was `404`).
+
+**Who is affected.** Clients that branch on the old status. A missing
+resource, or one you cannot read, still answers `403` or `404`.
+
+**How to tell.** The message names the setting or field, for example `needs
+the OpenShell Credential Proxy's observed-hook preview`.
+
+**Steps.** Handle these statuses, show the message and do not retry the `409`.
+
 ## 2026-10-26: protected source create and credential withdrawal name their refusal
 
 **What breaks.** More refusals name the rule instead of a generic answer:

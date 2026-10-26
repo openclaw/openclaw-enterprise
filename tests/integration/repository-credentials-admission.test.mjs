@@ -54,6 +54,7 @@ import {
   BROKER_PROXY_MODE,
   COMPUTE_REPOSITORY_UNSUPPORTED,
   COMPUTE_TOPOLOGY_REPOSITORY_UNSUPPORTED,
+  CREDENTIAL_PROXY_GIT_ALONE,
   CREDENTIAL_PROXY_INSTALLATION_ACCESS,
   CREDENTIAL_PROXY_INSTALLATION_PREVIEW,
   DEPENDENCY_UNAVAILABLE,
@@ -64,6 +65,7 @@ import {
   SAVED_REPOSITORY_SELECTION_NOT_APPROVED,
 } from "../helpers/refusal-text.mjs";
 import { assertSameAnswer } from "../helpers/refusal-answers.mjs";
+import { protectedSourceInputs } from "../helpers/protected-source-refusals.mjs";
 
 const driverId = "repository-credentials";
 const backendId = "repository-provider";
@@ -1864,18 +1866,64 @@ test("Deploy names what installation-wide access needs from the OpenShell Proxy 
     // The refusal comes after the deploy grant: a caller without it gets the same answer for
     // this Agent and a missing one, each request's ID hidden.
     const outsider = await f.requestWithoutGrants(f.app);
-    const answers = [];
-    for (const id of [agent.id, `agt_${randomUUID()}`]) {
-      const denied = await outsider("POST", `${f.collection}/${id}/deploy`);
-      answers.push({
-        status: denied.status,
-        code: denied.error.code,
-        message: sentIdHidden(denied.error.message, id),
-      });
-    }
-    assert.equal(answers[0].status, 403, `${label}: ${JSON.stringify(answers[0])}`);
-    assert.deepEqual(answers[1], answers[0], label);
+    await assertSameAnswer(
+      (id) => outsider("POST", `${f.collection}/${id}/deploy`),
+      [agent.id, `agt_${randomUUID()}`],
+      { label },
+    );
   }
+});
+
+test("Deploy names the Proxy's limit when a protected source sits beside repository Git", async (t) => {
+  // Finding 2536 (review-3732): the OpenShell Proxy has no policy reduction, so with the
+  // observed-hook preview it delivers installation-wide Git only alone. An Agent that also binds
+  // a Proxy-owned source can never start: deploy answers 409 naming the limit and the fixes,
+  // after the deploy grant and without a revision.
+  const installation = [{ repositoryRef: "installation", profile: "github-installation" }];
+  const f = await protectedOpenShellComposition(t, {
+    bindings: installation,
+    installationAccess: true,
+    preview: true,
+    // The gateway also registers the execution profile, so the Proxy can own a source.
+    advertised: true,
+  });
+  const agent = await f.createAgent({ executionMode: "dedicated", repositoryBindings: installation });
+  // Also registers the Agent's own principal.
+  await f.prepareDeployment(agent);
+  await f.state.transact((unit) =>
+    unit.namespaces.transitionNamespaceStatus(f.namespace.id, "provisioning", "ready"),
+  );
+  const created = await f.request(
+    "POST",
+    `/namespaces/${f.namespace.id}/credential-sources`,
+    protectedSourceInputs["credential-free-repository-metadata"](agent.id),
+  );
+  assert.equal(created.status, 201, JSON.stringify(created));
+  const sourceId = created.data.id;
+  // The Agent's own principal may use the source, so only the Proxy's limit refuses the deploy.
+  const internal = await f.controller.getAgent(f.actorId, f.namespace.id, agent.id);
+  grantRole(f.iamState, internal.servicePrincipalId, {
+    id: `source-${agent.id}`,
+    namespaceId: f.namespace.id,
+    permissions: { credential_source: ["operate"] },
+    resource: { kind: "credential_source", id: sourceId },
+  });
+  const path = `${f.collection}/${agent.id}`;
+  const bound = await f.request("PATCH", path, {
+    configurationId: f.configuration.id,
+    credentialSources: [{ sourceId }],
+  });
+  assert.equal(bound.status, 200, JSON.stringify(bound));
+  const deployed = await f.request("POST", `${path}/deploy`);
+  assert.equal(deployed.status, 409, JSON.stringify(deployed));
+  assert.equal(deployed.error.code, "RESOURCE_CONFLICT");
+  assert.equal(deployed.error.message, CREDENTIAL_PROXY_GIT_ALONE);
+  assert.deepEqual((await f.request("GET", `${path}/revisions`)).data, []);
+  const outsider = await f.requestWithoutGrants(f.app);
+  await assertSameAnswer(
+    (id) => outsider("POST", `${f.collection}/${id}/deploy`),
+    [agent.id, `agt_${randomUUID()}`],
+  );
 });
 
 test("Deploy refuses a repository profile a Credential Proxy cannot deliver by name", async (t) => {
@@ -2014,7 +2062,9 @@ test("A Git-only Credential Proxy names repository.openShell instead of a 503 or
     if (status === 409) {
       assert.equal(response.error.message, CredentialProxyRepositoryOnlyError.description, label);
     } else {
+      // A gateway state an operator fixes, named (finding 2536).
       assert.equal(response.error.code, "DEPENDENCY_UNAVAILABLE", label);
+      assert.equal(response.error.message, PROXY_REGISTRATION_UNAVAILABLE, label);
     }
   }
 });

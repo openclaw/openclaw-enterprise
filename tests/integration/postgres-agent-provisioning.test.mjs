@@ -51,6 +51,7 @@ import {
   BROKER_PROXY_DISABLED,
   COMPUTE_REPOSITORY_UNSUPPORTED,
   COMPUTE_TOPOLOGY_REPOSITORY_UNSUPPORTED,
+  CREDENTIAL_PROXY_INSTALLATION_ACCESS,
   DEPENDENCY_UNAVAILABLE,
   PROVISIONING_NOT_COMPLETED,
   SAVED_REPOSITORY_SELECTION_NOT_APPROVED,
@@ -931,7 +932,8 @@ test(
 
 // The GitHub repository policy the provisioning tests compose: one repository, `project`,
 // approved in `namespaceId` for `profiles`.
-function provisioningRepositoryPolicy(namespaceId, profiles) {
+// `installationAccess` also offers the Namespace installation-wide access, as `installation`.
+function provisioningRepositoryPolicy(namespaceId, profiles, installationAccess = false) {
   return new GitHubRepositoryPolicy(
     {
       id: "provisioning-repositories",
@@ -941,6 +943,12 @@ function provisioningRepositoryPolicy(namespaceId, profiles) {
       drivers: { repo: "provisioning-repo" },
     },
     {
+      ...(installationAccess && {
+        installationAccess: {
+          repositoryRef: "installation",
+          namespaces: [{ namespaceId, accessMode: "installation" }],
+        },
+      }),
       version: 1,
       backendId: "provisioning-repositories",
       providerInstanceId: "provisioning-github",
@@ -961,18 +969,18 @@ function provisioningRepositoryPolicy(namespaceId, profiles) {
 }
 
 // A fresh Namespace with its provisioning Secrets, and a fixture that exercises real repository
-// policy for `project` (approved for `profiles`) and Kubernetes topology admission (`topologyId`,
-// with the Sandbox Driver in `options`, if any) without contacting either external system.
-// `compose` opens another app on the same Drivers, as after a change of the Installation's
-// selection.
+// policy for `project` (approved for `profiles`; with `installationAccess`, also installation-wide
+// access) and Kubernetes topology admission (`topologyId`, with the Sandbox Driver in `options`,
+// if any) without contacting either external system. `compose` opens another app on the same
+// Drivers, as after a change of the Installation's selection.
 async function repositoryProvisioningFixture(
   context,
   topologyId,
-  { profiles = ["git-read"], ...options } = {},
+  { profiles = ["git-read"], installationAccess = false, ...options } = {},
 ) {
   const initial = await createFixture(context);
   const namespace = await initial.bootstrapNamespace();
-  const repoDriver = provisioningRepositoryPolicy(namespace.id, profiles);
+  const repoDriver = provisioningRepositoryPolicy(namespace.id, profiles, installationAccess);
   const topology = createTestKubernetesComputeDriver(topologyId, {
     repositoryCredentials: true,
     ...(options.sandboxDriver === undefined ? {} : { sandboxDriver: options.sandboxDriver }),
@@ -1233,6 +1241,37 @@ test(
         assert.equal(retried.body.error.message, retry);
       }
     }
+  },
+);
+
+// Finding 2536 (review-3732): installation-wide repository access needs a Credential Proxy, and
+// this Installation selects none. The request names one repository at an approved profile, so it
+// is accepted; the worker's deploy step refuses it, and every attempt would. The job fails at once
+// and its status names the refusal in fixed text, not "could not complete".
+test(
+  "a provisioning job whose installation-wide access needs a Credential Proxy names the refusal in its status",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    const { namespace, fixture, secrets } = await repositoryProvisioningFixture(
+      context,
+      "provisioning-installation-access",
+      { installationAccess: true },
+    );
+    const body = repositoryProvisioningBody(namespace.id, secrets, {
+      repositoryAccess: undefined,
+      repositoryBindings: [{ repositoryRef: "installation", profile: "github-installation" }],
+    });
+    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+      body,
+    });
+    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    const failed = await workerFailure(fixture, namespace.id, body.requestId, "installation");
+    const error = { code: "PROVISIONING_REJECTED", message: CREDENTIAL_PROXY_INSTALLATION_ACCESS };
+    assert.equal(failed.status, "failed");
+    assert.deepEqual(failed.progress.error, error);
+    const status = await fixture.request("GET", admitted.data.provisioning.url);
+    assert.equal(status.status, 200, JSON.stringify(status.body));
+    assert.deepEqual(status.data.error, error);
   },
 );
 

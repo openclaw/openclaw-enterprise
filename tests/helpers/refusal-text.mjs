@@ -452,6 +452,8 @@ export const PROVISIONING_NOT_COMPLETED = "Agent provisioning could not complete
 // repository access without its preview opt-in (409), and names the gateway states an operator
 // fixes (503); a stored source that breaks a later OpenShell Credential Gateway rule (409); a
 // ChatGPT service account whose credential does not belong to the Agent's Backend (409).
+export const CREDENTIAL_PROXY_GIT_ALONE =
+  "The selected Credential Proxy cannot add other credential sources beside this Agent's repository Git. Remove those sources or the repository binding, or ask an Installation administrator to select a Proxy with policy reduction.";
 export const CREDENTIAL_PROXY_INSTALLATION_PREVIEW =
   "Installation-wide repository access (profile github-installation) needs the OpenShell Credential Proxy's observed-hook preview, which this Installation does not enable. Choose another profile, or ask an Installation administrator to enable the preview.";
 export const PROXY_REGISTRATION_UNAVAILABLE =

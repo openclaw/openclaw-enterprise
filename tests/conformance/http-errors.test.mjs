@@ -37,6 +37,8 @@ import {
   ConfigurationGenerationConflictError,
   ConfigurationHarnessError,
   CredentialGatewayNotConfiguredError,
+  CredentialProxyAdmissionError,
+  CredentialSourceRegistrationConfigError,
   CredentialTokenUnsettledError,
   CredentialWithdrawalInProgressError,
   DedicatedOpenClawSandboxError,
@@ -64,6 +66,7 @@ import {
   RepositoryGitSenderUnqualifiedError,
   ResourceConflictError,
   ResourceStateConflictError,
+  RetryLaterError,
   RuntimeCredentialsForbiddenByClusterError,
   RuntimeLogsError,
   ScopeViolationError,
@@ -71,20 +74,28 @@ import {
   SecretBindingValidationError,
   SecretStorageDriverError,
   SecretValueError,
+  ServiceAccountBackendBindingError,
   ServiceAccountCredentialSecretExistsError,
   ServiceAccountDriverNotConfiguredError,
+  StoredCredentialSourceConfigError,
 } from "../../packages/occ/src/index.ts";
 import {
   AGENT_NAME_CONFLICT,
   agentPrincipalDenied,
   callerDenied,
   CONSOLE_ACCESS_DENIED,
+  CREDENTIAL_PROXY_INSTALLATION_PREVIEW,
   DEPENDENCY_UNAVAILABLE,
   GENERIC_DENIAL,
   NAMESPACE_NOT_READY,
   namespaceListDenied,
+  PREVIEW_GATEWAY_VERSION,
+  PROXY_REGISTRATION_UNAVAILABLE,
   RESOURCE_CONFLICT,
   RESOURCE_NOT_FOUND,
+  SERVICE_ACCOUNT_BACKEND_MISMATCH,
+  SERVICE_ACCOUNT_NO_BACKEND_BINDING,
+  storedCredentialSourceConfig,
 } from "../helpers/refusal-text.mjs";
 
 // Text that must never reach a client: the mappings below that answer with fixed text are
@@ -291,6 +302,54 @@ const cases = [
       code: "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED",
       message:
         "This service account holds an issued access token, and this Installation has no ChatGPT Backend to revoke it. Re-add it, or force the delete and revoke the token at the provider; see https://docs-enterprise.openclaw.org/reference/service-accounts/",
+    },
+  ],
+  [
+    "a service-account binding without the Agent's ChatGPT Backend names the fix",
+    new ServiceAccountBackendBindingError("noBinding"),
+    { status: 409, code: "RESOURCE_CONFLICT", message: SERVICE_ACCOUNT_NO_BACKEND_BINDING },
+  ],
+  [
+    "a service-account credential from another ChatGPT Backend names the fix",
+    new ServiceAccountBackendBindingError("mismatch"),
+    { status: 409, code: "RESOURCE_CONFLICT", message: SERVICE_ACCOUNT_BACKEND_MISMATCH },
+  ],
+  [
+    "installation-wide access without the OpenShell Proxy preview names the setting",
+    new CredentialProxyAdmissionError("installationPreview"),
+    { status: 409, code: "RESOURCE_CONFLICT", message: CREDENTIAL_PROXY_INSTALLATION_PREVIEW },
+  ],
+  [
+    "an OpenShell gateway without the Proxy's middleware names the operator fix",
+    new RetryLaterError("proxyRegistration"),
+    { status: 503, code: "DEPENDENCY_UNAVAILABLE", message: PROXY_REGISTRATION_UNAVAILABLE },
+  ],
+  [
+    "the observed-hook preview on another OpenShell gateway version names the operator fix",
+    new RetryLaterError("previewGatewayVersion"),
+    { status: 503, code: "DEPENDENCY_UNAVAILABLE", message: PREVIEW_GATEWAY_VERSION },
+  ],
+  [
+    "a stored credential source that breaks a later Gateway rule names the replacement",
+    new StoredCredentialSourceConfigError("token_url"),
+    {
+      status: 409,
+      code: "RESOURCE_CONFLICT",
+      message: storedCredentialSourceConfig("token_url"),
+    },
+  ],
+  [
+    "a config value refused at Gateway registration names its field",
+    new CredentialSourceRegistrationConfigError(
+      "token_url",
+      "The oauth2-client-credentials token_url host must not be a Kubernetes Pod name or a name in the OpenShell gateway's namespace.",
+    ),
+    {
+      status: 400,
+      code: "INVALID_REQUEST",
+      message:
+        "The oauth2-client-credentials token_url host must not be a Kubernetes Pod name or a name in the OpenShell gateway's namespace.",
+      details: [{ path: "/config/token_url", code: "INVALID_VALUE" }],
     },
   ],
   [
