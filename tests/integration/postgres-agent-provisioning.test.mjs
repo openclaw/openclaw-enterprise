@@ -46,7 +46,12 @@ import { waitFor } from "../helpers/wait-for.mjs";
 import { withNamespaceLockHeld } from "../helpers/postgres-namespace-lock.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 import { expireWorkLease, makeWorkDue } from "../helpers/postgres-worker-revision-support.mjs";
-import { AGENT_NAME_CONFLICT, DEPENDENCY_UNAVAILABLE } from "../helpers/refusal-text.mjs";
+import {
+  AGENT_NAME_CONFLICT,
+  COMPUTE_REPOSITORY_UNSUPPORTED,
+  DEPENDENCY_UNAVAILABLE,
+  SAVED_REPOSITORY_SELECTION_NOT_APPROVED,
+} from "../helpers/refusal-text.mjs";
 
 const adminEmail = "postgres-agent-provisioning-v2@example.test";
 const adminPassword = "postgres-agent-provisioning-password";
@@ -1107,6 +1112,110 @@ test(
     );
     assert.equal(work.rowCount, 1);
     assert.equal(work.rows[0].state, "queued");
+  },
+);
+
+// The GitHub repository policy the provisioning tests compose: one repository, `project`,
+// approved in `namespaceId` for `profiles`.
+function provisioningRepositoryPolicy(namespaceId, profiles) {
+  return new GitHubRepositoryPolicy(
+    {
+      id: "provisioning-repositories",
+      client: new UnixRepositoryCredentialControlClient({
+        controlSocket: "/unused/provisioning/control.sock",
+      }),
+      drivers: { repo: "provisioning-repo" },
+    },
+    {
+      version: 1,
+      backendId: "provisioning-repositories",
+      providerInstanceId: "provisioning-github",
+      appId: "123",
+      githubInstallationId: "456",
+      maximumDurationSeconds: 3600,
+      repositories: [
+        {
+          repositoryRef: "project",
+          repositoryId: "789",
+          repository: "example/project",
+          namespaces: [{ namespaceId, profiles }],
+        },
+      ],
+    },
+    { sessionDurationSeconds: 600 },
+  );
+}
+
+// Finding 2536: accepted work whose repository access the Installation can no longer deliver
+// fails permanently, and its status names why instead of "could not complete". Both refusals
+// have fixed text that names no repository: the Compute Driver lost repository credentials, or
+// the repository policy no longer approves the saved selection (a 409 about saved state, not
+// the request's 400).
+test(
+  "a provisioning job whose saved repository access can no longer be delivered names the refusal in its status",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    for (const [change, message] of [
+      ["compute", COMPUTE_REPOSITORY_UNSUPPORTED],
+      ["policy", SAVED_REPOSITORY_SELECTION_NOT_APPROVED],
+    ]) {
+      const initial = await createFixture(context);
+      const namespace = await initial.bootstrapNamespace();
+      const repoDriver = provisioningRepositoryPolicy(namespace.id, ["git-read"]);
+      const topology = createTestKubernetesComputeDriver(`provisioning-saved-${change}`, {
+        repositoryCredentials: true,
+      });
+      const computeDriver = initial.computeDriver;
+      computeDriver.validateRepositoryCredentials =
+        topology.validateRepositoryCredentials.bind(topology);
+      const fixture = await createFixture(context, {
+        computeDriver,
+        configurationDriver: initial.configurationDriver,
+        secretDriver: initial.secretDriver,
+        repoDriver,
+      });
+      const secrets = await createProvisioningSecrets(fixture, namespace.id);
+      const body = {
+        ...provisioningBody(namespace.id, secrets, {
+          repositoryAccess: {
+            defaultProfile: "git-read",
+            repositories: [{ repositoryRef: "project" }],
+          },
+        }),
+        pluginApprovers: [],
+      };
+      const admitted = await fixture.request(
+        "POST",
+        `/namespaces/${namespace.id}/agents/provision`,
+        { body },
+      );
+      assert.equal(admitted.status, 202, `${change}: ${JSON.stringify(admitted.body)}`);
+      if (change === "compute") {
+        // The Installation now selects a Compute Driver without repository credentials.
+        delete computeDriver.validateRepositoryCredentials;
+      } else {
+        // An Installation administrator withdrew the approval after the request was accepted.
+        // The policy refuses the selection as the Driver contract allows: without a reason.
+        repoDriver.resolve = () => {
+          throw new Error("synthetic withdrawn approval");
+        };
+      }
+      await fixture.startWorker();
+      const failed = await waitFor(
+        `the worker to refuse the saved access (${change})`,
+        async () => {
+          const row = await provisioningRow(fixture.pool, namespace.id, body.requestId);
+          return row.progress.error === undefined ? undefined : row;
+        },
+      );
+      await fixture.stopWorker();
+      assert.equal(failed.status, "failed", change);
+      assert.deepEqual(failed.progress.error, { code: "PROVISIONING_REJECTED", message }, change);
+      assert.equal(failed.agent_id, null, `${change}: refused before the work creates its Agent`);
+      const status = await fixture.request("GET", admitted.data.provisioning.url);
+      assert.equal(status.status, 200, `${change}: ${JSON.stringify(status.body)}`);
+      assert.deepEqual(status.data.error, { code: "PROVISIONING_REJECTED", message }, change);
+    }
   },
 );
 

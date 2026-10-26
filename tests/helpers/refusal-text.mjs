@@ -58,6 +58,23 @@ export const REPOSITORY_ACCESS_OR_BINDINGS =
   "Send repositoryAccess or repositoryBindings, not both. In repositoryAccess, list each repository once, at most 16, with a defaultProfile other than github-installation.";
 export const COMPUTE_REPOSITORY_UNSUPPORTED =
   "This Installation's Compute Driver cannot deliver repository credentials, so this Agent cannot use repository access. Remove its repository bindings, or ask an Installation administrator to select Kubernetes Compute.";
+// Saved selections (an Agent's, or queued provisioning work's) the repository policy no longer
+// approves: deploy, the approval scope read and the provisioning worker answer 409, not 400.
+export const SAVED_REPOSITORY_SELECTION_NOT_APPROVED =
+  "The saved repository selections are no longer approved for this Namespace: repository policy changed after they were saved. Choose approved ones from the repository options, or ask an Installation administrator to approve them again.";
+// Protected deploy admission (packages/occ/src/errors.ts CredentialProxyAdmissionError).
+export const CREDENTIAL_PROXY_INSTALLATION_ACCESS =
+  "Installation-wide repository access (profile github-installation) needs a Credential Proxy, and this Installation selects none. Choose another repository profile, or ask an Installation administrator to select drivers.credential_proxy.";
+// Update and rotation of a prepared or credential-free source (409 RESOURCE_CONFLICT).
+export const PROTECTED_SOURCE_UPDATE_REFUSED =
+  "This credential source holds a prepared or credential-free protected grant, which cannot change in place. Create a new source with the new values, bind it in place of this one, then delete this one.";
+export const PROTECTED_SOURCE_ROTATE_REFUSED =
+  "This credential source holds a prepared or credential-free protected grant, which is not rotated in place. To replace it, create a new source, bind it in place of this one, then delete this one.";
+// 503s that name when to retry or what to start again.
+export const registrationFenceRetry = (seconds) =>
+  `This credential source was registered moments ago, and its registration may still be completing. Retry the deletion in ${seconds === 1 ? "1 second" : `${seconds} seconds`}; nothing else needs to change.`;
+export const DEVICE_LOGIN_FAILED =
+  "The sign-in service did not complete this device login, so it was cancelled. Start a new device login. If it keeps failing, ask an operator to check the API logs.";
 export const SERVICE_ACCOUNT_CROSS_NAMESPACE =
   "Agent setting harnessAuth.source names a ServiceAccount in another Namespace. Harness authentication can use only a ServiceAccount in the Agent's own Namespace: select one from this Namespace.";
 // Standing repository approval refusals (409 RESOURCE_CONFLICT); none names the approval.
