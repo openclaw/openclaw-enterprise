@@ -84,14 +84,13 @@ audited denials spend no token; time buckets ignore clock changes.
 `KubernetesComputeDriver.describeAgentRuntime` lists owned-Namespace Pods by
 Agent, Agent revision ID, and role labels. Single-cluster profiles read
 Gateways and Harnesses in the tenant namespace; two-cluster profiles read
-Gateways from control and Harnesses from execution. Termination reporting:
+Gateways from control and Harnesses from execution. Termination and cluster `403` reporting:
 [Compute reference](../reference/drivers/compute.md#optional-runtime-status-and-logs). Event
 reads keep the Pod's 100 newest eligible Events across pages,
 drop a settled `FailedScheduling` PVC retry, and derive `container` from
 `involvedObject.fieldPath` (`null` for Pod Events). A log read passes
 `{ source, events: false }`. Each
-Kubernetes call has a five-second deadline; a `403` becomes
-`RuntimeLogsForbiddenByClusterError`. `runtime-logs/description.ts:validRuntimeDescription`
+Kubernetes call has a five-second deadline. `runtime-logs/description.ts:validRuntimeDescription`
 checks names, UIDs, counts and RFC 3339 UTC timestamps. Malformed, impossible
 or offset timestamps, including Kubernetes Pod and Event times, make runtime status
 unavailable; they are never normalized to another instant.
@@ -102,7 +101,7 @@ reasons and Event messages are redacted.
 
 `runtime-logs/read.ts:readRuntimeLogPage` verifies the cursor HMAC against principal,
 Agent, version and source (`runtime-logs/cursor.ts`). Select a listed Pod and main or
-init `container` (default: first main). A different stream, missing or expired cursor (one hour),
+init `container`. A different stream, missing or expired cursor (one hour),
 or departed Pod starts a new view. First record the admitting action in the `openclaw.agents.runtime_logs.view`
 access audit. The Driver rechecks Pod ownership and the declared container, then calls `readNamespacedPodLog` with `tailLines`, `sinceSeconds`,
 `previous`, a 1 MiB `limitBytes` and timestamps, and re-reads the Pod. A never-started
@@ -167,8 +166,8 @@ placement through `resolveSandboxNamespace`, then runs
 version and calls `GetSandboxLogs` through `openShellSandboxLogReader`, which
 exposes nothing else. The client rejects impossible `since_time` dates before gRPC. OpenShell batches
 timestamped supervisor lines and filters by those timestamps. Resume overlaps
-`SANDBOX_LOG_OVERLAP_MS` (5 s); the cursor retains up to 48 delivered line hashes,
-consumed on reread. First pages retain the requested window start.
+`SANDBOX_LOG_OVERLAP_MS`; the cursor's delivered line hashes are consumed on reread
+([limits](../guides/topics/agent-logs.md#sandbox-source)). First pages retain the requested window start.
 Signed checkpoints retain prefix digest/count, query floor and baseline, with
 2-second container overlap. Timed windows resume progress; changed tails or
 ambiguous replacements reset with gaps. Sandbox pins short/unordered windows,
@@ -192,7 +191,7 @@ names its audit event, and any denial, `openclaw.agents.runtime_logs.download`.
 
 `apps/controller/src/http/runtime-logs.ts:runtimeLogPageBody` and `runtimeLogDownloadBody`
 reject reserved `content`. Container headers label `instance` without Pods. Console and `runtimeLogDownloadFileName`
-take `-previous.log` from the request; current and Sandbox names stay unchanged.
+take `-previous.log` from the request.
 `runtimeLogPageAtLevel` filters after signing, preserving unknown levels, gaps and withheld counts.
 
 `console/agents/logs.mts` clears output when status selects another source, Pod or instance.
