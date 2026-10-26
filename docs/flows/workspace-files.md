@@ -167,9 +167,7 @@ without endpoint support cannot serve workspace files.
 session or scoped service API key. Native Agent credentials cannot invoke this
 administration surface. `GET` needs Agent `read`; `PUT` needs Agent `operate`
 and, for session callers, passes the browser CSRF boundary. OCC resolves the
-selected AgentRevision before Compute endpoint resolution. An API without
-workspace file access answers `503` only after this authorization, so a caller
-without the grant gets `403`.
+selected AgentRevision before Compute endpoint resolution.
 
 Names, the `PUT` body, and content and body limits follow the
 [live file contract](../reference/agents.md#live-file-access). The deadline and
