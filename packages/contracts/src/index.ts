@@ -997,7 +997,9 @@ export function codexRepositoryBrokerNetworkProxy(
     domains[host] = domains[host] === "deny" || decision === "deny" ? "deny" : "allow";
   }
   if (brokerHost !== undefined && domains[brokerHost] === "deny") {
-    return refuse("domains", `denies the broker host ${brokerHost}`, "Delete that deny");
+    // The text leaves out the host: the worker drops a preparation failure message over 256
+    // characters, and a Namespace name can make the host long.
+    return refuse("domains", "denies the repository credential broker's host", "Delete that deny");
   }
   return { domains };
 }

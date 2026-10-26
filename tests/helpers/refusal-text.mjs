@@ -285,5 +285,8 @@ export const BROKER_PROXY_EMPTY_HOST = brokerProxyRefusal(
   "has an empty host",
   "Delete that entry",
 );
-export const brokerHostDenied = (host) =>
-  brokerProxyRefusal("domains", `denies the broker host ${host}`, "Delete that deny");
+export const BROKER_HOST_DENIED = brokerProxyRefusal(
+  "domains",
+  "denies the repository credential broker's host",
+  "Delete that deny",
+);
