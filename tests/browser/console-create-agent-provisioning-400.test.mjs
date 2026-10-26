@@ -484,6 +484,17 @@ test("Create Agent names a refused Slack token form once, under its Configuratio
     `Slack bot token ${form}. To edit Slack here, set botToken to \${SLACK_BOT_TOKEN} in the Configuration JSON.`;
   const card = page.locator(".channel-card", { hasText: "Slack bot token holds" });
   await card.getByText(cardText(inline), { exact: true }).waitFor();
+  // The card re-renders many times per edit and submit. Each render once read both bound
+  // Secrets again, about 386 reads per edit (finding 2601); the view now reads each once.
+  const secretReads = () =>
+    requests.filter(
+      ({ method, path }) =>
+        method === "GET" &&
+        [slackApp, slackBot].some(({ id }) => path === `/namespaces/${namespace.id}/secrets/${id}`),
+    ).length;
+  const settledReads = secretReads();
+  t.diagnostic(`Slack Secret reads after the first edit: ${settledReads}`);
+  assert.ok(settledReads <= 2, `${settledReads} Slack Secret reads after the first edit`);
   // Its closed native configuration disclosure is the JSON the reader typed, not card text.
   assert.doesNotMatch(await card.innerText(), /xoxb-pasted/);
   // The Slack editor's channel field looked names up; Create Agent must not call Slack again.
@@ -532,6 +543,8 @@ test("Create Agent names a refused Slack token form once, under its Configuratio
       () => globalThis.document.activeElement?.id === "configuration-json",
     );
   }
+  // Later edits and submits read no bound Secret again.
+  assert.equal(secretReads(), settledReads);
   // Refused before Slack was asked, and nothing was saved.
   assert.equal(slackCalls, lookups);
   assert.equal(agentProvisionPostRequests(requests, namespace.id).length, 3);
