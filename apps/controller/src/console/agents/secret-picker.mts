@@ -4,7 +4,7 @@ import type {
   SecretReference,
 } from "@openclaw-enterprise/contracts";
 import {
-  INSTALLATION_ADMINISTRATION,
+  ADMINISTRATOR_PATH,
   refusedAsNonAdministrator,
   requestFailure,
   responseFields,
@@ -228,7 +228,7 @@ function readSecretMetadata(
         ? Promise.reject(refused)
         : readable && !readable.has(secretId)
           ? Promise.reject(Object.assign(new Error("Secret not listed."), { unlisted: true }))
-          : request(href, administrator ? INSTALLATION_ADMINISTRATION : undefined),
+          : request(href, administrator ? ADMINISTRATOR_PATH : undefined),
     );
   const administrator = context.installationAdmin === true;
   const read = attempt(administrator).catch((cause: unknown) =>

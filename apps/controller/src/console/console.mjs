@@ -474,12 +474,13 @@ function administrationRefusal() {
   });
 }
 
-// Reads only Installation administration may make (IAM policy lists, Driver configuration schemas,
-// a Secret's metadata read by ID on the administrator path), sent on an "administrator" answer
-// this tab settled earlier. An administrator revoked while signed in keeps that answer until one
-// of them is refused, and the API audits each refusal: the Access tab, a bound Secret and Settings
-// added six to the one Backends refusal (finding D760). So until one succeeds, a page load sends
-// them one at a time. A refusal asks a readable Namespace's permission answer, which audits
+// Reads the console makes because it takes the caller for an Installation administrator (IAM
+// policy lists and Driver configuration schemas, which need that administration; a Secret's
+// metadata read by ID, which other grants may allow too), on an answer this tab settled earlier.
+// An administrator revoked while signed in keeps that answer until one of them is refused, and the
+// API audits each refusal: the Access tab, a bound Secret and Settings added six to the one
+// Backends refusal (finding D760). So a page load sends them one at a time until one that needs
+// administration succeeds. A refusal asks a readable Namespace's permission answer, which audits
 // nothing, because a Restriction can refuse one read to an administrator; unless it confirms
 // administration, the refusal settles "not an administrator" for this tab, as a Backends refusal
 // does (finding 2627), and the reads still waiting are refused here, unsent. A probe answered in
@@ -498,7 +499,9 @@ function administrationRead(path, options) {
   const read = sendRequest(path, options);
   const check = read.then(
     () => {
-      administrationConfirmed = true;
+      if (options.installationAdministration === "required") {
+        administrationConfirmed = true;
+      }
     },
     async (error) => {
       if (error?.status !== 403) {

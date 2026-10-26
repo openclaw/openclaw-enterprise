@@ -375,7 +375,7 @@ test("console Secret writes honor read-only access, revocation and a new Agent r
   for (const [name, reason] of [
     ["Replace value", SECRET_UPDATE_DENIED],
     ["Delete Secret", SECRET_DELETE_DENIED],
-  ]) {
+  ] as const) {
     const action = readOnly.getByRole("button", { name, exact: true, description: reason });
     await action.waitFor();
     assert.equal(await action.isDisabled(), true, name);

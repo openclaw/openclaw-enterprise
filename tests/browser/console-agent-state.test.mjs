@@ -14,6 +14,7 @@ import {
   hasFocus,
   holdRequests,
   grantInstallationAdministration,
+  grantMember,
   login,
   nativeValues,
   newPage,
@@ -1103,8 +1104,9 @@ test("A Backends refusal after administration is revoked is read and audited onc
 // to Configuration and says why, the bound Secret's name is unavailable, Settings leaves out the
 // Driver schemas, and the Observability link goes away. The other pages read none of them again.
 // Each round starts on another page, opened right after the revoke, so it recalls the stale
-// answer. Last, a Restriction on Secret read refuses one such read to an administrator: the
-// permission answer, which audits nothing, still says she administers, so nothing settles.
+// answer. Then she may read the bound Secret herself. Last, a Restriction on Secret read refuses
+// one such read to an administrator: the permission answer, which audits nothing, still says she
+// administers, so nothing settles.
 test("Installation-administration reads after a revoke are refused and audited once", async (t) => {
   const auditSink = new InMemoryAuditSink();
   const url = "https://metrics.example.test/d/operations";
@@ -1181,9 +1183,25 @@ test("Installation-administration reads after a revoke are refused and audited o
     assert.equal(adminDenials().length, round + 1, first);
   }
 
+  // One who may read the bound Secret herself still sees its name once her answer settles: her
+  // Secret read, refused unsent or allowed by her own grant, takes or matches the member path.
+  // Allowed, it proves nothing about administration, so the sharing reads still wait for theirs.
+  grantMember(fixture, "revoked-walker", [["read", "secret"]]);
+  const named = page.getByRole("link", { name: "Revoked model key", exact: true });
+  revoke = grantInstallationAdministration(fixture, account.principal);
+  await page.goto(settingsUrl);
+  await driverSchemas.waitFor();
+  revoke();
+  await page.goto(String(detailUrl(fixture, namespace.id, agent.id, "draft", "access")));
+  await page.getByText(ACCESS_TAB_UNAVAILABLE, { exact: true }).waitFor();
+  await named.waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(await observability.count(), 0);
+  assert.equal(adminDenials().length, 4);
+
   grantInstallationAdministration(fixture, account.principal);
   await page.goto(agentUrl);
-  await page.getByRole("link", { name: "Revoked model key", exact: true }).waitFor();
+  await named.waitFor();
   assert.equal(await observability.getAttribute("href"), url);
   fixture.policy.restrictions.push({
     id: "deny-secret-read-here",
@@ -1199,7 +1217,7 @@ test("Installation-administration reads after a revoke are refused and audited o
   assert.equal(await page.getByRole("tab", { name: "Access", exact: true }).count(), 1);
   assert.deepEqual(
     adminDenials()
-      .slice(3)
+      .slice(4)
       .map((event) => event.action),
     ["openclaw.secrets.read"],
   );

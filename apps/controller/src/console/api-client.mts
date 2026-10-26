@@ -10,15 +10,19 @@ export interface RequestOptions {
   /** A session-scoped read that a later view joins instead of aborting it. */
   outlivesView?: boolean;
   /**
-   * A read only Installation administration may make. The console sends these one at a time until
-   * one succeeds, and refuses them unsent once it knows the caller does not administer the
+   * A read the console makes because it takes the caller for an Installation administrator:
+   * "required" when only that administration allows it, "path" when other grants may allow it too
+   * (a Secret's metadata by ID). The console sends these one at a time until a "required" one
+   * succeeds, and refuses them unsent once it knows the caller does not administer the
    * Installation (finding D760).
    */
-  installationAdministration?: boolean;
+  installationAdministration?: "required" | "path";
 }
 
-/** Options for a read only Installation administration may make. */
-export const INSTALLATION_ADMINISTRATION = { installationAdministration: true } as const;
+/** Options for a read only Installation administration allows. */
+export const INSTALLATION_ADMINISTRATION = { installationAdministration: "required" } as const;
+/** Options for a read on the administrator path that other grants may also allow. */
+export const ADMINISTRATOR_PATH = { installationAdministration: "path" } as const;
 
 /**
  * Whether a refusal settled that the caller does not administer the Installation: the console
