@@ -12639,6 +12639,7 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
         const timers = [];
         let probeTemplate;
         let pressureReads = 0;
+        let throttledReads = 0;
         let started = false;
         let held = false;
         let statusHandler;
@@ -12698,7 +12699,7 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
                   files.set(path, value);
                 },
                 rmSync() {},
-                // A 500m CPU limit; waiting grows 100 s across a starved probe.
+                // A 500m CPU limit; each wait counter grows 100 s across a starved probe.
                 readFileSync(path) {
                   const starved =
                     variant.includes("waiting for CPU") || variant.includes("throttled");
@@ -12713,8 +12714,9 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
                     return `some avg10=0.00 avg60=0.00 avg300=0.00 total=${total}\nfull total=0\n`;
                   }
                   if (path === "/sys/fs/cgroup/cpu.stat") {
-                    const throttled = starved ? pressureReads++ * 1e8 : 0;
-                    return `usage_usec 1\nnr_throttled 1\nthrottled_usec ${throttled}\n`;
+                    // 1000 throttled 100 ms periods bound the 100 s of throttled time.
+                    const reads = starved ? throttledReads++ : 0;
+                    return `usage_usec 1\nnr_throttled ${reads * 1000}\nthrottled_usec ${reads * 1e8}\n`;
                   }
                   throw Object.assign(new Error("unexpected read"), { code: "ENOENT" });
                 },
@@ -12907,9 +12909,13 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
           }
         }
         assert.deepEqual([probeLog.code, probeLog.capMs], [failureCode ?? "READY", 110_000]);
-        assert.equal(
-          probeLog.cpuWaitMs,
-          variant.includes("waiting for CPU") || variant.includes("throttled") ? 100_000 : 0,
+        const waitMs =
+          variant.includes("waiting for CPU") || variant.includes("throttled") ? 100_000 : 0;
+        assert.equal(probeLog.cpuWaitMs, waitMs);
+        // The event records each counter's delta; without pressure accounting PSI has none.
+        assert.deepEqual(
+          [probeLog.pressureWaitMs, probeLog.throttledWaitMs],
+          [variant.includes("pressure accounting") ? null : waitMs, waitMs],
         );
         assert.doesNotMatch(
           probeLines[0],

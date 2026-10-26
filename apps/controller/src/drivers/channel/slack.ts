@@ -37,7 +37,7 @@ type SlackRecord = Record<string, unknown>;
 export class SlackRouteNotConfiguredError extends ResourceStateConflictError {
   constructor() {
     super(
-      "OCC could not reach Slack, and the API has no Slack proxy. If the API has another approved route to Slack, try again. Otherwise an administrator must set Helm slackProxy.enabled or api.channelDirectoryProxyUrl; see the Slack integration guide.",
+      "OCC could not reach Slack, and the API has no Slack proxy. If the API has another approved route to Slack, try again. Otherwise ask the Installation operator to set Helm slackProxy.enabled or api.channelDirectoryProxyUrl; see the Slack integration guide.",
     );
     this.name = "SlackRouteNotConfiguredError";
   }

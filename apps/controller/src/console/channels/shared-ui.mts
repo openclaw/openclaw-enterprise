@@ -10,6 +10,7 @@ import type { SlackDirectoryContext } from "../agents/slack-directory.mjs";
 import {
   element,
   button,
+  describeDisabled,
   dismissOnBackdrop,
   field as formField,
   focusSaveOutcome,
@@ -270,12 +271,37 @@ function renderCard(section: HTMLElement, state: ChannelState, provider: Channel
       provider.secretBindings.some(
         (binding) => !state.drawerContext.secretBindings?.[binding.key]?.source,
       ));
-  // A disabled action names the reason shown on the card (finding 2495).
+  // A disabled action is described by the reason shown on the card (findings 2495, D749).
   const reasonId = `channel-${provider.id}-unavailable`;
-  const reasonShown = !state.readOnly && !disabledByMode && (blockReason || !support.supported);
-  const actionAttrs = canOpen
-    ? {}
-    : { disabled: "", ...(reasonShown ? { "aria-describedby": reasonId } : {}) };
+  let reason: HTMLElement | null = null;
+  if (state.readOnly) {
+    // A read-only view offers no action, so it has nothing to describe.
+  } else if (disabledByMode) {
+    // Informational: Embedded Agents simply do not offer channels; nothing is wrong yet.
+    reason = element(
+      "p",
+      { className: "hint", id: reasonId },
+      "Channels require Dedicated execution. Embedded Agents can only keep channels disabled.",
+    );
+  } else if (blockReason) {
+    reason = element(
+      "p",
+      { className: "status", "data-tone": "danger", id: reasonId },
+      blockReason,
+    );
+  } else if (!support.supported) {
+    reason = element(
+      "p",
+      { className: "status", "data-tone": "danger", id: reasonId },
+      support.reason,
+    );
+  }
+  const actionButton = state.readOnly
+    ? null
+    : button(action, () => openDrawer(section, state, provider), canOpen ? {} : { disabled: "" });
+  if (actionButton) {
+    describeDisabled(actionButton, reason);
+  }
   const card = element(
     "section",
     { className: "agent-card channel-card" },
@@ -296,9 +322,7 @@ function renderCard(section: HTMLElement, state: ChannelState, provider: Channel
       element(
         "div",
         { className: "channel-actions" },
-        state.readOnly
-          ? null
-          : button(action, () => openDrawer(section, state, provider), actionAttrs),
+        actionButton,
         canDisable
           ? button(`Disable ${provider.name}`, () => void disableProvider(state, provider), {
               tone: "danger",
@@ -334,24 +358,11 @@ function renderCard(section: HTMLElement, state: ChannelState, provider: Channel
         state.copy.readOnlyCardMessage ?? "Values in a deployed version cannot be edited.",
       ),
     );
-  } else if (disabledByMode) {
-    card.append(
-      // Informational: Embedded Agents simply do not offer channels; nothing is wrong yet.
-      element(
-        "p",
-        { className: "hint" },
-        "Channels require Dedicated execution. Embedded Agents can only keep channels disabled.",
-      ),
-    );
-  } else if (blockReason) {
-    card.append(
-      element("p", { className: "status", "data-tone": "danger", id: reasonId }, blockReason),
-    );
-  } else if (!support.supported) {
-    card.append(
-      element("p", { className: "status", "data-tone": "danger", id: reasonId }, support.reason),
-      nativeDocument(`${provider.name} native configuration`, support.config),
-    );
+  } else if (reason) {
+    card.append(reason);
+    if (!disabledByMode && !blockReason && !support.supported) {
+      card.append(nativeDocument(`${provider.name} native configuration`, support.config));
+    }
   }
   return card;
 }

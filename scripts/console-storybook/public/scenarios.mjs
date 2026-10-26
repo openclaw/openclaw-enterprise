@@ -8455,7 +8455,18 @@ export const scenarios = {
     deployed: true,
     firstDeploymentFailed: true,
     description:
-      "A failed first deployment leaves the Agent requested to run with no selected version, so Stop is disabled and says there is nothing to stop.",
+      "A failed first deployment leaves the Agent requested to run with no selected version, so the danger zone has no Stop row, as the Agents list has no Stop icon.",
+    gap: "Simulated UI proof only; this preview does not run a deployment.",
+  },
+  stopFirstDeploymentQueued: {
+    group: "Components/Stop Agent",
+    name: "First deployment queued",
+    path: draft,
+    deployed: true,
+    firstDeploymentQueued: true,
+    actions: [click("Stop Agent")],
+    description:
+      "A queued first deployment has no selected version yet. Stop stays, and its row and confirmation say it cancels the deployment in progress instead of interrupting a gateway.",
     gap: "Simulated UI proof only; this preview does not run a deployment.",
   },
   stopNeverDeployed: {

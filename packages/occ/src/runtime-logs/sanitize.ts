@@ -41,6 +41,8 @@ const WRAPPER_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freez
     "elapsedMs",
     "capMs",
     "cpuWaitMs",
+    "pressureWaitMs",
+    "throttledWaitMs",
     "code",
     "providerStatus",
     "providerCode",

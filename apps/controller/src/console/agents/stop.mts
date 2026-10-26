@@ -1,10 +1,11 @@
 import type { AgentRead } from "@openclaw-enterprise/contracts";
 import { requestFailure, responseFields } from "../api-client.mjs";
-import { button, element, setHidden, statusBlock } from "../dom.mjs";
+import { button, element, setHidden, setText, statusBlock } from "../dom.mjs";
 import {
   type AgentLifecycleContext,
   type LifecycleError,
-  STOP_CONFIRMATION,
+  cancelsFirstDeployment,
+  stopConfirmation,
 } from "./lifecycle-confirmation.mjs";
 import { AGENT_STOP_DENIED, askForGrant } from "./access-reasons.mjs";
 import { describeFailure, shortId } from "./list.mjs";
@@ -44,8 +45,13 @@ export function createAgentStop(
     noReadableVersions: boolean | null | undefined;
     versionLabel(id: string): string | undefined;
     used: boolean;
-    /** The detail page's answer: the latest deployment failed and no version was selected. */
-    nothingRunning: boolean;
+    /**
+     * The status of the latest deployment the detail page read, or null when this viewer cannot
+     * read it (no readable version, or a failed read). Undefined until the page knows.
+     */
+    latestDeployment: string | null | undefined;
+    /** This viewer's Stop cancelled a first deployment, before any version was selected. */
+    cancelledFirstDeployment: boolean;
   } = {
     agent,
     pending: false,
@@ -58,31 +64,33 @@ export function createAgentStop(
     versionLabel: () => undefined,
     // Set once this viewer opens Stop or refreshes here, so the row never vanishes under them.
     used: false,
-    nothingRunning: false,
+    latestDeployment: undefined,
+    cancelledFirstDeployment: false,
   };
 
   // Focus lands here when the control that would take it is not rendered.
   const title = element("h3", { id: "agent-stop-title", tabindex: "-1" }, "Stop Agent");
+  const summary = element("p", { className: "muted" });
   section.append(
-    element(
-      "div",
-      { className: "danger-zone-text" },
-      title,
-      element(
-        "p",
-        { className: "muted" },
-        "Stops the running version. The Agent stays and can be deployed again.",
-      ),
-    ),
+    element("div", { className: "danger-zone-text" }, title, summary),
     actions,
     feedback,
   );
 
   function render() {
     const requested = state.agent.desiredRuntimeState === "stopped";
-    // A first deployment that failed leaves the Agent requested to run with no version
-    // selected: Stop would change nothing, so it is disabled and says why (finding 2385).
-    const idle = state.nothingRunning && !requested && !state.agent.activeRevisionId;
+    // A first deployment that failed leaves the Agent requested to run with no version selected:
+    // Stop would change nothing, so the row is hidden, as on the Agents list (findings 2385,
+    // D691). Only a failure this page read decides it. A succeeded deployment read against an
+    // older Agent read, an unreadable deployment, or a failed read keeps Stop, and the API answers
+    // if nothing runs.
+    const idle = !requested && !state.agent.activeRevisionId && state.latestDeployment === "failed";
+    setText(
+      summary,
+      cancelsFirstDeployment(state.agent, state.latestDeployment)
+        ? "Cancels the deployment in progress. The Agent stays and can be deployed again."
+        : "Stops the running version. The Agent stays and can be deployed again.",
+    );
     // A running Agent's row is the title, its sentence and Stop; the overview already shows the
     // current version. After a stop request the row reports what Refresh reads back.
     feedback.replaceChildren(
@@ -109,7 +117,9 @@ export function createAgentStop(
               // Initial drafts and completed stops both have no selected revision.
               state.agent.activeRevisionId
                 ? "Stop requested. OCC will not start this Agent again until you deploy a new version. Runtime shutdown completion is not exposed in Console."
-                : "No version is selected. Deploy a new version to start this Agent.",
+                : state.cancelledFirstDeployment
+                  ? "Stop requested. The deployment in progress is cancelled, and OCC will not start this Agent until you deploy a new version."
+                  : "No version is selected. Deploy a new version to start this Agent.",
             ),
           ]
         : []),
@@ -154,10 +164,10 @@ export function createAgentStop(
     // A viewer whose permission answer denies Agent operate has no row either (UX spec 3.9).
     // A missing answer keeps it, and the API still decides. An answer that lands while this
     // viewer has the confirmation open keeps the row, so the reason stays where they were.
-    setHidden(section, (neverStarted || state.forbidden) && !state.used);
+    setHidden(section, (neverStarted || idle || state.forbidden) && !state.used);
     // After a request, a disabled Stop beside Request Stop again only adds noise, and an
     // uncertain outcome offers only Refresh (finding 1899).
-    if (neverStarted) {
+    if (neverStarted || (idle && !state.used)) {
       actions.replaceChildren();
     } else if (state.needsRefresh) {
       actions.replaceChildren(refresh);
@@ -301,6 +311,9 @@ export function createAgentStop(
       if (stopped.desiredRuntimeState !== "stopped") {
         throw new Error("Invalid Agent stop response");
       }
+      // Only a stop whose dialog said it cancels a deployment in progress reports that it did.
+      state.cancelledFirstDeployment =
+        cancelsFirstDeployment(state.agent, state.latestDeployment) && !stopped.activeRevisionId;
       dialog.close();
       setAgent(stopped);
     } catch (cause) {
@@ -371,7 +384,7 @@ export function createAgentStop(
     const description = element(
       "p",
       { id: "agent-stop-confirm-description", "aria-live": "polite" },
-      STOP_CONFIRMATION,
+      stopConfirmation(state.agent, state.latestDeployment),
     );
     const showRestriction = () => {
       // A late answer cannot undo a request already sent.
@@ -463,12 +476,13 @@ export function createAgentStop(
       state.noReadableVersions = value;
       render();
     },
-    // The detail page reports whether its latest deployment failed with no version selected.
-    setNothingRunning(value: boolean) {
-      if (state.nothingRunning === value) {
+    // The detail page reports the latest deployment's status, or null when this viewer cannot
+    // read it.
+    setLatestDeployment(value: string | null) {
+      if (state.latestDeployment === value) {
         return;
       }
-      state.nothingRunning = value;
+      state.latestDeployment = value;
       render();
     },
     // `label(id)` names a version as the page does ("v3"), or is undefined when unlisted. Only a

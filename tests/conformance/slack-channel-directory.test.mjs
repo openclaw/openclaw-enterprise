@@ -6,6 +6,7 @@ import test from "node:test";
 import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
 import { ChannelDirectoryError } from "../../packages/occ/src/index.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
+import { SLACK_ROUTE_NOT_CONFIGURED } from "../helpers/refusal-text.mjs";
 import {
   connectThroughProxy,
   requestThroughProxy,
@@ -499,8 +500,7 @@ test("Slack credential checks name the missing proxy only when production expect
     );
   const noRoute = {
     name: "SlackRouteNotConfiguredError",
-    message:
-      /no Slack proxy\. If the API has another approved route to Slack, try again\. Otherwise an administrator must set Helm slackProxy\.enabled/,
+    message: SLACK_ROUTE_NOT_CONFIGURED,
   };
   const unavailable = { reason: "unavailable", path: "/channels/slack/botToken" };
   // Node's own fetch sends the request to local endpoints, so each failure has the real shape.

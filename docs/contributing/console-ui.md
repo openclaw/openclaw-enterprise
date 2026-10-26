@@ -32,6 +32,9 @@ JavaScript at that URL. Run `pnpm typecheck` to check the browser code.
   the intended resource and confirms the expected saved state. If the write may have
   committed but you cannot confirm it, say the outcome is unknown and read that same
   resource again. Do not repeat the write to find out.
+- **Disabled controls.** Show the reason next to a disabled control, and link it with
+  `describeDisabled(control, reason)` wherever the control's state changes, so a screen
+  reader reads the reason with the control.
 
 ## Extend the shared styles
 

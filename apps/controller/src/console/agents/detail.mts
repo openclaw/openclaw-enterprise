@@ -17,6 +17,7 @@ import type { ConsolePageContext } from "../page-context.mjs";
 import { renderAgentDriverConfigurations } from "../driver-configurations.mjs";
 import {
   button,
+  describeDisabled,
   element,
   fieldError,
   focusSaveOutcome,
@@ -44,8 +45,11 @@ import {
   askForGrant,
   CONFIGURATION_UPDATE_DENIED,
   credentialCheckedAtDeploy,
+  modelCredentialRejectedReadOnly,
   NEW_VERSIONS_READ,
+  requestedVersionUnavailable,
   VERSION_READ_DENIED,
+  VERSION_UNAVAILABLE,
 } from "./access-reasons.mjs";
 import { renderAgentPlugins } from "./plugins.mjs";
 import { repositoryProfile, repositoryWriteAccessHelp } from "./repository-profiles.mjs";
@@ -105,7 +109,7 @@ import {
   deploymentPending,
   readRevisionPage,
 } from "./deployment-evidence.mjs";
-import { createDeploymentRecovery } from "./deployment-recovery.mjs";
+import { createDeploymentRecovery, secretBackedCredential } from "./deployment-recovery.mjs";
 import {
   sameNamespaceSecretHref,
   secretMetadata,
@@ -301,32 +305,32 @@ function errorPanel(
   cause: unknown,
   context: DetailContext,
   retry: () => void,
-  { version = false } = {},
+  { version = false, exists = false } = {},
 ) {
   const error = requestFailure(cause);
   if (error.status === 401) {
     context.onExpired();
     return element("div");
   }
-  // Revision read is granted per version; Agent access alone does not cover new versions.
-  const versionDenied = version && error.status === 403;
+  // Revision read is granted per version; Agent access alone does not cover new versions. A
+  // version not known to exist, such as one from an edited link, is answered as one the caller
+  // may not read (403) or as missing (404), so the text says either may be true (finding D750).
+  let heading = "Configuration unavailable";
+  let reason = message(cause, false, DRAFT_CONFIGURATION_NEED);
+  if (error.code === "SAVED_CONFIGURATION_UNREADABLE") {
+    heading = "Saved configuration unreadable";
+  } else if (version && exists && error.status === 403) {
+    heading = "You cannot read this version";
+    reason = VERSION_READ_DENIED;
+  } else if (version && !exists && (error.status === 403 || error.status === 404)) {
+    heading = "Version not found or not shared";
+    reason = VERSION_UNAVAILABLE;
+  }
   return element(
     "section",
     { className: "state-panel", role: "alert" },
-    element(
-      "h2",
-      {},
-      error.code === "SAVED_CONFIGURATION_UNREADABLE"
-        ? "Saved configuration unreadable"
-        : versionDenied
-          ? "You cannot read this version"
-          : "Configuration unavailable",
-    ),
-    element(
-      "p",
-      {},
-      versionDenied ? VERSION_READ_DENIED : message(cause, false, DRAFT_CONFIGURATION_NEED),
-    ),
+    element("h2", {}, heading),
+    element("p", {}, reason),
     responseFields(cause).remembered === true
       ? element(
           "p",
@@ -2239,17 +2243,25 @@ export async function renderAgentDetail(
       }
       const hidden = [selected, currentRevisionId].find(revisionHidden);
       setHidden(statusLine, hidden === undefined);
+      // The current version is known to exist; a requested one that is not current, such as one
+      // from an edited link, may not (finding D750).
       setText(
         statusLine,
-        hidden
-          ? `You cannot read version ${shortId(hidden)}, so its progress and outcome are not shown here. ${readAccessHint}`
-          : "",
+        !hidden
+          ? ""
+          : hidden === currentRevisionId
+            ? `You cannot read version ${shortId(hidden)}, so its progress and outcome are not shown here. ${readAccessHint}`
+            : requestedVersionUnavailable(shortId(hidden)),
       );
       setLiveServing(false);
-      stopPanel.setNothingRunning(false);
+      // This viewer reads no deployment, so Stop keeps its row and says it may cancel one or
+      // interrupt a gateway (finding D691); the API answers if nothing runs.
+      stopPanel.setLatestDeployment(null);
       return;
     }
-    stopPanel.setNothingRunning(latestDeploymentStatus === "failed" && !currentRevisionId);
+    // Stop hides only for a failed first deployment, and says it cancels one still queued or in
+    // progress (findings 2385, 2580, D691). A failed read is unknown, not failed.
+    stopPanel.setLatestDeployment(latestDeploymentStatus);
     const label = latestDeploymentStatus ? outcomeLabel(latestDeploymentStatus) : undefined;
     // A superseded or stopped deployment is neutral: it raises no banner and says nothing about
     // serving.
@@ -2326,9 +2338,7 @@ export async function renderAgentDetail(
       setText(
         statusLine,
         [
-          requestedHidden
-            ? `Version ${shortId(selected)} was requested, but you cannot read it, so its progress and outcome are not shown here.`
-            : null,
+          requestedHidden ? requestedVersionUnavailable(shortId(selected)) : null,
           newerHidden
             ? `The current version, ${shortId(currentRevisionId ?? "")}, is one you cannot read; v${latest.revision} is an older version.`
             : null,
@@ -2341,7 +2351,8 @@ export async function renderAgentDetail(
           successBehindUnknown
             ? `The current version, ${shortId(currentRevisionId ?? "")}, is not among the versions listed, so this page cannot tell whether it is newer than v${latest.revision}.${olderCursor ? " Show older versions to check." : ""}`
             : null,
-          hiddenNotice ? readAccessHint : null,
+          // The hint is about versions known to exist; a requested one may not (finding D750).
+          newerHidden || failureBehindHidden ? readAccessHint : null,
         ]
           .filter(Boolean)
           .join(" "),
@@ -2989,19 +3000,27 @@ export async function renderAgentDetail(
             credentials?.deployGateMessage() ?? "Credential readiness could not be confirmed.";
           // Secret values can be updated in place, so a rejected credential warns instead of
           // blocking. It never reads "Ready to deploy.": deploying again does not fix it.
-          const rejected =
-            "The last deployment's model credential was rejected; update or replace it in Credentials before deploying again.";
+          // A reader who cannot change the draft is told which grants fix it (finding D750).
+          const readOnly = draftReadOnly();
+          const rejected = readOnly
+            ? modelCredentialRejectedReadOnly(
+                secretBackedCredential("harnessAuth" in agent ? agent.harnessAuth : undefined),
+              )
+            : "The last deployment's model credential was rejected; update or replace it in Credentials before deploying again.";
           const status = !credentialRejected()
             ? gate
             : gate === "Ready to deploy."
               ? rejected
               : `${gate} ${rejected}`;
           deployStatus.textContent =
-            draftReadOnly() && status !== "Ready to deploy."
+            readOnly && status !== "Ready to deploy." && !credentialRejected()
               ? `${status} Your access does not include changing this version draft.`
               : status;
         }
       }
+      // A disabled Deploy is described by the line that says why, or by a refused deployment's
+      // alert when that line defers to it (finding D749).
+      describeDisabled(deploy, deployStatus.textContent ? deployStatus : deployFeedback);
       updateChecklist();
     }
     // The last deployment's model credential was rejected and the draft still uses it.
@@ -3858,7 +3877,11 @@ export async function renderAgentDetail(
             context.deniedReads?.forget(snapshotPath);
             context.navigate(target(selected, selectedTab), namespaceId, true);
           },
-          { version: selected !== "draft" },
+          {
+            version: selected !== "draft",
+            // The current version and every listed one are known to exist.
+            exists: selected === currentRevisionId || listedRevisions.has(selected),
+          },
         ),
       );
     } else if (data) {
@@ -4255,6 +4278,16 @@ export async function renderAgentDetail(
       let pending = false;
       // Set when the caller's permission answer denies Agent update (finding 1530).
       let updateDenied = false;
+      // The method select and Save are described by the note that says why they are disabled
+      // (finding D749).
+      const describeUpdateDenial = () => {
+        const method = auth.section.querySelector<HTMLElement>("#harness-auth-method");
+        for (const control of [save, method]) {
+          if (control) {
+            describeDisabled(control, updateDenied ? updateNote : null);
+          }
+        }
+      };
       const applyUpdateDenial = (reason: string | undefined) => {
         // Retry credential access only rechecks the Secret grant; it is not an Agent update.
         if (savedAuthentication || (reason === undefined && !updateDenied)) {
@@ -4269,6 +4302,7 @@ export async function renderAgentDetail(
           // An edit that cannot be saved would only block Deploy (finding 1539).
           auth.setDisabled(outcomeUnknown || updateDenied);
         }
+        describeUpdateDenial();
       };
       void agentSaveDenied.then((reason) => {
         if (context.isCurrent()) {
@@ -4588,6 +4622,7 @@ export async function renderAgentDetail(
             reload.disabled = false;
             save.disabled = outcomeUnknown || updateDenied;
             auth.setDisabled(outcomeUnknown || savedAuthentication !== null || updateDenied);
+            describeUpdateDenial();
             syncUnsavedAuthentication();
           }
         }

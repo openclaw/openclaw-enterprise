@@ -13,7 +13,7 @@ export const callerDenied = (grant, target) =>
   `Not authorized: this needs ${grant} on ${target}. Ask an Installation administrator to grant it.`;
 // An Agent's own service principal lacks a grant deployment needs (finding 2592). `agent` is
 // "Agent <id>" when the request carried its ID, otherwise "This Agent"; `target` is "Secret <id>"
-// when the caller sent or may read it, otherwise "one of its bound Secrets".
+// when the caller sent it or may read both it and the Agent, otherwise "one of its bound Secrets".
 export const agentPrincipalDenied = (agent, target, grant = "Secret operate") =>
   `${agent} cannot use ${target}: the Agent itself needs ${grant} on it. Ask an Installation administrator to give the Agent access, then deploy again.`;
 // A denial echoes the ID its request sent, so a real and an unknown ID get answers that match once
@@ -45,6 +45,12 @@ export const NAMESPACE_NAME_CONFLICT =
 // The sign-in endpoints' 503 (apps/controller/src/auth/index.ts); the console words its own.
 export const SIGN_IN_UNAVAILABLE =
   "Sign-in is temporarily unavailable. Try again shortly. If it continues, ask an operator to check the API logs.";
+// The sign-in endpoints' 429. The password limiter names its wait, the same number of seconds as
+// its Retry-After header, which counts down: two refusals a second apart differ in it. The external
+// sign-in budgets refill each minute and send no Retry-After.
+export const signInRateLimited = (seconds) =>
+  `Too many attempts. Wait ${seconds === 1 ? "1 second" : `${seconds} seconds`}, then try again.`;
+export const SIGN_IN_RATE_LIMITED_MINUTE = "Too many attempts. Wait a minute, then try again.";
 // Create Agent and the Agents list for a caller without Agent create, which Namespace Roles cannot
 // grant people (findings 2496, 2508).
 export const AGENT_CREATE_DENIED =
@@ -106,6 +112,27 @@ export const LOG_TEXT_DENIED =
   "Log text requires Agent read_logs (or Agent administer) on this Agent. Ask an Installation administrator to grant it.";
 export const RUNTIME_STATUS_DENIED =
   "Runtime status requires Agent operate on this Agent and AgentRevision read on this version. Log text needs Agent read_logs (or Agent administer). Ask an Installation administrator for the access you need.";
+// A version link the page cannot list may name a version that does not exist: the API answers
+// both alike, so the console says either may be true (finding D750).
+export const VERSION_UNAVAILABLE =
+  "This version does not exist or your access does not include it. If you need it, ask an Installation administrator for AgentRevision read on it.";
+export const requestedVersionUnavailable = (version) =>
+  `Version ${version} does not exist or your access does not include it, so this page shows no progress or outcome for it. If you need it, ask an Installation administrator for AgentRevision read on it.`;
+// A rejected model credential for a caller known to lack Agent update names the grants that fix
+// it and who gives them (finding D750): the failure banner, and the draft's deploy line. A
+// Secret-backed credential can also be replaced in place with Secret update on its Secret.
+const credentialFixGrants = (secretBacked, then) =>
+  secretBacked
+    ? `Replacing its Secret's value needs Secret update on that Secret; choosing another credential needs Agent update on this Agent, which your access does not include. If your access does not include Secret update either, ask an Installation administrator for one of them. Then ${then}.`
+    : `Your access does not include changing it. Ask an Installation administrator for Agent update on this Agent. Then ${then}.`;
+export const modelCredentialRejectedAsk = (secretBacked) =>
+  `The model provider rejected this version's credential (HTTP 401 or 403). ${credentialFixGrants(secretBacked, "deploy a new version")}`;
+export const modelCredentialRejectedReadOnly = (secretBacked) =>
+  `The last deployment's model credential was rejected. ${credentialFixGrants(secretBacked, "deploy again")}`;
+// The API has no route to Slack (SlackRouteNotConfiguredError, apps/controller/src/drivers/channel/
+// slack.ts). Helm settings belong to whoever operates the Installation (finding D750).
+export const SLACK_ROUTE_NOT_CONFIGURED =
+  "OCC could not reach Slack, and the API has no Slack proxy. If the API has another approved route to Slack, try again. Otherwise ask the Installation operator to set Helm slackProxy.enabled or api.channelDirectoryProxyUrl; see the Slack integration guide.";
 // Agent-side save controls, from the caller's permission answer (findings 2441, 2459).
 export const AGENT_UPDATE_DENIED = notIncluded(
   "saving these settings",

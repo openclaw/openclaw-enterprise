@@ -8,6 +8,7 @@ import type { Static } from "typebox";
 import { requestFailure } from "../api-client.mjs";
 import { deploymentFailureStep } from "../deployment-failure-steps.mjs";
 import { element, setHidden, setText } from "../dom.mjs";
+import { modelCredentialRejectedAsk } from "./access-reasons.mjs";
 import { agentSaveDenial, namespacePath } from "./list.mjs";
 import { logTextDenied } from "./logs.mjs";
 
@@ -43,6 +44,13 @@ const DEPLOYMENT_FAILURE_LINKS: Readonly<Record<string, Exclude<RecoveryTab, "lo
   // The stored Harness authentication is unusable; the step is choosing it again.
   INVALID_HARNESS_AUTH: "credentials",
 };
+
+/** A model credential held in an OCC Secret, whose value Secret update replaces in place. */
+export function secretBackedCredential(
+  harnessAuth: { method: string; source?: { kind: string } } | null | undefined,
+) {
+  return harnessAuth?.source?.kind === "secret";
+}
 
 const DEPLOYMENT_FAILURE_LINK_LABELS = {
   credentials: "Open Credentials",
@@ -176,11 +184,25 @@ export function createDeploymentRecovery(
     const generic = logsAllowed
       ? "Check the failed version’s logs before deploying a new version."
       : "Ask someone with log access to check the failed version’s logs before deploying a new version.";
-    let impact = errorMessage || generic;
+    // The API's step for a rejected model credential is to update it in Credentials, which needs
+    // Agent update. A caller whose permission answer denies that is told which grants fix it and
+    // who gives them instead: a Secret-backed credential can also be replaced in place with
+    // Secret update, which the answer does not cover (finding D750). The API still authorizes
+    // each save.
+    const harnessAuth = "harnessAuth" in agent ? agent.harnessAuth : undefined;
+    const credentialFixDenied =
+      code === "RUNTIME_AUTHENTICATION_FAILED" &&
+      harnessAuth?.method !== "runtime" &&
+      permissions !== null &&
+      !(permissions.update === true && agentSaveDenial(permissions) === undefined);
+    const failureText = credentialFixDenied
+      ? modelCredentialRejectedAsk(secretBackedCredential(harnessAuth))
+      : errorMessage;
+    let impact = failureText || generic;
     if (servingImpact === "replacement-failed") {
-      impact = `${currentLabel} is still selected, but its runtime was probably stopped for this deployment.${errorMessage ? ` ${errorMessage}` : ""}`;
+      impact = `${currentLabel} is still selected, but its runtime was probably stopped for this deployment.${failureText ? ` ${failureText}` : ""}`;
     } else if (servingImpact === "selected-failed") {
-      impact = `${currentLabel} is still selected, but its runtime replaced the previous version before deployment finished.${errorMessage ? ` ${errorMessage}` : ""}`;
+      impact = `${currentLabel} is still selected, but its runtime replaced the previous version before deployment finished.${failureText ? ` ${failureText}` : ""}`;
     }
     if ((servingImpact || (errorMessage && step === "logs")) && !logsAllowed) {
       // Without the Logs link this is the reader's only way to the logs (finding 1484).

@@ -57,6 +57,26 @@ export const VERSION_READ_DENIED = notIncluded(
   "AgentRevision read on it",
 );
 export const NEW_VERSIONS_READ = `Each new version needs its own AgentRevision read: ${ASK_INSTALLATION_ADMINISTRATOR} to grant it after each deployment.`;
+// A version link names a version the page cannot list. A reader granted read per version gets
+// the same answer for an unknown version as for one they may not read, so the text says either
+// may be true (finding D750).
+const IF_NEEDED_VERSION_READ = `If you need it, ${ASK_INSTALLATION_ADMINISTRATOR} for AgentRevision read on it.`;
+export const VERSION_UNAVAILABLE = `This version does not exist or your access does not include it. ${IF_NEEDED_VERSION_READ}`;
+export const requestedVersionUnavailable = (version: string) =>
+  `Version ${version} does not exist or your access does not include it, so this page shows no progress or outcome for it. ${IF_NEEDED_VERSION_READ}`;
+
+// A rejected model credential is fixed in the Agent's Credentials, which needs Agent update. A
+// Secret-backed credential can also be replaced in place, which needs Secret update on that
+// Secret. The permission answer covers only Agent update, so a caller known to lack it is told
+// which grant does what, and who grants it, rather than to fix it (finding D750).
+const credentialFixGrants = (secretBacked: boolean, then: string) =>
+  secretBacked
+    ? `Replacing its Secret's value needs Secret update on that Secret; choosing another credential needs Agent update on this Agent, which your access does not include. If your access does not include Secret update either, ${ASK_INSTALLATION_ADMINISTRATOR} for one of them. Then ${then}.`
+    : `${notIncluded("changing it", "Agent update on this Agent")} Then ${then}.`;
+export const modelCredentialRejectedAsk = (secretBacked: boolean) =>
+  `The model provider rejected this version's credential (HTTP 401 or 403). ${credentialFixGrants(secretBacked, "deploy a new version")}`;
+export const modelCredentialRejectedReadOnly = (secretBacked: boolean) =>
+  `The last deployment's model credential was rejected. ${credentialFixGrants(secretBacked, "deploy again")}`;
 
 // A Secret field with nothing to choose for a caller who can neither create nor read a Secret.
 export const NO_SECRETS_CREATE_DENIED = `No Secrets you can read in this Namespace. ${SECRET_CREATE_DENIED} Or ask one for Secret read and operate on an existing Secret.`;

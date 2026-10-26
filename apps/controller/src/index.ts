@@ -4355,13 +4355,15 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   /**
    * Which IDs a caller's own denial may name: those the request carried and, for a resource read
    * from stored state, such as a Secret the Agent binds, that resource when the caller may already
-   * read it (finding 2594). Only the caller's own denial of an action other than read or create
+   * read it (finding 2594) and, on an Agent's route, may read that Agent too: the binding is part
+   * of the Agent record. Only the caller's own denial of an action other than read or create
    * asks; an IAM failure while asking only hides the ID.
    */
   async function nameableIds(
     error: unknown,
     actorId: string | undefined,
     sent: (value: string) => boolean,
+    agent: ResourceRef | undefined,
   ): Promise<(value: string) => boolean> {
     if (
       actorId === undefined ||
@@ -4382,8 +4384,18 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     ) {
       return sent;
     }
-    const readable = await callerMay(actorId, "read", resource).catch(() => false);
+    const readable =
+      (agent === undefined || (await callerMay(actorId, "read", agent).catch(() => false))) &&
+      (await callerMay(actorId, "read", resource).catch(() => false));
     return readable ? (value) => value === resource.id || sent(value) : sent;
+  }
+
+  /** The Agent an Agent route's path names, for `nameableIds`. */
+  function routeAgent(request: FastifyRequest): ResourceRef | undefined {
+    const params = request.params as { namespaceId?: unknown; agentId?: unknown } | undefined;
+    return typeof params?.namespaceId === "string" && typeof params.agentId === "string"
+      ? { kind: "agent", id: params.agentId, namespaceId: params.namespaceId }
+      : undefined;
   }
 
   app.setErrorHandler(async (error, request, reply) => {
@@ -4391,7 +4403,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     // may already read that resource.
     const actorId = contexts.get(request)?.actorId;
     let mapped = requestFailure(error, {
-      requested: await nameableIds(error, actorId, requestedValues(request)),
+      requested: await nameableIds(error, actorId, requestedValues(request), routeAgent(request)),
       ...(actorId === undefined ? {} : { actorId }),
     });
     if (error instanceof RuntimeLogsError && error.retryAfterSeconds !== undefined) {

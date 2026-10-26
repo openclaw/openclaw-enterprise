@@ -8,7 +8,14 @@ import type {
   RuntimeLogStream,
 } from "@openclaw-enterprise/contracts";
 import { type RequestOptions, requestFailure } from "../api-client.mjs";
-import { button, element, replaceChildrenIfChanged, setText, statusBlock } from "../dom.mjs";
+import {
+  button,
+  describeDisabled,
+  element,
+  replaceChildrenIfChanged,
+  setText,
+  statusBlock,
+} from "../dom.mjs";
 import { LOG_TEXT_DENIED, RUNTIME_STATUS_DENIED } from "./access-reasons.mjs";
 import { displayDate, namespacePath, retryAfterText } from "./list.mjs";
 import { fitLogTimeColumn, SOURCE_LABELS, podCard, recordRow, visibleText } from "./logs-view.mjs";
@@ -445,6 +452,22 @@ export function renderAgentLogs(
     clearTimeout(retryHintTimer);
     logError.hidden = text === null;
     logError.textContent = text ?? "";
+    describeDeniedControls();
+  }
+
+  // A refused log read disables every log control; each is described by the refusal that says
+  // why (finding D749).
+  function describeDeniedControls() {
+    for (const control of [
+      sourceSelect,
+      previous,
+      includeDebug,
+      followButton,
+      refreshButton,
+      downloadButton,
+    ]) {
+      describeDisabled(control, logsDenied ? logError : null);
+    }
   }
 
   function showLogReadError(
@@ -597,6 +620,7 @@ export function renderAgentLogs(
     refreshButton.disabled = !readable;
     downloadButton.disabled = downloadPending || !readable;
     followButton.disabled = !readable || previous.checked;
+    describeDeniedControls();
   }
 
   // A later status denial clears the Pod details, not an independently authorized log cursor.

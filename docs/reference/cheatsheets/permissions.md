@@ -60,7 +60,8 @@ administrator to grant it.` No Role can hold create, so a create denial names
 its Namespace and says only an Installation administrator can create it. The
 message names a resource ID only when your request sent it in the path or an ID
 field, or you can already read that resource, never a binding, Role or
-Restriction. Log text needs `Agent read_logs (or Agent administer)`. A Restriction, a missing grant and
+Restriction. A Secret or credential source an Agent binds is named only when you
+can also read that Agent. Log text needs `Agent read_logs (or Agent administer)`. A Restriction, a missing grant and
 a resource that does not exist get the same message. A denial about your own
 account, session or provisioning job says so: `The acting account is disabled.`,
 `The acting identity is unavailable.`, `The human administrator session is no

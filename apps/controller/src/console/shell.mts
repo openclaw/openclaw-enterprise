@@ -1,6 +1,6 @@
 import type { BackendSummary, Namespace } from "@openclaw-enterprise/contracts";
 import { displayDate } from "./agents/list.mjs";
-import { button, element, type statusBlock } from "./dom.mjs";
+import { button, describeDisabled, element, type statusBlock } from "./dom.mjs";
 import type { createNavigation, pages } from "./navigation.mjs";
 
 interface Account {
@@ -51,6 +51,10 @@ export function brandContents(placement: "navigation" | "sign-in") {
       : image;
   return [logo, element("span", { className: "brand-name", title: displayName }, displayName)];
 }
+
+// The page panel's sentence that says why no Namespace can be selected. The header's disabled
+// selector is described by it (finding D749); the panel renders below the header afterwards.
+export const NAMESPACE_ACCESS_REASON_ID = "namespace-access-reason";
 
 export function panel(
   target: HTMLElement,
@@ -349,9 +353,25 @@ export function createShell({
     };
   }
 
+  // A reader with no Namespace sees a panel whose sentence says why the selector is disabled
+  // (finding D749). Only a shown panel describes it: on any other page, such as Settings, the
+  // selector names no reason that is not there.
+  function describeNamespaceSelector(select: HTMLSelectElement) {
+    describeDisabled(
+      select,
+      session && !namespaceAdmissionPending && namespaces.length === 0
+        ? // The page view may still be detached from the document while it renders.
+          (select.closest(".shell") ?? document).querySelector<HTMLElement>(
+            `#${NAMESPACE_ACCESS_REASON_ID}`,
+          )
+        : null,
+    );
+  }
+
   function updateNamespaceSelector(select: HTMLSelectElement) {
     const readable = namespaceAdmissionPending ? [] : namespaces;
     select.disabled = namespaceAdmissionPending || !session || readable.length === 0;
+    describeNamespaceSelector(select);
     select.replaceChildren();
     if (!readable.some((item) => item.id === namespaceId)) {
       // Once this session knows the Namespace list, admission names the selection instead of
@@ -1032,6 +1052,12 @@ export function createShell({
     renderRows,
     switchNamespace,
     updateNamespaces,
+    // The page view calls this once it shows (or replaces) the no-Namespace panel.
+    describeNamespaceSelector() {
+      if (namespaceSelect) {
+        describeNamespaceSelector(namespaceSelect);
+      }
+    },
     // The shown shell's control, outside its page view, that matches one from an earlier
     // render: the same sidebar link or button, Namespace selector, Refresh, heading or navigation
     // toggle. A new shell's account menus start closed, so their items give way to their toggle (the

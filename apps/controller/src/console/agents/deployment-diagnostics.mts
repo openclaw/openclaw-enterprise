@@ -3,7 +3,14 @@ import type {
   AgentDeploymentStatusWire,
 } from "@openclaw-enterprise/contracts";
 import { requestFailure } from "../api-client.mjs";
-import { button, element, focusSaveOutcome, patchChildren, statusBlock } from "../dom.mjs";
+import {
+  button,
+  describeDisabled,
+  element,
+  focusSaveOutcome,
+  patchChildren,
+  statusBlock,
+} from "../dom.mjs";
 import type { DeploymentContext } from "./deployment-evidence.mjs";
 import { DIAGNOSTICS_DENIED, notIncluded } from "./access-reasons.mjs";
 import { displayDate, message, neutralDeploymentOutcome } from "./list.mjs";
@@ -11,6 +18,7 @@ import { displayDate, message, neutralDeploymentOutcome } from "./list.mjs";
 // The console's delay for loading text (console.css .delayed-status): a diagnostics answer within
 // it never shows the waiting line (finding 1714).
 const DIAGNOSTICS_WAITING_DELAY_MS = 250;
+let diagnosticsPanels = 0;
 
 type DiagnosticCheck = AgentDeploymentDiagnosticsWire["checks"][number];
 
@@ -58,6 +66,8 @@ export function createVersionDiagnostics(
   // deployment poll re-renders the panel, and patchChildren drops attributes that render()
   // does not set (finding 1712).
   let outcomeId: string | null = null;
+  // The denial that describes the disabled button (finding D749); stable across polls.
+  const deniedId = `diagnostics-denied-${++diagnosticsPanels}`;
 
   async function run() {
     if (loading || operateDenied || !context.isCurrent()) {
@@ -237,20 +247,25 @@ export function createVersionDiagnostics(
       section.hidden = nothingToCheck;
     }
     const { status } = requestFailure(error);
+    // The button keeps its label while it waits, as Deploy and Save do: the status line below
+    // is the one announcement, and a changed label inside the Agent view's live region was
+    // announced as well (finding 1698).
+    const runButton = button("Run diagnostics for this version", () => void run(), {
+      disabled: waitingShown || operateDenied,
+      ...(outcomeId ? { "aria-describedby": outcomeId } : {}),
+    });
+    const denied = operateDenied
+      ? statusBlock("info", null, DIAGNOSTICS_DENIED, [], { id: deniedId })
+      : null;
+    describeDisabled(runButton, denied);
     patchChildren(section, [
       element(
         "div",
         { className: "deployment-heading" },
         element("h3", {}, "Current observations"),
-        // The button keeps its label while it waits, as Deploy and Save do: the status line
-        // below is the one announcement, and a changed label inside the Agent view's live
-        // region was announced as well (finding 1698).
-        button("Run diagnostics for this version", () => void run(), {
-          disabled: waitingShown || operateDenied,
-          ...(outcomeId ? { "aria-describedby": outcomeId } : {}),
-        }),
+        runButton,
       ),
-      ...(operateDenied ? [statusBlock("info", null, DIAGNOSTICS_DENIED)] : []),
+      denied,
       element(
         "p",
         { className: "muted" },
