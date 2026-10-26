@@ -68,6 +68,24 @@ export const CREDENTIAL_PROXY_INSTALLATION_ACCESS =
 // Deploy of several protected sources on a Credential Proxy without policy reduction (409).
 export const CREDENTIAL_PROXY_ONE_SOURCE =
   "The selected Credential Proxy cannot verify a reduced policy, so a protected revision can use only one credential source. Remove the others, or ask an Installation administrator to select a Proxy release with policy reduction.";
+// A bound live-adopted or Proxy-owned source after the Installation dropped its Credential Proxy.
+export const CREDENTIAL_PROXY_SOURCES_WITHOUT_PROXY =
+  "This Agent binds credential sources admitted under a Credential Proxy, and this Installation no longer selects one. Bind Credential Gateway sources instead, or ask an Installation administrator to select drivers.credential_proxy again.";
+// Deploy of a live-adopted source whose Configuration names no provider/model (400).
+export const LIVE_SOURCE_MODEL_REQUIRED =
+  "Configuration setting agents.defaults.model must name a provider/model: a live-adopted credential source routes protected inference only to an explicit provider. Set it in the Agent's Configuration, then deploy again.";
+// Protected credential source create: the Agent in config.agent_id (409), the type a Credential
+// Proxy cannot protect (409), and a Secret reference to another Namespace (400).
+export const AGENT_DELETING = "The requested Agent is being deleted.";
+export const PROTECTED_SOURCE_EMBEDDED_AGENT =
+  "config.agent_id names an embedded Agent, and a protected credential source serves only a dedicated Agent. Name a dedicated Agent in this Namespace.";
+export const protectedSourceTypeRefused = (type, types) =>
+  `With a Credential Proxy selected, every new credential source is protected, and the selected Credential Proxy cannot protect ${type} sources. Create a type it protects (${types}), or ask an Installation administrator.`;
+export const CREDENTIAL_SOURCE_SECRETS_CROSS_NAMESPACES =
+  "Credential source Secrets cannot cross Namespaces.";
+// Withdrawal of a source the Agent's active revision does not use (409).
+export const WITHDRAWAL_SOURCE_NOT_USED =
+  "The Agent's active version does not use this credential source, so there is nothing to withdraw. Withdraw a source that the deployed version uses.";
 // Update and rotation of a prepared or credential-free source (409 RESOURCE_CONFLICT).
 export const PROTECTED_SOURCE_UPDATE_REFUSED =
   "This credential source holds a prepared or credential-free protected grant, which cannot change in place. Create a new source with the new values, bind it in place of this one, then delete this one.";

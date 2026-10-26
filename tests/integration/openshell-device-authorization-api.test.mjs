@@ -282,6 +282,15 @@ test("Console device login completes through the paired OpenShell Refresh Driver
   assert.equal(failed.status, 503, JSON.stringify(failed.body));
   // The 503 says the login was cancelled and to start a new one (finding 2536).
   assert.equal(failed.body.error.message, DEVICE_LOGIN_FAILED);
+  // The text sends the caller to an operator. The API's 503 record for this request names the
+  // Refresh Driver's failure by class (and code, when it has one), never by its message.
+  const record = logs.find(
+    (line) =>
+      line.event === "http.dependency_unavailable" && line.requestId === failed.body.meta.requestId,
+  );
+  assert.equal(record?.errorClass, "RetryLaterError", JSON.stringify(record));
+  assert.deepEqual(record.causes, [{ errorClass: "TypeError" }]);
+  assert.equal(JSON.stringify(logs).includes("synthetic lost token-exchange response"), false);
   assert.equal(exchanges, 2);
   // It comes only after the caller's grants: a Namespace reader polling this login and a missing
   // one gets the same denial, each request's own ID hidden.

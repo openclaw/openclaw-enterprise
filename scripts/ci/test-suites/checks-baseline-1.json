@@ -117,7 +117,8 @@
     "tests/integration/credential-policy-recovery.test.ts",
     "tests/conformance/kubernetes-prepared-repository.test.mjs",
     "tests/integration/egress-installation-exchange.test.mjs",
-    "tests/integration/egress-prepared-github-metadata.test.mjs"
+    "tests/integration/egress-prepared-github-metadata.test.mjs",
+    "tests/integration/protected-source-refusals.test.mjs"
   ],
   "files": [
     {
@@ -574,6 +575,9 @@
     },
     {
       "path": "tests/integration/egress-prepared-github-metadata.test.mjs"
+    },
+    {
+      "path": "tests/integration/protected-source-refusals.test.mjs"
     }
   ]
 }
