@@ -2011,6 +2011,16 @@ test("a test-only change selects the lanes that list its files", async (t) => {
       ],
       [editTest("tests/integration/postgres-a.test.mjs"), ["postgres"]],
       [
+        ({ put }) => {
+          put("tests/integration/postgres-types.test.ts", "export const value: number = 1;\n");
+          put(
+            "scripts/ci/test-suites/postgres.json",
+            laneManifest([...suiteLanes.postgres, "tests/integration/postgres-types.test.ts"]),
+          );
+        },
+        ["checks-baseline-2", "postgres"],
+      ],
+      [
         withEdit("tests/integration/postgres-b.test.mjs", ({ put }) =>
           put("docs/testing.md", "Notes on tests/integration/postgres-b.test.mjs.\n"),
         ),
@@ -2034,17 +2044,6 @@ test("a test-only change selects the lanes that list its files", async (t) => {
       [
         postgresEdit(({ put }) => put("tests/conformance/lint-rules.test.mjs", "// edited\n")),
         ["checks-baseline-1", "postgres"],
-      ],
-      // The owning lane runs a new TypeScript test; baseline 2 type-checks it.
-      [
-        ({ put }) => {
-          put("tests/integration/postgres-c.test.ts", "// new\n");
-          put(
-            "scripts/ci/test-suites/postgres.json",
-            laneManifest([...suiteLanes.postgres, "tests/integration/postgres-c.test.ts"]),
-          );
-        },
-        ["checks-baseline-2", "postgres"],
       ],
       // A deleted file and its manifest entry.
       [
@@ -2113,6 +2112,7 @@ test("helper, fixture and other test-tree changes select full", async (t) => {
       "tests/integration/support.mjs",
       "tests/integration/nested/deep.test.mjs",
       "tests/unknown/other.test.mjs",
+      "tests/integration/postgres-a.test.js",
       "tests/integration/support.ts",
     ],
     async (path) => {
@@ -2543,4 +2543,13 @@ test("the checked-in suite index and manifests support test-only selection", asy
   const f = await fixture(t, ({ put }) => put(manifest.files[0].path, "// edited\n"), initial);
   const shallow = await shallowBootstrap(f);
   await settled([f.expectTests([lane]), shallow.expectTests([lane])]);
+  // The handoff proof must keep its real fixture lane and TypeScript check.
+  const handoff = await fixture(
+    t,
+    editTest("tests/integration/installation-handoff-k3d-real.test.ts"),
+    initial,
+  );
+  const handoffShallow = await shallowBootstrap(handoff);
+  const handoffLanes = ["checks-baseline-2", "k3d-fixture-configuration"];
+  await settled([handoff.expectTests(handoffLanes), handoffShallow.expectTests(handoffLanes)]);
 });

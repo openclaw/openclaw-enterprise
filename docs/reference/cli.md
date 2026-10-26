@@ -134,6 +134,11 @@ unauthorized resource. JSON and YAML output include each Agent's desired runtime
 state, execution mode, selected version, and whether deployment work is queued or
 claimed.
 
+## Installation handoff
+
+`occ installation doctor` and `plan` report the named Job, not release or workload readiness.
+[Resume with the original Job UID](../guides/deploy/production-handoff.md#resume-an-installation-in-progress).
+
 ## Runtime status and logs
 
 `occ agent runtime AGENT_ID` and `occ agent logs AGENT_ID` read the

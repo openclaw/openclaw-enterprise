@@ -3162,12 +3162,16 @@ async function prepareFile({ lane, file, statePath, template }) {
 async function prepareFileWithState({ name, relativeFile, resolvedStatePath, template }) {
   const state = await readState(resolvedStatePath);
   const prepare = lanePrepare(name);
+  const filePrepare = laneDefinition(name).files?.find(
+    (file) => file.path === relativeFile,
+  )?.prepare;
+  const preparePostgres = prepare.postgres && filePrepare?.postgres !== false;
   if (!state && prepare.requiresPreparedStateForFile) {
     throw new Error(
       `prepareFile for ${name} requires a prior prepareLane call using the same state path.`,
     );
   }
-  if (template !== undefined && (!prepare.postgres || !state)) {
+  if (template !== undefined && (!preparePostgres || !state)) {
     throw new Error("A template database requires a prepared PostgreSQL lane state.");
   }
   const effectiveState = state ?? baseState(name, resolvedStatePath);
@@ -3211,7 +3215,7 @@ async function prepareFileWithState({ name, relativeFile, resolvedStatePath, tem
     return { env: { ...env, ...prepared.env }, cleanup: prepared.cleanup };
   }
 
-  if (prepare.postgres) {
+  if (preparePostgres) {
     const dbKind = prepare.k3d ? "k8s" : "ci";
     const database = await createAndMigrateDatabase(resolvedStatePath, effectiveState, {
       kind: dbKind,
@@ -3272,7 +3276,7 @@ async function prepareFileWithState({ name, relativeFile, resolvedStatePath, tem
     // `lockTimeoutMs` limits the wait for the CI state lock (cleanupResourceIds).
     cleanup: async ({ lockTimeoutMs } = {}) => {
       try {
-        if (fixtureLanes.has(name)) {
+        if (fixtureLanes.has(name) && filePrepare?.verifyFixtureStorage !== false) {
           const cluster = effectiveState.resources.find(
             (resource) => resource.kind === "k3d-cluster",
           );
