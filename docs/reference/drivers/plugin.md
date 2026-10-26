@@ -122,8 +122,11 @@ requested IDs and policies, not credential values or native release metadata.
 At runtime, Compute and the bundled preparation helpers resolve current native
 metadata, translate supported policy, and apply it to the specified Agent revision
 before declaring readiness. Nonempty selections cannot start with a missing,
-changed, or Harness-incompatible Driver. An unsupported policy or unsafe native
-configuration prevents startup or leaves the version unready. Retries reuse the
+changed, or Harness-incompatible Driver. Agent save, provisioning and deployment
+refuse a Harness the Driver cannot run (`400`): bundled OpenClaw plugins need an
+OpenClaw Harness, bundled Codex plugins dedicated Codex or embedded OpenClaw.
+An unsupported policy or unsafe native configuration prevents startup or leaves
+the version unready. Retries reuse the
 requested IDs and policy; they may resolve a newer curated release at that later
 startup. Saving a selection is not evidence that it can start.
 

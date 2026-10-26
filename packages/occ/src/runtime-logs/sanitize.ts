@@ -41,6 +41,8 @@ const WRAPPER_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freez
     "elapsedMs",
     "capMs",
     "cpuWaitMs",
+    "pressureWaitMs",
+    "throttledWaitMs",
     "code",
     "providerStatus",
     "providerCode",
@@ -48,6 +50,8 @@ const WRAPPER_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freez
     "bodyShape",
     "providerErrorCode",
     "providerErrorType",
+    // The error code alone when the probe directory could not be removed (finding 2610).
+    "cleanupError",
   ],
   // One failed native Codex login attempt (finding 2017); a reliability failure is retried.
   "codex.login": ["attempt", "elapsedMs", "exitCode"],

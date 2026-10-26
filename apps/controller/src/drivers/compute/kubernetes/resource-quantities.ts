@@ -114,3 +114,8 @@ export function compareResourceQuantities(request: string, limit: string): numbe
   }
   return a.sign === 0 ? 0 : a.sign * magnitude(a, b);
 }
+
+/** Whether the API server can parse this JSON quantity string. */
+export function isResourceQuantity(value: string): boolean {
+  return parsed(value) !== undefined;
+}

@@ -464,6 +464,44 @@ function undescribe(control: Element, id: string) {
   }
 }
 
+let reasonIds = 0;
+
+/**
+ * Links a disabled control to the sentence that says why (finding D749), so assistive technology
+ * reads the reason with the control, as a sighted reader sees it nearby. Call it wherever the
+ * control's disabled state or the reason changes: while the control is disabled (or
+ * aria-disabled) and `reason` shows text, the reason joins the control's description; otherwise
+ * the link is removed. A reason given by ID may render later, such as a page panel under the
+ * header's selector. Other descriptions, such as a field's help or error, are kept.
+ */
+export function describeDisabled(
+  control: HTMLElement,
+  reason: HTMLElement | string | null | undefined,
+) {
+  const disabled =
+    (control as HTMLElement & { disabled?: boolean }).disabled === true ||
+    control.getAttribute("aria-disabled") === "true";
+  let id: string | undefined;
+  if (!disabled || !reason) {
+    id = undefined;
+  } else if (typeof reason === "string") {
+    id = reason;
+  } else if (!reason.hidden && reason.textContent?.trim()) {
+    id = reason.id ||= `disabled-reason-${++reasonIds}`;
+  }
+  const linked = control.dataset.disabledReason;
+  if (linked && linked !== id) {
+    undescribe(control, linked);
+    delete control.dataset.disabledReason;
+  }
+  if (id && !(control.getAttribute("aria-describedby") ?? "").split(/\s+/).includes(id)) {
+    describe(control, id);
+  }
+  if (id && linked !== id) {
+    control.dataset.disabledReason = id;
+  }
+}
+
 /**
  * A form field (UX plan C3, console.css "Form field"): a label, the control, then its help. The
  * control is described by the help, and by its error while one shows (setFieldError), which sits
@@ -724,6 +762,14 @@ export function statusBlock(
     actions.length ? element("div", { className: "status-actions" }, ...actions) : null,
   );
 }
+
+// One way to show a request ID (finding 2538): the words "Request ID:" and the ID, on their own
+// line under a failure that has room for one, otherwise after its one line of text.
+export const requestIdText = (requestId: string) => `Request ID: ${requestId}`;
+export const requestIdLine = (requestId: string) =>
+  element("p", { className: "request-id" }, requestIdText(requestId));
+export const withRequestId = (text: string, requestId: string | undefined) =>
+  requestId ? `${text} ${requestIdText(requestId)}` : text;
 
 /**
  * Gives a feedback line that switches between a quiet hint and a refusal its look: a status

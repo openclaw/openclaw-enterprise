@@ -3,10 +3,15 @@
 OpenClaw Enterprise (OCE) is pre-alpha and has no stable release, so a newer
 main can refuse or break an Installation that an older build created. Each
 change like that gets an entry here: what breaks, who is affected, how to tell,
-and the steps. Before an upgrade, read every entry dated after the source commit
-you run now, here, in the
+and the steps. Before an upgrade, read every entry dated on or after the date of the
+source commit you run now (an entry from that day can be newer than your
+commit), here, in the
+[later notices from 2026-10-24](breaking-changes-later-2026-10-24.md), in the
+[earlier notices from 2026-10-24](breaking-changes-earlier-2026-10-24.md), in the
+[notices before 2026-10-24](breaking-changes-before-2026-10-24.md), in the
+[notices before 2026-10-23](breaking-changes-before-2026-10-23.md), in the
 [notices before 2026-10-15](breaking-changes-before-2026-10-15.md), in the
-[earlier notices](breaking-changes-archive.md), in the
+[notices from 2026-10-13](breaking-changes-archive.md), in the
 [notices before 2026-10-13](breaking-changes-before-2026-10-13.md), in the
 [notices before 2026-10-12](breaking-changes-before-2026-10-12.md), in the
 [notices before 2026-10-11](breaking-changes-before-2026-10-11.md) and in the
@@ -17,155 +22,260 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
-## 2026-10-23: saves refuse a model without its provider
+## 2026-10-26: OpenShell Proxy and Gateway refusals name their fix
 
-**What breaks.** Configuration create and update, Agent provisioning, Agent
-create preflight and Preset save refuse an `agents.defaults.model` or `agents.entries.<id>.model` primary
-or fallback that is not `<provider>/<model>`, such as `fast` or OpenClaw's
-`openrouter:auto`, and fallbacks that are not a list. Every deployment already
-refused them. A stored Configuration still reads; an edit must fix the model.
+**What breaks.** More refusals name the fix instead of a generic answer:
 
-**Who is affected.** Configurations and Presets that hold such a model. They
-never deployed.
+- Deploy of an Agent with `github-installation` access when the OpenShell
+  Credential Proxy has no `observedHookPreviewWorkspace`: `409
+RESOURCE_CONFLICT` (was `503`). An Agent provisioning job for such an Agent
+  now fails at once with the same message (it was retried).
+- Credential source create whose `token_url` names the tenant's own OpenShell
+  gateway: `400 INVALID_REQUEST` naming `/config/token_url` (was `404`).
+- Update of a stored source whose `host` or `base_url` breaks a later
+  OpenShell Gateway rule: `409 RESOURCE_CONFLICT` (was `404`).
 
-**How to tell.** A `400` names the setting: `... must name each model as
-<provider>/<model>, ...` or `... fallbacks must be an array.` Deployment
-now gives the same text.
+**Who is affected.** Clients that branch on the old status. A missing
+resource, or one you cannot read, still answers `403` or `404`.
 
-**Steps.** Write each model as `<provider>/<model>`, for example
-`openai/gpt-5.1`, then save.
+**How to tell.** The message names the setting or field, for example `needs
+the OpenShell Credential Proxy's observed-hook preview`.
 
-## 2026-10-23: chart ports refuse leading zeros
+**Steps.** Handle these statuses, show the message and do not retry the `409`.
 
-**What breaks.** Helm rendering refuses `egressAuthority.port`,
-`openshellGit.port`, `repositoryCredentials.upstreamPort` or
-`preparedGitHub.issuerPort` given as text with a leading zero, such as
-`--set preparedGitHub.issuerPort=0443`. Earlier builds rendered issuer `0443`
-as 443, other ports wrongly.
+## 2026-10-26: protected source create and credential withdrawal name their refusal
 
-**Who is affected.** Helm installs that set such a port.
+**What breaks.** More refusals name the rule instead of a generic answer:
 
-**How to tell.** Helm fails with `<setting> must be a TCP port without leading
-zeros`.
+- Credential source create with a Credential Proxy selected: a type the Proxy
+  cannot protect answers `409 RESOURCE_CONFLICT` and lists the types it
+  protects; a Secret reference to another Namespace answers `400
+INVALID_REQUEST`, as without a Proxy (both were `404`).
+- Create of a prepared or credential-free source whose `config.agent_id` names
+  an Agent being deleted: `409 AGENT_DELETING`; an embedded Agent:
+  `409 RESOURCE_CONFLICT` (both were `404`).
+- Withdrawal of a source that the Agent's active version does not use:
+  `409 RESOURCE_CONFLICT` (was `404`), for any source ID.
+- Agent save or deploy that binds a Proxy-owned source after the Installation
+  dropped `drivers.credential_proxy`: `409 RESOURCE_CONFLICT` (was `500`).
 
-**Steps.** Write the port without leading zeros, for example `443`.
+**Who is affected.** Clients that branch on the old status or text. A missing
+resource, or one you cannot read, still answers `403` or `404`.
 
-## 2026-10-23: the worker refuses an App key that cannot sign
+**How to tell.** The message names the rule, for example `the selected
+Credential Proxy cannot protect codex-pat sources`.
 
-**What breaks.** With prepared repository Git, worker startup reads and parses
-`repository.preparedGitHub.privateKeyPath` and stops when the key cannot sign.
-Earlier builds started, logged `PREPARED_GITHUB_MAINTENANCE_FAILED` on every
-pass, and left revisions waiting for Git material. The worker now restarts
-until the key is fixed, so it also stops other work. The upgrade check mounts
-no private key and cannot catch this.
+**Steps.** Handle `409` for these requests, show the message and do not retry it.
 
-**Who is affected.** Helm installs with `repositoryCredentials.authority:
-prepared-git` whose App-key Secret holds a missing, public, passphrase-protected
-or non-RSA key.
+## 2026-10-26: a Codex network proxy that blocks the repository broker is refused at save
 
-**How to tell.** `worker.startup-error` shows
-`PREPARED_GITHUB_APP_KEY_INVALID` with `reason` `app_key_unreadable`,
-`app_key_unparsable` or `app_key_unsupported`.
+**What breaks.** For an Agent with repository bindings on a dedicated Codex
+Harness, or on embedded OpenClaw with the Codex Plugin Driver and plugins,
+Agent create and update, provisioning and deployment answer `400
+INVALID_REQUEST` when `plugins.entries.codex.config.appServer.networkProxy`
+has `enabled: false`, a `mode` other than `limited` or `full`, a non-boolean
+`allowLocalBinding`, `domains` that is not an object mapping each host to
+`allow` or `deny`, or a `domains` entry with an empty host. Earlier builds saved
+and admitted it, and Kubernetes preparation refused it; a dedicated deploy had
+stopped the running version first. A deny of the broker host is still refused
+only in preparation, which alone knows the host. Configuration save still
+accepts these settings, because a Configuration does not know which Agents use
+it. A stored such Agent still reads, but each update or deploy is refused.
 
-**Steps.** Before upgrading, put the App's RSA private key in the Secret named
-by `repositoryCredentials.appKeySecretName`; see
-[Replace a rejected App key](../repository-credentials/team-runbook.md#replace-a-rejected-app-key).
+**Who is affected.** Agents with repository bindings whose Configuration has
+such a setting. They could not deploy before either.
 
-## 2026-10-23: Installation listeners must match the chart
+**How to tell.** The `400` reads `Configuration setting
+plugins.entries.codex.config.appServer.networkProxy.<setting> ..., so Codex
+cannot reach the repository credential broker`.
 
-**What breaks.** API and worker startup and the chart's upgrade check refuse an
-Installation listener that the chart Service cannot reach. That is
-`drivers.credential_proxy.configuration.authority` or
-`repository.openShell.authority` on another port than Helm
-`egressAuthority.port` or `openshellGit.port`, on a host other than `0.0.0.0`
-or `::`, or with that chart listener disabled. Earlier builds started, or failed
-to bind, and then refused every protected request or Git call at first use.
-Since 2026-10-23 the check also refuses TLS or issuer file paths other than
-where the chart mounts them; a Recreate upgrade with such a path left the API
-or worker unable to start after the old Pod stopped.
+**Steps.** Fix or delete the named setting in the Configuration, or remove the
+Agent's repository bindings, then save or deploy again.
 
-**Who is affected.** Helm installs with a Credential Proxy authority or
-protected OpenShell Git.
+## 2026-10-26: saved repository selections, protected deploy and protected sources name their refusal
 
-**How to tell.** The upgrade check or the `startup-error` log shows
-`CHART_LISTENER_MISMATCH` with the Installation and Helm settings and values.
+**What breaks.** More refusals name the rule and the fix instead of a generic
+answer:
 
-**Steps.** Set the authority `host` to `0.0.0.0` and its `port` to the Helm
-value, or enable the chart listener. Set `certificatePath`, `privateKeyPath`
-and `issuerPublicKeyPath` to the paths the refusal names. Then upgrade again.
+- Deploy, provisioning work and `GET …/repository-approval-scopes`, when the
+  saved repository selections are no longer approved: `409 RESOURCE_CONFLICT`
+  (was `400`, as in the next entry). Selections that the request sends keep `400`.
+- Deploy that the Credential Proxy cannot start (Installation-wide access or
+  Proxy sources without a selected Proxy, several sources without policy
+  reduction, no Sandbox Driver, other sources beside repository Git):
+  `409 RESOURCE_CONFLICT` (was `503` or `404`). Provisioning fails such work
+  instead of retrying.
+- Deploy of a live-adopted source without a `provider/model` in
+  `agents.defaults.model`: `400 INVALID_REQUEST` (was `404`).
+- Update or rotation of a prepared or credential-free credential source:
+  `409 RESOURCE_CONFLICT` (was `404`).
+- Deletion inside the registration fence and a failed device-login poll keep
+  `503`, with text that names the wait or the next step.
+- A failed provisioning status names these repository and Credential Proxy
+  refusals instead of `Agent provisioning could not complete.`
 
-## 2026-10-23: a repository broker peer needs the native sender
+**Who is affected.** Clients that branch on the old status or text. A missing
+resource, or one you cannot read, still answers `403` or `404`.
 
-**What breaks.** Startup and the chart's upgrade check refuse an Installation
-that sets `drivers.compute.configuration.network.repositoryCredentials` without
-`repository.nativeSender`. Earlier builds accepted it. Then every stop, retire
-and delete of an Agent with repository bindings listed Secrets that the worker
-may not list, and retried the 403 without end.
+**How to tell.** The message names the rule, for example
+`The saved repository selections are no longer approved for this Namespace`.
 
-**Who is affected.** Installations that switched from the native repository
-broker to protected OpenShell Git or an installed sender, and kept the peer.
+**Steps.** Handle `409` for these requests, show the message and do not retry it.
 
-**How to tell.** The upgrade check and API and worker startup logs show
-`DRIVER_CONFIGURATION_INVALID` for
-`/drivers/compute/configuration/network/repositoryCredentials`.
+## 2026-10-26: some refusals name their reason instead of 404, 409 or 503
 
-**Steps.** Delete `network.repositoryCredentials` from the Compute
-configuration, keep its other `network` settings, and upgrade again.
+**What breaks.** These refusals no longer answer the generic `404 NOT_FOUND`,
+`409` "already exists" or `503 DEPENDENCY_UNAVAILABLE` text. They name the
+rule and the fix:
 
-## 2026-10-22: Credential Proxy retires the repository broker selections
+- Credential source create and update with an unknown or missing `config` or
+  `secrets` field: `400 INVALID_REQUEST`, detail `/config/<field>` or
+  `/secrets/<field>` (was 404).
+- Agent create, update, provisioning and deploy with repository selections the
+  Namespace does not approve, or with both `repositoryAccess` and
+  `repositoryBindings`: `400 INVALID_REQUEST` (was 404).
+- Standing repository approval refusals at Agent update and deploy:
+  `409 RESOURCE_CONFLICT` (a policy refusal was 404).
+- A `harnessAuth.source` that names a ServiceAccount in another Namespace:
+  `400 INVALID_REQUEST` (was 404).
+- Deploy and provisioning with repository bindings on a Compute Driver without
+  repository credentials (Docker, SSH): `409 RESOURCE_CONFLICT` (was 503). A
+  queued provisioning job in this state now fails instead of retrying.
 
-**What breaks.** The Credential Proxy release (#2487) refuses these at Helm
-render, or at API and worker startup and in the upgrade check:
+**Who is affected.** Clients that branch on the old status or match the
+generic text for these requests. A missing resource, or one you cannot read,
+still answers `403` or `404` as before.
 
-- Helm `repositoryCredentials` with the GitHub App signing broker:
-  `authority` must be `prepared-git` with `preparedCustodySecretName`; another
-  value fails with `GitHub App signing gateway retired: ...`. The broker's
-  service config refuses `backend.kind` `github-app` and `github-app-registry`.
-- Installation `drivers.repo`: configure `repository.nativeSender` with
-  `repository.preparedGitHub`, or protected Git through `repository.openShell`.
-  A Backend's own `drivers.repo` member stays.
-- Installation or Backend `drivers.conduit`: select
-  `drivers.credential_proxy` instead.
-- Helm `openshellGit.mode: broker-trial`: only `protected` remains.
+**How to tell.** The message names the field or rule, for example
+`Credential source type openai has no field secrets.extra`.
 
-The migrator also refuses a database from an earlier Credential Proxy preview.
+**Steps.** Handle `400` and `409` for these requests and show the message. Do
+not retry the `409` that replaced the `503`.
 
-**Who is affected.** Installations that used the native repository broker
-(Installation `drivers.repo`, Helm `repositoryCredentials.enabled`).
-`drivers.conduit`, `broker-trial` and the preview database refusal affect only
-Credential Proxy preview builds.
+## 2026-10-26: A denial of your own permission names the missing grant
 
-**How to tell.** Helm render fails for `broker-trial` and the broker settings
-above. The upgrade check prints the startup refusals, for example
-`drivers.repo native admission is retired. ...`, but the `startup-error` and
-`worker.startup-error` logs show only `STARTUP_FAILED` or
-`WORKER_STARTUP_FAILED`. The migrator (`db:migrate --check`) names a preview
-history as unsupported.
+**What breaks.** A `403 FORBIDDEN` for a grant the caller lacks no longer says
+`The exact platform operation was not authorized.` It names the grant and who
+grants it, for example `Not authorized: this needs Agent deploy on Agent <id>.
+Ask an Installation administrator to grant it.` A create denial says only an
+Installation administrator can create it. A denial about the caller's own
+account, session or provisioning job now says so in one of six sentences, such
+as `The acting account is disabled.`; the
+[permissions cheat sheet](../../reference/cheatsheets/permissions.md#denial-messages)
+lists them. Statuses and codes do not change. Denials that name no grant keep
+the old sentence.
 
-**Steps.** Before upgrading, drain accepted repository work on the original
-release, which alone can settle it, then follow the
-[Credential Proxy upgrade](credential-proxy-upgrade.md). Do not replay uncertain
-work.
+**Who is affected.** Clients that match the old sentence exactly. The console
+and `occ` from this build accept both.
 
-## 2026-10-16: stored model provider settings are checked at deploy
+**How to tell.** The message starts with `Not authorized:`.
 
-**What breaks.** On every Compute, deploying or redeploying an Agent runs the
-Configuration save's model provider rules on the stored Configuration. A
-Configuration an older build stored with a provider or model `baseUrl` that is
-not an absolute `http` or `https` URL (`ftp://models.example/v1`, `/v1`,
-`https:/v1`), an `api` the runtime does not support, or a header name that is
-not a valid HTTP field name used to deploy, and then failed at the model probe
-or not at all. Deployment now answers `400` and creates no version, even for a
-provider the Agent does not use. A provisioning attempt queued before the
-upgrade is rejected without retry.
+**Steps.** Match the `FORBIDDEN` code instead of the message.
 
-**Who is affected.** Agents whose stored Configuration holds such a value.
-Header names were already checked at deploy on Kubernetes Compute.
+## 2026-10-25: Configuration save refuses a Slack token SecretRef the Slack Driver cannot read
 
-**How to tell.** The deploy `400` carries the save's message, such as
-`Configuration field /models/providers/<provider>/baseUrl must be an absolute http or https URL.`
-or `... must name a model API the runtime supports, ...`. A rejected queued
-attempt records `PROVISIONING_REJECTED` with the same message.
+**What breaks.** On the bundled Kubernetes Compute, Configuration create and
+update, provisioning, and `POST .../agents/validate` with
+`configuration.secretBindings` answer `400 INVALID_REQUEST` when a Slack
+`appToken` or `botToken` is a `file` or `exec` SecretRef, an env SecretRef
+with a provider other than `default`, or another object. Earlier builds saved it, and the Slack
+credential check then refused provisioning and deployment with
+`binding_required`. A stored Configuration in this state still reads; an update
+that keeps the token is refused, and its deployment can now fail with this
+message instead. App tokens in HTTP mode and disabled accounts are not checked.
 
-**Steps.** Edit the Configuration: fix or remove the field the message names,
-save, and deploy again.
+**Who is affected.** Agents whose stored Configuration has such a Slack token.
+They could not deploy before either.
+
+**How to tell.** The message names the setting, for example
+`channels.slack.botToken holds a SecretRef the Slack Channel Driver cannot
+read`, or `holds an object` for an object that is not a SecretRef. Before you upgrade, read each Agent's Configuration as the next entry
+describes and check `appToken` and `botToken` under `channels.slack` and under
+each entry of `channels.slack.accounts`.
+
+**Steps.** Write the token as an env SecretRef with provider `default`, or as
+one whole `${NAME}`, and send its `secretBindings` entry for `NAME` in the same
+request.
+
+## 2026-10-25: Configuration save refuses an unbound channel credential reference
+
+**What breaks.** On the bundled Kubernetes Compute, Configuration create and update,
+provisioning, and `POST .../agents/validate` with `configuration.secretBindings`
+answer `400 INVALID_REQUEST` when an enabled channel has a `${NAME}` reference
+or environment SecretRef without a binding of that name. Builds from later that
+day also refuse, at save and at deployment, one inside other text and, in a
+channel secret-input field, one with a `:-fallback`, an unbound `$NAME` and a
+`${` that OpenClaw does not substitute, such as `${slack_bot}`. Earlier builds
+refused only at deployment. An update of a stored
+Configuration in this state is refused until it adds the bindings.
+
+**Who is affected.** Clients that save channel values before their bindings,
+and Agents whose stored Configuration has an unbound channel reference.
+
+**How to tell.** The message names the setting and the binding, for example
+`channels.slack.botToken references SLACK_BOT_TOKEN`, or the text, for example
+`channels.slack.botToken contains ${slack_bot}`. Before you upgrade, list each
+Namespace's Agents (`GET /namespaces/{namespaceId}/agents`), read the Configuration
+each names in `configurationId`
+(`GET /namespaces/{namespaceId}/configurations/{configurationId}`), and look for
+`${` or a whole `$NAME` in its `channels` values. A plain `${NAME}` is affected only
+when the response's `secretBindings` has no `NAME`.
+
+**Steps.** Send the values and their `secretBindings` in one request. For a
+stored Configuration, save both Slack Secrets on the Agent's **Credentials**
+tab; fix named Slack accounts and `msteams` through the API, sending the
+values with every binding they reference. Replace a refused `${` with an
+uppercase `${NAME}` bound to a Secret.
+
+## 2026-10-25: provisioning refuses a taken Agent name with 409
+
+**What breaks.** `POST /namespaces/{namespaceId}/agents/provision` with a name
+that another Agent in the Namespace has answers `409 RESOURCE_CONFLICT` with
+`An Agent with this name already exists in this Namespace. Choose a different
+name.` and stores no job. Earlier builds answered `202` and the job failed
+with `PROVISIONING_REJECTED` and the same message. Two new requests for one
+free name are still both admitted, and the later job fails as before.
+`POST /namespaces/{namespaceId}/agents/validate` accepts an optional `name` and
+refuses a taken one with the same `409`.
+
+**Who is affected.** API clients and alerts that expect `202` for a taken name
+or match the failed job.
+
+**How to tell.** The provisioning request answers `409` with that message.
+
+**Steps.** Choose another name and send the request again.
+
+## 2026-10-25: provisioning refuses an unplaceable dedicated Agent with 400
+
+**What breaks.** `POST /namespaces/{namespaceId}/agents/provision` with a Secret
+binding answers `400 INVALID_REQUEST` and `Dedicated Agents need <setting> in
+this Installation's Kubernetes Compute configuration`, as Agent save does, when
+the Kubernetes Compute configuration sets `runtime` without `gatewayRouting` or
+`runtime.gatewayNodeSelector`. Earlier builds answered `409 RESOURCE_CONFLICT`
+with fixed text. Create Agent now runs its preflight before it saves the model
+Secret or registers a Credential Source for provisioning, so neither is left.
+
+**Who is affected.** API clients and alerts that match that `409`.
+
+**How to tell.** The provisioning request answers `400` with that message.
+
+**Steps.** Configure the named setting as the
+[Kubernetes Compute reference](../../reference/drivers/kubernetes-compute.md)
+describes, or create an Embedded OpenClaw Agent.
+
+## 2026-10-25: repository options without repository settings answer 200
+
+**What breaks.** On an Installation without a `repository` block, both
+`repository-options` routes (`GET /namespaces/{namespaceId}/agents/repository-options`
+and the per-Agent one) answer `200` with an empty `data` array and
+`meta.notConfigured: true` instead of `503 REPOSITORY_OPTIONS_UNAVAILABLE`. An
+unsupported Compute or Sandbox Driver, or an unavailable repository Driver,
+still answers `503`. The console no longer logs an error for it.
+
+**Who is affected.** API clients and alerts that match this `503`, or that read
+an empty `data` array as "no approved repositories".
+
+**How to tell.** The answer carries `meta.notConfigured: true`.
+
+**Steps.** Treat `meta.notConfigured` as "repository access is not set up";
+Agent save still refuses repository bindings there with `409`.

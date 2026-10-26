@@ -141,23 +141,37 @@ func TestRefusedCommandsNameTheGrantTheyNeed(t *testing.T) {
 		texts = append(texts, err.Error())
 	}
 	want := "FORBIDDEN: " + denied + "\n" +
-		`hint: "occ agent deploy" needs Agent deploy and Configuration read, plus access to the ServiceAccount, Secrets and credential sources it binds, and Agent read and operate for a first deploy; ask an administrator to grant what is missing. OCC refuses an ID that does not exist the same way.`
+		grantHint("agent deploy", "Agent deploy and Configuration read, plus access to the ServiceAccount, Secrets and credential sources it binds, and Agent read and operate for a first deploy", true)
 	if !strings.HasSuffix(texts[0], want) || texts[0] != texts[1] {
 		t.Fatalf("refusals = %q, want both to end with %q", texts, want)
 	}
 	err := runRefused(t, keyFile, denied, "--namespace", testNamespaceID, "agent", "logs", testAgentID, "--source", "gateway", "--revision", testRevision1ID)
-	if err == nil || !strings.HasSuffix(err.Error(), `hint: "occ agent logs" needs Agent read_logs (or administer) and Agent read; ask an administrator to grant what is missing. OCC refuses an ID that does not exist the same way.`) {
+	if err == nil || !strings.HasSuffix(err.Error(), grantHint("agent logs", "Agent read_logs (or administer) and Agent read", true)) {
 		t.Fatalf("logs refusal = %v", err)
 	}
 	// A command without an ID argument does not mention missing IDs.
 	err = runRefused(t, keyFile, denied, "--namespace", testNamespaceID, "iam", "role", "list")
-	if err == nil || !strings.HasSuffix(err.Error(), `hint: "occ iam role list" needs Installation administer and Namespace read; ask an administrator to grant what is missing.`) {
+	if err == nil || !strings.HasSuffix(err.Error(), "\n"+grantHint("iam role list", "Installation administer and Namespace read", false)) {
 		t.Fatalf("role list refusal = %v", err)
 	}
 	// Three or more permissions read as a list.
 	err = runRefused(t, keyFile, denied, "--namespace", testNamespaceID, "agent", "runtime", testAgentID)
-	if err == nil || !strings.HasSuffix(err.Error(), `hint: "occ agent runtime" needs Agent operate, Agent read and revision read; ask an administrator to grant what is missing. OCC refuses an ID that does not exist the same way.`) {
+	if err == nil || !strings.HasSuffix(err.Error(), grantHint("agent runtime", "Agent operate, Agent read and AgentRevision read", true)) {
 		t.Fatalf("runtime refusal = %v", err)
+	}
+	// No Role can hold create, so a create says who creates it, as OCC and the
+	// console do, instead of asking for a grant nobody can give (finding 2607).
+	err = runRefused(t, keyFile, denied, "namespace", "create", "team")
+	if want := createHint("namespace create", "Namespace create, plus Installation administer with --existing-namespace", "Namespaces"); err == nil || !strings.HasSuffix(err.Error(), "\n"+want) {
+		t.Fatalf("namespace create refusal = %v, want suffix %q", err, want)
+	}
+	secretFile := filepath.Join(t.TempDir(), "secret.json")
+	if err := os.WriteFile(secretFile, []byte(`{"name":"Refused","value":"synthetic-value"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err = runRefused(t, keyFile, denied, "--namespace", testNamespaceID, "secret", "create", "--file", secretFile)
+	if want := createHint("secret create", "Secret create", "Secrets"); err == nil || !strings.HasSuffix(err.Error(), "\n"+want) {
+		t.Fatalf("secret create refusal = %v, want suffix %q", err, want)
 	}
 	// OCC filters this list by what the caller can read. Keep its refusal intact;
 	// the CLI cannot name a missing grant for the list itself.
@@ -166,8 +180,13 @@ func TestRefusedCommandsNameTheGrantTheyNeed(t *testing.T) {
 		t.Fatalf("namespace list refusal = %v, want %q", err, want)
 	}
 	// A 403 that names its own cause, such as an Agent principal's missing
-	// grant, and other failures ("" answers 404) keep OCC's text alone.
-	for _, message := range []string{"The Agent principal is not authorized to operate the Secret.", ""} {
+	// grant or the caller's own missing grant (finding 2534), and other
+	// failures ("" answers 404) keep OCC's text alone.
+	for _, message := range []string{
+		"The Agent principal is not authorized to operate the Secret.",
+		"Not authorized: this needs Agent deploy on Agent " + testAgentID + ". Ask an Installation administrator to grant it.",
+		"",
+	} {
 		err := runRefused(t, keyFile, message, "--namespace", testNamespaceID, "agent", "deploy", testAgentID)
 		if err == nil || strings.Contains(err.Error(), "hint:") {
 			t.Fatalf("refusal %q = %v, want no hint", message, err)
@@ -183,7 +202,6 @@ func TestNamespaceKeyRefusalNamesTheKeysNamespace(t *testing.T) {
 	scoped := writeKeyFile(t, `{"data":{"key":"test-key","namespaceId":"`+testNamespaceID+`"}}`)
 	want := "\nhint: this service key is scoped to Namespace " + testNamespaceID + `; it cannot reach another Namespace or Installation-level commands such as "occ namespace list". Pass --namespace ` + testNamespaceID + ` (or set OCC_NAMESPACE), read it with "occ namespace get ` + testNamespaceID + `", or use an Installation-scoped key.`
 	for _, args := range [][]string{
-		{"namespace", "list"},
 		{"namespace", "get", "ns_00000000-0000-4000-8000-000000000000"},
 		{"--namespace", "ns_00000000-0000-4000-8000-000000000000", "agent", "get", testAgentID},
 	} {
@@ -195,16 +213,42 @@ func TestNamespaceKeyRefusalNamesTheKeysNamespace(t *testing.T) {
 	// No recorded Namespace, or one that is not a plain ID, is not printed.
 	for _, contents := range []string{
 		`{"data":{"key":"test-key"}}`,
-		`{"data":{"key":"test-key","namespaceId":"ns_1\u001b[2J"}}`,
+		`{"data":{"key":"test-key","namespaceId":"ns_00000000-0000-4000-8000-000000000001\u001b[2J"}}`,
 		`{"data":{"key":"test-key","namespaceId":"\u001b[2Jns_1"}}`,
 		`{"data":{"key":"test-key","namespaceId":"ns_"}}`,
 		`{"data":{"key":"test-key","namespaceId":"ns_` + strings.Repeat("a", 65) + `"}}`,
 		`{"data":{"key":"test-key","namespaceId":"default"}}`,
 		`{"data":{"key":"test-key","namespaceId":123}}`,
 	} {
-		err := runRefused(t, writeKeyFile(t, contents), mismatch, "namespace", "list")
+		err := runRefused(t, writeKeyFile(t, contents), mismatch, "namespace", "get", "ns_00000000-0000-4000-8000-000000000000")
 		if err == nil || !strings.Contains(err.Error(), "hint: this service key is scoped to one Namespace;") {
 			t.Fatalf("refusal with key file %s = %v", contents, err)
+		}
+		err = runRefused(t, writeKeyFile(t, contents), mismatch, "namespace", "list")
+		if want := "\nhint: \"occ namespace list\" needs an Installation-scoped key. This service key works only in one Namespace, so ask an Installation administrator to run it for you."; err == nil || !strings.HasSuffix(err.Error(), want) {
+			t.Fatalf("refusal with key file %s = %v, want suffix %q", contents, err, want)
+		}
+	}
+}
+
+// Finding D740: an Installation-level command refused for a Namespace key does
+// not tell the caller to pass the --namespace it already selected; it says the
+// command needs an Installation-scoped key and who can run it.
+func TestInstallationCommandRefusalAsksForAnInstallationKey(t *testing.T) {
+	const mismatch = "The admitted Namespace does not match."
+	scoped := writeKeyFile(t, `{"data":{"key":"test-key","namespaceId":"`+testNamespaceID+`"}}`)
+	for _, args := range [][]string{
+		{"installation", "get"},
+		{"installation", "deployment-inventory"},
+		{"namespace", "list"},
+		{"namespace", "create", "team"},
+		{"service-key", "revoke", "key-1"},
+	} {
+		path := strings.Join(args[:2], " ")
+		want := "\nhint: \"occ " + path + "\" needs an Installation-scoped key. This service key works only in Namespace " + testNamespaceID + ` (read it with "occ namespace get ` + testNamespaceID + `"), so ask an Installation administrator to run it for you.`
+		err := runRefused(t, scoped, mismatch, append([]string{"--namespace", testNamespaceID}, args...)...)
+		if err == nil || !strings.HasSuffix(err.Error(), want) || strings.Contains(err.Error(), "Pass --namespace") {
+			t.Fatalf("occ %v refusal = %v, want suffix %q", args, err, want)
 		}
 	}
 }

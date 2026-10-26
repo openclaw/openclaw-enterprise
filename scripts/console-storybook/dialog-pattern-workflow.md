@@ -11,6 +11,13 @@ simulated data.
    shadow and backdrop. Cancel is on the left and the confirming action on the
    right. Focus starts inside the dialog (Cancel for Stop and Delete, Name for
    Create Secret).
+   In Delete, read what stays in the Namespace, then open **View separate cleanup
+   commands**. Each command includes the Namespace ID. Copying it keeps the
+   confirmation open and runs nothing.
+   In **Backdrop at the desktop scrollbar**, choose **Open preview in its own tab**
+   to check the window’s scrollbar gutter, rather than the surrounding frame.
+   An empty gutter blends into the backdrop; a classic scrollbar remains visible.
+   Press Escape: the page keeps its position and original colours.
 2. Open **Plugins (wide)**. The same chrome holds the plugin workspace, 72 rem
    wide. Wider than 1100 px the catalog and the selected plugin's detail sit
    side by side.

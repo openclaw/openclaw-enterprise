@@ -26,7 +26,8 @@ See [two-cluster transport](../testing/kubernetes.md#two-cluster-validation) for
   `POST /namespaces/:namespaceId/agents` and handles live `GET` and
   `PUT /namespaces/:namespaceId/agents/:agentId/workspace/files/:name`.
 - `packages/occ/src/index.ts:createAgent` authorizes creation and persists private
-  setup state; `apps/controller/src/worker.ts` passes it to Compute on deployment.
+  setup state; `deployAgentWithAuthorization` rechecks it, completed too, before
+  each revision.
 
 Live access requires the Agent's private HTTPRoute and native gateway. Configure
 Envoy Gateway, trust, and network restrictions through

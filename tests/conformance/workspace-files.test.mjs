@@ -53,10 +53,15 @@ async function createFixture({ workspaceFilesAccess, workspaceFileRequestTimeout
     },
     secretDriver: createTestSecretDriver(),
     appOptions: (overrides) => ({
-      workspaceFilesAccess: {
-        read: (read) => running.workspaceFilesAccess.read(read),
-        write: (write) => running.workspaceFilesAccess.write(write),
-      },
+      // An app built with `workspaceFilesUnconfigured` has no workspace file access at all.
+      ...(overrides.workspaceFilesUnconfigured === true
+        ? {}
+        : {
+            workspaceFilesAccess: {
+              read: (read) => running.workspaceFilesAccess.read(read),
+              write: (write) => running.workspaceFilesAccess.write(write),
+            },
+          }),
       ...(overrides.workspaceFileRequestTimeoutMs === undefined
         ? {}
         : { workspaceFileRequestTimeoutMs: overrides.workspaceFileRequestTimeoutMs }),
@@ -317,6 +322,50 @@ test("Agent workspace file routes enforce read and operate permissions separatel
   });
 });
 
+test("Agent workspace file routes authorize the caller before reporting unconfigured file access", async (context) => {
+  const fixture = await createFixture({ workspaceFilesAccess: undefined });
+  const namespace = await createNamespace(fixture, "Unconfigured tenant");
+  const { agent } = await createAgent(fixture, namespace, "Unconfigured files Agent");
+  // The same controller and sessions, but no workspace file access configured.
+  const unconfigured = fixture.createApp(fixture.administrator, {
+    workspaceFilesUnconfigured: true,
+  });
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}/workspace/files/AGENTS.md`;
+  const session = fixture.session(fixture.tenantAReader);
+  const assertDenied = (result, action) => {
+    assert.equal(result.response.status, 403);
+    assert.equal(result.payload.error.code, "FORBIDDEN");
+    assert.equal(fixture.auditSink.events.at(-1).kind, "authorization_denial");
+    assert.equal(fixture.auditSink.events.at(-1).authorization.action, action);
+  };
+  const assertUnavailable = (result) => {
+    assert.equal(result.response.status, 503);
+    assert.equal(result.payload.error.code, "DEPENDENCY_UNAVAILABLE");
+  };
+
+  // A caller with no grant on this Agent gets the refusal it would get on a configured
+  // Installation, not a 503 that answers before its authorization (finding 2584).
+  assertDenied(await request(unconfigured, path, { session }), "read");
+  // With Agent read, the read reaches the missing file access; a write still needs operate.
+  for (const grant of [...fixture.state.roles, ...fixture.state.bindings]) {
+    if (["role-tenant-a-reader", "binding-tenant-a-reader"].includes(grant.id)) {
+      replaceForCase(context, grant, "namespaceId", namespace.id);
+    }
+  }
+  assertUnavailable(await request(unconfigured, path, { session }));
+  assertDenied(
+    await put(unconfigured, path, { content: "cannot write\n" }, { session }),
+    "operate",
+  );
+  // An authorized caller still gets 503 for both. The two refusals are the only file audits.
+  assertUnavailable(await request(unconfigured, path));
+  assertUnavailable(await put(unconfigured, path, { content: "unconfigured\n" }));
+  assert.deepEqual(
+    fileAudits(fixture).map((event) => event.kind),
+    ["authorization_denial", "authorization_denial"],
+  );
+});
+
 test("Agent workspace file routes reject invalid names, bodies, and cross-site writes before provider access", async () => {
   const calls = [];
   const fixture = await createFixture({
@@ -452,8 +501,8 @@ test("Agent workspace file routes map provider file states without leaking conte
         }
         return { status: "unavailable" };
       },
-      async write() {
-        return { status: "unavailable" };
+      async write(write) {
+        return { status: write.filename === "SOUL.md" ? "missing" : "unavailable" };
       },
     },
   });
@@ -489,6 +538,14 @@ test("Agent workspace file routes map provider file states without leaking conte
   assert.equal(writeUnavailable.response.status, 503);
   assert.equal(writeUnavailable.payload.error.code, "DEPENDENCY_UNAVAILABLE");
 
+  const writeMissing = await put(
+    fixture.app,
+    `/namespaces/${namespace.id}/agents/${agent.id}/workspace/files/SOUL.md`,
+    { content: "secret-ish soul\n" },
+  );
+  assert.equal(writeMissing.response.status, 404);
+  assert.equal(writeMissing.payload.error.code, "NOT_FOUND");
+
   const audits = fileAudits(fixture);
   assert.equal(JSON.stringify(audits).includes("secret-ish"), false);
   assert.deepEqual(
@@ -498,8 +555,76 @@ test("Agent workspace file routes map provider file states without leaking conte
       reasonCode,
       details.workspaceFileName,
     ]),
-    [["openclaw.agents.workspace.files.write", "failure", "DEPENDENCY_UNAVAILABLE", "USER.md"]],
+    [
+      ["openclaw.agents.workspace.files.write", "failure", "DEPENDENCY_UNAVAILABLE", "USER.md"],
+      ["openclaw.agents.workspace.files.write", "failure", "FILE_MISSING", "SOUL.md"],
+    ],
   );
+});
+
+test("Agent workspace file reads refuse provider content OCC would not accept in a write", async () => {
+  let content;
+  const fixture = await createFixture({
+    workspaceFilesAccess: {
+      async read(read) {
+        return { status: "ok", file: { name: read.filename, content } };
+      },
+      async write() {
+        throw new Error("not used");
+      },
+    },
+  });
+  const namespace = await createNamespace(fixture, "Unstorable read tenant");
+  const { agent } = await createAgent(fixture, namespace, "Unstorable read Agent");
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}/workspace/files/AGENTS.md`;
+  for (const refused of ["before\u0000after", "lone \ud800 surrogate"]) {
+    content = refused;
+    const result = await request(fixture.app, path);
+    assert.equal(result.response.status, 503, JSON.stringify(refused));
+    assert.equal(result.payload.error.code, "DEPENDENCY_UNAVAILABLE");
+  }
+  content = "paired \ud83d\ude00 emoji\n";
+  const accepted = await request(fixture.app, path);
+  assert.equal(accepted.response.status, 200);
+  assert.equal(accepted.payload.data.content, content);
+});
+
+test("Agent workspace file writes report an unknown outcome when the success audit fails", async (context) => {
+  const writes = [];
+  const fixture = await createFixture({
+    workspaceFilesAccess: {
+      async read() {
+        throw new Error("not used");
+      },
+      async write(write) {
+        writes.push(write);
+        return { status: "ok" };
+      },
+    },
+  });
+  const namespace = await createNamespace(fixture, "Unaudited write tenant");
+  const { agent } = await createAgent(fixture, namespace, "Unaudited write Agent");
+  const append = fixture.auditSink.append.bind(fixture.auditSink);
+  replaceForCase(context, fixture.auditSink, "append", async (event) => {
+    if (event.action === "openclaw.agents.workspace.files.write") {
+      throw new Error("audit store unavailable");
+    }
+    await append(event);
+  });
+
+  const result = await put(
+    fixture.app,
+    `/namespaces/${namespace.id}/agents/${agent.id}/workspace/files/USER.md`,
+    { content: "written once\n" },
+  );
+  // The provider wrote the file, but without its audit record OCC cannot report success.
+  assert.equal(result.response.status, 503);
+  assert.equal(result.payload.error.code, "UNKNOWN_OUTCOME");
+  assert.equal(
+    result.payload.error.message,
+    "The workspace file was written, but its final audit outcome could not be persisted.",
+  );
+  assert.equal(writes.length, 1);
 });
 
 // Exercise an uncertain write together with a stalled audit sink. The provider is

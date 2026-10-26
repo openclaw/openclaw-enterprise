@@ -161,9 +161,11 @@ startup events such as `worker.started` would otherwise be lost for good.
 
 Before emitting the DaemonSet,
 `deploy/helm/openclaw-enterprise/templates/_helpers.tpl:openclaw.quantity`
-checks the Collector resource and volume quantities for obvious syntax errors.
-Malformed values stop rendering with the setting name; absent optional limits
-pass through. Kubernetes performs complete validation after rendering. See the
+checks the Collector resource and volume quantities for obvious syntax errors,
+and `openclaw.nonNegativeQuantity` and `openclaw.resourceRequirements` refuse
+negative values and unknown resource names. Malformed
+values stop rendering with the setting name; absent optional limits pass
+through. Kubernetes performs complete validation after rendering. See the
 [production settings](../reference/settings/production.md#production-operational-logging-collection)
 for the supported scope.
 

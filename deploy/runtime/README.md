@@ -47,7 +47,15 @@ profile revocation still stop dispatch. The OpenClaw build stage applies
 and runs the real Gateway public-RPC cases without network access. The cases
 cover placement before and after acknowledgement, disconnect, and committed
 role, scope, and profile revocation. Test changes stay in the build stage.
+The build also applies `openclaw-codex-full-access-profile.patch`, which selects
+the native full-access Codex profile, and
+`openclaw-control-ui-browser-reconnect.patch`, which offers a browser navigation
+after the Control UI's access is refused. Remove each when the pinned OpenClaw
+does the same.
 The source archive and patch hashes identify the resulting custom build.
+Provenance `patches` maps every patch the Dockerfile applies, in order, to its
+SHA-256; `scripts/build-runtime-assets.mjs` holds that list, and a test checks it
+against the Dockerfile.
 
 Dedicated Gateways require the supporting source recorded in this recipe and
 validate their effective native configuration before starting. The required
@@ -89,7 +97,7 @@ enrollment, containment, workspace access, or model execution.
 
 The source's package version is `2026.10.6`; it does not identify this custom
 build. `/opt/oce/runtime/provenance.json` records the source commit, verified archive
-hash, bridge and dependency patch hashes, lockfile hash, pinned package manager, selected plugins, architecture, stock Codex
+hash, every applied patch hash, lockfile hash, pinned package manager, selected plugins, architecture, stock Codex
 package identity, and the SHA-256 of `contents.json`, which inventories
 packaged files, modes, hashes, and symlinks after final-stage permission
 normalization. The final stage copies the assembled
@@ -238,6 +246,7 @@ OPENCLAW_ENTERPRISE_CI_STATE=/tmp/images-runtime-startup.json \
     tests/integration/runtime-image-native-listener.test.mjs \
     tests/integration/runtime-image-startup-probe.test.mjs \
     tests/integration/runtime-image-startup-termination.test.mjs \
+    tests/integration/runtime-image-gateway-unclean-restart.test.mjs \
     tests/integration/runtime-image-gateway-peer.test.mjs \
     tests/integration/runtime-image-native-worker.test.mjs
 ```

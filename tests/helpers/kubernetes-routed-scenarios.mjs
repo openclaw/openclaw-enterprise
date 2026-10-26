@@ -128,6 +128,11 @@ export function routedRevision(driver, overrides = {}) {
   };
 }
 
+/** The labels an equality-only Kubernetes `labelSelector` string ("key=value,key=value") names. */
+export function labelSelectorLabels(selector) {
+  return Object.fromEntries(selector.split(",").map((entry) => entry.split("=")));
+}
+
 export function selectorMatches(selector, labels) {
   const labelsMatch = Object.entries(selector.matchLabels ?? {}).every(
     ([key, value]) => labels[key] === value,

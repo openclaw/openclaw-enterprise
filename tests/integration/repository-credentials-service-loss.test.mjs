@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
+import { request } from "node:https";
 import { startServiceProcessFixture } from "../fixtures/repository-credentials/service-process.mjs";
+import { fixtureRepository } from "../fixtures/repository-credentials/github.mjs";
 
 // The registry-backed broker must fail closed when its durable journal is absent.
 test(
@@ -22,3 +25,64 @@ test(
     assert.deepEqual(fixture.github.errors, []);
   },
 );
+
+// The broker process logs each refusal of a request that carried credentials (finding 2411).
+// Unauthenticated requests are Git's challenge round trip and stay silent.
+test("the broker process logs one line per refused credentialed request", async (t) => {
+  const fixture = await startServiceProcessFixture(t);
+  const send = (authorization, host = new URL(fixture.config.gateway.publicOrigin).host) =>
+    new Promise((resolve, reject) => {
+      const outgoing = request(
+        {
+          hostname: "127.0.0.1",
+          port: fixture.generation().port,
+          path: `/${fixtureRepository}.git/info/refs?service=git-upload-pack`,
+          ca: fixture.tls.ca,
+          agent: false,
+          headers: {
+            host,
+            ...(authorization === undefined ? {} : { authorization }),
+          },
+        },
+        (incoming) => {
+          incoming.resume();
+          incoming.once("end", () => resolve(incoming.statusCode));
+        },
+      );
+      outgoing.setTimeout(10000, () => outgoing.destroy(new Error("request timeout")));
+      outgoing.once("error", reject);
+      outgoing.end();
+    });
+  const records = () =>
+    fixture
+      .stderr()
+      .split("\n")
+      .filter((line) => line.startsWith("{"))
+      .map((line) => JSON.parse(line))
+      .filter((record) => record.event === "repository-credentials.denied");
+
+  assert.equal(await send(undefined), 401);
+  // A bearer of the right shape that no open session issued.
+  const bearer = randomBytes(32).toString("base64url");
+  const basic = "Basic " + Buffer.from("gateway-session:" + bearer).toString("base64");
+  // Finding 2429: a head refused before authentication (a wrong Host that the certificate
+  // still names) is logged only when its credential names an open session, so neither of
+  // these writes a line.
+  assert.equal(await send(undefined, "localhost"), 400);
+  assert.equal(await send(basic, "localhost"), 400);
+  const status = await send(basic);
+  assert.equal(status, 401);
+  let logged;
+  for (let i = 0; i < 100 && !(logged = records()).length; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.deepEqual(logged, [
+    {
+      event: "repository-credentials.denied",
+      status: 401,
+      reasonCode: "session-unavailable",
+      reason: "session_unavailable",
+    },
+  ]);
+  assert.ok(!fixture.stderr().includes(bearer), "the bearer is never logged");
+});

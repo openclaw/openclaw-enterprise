@@ -21,6 +21,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { loadTestSuites } from "./test-suites.mjs";
 import { cleanupResourceIds, deleteOwnedK3dCluster } from "./cleanup.mjs";
 import { withStateLock } from "./state-lock.mjs";
+import { runPostgresAdmin } from "./postgres-admin.mjs";
 import {
   ANSI_COLOR,
   captureK3dDiagnostics,
@@ -594,19 +595,37 @@ async function ensurePostgresServer(statePath, state) {
     dockerArgsForPostgres(resource, "up", "-d", "--wait"),
     { env: { OCC_POSTGRES_PORT: String(port) } },
   );
+  await postgresAdmin(resource, { statements: ciPostgresSettings, stage: "postgres-settings" });
   await markResourceReady(statePath, state, resource);
   return resource;
 }
 
-async function postgresExec(resource, args, stage) {
-  await execFile(
-    process.env.OCC_DOCKER_BIN ?? "docker",
-    dockerArgsForPostgres(resource, "exec", "-T", "postgres", ...args),
-    {
-      env: { OCC_POSTGRES_PORT: String(resource.port) },
-      stage,
-    },
-  );
+// The lane's server is disposable (cleanup removes it with its volume), so it gives up
+// durability: commits stop waiting for WAL flushes, and the checkpoint each test
+// database's DROP DATABASE waits for skips its fsyncs. PostgreSQL containers wrote most
+// of a loaded runner's IO. A host crash could now corrupt the data and a server crash
+// could lose the last few hundred milliseconds of acknowledged commits; nothing kills
+// this server or reads it after a crash. The reload is requested before any test
+// database exists. Developers' compose.postgres.yaml server keeps PostgreSQL's defaults.
+const ciPostgresSettings = Object.freeze([
+  "ALTER SYSTEM SET fsync = off",
+  "ALTER SYSTEM SET synchronous_commit = off",
+  "ALTER SYSTEM SET full_page_writes = off",
+  "SELECT pg_catalog.pg_reload_conf()",
+]);
+
+// Administrative SQL on the lane's server, over its published port (postgres-admin.mjs). A
+// failed database step carries the closed diagnostic contract run-tests.mjs reports.
+async function postgresAdmin(server, { database, statements, stage }) {
+  try {
+    await runPostgresAdmin({ port: server.port, database, statements });
+  } catch (error) {
+    if (["database-create", "database-schema"].includes(stage)) {
+      error.code = "CI_PREPARATION_COMMAND_FAILED";
+      error.stage = stage;
+    }
+    throw error;
+  }
 }
 
 // A template must be a ready database this state owns on the same server. Nothing may
@@ -691,44 +710,26 @@ async function createDatabase(statePath, state, server, { kind, label, source, l
   await writeState(statePath, state);
 
   const grant = `GRANT CREATE ON DATABASE ${quoteIdentifier(name)} TO occ_migrator;`;
-  await postgresExec(
-    server,
-    [
-      "psql",
-      "-v",
-      "ON_ERROR_STOP=1",
-      "-U",
-      "postgres",
-      "-d",
-      "postgres",
-      "-c",
+  await postgresAdmin(server, {
+    statements: [
       `CREATE DATABASE ${quoteIdentifier(name)}${source === undefined ? "" : ` TEMPLATE ${quoteIdentifier(source)}`}`,
       // A copy carries the template's schemas, their ACLs and every migration, but not
       // the database-level grant, which lives in pg_database, so it is granted from here.
-      // Each -c is its own request (CREATE DATABASE refuses a transaction block) and psql
-      // stops at the first error. Every test's copy runs this under the CI state lock,
-      // where each `docker compose exec` costs about 0.25 s (finding 2180).
-      ...(source === undefined ? [] : ["-c", grant]),
+      // Each statement is its own request (CREATE DATABASE refuses a transaction block)
+      // and the first error stops the rest. Every test's copy runs this.
+      ...(source === undefined ? [] : [grant]),
     ],
-    "database-create",
-  );
+    stage: "database-create",
+  });
   const migrationUrl = postgresUrl("occ_migrator", "occ-migrator-local", server.port, name);
   if (source === undefined) {
-    await postgresExec(
-      server,
-      [
-        "psql",
-        "-v",
-        "ON_ERROR_STOP=1",
-        "-U",
-        "postgres",
-        "-d",
-        name,
-        "-c",
+    await postgresAdmin(server, {
+      database: name,
+      statements: [
         `${grant} CREATE SCHEMA occ AUTHORIZATION occ_migrator; CREATE SCHEMA drizzle AUTHORIZATION occ_migrator; REVOKE CREATE ON SCHEMA public FROM PUBLIC;`,
       ],
-      "database-schema",
-    );
+      stage: "database-schema",
+    });
     await execFile(process.env.OPENCLAW_CI_COREPACK_BIN ?? "corepack", ["pnpm", "db:migrate"], {
       env: { OCC_MIGRATION_DATABASE_URL: migrationUrl },
       stage: "database-migrate",
@@ -780,7 +781,7 @@ function assertImmutableOptionalEnvImages(names, env = process.env) {
   }
 }
 
-async function validateLaneInputsBeforeSideEffects(lane, env = {}, file) {
+async function validateLaneInputsBeforeSideEffects(lane, { file } = {}) {
   const name = laneName(lane);
   // TODO: Remove this refusal once installed repository qualification can remove its
   // remote branch and pull request only while they still match what the run created.
@@ -792,18 +793,18 @@ async function validateLaneInputsBeforeSideEffects(lane, env = {}, file) {
     );
   }
   const prepare = lanePrepare(name);
-  const effectiveEnv = effectiveLaneEnv(name, env);
+  const effectiveEnv = effectiveLaneEnv(name);
   if (prepare.k3d && name !== "openshell" && effectiveEnv.OPENCLAW_CI_K3S_IMAGE) {
     assertImmutableImageReference(effectiveEnv.OPENCLAW_CI_K3S_IMAGE, "OPENCLAW_CI_K3S_IMAGE");
   }
-  // This selected owner supports native OC and explicit-endpoint Codex with an
-  // API key. Full-lane preparation and other files keep the manifest's complete
-  // credential requirements.
+  const openShellGatewayFile =
+    file === "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs";
   const openShellApiKey =
     name === "openshell" &&
-    file === "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs" &&
-    (effectiveEnv.OCC_TEST_OPENSHELL_HARNESS === "openclaw" ||
-      effectiveEnv.OCC_TEST_OPENSHELL_MODEL_BASE_URL?.trim());
+    ((effectiveEnv.OCC_TEST_OPENSHELL_HARNESS === "openclaw" &&
+      (openShellGatewayFile ||
+        (file === undefined && effectiveEnv.OCC_K3D_HARNESS === "openclaw"))) ||
+      (openShellGatewayFile && Boolean(effectiveEnv.OCC_TEST_OPENSHELL_MODEL_BASE_URL?.trim())));
   requireEnv(
     (prepare.requireEnv ?? []).map((input) =>
       openShellApiKey && input === "CODEX_ACCESS_TOKEN" ? "OPENAI_API_KEY" : input,
@@ -914,7 +915,6 @@ async function validateLaneInputsBeforeSideEffects(lane, env = {}, file) {
 // (ci-image-cache.yml) exports it, building with images-packaging's state.
 const imageCacheLanes = new Map([
   ["images-packaging", { localStore: false }],
-  ["images-model-probes", { localStore: false }],
   ["images-runtime-startup", { localStore: false }],
   ["images-runtime-startup-2", { localStore: false }],
   ["images-runtime-startup-3", { localStore: false }],
@@ -2586,7 +2586,7 @@ async function prepareLaneLogging(statePath, state, env, cluster) {
 async function prepareLane({ lane, statePath, file }) {
   const name = assertLane(lane);
   const relativeFile = file === undefined ? undefined : toRepositoryRelative(filePath(file));
-  await validateLaneInputsBeforeSideEffects(name, {}, relativeFile);
+  await validateLaneInputsBeforeSideEffects(name, { file: relativeFile });
   const resolvedStatePath = normalizeStatePath(statePath);
   const existingState = await readState(resolvedStatePath);
   if (existingState) {
@@ -2612,16 +2612,6 @@ async function prepareLane({ lane, statePath, file }) {
       env.OCC_RUNTIME_IMAGE_RECEIPT = join(
         dirname(resolvedStatePath),
         "runtime-image-fixture-receipt.json",
-      );
-      break;
-    case "images-model-probes":
-      Object.assign(
-        env,
-        (
-          await timedPreparation(name, "runtime-image-build", () =>
-            buildRuntimeImages(resolvedStatePath, state, { runtime: true }),
-          )
-        ).env,
       );
       break;
     case "images-runtime-startup":
@@ -3139,7 +3129,7 @@ async function prepareFile({ lane, file, statePath, template }) {
     throw new Error("prepareFile requires a file.");
   }
   const relativeFile = toRepositoryRelative(filePath(file));
-  await validateLaneInputsBeforeSideEffects(name, {}, relativeFile);
+  await validateLaneInputsBeforeSideEffects(name, { file: relativeFile });
   const resolvedStatePath = normalizeStatePath(statePath);
   // A test may prepare databases from its own process while the runner prepares and
   // cleans other files. The lock keeps either side from writing back a stale state.

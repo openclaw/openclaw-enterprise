@@ -4,14 +4,76 @@ import type {
   Permission,
   SecretReference,
 } from "@openclaw-enterprise/contracts";
-import { responseFields } from "../api-client.mjs";
+import { INSTALLATION_ADMINISTRATION, responseFields } from "../api-client.mjs";
 import type { NamespacePageContext } from "../namespaces.mjs";
 import { namespacePath } from "./list.mjs";
 
 export type AgentAccessContext = Pick<
   NamespacePageContext,
   "request" | "isCurrent" | "onExpired"
-> & { namespaceId: string };
+> & {
+  namespaceId: string;
+  // The IDs of readable Secrets the caller may not operate, which binding one to the Agent needs
+  // (finding 2453); undefined when the answer is unknown. Secret fields mark and refuse them.
+  secretsOperateDenied?: SecretsOperateDenied | undefined;
+};
+
+// Reads the Secret operate answer, which pages cache. `fresh` drops the cached answer first: a
+// Secret created since it was read is not in it (finding 2486).
+export type SecretsOperateDenied = (options?: {
+  fresh?: boolean;
+}) => Promise<ReadonlySet<string> | undefined>;
+
+/**
+ * A page's cached Secret operate answer, which `read` fetches (the Agent's or the Namespace's
+ * `permissions/secrets`). `reset` drops the cached answer, as `fresh` does, so the next read asks
+ * again. A failed read answers the last answer read, or undefined before any read succeeded, and
+ * is not cached: the next read asks again. Forgetting a known answer on one failed reread made
+ * every Secret it denied choosable until a reload (finding 2501). `unreadable` is the last
+ * answer's count of bound Secrets the caller may neither read nor operate, which only the Agent's
+ * answer reports (finding D756); undefined when unknown.
+ */
+export function secretOperateAnswer(read: () => Promise<unknown>) {
+  let answer: Promise<ReadonlySet<string> | undefined> | null = null;
+  let known: ReadonlySet<string> | undefined;
+  let unreadable: number | undefined;
+  const denied: SecretsOperateDenied = ({ fresh = false } = {}) => {
+    if (fresh) {
+      answer = null;
+    }
+    if (answer) {
+      return answer;
+    }
+    const current = read()
+      .then((value) => {
+        const { operateDenied, unreadableOperateDenied } = responseFields(value);
+        if (!Array.isArray(operateDenied)) {
+          throw new Error("Invalid Secret permission answer");
+        }
+        known = new Set(operateDenied);
+        unreadable =
+          Number.isSafeInteger(unreadableOperateDenied) && Number(unreadableOperateDenied) >= 0
+            ? Number(unreadableOperateDenied)
+            : undefined;
+        return known;
+      })
+      .catch(() => {
+        if (answer === current) {
+          answer = null;
+        }
+        return known;
+      });
+    answer = current;
+    return current;
+  };
+  return {
+    read: denied,
+    unreadable: () => unreadable,
+    reset: () => {
+      answer = null;
+    },
+  };
+}
 
 type CredentialReference = SecretReference | CredentialSourceReference;
 
@@ -157,25 +219,29 @@ export async function ensureCredentialOperateBinding(
 }
 
 /**
- * Whether this Namespace's IAM policy grants the Agent operate on each Secret, as the IAM Driver
- * evaluates it: an identity binding scoped to the Namespace or to that Secret, whose role holds
- * the permission. An Agent's service principal belongs to no Group. A binding to a role the
- * Namespace does not list leaves its Secret undecided (undefined), never missing. Reading the
- * policy needs Installation administration; a refused read rejects (finding 1920).
+ * Whether this Namespace's IAM policy grants the Agent operate on each credential of one kind
+ * (Secrets or credential sources, by id), as the IAM Driver evaluates it: an identity binding
+ * scoped to the Namespace or to that credential, whose role holds the permission. An Agent's
+ * service principal belongs to no Group. A binding to a role the Namespace does not list leaves
+ * its credential undecided (undefined), never missing. Reading the policy needs Installation
+ * administration; a refused read rejects (findings 1920, 2260).
  */
-export async function secretOperateGrants(
+export async function credentialOperateGrants(
   context: AgentAccessContext,
   agent: Pick<Agent, "servicePrincipalId">,
-  secrets: readonly SecretReference[],
+  kind: CredentialReference["kind"],
+  ids: readonly string[],
 ) {
   const [roles, bindings] = await Promise.all([
-    context.request(iamPath(context, "roles")).then((value) => policyList(value, policyRole)),
     context
-      .request(iamPath(context, "access-bindings"))
+      .request(iamPath(context, "roles"), INSTALLATION_ADMINISTRATION)
+      .then((value) => policyList(value, policyRole)),
+    context
+      .request(iamPath(context, "access-bindings"), INSTALLATION_ADMINISTRATION)
       .then((value) => policyList(value, policyBinding)),
   ]);
   const grants = new Map<string, boolean | undefined>();
-  for (const secret of secrets) {
+  for (const id of ids) {
     let granted: boolean | undefined = false;
     for (const binding of bindings) {
       if (
@@ -183,7 +249,7 @@ export async function secretOperateGrants(
         binding.subjectKind !== "identity" ||
         binding.subjectId !== agent.servicePrincipalId ||
         (binding.resourceKind !== undefined &&
-          (binding.resourceKind !== "secret" || binding.resourceId !== secret.id))
+          (binding.resourceKind !== kind || binding.resourceId !== id))
       ) {
         continue;
       }
@@ -193,14 +259,14 @@ export async function secretOperateGrants(
       } else if (
         role.namespaceId === context.namespaceId &&
         role.permissions.some(
-          ({ action, resourceKind }) => action === "operate" && resourceKind === "secret",
+          ({ action, resourceKind }) => action === "operate" && resourceKind === kind,
         )
       ) {
         granted = true;
         break;
       }
     }
-    grants.set(secret.id, granted);
+    grants.set(id, granted);
   }
   return grants;
 }

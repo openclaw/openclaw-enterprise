@@ -6,11 +6,11 @@ import {
   randomBytes,
   randomUUID,
 } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import test, { after, before } from "node:test";
+import test, { before } from "node:test";
 import pg from "pg";
 import {
   loadInstallationConfiguration,
@@ -33,6 +33,7 @@ import {
 import { validateSelectedBackendDrivers } from "../../packages/occ/src/index.ts";
 import { spawnSync } from "node:child_process";
 import { captureChild, concurrencyLimit, settled } from "../helpers/child-processes.mjs";
+import { fileCompileCache } from "../helpers/compile-cache.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
   createCredentialProxyInstallationConfiguration as credentialProxyInstallation,
@@ -41,6 +42,7 @@ import {
 import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
 import { socketDirectory } from "../helpers/socket-directory.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 function jsonLines(text) {
   return text
@@ -59,11 +61,7 @@ function startupDiagnostic(stderr, event) {
 // The startup cases boot the real API and worker processes with an allowlisted environment,
 // which drops NODE_COMPILE_CACHE, so it is passed explicitly: the lane's cache in CI, otherwise
 // a temporary one owned by this file, so each boot after the first reuses compiled code.
-const compileCache =
-  process.env.NODE_COMPILE_CACHE || (await mkdtemp(join(tmpdir(), "configuration-startup-cache-")));
-if (compileCache !== process.env.NODE_COMPILE_CACHE) {
-  after(() => rm(compileCache, { recursive: true, force: true }));
-}
+const compileCache = await fileCompileCache("configuration-startup");
 
 // The production listener and sign-in settings of the API boots that reach session auth.
 const productionServer = {
@@ -132,8 +130,7 @@ before(async () => {
 });
 
 async function fixture(t, configuration = installation()) {
-  const directory = await mkdtemp(join(tmpdir(), "occ-installation-startup-"));
-  t.after(async () => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "occ-installation-startup-");
   const path = join(directory, "installation.yaml");
   // JSON is valid YAML; mutations exercise the same real SDK YAML parser as controller startup.
   await writeFile(path, JSON.stringify(configuration), "utf8");
@@ -217,6 +214,36 @@ test("Credential Proxy startup preserves the selection and refuses retired keys"
         await assert.rejects(load(), /drivers\.conduit is retired; use drivers\.credential_proxy/);
       });
     }
+  }
+
+  // Finding 2361: the retired drivers.repo refusal named only native Git, which startup refuses
+  // beside a Sandbox. It now names the path that fits the selected Sandbox.
+  for (const [sandbox, advice] of [
+    [
+      "bundled",
+      /configure repository\.openShell with repository\.preparedGitHub \(the bundled OpenShell Driver refuses git-write\), or repository\.nativeSender without drivers\.sandbox or drivers\.credential_proxy\./,
+    ],
+    [
+      "package",
+      /configure repository\.preparedGitHub with the package's drivers\.credential_proxy and no repository\.openShell, or repository\.nativeSender without drivers\.sandbox/,
+    ],
+    ["none", /then configure repository\.nativeSender with repository\.preparedGitHub\. Do not/],
+  ]) {
+    await t.test(`retired drivers.repo, Sandbox ${sandbox}`, async () => {
+      const invalid = structuredClone(configuration);
+      invalid.drivers.repo = { id: "repository-credentials", configuration: {} };
+      if (sandbox === "none") {
+        delete invalid.drivers.sandbox;
+      } else if (sandbox === "package") {
+        invalid.drivers.sandbox.package = "@example/installed-sender";
+      }
+      await writeFile(path, JSON.stringify(invalid));
+      await assert.rejects(load(), (error) => {
+        assert.match(error.message, /^drivers\.repo native admission is retired\./);
+        assert.match(error.message, advice);
+        return true;
+      });
+    });
   }
 });
 
@@ -721,8 +748,7 @@ function retiredChatgptInstallation() {
 }
 
 async function repositoryInstallation(t) {
-  const directory = await mkdtemp(join(tmpdir(), "occ-repository-startup-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "occ-repository-startup-");
   const tls = await createTlsMaterial(t);
   await chmod(tls.certFile, 0o644);
   const writableCaPath = join(directory, "writable-ca.crt");
@@ -1035,8 +1061,7 @@ test("repository startup rejects unmatched ownership, registry identity, duratio
 });
 
 test("public CA loading rejects repeated malformed certificates without stalling", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "occ-public-ca-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "occ-public-ca-");
   const path = join(directory, "ca.pem");
   await writeFile(
     path,
@@ -1596,6 +1621,59 @@ test("production server and worker resolve singleton startup without an Installa
     "PERSISTENCE_UNAVAILABLE",
   );
   assert.doesNotMatch(worker.stderr, /OCC_INSTALLATION_ID|explicit Installation/);
+});
+
+// An unwritable readiness path left the worker running but never Ready (finding 2311). Both
+// health markers are probed before PostgreSQL; readiness through a sibling file, since its
+// marker must not appear before queue health does. The code names the setting (finding 2327),
+// whether the path is relative, in a missing directory or an existing directory.
+test("worker refuses an unwritable readiness or liveness path before opening PostgreSQL", async (t) => {
+  const path = await fixture(t);
+  const directory = await temporaryDirectory(t, "occ-worker-markers-");
+  const shared = {
+    PATH: process.env.PATH,
+    NODE_ENV: "production",
+    OCC_CONFIG_PATH: path,
+    OCC_DATABASE_URL: "postgresql://127.0.0.1:1/occ",
+  };
+  const occupied = join(directory, "occupied");
+  await mkdir(join(occupied, "entry"), { recursive: true });
+  const refusals = [
+    ["OCC_WORKER_READINESS_PATH", "WORKER_READINESS_PATH_INVALID"],
+    ["OCC_WORKER_LIVENESS_PATH", "WORKER_LIVENESS_PATH_INVALID"],
+  ].flatMap(([setting, code]) =>
+    ["marker", join(directory, "missing", "marker"), occupied].map((marker) => ({
+      setting,
+      code,
+      marker,
+    })),
+  );
+  const ready = join(directory, "ready");
+  const [writable, ...refused] = await settled([
+    boot("apps/controller/src/worker.mjs", { ...shared, OCC_WORKER_READINESS_PATH: ready }),
+    ...refusals.map(({ setting, marker }) =>
+      boot("apps/controller/src/worker.mjs", { ...shared, [setting]: marker }),
+    ),
+  ]);
+  for (const [index, { setting, code, marker }] of refusals.entries()) {
+    const worker = refused[index];
+    assert.equal(worker.status, 1, `${setting}=${marker}`);
+    assert.equal(
+      startupDiagnostic(worker.stderr, "worker.startup-error").code,
+      code,
+      `${setting}=${marker}`,
+    );
+    // The code names the setting; the configured path stays out of the log.
+    assert.ok(!worker.stderr.includes(directory), setting);
+  }
+  // A writable path reaches PostgreSQL, leaving neither the marker nor the probe behind.
+  assert.equal(writable.status, 1);
+  assert.equal(
+    startupDiagnostic(writable.stderr, "worker.startup-error").code,
+    "PERSISTENCE_UNAVAILABLE",
+  );
+  assert.deepEqual((await readdir(directory)).sort(), ["occupied"]);
+  assert.deepEqual(await readdir(occupied), ["entry"]);
 });
 
 test("only the actual API process reads ChatGPT admin credentials and backend accounts require PostgreSQL", async (t) => {

@@ -4,6 +4,8 @@ Open **Secrets** in the sidebar and select a Namespace. Search by name or ID,
 or select **Refresh** to reload metadata. The list contains only Secrets you may
 read. Values are never returned. A ready Namespace is required to create or
 replace a value; ask an administrator for the exact operation permissions.
+Without Secret `create` in the Namespace, **Create Secret** is disabled and a
+note under it says so.
 
 ## Create and use a Secret
 
@@ -20,16 +22,22 @@ replace a value; ask an administrator for the exact operation permissions.
 
 ## Inspect consumers
 
-Select a Secret name to read its ID and current consumers. Agent IDs link to their
-console pages. Configurations, CredentialSources, and pending provisioning
+Select a Secret name to read its ID and current consumers. Agents show by name,
+with their IDs, and link to their console pages. Configurations, CredentialSources, and pending provisioning
 requests show their IDs; manage those references through their supported APIs or
 CLI commands. Hidden consumers appear as a count, and incomplete results are
 marked. Ask an administrator to inspect references you cannot read.
+
+A Secret link on an Agent page opens that Secret here, also when you must sign
+in first. A link to a Secret that is not in your list opens nothing. A note says
+the Secret may not exist or you may not read it.
 
 ## Replace a value
 
 Select the Secret, then **Replace value**. Enter the replacement and confirm.
 The ID and bindings remain stable. The old value is never loaded into the form.
+Without Secret `update` on it, **Replace value** is disabled and the dialog says
+so; without Secret `delete`, **Delete Secret** is too.
 
 A successful save changes storage. Deploy consuming Agents again through OCE
 and verify credential use. CredentialSources hold a separate copy; follow

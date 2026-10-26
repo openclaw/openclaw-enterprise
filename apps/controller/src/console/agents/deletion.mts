@@ -1,5 +1,5 @@
 import type { AgentRead } from "@openclaw-enterprise/contracts";
-import { requestFailure, responseFields } from "../api-client.mjs";
+import { GENERIC_DENIAL, namedDenial, requestFailure, responseFields } from "../api-client.mjs";
 import {
   button,
   element,
@@ -7,14 +7,16 @@ import {
   setHidden,
   setText,
   statusBlock,
+  requestIdLine,
 } from "../dom.mjs";
 import {
   type AgentLifecycleContext,
   DELETE_CONFIRMATION,
   type LifecycleError,
-  keptResourcesText,
+  keptResources,
 } from "./lifecycle-confirmation.mjs";
-import { message } from "./list.mjs";
+import { AGENT_DELETE_DENIED, askForGrant } from "./access-reasons.mjs";
+import { AGENT_STATUS_READ_NEED, describeFailure } from "./list.mjs";
 
 // Deletion finishes in the background; poll until the Agent is gone, then return to the list.
 export const DELETION_POLL_MS = 3000;
@@ -31,7 +33,7 @@ export function createAgentDeletion(
     className: "danger-zone-row deletion-note",
     "aria-labelledby": "agent-deletion-title",
   });
-  const permissionNotice = "Your access does not include deleting this Agent.";
+  const permissionNotice = AGENT_DELETE_DENIED;
   let restrictConfirmation: (() => void) | undefined;
   const feedback = element("div", { className: "danger-zone-feedback" });
   const actions = element("div", { className: "danger-zone-actions" });
@@ -96,7 +98,7 @@ export function createAgentDeletion(
     // the status (finding 1409).
     const checking = state.pending && !state.polling;
     const status = state.accessEnded
-      ? "Deletion was accepted. Your access to this Agent ended with it, so this page cannot follow the cleanup."
+      ? "Deletion was accepted. You can no longer read this Agent’s status, so this page cannot tell whether cleanup has finished."
       : state.deleting
         ? "Deletion was requested. The Agent cannot be edited or deployed. If cleanup has stopped after a failure, fix the cause and request deletion again."
         : state.notice;
@@ -111,9 +113,7 @@ export function createAgentDeletion(
               "div",
               { className: "status", "data-tone": "danger", role: "alert" },
               element("p", { className: "status-body" }, state.error.text),
-              state.error.requestId
-                ? element("p", { className: "request-id" }, `Request ID: ${state.error.requestId}`)
-                : null,
+              state.error.requestId ? requestIdLine(state.error.requestId) : null,
             ),
           ]
         : []),
@@ -224,14 +224,13 @@ export function createAgentDeletion(
       } else if (error.status === 404) {
         context.navigate("agents");
       } else if (error.status === 403 && state.deleting) {
-        // Most likely the finished deletion removed the bindings that target this Agent, so a
-        // reader with only those grants can no longer follow it. Stop polling instead of
-        // showing a denial.
+        // Cleanup can remove this reader’s grants; access can also end before cleanup finishes.
+        // Stop following the deletion without treating this denial as a not-found response.
         state.accessEnded = true;
         clearTimeout(pollTimer);
       } else {
         state.error = {
-          text: `Could not refresh deletion status. ${message(cause)}`,
+          text: `Could not refresh deletion status. ${describeFailure(cause, { need: AGENT_STATUS_READ_NEED })}`,
           requestId: error.requestId,
         };
         // Stop polling on errors; the reader can retry with Refresh deletion status.
@@ -245,12 +244,11 @@ export function createAgentDeletion(
         state.pending = false;
         state.polling = false;
         render();
-        // A read that ended access drops a waiting repeat with its dialog, before focus moves:
-        // the heading cannot take focus while the modal is open. Forbidden and needs-refresh
-        // states cannot arise while one waits; they are checked defensively.
+        // The reader may still be deciding in the repeat dialog, or may have confirmed a repeat
+        // we have not sent. Close either before returning focus; the modal makes the page inert.
         const dropQueued = state.accessEnded || state.forbidden || state.needsRefresh;
-        if (queued && dropQueued) {
-          queued.dialog.close();
+        if (state.accessEnded || (queued && dropQueued)) {
+          section.querySelector<HTMLDialogElement>("dialog[open]")?.close();
         }
         if (state.accessEnded) {
           // Refresh is gone, so keep focus in this section on its heading.
@@ -282,7 +280,7 @@ export function createAgentDeletion(
     cancel: HTMLButtonElement,
     confirm: HTMLButtonElement,
   ) {
-    if (state.forbidden || state.needsRefresh || !context.isCurrent()) {
+    if (state.accessEnded || state.forbidden || state.needsRefresh || !context.isCurrent()) {
       return;
     }
     if (state.pending) {
@@ -331,22 +329,27 @@ export function createAgentDeletion(
       dialog.close();
       let text;
       if (error.status === 403) {
+        // The API's named denial (finding 2534), or a retry refusal such as another actor's
+        // deletion; an older API's generic denial gets the console's text.
         text =
-          state.deleting &&
+          namedDenial(cause) ??
+          (state.deleting &&
           error.serverMessage !== undefined &&
-          error.serverMessage !== "The exact platform operation was not authorized."
+          error.serverMessage !== GENERIC_DENIAL
             ? error.serverMessage
-            : "You do not have permission to delete this Agent. Ask an administrator for Agent delete access.";
+            : `You do not have permission to delete this Agent. ${askForGrant("Agent delete on it")}`);
       } else if (error.status === 404) {
         state.needsRefresh = true;
         text =
           "This Agent is no longer available for deletion. Refresh its status to return to the Agents list if it is gone.";
-      } else if (error.status === 409) {
-        state.needsRefresh = true;
-        text =
-          "This Agent could not be deleted in its current state. Refresh its status before trying again.";
-      } else if (error.status === 400 || error.status === 429) {
-        text = message(cause);
+      } else if (error.status === 400 || error.status === 409 || error.status === 429) {
+        // The API's own reason for a 400 or 409, such as a lifecycle change during deletion.
+        state.needsRefresh = error.status === 409;
+        text = describeFailure(cause, {
+          mutation: true,
+          conflict: "This Agent could not be deleted in its current state.",
+          next: "Refresh deletion status before trying again.",
+        });
       } else {
         state.needsRefresh = true;
         text =
@@ -363,7 +366,12 @@ export function createAgentDeletion(
   }
 
   function openConfirmation() {
-    if (state.forbidden || (state.pending && !state.polling) || state.needsRefresh) {
+    if (
+      state.accessEnded ||
+      state.forbidden ||
+      (state.pending && !state.polling) ||
+      state.needsRefresh
+    ) {
       return;
     }
     const retry = state.deleting;
@@ -404,6 +412,7 @@ export function createAgentDeletion(
       cancel.focus();
     };
     restrictConfirmation = showRestriction;
+    const kept = keptResources(agent);
     dialog.append(
       element(
         "h2",
@@ -411,8 +420,9 @@ export function createAgentDeletion(
         retry ? `Request deletion again for ${agent.name}?` : `Delete ${agent.name}?`,
       ),
       description,
-      element("p", { id: "agent-delete-confirm-kept" }, keptResourcesText(agent)),
-      element("div", { className: "form-actions" }, cancel, confirm),
+      kept.summary,
+      kept.commands,
+      element("div", { className: "dialog-actions" }, cancel, confirm),
     );
     dialog.addEventListener("cancel", (event) => {
       if ((state.pending && !state.polling) || queuedDelete?.dialog === dialog) {

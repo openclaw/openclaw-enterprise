@@ -1,19 +1,23 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { appendFile, chmod, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { connect, createServer } from "node:net";
 import { availableParallelism } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { setTimeout as delay } from "node:timers/promises";
 import { describe, test } from "node:test";
 import { loadTestSuites } from "../../scripts/ci/test-suites.mjs";
 import { prepareCodexSeccompProfile } from "../../scripts/ci/codex-seccomp.mjs";
 import { metricsMonitoringImages } from "../../scripts/ci/metrics-monitoring-images.mjs";
 import { defaultK3sImage } from "../../scripts/ci/prepare.mjs";
 import { withStateLock } from "../../scripts/ci/state-lock.mjs";
+import { readJsonLines } from "../helpers/json-lines.mjs";
 import { createKubernetesInstallationConfiguration } from "../helpers/kubernetes-real.mjs";
+import { listen } from "../helpers/listen.mjs";
 import { nodeTestSummary } from "../helpers/node-test-summary.mjs";
 import {
   assertStderrMatch,
@@ -29,6 +33,7 @@ import {
   writeFixtureCommand,
 } from "../helpers/ci-prepare-fixture.mjs";
 import { waitUntil } from "../helpers/wait-for.mjs";
+import { startFakePostgres } from "../helpers/fake-postgres-server.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../../", import.meta.url)));
 const preparePath = join(repositoryRoot, "scripts/ci/prepare.mjs");
@@ -44,8 +49,9 @@ async function writeState(path, state) {
   await chmod(path, 0o600);
 }
 
-// A ready Compose PostgreSQL server, owned by its own preparation prefix.
-function composePostgres(name) {
+// A ready Compose PostgreSQL server, owned by its own preparation prefix, published on port
+// (a fake server's, when the case runs SQL).
+function composePostgres(name, port = 45431) {
   return {
     id: `compose-postgres-${name}`,
     kind: "compose-postgres",
@@ -53,7 +59,7 @@ function composePostgres(name) {
     status: "ready",
     name: `openclaw_ci_pg_${name}`,
     composeFile: join(repositoryRoot, "compose.postgres.yaml"),
-    port: 45431,
+    port,
   };
 }
 
@@ -67,6 +73,33 @@ async function writePostgresState(statePath, server, ...resources) {
     statePath,
     resources: [server, ...resources],
   });
+}
+
+// A fake lane PostgreSQL server for one case (fake-postgres-server.mjs), stopped after it.
+// Each query is also appended to logPath as "postgres\t<database>\t<query>", beside the
+// fake commands' lines.
+async function laneFakePostgres(t, { logPath, onQuery = () => undefined } = {}) {
+  const postgres = await startFakePostgres({
+    onQuery: async (query, session) => {
+      if (logPath) {
+        await appendFile(logPath, `postgres\t${session.database}\t${query}\n`);
+      }
+      return onQuery(query, session);
+    },
+  });
+  t.after(() => postgres.close());
+  return postgres;
+}
+
+// Every session reached the lane server as the superuser compose.postgres.yaml creates.
+async function assertSuperuserSessions(postgres) {
+  const compose = await readFile(join(repositoryRoot, "compose.postgres.yaml"), "utf8");
+  const password = compose.match(/POSTGRES_PASSWORD: (\S+)/)[1];
+  assert.ok(postgres.sessions.length > 0);
+  for (const { user, password: sent } of postgres.sessions) {
+    assert.equal(user, "postgres");
+    assert.equal(sent, password);
+  }
 }
 
 // Runs a module program that imports prepare.mjs (argv[1]) and uses the state at argv[2].
@@ -178,6 +211,35 @@ describe("CI preparation", { concurrency }, () => {
       }
 
       const preparation = await commands.commands();
+      if (scenario === "success") {
+        // The lane's disposable PostgreSQL server gives up durability right after it
+        // starts, before any database is created or migrated, over its published port.
+        const started = preparation.findIndex(
+          ({ command, args }) =>
+            command === "docker" &&
+            args[0] === "compose" &&
+            args.slice(5).join(" ") === "up -d --wait",
+        );
+        assert.notEqual(started, -1, "preparation starts its PostgreSQL server");
+        const sql = (entries) =>
+          entries.filter(({ command }) => command === "postgres").map(({ args }) => args);
+        assert.deepEqual(sql(preparation.slice(0, started)), [], "no SQL before the server");
+        assert.deepEqual(sql(preparation.slice(started)).slice(0, 4), [
+          ["postgres", "ALTER SYSTEM SET fsync = off"],
+          ["postgres", "ALTER SYSTEM SET synchronous_commit = off"],
+          ["postgres", "ALTER SYSTEM SET full_page_writes = off"],
+          ["postgres", "SELECT pg_catalog.pg_reload_conf()"],
+        ]);
+        assert.ok(
+          preparation
+            .slice(started)
+            .every(
+              ({ command, args }) =>
+                command !== "docker" || !args.includes("exec") || args[0] !== "compose",
+            ),
+          "no docker compose exec for SQL",
+        );
+      }
       const criLookups = (suffix) =>
         preparation.filter(
           ({ args }) => args[1] === `k3d-${cluster.name}-${suffix}` && args[2] === "crictl",
@@ -370,10 +432,9 @@ describe("CI preparation", { concurrency }, () => {
       socket.on("error", () => {});
       socket.once("data", () => socket.end("printf impostor-ran\nexit 0\n"));
     });
-    await new Promise((resolve) => impostor.listen(0, "127.0.0.1", resolve));
-    t.after(() => new Promise((resolve) => impostor.close(resolve)));
+    const impostorPort = await listen(t, impostor);
     const misdirected = join(root, "misdirected-docker");
-    await writeFixtureCommand(misdirected, "docker", server, impostor.address().port);
+    await writeFixtureCommand(misdirected, "docker", server, impostorPort);
     const refused = await spawnResult(misdirected, ["version"], {
       env: { PATH: "/nonexistent", CI_FIXTURE_SCENARIO: "success" },
     });
@@ -848,6 +909,18 @@ describe("CI preparation", { concurrency }, () => {
         [],
         /Image caching requires the hosted image lane/,
       ],
+      [
+        "malformed run ID",
+        { GITHUB_RUN_ID: "0" },
+        [],
+        /Image CI state requires a valid run ID and attempt/,
+      ],
+      [
+        "malformed run attempt",
+        { GITHUB_RUN_ATTEMPT: "01" },
+        [],
+        /Image CI state requires a valid run ID and attempt/,
+      ],
     ]) {
       const commands = await fixtureImageCommands(t, "success", "images-packaging", {
         ...warmCacheEnv,
@@ -961,24 +1034,9 @@ describe("CI preparation", { concurrency }, () => {
     const root = await fixture(t);
     const statePath = join(root, "state.json");
     const logPath = join(root, "fake-commands.log");
-    const dockerPath = join(root, "fake-docker.mjs");
     const corepackPath = join(root, "fake-corepack.mjs");
-    await writePostgresState(statePath, composePostgres("synthetic"));
-    await writeFile(
-      dockerPath,
-      `#!${process.execPath}
-import assert from "node:assert/strict";
-import { appendFileSync } from "node:fs";
-const args = process.argv.slice(2);
-assert.equal(args[0], "compose");
-assert.equal(args[1], "-f");
-assert.equal(args[3], "-p");
-assert.deepEqual(args.slice(5, 9), ["exec", "-T", "postgres", "psql"]);
-const commands = args.filter((_, index) => args[index - 1] === "-c");
-appendFileSync(process.env.CI_SYNTHETIC_LOG, ["docker-exec", ...commands].join("\\t") + "\\n");
-`,
-      { mode: 0o700 },
-    );
+    const postgres = await laneFakePostgres(t);
+    await writePostgresState(statePath, composePostgres("synthetic", postgres.port));
     await writeFile(
       corepackPath,
       `#!${process.execPath}
@@ -1034,15 +1092,20 @@ assert.deepEqual(finalState.resources.map(({ kind, laneTemplate }) => [kind, lan
     const fakeEnv = {
       PATH: root,
       LANG: "C",
-      OCC_DOCKER_BIN: dockerPath,
+      // SQL reaches the server over its port; no container engine command runs.
+      OCC_DOCKER_BIN: join(root, "must-not-run"),
       OPENCLAW_CI_COREPACK_BIN: corepackPath,
       CI_SYNTHETIC_LOG: logPath,
     };
     const result = await runProgram(program, statePath, fakeEnv, 20_000);
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stdout, "");
-    const commandLog = (await readFile(logPath, "utf8")).trim().split("\n");
-    // One migrated lane template, then a copy per file, each copy one exec.
+    const sessions = () => [
+      ...postgres.sessionLines(),
+      ...readFileSync(logPath, "utf8").trim().split("\n"),
+    ];
+    const commandLog = sessions();
+    // One migrated lane template, then a copy per file, each copy one session.
     assert.equal(commandLog.length, 7);
     assert.equal(commandLog.filter((line) => line.startsWith("migrate\t")).length, 1);
     const createCommands = commandLog.filter((line) => line.includes("CREATE DATABASE"));
@@ -1050,7 +1113,7 @@ assert.deepEqual(finalState.resources.map(({ kind, laneTemplate }) => [kind, lan
     assert.equal(createCommands.length, 3);
     assert.equal(createCommands.filter((line) => line.includes(" TEMPLATE ")).length, 2);
     assert.equal(dropCommands.length, 2);
-    assert.ok(createCommands.every((line) => line.startsWith("docker-exec\tCREATE DATABASE ")));
+    assert.ok(createCommands.every((line) => line.startsWith("postgres\tCREATE DATABASE ")));
     const githubEnv = join(root, "github.env");
     // Neither GITHUB_ENV nor --github-env may publish the barrier outside the runner.
     for (const [env, extra] of [
@@ -1075,16 +1138,16 @@ assert.deepEqual(finalState.resources.map(({ kind, laneTemplate }) => [kind, lan
       assert.match(blocked.stderr, /must be prepared within the test runner/);
       await assert.rejects(() => stat(githubEnv), { code: "ENOENT" });
     }
-    assert.equal((await readFile(logPath, "utf8")).trim().split("\n").length, 7);
+    assert.equal(sessions().length, 7);
   });
 
   test("prepareFile copies a per-test database from a ready template it owns without migrating", async (t) => {
     const root = await fixture(t);
     const statePath = join(root, "state.json");
     const logPath = join(root, "fake-commands.log");
-    const dockerPath = join(root, "fake-docker.mjs");
     const corepackPath = join(root, "fake-corepack.mjs");
-    const server = composePostgres("synthetic");
+    const postgres = await laneFakePostgres(t, { logPath });
+    const server = composePostgres("synthetic", postgres.port);
     const database = (name, extra = {}) => ({
       id: `postgres-database-${name}`,
       kind: "postgres-database",
@@ -1102,18 +1165,6 @@ assert.deepEqual(finalState.resources.map(({ kind, laneTemplate }) => [kind, lan
       database("openclaw_ci_planned", { status: "planned" }),
       database("openclaw_ci_other_project", { composeProject: "openclaw_ci_pg_other" }),
       database("openclaw_ci_other_port", { port: 45432 }),
-    );
-    await writeFile(
-      dockerPath,
-      `#!${process.execPath}
-import assert from "node:assert/strict";
-import { appendFileSync } from "node:fs";
-const args = process.argv.slice(2);
-assert.deepEqual(args.slice(5, 9), ["exec", "-T", "postgres", "psql"]);
-const commands = args.filter((_, index) => args[index - 1] === "-c");
-appendFileSync(process.env.CI_SYNTHETIC_LOG, ["docker-exec", args[args.indexOf("-d") + 1], ...commands].join("\\t") + "\\n");
-`,
-      { mode: 0o700 },
     );
     await writeFile(
       corepackPath,
@@ -1168,39 +1219,48 @@ console.error(laneTemplate + " " + new URL(template.env.OCC_TEST_DATABASE_URL).p
       {
         PATH: root,
         LANG: "C",
-        OCC_DOCKER_BIN: dockerPath,
+        OCC_DOCKER_BIN: join(root, "must-not-run"),
         OPENCLAW_CI_COREPACK_BIN: corepackPath,
         CI_SYNTHETIC_LOG: logPath,
       },
       20_000,
     );
     assert.equal(result.status, 0, result.stderr);
+    await assertSuperuserSessions(postgres);
     const [laneTemplateName, templateName, copyName] = result.stderr.trim().split(" ");
     assert.match(laneTemplateName, /^openclaw_ci_lane_template_[a-f0-9]{12}$/);
     assert.deepEqual((await readFile(logPath, "utf8")).trim().split("\n"), [
       // The lane's one migration, which each file's database copies.
-      `docker-exec\tpostgres\tCREATE DATABASE "${laneTemplateName}"`,
-      `docker-exec\t${laneTemplateName}\tGRANT CREATE ON DATABASE "${laneTemplateName}" TO occ_migrator; CREATE SCHEMA occ AUTHORIZATION occ_migrator; CREATE SCHEMA drizzle AUTHORIZATION occ_migrator; REVOKE CREATE ON SCHEMA public FROM PUBLIC;`,
+      `postgres\tpostgres\tCREATE DATABASE "${laneTemplateName}"`,
+      `postgres\t${laneTemplateName}\tGRANT CREATE ON DATABASE "${laneTemplateName}" TO occ_migrator; CREATE SCHEMA occ AUTHORIZATION occ_migrator; CREATE SCHEMA drizzle AUTHORIZATION occ_migrator; REVOKE CREATE ON SCHEMA public FROM PUBLIC;`,
       `migrate\t/${laneTemplateName}`,
-      // A copy keeps the template's schemas and migrations; only the database grant is new,
-      // in the same exec.
-      `docker-exec\tpostgres\tCREATE DATABASE "${templateName}" TEMPLATE "${laneTemplateName}"\tGRANT CREATE ON DATABASE "${templateName}" TO occ_migrator;`,
-      `docker-exec\tpostgres\tCREATE DATABASE "${copyName}" TEMPLATE "${templateName}"\tGRANT CREATE ON DATABASE "${copyName}" TO occ_migrator;`,
-      `docker-exec\tpostgres\tDROP DATABASE IF EXISTS "${copyName}" WITH (FORCE)`,
-      `docker-exec\tpostgres\tDROP DATABASE IF EXISTS "${templateName}" WITH (FORCE)`,
+      // A copy keeps the template's schemas and migrations; only the database grant is new.
+      `postgres\tpostgres\tCREATE DATABASE "${templateName}" TEMPLATE "${laneTemplateName}"`,
+      `postgres\tpostgres\tGRANT CREATE ON DATABASE "${templateName}" TO occ_migrator;`,
+      `postgres\tpostgres\tCREATE DATABASE "${copyName}" TEMPLATE "${templateName}"`,
+      `postgres\tpostgres\tGRANT CREATE ON DATABASE "${copyName}" TO occ_migrator;`,
+      `postgres\tpostgres\tDROP DATABASE IF EXISTS "${copyName}" WITH (FORCE)`,
+      `postgres\tpostgres\tDROP DATABASE IF EXISTS "${templateName}" WITH (FORCE)`,
+    ]);
+    // Each copy and its grant share one session, as each drop has its own.
+    assert.deepEqual(postgres.sessionLines().slice(2), [
+      `postgres\tCREATE DATABASE "${templateName}" TEMPLATE "${laneTemplateName}"\tGRANT CREATE ON DATABASE "${templateName}" TO occ_migrator;`,
+      `postgres\tCREATE DATABASE "${copyName}" TEMPLATE "${templateName}"\tGRANT CREATE ON DATABASE "${copyName}" TO occ_migrator;`,
+      `postgres\tDROP DATABASE IF EXISTS "${copyName}" WITH (FORCE)`,
+      `postgres\tDROP DATABASE IF EXISTS "${templateName}" WITH (FORCE)`,
     ]);
   });
 
   test("prepareFile and cleanup in two processes keep each other's state entries", async (t) => {
     const root = await fixture(t);
     const statePath = join(root, "state.json");
-    const dockerPath = join(root, "fake-docker.mjs");
     const corepackPath = join(root, "fake-corepack.mjs");
-    const server = composePostgres("synthetic");
+    // Each statement and command takes a little while, so the two processes' state updates
+    // overlap.
+    const postgres = await laneFakePostgres(t, { onQuery: () => delay(10) });
+    const server = composePostgres("synthetic", postgres.port);
     await writePostgresState(statePath, server);
-    // Each command takes a little while, so the two processes' state updates overlap.
     const slow = `Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);\n`;
-    await writeFile(dockerPath, `#!${process.execPath}\n${slow}`, { mode: 0o700 });
     await writeFile(corepackPath, `#!${process.execPath}\n${slow}`, { mode: 0o700 });
     // A template per process, then a copy per test, like the worker revision suite, whose
     // template is the database the runner prepared for its file.
@@ -1225,7 +1285,7 @@ await template.cleanup();
         {
           PATH: root,
           LANG: "C",
-          OCC_DOCKER_BIN: dockerPath,
+          OCC_DOCKER_BIN: join(root, "must-not-run"),
           OPENCLAW_CI_COREPACK_BIN: corepackPath,
         },
         60_000,
@@ -1245,11 +1305,12 @@ await template.cleanup();
       })),
       [{ kind: "postgres-database", laneTemplate: "ci", status: "ready" }],
     );
-    assert.deepEqual((await readdir(root)).sort(), [
-      "fake-corepack.mjs",
-      "fake-docker.mjs",
-      "state.json",
-    ]);
+    assert.deepEqual((await readdir(root)).sort(), ["fake-corepack.mjs", "state.json"]);
+    // Every copy and drop reached the server: per process a copy of the lane template for
+    // its file and 10 per-test copies, each dropped again.
+    const statements = postgres.queries();
+    assert.equal(statements.filter((line) => / TEMPLATE /.test(line)).length, 22);
+    assert.equal(statements.filter((line) => /\tDROP DATABASE /.test(line)).length, 22);
   });
 
   test("the CI state lock removes an exited holder's lock and waits for a live one", async (t) => {
@@ -1956,6 +2017,50 @@ for (let index = 0; index < Number(times); index += 1) {
     assert.equal((await stat(statePath)).mode & 0o777, 0o600);
   });
 
+  test("prepareFile refuses a state file it does not own before using it", async (t) => {
+    const root = await fixture(t);
+    const statePath = join(root, "state.json");
+    const owned = {
+      version: 1,
+      repositoryRoot,
+      lane: "postgres-application",
+      prefix: "openclaw-ci-local-foreign-state",
+      statePath,
+      resources: [composePostgres("foreign_state")],
+    };
+    for (const [label, change, error] of [
+      ["another version", { version: 2 }, /Unsupported CI state version: 2/],
+      [
+        "another checkout",
+        { repositoryRoot: join(root, "other-checkout") },
+        /CI state belongs to another repository root/,
+      ],
+      [
+        "another prefix",
+        { prefix: "someone-else" },
+        /CI state prefix is not an OpenClaw Enterprise CI prefix/,
+      ],
+      ["no resource list", { resources: {} }, /CI state resources must be an array/],
+    ]) {
+      const state = { ...owned, ...change };
+      await writeState(statePath, state);
+      const result = await runPrepare(
+        [
+          "--lane",
+          "postgres-application",
+          "--file",
+          "tests/integration/postgres-worker-agent-revision.test.mjs",
+          "--state",
+          statePath,
+        ],
+        { OCC_DOCKER_BIN: join(root, "must-not-run") },
+      );
+      assert.equal(result.status, 1, label);
+      assertStderrMatch(result.stderr, error, label);
+      assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), state, label);
+    }
+  });
+
   test("prepareLane pre-pulls logging and metrics images with retry and preserves its Node override", async (t) => {
     for (const failure of ["transient", "missing-manifest"]) {
       await t.test(failure, async (t) => {
@@ -2020,10 +2125,7 @@ process.exit(2);
           },
         );
 
-        const pulls = (await readFile(join(root, "docker.jsonl"), "utf8"))
-          .trim()
-          .split("\n")
-          .map((line) => JSON.parse(line))
+        const pulls = (await readJsonLines(join(root, "docker.jsonl")))
           .filter((args) => args[0] === "pull")
           .map((args) => args[1]);
         if (failure === "missing-manifest") {
@@ -2157,6 +2259,21 @@ process.exit(2);
     );
     assert.equal(invalid.status, 1);
     assert.match(invalid.stderr, /NODE_BASE_IMAGE must be an immutable/);
+
+    const otherNode = await runPrepare(
+      ["--lane", "images-packaging", "--file", file, "--state", statePath],
+      { NODE_BASE_IMAGE: customNodeBaseImage.replace("node:24-", "node:22-") },
+    );
+    assert.equal(otherNode.status, 1);
+    assertStderrMatch(otherNode.stderr, /NODE_BASE_IMAGE must select an approved Node 24 image/);
+
+    // A blank override is a missing input, not a reason to fall back to the default.
+    const blank = await runPrepare(
+      ["--lane", "images-packaging", "--file", file, "--state", statePath],
+      { NODE_BASE_IMAGE: "   " },
+    );
+    assert.equal(blank.status, 1);
+    assertStderrMatch(blank.stderr, /Missing required CI input\(s\): NODE_BASE_IMAGE/);
   });
 
   // This command fixture tests preparation ordering only. The real launcher case
@@ -2201,12 +2318,7 @@ if (args[0] === "pull") {
         // The launcher engine selection must win over the general CI engine override.
         OCC_DOCKER_BIN: join(root, "must-not-run"),
       },
-      commands: async () =>
-        (await readFile(join(root, "commands.jsonl"), "utf8"))
-          .trim()
-          .split("\n")
-          .filter(Boolean)
-          .map(JSON.parse),
+      commands: () => readJsonLines(join(root, "commands.jsonl"), { skipBlank: true }),
     };
   }
 
@@ -2291,34 +2403,42 @@ if (args[0] === "pull") {
     }
   });
 
-  test("provider-account preparation accepts absent image inputs before prepared state exists", async (t) => {
+  test("provider-account preparation checks image inputs and admin key mode before prepared state exists", async (t) => {
     const root = await fixture(t);
     const adminKeyPath = join(root, "chatgpt-admin.key");
     const statePath = join(root, "missing-state.json");
     await writeFile(adminKeyPath, "admin key\n", { mode: 0o600 });
     await chmod(adminKeyPath, 0o600);
+    const prepareProviderAccount = () =>
+      runPrepare(
+        [
+          "--lane",
+          "provider-account",
+          "--file",
+          "tests/integration/service-account-driver-real.test.mjs",
+          "--state",
+          statePath,
+        ],
+        {
+          OCC_TEST_OPENAI_MODEL: "gpt-test",
+          OCC_TEST_CHATGPT_WORKSPACE_ID: "workspace-test",
+          OCC_TEST_CHATGPT_ADMIN_KEY_PATH: adminKeyPath,
+          OCC_TEST_KUBERNETES_GATEWAY_IMAGE: "",
+          OCC_TEST_KUBERNETES_AGENT_IMAGE: "",
+        },
+      );
 
-    const result = await runPrepare(
-      [
-        "--lane",
-        "provider-account",
-        "--file",
-        "tests/integration/service-account-driver-real.test.mjs",
-        "--state",
-        statePath,
-      ],
-      {
-        OCC_TEST_OPENAI_MODEL: "gpt-test",
-        OCC_TEST_CHATGPT_WORKSPACE_ID: "workspace-test",
-        OCC_TEST_CHATGPT_ADMIN_KEY_PATH: adminKeyPath,
-        OCC_TEST_KUBERNETES_GATEWAY_IMAGE: "",
-        OCC_TEST_KUBERNETES_AGENT_IMAGE: "",
-      },
-    );
-
+    const result = await prepareProviderAccount();
     assert.equal(result.status, 1);
-    assert.match(result.stderr, /requires a prior prepareLane/);
+    assertStderrMatch(result.stderr, /requires a prior prepareLane/);
     assert.doesNotMatch(result.stderr, /OCC_TEST_KUBERNETES_.*IMAGE/);
+    await assert.rejects(() => stat(statePath), { code: "ENOENT" });
+
+    // The admin key must stay private to the runner's user.
+    await chmod(adminKeyPath, 0o644);
+    const readable = await prepareProviderAccount();
+    assert.equal(readable.status, 1);
+    assertStderrMatch(readable.stderr, /ChatGPT admin key must have mode 0600/);
     await assert.rejects(() => stat(statePath), { code: "ENOENT" });
   });
 
@@ -2577,8 +2697,9 @@ if (args[0] === "pull") {
   });
 
   for (const scenario of [
-    { stage: "database-create", failure: "exit", exitCode: 42, signal: null },
-    { stage: "database-schema", failure: "exit", exitCode: 43, signal: null },
+    { stage: "database-create", failure: "query" },
+    { stage: "database-create", failure: "connect" },
+    { stage: "database-schema", failure: "query" },
     { stage: "database-migrate", failure: "exit", exitCode: 44, signal: null },
     { stage: "database-migrate", failure: "spawn" },
     { stage: "database-migrate", failure: "signal", exitCode: null, signal: "SIGTERM" },
@@ -2587,25 +2708,37 @@ if (args[0] === "pull") {
       const root = await fixture(t);
       const statePath = join(root, "state.json");
       const commandsPath = join(root, "commands.jsonl");
-      const dockerPath = join(root, "docker.mjs");
       const corepackPath = join(root, "corepack.mjs");
-      await writePostgresState(statePath, composePostgres("diagnostics"));
+      const stageOf = (query) =>
+        query.startsWith("CREATE DATABASE") ? "database-create" : "database-schema";
+      const postgres = await laneFakePostgres(t, {
+        onQuery: async (query) => {
+          const stage = stageOf(query);
+          await appendFile(commandsPath, JSON.stringify(stage) + "\n");
+          if (stage === scenario.stage) {
+            return { error: "secret-canary-server-message" };
+          }
+        },
+      });
+      // A connect failure: nothing listens on the published port any more.
+      if (scenario.failure === "connect") {
+        await postgres.close();
+      }
+      await writePostgresState(statePath, composePostgres("diagnostics", postgres.port));
       const commandSource = `#!${process.execPath}
 import { appendFileSync } from "node:fs";
-const args = process.argv.slice(2);
-const stage = args[0] === "pnpm" ? "database-migrate" :
-  args.at(-1).startsWith("CREATE DATABASE") ? "database-create" : "database-schema";
-appendFileSync(process.env.CI_DIAGNOSTIC_COMMANDS, JSON.stringify(stage) + "\\n");
-if (stage === ${JSON.stringify(scenario.stage)}) {
-  process.stdout.write("secret-canary-stdout");
-  process.stderr.write("secret-canary-stderr");
-  ${scenario.failure === "signal" ? 'process.kill(process.pid, "SIGTERM");' : `process.exit(${scenario.exitCode ?? 45});`}
-}
+appendFileSync(process.env.CI_DIAGNOSTIC_COMMANDS, JSON.stringify("database-migrate") + "\\n");
+process.stdout.write("secret-canary-stdout");
+process.stderr.write("secret-canary-stderr");
+${scenario.failure === "signal" ? 'process.kill(process.pid, "SIGTERM");' : `process.exit(${scenario.exitCode ?? 45});`}
 `;
-      await writeFile(dockerPath, commandSource, { mode: 0o700 });
       if (scenario.failure !== "spawn") {
         await writeFile(corepackPath, commandSource, { mode: 0o700 });
       }
+      const expectProcess =
+        scenario.stage === "database-migrate"
+          ? `assert.equal(error.exitCode, ${JSON.stringify(scenario.exitCode)}); assert.equal(error.signal, ${JSON.stringify(scenario.signal)});`
+          : "assert.equal(error.exitCode, undefined); assert.equal(error.signal, undefined);";
       const program = `
 import assert from "node:assert/strict";
 const { prepareFile } = await import(process.argv[1]);
@@ -2615,7 +2748,7 @@ await assert.rejects(() => prepareFile({ lane: "postgres-application",
     assert.equal(error.code, "CI_PREPARATION_COMMAND_FAILED");
     assert.equal(error.stage, ${JSON.stringify(scenario.stage)});
     assert.equal(error.failure, ${JSON.stringify(scenario.failure)});
-    ${scenario.failure === "spawn" ? "" : `assert.equal(error.exitCode, ${JSON.stringify(scenario.exitCode)}); assert.equal(error.signal, ${JSON.stringify(scenario.signal)}); assert.equal(error.timedOut, false);`}
+    ${scenario.failure === "spawn" ? "" : `${expectProcess} assert.equal(error.timedOut, false);`}
     return true;
   });
 `;
@@ -2624,18 +2757,23 @@ await assert.rejects(() => prepareFile({ lane: "postgres-application",
         statePath,
         {
           PATH: root,
-          OCC_DOCKER_BIN: dockerPath,
+          OCC_DOCKER_BIN: join(root, "must-not-run"),
           OPENCLAW_CI_COREPACK_BIN: corepackPath,
           CI_DIAGNOSTIC_COMMANDS: commandsPath,
         },
         10_000,
       );
       assert.equal(result.status, 0, result.stderr);
-      const commands = (await readFile(commandsPath, "utf8")).trim().split("\n").map(JSON.parse);
+      const commands = scenario.failure === "connect" ? [] : await readJsonLines(commandsPath);
       const expected = ["database-create", "database-schema", "database-migrate"];
       assert.deepEqual(
         commands,
-        expected.slice(0, scenario.failure === "spawn" ? 2 : expected.indexOf(scenario.stage) + 1),
+        scenario.failure === "connect"
+          ? []
+          : expected.slice(
+              0,
+              scenario.failure === "spawn" ? 2 : expected.indexOf(scenario.stage) + 1,
+            ),
       );
       const state = JSON.parse(await readFile(statePath, "utf8"));
       assert.notEqual(

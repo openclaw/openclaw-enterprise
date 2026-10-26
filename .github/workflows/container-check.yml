@@ -3,6 +3,10 @@ name: Check Native Container Images
 on:
   workflow_dispatch:
     inputs:
+      source_sha:
+        description: Expected full source commit SHA (defaults to the selected ref's SHA)
+        required: false
+        type: string
       node_base_image:
         description: "Pinned Node base image; defaults to the repository configuration."
         required: false

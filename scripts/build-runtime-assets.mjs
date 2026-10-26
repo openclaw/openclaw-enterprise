@@ -15,6 +15,34 @@ import {
 } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, sep, resolve } from "node:path";
 
+// Every patch deploy/runtime/Dockerfile applies, in order, as provenance records it under
+// `patches` (finding 2290). runtime-assets.test.mjs checks this list against the Dockerfile.
+// `field` keeps the per-patch provenance names that existed before `patches`.
+const appliedPatches = [
+  {
+    file: "openclaw-codex-read-only-paths.patch",
+    sha256: "2e529593cb72c69be86cf7bb927aa555de50bc7ef923e80b37ba67df9bc1a624",
+    field: "openclawBridgePatchSha256",
+  },
+  {
+    file: "openclaw-codex-full-access-profile.patch",
+    sha256: "ce301e59ba9266f7897c472cd54d51f487a4f9ed75034824f48c6839b35e922f",
+  },
+  {
+    file: "stock-codex-0.163.0-alpha.2-dependency-pin.patch",
+    sha256: "686dcb3fcdd384150845f7af5b5f3bf46b2dc6ee24ab8f5b629b10566e18afd4",
+    field: "codexDependencyPinPatchSha256",
+  },
+  {
+    file: "openclaw-required-worker-authority-regression.patch",
+    sha256: "ac7d081a26c23b7e02d7b2c51abb77a7d5d36135eb49a077b5c65bdcae68dd40",
+    field: "openclawRequiredWorkerAuthorityRegressionPatchSha256",
+  },
+  {
+    file: "openclaw-control-ui-browser-reconnect.patch",
+    sha256: "25a84ab3b698e64f6e7a0bdf7d2058b1bb3b4b81bcd89eaaf4e13b9d6fa9d58d",
+  },
+];
 const [command, sourceRoot, output] = process.argv.slice(2);
 const root = await realpath(sourceRoot);
 const runtimePaths = [
@@ -302,12 +330,10 @@ if (command === "inputs") {
         source: "https://github.com/openclaw/openclaw",
         commit: process.env.GIT_COMMIT,
         sourceArchiveSha256: "bdf8d13a4d2e344b5925f2c506f4aadf184796defb3d4fde4938250ae89ecfa6",
-        openclawBridgePatchSha256:
-          "2e529593cb72c69be86cf7bb927aa555de50bc7ef923e80b37ba67df9bc1a624",
-        codexDependencyPinPatchSha256:
-          "686dcb3fcdd384150845f7af5b5f3bf46b2dc6ee24ab8f5b629b10566e18afd4",
-        openclawRequiredWorkerAuthorityRegressionPatchSha256:
-          "ac7d081a26c23b7e02d7b2c51abb77a7d5d36135eb49a077b5c65bdcae68dd40",
+        ...Object.fromEntries(
+          appliedPatches.flatMap(({ field, sha256 }) => (field ? [[field, sha256]] : [])),
+        ),
+        patches: Object.fromEntries(appliedPatches.map(({ file, sha256 }) => [file, sha256])),
         artifactKind: "assembled-runtime-root",
         runtimeContentsSha256: hash(contents),
         lockfileSha256: hash(await readFile(join(root, "pnpm-lock.yaml"))),
