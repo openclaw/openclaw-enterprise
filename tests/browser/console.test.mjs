@@ -454,6 +454,7 @@ test("console browser flow keeps Namespace URL state across global pages and log
       "GET /console/agents/deployment-diagnostics.mjs",
       "GET /console/agents/deployment-evidence.mjs",
       "GET /console/agents/deployment-recovery.mjs",
+      "GET /console/deployment-failure-steps.mjs",
       `GET /namespaces/${alpha.id}/agents/${alphaAgent.id}/permissions`,
       `GET /namespaces/${alpha.id}/agents/${alphaAgent.id}/revisions`,
       `GET /namespaces/${beta.id}/agents/${betaAgent.id}/permissions`,

@@ -174,6 +174,10 @@ function candidateDeploymentError(scenario, checkedAt) {
       },
     };
   }
+  // A scenario can name any failure code with the message OCC returns for it.
+  if (scenario.candidateFailure) {
+    return scenario.candidateFailure;
+  }
   if (scenario.candidateDependencyUnavailable) {
     return {
       code: "DEPENDENCY_UNAVAILABLE",
