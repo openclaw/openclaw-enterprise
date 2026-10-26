@@ -53,7 +53,7 @@ needs its principal’s own grants; it does not inherit the issuer’s. See
 [service key scope](../authentication/service-api-keys.md#request-admission-and-scope).
 An account created with the Installation administrator `roleId` holds only
 `installation:administer` and `installation:read`; see
-[appointed administrators](../authentication.md#appointed-installation-administrators).
+[Appoint an administrator](../../guides/topics/iam.md#appoint-an-administrator).
 
 ## Denial messages
 
