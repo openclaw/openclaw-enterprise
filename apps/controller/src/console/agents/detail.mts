@@ -731,6 +731,41 @@ export async function renderAgentDetail(
   }
   const tabsForSelection = new Set(tabLabels.map(([id]) => id));
   let selectedTab = tab && tabsForSelection.has(tab) ? tab : "configuration";
+  // A link to a tab this version or this reader does not have shows Configuration and says why,
+  // naming the tab (finding 2552).
+  // An empty `tab=` is no tab: it shows Configuration without a note.
+  function unavailableTabNotice(requested: string | null) {
+    if (!requested || tabsForSelection.has(requested)) {
+      return "";
+    }
+    const reason =
+      requested === "access"
+        ? "The Access tab needs Installation administration, which your access does not include."
+        : requested === "repositories" || requested === "credentials"
+          ? `The ${requested === "credentials" ? "Credentials" : "Repositories"} tab is on the version draft only.`
+          : requested === "logs"
+            ? "The Logs tab is on deployed versions only."
+            : `This Agent has no “${requested.slice(0, 40)}” tab.`;
+    return `${reason} Showing Configuration.`;
+  }
+  const tabNotice = statusBlock("info", null, null, [], {
+    className: "agent-tab-notice",
+    role: "status",
+  });
+  function showTabNotice(text: string) {
+    if (text === "") {
+      cancelAnnouncement(tabNotice);
+      tabNotice.textContent = "";
+    } else {
+      setAnnouncedText(tabNotice, text);
+    }
+    tabNotice.hidden = text === "";
+  }
+  showTabNotice(unavailableTabNotice(tab));
+  // Set when a Logs read is refused after the same read succeeded: the caller's access changed,
+  // so tab changes read the page again instead of showing tabs built from earlier reads
+  // (finding 2550).
+  let accessChanged = false;
   let deployInFlight = false;
   // The draft holds below are declared before a deleting Agent's early return: ← Agents and the
   // reload check read them on that page too (finding 2125).
@@ -1389,7 +1424,7 @@ export async function renderAgentDetail(
   };
   tabs.addEventListener("scroll", fadeTabEdges, { passive: true });
   versionSummary.append(detailHeading, versionEvidence);
-  detailPane.append(tabs, content);
+  detailPane.append(tabs, tabNotice, content);
   const nativeAdmin = renderNativeAdminAccess(context, path, () =>
     latestPermissionsRead.then((permissions) => permissions?.administer),
   );
@@ -1419,6 +1454,27 @@ export async function renderAgentDetail(
   const revealed = new Promise<void>((resolve) => {
     markRevealed = resolve;
   });
+  // Set while the page replaces its own address after an unavailable tab link: that navigation
+  // keeps the shown Configuration and its note instead of rebuilding the page.
+  let normalizingTabLink = false;
+  if (!tabNotice.hidden) {
+    void revealed.then(() => {
+      if (!context.isCurrent() || deleting || tabNotice.hidden || selectedTab !== "configuration") {
+        return;
+      }
+      // The note was written before the page was on screen: write it again so screen readers
+      // announce it.
+      announceAfterShown(tabNotice, tabNotice.textContent ?? "");
+      // The address drops the unavailable tab, so a reload or a shared link does not repeat the
+      // note (finding 2567).
+      normalizingTabLink = true;
+      try {
+        context.navigate(target(selected, "configuration"), namespaceId, true);
+      } finally {
+        normalizingTabLink = false;
+      }
+    });
+  }
   // A Logs entry that scrolls to its output also waits for that output (within the same bound)
   // and scrolls in the frame that reveals the page, never at the top first (finding 1552).
   let revealHold: Promise<void> | null = null;
@@ -3693,6 +3749,9 @@ export async function renderAgentDetail(
             renderLatestDeployment();
           }
         },
+        onAccessChanged: () => {
+          accessChanged = true;
+        },
       });
       content.append(logs.section);
       state.loading = false;
@@ -5298,6 +5357,9 @@ export async function renderAgentDetail(
       return false;
     }
     if (nextRevision === selected && nextTab === selectedTab) {
+      if (normalizingTabLink) {
+        return true;
+      }
       // The page's own reloads (a retry, a draft re-read) rebuild it: a share waits for them too.
       if (!sharingWrite) {
         return false;
@@ -5313,11 +5375,12 @@ export async function renderAgentDetail(
       }
       return "blocked";
     }
-    if (nextRevision !== selected) {
+    if (nextRevision !== selected || accessChanged) {
       return false;
     }
     const linked = takeLinkedVersionView(linkedKey(nextRevision, nextTab));
     selectedTab = nextTab;
+    showTabNotice(unavailableTabNotice(requestedTab));
     // A Logs visit may have just been denied: the recovery stops offering its Logs link.
     if (!recovery.section.hidden) {
       renderLatestDeployment();

@@ -454,6 +454,7 @@ test("console browser flow keeps Namespace URL state across global pages and log
       "GET /console/agents/deployment-diagnostics.mjs",
       "GET /console/agents/deployment-evidence.mjs",
       "GET /console/agents/deployment-recovery.mjs",
+      "GET /console/deployment-failure-steps.mjs",
       `GET /namespaces/${alpha.id}/agents/${alphaAgent.id}/permissions`,
       `GET /namespaces/${alpha.id}/agents/${alphaAgent.id}/revisions`,
       `GET /namespaces/${beta.id}/agents/${betaAgent.id}/permissions`,
@@ -652,7 +653,9 @@ test("console ignores stale collection successes and errors while switching Name
 // a Refresh in both the header and the panel, and "Namespaces remain available in navigation"
 // (finding 2371). The panel now says it once and leaves Refresh to the header. A bookmarked link
 // that names a Namespace (a member whose only grant was revoked) said "Choose another Namespace."
-// beside a disabled selector; it now points at the same Refresh (finding 2393).
+// beside a disabled selector; it now points at the same Refresh (finding 2393). This sign-in
+// never listed the bookmarked Namespace, so the panel does not say access was lost (finding
+// 2550).
 test("Agents with no readable Namespace names it once and keeps one Refresh", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -674,7 +677,7 @@ test("Agents with no readable Namespace names it once and keeps one Refresh", as
     [
       `/console/agents?namespace=${granted.id}`,
       "Namespace unavailable",
-      "This Namespace is missing or you no longer have access, and you cannot read any other Namespace. Ask an administrator to grant you access to one, then Refresh.",
+      "This Namespace is missing or not shared with you, and you cannot read any other Namespace. Ask an administrator to grant you access to one, then Refresh.",
       "Unavailable",
     ],
     // An Agent bookmark in that Namespace kept the Agent page's header above the panel: the
@@ -683,7 +686,7 @@ test("Agents with no readable Namespace names it once and keeps one Refresh", as
     [
       `/console/agents/${agent.id}?namespace=${granted.id}`,
       "Namespace unavailable",
-      "This Namespace is missing or you no longer have access, and you cannot read any other Namespace. Ask an administrator to grant you access to one, then Refresh.",
+      "This Namespace is missing or not shared with you, and you cannot read any other Namespace. Ask an administrator to grant you access to one, then Refresh.",
       "Unavailable",
     ],
   ]) {

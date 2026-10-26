@@ -120,6 +120,14 @@ const CONSOLE_ASSETS = new Map([
       contentType: "text/javascript; charset=utf-8",
     },
   ],
+  // The Console offers each failed deployment's next step from OCC's own table.
+  [
+    "/console/deployment-failure-steps.mjs",
+    {
+      path: new URL("../../../packages/occ/src/deployment-failure-steps.ts", import.meta.url),
+      contentType: "text/javascript; charset=utf-8",
+    },
+  ],
 ]);
 const CONSOLE_SHELL_ROUTES = new Set([
   "/console",

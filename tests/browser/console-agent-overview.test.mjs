@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { DELETION_POLL_MS } from "../../apps/controller/src/console/agents/deletion.mjs";
 import { FIRST_ACTIVITY_WAIT_MS } from "../../apps/controller/src/console/agents/detail.mts";
 import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/deployment-evidence.mts";
-import { deploymentFailureStep } from "../../apps/controller/src/console/agents/deployment-recovery.mts";
+import {
+  DEPLOYMENT_FAILURE_STEPS,
+  deploymentFailureStep,
+} from "../../apps/controller/src/console/deployment-failure-steps.mjs";
+import { AgentProvisioningStatusSchema } from "../../packages/contracts/src/api/resources.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { fileConsoleApp } from "../helpers/console-app.mjs";
 import {
@@ -1435,92 +1440,200 @@ for (const c of [
   }
 }
 
-// The banner reads each failure's next step from the API's own message, so the two stay in step:
-// a rewording that drops "Deploy again", or a step, fails here rather than silently changing the
-// banner (finding 1898).
-test("Every failed deployment message maps to its banner step", () => {
-  const deployAgain = [
-    "ACTOR_REVOKED",
-    "COMPUTE_DRIVER_MISMATCH",
-    "DEPENDENCY_UNAVAILABLE",
-    "HARNESS_DESCRIPTOR_MISMATCH",
-    "LEASE_EXPIRED",
-    "NAMESPACE_NOT_READY",
-    "REPOSITORY_BINDING_CHANGED",
-    "REPOSITORY_CREDENTIAL_DEADLINE_EXCEEDED",
-    "REPOSITORY_DRIVER_MISMATCH",
-  ];
-  // These name no step: the banner adds the generic logs advice.
-  const none = [
-    "AGENT_GATEWAY_UNAVAILABLE",
-    "KUBERNETES_API_UNAVAILABLE",
-    "SANDBOX_ADMISSION_LIMIT_REACHED",
-    "SANDBOX_GATEWAY_UNAVAILABLE",
-    "SANDBOX_HARNESS_UNSUPPORTED",
-    "SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED",
-    // The API's catch-all message.
-    "UNLISTED_FAILURE_CODE",
-  ];
-  const named = [
-    "AGENT_GATEWAY_UNAUTHORIZED",
-    "AUTHORIZATION_DENIED",
-    "BACKEND_UNAVAILABLE",
-    "CONVERGENCE_DEADLINE_EXCEEDED",
-    "CREDENTIAL_GATEWAY_MISMATCH",
-    "CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT",
-    "CREDENTIAL_SOURCE_UNAVAILABLE",
-    "CREDENTIAL_WITHDRAWN",
-    "HARNESS_AUTH_REQUIRED",
-    "HARNESS_AUTH_SOURCE_CHANGED",
-    "HARNESS_AUTH_SOURCE_UNAVAILABLE",
-    "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED",
-    "HARNESS_CREDENTIAL_BOOTSTRAP_TIMEOUT",
-    "REPOSITORY_BINDING_UNAVAILABLE",
-    "REPOSITORY_RUNTIME_UNSUPPORTED",
-    "RUNTIME_AUTHENTICATION_FAILED",
-    "RUNTIME_CPU_STARVED",
-    "RUNTIME_LOGIN_FAILED",
-    "RUNTIME_MODEL_PROBE_FAILED",
-    "RUNTIME_MODEL_PROBE_TIMEOUT",
-    "RUNTIME_STARTUP_FAILED",
-    "SANDBOX_GATEWAY_UNAUTHORIZED",
-    "SECRET_BINDING_UNAVAILABLE",
-    "SECRET_DRIVER_MISMATCH",
-    "SERVICE_ACCOUNT_BACKEND_MISMATCH",
-    "WORKSPACE_SETUP_REFUSED",
-    "WORKSPACE_SETUP_UNSUPPORTED",
-  ];
-  for (const [expected, codes] of [
-    ["deploy-again", deployAgain],
-    [null, none],
-    ["named", named],
-  ]) {
+// Codes the console shows as a neutral ending, not a failure (`agents/list.mts`), so they need no
+// step.
+const NEUTRAL_DEPLOYMENT_CODES = [
+  "REPOSITORY_REVISION_SUPERSEDED",
+  "REVISION_STOPPED",
+  "REVISION_SUPERSEDED",
+];
+// Older messages longer than the provisioning status cap (follow-up to finding 2571). A first
+// deployment's failure copies its message into that status. Remove a code once its text fits.
+const OVER_PROVISIONING_CAP = [
+  "AUTHORIZATION_DENIED",
+  "KUBERNETES_SECRET_WRITE_FORBIDDEN",
+  "REPOSITORY_DRIVER_MISMATCH",
+  "REPOSITORY_GIT_PROFILE_UNSUPPORTED",
+  "REPOSITORY_GIT_ROUTE_BLOCKED",
+  "REPOSITORY_GIT_SENDER_UNQUALIFIED",
+  "REPOSITORY_RUNTIME_UNSUPPORTED",
+  "RUNTIME_MODEL_PROBE_FAILED",
+  "RUNTIME_MODEL_PROBE_TIMEOUT",
+  "SANDBOX_GATEWAY_UNAUTHORIZED",
+  "WORKSPACE_SETUP_REFUSED",
+];
+
+// Every failed deployment code names its cause and a next step, and the banner chooses its actions
+// from OCC's step table, not from the message's words (findings 1898, 2537). The table lists each
+// code once, and every code the message switch handles is in it unless the console shows it as
+// neutral (finding 2572): a rewording that drops the step, or a new code missing from the table,
+// fails here.
+test("Every failed deployment code has its own message and next step", async () => {
+  const steps = {
+    "deploy-again": [
+      "ACTOR_REVOKED",
+      "AGENT_GATEWAY_UNAVAILABLE",
+      "COMPUTE_DRIVER_MISMATCH",
+      "DEPENDENCY_UNAVAILABLE",
+      "EXECUTION_ADMISSION_UNAVAILABLE",
+      "EXECUTION_ADMISSION_WITHDRAWN",
+      "HARNESS_AUTH_SOURCE_CHANGED",
+      "HARNESS_DESCRIPTOR_MISMATCH",
+      "INVALID_SECRET_BINDINGS",
+      "KUBERNETES_API_UNAVAILABLE",
+      "LEASE_EXPIRED",
+      "NAMESPACE_NOT_READY",
+      "REPOSITORY_BINDING_CHANGED",
+      "REPOSITORY_CREDENTIAL_DEADLINE_EXCEEDED",
+      "REPOSITORY_DRIVER_MISMATCH",
+      "REPOSITORY_EXECUTION_CHANGED",
+      "REPOSITORY_EXECUTION_CLOSED",
+      "REPOSITORY_EXECUTION_REPLACED",
+      "REPOSITORY_EXECUTION_UNVERIFIED",
+      "REPOSITORY_GIT_ROUTE_BLOCKED",
+      "REPOSITORY_PROXY_ADMISSION_MISMATCH",
+      "REPOSITORY_REVISION_STOPPED",
+      "REPOSITORY_SESSION_NO_LONGER_CURRENT",
+      "REPOSITORY_SESSION_RECOVERY_UNSAFE",
+      "SANDBOX_ADMISSION_LIMIT_REACHED",
+      "SANDBOX_GATEWAY_UNAVAILABLE",
+    ],
+    // The runtime ran: the banner keeps the Logs link, or says who can read the logs.
+    logs: [
+      "AGENT_GATEWAY_UNAUTHORIZED",
+      "CONVERGENCE_DEADLINE_EXCEEDED",
+      "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED",
+      "HARNESS_CREDENTIAL_BOOTSTRAP_TIMEOUT",
+      "INVALID_DRIVER_OBSERVATION",
+      "INVALID_REPOSITORY_DRIVER_OBSERVATION",
+      "RUNTIME_AUTHENTICATION_FAILED",
+      "RUNTIME_CPU_STARVED",
+      "RUNTIME_LOGIN_FAILED",
+      "RUNTIME_MODEL_PROBE_FAILED",
+      "RUNTIME_MODEL_PROBE_TIMEOUT",
+      "RUNTIME_STARTUP_FAILED",
+      "UNKNOWN_FAILURE",
+    ],
+    // A setting, grant or stored record must change first; no runtime logged anything.
+    change: [
+      "AUTHORIZATION_DENIED",
+      "BACKEND_UNAVAILABLE",
+      "CREDENTIAL_GATEWAY_MISMATCH",
+      "CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT",
+      "CREDENTIAL_SOURCE_UNAVAILABLE",
+      "CREDENTIAL_WITHDRAWN",
+      "EGRESS_PROVIDER_UNAVAILABLE",
+      "HARNESS_AUTH_REQUIRED",
+      "HARNESS_AUTH_SOURCE_UNAVAILABLE",
+      "INVALID_ACTIVE_REVISION",
+      "INVALID_ADMITTED_REVISION",
+      "INVALID_AGENT_PRINCIPAL",
+      "INVALID_HARNESS_AUTH",
+      "INVALID_REPOSITORY_ATTEMPT_OWNER",
+      "INVALID_REVISION_OWNER",
+      "INVALID_TARGET",
+      "KUBERNETES_SECRET_WRITE_FORBIDDEN",
+      "REPOSITORY_BINDING_UNAVAILABLE",
+      "REPOSITORY_GIT_PROFILE_UNSUPPORTED",
+      "REPOSITORY_GIT_SENDER_UNQUALIFIED",
+      "REPOSITORY_PREPARED_ADMISSION_UNAVAILABLE",
+      "REPOSITORY_RUNTIME_UNSUPPORTED",
+      "REPOSITORY_STANDING_APPROVAL_REMOVED",
+      "REPOSITORY_STANDING_POLICY_CHANGED",
+      "SANDBOX_GATEWAY_UNAUTHORIZED",
+      "SANDBOX_HARNESS_UNSUPPORTED",
+      "SANDBOX_REPOSITORY_RECIPIENT_UNVERIFIED",
+      "SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED",
+      "SECRET_BINDING_UNAVAILABLE",
+      "SECRET_DRIVER_MISMATCH",
+      "SERVICE_ACCOUNT_BACKEND_MISMATCH",
+      "WORKSPACE_SETUP_REFUSED",
+      "WORKSPACE_SETUP_UNSUPPORTED",
+    ],
+  };
+  assert.deepEqual(
+    Object.keys(DEPLOYMENT_FAILURE_STEPS).sort(),
+    Object.values(steps).flat().sort(),
+  );
+  // The codes OCC's message switch handles (`deploymentErrorMessage` in controller-work.ts).
+  const source = await readFile(
+    new URL("../../packages/occ/src/state/controller-work.ts", import.meta.url),
+    "utf8",
+  );
+  const start = source.indexOf("function deploymentErrorMessage(");
+  const body = source.slice(start, source.indexOf("    default:", start));
+  const handled = [...body.matchAll(/case "([A-Z0-9_]+)":/gu)].map((match) => match[1]);
+  assert.ok(handled.length > NEUTRAL_DEPLOYMENT_CODES.length, "message switch found");
+  assert.deepEqual(
+    handled.filter((code) => !NEUTRAL_DEPLOYMENT_CODES.includes(code)).sort(),
+    Object.keys(DEPLOYMENT_FAILURE_STEPS).sort(),
+  );
+  // A failed first deployment copies its message into the provisioning status, whose schema caps
+  // error.message (finding 2571).
+  const cap = AgentProvisioningStatusSchema.properties.error.properties.message.maxLength;
+  const fallback = persistedDeploymentError("UNLISTED_FAILURE_CODE").message;
+  for (const [step, codes] of Object.entries(steps)) {
     for (const code of codes) {
+      assert.equal(deploymentFailureStep(code), step, code);
       const { message } = persistedDeploymentError(code);
-      assert.equal(deploymentFailureStep(message), expected, `${code}: ${message}`);
+      // Each code has its own text: the cause, then a step (at least two sentences).
+      assert.notEqual(message, fallback, code);
+      assert.equal(
+        message.length > cap,
+        OVER_PROVISIONING_CAP.includes(code),
+        `${code}: ${message.length}`,
+      );
+      assert.ok(message.split(/[.:;] /u).length >= 2, `${code}: ${message}`);
+      assert.doesNotMatch(message, /reconciliation failed/u, code);
+      // The banner offers Deploy again for these, so the text says to deploy again too.
+      if (step === "deploy-again") {
+        assert.match(message, /\b(?:deploy again|deploy a new version)\b/iu, `${code}: ${message}`);
+      }
     }
   }
-  assert.equal(deploymentFailureStep(""), null);
-  assert.equal(deploymentFailureStep(undefined), null);
+  // An unlisted code keeps the logs step its fallback text names.
+  assert.equal(deploymentFailureStep("UNLISTED_FAILURE_CODE"), "logs");
+  assert.match(fallback, /\blogs\b/u);
+  assert.equal(deploymentFailureStep(undefined), "logs");
 });
 
-// A message that names no step keeps the generic advice after it.
-test("A failed deployment's banner keeps the logs advice when the message names no step", async (t) => {
-  const { fixture, namespace, agent, page } = await agentPage(t, "No step", "No Step Agent");
-  const revision = await fixture.deployAgent(namespace.id, agent.id);
-  await routeFailedRecord(page, fixture, namespace, agent, revision, "AGENT_GATEWAY_UNAVAILABLE");
+// Codes that read "Deployment reconciliation failed." and got the generic logs advice before
+// finding 2537: the banner shows the code's own step, offers Deploy again only where deploying
+// again can help, and adds no logs advice to a failure that no runtime logged.
+for (const c of [
+  { code: "EXECUTION_ADMISSION_UNAVAILABLE", deployAgain: true },
+  { code: "INVALID_REVISION_OWNER", deployAgain: false },
+]) {
+  test(`A failed deployment's banner shows the ${c.code} step without logs advice`, async (t) => {
+    const { fixture, namespace, agent, page } = await agentPage(t, `Step ${c.code}`, "Step Agent");
+    const revision = await fixture.deployAgent(namespace.id, agent.id);
+    await routeFailedRecord(page, fixture, namespace, agent, revision, c.code);
 
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
-  const recovery = page.getByRole("region", { name: "Deployment needs attention" });
-  await recovery
-    .getByText(
-      `v1 did not deploy successfully (AGENT_GATEWAY_UNAVAILABLE). ${persistedDeploymentError("AGENT_GATEWAY_UNAVAILABLE").message} Check the failed version’s logs before deploying a new version.`,
-      { exact: true },
-    )
-    .waitFor();
-  await recovery.getByRole("link", { name: "Open v1 Logs" }).waitFor();
-  assert.equal(await recovery.getByRole("link", { name: "Deploy again" }).count(), 0);
-});
+    await login(
+      page,
+      fixture,
+      new URL(`/console/agents/${agent.id}?namespace=${namespace.id}`, fixture.origin),
+    );
+    const recovery = page.getByRole("region", { name: "Deployment needs attention" });
+    const { message } = persistedDeploymentError(c.code);
+    await recovery
+      .getByText(`v1 did not deploy successfully (${c.code}). ${message}`, { exact: true })
+      .waitFor();
+    if (c.deployAgain) {
+      const again = recovery.getByRole("link", { name: "Deploy again", exact: true });
+      await again.waitFor();
+      assert.equal(await again.getAttribute("class"), "button button--primary");
+    } else {
+      // The actions render together; with Logs shown, a Deploy again would be too.
+      await recovery.getByRole("link", { name: "Open v1 Logs" }).waitFor();
+      assert.equal(await recovery.getByRole("link", { name: "Deploy again" }).count(), 0);
+    }
+    assert.equal(
+      await recovery.getByText("before deploying a new version", { exact: false }).count(),
+      0,
+    );
+  });
+}
 
 // A draft whose Configuration this caller cannot read builds no Deploy new version, so Deploy
 // again would lead nowhere and push the usable Logs link down.

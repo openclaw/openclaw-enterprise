@@ -86,7 +86,12 @@ Deployment failure remains terminal. Terminal preparation errors retain
 `error.data.preparation` under schema limits (identities, reasons, scheduling, exits, timestamps),
 excluding raw output and credentials.
 
-Errors have fixed codes, messages, and allowlisted `error.data`.
+Errors have fixed codes, messages, and allowlisted `error.data`. Each message
+names the cause and the next step. The console offers **Deploy again** only for
+codes that a new deployment can clear, such as `DEPENDENCY_UNAVAILABLE` or
+`EXECUTION_ADMISSION_UNAVAILABLE`. A version stored inconsistently
+(`INVALID_TARGET`, `INVALID_REVISION_OWNER`, `INVALID_ADMITTED_REVISION`,
+`INVALID_ACTIVE_REVISION`) has no runtime logs; ask an Installation administrator.
 `CONVERGENCE_DEADLINE_EXCEEDED` data includes `timeoutMs` and optional
 `runtimeFailure` (`component`, `check`, `checkedAt`, `code`) from that version
 (unknown values read `UNRECOGNIZED`); missing evidence leaves the cause
