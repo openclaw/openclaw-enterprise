@@ -31,11 +31,13 @@ import {
   setText,
   statusBlock,
   validateFields,
+  requestIdText,
+  withRequestId,
 } from "../dom.mjs";
 import { WORKSPACE_DEFAULTS, WORKSPACE_DEFAULTS_ID } from "../workspace-defaults.mjs";
 import { configuredHarnessId, harnessAuthDescription } from "./harness-auth.mjs";
 import { type DeviceLogin, createDeviceLogin } from "./device-login.mjs";
-import { AGENT_CREATE_DENIED, askAdministratorTo } from "./access-reasons.mjs";
+import { AGENT_CREATE_DENIED, askAdministratorTo, notIncluded } from "./access-reasons.mjs";
 import { createRepositoryFields } from "./repositories.mjs";
 import { ensureCredentialOperateBinding, secretOperateAnswer } from "./credential-access.mjs";
 import {
@@ -62,8 +64,10 @@ import {
   NAMESPACE_MISSING,
   NAMESPACE_RECHECK_MS,
   namespaceCreation,
+  namespaceListNeed,
   namespacePath,
   preAdmissionRefusal,
+  readFailure,
   rejectionMessage,
 } from "./list.mjs";
 
@@ -337,6 +341,26 @@ function credentialRegistrationResult(
     throw new Error("The response did not identify the requested credential registration.");
   }
   return { id, state };
+}
+
+// Why removing a failed credential registration failed and the next step (finding 2538): a
+// refusal names its grant (DELETE authorizes credential source delete on the source), and only
+// an unanswered request suggests the Credential Gateway was unavailable.
+function credentialRemovalFailure(cause: unknown) {
+  const { status } = requestFailure(cause);
+  if (status === 403) {
+    return notIncluded("removing this credential registration", "credential source delete on it");
+  }
+  if (status === 404) {
+    return "This credential registration is no longer available. Select Check credential registration.";
+  }
+  if (status === 400 || status === 409 || status === 429) {
+    return `The failed credential registration was not removed. ${describeFailure(cause, {
+      mutation: true,
+      next: "Select Check credential registration, then try again.",
+    })}`;
+  }
+  return "The failed credential registration could not be removed: the Credential Gateway did not confirm it. Retry removal when the Credential Gateway is available.";
 }
 
 function createClientRequestId() {
@@ -1811,7 +1835,12 @@ function renderAgentForm(
       }
     } catch (error) {
       if (context.isCurrent()) {
-        feedback.textContent = message(error);
+        // The list checks Namespace read, like the other Namespace lists (finding 2538).
+        feedback.textContent = readFailure(
+          "Credential registrations",
+          error,
+          namespaceListNeed("credential sources"),
+        );
       }
     } finally {
       if (context.isCurrent()) {
@@ -1843,7 +1872,7 @@ function renderAgentForm(
           "Failed credential registration removed. Select Create Agent to retry with the saved model Secret.";
       } catch (error) {
         if (context.isCurrent()) {
-          feedback.textContent = `${message(error)} Retry removal when the Credential Gateway is available; the model Secret remains saved.`;
+          feedback.textContent = `${credentialRemovalFailure(error)} The model Secret remains saved.`;
         }
       } finally {
         if (context.isCurrent()) {
@@ -3092,7 +3121,7 @@ function renderAgentForm(
       } else {
         detail = followableRefusal(createRefusal(cause, mutationStarted));
       }
-      const feedbackText = detail + (error.requestId ? ` Request ID: ${error.requestId}` : "");
+      const feedbackText = withRequestId(detail, error.requestId);
       // A job that ended keeps its final status (none once it failed: the error line says so);
       // any other progress line spoke for the request that just ended (finding 1490).
       if (!terminal) {
@@ -3386,7 +3415,7 @@ function renderAgentForm(
           refusedInConfiguration = showChannelBindingRefusal(error);
           feedback.textContent = refusedInConfiguration
             ? ""
-            : detail + (failure.requestId ? ` Request ID: ${failure.requestId}` : "");
+            : withRequestId(detail, failure.requestId);
           // While the pressed control is still disabled, as after a save.
           focusFeedbackLine(feedback);
           if (nameTaken) {
@@ -3656,7 +3685,8 @@ function renderAgentForm(
         context.onExpired();
         return;
       }
-      const registrationProblem = error.status && error.status >= 400 ? ` ${message(cause)}` : "";
+      const registrationProblem =
+        error.status && error.status >= 400 ? ` ${describeFailure(cause, { mutation: true })}` : "";
       // A refused grant on a saved Agent shows this text only to an Installation administrator (a
       // member sees MEMBER_GRANT_REFUSED below), so its denial names nobody to ask (finding 2113).
       const detail = credentialRegistration
@@ -3716,7 +3746,7 @@ function renderAgentForm(
         ? ""
         : (memberGrantRefused ? MEMBER_GRANT_REFUSED : detail) +
           guidance +
-          (error.requestId ? ` Request ID: ${error.requestId}` : "");
+          (error.requestId ? ` ${requestIdText(error.requestId)}` : "");
       focusFeedbackLine(feedback);
       // A create that raced another Agent to the name (the preflight checked it).
       if (!savedAgent && error.status === 409 && error.serverMessage === AGENT_NAME_CONFLICT) {

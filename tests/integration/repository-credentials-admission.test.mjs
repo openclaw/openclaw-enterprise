@@ -53,9 +53,11 @@ import {
   BROKER_PROXY_LOCAL_BINDING,
   BROKER_PROXY_MODE,
   COMPUTE_REPOSITORY_UNSUPPORTED,
+  CREDENTIAL_PROXY_INSTALLATION_ACCESS,
   DEPENDENCY_UNAVAILABLE,
   REPOSITORY_ACCESS_OR_BINDINGS,
   REPOSITORY_SELECTION_NOT_APPROVED,
+  SAVED_REPOSITORY_SELECTION_NOT_APPROVED,
   sentIdHidden,
 } from "../helpers/refusal-text.mjs";
 
@@ -743,6 +745,14 @@ test("Installation-wide repository access refuses other bindings at save, as dep
   const installation = { repositoryRef: "installation", profile: "github-installation" };
   const sole = await f.createAgent({ repositoryBindings: [installation] });
   assert.deepEqual(sole.repositoryBindings, [installation]);
+  // Installation-wide access needs a Credential Proxy, which this Installation does not select:
+  // an Installation property, so deploy names it in a 409 instead of a generic 503 (finding 2536).
+  await f.prepareDeployment(sole);
+  const unprotected = await f.request("POST", `${f.collection}/${sole.id}/deploy`);
+  assert.equal(unprotected.status, 409, JSON.stringify(unprotected));
+  assert.equal(unprotected.error.code, "RESOURCE_CONFLICT");
+  assert.equal(unprotected.error.message, CREDENTIAL_PROXY_INSTALLATION_ACCESS);
+  assert.deepEqual((await f.request("GET", `${f.collection}/${sole.id}/revisions`)).data, []);
   const agent = await f.createAgent({ repositoryBindings: selection });
   const path = `${f.collection}/${agent.id}`;
   const before = (await f.request("GET", f.collection)).data;
@@ -1000,10 +1010,17 @@ test("Deploy rechecks repository policy after a draft was accepted", async (t) =
   replacement.repositories[0].namespaces[0].profiles = ["git-read"];
   const reconfigured = await f.compose(replacement);
   const path = `${f.collection}/${agent.id}`;
-  const deployed = await reconfigured.request("POST", `${path}/deploy`);
-  assert.equal(deployed.status, 400, JSON.stringify(deployed));
-  assert.equal(deployed.error.code, "INVALID_REQUEST");
-  assert.equal(deployed.error.message, REPOSITORY_SELECTION_NOT_APPROVED);
+  // The request sends no selections: the saved ones are refused as saved state, a 409, both by
+  // deploy and by the standing approval review that reads them (finding 2536).
+  for (const [method, suffix] of [
+    ["POST", "/deploy"],
+    ["GET", "/repository-approval-scopes"],
+  ]) {
+    const refused = await reconfigured.request(method, `${path}${suffix}`);
+    assert.equal(refused.status, 409, `${suffix}: ${JSON.stringify(refused)}`);
+    assert.equal(refused.error.code, "RESOURCE_CONFLICT", suffix);
+    assert.equal(refused.error.message, SAVED_REPOSITORY_SELECTION_NOT_APPROVED, suffix);
+  }
   assert.deepEqual((await reconfigured.request("GET", `${path}/revisions`)).data, []);
   const unchanged = (await reconfigured.request("GET", path)).data;
   assert.deepEqual(unchanged.repositoryBindings, selection);
@@ -1026,14 +1043,14 @@ test("Repository refusals wait for the Agent grant: a missing and an unreadable 
     configurationId: f.configuration.id,
     repositoryBindings: [{ repositoryRef: "missing" }],
   };
-  for (const [method, suffix, body] of [
-    ["PATCH", "", refusedSave],
-    ["POST", "/deploy", undefined],
+  for (const [method, suffix, body, status, message] of [
+    ["PATCH", "", refusedSave, 400, REPOSITORY_SELECTION_NOT_APPROVED],
+    ["POST", "/deploy", undefined, 409, SAVED_REPOSITORY_SELECTION_NOT_APPROVED],
   ]) {
     // The same request from the administrator meets the named refusal.
     const named = await reconfigured.request(method, `${f.collection}/${agent.id}${suffix}`, body);
-    assert.equal(named.status, 400, JSON.stringify(named));
-    assert.equal(named.error.message, REPOSITORY_SELECTION_NOT_APPROVED);
+    assert.equal(named.status, status, JSON.stringify(named));
+    assert.equal(named.error.message, message);
     const answers = [];
     for (const id of [agent.id, missing]) {
       const response = await outsider(method, `${f.collection}/${id}${suffix}`, body);
@@ -1046,7 +1063,30 @@ test("Repository refusals wait for the Agent grant: a missing and an unreadable 
     assert.equal(answers[0].status, 403, JSON.stringify(answers[0]));
     assert.deepEqual(answers[1], answers[0], `${method} ${suffix}`);
   }
+  // Agent create names the refusal only after the Namespace grant: an outsider gets the same
+  // answer for this Namespace and for one that does not exist.
+  const refusedCreate = { name: "Refused Agent", ...refusedSave };
+  const named = await reconfigured.request("POST", f.collection, refusedCreate);
+  assert.equal(named.status, 400, JSON.stringify(named));
+  assert.equal(named.error.message, REPOSITORY_SELECTION_NOT_APPROVED);
+  await assertNamespaceAnswersAlike(outsider, f.namespace.id, "", refusedCreate);
 });
+
+// An outsider's request to an existing Namespace and to a missing one gets the same answer, each
+// answer's own Namespace ID hidden: a refusal after the grant says nothing about existence.
+async function assertNamespaceAnswersAlike(outsider, namespaceId, suffix, body) {
+  const answers = [];
+  for (const id of [namespaceId, `ns_${randomUUID()}`]) {
+    const response = await outsider("POST", `/namespaces/${id}/agents${suffix}`, body);
+    answers.push({
+      status: response.status,
+      code: response.error.code,
+      message: sentIdHidden(response.error.message, id),
+    });
+  }
+  assert.equal(answers[0].status, 403, JSON.stringify(answers[0]));
+  assert.deepEqual(answers[1], answers[0], `POST agents${suffix}`);
+}
 
 test("Unsupported Compute refuses repository deployment while ordinary deployment remains optional", async (t) => {
   const f = await fixture(t, { compute: sshCompute() });
@@ -1441,6 +1481,16 @@ test("Provisioning rejects a forbidden repository profile before queueing or cre
   assert.equal(response.error.code, "INVALID_REQUEST");
   assert.equal(response.error.message, REPOSITORY_SELECTION_NOT_APPROVED);
   assert.deepEqual((await f.request("GET", f.collection)).data, []);
+  // The refusal follows the Namespace's provisioning grants (finding 2536).
+  await assertNamespaceAnswersAlike(
+    await f.requestWithoutGrants(f.app),
+    f.namespace.id,
+    "/provision",
+    {
+      ...body,
+      requestId: `req_${randomUUID()}`,
+    },
+  );
 });
 
 // Finding 1145: the provisioning request answers the 409 Agent create gives for repository

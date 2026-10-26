@@ -9,7 +9,11 @@ import {
 } from "../helpers/postgres-protected-scenarios.mjs";
 import { receipts as installedReceipts } from "../helpers/egress-custody-observations.mjs";
 import { captureMetadata } from "../helpers/github-metadata-exchange.mjs";
-import { credentialSourceFieldRequired } from "../helpers/refusal-text.mjs";
+import {
+  credentialSourceFieldRequired,
+  PROTECTED_SOURCE_ROTATE_REFUSED,
+  PROTECTED_SOURCE_UPDATE_REFUSED,
+} from "../helpers/refusal-text.mjs";
 
 // Acts as the enrolled supervisor on genuine TLS gRPC; exercises real API, IAM, HTTP origin and
 // PostgreSQL dispatch + recovery. Supplier custody and network enforcement need the installed suite.
@@ -69,6 +73,17 @@ test(
         }
         assert.equal(source.egress.adoption, "credential_free");
         assert.deepEqual(source.secrets, {});
+        // Its grant was admitted once, at create: an update or rotation cannot change it, and
+        // the caller who may change the source is told to replace it (finding 2536).
+        for (const [method, suffix, options, message] of [
+          ["PATCH", "", { body: {} }, PROTECTED_SOURCE_UPDATE_REFUSED],
+          ["POST", "/rotate", {}, PROTECTED_SOURCE_ROTATE_REFUSED],
+        ]) {
+          const refused = await app.request(method, `${path}/${source.id}${suffix}`, options);
+          assert.equal(refused.status, 409, `${method}: ${JSON.stringify(refused.body)}`);
+          assert.equal(refused.body.error.code, "RESOURCE_CONFLICT", method);
+          assert.equal(refused.body.error.message, message, method);
+        }
         return bindRuntimeSource(app, namespace, agent, source);
       },
     });

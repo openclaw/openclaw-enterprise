@@ -24,6 +24,7 @@ import {
 } from "./access-reasons.mjs";
 import {
   describeFailure,
+  NAMESPACE_NOT_READY_MESSAGE,
   explainedConflict,
   message,
   namespaceListNeed,
@@ -864,8 +865,7 @@ export function createSecretReferenceField({
           feedback.textContent =
             "Secret creation outcome could not be confirmed. Refresh before trying again.";
         } else if (status === 409 && code === "NAMESPACE_NOT_READY") {
-          feedback.textContent =
-            "This Namespace is not ready, so it cannot store Secrets yet. Check its status on the Namespaces page: a provisioning Namespace becomes ready when its Kubernetes setup completes (on Kubernetes installs, after an operator grants the tenant RoleBindings).";
+          feedback.textContent = NAMESPACE_NOT_READY_MESSAGE;
         } else if (status === 409 && explainedConflict(cause) !== undefined) {
           // A typed conflict names the state that refused the create.
           feedback.textContent = describeFailure(cause, { mutation: true });

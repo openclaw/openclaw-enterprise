@@ -16,6 +16,7 @@ import {
   message,
   neutralDeploymentOutcome,
   outcomeLabel,
+  readFailureReason,
 } from "./list.mjs";
 import { pluginWarningText } from "./plugins.mjs";
 
@@ -81,9 +82,10 @@ function runtimeFailureCauseText(cause: RuntimeFailureCause) {
   if (cause.kind === "PROBE_STATUS" && (detail === "rate_limit" || detail === "billing")) {
     return PROBE_STATUS_DETAIL_TEXT[detail] + retry;
   }
+  // A kind this console does not know gets a sentence, not its raw code (finding 2538).
   const label = Object.hasOwn(RUNTIME_FAILURE_CAUSE_LABELS, cause.kind)
     ? RUNTIME_FAILURE_CAUSE_LABELS[cause.kind]
-    : cause.kind;
+    : "The runtime check failed";
   if (!detail) {
     return label;
   }
@@ -333,6 +335,8 @@ export function createDeploymentStatusPanel(
   let record: Deployment | null = null;
   let error: unknown = null;
   let overviewUnavailable = false;
+  // The refused or failed overview read, when one was, so its text says why (finding 2538).
+  let overviewError: unknown = null;
   // Tallest the details have been since a deploy was seen pending; see reserveHeight().
   let reservedHeight: number | null = null;
   const heightObserver =
@@ -378,6 +382,7 @@ export function createDeploymentStatusPanel(
     polling = poll;
     error = null;
     overviewUnavailable = false;
+    overviewError = null;
     render();
     try {
       const [statusResult, agentResult, revisionsResult] = await Promise.allSettled([
@@ -418,6 +423,10 @@ export function createDeploymentStatusPanel(
           }
         } else {
           overviewUnavailable = true;
+          overviewError =
+            [agentResult, revisionsResult].find(
+              (result): result is PromiseRejectedResult => result.status === "rejected",
+            )?.reason ?? null;
         }
       }
     } catch (cause) {
@@ -561,7 +570,11 @@ export function createDeploymentStatusPanel(
             statusBlock(
               "danger",
               null,
-              "Current version and version history could not be refreshed. Use the page Refresh control to retry.",
+              `Current version and version history could not be refreshed. ${
+                overviewError === null
+                  ? "Use the page Refresh control to retry."
+                  : readFailureReason(overviewError)
+              }`,
             ),
           ]
         : []),

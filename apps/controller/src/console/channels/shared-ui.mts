@@ -16,6 +16,7 @@ import {
   focusSaveOutcome,
   statusBlock,
   validateOnSubmit,
+  withRequestId,
 } from "../dom.mjs";
 import { renderSecretReference } from "../agents/secret-picker.mjs";
 import { carryList, carryValue } from "../carry.mjs";
@@ -239,7 +240,7 @@ function withPlugin(values: ChannelValues, provider: ChannelProvider) {
 function errorText(error: Record<string, unknown>) {
   const message =
     typeof error.message === "string" ? error.message : "Channel settings could not be saved.";
-  return message + (typeof error.requestId === "string" ? ` Request ID: ${error.requestId}` : "");
+  return withRequestId(message, typeof error.requestId === "string" ? error.requestId : undefined);
 }
 
 function renderCard(section: HTMLElement, state: ChannelState, provider: ChannelProvider) {

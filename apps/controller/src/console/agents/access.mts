@@ -7,6 +7,7 @@ import {
   setStatusTone,
   statusBlock,
   validateOnSubmit,
+  withRequestId,
 } from "../dom.mjs";
 import {
   type AgentAccessContext,
@@ -268,7 +269,7 @@ export function renderAgentAccess(
             : message(error, mutation);
     state.error += " Refresh sharing to inspect current policy before another change.";
     if (requestId) {
-      state.error += ` Request ID: ${requestId}`;
+      state.error = withRequestId(state.error, requestId);
     }
   }
 

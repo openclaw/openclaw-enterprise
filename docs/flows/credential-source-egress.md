@@ -72,8 +72,9 @@ upgrade all writers before admitting it. Qualify release and installed deny-all 
 Deploy refuses with 409 what cannot start: Git without a delivery profile in `admitProxyPlan`
 (`REPOSITORY_GIT_PROFILE_UNSUPPORTED`), bundled `git-write` in
 `apps/controller/src/drivers/egress-proxy/openshell.ts:assertRepositoryGitProfileAvailable`
-(`REPOSITORY_GIT_SENDER_UNQUALIFIED`), bindings the Proxy did not admit, and Agents without
-Git on a Git-only Proxy. Preparation repeats both Git refusals.
+(`REPOSITORY_GIT_SENDER_UNQUALIFIED`), bindings the Proxy did not admit, Agents without
+Git on a Git-only Proxy, and Installation limits (`CredentialProxyAdmissionError`).
+Preparation repeats both Git refusals.
 
 Compute passes Credential Proxy wiring to Sandbox provisioning. Protected sources
 require admission, API-key login, an exact plan source-key match and no Gateway

@@ -35,6 +35,7 @@ import {
   PostgresCommitOutcomeUnknownError,
   ResourceConflictError,
   ResourceStateConflictError,
+  RetryLaterError,
   ProtectedExecutionNetworkPolicyError,
   RepositoryBindingSelectionError,
   RepositoryGitProfileUnsupportedError,
@@ -839,6 +840,11 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
   }
   if (error instanceof CredentialSourceDriverError) {
     // A fixed message naming the fix; raised only after the source's grant and lookup.
+    return failure(503, "DEPENDENCY_UNAVAILABLE", error.message);
+  }
+  if (error instanceof RetryLaterError) {
+    // A fixed message naming the wait or the restart; raised only after the caller's grant and
+    // lookup (finding 2536).
     return failure(503, "DEPENDENCY_UNAVAILABLE", error.message);
   }
   if (isDependencyUnavailable(error)) {

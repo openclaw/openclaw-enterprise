@@ -7,6 +7,26 @@ apply when you upgrade from a source commit older than their date. Entries are
 newest first. Steps marked _untested_ have not been run against a real
 Installation.
 
+## 2026-10-24: OpenShell refuses OpenClaw Agents with several Sandbox ServiceAccounts
+
+**What breaks.** With the OpenShell Sandbox Driver, Agent save, deployment and
+provisioning refuse a dedicated OpenClaw Agent with `400` when
+`gateway.operatorWorkspaceResources` lists more than one ServiceAccount.
+Earlier builds admitted it and failed every new revision in workspace
+preparation, after its predecessors had stopped. The Installation's
+`openclaw.executionModes` now omits `dedicated` whenever these checks, or the
+`kubernetes.userNamespaces` check, refuse it. Codex Agents are unaffected.
+
+**Who is affected.** OpenShell Installations with several such ServiceAccounts
+and OpenClaw Agents; none of those Agents could deploy.
+
+**How to tell.** The refusal reads `Dedicated OpenClaw needs at most one
+ServiceAccount in gateway.operatorWorkspaceResources`, and Create Agent no
+longer offers Dedicated for OpenClaw.
+
+**Steps.** Keep one ServiceAccount in `gateway.operatorWorkspaceResources` and
+restart the controller, or switch the Agent to Codex.
+
 ## 2026-10-24: chart container resources are checked at render
 
 **What breaks.** `helm install` and `helm upgrade` refuse a `resources`,

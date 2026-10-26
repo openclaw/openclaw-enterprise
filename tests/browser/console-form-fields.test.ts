@@ -5,6 +5,7 @@ import type { Locator, Page } from "playwright";
 
 import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
 import {
+  CONSOLE_NAMESPACE_NOT_READY,
   RESOURCE_CONFLICT,
   SECRET_CREATE_DENIED,
   SECRET_NAME_CONFLICT,
@@ -607,10 +608,7 @@ for (const viewport of consoleViewports) {
     // The Secret API never answers 429: a rate limit in front of it (an ingress or proxy) does,
     // with its own page and no API envelope.
     const cases = [
-      [
-        apiErrorResponse(409, "NAMESPACE_NOT_READY", "refused"),
-        "This Namespace is not ready, so it cannot store Secrets yet.",
-      ],
+      [apiErrorResponse(409, "NAMESPACE_NOT_READY", "refused"), CONSOLE_NAMESPACE_NOT_READY],
       [apiErrorResponse(403, "FORBIDDEN", "refused"), SECRET_CREATE_DENIED],
       [proxyErrorResponse(429), "Too many requests. Wait before trying again."],
     ] as const;

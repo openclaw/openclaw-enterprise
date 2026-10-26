@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
@@ -11,6 +12,7 @@ import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs
 import { jsonLineDestination } from "../helpers/json-lines.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import { DEVICE_LOGIN_FAILED, sentIdHidden } from "../helpers/refusal-text.mjs";
 
 function jwt(payload) {
   return `${Buffer.from(JSON.stringify({ alg: "none" })).toString("base64url")}.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.synthetic`;
@@ -278,6 +280,30 @@ test("Console device login completes through the paired OpenShell Refresh Driver
   const interruptedPath = `${path}/${interrupted.data.session.id}/poll`;
   const failed = await fixture.request("POST", interruptedPath, { body: {} });
   assert.equal(failed.status, 503, JSON.stringify(failed.body));
+  // The 503 says the login was cancelled and to start a new one (finding 2536).
+  assert.equal(failed.body.error.message, DEVICE_LOGIN_FAILED);
+  assert.equal(exchanges, 2);
+  // It comes only after the caller's grants: a Namespace reader polling this login and a missing
+  // one gets the same denial, each request's own ID hidden.
+  const reader = await fixture.createNamespaceMember("device-login-reader", namespace.id, [
+    ["read", "namespace"],
+  ]);
+  const readerSession = await fixture.signIn(reader.credentials);
+  const sessionId = interrupted.data.session.id;
+  const answers = [];
+  for (const id of [sessionId, `${sessionId.slice(0, sessionId.indexOf("_"))}_${randomUUID()}`]) {
+    const denied = await fixture.request("POST", `${path}/${id}/poll`, {
+      session: readerSession,
+      body: {},
+    });
+    answers.push({
+      status: denied.status,
+      code: denied.body.error.code,
+      message: sentIdHidden(denied.body.error.message, id),
+    });
+  }
+  assert.equal(answers[0].status, 403, JSON.stringify(answers[0]));
+  assert.deepEqual(answers[1], answers[0]);
   assert.equal(exchanges, 2);
   const failedRecord = await fixture.controller.transact((unit) =>
     unit.secrets.findSecret(namespace.id, interrupted.data.session.id),

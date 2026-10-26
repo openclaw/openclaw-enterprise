@@ -341,7 +341,10 @@ The [OpenShell SandboxDriver](drivers/openshell-sandbox.md) requires Kubernetes 
   Namespace, the Namespace cannot accept new Agents, or a stopping Agent cannot
   accept the requested mutation. Also for a standing repository approval that
   blocks the change, and for repository bindings on a Compute Driver that cannot
-  deliver repository credentials; the message names the fix.
+  deliver repository credentials; the message names the fix. Deploy and the
+  repository approval scope read answer it when the saved repository selections
+  are no longer approved, and deploy when the Credential Proxy cannot start the
+  Agent.
 - `409 AGENT_DELETING`: The Agent is [deleting](#deletion) and rejects the
   mutation.
 - `409 NAMESPACE_NOT_READY`: The backing Namespace infrastructure is not ready
