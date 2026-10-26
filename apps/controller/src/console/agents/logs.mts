@@ -785,8 +785,6 @@ export function renderAgentLogs(
     updateFilterStatus();
   }
 
-  // The status is a live region: an unchanged count is not written again, so a Follow poll
-  // neither re-announces it nor touches rows the reader may have selected text in.
   function updateFilterStatus() {
     let text = "Filters search only the lines loaded in this view, not the whole container log.";
     if (hiddenLevels.size > 0 || filterInput.value.trim() !== "") {
@@ -795,12 +793,12 @@ export function renderAgentLogs(
       const shown = pane.querySelectorAll(":scope > [data-level]:not([hidden])").length;
       text = `Showing ${shown} of ${lines} loaded lines. ${text}`;
     }
-    if (filterStatus.textContent !== text) {
-      filterStatus.textContent = text;
-    }
+    filterStatus.textContent = text;
   }
 
   function appendRecords(records: readonly RuntimeLogRecord[]) {
+    // An empty Follow poll writes nothing: the filter status is a live region that would be
+    // announced again, and rows the reader selected text in stay as they are.
     if (records.length === 0) {
       return;
     }
