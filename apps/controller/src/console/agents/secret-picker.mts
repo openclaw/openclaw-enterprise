@@ -406,6 +406,9 @@ export function createSecretReferenceField({
   const labelNode = element("label", { for: id }, label);
   const metadataLink = credentialLink("#", metadataLabel);
   const secrets: SecretMetadata[] = [];
+  // Whether `secrets` holds the caller's readable list yet. Until it does, nothing is known to be
+  // unlisted, and the link stays as it was first drawn.
+  let secretsListed = false;
   // Set once a binding is staged, so a Secret list that arrives later keeps its hint.
   let staged = false;
   // Set while the hint describes the loaded Secret list, which follows the field's state.
@@ -476,15 +479,11 @@ export function createSecretReferenceField({
     return source && source.namespaceId === context.namespaceId ? source.id : null;
   }
 
-  // Only a Secret the caller's list includes gets the link: the Secrets page shows nothing for
-  // one they may not read (finding D757).
+  // A Secret the caller's list leaves out gets no link: the Secrets page shows nothing for one
+  // they may not read (finding D757).
   function updateMetadataLink() {
     const selectedSecretId = currentSecretId();
-    if (
-      !context.namespaceId ||
-      selectedSecretId === null ||
-      !secrets.some((secret) => secret.id === selectedSecretId)
-    ) {
+    if (!context.namespaceId || selectedSecretId === null || unlisted(selectedSecretId)) {
       metadataLink.hidden = true;
       metadataLink.removeAttribute("href");
       return;
@@ -497,9 +496,12 @@ export function createSecretReferenceField({
   // D757).
   function unlistedBinding() {
     const selectedSecretId = currentSecretId();
-    return selectedSecretId !== null && !secrets.some((secret) => secret.id === selectedSecretId)
+    return selectedSecretId !== null && unlisted(selectedSecretId)
       ? `${SECRET_UNLISTED} ${askForGrant("Secret read on it")}`
       : null;
+  }
+  function unlisted(secretId: string) {
+    return secretsListed && !secrets.some((secret) => secret.id === secretId);
   }
 
   function currentSecretLabel() {
@@ -1030,6 +1032,7 @@ export function createSecretReferenceField({
         // A Secret created or chosen while this read was pending is newer than the list.
         const added = secrets.filter((secret) => !listed.some((item) => item.id === secret.id));
         secrets.splice(0, secrets.length, ...listed, ...added);
+        secretsListed = true;
         setSecretOptions({ preserveSearch: true });
         if (!staged) {
           setStatusTone(status, null);

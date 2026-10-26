@@ -394,9 +394,10 @@ test("Agent creation stores its API key separately, grants exact access, and sav
     exact: true,
   });
   await boundSecret.waitFor();
+  // It opens the console Secrets page on that Secret, not the API path (finding D757).
   assert.equal(
     await boundSecret.getAttribute("href"),
-    `/namespaces/${namespace.id}/secrets/${secret.id}`,
+    `/console/secrets?namespace=${namespace.id}&secret=${secret.id}`,
   );
   const visibleConfiguration = await page.locator("body").textContent();
   assert.ok(visibleConfiguration !== null);

@@ -2480,24 +2480,28 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         namespaceId,
       };
       const [
-        update,
-        deploy,
-        operate,
-        remove,
-        // Native admin UI access authorizes Agent administer on the exact Agent, so the console
-        // skips its audited probe for a caller without it.
-        administer,
-        configurationUpdate,
-        configurationRead,
-        sandboxPolicyRead,
+        [
+          update,
+          deploy,
+          operate,
+          remove,
+          // Native admin UI access authorizes Agent administer on the exact Agent, so the console
+          // skips its audited probe for a caller without it.
+          administer,
+          configurationUpdate,
+          configurationRead,
+          sandboxPolicyRead,
+        ],
         readLogsDecision,
       ] = await Promise.all([
-        ...(["update", "deploy", "operate", "delete", "administer"] as const).map((action) =>
-          callerMay(context.actorId, action, target),
-        ),
-        callerMay(context.actorId, "update", configuration),
-        callerMay(context.actorId, "read", configuration),
-        callerMay(context.actorId, "read", sandboxPolicy),
+        Promise.all([
+          ...(["update", "deploy", "operate", "delete", "administer"] as const).map((action) =>
+            callerMay(context.actorId, action, target),
+          ),
+          callerMay(context.actorId, "update", configuration),
+          callerMay(context.actorId, "read", configuration),
+          callerMay(context.actorId, "read", sandboxPolicy),
+        ]),
         callerDecision(context.actorId, "read_logs", target),
       ]);
       // Log text authorizes Agent read_logs or, without a Restriction on read_logs, Agent
