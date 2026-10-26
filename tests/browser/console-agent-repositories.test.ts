@@ -19,10 +19,10 @@ import {
 } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
-  AGENT_READ,
   apiRequests,
   holdRequests,
   login,
+  MEMBER_WRITE,
   nativeValues,
   newPage,
   pathRequests,
@@ -616,11 +616,13 @@ test("Agent repository tab without a Repo Driver sends a member to an Installati
     "Member repository-less Agent",
     nativeValues("rm"),
   );
-  // repository-options for one Agent checks Agent update.
-  const member = await fixture.createNamespaceMember(`${agent.id}-editor`, namespace.id, [
-    ...AGENT_READ,
-    ["update", "agent"],
-  ]);
+  // The member-write persona: Agent update, which repository-options checks, and Secret operate,
+  // which saving the tab needs.
+  const member = await fixture.createNamespaceMember(
+    `${agent.id}-editor`,
+    namespace.id,
+    MEMBER_WRITE,
+  );
   const { page } = await newPage(t, fixture);
   await login(
     page,

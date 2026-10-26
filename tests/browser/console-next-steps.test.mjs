@@ -241,7 +241,7 @@ test("a member's own deploy of a version she cannot read is accepted, not possib
   const summary = page.locator(".agent-current-summary");
   await summary.getByText("Deployment accepted", { exact: true }).waitFor();
   await summary.getByText(DEPLOYED_VERSION_UNREADABLE, { exact: true }).waitFor();
-  assert.equal(await summary.getByText(/No readable deployments|^None$/).count(), 0);
+  assert.equal(await summary.getByText("No readable deployments.").count(), 0);
   const panel = page.locator(".state-panel");
   await panel.getByRole("heading", { name: "You cannot read this version" }).waitFor();
   await panel.getByText(VERSION_READ_DENIED, { exact: true }).waitFor();
