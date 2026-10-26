@@ -60,8 +60,9 @@ then discards tokens, expiry, and scope data. It performs no refresh, creates no
 repository grants, and gives no provider credentials to repository consumers or Agents.
 
 A new client ID requires reattachment under a new provider instance; then detach
-old methods by `methodId`. Secret rotation preserves enrollment and invalidates pending
-attempts.
+old methods by `methodId`. Sessions from the old instance end
+([session controls](#session-and-recovery-controls)). Secret rotation preserves enrollment
+and invalidates pending attempts.
 
 A human Installation administrator reads `GET /api/auth/accounts/:userId`
 ([requirements](#session-and-recovery-controls)). Its no-store response
@@ -156,7 +157,8 @@ deadline and refuse redirects.
 
 The GitHub App needs the organization permission **Members: read**, accepted by the owner of
 each listed organization, and an installation on each one. Members: read is read-only, and
-also lets the App's installation token list those organizations' members and teams.
+also lets the App's installation token list those organizations' members and teams. No OAuth
+scope is requested.
 
 | Outcome                                     | Audit `reasonCode`       | Console (`authReason`)   |
 | ------------------------------------------- | ------------------------ | ------------------------ |
@@ -168,7 +170,7 @@ numeric GitHub `subject`, a valid login returned by GitHub when available, and t
 Successful GitHub sign-ins and refusals after profile verification record the same identity
 fields. The login is diagnostic only; authorization uses the immutable subject. See
 [sign-in audit troubleshooting](../../guides/topics/audit-log.md#investigate-a-github-sign-in). The callback returns to
-`/console/?authError=github&authReason=<reason>`.
+`/console/?authError=github&authReason=<reason>`, and the Console explains the refusal.
 `MEMBERSHIP_UNAVAILABLE` covers a transport failure, the deadline, a redirect, an oversized or
 malformed answer, and any status other than `200` or `404`. It fails closed and logs
 `authentication.provider-unavailable-warning` with `step: membership`. A `403` there usually
@@ -279,8 +281,9 @@ Password reset and deletion remain deferred.
 
 These account and recovery routes need GitHub, Google or OIDC sign-in. In the
 password-only profile an authorized administrator receives
-`409 RESOURCE_CONFLICT` naming that requirement: that profile cannot disable an
-account or revoke its sessions online.
+`409 RESOURCE_CONFLICT` naming that requirement; the profile has no account
+version, disabled state, or session binding, so it cannot disable an account or
+revoke its sessions online. Enable an external provider to use these controls.
 
 Password sign-in has the password-only profile's
 [failure-counting limit](../authentication.md#session-lifecycle): only failed sign-ins

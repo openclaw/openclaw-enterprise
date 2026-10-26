@@ -53,7 +53,8 @@ configuration. Startup resolves and translates current curated metadata inside
 the Agent workload, so a retry or restart can resolve a later curated release
 for the same catalog ID. Kubernetes keeps the native OpenClaw installation
 registry in the Agent-owned state database; serialized gateway replacement
-prevents old and new versions from installing concurrently. Ordinary retirement removes old
+prevents old and new versions from installing concurrently. The Agent
+workspace keeps its existing lifecycle. Ordinary retirement removes old
 workload state but not the Agent-owned database.
 
 Failed catalog resolution, policy translation, integrity verification, or core
@@ -137,7 +138,8 @@ field; omitted fields inherit. The Driver validates unsupported fields and
 combinations even when the plugin or tool is disabled. To remove an override,
 replace the entry without that field.
 The former `native`, `prompt`, and `approve` approval values, top-level
-`approvalMode`, and category approval fields are not accepted.
+`approvalMode`, and category approval fields are not accepted. Reviewer `auto`
+is a distinct value.
 
 This example enables Diffs with tools disabled by default except its known
 `diffs` tool. Deploy after saving:
@@ -214,9 +216,10 @@ See [native mappings](drivers/plugin-bundled.md#native-mappings-and-limits).
 
 ### Verification boundary
 
-Source, schema, and fixture tests establish API and translation behavior; native
+Source, schema, and fixture tests establish API and translation behavior. Native
 runtime compatibility needs the opt-in Kubernetes proof in
-[Agent plugin testing](../testing/plugins.md).
+[Agent plugin testing](../testing/plugins.md): a real Agent turn, then a later
+deployment that disables or removes the selection and leaves another Agent unchanged.
 
 This page owns the nested plugin wire contract. The
 [generated API reference](api.md) summarizes routes and top-level schemas;
@@ -356,7 +359,9 @@ the candidate failed or unready without changing the earlier Agent write.
 
 Namespace plugin configuration, arbitrary catalogs, importing an owner's Codex
 configuration, plugin-specific settings/credential APIs, Code Mode, and new
-plugin permission restrictions are outside this feature. An approval setting does not grant filesystem access or isolate plugin code.
+plugin permission restrictions are outside this feature. Existing sandbox,
+network, filesystem, managed policy, and authorization controls remain in force.
+An approval setting does not grant filesystem access or isolate plugin code.
 
 ## Related documentation
 

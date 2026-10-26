@@ -68,7 +68,8 @@ provisioning check the same fields and answer `409 RESOURCE_CONFLICT` naming the
 provisioning returns fixed `409` text with the reason in the API log; deployment
 is admitted, then fails with `DEPENDENCY_UNAVAILABLE` and the reason in the
 worker's `worker.compute-prepare-failed` line. `trustedProxy.allowLoopback` must be omitted or false:
-loopback access uses the separate password, not proxy identity headers.
+loopback access uses the separate password, not proxy identity headers. Native
+required-header and device auto-approval settings serve separate purposes.
 
 Compute renders `gateway.bind: lan` when it is omitted or `auto`, as native
 container detection misses containerd on cgroup v2. Deployment/provisioning
@@ -87,6 +88,7 @@ Configured CIDRs must contain the proxy's
 source addresses and exclude untrusted sources. CIDRs do not authenticate a
 proxy: retain the exact Envoy NetworkPolicy peer, TLS verification, service-key
 authentication, and identity/header sanitization.
+Direct access still requires a trusted proxy or the operator loopback password.
 
 For Agent revisions with repository bindings, Compute grants credential-service egress to
 the embedded gateway/Harness or dedicated Codex Pod. The separate dedicated
@@ -250,7 +252,8 @@ the existing same-namespace gateway Service:
 - A prefix rule below that Agent path rewrites the prefix to `/` and retains
   the suffix for native UI assets, deep links, and WebSocket paths.
 
-OCC bounds proxy requests to the selected Agent base. See
+OCC bounds proxy requests to the selected Agent base. Public native UI browser
+traffic enters through OCC; Envoy and gateway Services remain private. See
 [Agent native admin UI](../../agent-native-admin.md#agent-host-identity).
 Namespaces receive the Gateway membership label used by `allowedRoutes`.
 Runtime-enabled dedicated versions receive a `/node` route and a

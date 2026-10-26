@@ -132,7 +132,8 @@ limits. A saved template does not prove live Codex policy enforcement.
 and adds Slack Socket Mode and workspace instructions for software engineering.
 It uses the Codex harness with **Service Accounts** authentication (`codex_pat`).
 The `model` variable defaults to `gpt-6-astra` and remains editable; its rendered
-model reference is `codex/gpt-6-astra`. After **Use Preset**, choose an existing service account Secret or
+model reference is `codex/gpt-6-astra`. The preset exposes only `name` and `model`
+variables. After **Use Preset**, choose an existing service account Secret or
 **Create new Secret...** before creating the Agent.
 
 List the shipped container file as above; `includeDefaults` alone does not add it.
@@ -146,7 +147,8 @@ The preset includes the supplied instructions in
 It uses `{{vars.name}}` in the heading, opening sentence, and other self-references,
 filled from the entered `name` when applying the Preset. Later name edits do not
 re-render the copied file. To revise the instructions, update that content and the
-existing Namespace Preset through the API.
+existing Namespace Preset through the API. Restarting with a changed JSON file
+preserves already-installed same-name copies.
 
 ## Contents
 
@@ -326,7 +328,7 @@ cannot edit an Installation Role or grant collection-wide `create`.
 Preset access grants no permission to create Agents or use referenced Secrets.
 After rendering, Configuration and Agent creation enforce their existing schemas,
 credential rules, and authorization before saving. Deployment rechecks admission.
-Audit records omit templates and
+Console checks do not replace server validation. Audit records omit templates and
 variable values.
 
 Invalid inputs return `400`; denied access returns `403`; a missing exact target
@@ -350,4 +352,5 @@ reread the Preset. **Start over** discards the unsaved draft
 and returns to the chooser, but is disabled once a Configuration has saved or a
 save outcome is uncertain.
 
-A valid Preset is not necessarily a valid Agent configuration.
+A valid Preset is not necessarily a valid Agent configuration. Later deployments
+read the Agent's own draft.

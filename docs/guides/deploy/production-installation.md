@@ -84,7 +84,8 @@ fi
 ```
 
 Before installation, [check each digest](../../testing/docker.md#check-published-images)
-on native hosts for every target architecture, without skips.
+on native hosts for every target architecture, without skips. Configure pull
+credentials only when the selected registry requires them.
 
 ## Configure the Installation
 
@@ -369,7 +370,8 @@ identities, confining migrator privileges to migration. Use
 
 The chart configures none of these inputs. Its migration and bootstrap
 containers share an initialization Pod and service account, so changing the
-database URL Secrets alone does not enable Azure mode.
+database URL Secrets alone neither configures their distinct identity inputs nor
+enables Azure mode.
 
 ### Optional operational log export
 
@@ -470,6 +472,8 @@ including its [model-response check](production-agents.md#verify-production-work
 
 ## Enable GitHub browser sign-in
 
+Use a controller image that includes GitHub sign-in: a [published image](#use-published-images)
+from a commit that includes it, or [your own build](#build-and-publish-production-images).
 Follow the [single-controller profile](../../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts)
 during stopped maintenance, after first installing without GitHub as above.
 
@@ -514,6 +518,7 @@ intended GitHub user; verify ownership through your identity process, not
 email or usernames. Follow the reference's attachment and unknown-outcome handling.
 Once every ordinary account has an identity, set `auth.passwordSignIn: recovery-only`
 ([recovery-only sign-in](../../reference/authentication/external-sign-in.md#recovery-only-password-sign-in)).
+Loopback tests do not qualify production stop/drain, cookies, logging, or GitHub registration.
 
 ## Related
 

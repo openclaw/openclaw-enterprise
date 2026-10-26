@@ -56,7 +56,8 @@ Helm/Compute and resolve to Envoy. The chart requests DNS SANs, not IP SANs;
 use a certificate-covered DNS name.
 
 `getGatewayEndpoint(revision)` computes the URL without a Kubernetes lookup;
-it does not check whether the gateway is ready. When preparing and activating a
+it does not check whether the gateway is ready, reads no per-Agent endpoint
+file, and persists no URL in Agent Configuration. When preparing and activating a
 version, Compute creates or updates an HTTPRoute attached to the shared
 Gateway's `https` listener. The route matches the exact hostname and forwards
 to the Agent Service in the same namespace. The exact Agent path rewrites to
@@ -108,7 +109,8 @@ and file-transfer roots. This directory is Harness runtime state (on OpenShell, 
 version's runtime PVC subpath). Each Codex start replaces it with an empty private
 directory. It is not an isolation boundary against compromised Harness code running as
 the same user. Gateway checks bind each
-capability to this Agent's live provider/relay and exact generation. Native hooks use the installation's public CA bundle
+capability to this Agent's live provider/relay and exact generation; it grants
+neither another Agent's callbacks nor node or operator access. Native hooks use the installation's public CA bundle
 (the node's CA) with normal HTTPS certificate verification.
 
 Preparation creates or repairs these resources under the serving Gateway's
@@ -158,7 +160,8 @@ This password is separate from the Envoy service key. See the complete
 
 This key grants native administrative access across the Installation's routed
 gateways. OCC separately checks the caller's exact Agent permission. Keep the
-key separate from Better Auth, provider, and native Agent credentials.
+key separate from Better Auth, provider, and native Agent credentials. Agent
+Gateway and Harness Pods never receive it.
 
 ## TLS and certificate lifecycle
 
@@ -171,8 +174,8 @@ cert-manager generates and stores the key material.
 | Root CA     | 87,600 hours       | 720 hours           | ECDSA P-256; `isCA: true`; key rotation policy `Never`. |
 | Listener    | 2,160 hours        | 720 hours           | DNS name equals the routing hostname.                   |
 
-The API Pod receives only the root Secret's public `tls.crt`, mounted as
-`ca.crt`, and loads it through `NODE_EXTRA_CA_CERTS`. It waits for the Secret
+The API and worker Pods receive only the root Secret's public `tls.crt`, mounted
+as `ca.crt`, and load it through `NODE_EXTRA_CA_CERTS`. Each waits for the Secret
 before starting. The CA signing key is never mounted into OCC. Normal CA and
 hostname verification remain enabled; OCC does not pin the listener leaf.
 
@@ -281,8 +284,8 @@ wss://<private-host>/namespaces/<namespaceId>/agents/<agentId>
 
 OCC converts that endpoint to `https:` for native UI HTTP traffic while keeping
 the same private authority and exact Agent base path. Workspace-file traffic
-continues to use the original WSS endpoint. Native-host requests resolve to the
-host's exact Agent and its selected version before the API proxies HTTP or WebSocket traffic through the private route.
+continues to use the original WSS endpoint. Native-host requests are intercepted before the
+normal API not-found path and resolve to the host's exact Agent and its selected version before the API proxies HTTP or WebSocket traffic through the private route.
 
 ## Public preview routing
 

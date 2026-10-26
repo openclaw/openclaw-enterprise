@@ -59,7 +59,8 @@ same time on one node can together exhaust it, and the kubelet then evicts Pods
 using more than their requests first; size agents nodes for the turns
 you expect to run concurrently.
 
-Profile input cannot change these values; for others, write the Installation from the production example (see
+Denying the 11 bundled plugins an OpenAI-only Agent does not use
+(`plugins.deny`) saved only about 50 MiB. Profile input cannot change these values; for others, write the Installation from the production example (see
 [Images and resources](../../reference/drivers/kubernetes-compute.md#images-and-resources)).
 An existing Installation keeps its values on upgrade; adopted values apply to
 each Agent at its next deployment. Before adopting them, check each agents node's
@@ -175,7 +176,8 @@ to keep the `admin-key` default.
 `workspaceId` must be a UUID the controller accepts at startup: version digit
 1–8 and variant 8, 9, a, or b, as in the example. Any other spelling, including
 a nil UUID, is a preflight error. Managed issuance is separate from the default
-`codex_pat` path. Optional `credentialTtlSeconds`
+`codex_pat` path. The rendered Backend and ServiceAccount Driver wiring does not
+prove that live service-account creation works. Optional `credentialTtlSeconds`
 must be an integer from 1 through 2592000, the lifetime the API accepts; omit it
 to use 2592000.
 
@@ -350,7 +352,9 @@ admission.
 Preflight rejects invalid placement labels before writing deployment files.
 
 If rendering fails or either YAML file is absent, fix the input and rerender;
-never copy manual examples into the output directory.
+never copy manual examples into the output directory. Only a successful render
+keeps `values.yaml`, `installation.yaml`, and `controlPlane.installationChecksum`
+paired.
 
 `runtime.transportSecretPrefix` must form a DNS-safe Kubernetes Secret name after
 `-` and 12 hex characters are appended, with at most 253 characters in total.

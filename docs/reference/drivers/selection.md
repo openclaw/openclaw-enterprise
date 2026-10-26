@@ -152,7 +152,8 @@ selected Credential Gateway or Credential Refresh Driver must belong to a
 configured Backend. There is no per-Agent Driver selection.
 
 Runtime Backend injection is limited to those bundled Drivers; installed
-packages keep the factory arguments below, without Backend injection.
+packages keep the factory arguments below, and Backend loading or injection into
+them is deferred.
 
 ## Configuration definitions and discovery
 

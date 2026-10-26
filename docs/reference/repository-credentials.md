@@ -31,7 +31,7 @@ The GitHub Backend's `drivers.repo` member pins its ID. Protected composition se
 `repository` and the installed Sandbox/Credential Proxy Driver.
 `repository.nativeSender` selects native sessions with prepared custody, without
 protected fallback. Controller startup rejects the legacy Installation `drivers.repo`
-selection in every mode. Drain accepted work on its original owner before cutover;
+selection in every mode. Stop new admissions and drain accepted work on its original owner before cutover;
 then select `repository.nativeSender` with `repository.preparedGitHub`.
 The [shared policy contract](../../packages/contracts/src/repo.ts) exposes:
 
@@ -55,7 +55,9 @@ snapshots after private validation. Cleanup counters and configuration
 decoding stay private. Status cannot regenerate the closed-schema Git/gh files.
 
 `maintenanceIntervalMs` schedules worker reconciliation and retries of incomplete
-repository cleanup; it is not a measured withdrawal bound.
+repository cleanup; it is not a measured withdrawal bound. Configured IDs,
+`AgentRevision.repositoryCredentials` and persisted
+`admitted_spec.repository_credentials` retain their meaning.
 
 State derives immutable Driver, Backend, profile and grant context from the
 saved version. After Agent deletion it retains Namespace, Agent,
@@ -308,7 +310,8 @@ so they continue after expiry or with stale pins. Generation
 pinning does not promise a command-wide snapshot across arbitrary subprocesses.
 
 Native settings override these defaults; other helpers can retain credentials.
-Our helper ignores `store` and `erase`. There is no command-wide preflight.
+Our helper ignores `store` and `erase`. There is no command-wide preflight or
+automatic retry of an uncertain mutation.
 
 The API launcher requires GitHub CLI **2.100.0**, `GH_HOST=github.com`, a gateway
 hostname with verified TLS, and HTTPS port 443. Its private `hosts.yml` uses the
@@ -346,6 +349,7 @@ Unsettled actions retain capacity until exit; grace expiry does not establish
 cleanup inventory. Overrides remain positive and finite.
 
 The [testing guide](../testing/repository-credentials.md) separates fixture
-from live-provider proof. The
+from live-provider proof; local fixtures establish neither live GitHub
+compatibility nor release readiness. The
 [service flow](../flows/repository-credentials.md) and
 [Agent flow](../flows/agent-repository-credentials.md) own implementation.

@@ -114,7 +114,7 @@ A selected Sandbox uses only Compute's
 
 The `codex_pat` binding accepts a Secret or managed ServiceAccount source and
 renders `CODEX_LOGIN_MODE=codex_pat` for both. Source ownership and authorization
-remain distinct.
+remain distinct; native Codex derives account identity from the access token.
 
 A [`credential_source`](credential-sources.md) binding requires a selected
 Credential Gateway, the paired OpenShell Sandbox, a dedicated Codex or native
@@ -135,7 +135,8 @@ Kubernetes deployment rejects `runtime` with `409`.
 
 Codex requires a successful native model probe before serving.
 API-key/PAT/external-token state stays ephemeral; `chatgptAuthTokens` delegates
-refresh externally with no refresh token or native fallback. Configuration
+refresh externally with no refresh token or native fallback. Dedicated Gateways
+do not receive the selected Harness inference credential. Configuration
 `secretBindings` supply channel and Gateway feature credentials, including Memory
 embeddings; the initial runtime credential API supplies transport authentication.
 
@@ -299,7 +300,7 @@ externally contained dedicated Codex and native OpenClaw with its admitted
 configuration. Its paired Credential Gateway supplies the model key. OpenShell must
 support the app-server token Secret reference and projected workload identity
 the admitted workload requires; stock OpenShell incompatibilities fail
-explicitly. See its
+explicitly, and test bridges do not establish turnkey production support. See its
 [qualification contract](drivers/openshell-sandbox.md#qualification-contract).
 
 ### Native worker support
@@ -312,7 +313,7 @@ The pinned [runtime image](../../deploy/runtime/README.md) includes these
 features, and OCC reports `capabilities.nativeWorkers.support: "pinned-runtime"`
 from `GET /installation`. In the Console, select OpenClaw, expand Runtime
 details, and choose Dedicated. Create Agent then starts the same provisioning
-workflow used by dedicated Codex.
+workflow used by dedicated Codex; no startup override is required.
 
 A custom image can declare
 [`runtime.nativeWorkerSupport`](configuration.md#installation-startup-configuration). Without native-worker support, deploy and provisioning answer
