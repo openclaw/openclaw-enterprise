@@ -976,7 +976,7 @@ for (const reply of ["an incomplete preview", "a save with different rules"] as 
       assert.equal(await alert.isVisible(), true, "a pre-save policy read cannot resolve the save");
       assert.equal(await review.count(), 0);
       assert.equal(
-        await page.getByRole("button", { name: "Apply saved policy to current revision" }).count(),
+        await page.getByRole("button", { name: /^(Apply saved rules|Retry application)$/ }).count(),
         0,
       );
       await refresh.click();

@@ -1000,7 +1000,7 @@ export function renderAgentSandboxPolicy(
             element(
               "p",
               { className: "resource-id" },
-              `${visibleText(item.grant.binary)} → ${item.grant.host}:${item.grant.ports.map((port) => (port.from === port.to ? port.from : `${port.from}–${port.to}`)).join(", ")} · ${item.count} ${item.count === 1 ? "denial" : "denials"} → ${item.covered ? "already covered" : "1 new rule"}`,
+              `${grantText(item.grant)} · ${item.count} ${item.count === 1 ? "denial" : "denials"} → ${item.covered ? "already covered" : "1 new rule"}`,
             ),
           ),
         ),

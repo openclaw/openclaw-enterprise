@@ -8,6 +8,7 @@ import {
   detailUrl,
   login,
   newPage,
+  nextFrames,
   pathRequests,
 } from "./console-agents-browser-helpers.mjs";
 
@@ -18,7 +19,7 @@ const grants: SandboxNetworkGrant[] = ["one", "two", "three"].map((name) => ({
   ports: [{ from: 443, to: 443 }],
 }));
 
-function denial(grant: SandboxNetworkGrant, index: number): RuntimeLogRecord {
+function denial(grant: SandboxNetworkGrant, index: number, port = 443): RuntimeLogRecord {
   return {
     type: "line",
     time: new Date(Date.UTC(2026, 9, 22, 10, 0, index)).toISOString(),
@@ -32,7 +33,7 @@ function denial(grant: SandboxNetworkGrant, index: number): RuntimeLogRecord {
       enforcement: "blocked",
       binary: grant.binary,
       host: grant.host,
-      port: 443,
+      port,
       reason: "Destination not allowed",
     },
   };
@@ -207,6 +208,23 @@ test("denial selection spans pages, keeps the inspected window, and saves a dedu
   const tab = page.locator(".sandbox-policy");
   await tab.getByText("200 in loaded window", { exact: true }).waitFor();
   assert.equal(await tab.locator(".sandbox-decision").count(), 5);
+  // Refresh denials replaces the window, so a selection of the old records must not survive it:
+  // Allow selected would otherwise stage denials that are no longer displayed.
+  await tab.getByLabel("Select page", { exact: true }).check();
+  await tab.getByRole("button", { name: "Allow selected (5)", exact: true }).waitFor();
+  const refreshed = page.waitForResponse(
+    (response) =>
+      response
+        .url()
+        .startsWith(`${fixture.origin}${agentPath}/deployments/${revision.id}/runtime/logs?`) &&
+      !new URL(response.url()).searchParams.has("cursor"),
+  );
+  await tab.getByRole("button", { name: "Refresh denials", exact: true }).click();
+  await refreshed;
+  await nextFrames(page);
+  assert.equal(await tab.locator(".sandbox-selection-actions").isVisible(), false);
+  assert.equal(await tab.getByRole("button", { name: /^Allow selected/ }).count(), 0);
+  assert.equal(await tab.getByLabel(/^Select page/).isChecked(), false);
   await tab.getByLabel("Select page", { exact: true }).check();
   await tab.getByRole("button", { name: "Allow selected (5)", exact: true }).waitFor();
   await tab.getByRole("button", { name: "Next", exact: true }).click();
@@ -259,6 +277,101 @@ test("denial selection spans pages, keeps the inspected window, and saves a dedu
     pathRequests(requests, "POST", `${base}/apply`).map(({ body }: { body: unknown }) => body),
     [{ expectedVersion: 3, revisionId: revision.id }],
   );
+});
+
+test("Allow this opens the editor at its new rule and a covered suggestion adds none", async (t) => {
+  // The saved rule allows one.example.org on 443 only; the ceiling also delegates 8443.
+  const alternatePort: SandboxNetworkGrant = {
+    ...grants[0]!,
+    id: "python-one-alternate",
+    ports: [{ from: 8443, to: 8443 }],
+  };
+  const { fixture, namespace, agent, base } = await createPolicyConsole(t, [
+    ...grants,
+    alternatePort,
+  ]);
+  assert.equal(
+    (await fixture.request("PUT", base, { body: { expectedVersion: 1, additions: [grants[0]] } }))
+      .status,
+    200,
+  );
+  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture);
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  await logWindow(page, fixture.origin, agentPath, revision.id, [
+    denial(grants[0]!, 1),
+    denial(grants[0]!, 2, 8443),
+  ]);
+  // Like the log window, only the provider's observed suggestion is simulated: it repeats the
+  // saved rule, so reviewing it must not propose another.
+  await page.route(
+    `${fixture.origin}${agentPath}/revisions/${revision.id}/sandbox-policy/networking/recommendations`,
+    (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        json: {
+          data: {
+            recommendations: [
+              { id: "suggested-one", status: "pending", grant: grants[0], observations: 2 },
+            ],
+            truncated: false,
+          },
+        },
+      }),
+  );
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revision.id, "policy"));
+  const tab = page.locator(".sandbox-policy");
+  await tab.getByText("2 in loaded window", { exact: true }).waitFor();
+
+  // A denial on a second port of an allowed host is not covered: Allow this opens the editor
+  // at the new rule (index 1, port 8443), not at the saved rule for the same host.
+  await tab
+    .locator(".sandbox-decision", { hasText: `${grants[0]!.host}:8443` })
+    .getByRole("button", { name: "Allow this", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog", { name: "Edit network rule", exact: true });
+  await dialog.getByText(/^Rules added to your proposal\./).waitFor();
+  assert.equal(
+    await dialog.getByRole("textbox", { name: "Destination hostname", exact: true }).inputValue(),
+    grants[0]!.host,
+  );
+  assert.equal(await dialog.getByLabel("Start port", { exact: true }).inputValue(), "8443");
+  assert.equal(pathRequests(requests, "POST", `${base}/validate`).length, 0, "prefill only");
+  await dialog.getByRole("button", { name: "Review changes", exact: true }).click();
+  const review = page.getByRole("dialog", { name: "Review policy changes", exact: true });
+  await review.getByText("Rules to add or update · 1", { exact: true }).waitFor();
+  await review.getByRole("button", { name: "Save for later", exact: true }).click();
+  await page.getByText(/Policy v3 saved\./).waitFor();
+  const saved = (await fixture.request("GET", base)).data.policy;
+  assert.equal(saved.version, 3);
+  assert.deepEqual(saved.additions[0], grants[0]);
+  assert.deepEqual(
+    saved.additions.slice(1).map(({ binary, host, ports }: SandboxNetworkGrant) => ({
+      binary,
+      host,
+      ports,
+    })),
+    [{ binary: alternatePort.binary, host: alternatePort.host, ports: alternatePort.ports }],
+  );
+  // Saving closes the dialog.
+  await review.waitFor({ state: "hidden" });
+
+  // The suggestion repeats a saved rule: the rules list opens unchanged with the covered
+  // feedback, nothing is validated or saved, and closing returns focus to the suggestion.
+  const suggestion = tab.getByRole("button", { name: "Review suggestion", exact: true });
+  await suggestion.click();
+  const rules = page.getByRole("dialog", { name: "Manage network rules", exact: true });
+  await rules
+    .getByText(/^These requests are already covered by saved or proposed rules\./)
+    .waitFor();
+  await rules.getByText("Agent-specific rules · 2", { exact: true }).waitFor();
+  await rules.getByRole("button", { name: "Done", exact: true }).click();
+  assert.equal(await suggestion.evaluate((node) => node === document.activeElement), true);
+  assert.equal(pathRequests(requests, "POST", `${base}/validate`).length, 1);
+  assert.equal(pathRequests(requests, "PUT", base).length, 1);
+  assert.equal((await fixture.request("GET", base)).data.policy.version, 3);
 });
 
 test("a policy batch outside the Installation ceiling retains its draft and does not save or apply", async (t) => {

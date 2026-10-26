@@ -161,15 +161,13 @@ test("Policy denials says once that the Sandbox Driver lacks per-Agent network p
     .filter({ hasText: "This Sandbox Driver does not support per-Agent network policy." })
     .waitFor();
   assert.equal(await page.getByText("does not support per-Agent network policy").count(), 1);
-  for (const name of [
-    "Enable policy editing",
-    "Refresh denials",
-    "Refresh suggestions",
-    "Refresh policy",
-    "Add proposed rule",
-  ]) {
+  // No editor entry point: the editing switch, Manage or View rules, and the window's refreshes.
+  // Add rule and Refresh policy live in the rule dialog, which the tab no longer contains.
+  assert.equal(await tab.getByRole("switch", { name: "Policy editing" }).count(), 0);
+  for (const name of ["Manage rules", "View rules", "Refresh denials", "Refresh suggestions"]) {
     assert.equal(await tab.getByRole("button", { name }).count(), 0, name);
   }
+  assert.equal(await tab.locator("dialog").count(), 0);
   assert.equal(await tab.getByRole("alert").count(), 0);
   // Neither unavailable read is made.
   assert.deepEqual(
@@ -184,7 +182,8 @@ test("Policy denials says once that the Sandbox Driver lacks per-Agent network p
     .getByRole("status")
     .filter({ hasText: "This Sandbox Driver does not support per-Agent network policy." })
     .waitFor();
-  assert.equal(await tab.getByRole("button", { name: "Enable policy editing" }).count(), 0);
+  assert.equal(await tab.getByRole("switch", { name: "Policy editing" }).count(), 0);
+  assert.equal(await tab.getByRole("button", { name: /^(Manage|View) rules$/ }).count(), 0);
   assert.equal(await page.getByText("does not support per-Agent network policy").count(), 1);
 });
 
@@ -592,7 +591,9 @@ test("Agent policy proposals preserve valid Unicode executable paths through rev
   ]);
   await page.getByText("Configuration does not satisfy maxLength.", { exact: true }).waitFor();
   assert.equal(await executable.inputValue(), tooLong);
-  assert.equal(await page.getByRole("button", { name: "Save", exact: true }).count(), 0);
+  for (const name of ["Save for later", "Save and apply to current revision"]) {
+    assert.equal(await page.getByRole("button", { name, exact: true }).count(), 0, name);
+  }
   assert.equal(pathRequests(requests, "PUT", base).length, 1);
   const unchanged = (await fixture.request("GET", base)).data.policy;
   assert.equal(unchanged.version, 2);
