@@ -6021,6 +6021,15 @@ export const scenarios = {
     description:
       "A rejected deployment reports failure and re-enables the action. Focus returns to Deploy new version, described by the failure.",
   },
+  tabLinkUnavailable: {
+    group: "Pages/Agent detail",
+    name: "Link to an unavailable tab",
+    path: `${draft}&tab=bogus`,
+    description:
+      "A link names a tab this Agent page does not have. The page shows Configuration with a note above it that names the tab and says Configuration is shown instead.",
+    steps: ["Read the note above the panel, then choose Plugins: the note goes away."],
+    gap: "The link is simulated; a reader without Installation administration gets the same note for the Access tab.",
+  },
   deployInProgress: {
     group: "Pages/Agent detail",
     name: "Deployment in progress",
