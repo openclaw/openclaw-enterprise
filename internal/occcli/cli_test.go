@@ -411,7 +411,7 @@ func TestAgentLogsRejectsInvalidFlagsBeforeAnyRequest(t *testing.T) {
 		stub := &runtimeLogStub{t: t}
 		_, _, err := runLogsCommand(t, context.Background(), stub, args...)
 		// The hint keeps the selected Namespace so the copied command targets the same Agent.
-		if err == nil || err.Error() != `agent agt_00000000-0000-4000-8000-000000000001 has no active revision and no revision you can read; listing revisions needs AgentRevision read (ask an Installation administrator to grant it), or pass --revision with a revision ID; if it was never deployed, run "occ --namespace ns_00000000-0000-4000-8000-000000000001 agent deploy agt_00000000-0000-4000-8000-000000000001" first` {
+		if want := noReadableRevision("agt_00000000-0000-4000-8000-000000000001") + `, or pass --revision with a revision ID; if it was never deployed, run "occ --namespace ns_00000000-0000-4000-8000-000000000001 agent deploy agt_00000000-0000-4000-8000-000000000001" first`; err == nil || err.Error() != want {
 			t.Fatalf("follow=%v: expected a missing revision error, got %v", follow, err)
 		}
 		if len(stub.queries) != 0 {
@@ -447,7 +447,7 @@ func TestAgentLogsNameTheRevisionGrantWhenNoRevisionIsReadable(t *testing.T) {
 	}
 
 	reader := `{"update":false,"deploy":false,"operate":false,"delete":false}`
-	logsError := "agent agt_00000000-0000-4000-8000-000000000001 has no active revision and no revision you can read; listing revisions needs AgentRevision read (ask an Installation administrator to grant it), or pass --revision with a revision ID"
+	logsError := noReadableRevision("agt_00000000-0000-4000-8000-000000000001") + ", or pass --revision with a revision ID"
 	for _, test := range []struct {
 		args        []string
 		permissions string
@@ -457,7 +457,7 @@ func TestAgentLogsNameTheRevisionGrantWhenNoRevisionIsReadable(t *testing.T) {
 		// Runtime status itself needs revision read, so --revision is no way around it.
 		{
 			[]string{"agent", "runtime", "agt_00000000-0000-4000-8000-000000000001"}, reader,
-			"agent agt_00000000-0000-4000-8000-000000000001 has no active revision and no revision you can read; listing revisions needs AgentRevision read (ask an Installation administrator to grant it)",
+			noReadableRevision("agt_00000000-0000-4000-8000-000000000001"),
 		},
 		// An unreadable permission summary cannot show deploy access: no deploy advice.
 		{[]string{"agent", "logs", "agt_00000000-0000-4000-8000-000000000001", "--source", "gateway"}, "forbidden", logsError},
@@ -1395,7 +1395,7 @@ func TestAgentPolicyFlagsAreCheckedBeforeAnyRequest(t *testing.T) {
 	connection := []string{"--url", server.URL, "--service-key-file", keyFile, "--namespace", "ns_00000000-0000-4000-8000-000000000001"}
 	const notNetworking = "--facet must be networking"
 	const emptyFacet = "--facet must name a sandbox policy facet such as networking"
-	const notRevision = `"deploy-1" is not a valid deployment ID: OCC accepts IDs that start with "rev_", not names; run "occ --namespace ns_00000000-0000-4000-8000-000000000001 agent revisions AGENT_ID" to find the ID`
+	notRevision := nameNotIDRefusal("deploy-1", "deployment", "rev_", "occ --namespace ns_00000000-0000-4000-8000-000000000001 agent revisions AGENT_ID")
 	for _, test := range []struct {
 		args []string
 		want string

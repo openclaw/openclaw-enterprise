@@ -141,22 +141,22 @@ func TestRefusedCommandsNameTheGrantTheyNeed(t *testing.T) {
 		texts = append(texts, err.Error())
 	}
 	want := "FORBIDDEN: " + denied + "\n" +
-		`hint: "occ agent deploy" needs Agent deploy and Configuration read, plus access to the ServiceAccount, Secrets and credential sources it binds, and Agent read and operate for a first deploy; ask an Installation administrator to grant what is missing. OCC refuses an ID that does not exist the same way.`
+		grantHint("agent deploy", "Agent deploy and Configuration read, plus access to the ServiceAccount, Secrets and credential sources it binds, and Agent read and operate for a first deploy", true)
 	if !strings.HasSuffix(texts[0], want) || texts[0] != texts[1] {
 		t.Fatalf("refusals = %q, want both to end with %q", texts, want)
 	}
 	err := runRefused(t, keyFile, denied, "--namespace", testNamespaceID, "agent", "logs", testAgentID, "--source", "gateway", "--revision", testRevision1ID)
-	if err == nil || !strings.HasSuffix(err.Error(), `hint: "occ agent logs" needs Agent read_logs (or administer) and Agent read; ask an Installation administrator to grant what is missing. OCC refuses an ID that does not exist the same way.`) {
+	if err == nil || !strings.HasSuffix(err.Error(), grantHint("agent logs", "Agent read_logs (or administer) and Agent read", true)) {
 		t.Fatalf("logs refusal = %v", err)
 	}
 	// A command without an ID argument does not mention missing IDs.
 	err = runRefused(t, keyFile, denied, "--namespace", testNamespaceID, "iam", "role", "list")
-	if err == nil || !strings.HasSuffix(err.Error(), `hint: "occ iam role list" needs Installation administer and Namespace read; ask an Installation administrator to grant what is missing.`) {
+	if err == nil || !strings.HasSuffix(err.Error(), "\n"+grantHint("iam role list", "Installation administer and Namespace read", false)) {
 		t.Fatalf("role list refusal = %v", err)
 	}
 	// Three or more permissions read as a list.
 	err = runRefused(t, keyFile, denied, "--namespace", testNamespaceID, "agent", "runtime", testAgentID)
-	if err == nil || !strings.HasSuffix(err.Error(), `hint: "occ agent runtime" needs Agent operate, Agent read and revision read; ask an Installation administrator to grant what is missing. OCC refuses an ID that does not exist the same way.`) {
+	if err == nil || !strings.HasSuffix(err.Error(), grantHint("agent runtime", "Agent operate, Agent read and revision read", true)) {
 		t.Fatalf("runtime refusal = %v", err)
 	}
 	// OCC filters this list by what the caller can read. Keep its refusal intact;
