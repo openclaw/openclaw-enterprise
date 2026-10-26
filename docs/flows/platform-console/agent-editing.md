@@ -95,9 +95,8 @@ Its bodyless POST requires Agent `read`/`operate` and exact Agent revision `read
 **Create new version** opens the saved draft; **Deploy new version** admits its
 Configuration/plugins. **Edit current Configuration** never copies historical
 values. Deploy stays disabled while the Secret permission answer names a bound
-Secret the caller may not `operate`, or, for a caller who is not an Installation
-administrator, while the readable Secret list leaves a bound Secret out; that
-reason names no Secret (finding D756). After a deploy, a version that the
+Secret the caller may not `operate`, or counts one the caller may neither `read`
+nor `operate`; that reason names no Secret (finding D756). After a deploy, a version that the
 newest page of versions leaves out is shown as unreadable without its read,
 which would be audited (finding D758).
 

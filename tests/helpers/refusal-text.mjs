@@ -497,9 +497,9 @@ export const PLUGIN_CREDENTIALS_REJECTED =
 // Finding 2619. A bound Secret the caller's readable Secret list leaves out, shown without the
 // audited metadata read; and the Backends refusal a non-administrator gets without the read.
 export const BOUND_SECRET_UNLISTED = `A Secret is bound. Its name is unavailable: your access does not include reading it, or it was deleted. ${askForGrant("Secret read on it")}`;
-// Finding D756. Deploy beside a bound Secret the deployer's readable Secret list leaves out: it
-// needs Secret operate there too, and names no Secret.
-export const deployUnlistedSecrets = (count) =>
+// Finding D756. Deploy beside a bound Secret the deployer may neither read nor operate: it names
+// no Secret, and the grant to ask for includes read.
+export const deployUnreadableSecrets = (count) =>
   count === 1
     ? `Deploying needs Secret operate on a bound Secret your access does not include reading. ${askForGrant("Secret read and operate on it")}`
     : `Deploying needs Secret operate on ${count} bound Secrets your access does not include reading. ${askForGrant("Secret read and operate on them")}`;

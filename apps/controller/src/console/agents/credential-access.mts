@@ -29,11 +29,14 @@ export type SecretsOperateDenied = (options?: {
  * `permissions/secrets`). `reset` drops the cached answer, as `fresh` does, so the next read asks
  * again. A failed read answers the last answer read, or undefined before any read succeeded, and
  * is not cached: the next read asks again. Forgetting a known answer on one failed reread made
- * every Secret it denied choosable until a reload (finding 2501).
+ * every Secret it denied choosable until a reload (finding 2501). `unreadable` is the last
+ * answer's count of bound Secrets the caller may neither read nor operate, which only the Agent's
+ * answer reports (finding D756); undefined when unknown.
  */
 export function secretOperateAnswer(read: () => Promise<unknown>) {
   let answer: Promise<ReadonlySet<string> | undefined> | null = null;
   let known: ReadonlySet<string> | undefined;
+  let unreadable: number | undefined;
   const denied: SecretsOperateDenied = ({ fresh = false } = {}) => {
     if (fresh) {
       answer = null;
@@ -43,11 +46,15 @@ export function secretOperateAnswer(read: () => Promise<unknown>) {
     }
     const current = read()
       .then((value) => {
-        const { operateDenied } = responseFields(value);
+        const { operateDenied, unreadableOperateDenied } = responseFields(value);
         if (!Array.isArray(operateDenied)) {
           throw new Error("Invalid Secret permission answer");
         }
         known = new Set(operateDenied);
+        unreadable =
+          Number.isSafeInteger(unreadableOperateDenied) && Number(unreadableOperateDenied) >= 0
+            ? Number(unreadableOperateDenied)
+            : undefined;
         return known;
       })
       .catch(() => {
@@ -61,6 +68,7 @@ export function secretOperateAnswer(read: () => Promise<unknown>) {
   };
   return {
     read: denied,
+    unreadable: () => unreadable,
     reset: () => {
       answer = null;
     },

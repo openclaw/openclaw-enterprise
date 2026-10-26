@@ -50,7 +50,7 @@ import {
   CHANNEL_SECRETS_CONFIGURATION_CHANGED,
   CONFIGURATION_SAVE_DENIED,
   DEPENDENCY_UNAVAILABLE,
-  deployUnlistedSecrets,
+  deployUnreadableSecrets,
   GENERIC_DENIAL,
   NAMESPACE_NOT_READY,
   READ_UNAVAILABLE,
@@ -1556,12 +1556,13 @@ test("Deploy names the bound Secrets an operator may not operate", async (t) => 
   }
 });
 
-// Finding D756. A bound Secret the operator may not read is not in her readable Secret list, and
-// the Secret operate answer covers only Secrets she may read. Deploying still needs Secret
-// operate on it, so Deploy is disabled beside a reason that names no Secret, instead of "Ready to
-// deploy." and a 403 on click. With read and operate on it, the same operator deploys. An
-// Installation administrator reads no Secret list, so the gate never holds for one.
-test("Deploy says a bound Secret the operator cannot read needs read and operate", async (t) => {
+// Finding D756. A bound Secret the operator may not read is not in the Secret operate answer's
+// list, which names only Secrets she may read. Deploying still needs Secret operate on it, so the
+// answer counts the bound Secrets she may neither read nor operate, and Deploy is disabled beside
+// a reason that names no Secret, instead of "Ready to deploy." and a 403 on click. Operate alone
+// is enough to deploy: with it and still no read, the same operator deploys. An Installation
+// administrator may operate every Secret, so the gate never holds for one.
+test("Deploy says a bound Secret the operator may neither read nor operate needs a grant", async (t) => {
   const { fixture, namespace, agent, path } = await deployableRepositoryAgent(
     t,
     "Unlisted Secret Agent",
@@ -1571,7 +1572,7 @@ test("Deploy says a bound Secret the operator cannot read needs read and operate
     ["deploy", "agent"],
     ["operate", "agent"],
   ]);
-  const reason = deployUnlistedSecrets(1);
+  const reason = deployUnreadableSecrets(1);
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
   const deployed = async (page) => {
     const deploy = page.getByRole("button", { name: "Deploy new version" });
@@ -1606,10 +1607,7 @@ test("Deploy says a bound Secret the operator cannot read needs read and operate
     await deployed(page);
   }
 
-  grantMember(fixture, "unlisted-operator", [
-    ["read", "secret"],
-    ["operate", "secret"],
-  ]);
+  grantMember(fixture, "unlisted-operator", [["operate", "secret"]]);
   {
     const { page } = await newPage(t, fixture);
     await login(page, fixture, url, operator.credentials);

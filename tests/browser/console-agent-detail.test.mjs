@@ -4800,7 +4800,10 @@ test("Secret fields refuse a readable Secret the editor cannot operate", async (
   const save = page.getByRole("button", { name: "Save channel Secrets" });
   await waitForEnabled(page.getByLabel("Slack bot token", { exact: true }));
   const denied = await operateDeniedSecretOption(page, "Slack bot token", spare);
-  assert.deepEqual((await (await answer).json()).data, { operateDenied: [spare.id] });
+  assert.deepEqual((await (await answer).json()).data, {
+    operateDenied: [spare.id],
+    unreadableOperateDenied: 0,
+  });
   // A forced click skips the disabled check: choosing it still stages nothing.
   await denied.click({ force: true });
   await page.getByLabel("Slack bot token", { exact: true }).press("Enter");

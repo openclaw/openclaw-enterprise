@@ -48,7 +48,7 @@ import {
   CONFIGURATION_UPDATE_DENIED,
   credentialCheckedAtDeploy,
   deployAcceptedVersionUnreadable,
-  deployUnlistedSecretsReason,
+  deployUnreadableSecretsReason,
   modelCredentialRejectedReadOnly,
   NEW_VERSIONS_READ,
   requestedVersionUnavailable,
@@ -119,7 +119,6 @@ import {
   sameNamespaceSecretHref,
   secretMetadata,
   secretSourceForBinding,
-  unlistedSecretCount,
 } from "./secret-picker.mjs";
 
 type DetailContext = ConsolePageContext & { namespaceId: string; agentId: string };
@@ -288,18 +287,18 @@ function deployFailureText(cause: unknown, submitted: boolean) {
 // caller may not read, which are never named.
 interface DeploySecretsDenied {
   names: readonly string[];
-  unlisted: number;
+  unreadable: number;
 }
 // Deployment authorizes Secret operate on every Secret the draft binds (finding 2546), including
 // one the caller may not read (finding D756). Empty when nothing is known to be refused.
-function deploySecretsOperateReason({ names, unlisted }: DeploySecretsDenied) {
+function deploySecretsOperateReason({ names, unreadable }: DeploySecretsDenied) {
   const listed =
     names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
   return [
     names.length
       ? `Deploying needs Secret operate on ${listed}, which your access does not include. ${askAdministratorTo("grant it")}`
       : "",
-    unlisted ? deployUnlistedSecretsReason(unlisted) : "",
+    unreadable ? deployUnreadableSecretsReason(unreadable) : "",
   ]
     .filter(Boolean)
     .join(" ");
@@ -2933,10 +2932,10 @@ export async function renderAgentDetail(
     // bindings and a Secret authentication source. The Secret operate answer names the bound ones
     // this caller may read but not operate, so Deploy says so before a click the API would
     // refuse. An unknown or unreported answer names none and leaves Deploy to the API (finding
-    // 2546). A bound Secret the readable Secret list leaves out is one the caller may not read,
-    // which that answer never covers: Deploy says so too, without its name (finding D756). An
-    // Installation administrator's list is not used, so it never counts one.
-    let deploySecretsDenied: DeploySecretsDenied = { names: [], unlisted: 0 };
+    // 2546). The answer also counts the bound Secrets the caller may neither read nor operate,
+    // without their IDs: Deploy says so too, never naming them (finding D756). A Secret the caller
+    // may operate but not read holds nothing: the deployment checks only operate.
+    let deploySecretsDenied: DeploySecretsDenied = { names: [], unreadable: 0 };
     let deploySecretsRead = 0;
     async function boundSecretsDenied({ fresh = false } = {}): Promise<DeploySecretsDenied> {
       const bound = new Map<string, unknown>();
@@ -2951,22 +2950,10 @@ export async function renderAgentDetail(
         bound.set(harness.id, harness);
       }
       if (bound.size === 0) {
-        return { names: [], unlisted: 0 };
+        return { names: [], unreadable: 0 };
       }
-      const [denied, unlisted] = await Promise.all([
-        secretsOperateDenied({ fresh }),
-        unlistedSecretCount(
-          {
-            namespaceId,
-            namespace: context.namespace,
-            installationAdmin: context.installationAdmin,
-            request,
-          },
-          [...bound]
-            .filter(([, source]) => sameNamespaceSecretHref(source, namespaceId))
-            .map(([id]) => id),
-        ),
-      ]);
+      const denied = await secretsOperateDenied({ fresh });
+      const unreadable = secretsOperateAnswer.unreadable();
       // The answer lists only Secrets this caller may read, so each one's name reads too.
       const names = await Promise.all(
         [...bound]
@@ -2982,7 +2969,7 @@ export async function renderAgentDetail(
       );
       return {
         names: names.sort((left, right) => left.localeCompare(right)),
-        unlisted: unlisted ?? 0,
+        unreadable: unreadable ?? 0,
       };
     }
     function readDeploySecretsDenied(options?: { fresh?: boolean }) {

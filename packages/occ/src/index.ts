@@ -5303,6 +5303,37 @@ export class OpenClawController {
     });
   }
 
+  /**
+   * How many of the Namespace's Secrets among `secretIds` the principal may neither read nor
+   * operate: an advisory count for a client that deploys a draft binding them, which needs operate
+   * on each (finding D756). It names none, since the principal may not read them. Decisions as in
+   * listSecretsOperateDenied: one read unit, and a false decision is an answer, not an audited
+   * attempt. The caller checks Namespace read first.
+   */
+  async countUnreadableSecretsOperateDenied(
+    principalId: string,
+    namespaceId: string,
+    secretIds: ReadonlySet<string>,
+  ): Promise<number> {
+    const namespace = await this.getNamespace(principalId, namespaceId);
+    return this.read(async (state) => {
+      let count = 0;
+      for (const secret of await state.secrets.listSecrets(namespace.id)) {
+        if (!secretIds.has(secret.id)) {
+          continue;
+        }
+        const resource: ResourceRef = { kind: "secret", id: secret.id, namespaceId: namespace.id };
+        if (
+          !(await this.canRead(principalId, resource)) &&
+          !(await this.authorizationDecision(principalId, "operate", resource)).decision.allowed
+        ) {
+          count += 1;
+        }
+      }
+      return count;
+    });
+  }
+
   async updateSecret(
     principalId: string,
     input: UpdateSecretInput,

@@ -199,27 +199,6 @@ function readableSecretIds(context: SecretContext, request: SecretRequest) {
   });
   return read;
 }
-/**
- * How many of `ids` the readable Secret list leaves out: bound Secrets the caller may not read,
- * whose names stay hidden (finding D756). A view's list can predate a Secret created or granted
- * since, so one that leaves an ID out is read again before it counts. Null when the list is not
- * used or unknown, as above.
- */
-export async function unlistedSecretCount(context: SecretContext, ids: Iterable<string>) {
-  const { request } = context;
-  if (typeof request !== "function") {
-    return null;
-  }
-  const bound = [...new Set(ids)];
-  const unlisted = (readable: ReadonlySet<string> | null) =>
-    readable && bound.filter((id) => !readable.has(id)).length;
-  const known = unlisted(await readableSecretIds(context, request));
-  if (!known) {
-    return known;
-  }
-  readableSecretLists.delete(request);
-  return unlisted(await readableSecretIds(context, request));
-}
 function readSecretMetadata(
   context: SecretContext,
   request: SecretRequest,

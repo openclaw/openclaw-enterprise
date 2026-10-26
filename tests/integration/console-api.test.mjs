@@ -814,12 +814,13 @@ async function secretAnswerFixture(t, options = {}) {
       grant(`read-${secret.id}`, "read", "secret", secret.id);
     }
     const session = await fixture.signIn(created.credentials);
-    const answer = async () => {
+    const data = async () => {
       const response = await fixture.request("GET", answerPath, { session });
       assert.equal(response.status, 200);
-      return response.data.operateDenied;
+      return response.data;
     };
-    return { session, grant, answer, principal: created.principal };
+    const answer = async () => (await data()).operateDenied;
+    return { session, grant, answer, data, principal: created.principal };
   };
   const denials = () => auditSink.list().filter((event) => event.kind === "authorization_denial");
   return { fixture, namespace, agent, app, bot, binding, answerPath, member, denials };
@@ -857,7 +858,7 @@ test("the Agent Secret answer names the readable Secrets a binding save would be
   // An administrator may operate every Secret, so nothing is listed.
   const admin = await fixture.request("GET", answerPath);
   assert.equal(admin.status, 200);
-  assert.deepEqual(admin.data, { operateDenied: [] });
+  assert.deepEqual(admin.data, { operateDenied: [], unreadableOperateDenied: 0 });
 
   // The D710 persona: Configuration update without Agent update.
   const editor = await member("secret-answer-editor", reads, readable);
@@ -928,6 +929,30 @@ test("the Agent Secret answer names the readable Secrets a binding save would be
   assert.deepEqual(await deployer.answer(), [app.id, spares[0].id].sort());
   // The narrowed answer still makes no refused, audited read.
   assert.equal(denials().length, deniedBeforeDeployer);
+  // A bound Secret the caller may not read is never named, only counted, and only while she may
+  // not operate it either: deploying checks operate alone (finding D756). This deployer reads
+  // only app of the three Secrets the draft binds.
+  const blind = await member("secret-answer-blind-deployer", reads, [app]);
+  blind.grant("deploy", "deploy", "agent", agent.id);
+  assert.deepEqual(await blind.data(), { operateDenied: [app.id], unreadableOperateDenied: 2 });
+  blind.grant("operate-spare", "operate", "secret", spares[0].id);
+  blind.grant("operate-app", "operate", "secret", app.id);
+  assert.deepEqual(await blind.data(), { operateDenied: [], unreadableOperateDenied: 1 });
+  assert.equal(denials().length, deniedBeforeDeployer);
+  // The count matches the real deployment: refused while one is counted, admitted at 0.
+  const deployPath = `/namespaces/${namespace.id}/agents/${agent.id}/deploy`;
+  const refused = await fixture.request("POST", deployPath, { session: blind.session });
+  assertApiError(refused, 403, "FORBIDDEN");
+  assert.equal(denials().at(-1).action, "openclaw.agents.deploy");
+  blind.grant("operate-harness", "operate", "secret", harnessSecret.id);
+  assert.deepEqual(await blind.data(), { operateDenied: [], unreadableOperateDenied: 0 });
+  const admitted = await fixture.request("POST", deployPath, { session: blind.session });
+  assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+  const deniedAfterDeploy = denials().length;
+  // A reader who may not deploy or update gets no count.
+  const blindReader = await member("secret-answer-blind-reader", reads, []);
+  assert.deepEqual(await blindReader.data(), { operateDenied: [], unreadableOperateDenied: 0 });
+  assert.equal(denials().length, deniedAfterDeploy);
   // Both updates without Configuration read: no save can bind a Secret, so it is not reported.
   const unreadConfiguration = await member(
     "secret-answer-no-configuration-read",

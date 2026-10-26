@@ -99,10 +99,10 @@ export const SECRET_UPDATE_DENIED = notIncluded(
 );
 export const SECRET_DELETE_DENIED = notIncluded("deleting this Secret", "Secret delete on it");
 export const SECRET_OPERATE_NEEDED = askForGrant("Secret operate on it");
-// Deploying authorizes Secret operate on each Secret the draft binds. A bound Secret the caller's
-// readable Secret list leaves out is one they may not read: its name stays hidden, and the grant
-// to ask for includes read (finding D756).
-export const deployUnlistedSecretsReason = (count: number) =>
+// Deploying authorizes Secret operate on each Secret the draft binds. A bound Secret the caller
+// may neither read nor operate keeps its name hidden, and the grant to ask for includes read
+// (finding D756).
+export const deployUnreadableSecretsReason = (count: number) =>
   count === 1
     ? `Deploying needs Secret operate on a bound Secret your access does not include reading. ${askForGrant("Secret read and operate on it")}`
     : `Deploying needs Secret operate on ${count} bound Secrets your access does not include reading. ${askForGrant("Secret read and operate on them")}`;
