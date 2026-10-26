@@ -1,7 +1,7 @@
 ---
 created: "2026-10-08"
 updated: 2026-10-26
-last_updated_session: authoring-run/c959c07b-2be2-482d-83ae-fe63be655940
+last_updated_session: authoring-run/31aa1352-e139-4622-8019-4b5c08958c21
 ---
 
 # Credential source refresh Flow
@@ -239,25 +239,26 @@ The worker records an `issuing` attempt, signs a short-lived JSON Web Token
 selects the HTTPS issuer and trust roots. PostgreSQL stores token bytes encrypted
 under a dedicated 32-byte custody key that must survive worker restarts.
 
-For a single repository, the worker sends its numeric ID and requested
-permissions. It checks the returned repository ID, name, permissions and expiry.
-For the explicitly approved `github-installation` profile it sends `{}`.
-GitHub applies the App installation's selection and permissions. Both paths
-check the expiry and record a new material version before the token becomes usable.
+For one repository, the worker sends its numeric ID and requested permissions
+and checks the returned ID, name and permissions. An explicitly approved
+`github-installation` request sends `{}` to use the installation's selection and
+permissions. The worker checks expiry and commits the new version before use.
 
-| Limit                                 | What happens when it ends                                                                                                                                                                                                          |
-| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Repository approval                   | Expiry or removal stops new authorizations. A [standing approval](../guides/repository-credentials.md#keep-git-access-on-the-same-running-agent) allows another finite session for the same scope and running Agent until removal. |
-| Execution's repository session        | The current session stops authorizing requests. A new token cannot extend the session.                                                                                                                                             |
-| Local safe-use cutoff (`usableUntil`) | The trusted reader stops selecting the token 60 seconds before GitHub's reported expiry to allow for clock skew. A request can require more remaining time.                                                                        |
-| GitHub token expiry (`expires_at`)    | The token's provider lifetime ends. The worker tracks this separately from local denial and confirmed revocation.                                                                                                                  |
+Git through `repositoryBindings` has four limits. Prepared metadata reads share
+the two token limits. To withdraw a metadata read, withdraw its credential-source binding.
 
-**Cold use and renewal.** The Resolver can read only committed material matching
-the current admission. A cold or expired read returns `not_ready` and makes no
-issuance request. During renewal it can still read the current token while that
-version remains eligible. Committing the replacement retires the old version.
-On the protected exchange, OCC checks current authority and material again before
-allowing the send. [Protected request flow](credential-source-egress.md)
+| Limit                                 | What happens when it ends                                                                                                                                                                                                         |
+| ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Repository approval                   | Expiry or removal stops new authorizations. [Standing approval](../guides/repository-credentials.md#keep-git-access-on-the-same-running-agent) permits another finite session for the same running Agent and scope until removal. |
+| Execution's repository session        | The session stops authorizing requests. Renewing the token cannot extend it.                                                                                                                                                      |
+| Local safe-use cutoff (`usableUntil`) | The reader stops selecting the token 60 seconds before GitHub expiry to allow for clock skew. Requests can require more remaining time.                                                                                           |
+| GitHub token expiry (`expires_at`)    | The token expires at GitHub. The worker separately tracks local denial and confirmed revocation.                                                                                                                                  |
+
+**Cold use and renewal.** The Resolver reads only committed material matching
+the current admission. Cold or expired reads return `not_ready` without requesting
+issuance. An eligible token remains readable during renewal. Committing its
+replacement retires it. Before authorizing a protected send, OCC rechecks
+authority and material. [Protected request flow](credential-source-egress.md)
 
 **Key rotation and withdrawal.** When the worker observes a changed signing-key
 version, it advances the owner epoch and retires the old material before it can
@@ -317,6 +318,8 @@ detached warm reads. Clearing a local buffer cannot revoke a provider token.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-26 22:20: Distinguish Git session limits from metadata access. (authoring-run/31aa1352-e139-4622-8019-4b5c08958c21 - c1fee5d433)
 
 - 2026-10-26 21:46: Trace GitHub App issuance, separate deadlines, replacement and retirement. (authoring-run/c959c07b-2be2-482d-83ae-fe63be655940 - e573b7de03)
 

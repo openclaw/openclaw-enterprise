@@ -131,8 +131,8 @@ request, OCC checks current Agent permission before material access and before s
 
 Git clone, push and approved GitHub API operations use separately admitted
 [`repositoryBindings`](repository-credentials.md). Binding a metadata source for
-one repository does not grant Git or pull request access. Harness authentication requires
-a compatible Gateway source. Source-backed deployment requires a Sandbox. See the [binding and deployment trace](../flows/credential-source-lifecycle.md#4-bind-the-source-to-an-agent).
+one repository does not grant Git or pull request access. To authenticate the Harness with a
+credential source, select a compatible Gateway source. Source-backed deployment requires a Sandbox. See the [binding and deployment trace](../flows/credential-source-lifecycle.md#4-bind-the-source-to-an-agent).
 
 While a Credential Gateway is selected, deployment and guided provisioning reject
 `api_key` and `codex_pat` bindings (both Secret and ServiceAccount sources) with `409`.

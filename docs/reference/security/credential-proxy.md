@@ -46,19 +46,22 @@ refusal of repository-scoped protected writes are documented separately.
 ## What happens when access changes?
 
 OCC checks the current binding, execution, installation and permission before
-material access and again before releasing a send permit. If the grant is
-withdrawn between those checks, the second check denies the send. If renewal
+material access and again before releasing a send permit. To withdraw the walkthrough's
+metadata read, withdraw the bound credential source from the Agent's running
+revision. If withdrawal occurs between those checks, OCC denies the send. If renewal
 replaced the selected token, the old version fails its check. A request already
 authorized can still reach the provider. A lost acknowledgment leaves the
 attempt for reconciliation. Repeating a possible write can apply it twice.
 [Send authorization](../../../packages/occ/src/credential-proxy.ts) ·
 [Withdrawal](../credential-sources/withdrawal.md)
 
-Keep four clocks separate for repository access. Approval can be standing or
-time-limited. The execution session has its own deadline. A token has a local
-safe-use cutoff and a GitHub expiry. Removing approval can deny a fresh request
-while a token still works at GitHub. OCC denial, observed removal of the
-installed route and provider revocation or expiry are separate events.
+Git access through `repositoryBindings` has two additional limits. Repository
+approval can be standing or time-limited, and the execution's repository session
+has its own deadline. Both Git and the prepared metadata source also enforce a
+local safe-use cutoff for the token. GitHub sets the token's expiry. Removing
+Git approval can deny a Git request while the token still works at GitHub.
+OCC denial, observed removal of the installed route and provider revocation or
+expiry are separate events.
 [Token Service lifecycle](../repository-credentials.md#token-service-lifecycle)
 
 In the controlled withdrawal example, removing binding A preserves binding B.
