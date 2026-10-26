@@ -264,6 +264,12 @@ function providerExchangeFailure(error, label) {
   if (error?.status === undefined || error.status >= 500) {
     return signInUnavailableFailure(label);
   }
+  // Other than the origin check, the exchange answers 403 only when this API no longer
+  // configures the provider (it was removed after the start), which the provider list shows
+  // anyway. Starting again would fail the same way (finding 2555).
+  if (error.status === 403) {
+    return `Could not finish signing in with ${label}. ${label} sign-in is no longer available on this Installation. Use another sign-in method, or ask an administrator.`;
+  }
   return `Could not finish signing in with ${label}. The sign-in in this tab did not complete in time, or another sign-in replaced it. Select Continue with ${label} to start again.`;
 }
 
