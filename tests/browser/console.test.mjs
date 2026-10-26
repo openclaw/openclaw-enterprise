@@ -33,7 +33,11 @@ import {
   writeRequests,
 } from "./console-agents-browser-helpers.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
-import { WORKSPACE_FILES_UNAVAILABLE, SIGN_IN_UNAVAILABLE } from "../helpers/refusal-text.mjs";
+import {
+  NO_READABLE_NAMESPACES,
+  WORKSPACE_FILES_UNAVAILABLE,
+  SIGN_IN_UNAVAILABLE,
+} from "../helpers/refusal-text.mjs";
 
 const defaultCodexPreset = JSON.parse(
   await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
@@ -671,7 +675,7 @@ test("Agents with no readable Namespace names it once and keeps one Refresh", as
   for (const [path, title, text, selected] of [
     [
       "/console/agents",
-      "No readable Namespaces",
+      NO_READABLE_NAMESPACES,
       "Ask an Installation administrator to create a Namespace or to give you access to one, then Refresh.",
       "None",
     ],
@@ -2367,7 +2371,7 @@ test("Namespaces recovers stale selection inline and handles losing all readable
     effect: "deny",
   });
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
-  await page.getByRole("heading", { name: "No accessible namespaces", exact: true }).waitFor();
+  await page.getByRole("heading", { name: NO_READABLE_NAMESPACES, exact: true }).waitFor();
   await page.getByText("Create a Namespace to get started.", { exact: true }).waitFor();
   await waitForEnabled(page.getByRole("button", { name: "Create Namespace", exact: true }));
   assert.equal(await page.getByRole("combobox").count(), 0);

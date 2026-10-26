@@ -22,6 +22,7 @@ import {
   apiRequests,
   holdRequests,
   login,
+  MEMBER_WRITE,
   nativeValues,
   newPage,
   pathRequests,
@@ -35,7 +36,12 @@ import {
   createRepositoryLaunchFixture,
   enterManualModel,
 } from "./console-agents-test-support.mjs";
-import { AGENT_SAVE_DENIED, REPOSITORY_ACCESS_CHANGED } from "../helpers/refusal-text.mjs";
+import {
+  AGENT_SAVE_DENIED,
+  REPOSITORY_ACCESS_CHANGED,
+  REPOSITORY_ACCESS_NOT_CONFIGURED,
+  REPOSITORY_SETUP_ASK,
+} from "../helpers/refusal-text.mjs";
 
 test("Agent repository access labels target the right repository when references overlap", async (t) => {
   const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId) =>
@@ -393,7 +399,7 @@ test("Create Agent lets a draft drop retained repositories once repository acces
   await page.waitForURL(/\/console\/agents(\?|$)/);
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   const status = page.getByRole("status").filter({
-    hasText: "Repository access is not available in this Installation's configuration.",
+    hasText: REPOSITORY_ACCESS_NOT_CONFIGURED,
   });
   await status.waitFor();
   assert.match(
@@ -465,7 +471,7 @@ test("Agent repository tab offers Save only to drop every binding while reposito
     `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=repositories`,
   );
   const status = page.getByRole("status").filter({
-    hasText: "Repository access is not available in this Installation's configuration.",
+    hasText: REPOSITORY_ACCESS_NOT_CONFIGURED,
   });
   await status.waitFor();
   assert.match(
@@ -559,12 +565,14 @@ test("Agent repository tab without a Repo Driver names the setup step and offers
   const body = await response.json();
   assert.deepEqual([body.data, body.meta.notConfigured], [[], true]);
   const status = page.getByRole("status").filter({
-    hasText: "Repository access is not available in this Installation's configuration.",
+    hasText: REPOSITORY_ACCESS_NOT_CONFIGURED,
   });
   await status.waitFor();
-  assert.match(
+  // An Installation administrator can set it up, so only their line links the setup guide
+  // (finding D754).
+  assert.equal(
     await status.innerText(),
-    /You can’t save repository changes on this page until an operator sets up repository access\./,
+    `${REPOSITORY_ACCESS_NOT_CONFIGURED} Set up repository access.`,
   );
   assert.equal(
     await status.getByRole("link", { name: "Set up repository access" }).getAttribute("href"),
@@ -594,6 +602,41 @@ test("Agent repository tab without a Repo Driver names the setup step and offers
       ),
     0,
   );
+});
+
+// A member who may edit the Agent cannot set up repository access. The line said to wait for "an
+// operator" and linked an operator runbook; it now says whom to ask, in the console's words, with
+// no link (finding D754).
+test("Agent repository tab without a Repo Driver sends a member to an Installation administrator", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("No Repo Driver member", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Member repository-less Agent",
+    nativeValues("rm"),
+  );
+  // The member-write persona: Agent update, which repository-options checks, and Secret operate,
+  // which saving the tab needs.
+  const member = await fixture.createNamespaceMember(
+    `${agent.id}-editor`,
+    namespace.id,
+    MEMBER_WRITE,
+  );
+  const { page } = await newPage(t, fixture);
+  await login(
+    page,
+    fixture,
+    `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=repositories`,
+    member.credentials,
+  );
+  const status = page.getByRole("status").filter({ hasText: REPOSITORY_ACCESS_NOT_CONFIGURED });
+  await status.waitFor();
+  assert.equal(
+    await status.innerText(),
+    `${REPOSITORY_ACCESS_NOT_CONFIGURED} ${REPOSITORY_SETUP_ASK}`,
+  );
+  assert.equal(await status.getByRole("link").count(), 0);
 });
 
 test("Preset repository access and plugin policies remain independent during Agent creation", async (t) => {

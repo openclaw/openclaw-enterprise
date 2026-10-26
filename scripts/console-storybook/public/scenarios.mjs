@@ -1414,7 +1414,7 @@ export const scenarios = {
     path: "/console/namespaces",
     emptyNamespaces: true,
     description:
-      "No accessible Namespaces. Create Namespace remains available; the API decides whether creation is permitted.",
+      "No readable Namespaces. Create Namespace remains available; the API decides whether creation is permitted.",
   },
   namespacesEmptyMember: {
     group: "Pages/Namespaces",
@@ -4793,10 +4793,21 @@ export const scenarios = {
     repositoryOptions: [],
     repositoryNotConfigured: true,
     description:
-      "The Installation has no Repo Driver: the tab names the setup step, links the runbook and offers no Retry. Save repository access stays hidden while the stale binding remains.",
+      "The Installation has no Repo Driver: for an Installation administrator the tab links the setup guide and offers no Retry. Save repository access stays hidden while the stale binding remains.",
     steps: [
       "Remove application. Save repository access appears, and the status says to save to continue without repository access.",
     ],
+    gap: "Simulated UI proof only; this preview does not configure a Repo Driver.",
+  },
+  repositoryEditorNotConfiguredMember: {
+    group: "Pages/Agent detail",
+    name: "Repository access without a Repo Driver, for a member",
+    path: `${draft}&tab=repositories`,
+    repositoryOptions: [],
+    repositoryNotConfigured: true,
+    observabilityDenied: true,
+    description:
+      "A member who may edit the Agent is told to ask an Installation administrator to set up repository access, with no setup guide link.",
     gap: "Simulated UI proof only; this preview does not configure a Repo Driver.",
   },
   repositoryEditorLoading: {

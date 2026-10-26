@@ -82,6 +82,7 @@ import {
   GENERIC_DENIAL,
   AGENT_CREATE_INSTALLATION_DENIED,
   CHANNELS_NEED_DEDICATED,
+  REPOSITORY_ACCESS_NOT_CONFIGURED,
 } from "../helpers/refusal-text.mjs";
 
 const defaultCodexPreset = JSON.parse(
@@ -702,14 +703,12 @@ test("Agent creation distinguishes unavailable repository choices from denied Ag
   assert.equal(options.status(), 200);
   const optionsBody = await options.json();
   assert.deepEqual([optionsBody.data, optionsBody.meta.notConfigured], [[], true]);
-  await unavailablePage
-    .getByText(/Repository access is not available in this Installation's configuration/)
-    .waitFor();
+  await unavailablePage.getByText(REPOSITORY_ACCESS_NOT_CONFIGURED, { exact: false }).waitFor();
   assert.match(
     await unavailablePage
       .getByRole("status")
       .filter({
-        hasText: "Repository access is not available in this Installation's configuration",
+        hasText: REPOSITORY_ACCESS_NOT_CONFIGURED,
       })
       .innerText(),
     /You can continue without repository access/,
@@ -1714,9 +1713,7 @@ test("Dedicated Agent creation keeps provisioning when optional repository disco
   );
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start with default Preset" }).click();
-  await page
-    .getByText(/Repository access is not available in this Installation's configuration/)
-    .waitFor();
+  await page.getByText(REPOSITORY_ACCESS_NOT_CONFIGURED, { exact: false }).waitFor();
   await page.getByLabel("Agent name", { exact: true }).fill("Model-only Agent");
   await enterManualModel(page, "model-only-test-key", "gpt-5.1");
   const admission = page.waitForResponse(

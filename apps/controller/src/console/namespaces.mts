@@ -18,6 +18,10 @@ import {
   NAMESPACE_CREATE_DENIED,
 } from "./agents/access-reasons.mjs";
 
+// The heading wherever a caller reads no Namespace: the Namespaces page and the shell's panel
+// say it alike (finding D755).
+export const NO_READABLE_NAMESPACES = "No readable Namespaces";
+
 /** The part of the mounted page context used by Namespaces and Secrets. */
 export interface NamespacePageContext {
   view: HTMLElement;
@@ -130,7 +134,7 @@ export function renderNamespaces(
       element(
         "section",
         { className: "state-panel" },
-        element("h2", {}, "No accessible namespaces"),
+        element("h2", {}, NO_READABLE_NAMESPACES),
         emptyText,
       ),
     );

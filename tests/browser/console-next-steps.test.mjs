@@ -4,6 +4,7 @@ import test from "node:test";
 
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
+  DEPLOYED_VERSION_UNREADABLE,
   deployAcceptedVersionUnreadable,
   modelCredentialRejectedAsk,
   modelCredentialRejectedReadOnly,
@@ -235,6 +236,12 @@ test("a member's own deploy of a version she cannot read is accepted, not possib
     .locator(".agent-status-line")
     .getByText(deployAcceptedVersionUnreadable(shortId(id)), { exact: true })
     .waitFor();
+  // The summary card says the same as after a redeploy, not "None. No readable deployments."
+  // (finding D755).
+  const summary = page.locator(".agent-current-summary");
+  await summary.getByText("Deployment accepted", { exact: true }).waitFor();
+  await summary.getByText(DEPLOYED_VERSION_UNREADABLE, { exact: true }).waitFor();
+  assert.equal(await summary.getByText("No readable deployments.").count(), 0);
   const panel = page.locator(".state-panel");
   await panel.getByRole("heading", { name: "You cannot read this version" }).waitFor();
   await panel.getByText(VERSION_READ_DENIED, { exact: true }).waitFor();
@@ -295,7 +302,7 @@ async function redeployUnreadable(t, name, { paged = false } = {}) {
   const summary = page.locator(".agent-current-summary");
   await summary.getByText("Deployment accepted", { exact: true }).waitFor();
   await summary
-    .getByText("You cannot read the version you deployed. v1 (Failed) is older.")
+    .getByText(`${DEPLOYED_VERSION_UNREADABLE} v1 (Failed) is older.`, { exact: true })
     .waitFor();
   await stopButton(page).waitFor();
   assert.equal(await recovery.count(), 0);
