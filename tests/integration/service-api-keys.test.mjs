@@ -674,8 +674,11 @@ test("service API keys authenticate scoped automation without replacing sessions
       { env: adminEnv },
     );
     assert.deepEqual(JSON.parse(revokedRotated.stdout), { id: rotatedDetails.id, revoked: true });
+    // A revoked key's 401 names the key file and who issues a new key, not OCC's cookie and
+    // header advice (finding D745).
     await assert.rejects(run(occCli, ["iam", "service-principal", "list"], { env: rotatedEnv }), {
-      stderr: /HTTP 401/,
+      stderr:
+        /^Error: OCC rejected the service key in \S+rotated-admin-key\.json: it is invalid, expired or revoked\. Ask an Installation administrator for a new key\.\n$/,
     });
     // A secret Role bound to the Namespace could never grant anything there: the CLI shows
     // the API's refusal naming the Permissions instead of reporting a created binding.
@@ -811,7 +814,13 @@ test("service API keys authenticate scoped automation without replacing sessions
         assert.equal(error.stdout, "");
         assert.match(error.stderr, /FORBIDDEN/);
         assert.match(error.stderr, /HTTP 403/);
-        assert.ok(error.stderr.includes(`is scoped to Namespace ${namespaceId};`));
+        // The hint names the Namespace of the key this request sent, not the rotated one, and
+        // asks for an Installation-scoped key rather than a --namespace (finding D740).
+        assert.ok(
+          error.stderr.includes(
+            `"occ installation get" needs an Installation-scoped key. This service key works only in Namespace ${namespaceId} `,
+          ),
+        );
         return true;
       },
     );

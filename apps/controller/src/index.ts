@@ -4352,11 +4352,46 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     );
   });
 
+  /**
+   * Which IDs a caller's own denial may name: those the request carried and, for a resource read
+   * from stored state, such as a Secret the Agent binds, that resource when the caller may already
+   * read it (finding 2594). Only the caller's own denial of an action other than read or create
+   * asks; an IAM failure while asking only hides the ID.
+   */
+  async function nameableIds(
+    error: unknown,
+    actorId: string | undefined,
+    sent: (value: string) => boolean,
+  ): Promise<(value: string) => boolean> {
+    if (
+      actorId === undefined ||
+      !isAuthorizationDenied(error) ||
+      isDependencyUnavailable(error) ||
+      error instanceof AgentPrincipalAuthorizationError ||
+      error.authorization === undefined ||
+      error.checkedPrincipalId !== actorId
+    ) {
+      return sent;
+    }
+    const { action, resource } = error.authorization;
+    if (
+      action === "read" ||
+      action === "create" ||
+      resource.kind === "installation" ||
+      sent(resource.id)
+    ) {
+      return sent;
+    }
+    const readable = await callerMay(actorId, "read", resource).catch(() => false);
+    return readable ? (value) => value === resource.id || sent(value) : sent;
+  }
+
   app.setErrorHandler(async (error, request, reply) => {
-    // A caller's own denial names a resource ID only when this request carried it.
+    // A caller's own denial names a resource ID only when this request carried it or the caller
+    // may already read that resource.
     const actorId = contexts.get(request)?.actorId;
     let mapped = requestFailure(error, {
-      requested: requestedValues(request),
+      requested: await nameableIds(error, actorId, requestedValues(request)),
       ...(actorId === undefined ? {} : { actorId }),
     });
     if (error instanceof RuntimeLogsError && error.retryAfterSeconds !== undefined) {

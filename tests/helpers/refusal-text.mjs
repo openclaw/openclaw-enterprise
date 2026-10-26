@@ -11,6 +11,11 @@ export const GENERIC_DENIAL = "The exact platform operation was not authorized."
 // carried, otherwise "a <Kind> this request uses".
 export const callerDenied = (grant, target) =>
   `Not authorized: this needs ${grant} on ${target}. Ask an Installation administrator to grant it.`;
+// An Agent's own service principal lacks a grant deployment needs (finding 2592). `agent` is
+// "Agent <id>" when the request carried its ID, otherwise "This Agent"; `target` is "Secret <id>"
+// when the caller sent or may read it, otherwise "one of its bound Secrets".
+export const agentPrincipalDenied = (agent, target, grant = "Secret operate") =>
+  `${agent} cannot use ${target}: the Agent itself needs ${grant} on it. Ask an Installation administrator to give the Agent access, then deploy again.`;
 // A denial echoes the ID its request sent, so a real and an unknown ID get answers that match once
 // each answer's own ID is hidden: the text never says whether the resource exists.
 export const sentIdHidden = (text, id) => text.replaceAll(id, "<id>");
@@ -91,6 +96,11 @@ export const SANDBOX_POLICY_READ_DENIED = notIncluded(
   "reading this Agent’s network policy or its suggestions",
   "SandboxPolicy read on it",
 );
+// The Logs tab's refusals use the API's grant words for log text (finding 2599).
+export const LOG_TEXT_DENIED =
+  "Log text requires Agent read_logs (or Agent administer) on this Agent. Ask an Installation administrator to grant it.";
+export const RUNTIME_STATUS_DENIED =
+  "Runtime status requires Agent operate on this Agent and AgentRevision read on this version. Log text needs Agent read_logs (or Agent administer). Ask an Installation administrator for the access you need.";
 // Agent-side save controls, from the caller's permission answer (findings 2441, 2459).
 export const AGENT_UPDATE_DENIED = notIncluded(
   "saving these settings",

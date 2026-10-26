@@ -832,7 +832,7 @@ export function createShell({
           : `No accessible ${pages[feature].toLowerCase()}`,
         feature === "backends"
           ? "No experimental Backends are configured for this Installation."
-          : "Ask an administrator to provision resources or grant access, then refresh.",
+          : "Ask an Installation administrator to provision resources or grant access, then refresh.",
         "Refresh",
         () => void loadPage(),
       );

@@ -76,6 +76,7 @@ import {
 } from "../../packages/occ/src/index.ts";
 import {
   AGENT_NAME_CONFLICT,
+  agentPrincipalDenied,
   callerDenied,
   CONSOLE_ACCESS_DENIED,
   DEPENDENCY_UNAVAILABLE,
@@ -832,7 +833,7 @@ const cases = [
     },
   ],
   [
-    "an Agent principal denial names the missing grant",
+    "an Agent principal denial names the Agent's missing grant and who gives it",
     new AgentPrincipalAuthorizationError("prn_agent", "operate", {
       kind: "secret",
       id: "sec_1",
@@ -841,8 +842,7 @@ const cases = [
     {
       status: 403,
       code: "FORBIDDEN",
-      message:
-        "The Agent service principal prn_agent is not authorized to operate secret sec_1. Grant that principal operate on the secret, then deploy again.",
+      message: agentPrincipalDenied("This Agent", "one of its bound Secrets"),
     },
   ],
   [
@@ -1529,6 +1529,60 @@ test("a caller denial names each checked grant without disclosing a Restriction 
   );
 });
 
+// Finding 2592: the resource an Agent's own principal lacks comes from the Agent's stored bindings.
+// The text names it only when the request carried its ID or the caller may read it, names the
+// Agent only when the request carried its ID, and never names the principal.
+test("an Agent principal denial names a bound resource only when the caller sent or may read it", () => {
+  const agentId = "agt_1";
+  const secret = { kind: "secret", id: "sec_1", namespaceId: "ns_1" };
+  const deploy = requestedValues({ params: { namespaceId: "ns_1", agentId } });
+  const answer = (resource, callerMayReadResource, requested = deploy) =>
+    requestFailure(
+      new AgentPrincipalAuthorizationError("prn_agent", "operate", resource, undefined, {
+        agentId,
+        callerMayReadResource,
+      }),
+      { requested, actorId: "prn_caller" },
+    );
+  const hidden = answer(secret, false);
+  assert.equal(hidden.status, 403);
+  assert.equal(hidden.code, "FORBIDDEN");
+  assert.equal(
+    hidden.message,
+    agentPrincipalDenied(`Agent ${agentId}`, "one of its bound Secrets"),
+  );
+  assert.doesNotMatch(hidden.message, /sec_1|prn_agent/);
+  assert.equal(
+    answer(secret, true).message,
+    agentPrincipalDenied(`Agent ${agentId}`, "Secret sec_1"),
+  );
+  // An ID the request itself sent is named even without read, as in the caller's own denials.
+  assert.equal(
+    answer(secret, false, requestedValues({ params: { agentId }, body: { secretId: "sec_1" } }))
+      .message,
+    agentPrincipalDenied(`Agent ${agentId}`, "Secret sec_1"),
+  );
+  // A request that did not carry the Agent's ID, such as a provisioning retry, names no Agent.
+  assert.equal(
+    answer(secret, true, requestedValues({ params: { workId: "work_1" } })).message,
+    agentPrincipalDenied("This Agent", "Secret sec_1"),
+  );
+  const source = { kind: "credential_source", id: "crs_1", namespaceId: "ns_1" };
+  assert.equal(
+    answer(source, false).message,
+    agentPrincipalDenied(
+      `Agent ${agentId}`,
+      "one of its bound credential sources",
+      "credential source operate",
+    ),
+  );
+  // An ID outside the plain shape is never echoed, even when the caller may read it.
+  assert.equal(
+    answer({ ...secret, id: "sec_1\u001b[2J" }, true).message,
+    agentPrincipalDenied(`Agent ${agentId}`, "one of its bound Secrets"),
+  );
+});
+
 // Finding 2586: Native IAM reports no identity for a principal it has not provisioned, so only the
 // principal the error records as checked tells the caller's own denial from another's.
 test("a denial for an unprovisioned principal other than the caller names no grant", async () => {
@@ -1595,6 +1649,21 @@ test("only path parameters and reference fields count as IDs a request sent", ()
     assert.equal(sent(id), false, id);
   }
   assert.equal(requestedValues({})("anything"), false);
+  // A path Agent ID also carries that Agent's SandboxPolicy ID, which is derived from it; a body
+  // or query Agent ID does not (finding 2594).
+  const agentUuid = "00000000-0000-4000-8000-000000000001";
+  assert.equal(
+    requestedValues({ params: { agentId: `agt_${agentUuid}` } })(`sbp_${agentUuid}`),
+    true,
+  );
+  assert.equal(
+    requestedValues({ body: { agentId: `agt_${agentUuid}` } })(`sbp_${agentUuid}`),
+    false,
+  );
+  assert.equal(
+    requestedValues({ params: { configurationId: `cfg_${agentUuid}` } })(`sbp_${agentUuid}`),
+    false,
+  );
 });
 
 // The console shows the API's named denial where the view has no grant or refusal of its own,

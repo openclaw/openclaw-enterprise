@@ -44,6 +44,7 @@ import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.
 import { createPolicyConsole } from "./console-sandbox-policy-fixture.ts";
 import {
   AGENT_SAVE_DENIED,
+  agentPrincipalDenied,
   callerDenied,
   CHANNEL_SECRETS_CONFIGURATION_CHANGED,
   CONFIGURATION_SAVE_DENIED,
@@ -1465,8 +1466,8 @@ test("Deploy names the bound Secrets an operator may not operate", async (t) => 
   }
 
   // Unknown answer: the first Secret answer fails, so Deploy stays enabled and the API decides.
-  // Its 403 names the grant but no Secret the request did not send; the answer, read again,
-  // names the Secret.
+  // Its 403 names the grant and the Secret, which the operator may read (finding 2594); the
+  // answer, read again, names the Secret by name.
   {
     const { page } = await newPage(t, fixture);
     let failed = false;
@@ -1492,7 +1493,7 @@ test("Deploy names the bound Secrets an operator may not operate", async (t) => 
     assert.equal(response.status(), 403);
     assert.equal(
       (await response.json()).error.message,
-      callerDenied("Secret operate", "a Secret this request uses"),
+      callerDenied("Secret operate", `Secret ${modelSecret.id}`),
     );
     const alert = page.getByRole("alert").filter({ hasText: reason });
     await alert.waitFor();
@@ -1565,12 +1566,10 @@ test("Agent deployment shows the API's typed 403 and 409 refusals", async (t) =>
   }
 
   // The caller may operate the model Secret, but the Agent's own service principal may not.
-  // The API names that principal and the grant to add; the console shows the same sentence.
+  // The API names the grant the Agent lacks and who gives it, never the principal; the console
+  // shows the same sentence (finding 2592).
   const denied = await refusal(403);
-  assert.match(
-    denied,
-    new RegExp(`^The Agent service principal ${agent.servicePrincipalId} is not authorized`),
-  );
+  assert.equal(denied, agentPrincipalDenied(`Agent ${agent.id}`, `Secret ${modelSecret.id}`));
   await page.getByText(denied, { exact: true }).waitFor();
   await waitForEnabled(deploy);
 

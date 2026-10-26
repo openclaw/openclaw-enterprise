@@ -59,7 +59,8 @@ A `403 FORBIDDEN` for a grant you lack names it and who grants it, for example
 administrator to grant it.` No Role can hold create, so a create denial names
 its Namespace and says only an Installation administrator can create it. The
 message names a resource ID only when your request sent it in the path or an ID
-field, never a binding, Role or Restriction. A Restriction, a missing grant and
+field, or you can already read that resource, never a binding, Role or
+Restriction. Log text needs `Agent read_logs (or Agent administer)`. A Restriction, a missing grant and
 a resource that does not exist get the same message. A denial about your own
 account, session or provisioning job says so: `The acting account is disabled.`,
 `The acting identity is unavailable.`, `The human administrator session is no

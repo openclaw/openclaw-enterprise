@@ -23,6 +23,7 @@ import {
 } from "./console-agents-browser-helpers.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import {
+  agentPrincipalDenied,
   CONFIGURATION_EDITS_PENDING,
   DEPENDENCY_UNAVAILABLE,
   READ_UNAVAILABLE,
@@ -120,11 +121,12 @@ test("draft Agent offers deployment without a generated-credential step", async 
   );
   await deploy.click();
   assert.equal((await deniedDeployment).status(), 403);
-  // The API names the Agent's own principal and the grant it lacks; the console shows that.
+  // The API names the grant the Agent's own principal lacks and who gives it; the console shows
+  // that. The administrator may read the model Secret, so it is named (finding 2592).
   await page
     .getByRole("alert")
     .filter({
-      hasText: `The Agent service principal ${agent.servicePrincipalId} is not authorized to operate`,
+      hasText: agentPrincipalDenied(`Agent ${agent.id}`, `Secret ${agent.harnessAuth.source.id}`),
     })
     .waitFor();
   await waitForEnabled(deploy);

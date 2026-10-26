@@ -32,7 +32,7 @@ func TestAgentLogsEscapeBidiAndZeroWidthCharactersInTextAndNotices(t *testing.T)
 	}
 
 	stub := newStub()
-	out, errOut, err := runLogsCommand(t, context.Background(), stub, "agent", "logs", "agt_1", "--source", "gateway")
+	out, errOut, err := runLogsCommand(t, context.Background(), stub, "agent", "logs", "agt_00000000-0000-4000-8000-000000000001", "--source", "gateway")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +42,7 @@ func TestAgentLogsEscapeBidiAndZeroWidthCharactersInTextAndNotices(t *testing.T)
 		t.Errorf("text output = %q, want %q", out, want)
 	}
 	for _, want := range []string{
-		`agent agt_1 has no active revision; using rev_\u2069\u202a2, the latest revision you can read`,
+		`agent agt_00000000-0000-4000-8000-000000000001 has no active revision; using rev_\u2069\u202a2, the latest revision you can read`,
 		`notice: - gap stream\u202ereplaced: Container \ufeffrestarted.`,
 		`notice: 2026-09-30T12:00:02Z 3 lines withheld (over\u200dlimit)`,
 	} {
@@ -55,8 +55,8 @@ func TestAgentLogsEscapeBidiAndZeroWidthCharactersInTextAndNotices(t *testing.T)
 	}
 
 	// A page without a running Pod names the revision and source in its notice.
-	stub = &runtimeLogStub{t: t, activeID: "rev_1", pages: []func(http.ResponseWriter, url.Values){podless}}
-	_, errOut, err = runLogsCommand(t, context.Background(), stub, "agent", "logs", "agt_1", "--source", "gateway", "--revision", "rev_1")
+	stub = &runtimeLogStub{t: t, activeID: "rev_00000000-0000-4000-8000-000000000001", pages: []func(http.ResponseWriter, url.Values){podless}}
+	_, errOut, err = runLogsCommand(t, context.Background(), stub, "agent", "logs", "agt_00000000-0000-4000-8000-000000000001", "--source", "gateway", "--revision", "rev_00000000-0000-4000-8000-000000000001")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func TestAgentLogsEscapeBidiAndZeroWidthCharactersInTextAndNotices(t *testing.T)
 	// NDJSON output is the exact record (JSON escaping keeps it valid); its
 	// notices on stderr are text and escaped.
 	stub = newStub()
-	out, errOut, err = runLogsCommand(t, context.Background(), stub, "agent", "logs", "agt_1", "--source", "gateway", "-o", "json")
+	out, errOut, err = runLogsCommand(t, context.Background(), stub, "agent", "logs", "agt_00000000-0000-4000-8000-000000000001", "--source", "gateway", "-o", "json")
 	if err != nil {
 		t.Fatal(err)
 	}

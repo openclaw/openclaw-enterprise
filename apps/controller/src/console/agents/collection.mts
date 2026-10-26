@@ -792,7 +792,17 @@ export function renderAgentList(context: AgentListContext) {
         element(
           "section",
           { className: "state-panel" },
-          element("h2", {}, query ? "No matching Agents" : "No Agents yet"),
+          // A reader without create sees only Agents shared with them, not every Agent here
+          // (finding 2548).
+          element(
+            "h2",
+            {},
+            query
+              ? "No matching Agents"
+              : createDenied
+                ? "No Agents are shared with you"
+                : "No Agents yet",
+          ),
           element(
             "p",
             {},

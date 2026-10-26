@@ -45,6 +45,8 @@ type application struct {
 	output         string
 	parsedTimeout  time.Duration
 	ctx            context.Context
+	// commandPath is the running command after "occ", such as "agent list".
+	commandPath string
 }
 
 // New builds the OCC domain command tree.
@@ -56,7 +58,7 @@ func New(out, errOut io.Writer) *cobra.Command {
 		Version:       Version,
 		SilenceErrors: true,
 		SilenceUsage:  true,
-		Args:          cobra.NoArgs,
+		Args:          missingCommandArgs(signInCommands),
 		// Runnable like commandGroup, so cobra checks Args and rejects an unknown
 		// command instead of printing help and exiting 0.
 		RunE: func(command *cobra.Command, _ []string) error {
@@ -262,6 +264,9 @@ func (app *application) namespaceCommand() *cobra.Command {
 
 func (app *application) configurationCommand() *cobra.Command {
 	command := commandGroup("configuration", "Manage Configurations in the selected Namespace")
+	command.Args = missingCommandArgs(map[string]string{
+		"list": "occ has no configuration list; the CONFIGURATION column of \"occ agent list\" shows each Agent's Configuration ID.",
+	})
 
 	var createFile string
 	create := &cobra.Command{
@@ -777,7 +782,7 @@ func (app *application) agentCommand() *cobra.Command {
 		Use:   "deploy ID",
 		Short: "Deploy an Agent and create an immutable revision",
 		Args:  idArgs(agentIDArg),
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(command *cobra.Command, args []string) error {
 			namespace, err := app.requiredNamespace()
 			if err != nil {
 				return err
@@ -790,12 +795,16 @@ func (app *application) agentCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return app.printItems(revision, false, []column{
+			if err := app.printItems(revision, false, []column{
 				{title: "ID", key: "id"},
 				{title: "REVISION", key: "revision"},
 				{title: "AGENT", key: "agentId"},
 				{title: "CONFIGURATION", key: "configurationId"},
-			})
+			}); err != nil {
+				return err
+			}
+			unreadableRevisionNotice(client, command.ErrOrStderr(), namespace, args[0], revision)
+			return nil
 		},
 	}
 	var revisionLimit int
@@ -876,12 +885,25 @@ func (app *application) agentCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// Only an Agent the caller can already read tells whether anything ran:
+			// stopped with no active revision is a never-deployed or already
+			// stopped Agent (finding D746). A failed read keeps the plain notice.
+			idle := false
+			if before, readErr := client.GetAgent(namespace, args[0]); readErr == nil {
+				resource, _ := before.(map[string]any)
+				active, _ := resource["activeRevisionId"].(string)
+				idle = resource["desiredRuntimeState"] == "stopped" && active == ""
+			}
 			agent, err := client.StopAgent(namespace, args[0])
 			if err != nil {
 				return err
 			}
 			if err := app.printAgent(agent, false); err != nil {
 				return err
+			}
+			if idle {
+				fmt.Fprintf(command.ErrOrStderr(), "notice: No version is running, so there is nothing to stop. Run \"occ --namespace %s agent deploy %s\" to start the Agent.\n", namespace, args[0])
+				return nil
 			}
 			fmt.Fprintf(command.ErrOrStderr(), "notice: stop requested; run \"occ --namespace %s agent deploy %s\" to start the Agent again\n", namespace, args[0])
 			return nil
@@ -1097,6 +1119,26 @@ func commandGroup(use, short string) *cobra.Command {
 		RunE: func(command *cobra.Command, _ []string) error {
 			return command.Help()
 		},
+	}
+}
+
+// signInCommands are commands people try first that occ does not have: it
+// authenticates with a service key file only (finding D745).
+var signInCommands = func() map[string]string {
+	const signIn = "occ has no sign-in command: it uses a service key file. Set OCC_SERVICE_KEY_FILE to the key an Installation administrator issued you."
+	return map[string]string{"login": signIn, "auth": signIn, "device-login": signIn, "whoami": signIn}
+}()
+
+// missingCommandArgs refuses positional arguments like cobra.NoArgs, but a
+// command name in missing gets its own explanation after cobra's text.
+func missingCommandArgs(missing map[string]string) cobra.PositionalArgs {
+	return func(command *cobra.Command, args []string) error {
+		if len(args) > 0 {
+			if explanation, ok := missing[args[0]]; ok {
+				return fmt.Errorf("unknown command %q for %q. %s", args[0], command.CommandPath(), explanation)
+			}
+		}
+		return cobra.NoArgs(command, args)
 	}
 }
 

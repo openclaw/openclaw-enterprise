@@ -2221,6 +2221,24 @@ export function installFixture(scenario, evidence) {
           if (!revisions.has(revisionId)) {
             return error(404);
           }
+          if (scenario.diagnosticsState === "noSlack") {
+            // The gateway's answer for a version with no Slack channel.
+            return response({
+              revisionId,
+              observedAt: "2026-09-27T12:00:00.000Z",
+              checks: [
+                ["configuration", "failed", "NOT_CONFIGURED"],
+                ["authentication", "unknown"],
+                ["connectivity", "unknown"],
+              ].map(([check, state, code]) => ({
+                component: "gateway",
+                check,
+                state,
+                checkedAt: "2026-09-27T11:59:59.000Z",
+                ...(code ? { code } : {}),
+              })),
+            });
+          }
           return response({
             revisionId,
             observedAt: "2026-09-27T12:00:00.000Z",

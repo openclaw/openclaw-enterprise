@@ -19,6 +19,7 @@ import type {
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture, fileConsoleApp } from "../helpers/console-app.mjs";
 import { grantRole } from "../helpers/iam-grants.mjs";
+import { LOG_TEXT_DENIED, RUNTIME_STATUS_DENIED } from "../helpers/refusal-text.mjs";
 import {
   createProviderSandboxDriver,
   createRuntimeLogComputeDriver,
@@ -1264,9 +1265,7 @@ test("an operator without administer sees status but no log text and is never re
   await login(page, fixture, url, operator.credentials);
 
   await page.locator(".runtime-pod").getByRole("heading", { name: "Gateway" }).waitFor();
-  await page
-    .getByText("Log text requires Agent read_logs (or administer) and read access.")
-    .waitFor();
+  await page.getByText(LOG_TEXT_DENIED).waitFor();
   assert.equal(await page.getByText("operator must not see this").count(), 0);
   assert.equal(await page.getByRole("button", { name: "Follow" }).isDisabled(), true);
   assert.equal(await page.getByRole("button", { name: "Refresh logs" }).isDisabled(), true);
@@ -1306,11 +1305,7 @@ test("a log reader without operate reads log text in the Logs tab without runtim
   await login(page, fixture, url, reader.credentials);
 
   // Runtime status needs operate; log text needs only read_logs, so the tab still reads it.
-  await page
-    .getByText(
-      "Runtime status requires Agent operate and read access plus read access to this version.",
-    )
-    .waitFor();
+  await page.getByText(RUNTIME_STATUS_DENIED).waitFor();
   const pane = page.getByRole("log", { name: "Runtime log output" });
   await pane.getByText("log reader can see this").waitFor();
   const pod = computeDriver.podName({ id: revisionId });
@@ -1957,11 +1952,7 @@ test("a reader without operate learns what log text needs and is not asked for s
   const url = detailUrl(fixture, namespace.id, agent.id, revisionId, "logs");
   await login(page, fixture, url, reader.credentials);
 
-  await page
-    .getByText(
-      /Runtime status requires Agent operate .* Log text needs Agent read_logs \(or administer\) and read access\./,
-    )
-    .waitFor();
+  await page.getByText(RUNTIME_STATUS_DENIED).waitFor();
   const statusReads = () =>
     requests.filter(({ path }) => path.endsWith(`/deployments/${revisionId}/runtime`)).length;
   await settlePageRequests(page);

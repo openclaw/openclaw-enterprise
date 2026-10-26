@@ -1,6 +1,7 @@
 package occcli
 
 import (
+	"cmp"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"fmt"
@@ -363,8 +364,33 @@ func (app *application) printItems(value any, collection bool, columns []column)
 		if !ok {
 			return fmt.Errorf("OCC returned an invalid resource collection")
 		}
+		if len(items) == 0 {
+			return app.printEmptyList()
+		}
 	}
 	return printTable(app.out, items, columns)
+}
+
+// emptyListTexts answer an empty list per command. OCC filters these lists by
+// what the caller may read, so an empty list does not mean nothing exists
+// (finding D746).
+var emptyListTexts = map[string]string{
+	"namespace list":             "No Namespaces you can read.",
+	"secret list":                "No Secrets you can read.",
+	"preset list":                "No Presets you can read.",
+	"credential-source list":     "No credential sources you can read.",
+	"service-account list":       "No ServiceAccounts you can read.",
+	"agent list":                 "No Agents you can read.",
+	"iam role list":              "No Roles you can read.",
+	"iam access-binding list":    "No AccessBindings you can read.",
+	"iam service-principal list": "No ServicePrincipals you can read.",
+	"agent revisions":            "No revisions you can read. Revisions need AgentRevision read; ask an Installation administrator.",
+}
+
+// printEmptyList prints the running command's empty-list sentence.
+func (app *application) printEmptyList() error {
+	_, err := fmt.Fprintln(app.out, cmp.Or(emptyListTexts[app.commandPath], "No resources found."))
+	return err
 }
 
 // printBrowsingItems keeps metadata readable while making saved-settings errors visible.
@@ -379,6 +405,9 @@ func (app *application) printBrowsingItems(value any, collection bool, columns [
 		items, ok = value.([]any)
 		if !ok {
 			return fmt.Errorf("OCC returned an invalid resource collection")
+		}
+		if len(items) == 0 {
+			return app.printEmptyList()
 		}
 	}
 	rows := make([]any, 0, len(items))

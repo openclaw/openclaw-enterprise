@@ -238,6 +238,21 @@ func (app *application) agentRuntimeCommand() *cobra.Command {
 	return command
 }
 
+// sinceValue is a --since duration whose parse error names the accepted
+// units instead of Go's duration parser text (finding D745): "3d" is common.
+type sinceValue time.Duration
+
+func (value *sinceValue) String() string { return time.Duration(*value).String() }
+func (value *sinceValue) Type() string   { return "duration" }
+func (value *sinceValue) Set(text string) error {
+	parsed, err := time.ParseDuration(text)
+	if err != nil {
+		return errors.New("use h, m or s, for example 12h or 90m; at most 24h")
+	}
+	*value = sinceValue(parsed)
+	return nil
+}
+
 type runtimeLogOptions struct {
 	source   string
 	revision string
@@ -272,7 +287,7 @@ func (app *application) agentLogsCommand() *cobra.Command {
 	flags.StringVar(&options.pod, "pod", "", "Pod name (default: the source's first Pod)")
 	flags.BoolVar(&options.previous, "previous", false, "Read the previous container instance")
 	flags.IntVar(&options.tail, "tail", 200, "Lines from the end of the stream, 1 to 1000")
-	flags.DurationVar(&options.since, "since", 0, "Only lines newer than this duration, at least 1s, up to 24h")
+	flags.Var((*sinceValue)(&options.since), "since", "Only lines newer than this duration, at least 1s, up to 24h")
 	flags.BoolVar(&options.follow, "follow", false, "Poll for new lines every 2 seconds")
 	flags.StringVar(&options.level, "level", "", "Minimum level: error, warn, info or debug (default: every level; lines of unknown level are always shown)")
 	_ = command.MarkFlagRequired("source")
@@ -349,6 +364,8 @@ func (app *application) runAgentLogs(command *cobra.Command, agentID string, opt
 	}
 	cursor := ""
 	noPod := false
+	// read records a page already read, so a later refusal means access changed.
+	read := false
 	for {
 		pageQuery := query
 		if cursor != "" {
@@ -381,6 +398,12 @@ func (app *application) runAgentLogs(command *cobra.Command, agentID string, opt
 				fmt.Fprintf(notices, "notice: rate limited; retrying in %s\n", wait)
 			case apiErr.Status == http.StatusGatewayTimeout:
 				fmt.Fprintf(notices, "notice: the read timed out; retrying in %s\n", wait)
+			case apiErr.Status == http.StatusForbidden && read:
+				// The caller read this Agent's logs a moment ago (finding D746).
+				return fmt.Errorf(
+					"your access to Agent %s changed while following its logs; log text now needs Agent read_logs (or Agent administer). Ask an Installation administrator if you still need it.",
+					agentID,
+				)
 			case apiErr.Status == http.StatusBadRequest && apiErr.Code == "RUNTIME_LOGS_CURSOR_INVALID" && cursor != "":
 				fmt.Fprintln(notices, "notice: the cursor was rejected; starting a new view")
 				cursor = ""
@@ -396,6 +419,7 @@ func (app *application) runAgentLogs(command *cobra.Command, agentID string, opt
 				noticef(notices, "notice: revision %s has no running Pod for source %s", page.RevisionID, page.Source)
 			}
 			noPod = missingPod
+			read = true
 			if err := app.printRuntimeLogPage(page, notices); err != nil {
 				return err
 			}
