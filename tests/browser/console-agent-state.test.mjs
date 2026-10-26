@@ -965,7 +965,7 @@ test("Deployment activity guides a failed model check or an unauthorized gateway
         },
       }),
       nextStep:
-        /^The startup model check failed for a reason other than a rejected credential, .*, or, with Codex, a provider the runtime cannot reach\. .*and that the runtime can reach the provider, then deploy a new version\.$/,
+        /^The startup model check failed, but not for a rejected credential: .*, or, with Codex, an unreachable provider\. Check these and the provider account, then deploy a new version\.$/,
       // The runtime's classified cause names why this check failed.
       cause:
         "The model provider rejected the request: rate or usage limit reached (rate_limit). Wait for the provider's limit to reset or use an account with remaining quota, then deploy a new version.",
@@ -981,7 +981,7 @@ test("Deployment activity guides a failed model check or an unauthorized gateway
           cause: { kind: "PROBE_STATUS", detail: "error-event" },
         },
       }),
-      nextStep: /^The startup model check failed for a reason other than a rejected credential, /,
+      nextStep: /^The startup model check failed, but not for a rejected credential: /,
       cause: "The model provider check reported a failure (error-event)",
     },
     {
@@ -995,7 +995,7 @@ test("Deployment activity guides a failed model check or an unauthorized gateway
           cause: { kind: "PROBE_STATUS", detail: "billing" },
         },
       }),
-      nextStep: /^The startup model check failed for a reason other than a rejected credential, /,
+      nextStep: /^The startup model check failed, but not for a rejected credential: /,
       cause:
         "The model provider rejected the request: billing or credit problem (billing). Check the provider account's plan and credits, then deploy a new version.",
     },
@@ -1020,13 +1020,13 @@ test("Deployment activity guides a failed model check or an unauthorized gateway
           cause: { kind: "PROBE_STATUS", detail },
         },
       }),
-      nextStep: /^The startup model check failed for a reason other than a rejected credential, /,
+      nextStep: /^The startup model check failed, but not for a rejected credential: /,
       cause,
     })),
     {
       error: persistedDeploymentError("RUNTIME_MODEL_PROBE_TIMEOUT"),
       nextStep:
-        /^The startup model check did not get a reply from the model provider in time\. With OpenClaw this includes a provider the runtime cannot reach \(refused connection or unknown host\)\..* then deploy a new version\.$/,
+        /^The startup model check got no reply from the provider in time\. With OpenClaw this includes an unreachable provider \(refused connection or unknown host\)\..* then deploy a new version\.$/,
     },
     {
       // The Configuration holds the fix (Enable gateway password access), not Credentials.
