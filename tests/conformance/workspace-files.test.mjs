@@ -53,10 +53,15 @@ async function createFixture({ workspaceFilesAccess, workspaceFileRequestTimeout
     },
     secretDriver: createTestSecretDriver(),
     appOptions: (overrides) => ({
-      workspaceFilesAccess: {
-        read: (read) => running.workspaceFilesAccess.read(read),
-        write: (write) => running.workspaceFilesAccess.write(write),
-      },
+      // An app built with `workspaceFilesUnconfigured` has no workspace file access at all.
+      ...(overrides.workspaceFilesUnconfigured === true
+        ? {}
+        : {
+            workspaceFilesAccess: {
+              read: (read) => running.workspaceFilesAccess.read(read),
+              write: (write) => running.workspaceFilesAccess.write(write),
+            },
+          }),
       ...(overrides.workspaceFileRequestTimeoutMs === undefined
         ? {}
         : { workspaceFileRequestTimeoutMs: overrides.workspaceFileRequestTimeoutMs }),
@@ -315,6 +320,50 @@ test("Agent workspace file routes enforce read and operate permissions separatel
     id: agent.id,
     namespaceId: namespace.id,
   });
+});
+
+test("Agent workspace file routes authorize the caller before reporting unconfigured file access", async (context) => {
+  const fixture = await createFixture({ workspaceFilesAccess: undefined });
+  const namespace = await createNamespace(fixture, "Unconfigured tenant");
+  const { agent } = await createAgent(fixture, namespace, "Unconfigured files Agent");
+  // The same controller and sessions, but no workspace file access configured.
+  const unconfigured = fixture.createApp(fixture.administrator, {
+    workspaceFilesUnconfigured: true,
+  });
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}/workspace/files/AGENTS.md`;
+  const session = fixture.session(fixture.tenantAReader);
+  const assertDenied = (result, action) => {
+    assert.equal(result.response.status, 403);
+    assert.equal(result.payload.error.code, "FORBIDDEN");
+    assert.equal(fixture.auditSink.events.at(-1).kind, "authorization_denial");
+    assert.equal(fixture.auditSink.events.at(-1).authorization.action, action);
+  };
+  const assertUnavailable = (result) => {
+    assert.equal(result.response.status, 503);
+    assert.equal(result.payload.error.code, "DEPENDENCY_UNAVAILABLE");
+  };
+
+  // A caller with no grant on this Agent gets the refusal it would get on a configured
+  // Installation, not a 503 that answers before its authorization (finding 2584).
+  assertDenied(await request(unconfigured, path, { session }), "read");
+  // With Agent read, the read reaches the missing file access; a write still needs operate.
+  for (const grant of [...fixture.state.roles, ...fixture.state.bindings]) {
+    if (["role-tenant-a-reader", "binding-tenant-a-reader"].includes(grant.id)) {
+      replaceForCase(context, grant, "namespaceId", namespace.id);
+    }
+  }
+  assertUnavailable(await request(unconfigured, path, { session }));
+  assertDenied(
+    await put(unconfigured, path, { content: "cannot write\n" }, { session }),
+    "operate",
+  );
+  // An authorized caller still gets 503 for both. The two refusals are the only file audits.
+  assertUnavailable(await request(unconfigured, path));
+  assertUnavailable(await put(unconfigured, path, { content: "unconfigured\n" }));
+  assert.deepEqual(
+    fileAudits(fixture).map((event) => event.kind),
+    ["authorization_denial", "authorization_denial"],
+  );
 });
 
 test("Agent workspace file routes reject invalid names, bodies, and cross-site writes before provider access", async () => {
