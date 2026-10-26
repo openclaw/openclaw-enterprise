@@ -124,8 +124,9 @@ without pickers. It also lists the other keys the Slack settings read, such as a
 below the pickers. Bind them through the Configuration API; **Deploy new version** waits until each
 is bound and the Agent can use its Secret. Deployment checks the Agent's access to every bound
 Secret, so a bound key no Slack setting reads, such as `SLACK_APP_TOKEN` left from Socket Mode,
-shows as **Bound · not read by the Slack settings** and needs that access too. **Retry Secret
-access** stays available for all of them. If the API refuses a save for a channel
+shows as **Bound · not read by the Slack settings** and needs that access too. While an
+Installation administrator's console reads that access, **Deploy new version** waits. **Retry
+Secret access** stays available for all of them. If the API refuses a save for a channel
 setting, the panel shows the API's message, which names the setting. Fix that setting in the
 Configuration JSON on the Configuration tab. If the message asks for a Secret binding of another
 name, bind that name through the Configuration API.

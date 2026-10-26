@@ -867,7 +867,7 @@ test("Deploy waits for the Agent's Secret grant read and sends no deploy it woul
   );
   assert.ok(heldReads > 0, "the grant read is in flight");
   assert.equal(await deploy.isDisabled(), true);
-  await page.getByText("Checking this Agent's Secret access before deploying.").waitFor();
+  await page.getByText("Checking this Agent's credential access before deploying.").waitFor();
   releaseReads();
   await page.getByText("Resolve the saved Secret access grant before deploying.").waitFor();
   assert.equal(await deploy.isDisabled(), true);

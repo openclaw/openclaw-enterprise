@@ -7303,6 +7303,21 @@ export const scenarios = {
       "Select Retry Secret access. The row reads Bound · not read by the Slack settings and Deploy new version is available; do not deploy.",
     ],
   },
+  credentialsSlackGrantReadPending: {
+    group: "Components/Credentials",
+    name: "Slack grant read in progress",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    slackGrantMissing: "SLACK_APP_TOKEN",
+    rules: [{ suffix: "/iam/access-bindings", method: "GET", delayMs: 4000 }],
+    description:
+      "An Installation administrator opens an Agent while the console still reads the Namespace IAM policy for the bound Slack Secrets' grants. Deploy waits for that read, then stays blocked because the app token Secret has no Agent grant.",
+    gap: "The slow policy read is simulated.",
+    steps: [
+      "While the read is held, Prepare says Checking this Agent's credential access before deploying. and Deploy new version is disabled.",
+      "After the read lands, the Slack app token reads Bound · Agent access not confirmed and Deploy stays disabled until Retry Secret access grants it.",
+    ],
+  },
   credentialsSlackSigningSecretMissing: {
     group: "Components/Credentials",
     name: "Slack signing secret without a binding",

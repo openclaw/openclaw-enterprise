@@ -814,7 +814,7 @@ export function createChannelSecretsPanel({
       return "Version history is required before deploying this new version.";
     }
     if (state.checkingGrants) {
-      return "Checking this Agent's Secret access before deploying.";
+      return "Checking this Agent's credential access before deploying.";
     }
     if (state.saveGrantWarning) {
       return "Resolve the saved Secret access grant before deploying.";

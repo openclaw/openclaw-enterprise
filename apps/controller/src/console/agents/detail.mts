@@ -2963,7 +2963,7 @@ export async function renderAgentDetail(
                 : authenticationSaveState === "uncertain"
                   ? "Reload this draft"
                   : credentials?.checkingGrants()
-                    ? "Checking Secret access…"
+                    ? "Checking credential access…"
                     : "Finish in Credentials",
       );
       setStep(checklistSteps[2], false, "Creates an immutable version from the saved draft");
@@ -4271,7 +4271,7 @@ export async function renderAgentDetail(
         auth.setDisabled(true);
         data.setAuthenticationSaveState("saving");
         data.setAuthenticationPending(true);
-        say(savedAuthentication ? "Checking Secret access…" : "Saving authentication…");
+        say(savedAuthentication ? "Checking credential access…" : "Saving authentication…");
         let mutationStarted = false;
         // Set once the grant request starts: a retry first rereads the Agent.
         let grantRequested = false;
