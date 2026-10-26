@@ -9,6 +9,7 @@ import {
 } from "../helpers/postgres-protected-scenarios.mjs";
 import { receipts as installedReceipts } from "../helpers/egress-custody-observations.mjs";
 import { captureMetadata } from "../helpers/github-metadata-exchange.mjs";
+import { credentialSourceFieldRequired } from "../helpers/refusal-text.mjs";
 
 // Acts as the enrolled supervisor on genuine TLS gRPC; exercises real API, IAM, HTTP origin and
 // PostgreSQL dispatch + recovery. Supplier custody and network enforcement need the installed suite.
@@ -45,7 +46,13 @@ test(
           config,
         };
         const post = (body) => app.request("POST", path, { body });
-        assert.equal((await post(input)).status, 404, "no implicit execution authority");
+        // No implicit execution authority: the catalog requires it, and the refusal names it.
+        const implicit = await post(input);
+        assert.equal(implicit.status, 400, "no implicit execution authority");
+        assert.equal(
+          implicit.body.error.message,
+          credentialSourceFieldRequired("credential-free-repository-metadata", "config.authority"),
+        );
         const { status, data: source } = await post({
           ...input,
           config: { ...config, authority: "execution" },
