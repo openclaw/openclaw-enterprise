@@ -3043,10 +3043,11 @@ test("an operate grant after the page loaded shows status on the first Logs visi
   assert.equal(permissionReads() - permissionsBefore, 1);
 });
 
-// An unknown permission answer keeps today's behaviour: the status read is still sent, and an
-// operator sees runtime status (finding 2454).
-test("an unknown permission answer still reads runtime status", async (t) => {
-  const { fixture, namespace, agent, revisionId } = await logsFixture(t);
+// An unknown permission answer keeps today's behaviour: the status and log text reads are still
+// sent, and an operator sees runtime status and log text (findings 2454, D758).
+test("an unknown permission answer still reads runtime status and log text", async (t) => {
+  const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
+  computeDriver.state.lines = [line(1, "read without a permission answer")];
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   await withholdPermissionSummary(page, fixture, namespace.id, agent.id);
@@ -3054,6 +3055,10 @@ test("an unknown permission answer still reads runtime status", async (t) => {
   await page.locator(".runtime-pod").first().waitFor();
   assert.ok(requests.some(({ path }) => path.endsWith(`/deployments/${revisionId}/runtime`)));
   assert.equal(await page.getByText(/Runtime status requires Agent operate/).count(), 0);
+  await page
+    .getByRole("log", { name: "Runtime log output" })
+    .getByText("read without a permission answer")
+    .waitFor();
 });
 
 // The page read its answer before operate was revoked. The refusal is compared with a fresh

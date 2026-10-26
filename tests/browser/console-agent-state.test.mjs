@@ -816,6 +816,22 @@ test("Credentials links a readable bound Secret to the Secrets page and explains
   assert.equal(await member.getByText("Secret metadata is bound.").count(), 0);
   assert.deepEqual(authorizationDenials(auditSink, /^openclaw\.secrets\./), []);
 
+  // A member who may update the Agent and operate the Secret, but not read it, can edit the
+  // field. Its hint still says why the bound Secret has no name, before how to choose another.
+  const editor = await fixture.createNamespaceMember("link-editor", namespace.id, [
+    ...AGENT_READ,
+    ["update", "agent"],
+    ["operate", "secret"],
+  ]);
+  const { page: editing } = await newPage(t, fixture);
+  await trackSettledFetches(editing);
+  await login(editing, fixture, url, editor.credentials);
+  await waitForEnabled(editing.getByLabel("API key Secret", { exact: true }));
+  await waitForIdleFetches(editing);
+  const editorHint = await editing.locator("#harness-auth-secret-status").textContent();
+  assert.ok(editorHint.startsWith(`${BOUND_SECRET_UNLISTED} `), editorHint);
+  assert.equal(await metadataLink(editing).count(), 0);
+
   const { page: admin } = await newPage(t, fixture);
   await login(admin, fixture, url);
   await waitForEnabled(admin.getByLabel("API key Secret", { exact: true }));
@@ -1077,6 +1093,32 @@ test("A Backends refusal after administration is revoked is read and audited onc
     ),
     ["openclaw.backends.list", "openclaw.backends.list"],
   );
+});
+
+// Only a Backends refusal settles Installation administration as false (finding 2627). A read that
+// fails for another reason, here an unavailable dependency, says nothing about it: the
+// administrator keeps the Observability link.
+test("A Backends failure other than a refusal keeps an administrator's answer", async (t) => {
+  const url = "https://metrics.example.test/d/operations";
+  const fixture = await createConsoleAppFixture(t, { observabilityUrl: url });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Backends outage", { ready: true });
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  const observability = page.getByRole("link", { name: "Observability", exact: true });
+  const isBackends = (address) => new URL(address).pathname === "/backends";
+  await page.route(isBackends, (route) =>
+    route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Try again.")),
+  );
+
+  const read = page.waitForResponse(
+    (response) => isBackends(response.url()) && response.status() === 503,
+  );
+  await login(page, fixture, `/console/backends?namespace=${namespace.id}`);
+  await read;
+  await waitForIdleFetches(page);
+  assert.equal(await page.getByText(BACKENDS_DENIED, { exact: true }).count(), 0);
+  assert.equal(await observability.getAttribute("href"), url);
 });
 
 const FORBIDDEN = {
