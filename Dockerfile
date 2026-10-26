@@ -16,7 +16,11 @@ COPY packages/utils/package.json packages/utils/package.json
 RUN --mount=type=secret,id=npmrc,target=/root/.npmrc,required=false \
     corepack pnpm install --frozen-lockfile --prod --ignore-scripts
 
-FROM dependencies AS console-build
+# The stamp needs only Node, so it starts from the runtime base image the runtime stage already
+# uses. On the dependencies stage, every build that changed runtime source had to unpack the
+# full build base and its dependencies just to rewrite one HTML file.
+FROM ${NODE_RUNTIME_BASE_IMAGE} AS console-build
+WORKDIR /app
 ARG OCC_BUILD_REVISION=""
 COPY apps/controller/src/console/index.html apps/controller/src/console/index.html
 COPY scripts/build-console-metadata.mjs scripts/build-console-metadata.mjs
