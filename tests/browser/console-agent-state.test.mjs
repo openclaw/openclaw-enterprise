@@ -1255,6 +1255,120 @@ test("Installation-administration reads after a revoke are refused and audited o
   );
 });
 
+// Finding 2636. A page kept for Back replays its reads to check it is unchanged. The reads only
+// Installation administration may make keep that gate on replay: after a revoke, the first Back to
+// a kept Access tab sends one of them, the API refuses and audits it, and that refusal settles
+// "not an administrator" for the tab. The other replays, and every later Back, are refused unsent.
+test("Back to a kept Access tab after a revoke sends one audited administration read", async (t) => {
+  const auditSink = new InMemoryAuditSink();
+  const url = "https://metrics.example.test/d/operations";
+  const fixture = await createConsoleAppFixture(t, { auditSink, observabilityUrl: url });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Revoked before Back", { ready: true });
+  const secret = await fixture.createSecret(namespace.id, "Kept model key", "hidden-model");
+  const agent = await fixture.createAgent(namespace.id, "Kept Agent", nativeValues("x"), {
+    harnessAuth: { method: "api_key", source: secret.ref },
+  });
+  const account = await fixture.createNamespaceMember("revoked-reader", namespace.id, AGENT_READ);
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  const observability = page.getByRole("link", { name: "Observability", exact: true });
+  const adminDenials = () =>
+    authorizationDenials(
+      auditSink,
+      /^openclaw\.(observability|backends|iam|secrets|installation)\./,
+    );
+
+  const revoke = grantInstallationAdministration(fixture, account.principal);
+  await login(
+    page,
+    fixture,
+    String(detailUrl(fixture, namespace.id, agent.id, "draft", "access")).replace(
+      fixture.origin,
+      "",
+    ),
+    account.credentials,
+  );
+  await page.getByRole("tab", { name: "Access", selected: true }).waitFor();
+  await page.getByRole("link", { name: "Kept model key", exact: true }).waitFor();
+  await waitForIdleFetches(page);
+  // In-app navigation keeps the Agent page for Back.
+  await page.locator("nav").getByRole("link", { name: "Agents", exact: true }).first().click();
+  await page.waitForURL(/\/console\/agents\?/);
+  await waitForIdleFetches(page);
+  assert.equal(adminDenials().length, 0);
+
+  revoke();
+  for (let step = 0; step < 3; step += 1) {
+    await page.goBack();
+    await page.waitForURL(new RegExp(`/console/agents/${agent.id}\\?`));
+    await waitForIdleFetches(page);
+    assert.equal(await observability.count(), 0, `Back ${step}`);
+    assert.equal(adminDenials().length, 1, `Back ${step}`);
+    await page.goForward();
+    await page.waitForURL(/\/console\/agents\?/);
+    await waitForIdleFetches(page);
+  }
+});
+
+// Finding 2637. A Restriction refuses an administrator's bound Secret read, and the permission
+// answer that would confirm her administration fails (here a 503). A failed answer is unknown, not
+// a refusal: she keeps the Observability link and the Access tab, and the next page load asks again.
+test("A failed permission answer after a Restriction refusal keeps an administrator's answer", async (t) => {
+  const auditSink = new InMemoryAuditSink();
+  const url = "https://metrics.example.test/d/operations";
+  const fixture = await createConsoleAppFixture(t, { auditSink, observabilityUrl: url });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Permission outage", { ready: true });
+  const secret = await fixture.createSecret(namespace.id, "Restricted model key", "hidden-model");
+  const agent = await fixture.createAgent(namespace.id, "Restricted Agent", nativeValues("x"), {
+    harnessAuth: { method: "api_key", source: secret.ref },
+  });
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  const observability = page.getByRole("link", { name: "Observability", exact: true });
+  await login(page, fixture, `/console/settings?namespace=${namespace.id}`);
+  await page.getByRole("heading", { name: "Installation Driver configuration" }).waitFor();
+  assert.equal(await observability.getAttribute("href"), url);
+
+  fixture.policy.restrictions.push({
+    id: "deny-secret-read-outage",
+    namespaceId: namespace.id,
+    resourceKind: "secret",
+    action: "read",
+    effect: "deny",
+  });
+  const permissionsPath = `/namespaces/${namespace.id}/permissions`;
+  const isPermissions = (address) => new URL(address).pathname === permissionsPath;
+  await page.route(isPermissions, (route) =>
+    route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Try again.")),
+  );
+  // The page load asks the permission answer first; the Restriction refusal asks it again.
+  const failedAnswers = [];
+  page.on("response", (response) => {
+    if (isPermissions(response.url()) && response.status() === 503) {
+      failedAnswers.push(response.url());
+    }
+  });
+  const refusal = page.waitForResponse(
+    (response) => /\/secrets\//.test(new URL(response.url()).pathname) && response.status() === 403,
+  );
+  await page.goto(String(detailUrl(fixture, namespace.id, agent.id, "draft", "configuration")));
+  await refusal;
+  await page.getByText(BOUND_SECRET_READ_REFUSED, { exact: true }).waitFor();
+  await waitForIdleFetches(page);
+  assert.ok(failedAnswers.length >= 1, "the permission answer failed");
+  assert.equal(await observability.getAttribute("href"), url);
+  assert.equal(await page.getByRole("tab", { name: "Access", exact: true }).count(), 1);
+  assert.deepEqual(
+    authorizationDenials(
+      auditSink,
+      /^openclaw\.(observability|backends|iam|secrets|installation)\./,
+    ).map((event) => event.action),
+    ["openclaw.secrets.read"],
+  );
+});
+
 // Only a Backends refusal settles Installation administration as false (finding 2627). A read that
 // fails for another reason, here an unavailable dependency, says nothing about it: the
 // administrator keeps the Observability link.
