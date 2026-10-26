@@ -7,6 +7,7 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
+import { DEVELOPMENT_HARNESS_DESCRIPTOR } from "../../apps/controller/src/composition/production-harness.ts";
 import { composeProduction } from "../../apps/controller/src/composition/production.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { PostgresPlatformState, PostgresWorkQueue } from "../../packages/occ/src/index.ts";
@@ -698,5 +699,133 @@ test(
         assert.equal((await queue.findWork(key))?.attemptCount, 1);
       }
     }
+
+    // A named worker shares a database with another ready logical Namespace.
+    const otherFixture = await setup(t);
+    const neighbor = otherFixture.namespace;
+    const enqueueReady = async (namespaceId: string) => {
+      const idempotencyKey = `named-scope-${randomUUID()}`;
+      await queue.enqueue({
+        idempotencyKey,
+        namespaceId,
+        namespaceTarget: "ready",
+        actorId: fixture.actor.id,
+      });
+      return idempotencyKey;
+    };
+    const expiredKey = await enqueueReady(neighbor.id);
+    assert.equal((await queue.claim())?.idempotencyKey, expiredKey);
+    const queuedKey = await enqueueReady(neighbor.id);
+    const exhaustedKey = await enqueueReady(neighbor.id);
+    await migrator.query(
+      "UPDATE occ.controller_work SET attempt_count = 1 WHERE idempotency_key = $1",
+      [exhaustedKey],
+    );
+    await delay(150);
+    const expired = await snapshot(expiredKey);
+    const queued = await snapshot(queuedKey);
+    const exhausted = await snapshot(exhaustedKey);
+    for (const drivers of [gated, runtime]) {
+      const ownedKey = await enqueueReady(selected.namespaceId);
+      worker = await startWorker(drivers, 900_000, 1);
+      await waitFor(
+        "named worker completes its own work",
+        async () => (await queue.findWork(ownedKey))?.state === "succeeded" || undefined,
+      );
+      await worker.stop();
+      const afterExpired = await snapshot(expiredKey);
+      const afterQueued = await snapshot(queuedKey);
+      t.diagnostic(
+        `neighbor expired ${expired.state}/${expired.attempt_count} -> ${afterExpired.state}/${afterExpired.attempt_count}; fresh ${queued.state}/${queued.attempt_count} -> ${afterQueued.state}/${afterQueued.attempt_count}`,
+      );
+      assert.ok(
+        expired.row_bytes === afterExpired.row_bytes,
+        "named recovery preserves the neighbor's expired claim and lease",
+      );
+      assert.ok(
+        queued.row_bytes === afterQueued.row_bytes,
+        "named worker leaves the neighbor's fresh work queued",
+      );
+      assert.ok(
+        exhausted.row_bytes === (await snapshot(exhaustedKey)).row_bytes,
+        "named recovery preserves the neighbor's exhausted queued work",
+      );
+    }
+
+    await migrator.query(
+      "UPDATE occ.controller_work SET created_at = 'infinity' WHERE idempotency_key = $1",
+      [queuedKey],
+    );
+    const unknown = await snapshot(queuedKey);
+    const ownedKey = await enqueueReady(selected.namespaceId);
+    worker = await startWorker(gated);
+    await waitFor(
+      "unknown age in a different Namespace permits owned work",
+      async () => (await queue.findWork(ownedKey))?.state === "succeeded" || undefined,
+    );
+    await worker.stop();
+    assert.ok(unknown.row_bytes === (await snapshot(queuedKey)).row_bytes);
+    await migrator.query(
+      "UPDATE occ.controller_work SET created_at = clock_timestamp() WHERE idempotency_key = $1",
+      [queuedKey],
+    );
+
+    // Both Namespaces have failed native deployments whose retained Sandbox
+    // needs an exposure withdrawal. Observe dispatch at the Compute boundary.
+    assert.ok(runtime.sandboxDriver);
+    for (const owner of [fixture, otherFixture]) {
+      const candidate = await owner.revision(await owner.agent(), 1, {
+        harness: { ...DEVELOPMENT_HARNESS_DESCRIPTOR, mode: "dedicated" },
+        compute: {
+          id: runtime.computeDriver.id,
+          implementation: runtime.computeDriver.implementation,
+        },
+        sandboxDriverId: runtime.sandboxDriver.id,
+      });
+      await fixture.observerPool.query(
+        "UPDATE occ.controller_work SET state = 'failed_permanent', reason_code = 'DEPENDENCY_UNAVAILABLE', completed_at = clock_timestamp() WHERE idempotency_key = $1",
+        [candidate.idempotencyKey],
+      );
+    }
+    const withdrawn: string[] = [];
+    t.mock.method(
+      runtime.computeDriver,
+      "withdrawHarnessExposure",
+      async (revision: { namespaceId: string }) => {
+        withdrawn.push(revision.namespaceId);
+      },
+      {},
+    );
+    events.length = 0;
+    worker = await startWorker(runtime);
+    await waitFor(
+      "named worker dispatches its own exposure withdrawal",
+      async () => withdrawn.includes(selected.namespaceId) || undefined,
+    );
+    await worker.stop();
+    assert.deepEqual(withdrawn, [selected.namespaceId]);
+    assert.ok(
+      events.some(
+        (event) => event.event === "worker.harness-exposure-sweep" && event.pending === 1,
+      ),
+    );
+    withdrawn.length = 0;
+
+    // An unnamed worker still recovers and claims work across both Namespaces.
+    const controlKey = await enqueueReady(selected.namespaceId);
+    await fixture.start(runtime.computeDriver);
+    await waitFor("unnamed worker completes both Namespaces' work", async () => {
+      const rows = await Promise.all(
+        [controlKey, queuedKey, expiredKey, exhaustedKey].map((key) => queue.findWork(key)),
+      );
+      return rows.every((row) => row?.state === "succeeded") || undefined;
+    });
+    await waitFor(
+      "unnamed worker sweeps both Namespaces",
+      async () =>
+        (withdrawn.includes(selected.namespaceId) && withdrawn.includes(neighbor.id)) || undefined,
+    );
+    await fixture.stop();
+    assert.equal((await snapshot(expiredKey)).attempt_count, 2);
   },
 );

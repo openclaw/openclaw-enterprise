@@ -1,7 +1,7 @@
 ---
 created: "2026-10-23"
-updated: "2026-10-23"
-last_updated_session: "named-workspace-gateway-identity-20261023"
+updated: "2026-10-26"
+last_updated_session: "authoring-run/ae36f43b-7d02-4085-a886-ef6421011637"
 ---
 
 # Named workspace runtime flow
@@ -34,7 +34,7 @@ graph TD
     B --> C["GET exact physical Namespace and verify original UID"]
     C --> D["Start API; repeat checks on readyz"]
     C --> E{"Worker startup cycle selected?"}
-    E -->|independent| J["Normal recovery and claims"]
+    E -->|independent| J["Recover and claim work in the bound Namespace"]
     E -->|gateway-readiness| F["Hold recovery and claims"]
     F --> G["Check logical identity and physical UID;<br/>read Health, then GetCurrentUser"]
     G --> H{"Identity ready and original work age known?"}
@@ -95,11 +95,15 @@ keep it closed. RPCs retain deadlines and abort cancellation. The worker repeats
 logical and physical identity checks before and after both gateway reads succeed.
 
 `packages/occ/src/state/postgres-work-queue.ts:startupWorkAge` reads original
-queued and claimed timestamps on the database clock. Unknown age keeps the gate
+queued and claimed timestamps in the bound logical Namespace on the database clock. Unknown age keeps the gate
 closed. Positive old age emits `work-too-old` and proceeds to the ordinary
 [worker recovery and deadline rules](controller-worker.md), without resetting
 attempts, age or leases. Every process restart closes the gate. Independent
 profiles bypass it; this Git-disabled contract serves no broker while gated.
+
+In both startup cycles, the worker recovers and claims work only in the bound
+logical Namespace. Its maintenance sweep also selects revisions for Harness
+exposure withdrawal only from that Namespace.
 
 ## Debugging and Verification
 
@@ -133,6 +137,7 @@ GitHub sign-in, browser behavior, supplier compatibility or model execution.
 
 ## Changelog
 
+- 2026-10-26 18:27: Scope worker recovery, claims and exposure withdrawals to the bound Namespace. (authoring-run/ae36f43b-7d02-4085-a886-ef6421011637 - 993ba4674bed65cf6a31410760cea1ee1d53189d)
 - 2026-10-23 15:12: Require an authenticated identity read after public Health. (named-workspace-gateway-identity-20261023 - 5c7ffab23c3a7ebbc96e81b37722ad8e634ee1da)
 - 2026-10-23 01:13: Bound readiness requests before dependency checks. (named-workspace-readiness-rate-limit-20261023 - 70a74c6bb1eaba6acb7536101889cbf79b26c7ef)
 - 2026-10-23 00:48: Document runtime attachment and optional worker dependency checks. (named-workspace-runtime-publication-20261023 - 9c10e6d571333c89e9206df6505fd0fbebd14247)

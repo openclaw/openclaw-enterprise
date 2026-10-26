@@ -1169,6 +1169,7 @@ export class ControllerWorker {
       throw new Error("Production controller workers require Installation startup configuration.");
     }
     this.queueOptions = {
+      ...(this.namedWorkspace && { namespaceId: this.namedWorkspace.namespaceId }),
       leaseDurationMs: this.leaseDurationMs,
       maxAttempts: this.maxAttempts,
     };
@@ -3642,10 +3643,13 @@ export class ControllerWorker {
         readonly activeRevisionId: string | undefined;
         readonly revisions: readonly Readonly<AgentRevision>[];
       }[] = [];
-      for (const namespace of await view.namespaces.listNamespaces()) {
+      const namespaces = this.namedWorkspace
+        ? [await view.namespaces.findNamespace(this.namedWorkspace.namespaceId)]
+        : await view.namespaces.listNamespaces();
+      for (const namespace of namespaces) {
         // A Namespace fails only from `provisioning` (no Agent ran in it), and `deleting`
         // releases the provider Workspace with every Sandbox in it.
-        if (namespace.status !== "ready") {
+        if (namespace?.status !== "ready") {
           continue;
         }
         for (const agent of await view.agents.listAgents(namespace.id)) {
