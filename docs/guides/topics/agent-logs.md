@@ -221,8 +221,8 @@ RUNTIME_LOGS_POD_INVALID`).
   `dst_placeholder_ip`, `method`, `path`, `binary`, `pid`, `rule_name`,
   `rule_type`, `policy_generation`, `reason`, `source`, `cmd_line` and `url`.
   `dst_placeholder_ip` is the policy DNS placeholder address a denial named;
-  the decision's host comes from the policy DNS record for it in the same read,
-  and is absent when that record is not there. Command lines and URLs often carry tokens:
+  the decision's host comes from the latest policy DNS record for it in the same
+  read, and is absent when that record is not there or names a placeholder address. Command lines and URLs often carry tokens:
   they are redacted like every string and cut to 1 KiB. In command lines the
   value after a credential flag is masked too (`-p`, `-pass`, `--pass`,
   `--token`, `--with-token`, `--username`, `-u`, `--user`, `-U` or
