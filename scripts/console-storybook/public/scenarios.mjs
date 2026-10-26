@@ -8498,6 +8498,11 @@ for (const [id, state, name] of [
   ["policyDenialsGap", "gap", "Policy denial window has a buffer gap"],
   ["policyDenialsMissingMetadata", "missingMetadata", "Policy denial with unknown metadata"],
   ["policyDenialsFailed", "failed", "Policy application unconfirmed"],
+  [
+    "policyApplicationCeilingChanged",
+    "failedCeiling",
+    "Policy application refused by a changed ceiling",
+  ],
   ["policyDenialsApplyRejected", "applyRejected", "Policy saved but live application rejected"],
   ["policyIncompletePreview", "incompletePreview", "Policy preview omits the validated rules"],
   ["policyUnconfirmedSave", "unconfirmedSave", "Policy save returns different rules than reviewed"],
