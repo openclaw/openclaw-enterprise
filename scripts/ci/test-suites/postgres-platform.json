@@ -3,7 +3,7 @@
     "postgres": true,
     "requiresPreparedStateForFile": true
   },
-  "fileConcurrency": 3,
+  "fileConcurrency": 4,
   "parallelFiles": [
     "tests/integration/postgres-password-sign-in-limit.test.mjs",
     "tests/integration/postgres-bootstrap-failures.test.mjs",
