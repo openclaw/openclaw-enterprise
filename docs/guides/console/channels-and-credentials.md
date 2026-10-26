@@ -112,7 +112,7 @@ This section appears when Slack is enabled in the saved Configuration.
 | ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | **Slack app token / bot token: Bound/Missing**    | Reports saved Secret references, not whether Slack accepts the tokens.                                           |
 | **Bound · Agent access not confirmed**            | The Secret is saved, but the Agent may not use it yet: its grant was refused, missing or not verified.           |
-| **Retry Secret access**                           | Retries only the Agent's access grant for saved Slack Secrets; it saves no Configuration.                        |
+| **Retry Secret access**                           | Retries only the Agent's access grants for the saved bound Secrets; it saves no Configuration.                   |
 | **Slack app token** / **Slack bot token** pickers | Select a readable Namespace Secret or **Create new Secret...**. Missing tokens need a selected binding.          |
 | **Save channel Secrets**                          | Saves Configuration Secret bindings, grants the Agent access, and requires an explicit deployment to apply them. |
 
