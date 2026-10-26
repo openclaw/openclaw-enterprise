@@ -436,14 +436,19 @@ function readableNamespaceId() {
     : (namespaces[0]?.id ?? null);
 }
 
-// A readable Namespace's permission answer, or null without one. Reading it audits nothing.
+// A readable Namespace's permission answer, or null without one or when the read fails. Reading
+// it audits nothing.
 function readableNamespacePermissions(options = {}) {
+  return namespacePermissionsRead(options).catch(() => null);
+}
+
+// The same answer, rejecting when the read fails, for a caller that must tell a failure (an
+// unknown answer) from no readable Namespace.
+function namespacePermissionsRead(options) {
   const readableId = readableNamespaceId();
   return readableId === null
     ? Promise.resolve(null)
-    : request(`/namespaces/${encodeURIComponent(readableId)}/permissions`, options).catch(
-        () => null,
-      );
+    : request(`/namespaces/${encodeURIComponent(readableId)}/permissions`, options);
 }
 
 function forgetInstallationAccess() {
@@ -483,8 +488,9 @@ function administrationRefusal() {
 // administration succeeds. A refusal asks a readable Namespace's permission answer, which audits
 // nothing, because a Restriction can refuse one read to an administrator; unless it confirms
 // administration, the refusal settles "not an administrator" for this tab, as a Backends refusal
-// does (finding 2627), and the reads still waiting are refused here, unsent. A probe answered in
-// this page load already confirms the answer. Gating only: the API still authorizes every read.
+// does (finding 2627), and the reads still waiting are refused here, unsent. A failed answer
+// settles nothing (finding 2637). A probe answered in this page load already confirms the answer.
+// Gating only: the API still authorizes every read.
 function administrationRead(path, options) {
   if (installationAdmin === false) {
     return Promise.reject(administrationRefusal());
@@ -507,7 +513,15 @@ function administrationRead(path, options) {
       if (error?.status !== 403) {
         return;
       }
-      const answer = await readableNamespacePermissions({ outlivesView: true });
+      let answer;
+      try {
+        answer = await namespacePermissionsRead({ outlivesView: true });
+      } catch {
+        // No answer (a network failure or a 5xx) is unknown, not a refusal: an administrator
+        // whose read a Restriction refused keeps that answer, and the next page load asks again
+        // (finding 2637).
+        return;
+      }
       if (owner === null || owner !== sessionOwnerKey(session)) {
         return;
       }
@@ -1921,10 +1935,15 @@ async function loadPage({
             refused.set(path, 403);
             return;
           }
+          // An administration read keeps its gate: once this tab knows the caller does not
+          // administer the Installation, it is refused here, unsent (finding 2636).
           try {
             fresh.set(
               path,
-              await request(path, { includeMeta: retainedState.metaReads.has(path) }),
+              await request(path, {
+                includeMeta: retainedState.metaReads.has(path),
+                installationAdministration: retainedState.administrationReads.get(path),
+              }),
             );
           } catch (error) {
             if (!settledRefusal(error)) {
@@ -2041,6 +2060,9 @@ async function loadPage({
       mutations: 0,
       reads: new Map(),
       metaReads: new Set(),
+      // Each read's Installation-administration option, so a return replays it gated (finding
+      // 2636).
+      administrationReads: new Map(),
       resumeHandlers: new Set(),
       revalidators: new Set(),
       user: session.user,
@@ -2061,12 +2083,19 @@ async function loadPage({
         viewState.mutations += 1;
         retainedViews.clear();
       }
+      // Records a read's answer, and its administration option, for a return to replay.
+      const recordRead = (signature) => {
+        viewState.reads.set(path, signature);
+        if (options.installationAdministration) {
+          viewState.administrationReads.set(path, options.installationAdministration);
+        }
+      };
       try {
         const result = await request(path, options);
         // Live reads (runtime status, log pages) differ on every call; replaying them to
         // revalidate a cached view would only spend the reader's rate limit.
         if ((options.method ?? "GET") === "GET" && options.revalidate !== false) {
-          viewState.reads.set(path, readSignature(result, options.includeMeta));
+          recordRead(readSignature(result, options.includeMeta));
           if (options.includeMeta) {
             viewState.metaReads.add(path);
           }
@@ -2082,7 +2111,7 @@ async function loadPage({
             viewState.reusable = false;
           }
           if (options.revalidate !== false) {
-            viewState.reads.set(path, refusedRead(error.status));
+            recordRead(refusedRead(error.status));
           }
         } else if (counted) {
           // A reread on resume replaces what an unfinished or failed one showed, including a
