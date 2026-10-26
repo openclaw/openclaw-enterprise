@@ -73,7 +73,7 @@ Deploy refuses with 409 what cannot start: Git without a delivery profile in `ad
 (`REPOSITORY_GIT_PROFILE_UNSUPPORTED`), bundled `git-write` in
 `apps/controller/src/drivers/egress-proxy/openshell.ts:assertRepositoryGitProfileAvailable`
 (`REPOSITORY_GIT_SENDER_UNQUALIFIED`), bindings the Proxy did not admit, Agents without
-Git on a Git-only Proxy, and the Installation limits of `CredentialProxyAdmissionError`.
+Git on a Git-only Proxy, and Installation limits (`CredentialProxyAdmissionError`).
 Preparation repeats both Git refusals.
 
 Compute passes Credential Proxy wiring to Sandbox provisioning. Protected sources
