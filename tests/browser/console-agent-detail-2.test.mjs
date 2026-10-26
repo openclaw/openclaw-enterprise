@@ -68,6 +68,7 @@ import {
   RESOURCE_NOT_FOUND,
   SANDBOX_POLICY_READ_DENIED,
   STOP_REQUESTED,
+  STOPPED_NO_VERSION,
   WORKSPACE_API_UNREACHABLE,
   WORKSPACE_FILES_UNAVAILABLE,
   WORKSPACE_UNREACHABLE,
@@ -4769,9 +4770,7 @@ test("Console can repeat Stop without treating the selected version as cleanup c
     unit.agents.compareAndClearActiveRevision(namespace.id, agent.id, active.revision.id),
   );
   await page.getByRole("button", { name: "Refresh stop status" }).click();
-  await page
-    .getByText("No version is selected. Deploy a new version to start this Agent.")
-    .waitFor();
+  await page.getByText(STOPPED_NO_VERSION).waitFor();
   await waitForEnabled(repeat);
   assert.equal(agentStopRequests(requests, namespace.id, agent.id).length, 1);
   await repeat.click();

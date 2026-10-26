@@ -26,6 +26,7 @@ import {
   agentPrincipalDenied,
   CONFIGURATION_EDITS_PENDING,
   DEPENDENCY_UNAVAILABLE,
+  DEPLOY_CLUSTER_RBAC_REFUSED,
   READ_UNAVAILABLE,
   namespaceListDenied,
 } from "../helpers/refusal-text.mjs";
@@ -147,8 +148,7 @@ test("draft Agent offers deployment without a generated-credential step", async 
   await page
     .getByRole("alert")
     .filter({
-      hasText:
-        "Deployment refused: the cluster denied the control plane access to this Agent's connection credentials. Ask an operator to grant the control plane the Kubernetes RoleBindings this Namespace needs, then deploy again.",
+      hasText: DEPLOY_CLUSTER_RBAC_REFUSED,
     })
     .waitFor();
   await waitForEnabled(deploy);

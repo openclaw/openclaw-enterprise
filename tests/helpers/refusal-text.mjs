@@ -258,6 +258,10 @@ export const EMBEDDED_API_KEY_REQUIRED =
   "Agent setting harnessAuth.method must be api_key for embedded OpenClaw on Kubernetes Compute: change harnessAuth or executionMode.";
 export const codexApiKeyRefusal = (setting) =>
   `Configuration setting ${setting} must be unset: Dedicated Codex receives model credentials from the Agent's Harness authentication binding.`;
+// Deploy refused because the cluster denied the controller the RoleBindings for this Agent's
+// runtime credentials (RUNTIME_CREDENTIALS_CLUSTER_RBAC; agents/detail.mts).
+export const DEPLOY_CLUSTER_RBAC_REFUSED =
+  "Deployment refused: the cluster denied the control plane access to this Agent's connection credentials. Ask an operator to grant the control plane the Kubernetes RoleBindings this Namespace needs, then deploy again.";
 // Deployment progress that asks an administrator to act, in fixed copy that never shows the
 // quota's numbers or the image reference (packages/occ/src/state/controller-work.ts).
 export const POD_QUOTA_FULL =
@@ -323,6 +327,15 @@ export const WORKSPACE_API_UNREACHABLE =
 // A Stop that the API accepted for an Agent with a running version.
 export const STOP_REQUESTED =
   "Stop requested. This Agent will not start again until you deploy a new version. The console does not show when its runtime finishes shutting down.";
+// A Stop that the API accepted while a first deployment was queued or in progress.
+export const STOP_REQUESTED_FIRST_DEPLOYMENT =
+  "Stop requested. The deployment in progress is cancelled, and this Agent will not start until you deploy a new version.";
+// The Stop panel with no version selected and no first deployment it cancelled.
+export const STOPPED_NO_VERSION =
+  "No version is selected. Deploy a new version to start this Agent.";
+// A Stop status read that failed: the prefix, then why (agents/stop.mts).
+export const STOP_STATUS_REFRESH_FAILED = "Could not refresh stop status.";
+export const stopStatusRefreshFailed = (reason) => `${STOP_STATUS_REFRESH_FAILED} ${reason}`;
 
 // The Agent page's Workspace tab without a deployed, reachable gateway.
 export const WORKSPACE_FILES_UNAVAILABLE =

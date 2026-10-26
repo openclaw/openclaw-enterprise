@@ -60,6 +60,7 @@ import {
   STOP_CANCELS_FIRST_DEPLOYMENT,
   STOP_CONFIRMATION,
   STOP_FIRST_DEPLOYMENT_CONFIRMATION,
+  STOP_REQUESTED_FIRST_DEPLOYMENT,
   STOP_RUNNING_VERSION,
   STOP_UNKNOWN_DEPLOYMENT_CONFIRMATION,
 } from "../helpers/refusal-text.mjs";
@@ -496,12 +497,7 @@ test("Stop stays enabled and says it cancels a first deployment that is queued",
   await dialog.getByText(STOP_FIRST_DEPLOYMENT_CONFIRMATION, { exact: true }).waitFor();
   assert.equal(await dialog.getByText(/runtime gateway/).count(), 0);
   await dialog.getByRole("button", { name: "Stop Agent", exact: true }).click();
-  await stopRegion
-    .getByText(
-      "Stop requested. The deployment in progress is cancelled, and this Agent will not start until you deploy a new version.",
-      { exact: true },
-    )
-    .waitFor();
+  await stopRegion.getByText(STOP_REQUESTED_FIRST_DEPLOYMENT, { exact: true }).waitFor();
 });
 
 // Stop hides only when the page read a failed first deployment. A first deployment that

@@ -91,12 +91,15 @@ import {
   STOP_CONFIRMATION,
   STOP_REQUESTED,
   STOP_RUNNING_VERSION,
+  STOP_STATUS_REFRESH_FAILED,
+  STOPPED_NO_VERSION,
   WORKSPACE_FILES_UNAVAILABLE,
   credentialCheckedAtDeploy,
   namespaceListDenied,
   notIncluded,
   secretOperateRefused,
   stopRefused,
+  stopStatusRefreshFailed,
 } from "../helpers/refusal-text.mjs";
 
 test("Agent detail separates the current version, viewed version, and latest deployment", async (t) => {
@@ -3131,9 +3134,7 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
     .getByRole("region", { name: "Stop Agent", exact: true })
     .getByText("No current version", { exact: true })
     .waitFor();
-  await page
-    .getByText("No version is selected. Deploy a new version to start this Agent.")
-    .waitFor();
+  await page.getByText(STOPPED_NO_VERSION).waitFor();
   // A completed stop also clears the selected version, but no deployment is in progress: a new
   // stop intent must not say it cancels one, nor report one cancelled (finding D691).
   await page.getByRole("button", { name: "Request Stop again", exact: true }).click();
@@ -3148,9 +3149,7 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
   await dialog.getByRole("button", { name: "Stop Agent" }).click();
   assert.equal((await repeated).status(), 202);
   await dialog.waitFor({ state: "hidden" });
-  await page
-    .getByText("No version is selected. Deploy a new version to start this Agent.")
-    .waitFor();
+  await page.getByText(STOPPED_NO_VERSION).waitFor();
   assert.equal(await page.getByText(/deployment in progress is cancelled/).count(), 0);
 
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
@@ -3464,7 +3463,7 @@ test("Agent stop uncertainty requires refresh before another stop request", asyn
     { times: 1 },
   );
   await page.getByRole("button", { name: "Refresh stop status" }).click();
-  await page.getByText("Could not refresh stop status.").waitFor();
+  await page.getByText(STOP_STATUS_REFRESH_FAILED).waitFor();
   assert.deepEqual(await stopControls.allTextContents(), ["Refresh stop status"]);
 
   // A refused status read names the Agent read it checks, not a bare denial (finding 2538).
@@ -3476,7 +3475,7 @@ test("Agent stop uncertainty requires refresh before another stop request", asyn
   await page.getByRole("button", { name: "Refresh stop status" }).click();
   await page
     .getByText(
-      `Could not refresh stop status. ${notIncluded("reading this Agent's status", "Agent read on it")}`,
+      stopStatusRefreshFailed(notIncluded("reading this Agent's status", "Agent read on it")),
       { exact: true },
     )
     .waitFor();
