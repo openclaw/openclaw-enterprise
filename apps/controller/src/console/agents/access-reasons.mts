@@ -107,7 +107,12 @@ export const LOG_TEXT_DENIED = `Log text requires ${LOG_TEXT_GRANT} on this Agen
 // Runtime status authorizes Agent operate and read plus AgentRevision read on the version.
 export const RUNTIME_STATUS_DENIED = `Runtime status requires Agent operate on this Agent and AgentRevision read on this version. Log text needs ${LOG_TEXT_GRANT}. ${askForGrant("the access you need")}`;
 
-// Saving a workspace file and running diagnostics authorize Agent operate.
+// Reading a workspace file authorizes Agent read; saving one and running diagnostics, Agent
+// operate.
+export const WORKSPACE_READ_DENIED = notIncluded(
+  "reading this Agent's workspace files",
+  "Agent read on it",
+);
 export const WORKSPACE_SAVE_DENIED = notIncluded(
   "saving this Agent's workspace files",
   "Agent operate on it",

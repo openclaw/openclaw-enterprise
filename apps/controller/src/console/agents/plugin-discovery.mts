@@ -7,7 +7,8 @@ import {
   type PluginFieldsOptions,
   createPluginFields,
 } from "./plugin-fields.mjs";
-import { namespacePath } from "./list.mjs";
+import { withRequestId } from "../dom.mjs";
+import { describeFailure, namespacePath } from "./list.mjs";
 
 export interface PluginDiscoveryContext {
   namespaceId: string;
@@ -58,7 +59,12 @@ function discoveryError(
       "The plugin service returned an unsupported response. Retry or contact your operator.",
   };
   const reason = error.code ? reasons[error.code] : undefined;
-  return `${reason ?? "Plugins could not be loaded. Check the credential and retry."}${error.requestId ? ` Request: ${error.requestId}` : ""}`;
+  // A rate limit the API itself answered says how long to wait (finding 2538).
+  const fallback =
+    error.status === 429
+      ? describeFailure(error)
+      : "Plugins could not be loaded. Check the credential and retry.";
+  return withRequestId(reason ?? fallback, error.requestId);
 }
 
 export function createPluginDiscovery({

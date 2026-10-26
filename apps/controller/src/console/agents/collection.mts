@@ -9,7 +9,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import type { Static } from "typebox";
 import { type RequestOptions, requestFailure } from "../api-client.mjs";
-import { button, element, setText, statusBlock } from "../dom.mjs";
+import { button, element, setText, statusBlock, requestIdLine } from "../dom.mjs";
 import type { createDraftStore } from "../drafts.mjs";
 import { DELETE_CONFIRMATION, stopConfirmation, keptResources } from "./lifecycle-confirmation.mjs";
 import {
@@ -451,9 +451,7 @@ export function renderAgentList(context: AgentListContext) {
               "div",
               { className: "status", "data-tone": "danger", role: "alert" },
               element("p", { className: "status-body" }, error),
-              requestId
-                ? element("p", { className: "request-id" }, `Request ID: ${requestId}`)
-                : null,
+              requestId ? requestIdLine(requestId) : null,
             ),
           ]
         : []),
@@ -563,7 +561,7 @@ export function renderAgentList(context: AgentListContext) {
         notice:
           stopped.status === "deleting"
             ? `${item.name} is being deleted.`
-            : `Stop requested for ${item.name}. OCC will not start it again until you deploy a new version. Runtime shutdown completion is not exposed in Console.`,
+            : `Stop requested for ${item.name}. It will not start again until you deploy a new version. The console does not show when its runtime finishes shutting down.`,
       });
     } catch (error) {
       reportFailure(item, error, "stop");

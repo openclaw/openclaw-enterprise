@@ -763,6 +763,14 @@ export function statusBlock(
   );
 }
 
+// One way to show a request ID (finding 2538): the words "Request ID:" and the ID, on their own
+// line under a failure that has room for one, otherwise after its one line of text.
+export const requestIdText = (requestId: string) => `Request ID: ${requestId}`;
+export const requestIdLine = (requestId: string) =>
+  element("p", { className: "request-id" }, requestIdText(requestId));
+export const withRequestId = (text: string, requestId: string | undefined) =>
+  requestId ? `${text} ${requestIdText(requestId)}` : text;
+
 /**
  * Gives a feedback line that switches between a quiet hint and a refusal its look: a status
  * block in `tone`, or `fallback` (the hint class) when `tone` is null. It replaces the whole

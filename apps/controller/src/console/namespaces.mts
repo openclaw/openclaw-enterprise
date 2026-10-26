@@ -1,6 +1,14 @@
 import type { Namespace } from "@openclaw-enterprise/contracts";
 import { type createApiClient, requestFailure, responseFields } from "./api-client.mjs";
-import { button, dismissOnBackdrop, element, field, statusBlock, validateFields } from "./dom.mjs";
+import {
+  button,
+  dismissOnBackdrop,
+  element,
+  field,
+  statusBlock,
+  validateFields,
+  requestIdLine,
+} from "./dom.mjs";
 import type { createNavigation } from "./navigation.mjs";
 import { describeFailure, explainedConflict } from "./agents/list.mjs";
 import {
@@ -355,9 +363,7 @@ export function renderNamespaces(
         // A refusal the reader can fix here, a taken name above all, does not need one (finding
         // 2102).
         const requestId =
-          (unknown || forbidden) && error.requestId
-            ? [element("p", { className: "request-id" }, `Request ID: ${error.requestId}`)]
-            : [];
+          (unknown || forbidden) && error.requestId ? [requestIdLine(error.requestId)] : [];
         if (error.status === 400) {
           // The name is the only field: mark it invalid with the refusal linked to it, until
           // it is edited (finding 2046).

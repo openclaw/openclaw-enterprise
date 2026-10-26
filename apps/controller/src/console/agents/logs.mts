@@ -15,6 +15,7 @@ import {
   replaceChildrenIfChanged,
   setText,
   statusBlock,
+  withRequestId,
 } from "../dom.mjs";
 import { LOG_TEXT_DENIED, RUNTIME_STATUS_DENIED } from "./access-reasons.mjs";
 import { displayDate, namespacePath, retryAfterText } from "./list.mjs";
@@ -152,7 +153,7 @@ function runtimeErrorText(
 }
 
 function withRequestId(text: string, error: RequestFailure) {
-  return error.requestId ? `${text} Request ID: ${error.requestId}` : text;
+  return withRequestId(text, error.requestId);
 }
 
 /**

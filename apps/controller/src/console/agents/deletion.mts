@@ -7,6 +7,7 @@ import {
   setHidden,
   setText,
   statusBlock,
+  requestIdLine,
 } from "../dom.mjs";
 import {
   type AgentLifecycleContext,
@@ -15,7 +16,7 @@ import {
   keptResources,
 } from "./lifecycle-confirmation.mjs";
 import { AGENT_DELETE_DENIED, askForGrant } from "./access-reasons.mjs";
-import { describeFailure } from "./list.mjs";
+import { AGENT_STATUS_READ_NEED, describeFailure } from "./list.mjs";
 
 // Deletion finishes in the background; poll until the Agent is gone, then return to the list.
 export const DELETION_POLL_MS = 3000;
@@ -112,9 +113,7 @@ export function createAgentDeletion(
               "div",
               { className: "status", "data-tone": "danger", role: "alert" },
               element("p", { className: "status-body" }, state.error.text),
-              state.error.requestId
-                ? element("p", { className: "request-id" }, `Request ID: ${state.error.requestId}`)
-                : null,
+              state.error.requestId ? requestIdLine(state.error.requestId) : null,
             ),
           ]
         : []),
@@ -231,7 +230,7 @@ export function createAgentDeletion(
         clearTimeout(pollTimer);
       } else {
         state.error = {
-          text: `Could not refresh deletion status. ${describeFailure(cause)}`,
+          text: `Could not refresh deletion status. ${describeFailure(cause, { need: AGENT_STATUS_READ_NEED })}`,
           requestId: error.requestId,
         };
         // Stop polling on errors; the reader can retry with Refresh deletion status.
