@@ -19,6 +19,7 @@ import {
   CredentialSourceRegistrationConfigError,
   CredentialTokenUnsettledError,
   CredentialWithdrawalInProgressError,
+  CredentialWithdrawalNotFoundError,
   DependencyUnavailableError,
   DeviceAuthorizationStartError,
   IAMAccessBindingRoleError,
@@ -34,6 +35,7 @@ import {
   NativeWorkerSupportError,
   PluginPolicyValidationError,
   PostgresCommitOutcomeUnknownError,
+  QualifiedAuthorizationDeniedError,
   ResourceConflictError,
   ResourceStateConflictError,
   RetryLaterError,
@@ -553,6 +555,11 @@ export function dependencyUnavailableLogFields(error: Error): {
   };
 }
 
+// Names the requested source and which versions have each source (finding D762). The source is
+// one the contract accepts, so the text never echoes free input.
+const runtimeLogSourceUnavailable = (source: string) =>
+  `This Agent version has no ${source} log source. Every version has gateway; only a Dedicated Agent has agent, and only a version deployed with a Sandbox Driver has sandbox.`;
+
 const RUNTIME_LOG_FAILURES: Readonly<
   Record<RuntimeLogsErrorCode, { readonly status: number; readonly message: string }>
 > = Object.freeze({
@@ -566,7 +573,7 @@ const RUNTIME_LOG_FAILURES: Readonly<
   },
   RUNTIME_LOGS_SOURCE_UNAVAILABLE: {
     status: 400,
-    message: "This Agent version has no such runtime log source.",
+    message: runtimeLogSourceUnavailable("such"),
   },
   RUNTIME_LOGS_RATE_LIMITED: {
     status: 429,
@@ -662,7 +669,13 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
   }
   if (error instanceof RuntimeLogsError) {
     const mapped = RUNTIME_LOG_FAILURES[error.code];
-    return failure(mapped.status, error.code, mapped.message);
+    return failure(
+      mapped.status,
+      error.code,
+      error.code === "RUNTIME_LOGS_SOURCE_UNAVAILABLE"
+        ? runtimeLogSourceUnavailable(error.source ?? "such")
+        : mapped.message,
+    );
   }
   if (error instanceof RuntimeCredentialsForbiddenByClusterError) {
     return failure(
@@ -884,6 +897,10 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
   if (error instanceof ScopeViolationError) {
     return failure(404, "NOT_FOUND", "The requested platform resource was not found.");
   }
+  if (error instanceof CredentialWithdrawalNotFoundError) {
+    // Raised only after Agent read, with a fixed message about that Agent's active version.
+    return failure(404, "NOT_FOUND", error.message);
+  }
   if (error instanceof DeletionRetryOwnedError) {
     // The caller holds delete on this exact resource; only the retry condition is named.
     return failure(403, "FORBIDDEN", error.message);
@@ -910,7 +927,13 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
       "FORBIDDEN",
       error.authorization === undefined || !own
         ? GENERIC_DENIAL
-        : capped(callerDenialMessage(error.authorization, denied?.requested)),
+        : capped(
+            callerDenialMessage(
+              error.authorization,
+              denied?.requested,
+              error instanceof QualifiedAuthorizationDeniedError ? error.qualifier : undefined,
+            ),
+          ),
     );
   }
   if (error instanceof Error) {
@@ -973,7 +996,10 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
           ? reason === "untrusted_origin"
             ? UNTRUSTED_ORIGIN_MESSAGE
             : "The request did not satisfy the configured admission boundary."
-          : "A valid session cookie or service API key is required: the credential sent is missing, invalid, expired, or revoked. Send service API keys in the x-api-key header; Authorization bearer tokens are not accepted.",
+          : // Header advice only for a request that sent an Authorization header (finding D762).
+            reason === "authorization_header"
+            ? "The API does not accept an Authorization header. Send a service API key in the x-api-key header, or sign in for a session cookie."
+            : "A valid session cookie or service API key is required: the credential sent is missing, invalid, expired, or revoked. Sign in again, or use a current service API key.",
       );
     }
   }

@@ -10,6 +10,7 @@ import {
   agentPrincipalDenied,
   callerDenied,
   createDenied,
+  currentHarnessAuthDenied,
   INSTALLATION_ADMINISTER_DENIED,
   NAMESPACE_CREATE_DENIED,
 } from "../helpers/refusal-text.mjs";
@@ -389,5 +390,53 @@ test("a stored binding's denial names its Secret only to a caller who may read t
       [recordId, `${recordId.split("_")[0]}_${randomUUID()}`],
       { label },
     );
+  }
+});
+
+// Every Agent update checks the caller's grant on the Agent's current Harness authentication,
+// even an update that replaces it, so a member cannot swap out a credential she may not use. Her
+// denial says that this is the current one (finding D763), and names its Secret only when she may
+// read it and the Agent.
+test("an Agent update's denial on the current Harness authentication says every update checks it", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Current Harness authentication", {
+    ready: true,
+  });
+  const values = createHarnessConfiguration("openclaw", "gpt-4.1");
+  const agent = await fixture.createAgent(namespace.id, "Harness Agent", values);
+  const current = agent.harnessAuth.source.id;
+  const replacement = await fixture.createSecret(
+    namespace.id,
+    "replacement-model-key",
+    `synthetic-replacement-${randomUUID()}`,
+  );
+  const editor: Grants = [
+    ["read", "namespace"],
+    ["read", "agent"],
+    ["update", "agent"],
+    ["read", "configuration"],
+  ];
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const replace = { method: "api_key", source: replacement.ref };
+  const cases: readonly [string, Grants, string][] = [
+    ["unread", editor, "a Secret this request uses"],
+    ["read", [...editor, ["read", "secret"]], `Secret ${current}`],
+  ];
+  for (const [label, grants, target] of cases) {
+    const session = await memberSession(fixture, `harness-${label}`, namespace.id, grants);
+    // A plain save and a save that replaces the credential get the same denial.
+    for (const body of [
+      { configurationId: agent.configurationId },
+      { configurationId: agent.configurationId, harnessAuth: replace },
+    ]) {
+      const response = await fixture.request("PATCH", path, { session, body });
+      assertApiError(response, 403, "FORBIDDEN", label);
+      assert.equal(
+        response.body.error.message,
+        currentHarnessAuthDenied("Secret operate", target),
+        label,
+      );
+    }
   }
 });

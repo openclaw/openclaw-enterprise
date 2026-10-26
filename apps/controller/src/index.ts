@@ -279,6 +279,17 @@ const RESOURCE_ID = Object.fromEntries(
   ]),
 ) as Readonly<Record<keyof typeof RESOURCE_ID_PREFIX, RegExp>>;
 
+// Runs only after the JSON parser refused a body, to tell text that is not JSON from JSON its
+// poisoning guard refused.
+function isJson(text: string): boolean {
+  try {
+    JSON.parse(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function ipv4(value: string): number | undefined {
   const parts = value.split(".");
   if (parts.length !== 4) {
@@ -1213,7 +1224,18 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       done(tooDeepFailure(tooDeep), undefined);
       return;
     }
-    parseJson(request, body as string, done);
+    parseJson(request, body as string, (error, parsed) => {
+      // Text that is not JSON at all gets its own message (finding D762). Valid JSON the
+      // poisoning guard refused, such as a __proto__ key, keeps the generic contract message.
+      if (
+        (error as { code?: unknown } | null)?.code === "FST_ERR_CTP_INVALID_JSON_BODY" &&
+        !isJson(body as string)
+      ) {
+        done(failure(400, "INVALID_REQUEST", "The request body is not valid JSON."), undefined);
+        return;
+      }
+      done(error, parsed);
+    });
   });
   app.addSchema(JsonValue);
   app.addSchema(PluginDriverIdentitySchema);
@@ -1967,7 +1989,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       admitted.admittedScope.namespaceId !== (request.params as Record<string, unknown>).namespaceId
     ) {
       await denial(operation, request, "authorization_denial", context);
-      throw failure(403, "FORBIDDEN", "The admitted Namespace does not match.");
+      // Names only the key's own Namespace, never the requested one (finding D763).
+      throw failure(
+        403,
+        "FORBIDDEN",
+        `This service key works only in Namespace ${admitted.admittedScope.namespaceId}; this request is outside it. Ask an Installation administrator to run it.`,
+      );
     }
   }
 
@@ -4379,9 +4406,18 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       );
       return;
     }
+    // No route has this path's shape, so the answer says that rather than "resource not found"
+    // (finding D764). It reads only the path, never stored state, so it is the same for every ID.
+    const trimmed = pathname.length > 1 ? pathname.replace(/\/+$/, "") : pathname;
     canonicalFailure(
       reply,
-      failure(404, "NOT_FOUND", "The requested platform resource was not found."),
+      failure(
+        404,
+        "NOT_FOUND",
+        trimmed !== pathname && methodRoutes.some(({ pattern }) => pattern.test(trimmed))
+          ? "No API route has this path: remove the trailing slash."
+          : "No API route has this path. Check it against the API reference.",
+      ),
     );
   });
 

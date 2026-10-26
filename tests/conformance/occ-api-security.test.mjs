@@ -23,7 +23,14 @@ import {
   tenantANamespaceId,
   tenantRequest as request,
 } from "../helpers/tenant-reader-app.mjs";
-import { RESOURCE_NOT_FOUND } from "../helpers/refusal-text.mjs";
+import {
+  BODY_NOT_JSON,
+  POLICY_RECOMMENDATIONS_NO_SANDBOX,
+  RESOURCE_NOT_FOUND,
+  ROUTE_NOT_FOUND,
+  ROUTE_TRAILING_SLASH,
+  runtimeLogSourceUnavailable,
+} from "../helpers/refusal-text.mjs";
 
 const installationId = "ins_3033697e-6397-4cc6-9b04-8ec17af78cf1";
 const missingRevisionId = "rev_3dd29693-ce8b-4b4c-97c4-14b4c68c6e9c";
@@ -839,6 +846,20 @@ test("malformed, non-JSON, invalid, and oversized inputs fail without mutations"
     assert.equal(fixture.controller.pendingOperations().length, before);
   }
 
+  // Text that is not JSON says so (finding D762). JSON the prototype-poisoning guard refuses is
+  // valid JSON, so it keeps the contract message.
+  const notJson = await request(fixture.app, "/namespaces", { body: '{"name":"a\nb"}' });
+  assert.equal(notJson.response.status, 400);
+  assert.deepEqual(notJson.payload.error, { code: "INVALID_REQUEST", message: BODY_NOT_JSON });
+  const poisoned = await request(fixture.app, "/namespaces", {
+    body: '{"__proto__":{"x":1},"name":"p"}',
+  });
+  assert.equal(poisoned.response.status, 400);
+  assert.equal(
+    poisoned.payload.error.message,
+    "The request does not match the operation contract.",
+  );
+
   // Route-specific Preset defaults must still obey an explicitly smaller application limit.
   for (const method of ["POST", "PATCH"]) {
     const suffix = method === "PATCH" ? "/pre_00000000-0000-4000-8000-000000000001" : "";
@@ -1172,8 +1193,6 @@ test("exact Namespace ownership prevents cross-tenant access and resource traver
     `/namespaces/${namespaceA.id}/agents/${agentB.id}/revisions`,
     `/namespaces/${namespaceA.id}/agents/${agentA.id}/revisions/${missingRevisionId}`,
     `/namespaces/${namespaceB.id}/agents/${agentB.id}/revisions/${missingRevisionId}`,
-    `/namespaces/${namespaceA.id}%2F..%2F${namespaceB.id}`,
-    `/namespaces/${namespaceA.id}/agents/${agentB.id}%2F..`,
     "/namespaces/%00",
     "/namespaces/%5Ctenant",
   ]) {
@@ -1182,6 +1201,61 @@ test("exact Namespace ownership prevents cross-tenant access and resource traver
       result.response.status === 400 || result.response.status === 404,
       `${pathname}: ${result.response.status}`,
     );
+  }
+  // An encoded "../" stays inside its path parameter: the router never decodes it into a path,
+  // never redirects, and every ID parameter refuses it as a malformed ID that it names
+  // (finding D764). The answer depends only on the path, so a real and an unknown Agent match.
+  const traversal = (id) => `${id}%2F..%2F..%2Fnamespaces`;
+  const configuration = `cfg_${agentA.id.slice(4)}`;
+  const unknownAgentId = "agt_5c1e8d2a-6b3f-4d7e-9a2c-1f8e3b6d4a90";
+  const unknownSecretId = "sec_7d2f9e3b-1a4c-4e8d-b6f2-3c9a1e7d5b02";
+  for (const [pathname, parameter, prefix] of [
+    [`/namespaces/${traversal(namespaceA.id)}`, "namespaceId", "ns_"],
+    [`/namespaces/${namespaceA.id}/agents/${traversal(agentA.id)}`, "agentId", "agt_"],
+    [`/namespaces/${namespaceA.id}/agents/${traversal(unknownAgentId)}`, "agentId", "agt_"],
+    [`/namespaces/${namespaceA.id}/agents/${agentB.id}%2F..`, "agentId", "agt_"],
+    [
+      `/namespaces/${namespaceA.id}/agents/${agentA.id}/revisions/${traversal(missingRevisionId)}`,
+      "revisionId",
+      "rev_",
+    ],
+    [
+      `/namespaces/${namespaceA.id}/configurations/${traversal(configuration)}`,
+      "configurationId",
+      "cfg_",
+    ],
+    [`/namespaces/${namespaceA.id}/secrets/${traversal(unknownSecretId)}`, "secretId", "sec_"],
+  ]) {
+    const result = await request(fixture.app, pathname);
+    assert.equal(result.response.status, 400, pathname);
+    assert.equal(result.response.headers.get("location"), null, pathname);
+    assert.deepEqual(
+      result.payload.error,
+      {
+        code: "INVALID_REQUEST",
+        message: `The request does not match the operation contract: params /${parameter} has an invalid format; expected ${prefix} followed by a lowercase version 4 UUID.`,
+        details: [{ path: `/${parameter}`, code: "INVALID_FORMAT" }],
+      },
+      pathname,
+    );
+  }
+  // A path no route has gets route text, not "resource not found", and the same answer for a
+  // readable and an unknown Agent (finding D764).
+  for (const [suffix, message] of [
+    ["/", ROUTE_TRAILING_SLASH],
+    ["/no-such-route", ROUTE_NOT_FOUND],
+  ]) {
+    const answers = [];
+    for (const id of [agentA.id, unknownAgentId]) {
+      const result = await request(
+        fixture.app,
+        `/namespaces/${namespaceA.id}/agents/${id}${suffix}`,
+      );
+      assert.equal(result.response.status, 404, suffix);
+      assert.deepEqual(result.payload.error, { code: "NOT_FOUND", message }, suffix);
+      answers.push([result.response.status, result.payload.error]);
+    }
+    assert.deepEqual(answers[0], answers[1]);
   }
 
   const reader = fixture.tenantAReader;
@@ -2285,6 +2359,24 @@ test("runtime log failures are fixed, content-free and never read after an audit
   const hostile = await fixture.request("GET", target.runtimePath);
   assert.equal(hostile.status, 503);
   assert.equal(hostile.body.error.code, "RUNTIME_LOGS_UNAVAILABLE");
+});
+
+// Finding D762: refusals that are not about a grant name their cause and what would help. This
+// version runs without a Sandbox Driver and, as an embedded Agent, without an agent container.
+test("a version without a Sandbox names the log sources and policy suggestions it lacks", async () => {
+  const fixture = await createRuntimeLogFixture();
+  const target = await fixture.deployAgent();
+  for (const source of ["sandbox", "agent"]) {
+    const refused = await fixture.request("GET", target.logsPath(`source=${source}`));
+    assertApiError(refused, 400, "RUNTIME_LOGS_SOURCE_UNAVAILABLE", source);
+    assert.equal(refused.body.error.message, runtimeLogSourceUnavailable(source));
+  }
+  const suggestions = await fixture.request(
+    "GET",
+    `/namespaces/${target.namespace.id}/agents/${target.agent.id}/revisions/${target.revisionId}/sandbox-policy/networking/recommendations`,
+  );
+  assertApiError(suggestions, 409, "RESOURCE_CONFLICT");
+  assert.equal(suggestions.body.error.message, POLICY_RECOMMENDATIONS_NO_SANDBOX);
 });
 
 test("runtime log reads retain allowance through backward and restored wall clocks", async (t) => {

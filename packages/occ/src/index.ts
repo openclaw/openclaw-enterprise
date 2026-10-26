@@ -283,6 +283,7 @@ import {
   CredentialSourceTypeNotOfferedError,
   CredentialSourceUnprotectedError,
   CredentialWithdrawalInProgressError,
+  CredentialWithdrawalNotFoundError,
   HarnessAuthSecretDriverError,
   IAMAccessBindingRoleError,
   IAMPolicyValidationError,
@@ -295,6 +296,7 @@ import {
   NotImplementedError,
   PluginPolicyValidationError,
   ProvisioningSecretDriverError,
+  QualifiedAuthorizationDeniedError,
   RepositoryBindingSelectionError,
   RepositoryGitProfileUnsupportedError,
   RepositoryOptionsUnavailableError,
@@ -448,6 +450,7 @@ export {
   CredentialSourceUnprotectedError,
   CredentialTokenUnsettledError,
   CredentialWithdrawalInProgressError,
+  CredentialWithdrawalNotFoundError,
   CredentialWithdrawalRefusedError,
   GatewayPasswordValueError,
   HarnessAuthSecretDriverError,
@@ -465,6 +468,7 @@ export {
   NotImplementedError,
   PluginPolicyValidationError,
   ProvisioningSecretDriverError,
+  QualifiedAuthorizationDeniedError,
   quotedSettingKey,
   RepositoryBindingSelectionError,
   RepositoryGitProfileUnsupportedError,
@@ -3781,6 +3785,8 @@ export class OpenClawController {
                   : error.reason === "source_unavailable"
                     ? "RUNTIME_LOGS_SOURCE_UNAVAILABLE"
                     : "RUNTIME_LOGS_UNAVAILABLE",
+              undefined,
+              query.source,
             );
           }
           throw error;
@@ -3807,7 +3813,7 @@ export class OpenClawController {
   ): Promise<Readonly<RuntimeLogPage>> {
     const sandbox = this.sandboxLogDriver(compute, binding.revision);
     if (sandbox === undefined) {
-      throw new RuntimeLogsError("RUNTIME_LOGS_SOURCE_UNAVAILABLE");
+      throw new RuntimeLogsError("RUNTIME_LOGS_SOURCE_UNAVAILABLE", undefined, "sandbox");
     }
     const description = this.withSandboxLogSource(
       Object.freeze({
@@ -3859,6 +3865,8 @@ export class OpenClawController {
                 : error.reason === "source_unavailable"
                   ? "RUNTIME_LOGS_SOURCE_UNAVAILABLE"
                   : "RUNTIME_LOGS_UNAVAILABLE",
+            undefined,
+            "sandbox",
           );
         }
         throw error;
@@ -7538,7 +7546,7 @@ export class OpenClawController {
     if (!this.selections.has("credential_gateway") || !this.selections.has("credential_refresh")) {
       throw new NotImplementedError(
         "agent_device_authorization",
-        "Device login requires a Credential Gateway and a Credential Refresh Driver.",
+        "Device login needs a Credential Gateway and a Credential Refresh Driver, and this Installation does not select both. Ask an Installation administrator to select them; see the credential lifecycle guide.",
       );
     }
     const gateway = this.credentialGatewayDriver();
@@ -8991,12 +8999,21 @@ export class OpenClawController {
       return { namespace, revision };
     });
     const driver = this.sandboxDriver();
-    if (
-      driver?.id !== binding.revision.sandboxDriverId ||
-      driver?.readPolicyRecommendations === undefined
-    ) {
+    // Each refusal names why this version has no recommendations and what would give some
+    // (finding D762); all are facts about the version and the Installation the caller may read.
+    if (binding.revision.sandboxDriverId === undefined) {
       throw new ResourceStateConflictError(
-        "Policy recommendations are unavailable for this revision.",
+        "This version runs without a Sandbox, so it records no network denials to recommend policy from. Policy recommendations need an Agent deployed with a Sandbox Driver such as OpenShell.",
+      );
+    }
+    if (driver?.id !== binding.revision.sandboxDriverId) {
+      throw new ResourceStateConflictError(
+        "This version runs on a Sandbox Driver that this Installation no longer selects, so its recommendations cannot be read. Deploy a new version to read them.",
+      );
+    }
+    if (driver.readPolicyRecommendations === undefined) {
+      throw new ResourceStateConflictError(
+        "The selected Sandbox Driver does not offer policy recommendations, so no version can have them.",
       );
     }
     const readRecommendations = driver.readPolicyRecommendations.bind(driver);
@@ -9492,7 +9509,13 @@ export class OpenClawController {
       // usable record: after a Secret Driver or Credential Gateway change, an update must still
       // be able to replace or drop what the new driver does not own. Only what the update
       // binds is looked up, and deploy admission rechecks every bound source.
-      await this.authorizeBoundHarnessAuth(principalId, namespace.id, previousAuth);
+      // A denial here says it is for the current Harness authentication, which an update that
+      // replaces it also needs (finding D763).
+      await this.authorizeBoundHarnessAuth(principalId, namespace.id, previousAuth).catch(
+        (error: unknown) => {
+          throw QualifiedAuthorizationDeniedError.qualify(error, "current_harness_auth");
+        },
+      );
       await this.authorizeBoundCredentialSources(
         principalId,
         namespace.id,
@@ -10381,8 +10404,13 @@ export class OpenClawController {
     return this.read(async (state) => {
       await this.exactNamespace(state, input.namespaceId);
       const agent = await state.agents.findAgent(input.namespaceId, input.agentId);
-      if (agent === undefined || agent.activeRevisionId === undefined) {
-        throw new ScopeViolationError("The Agent has no active revision.");
+      if (agent === undefined) {
+        throw new ScopeViolationError("The Agent does not belong to this Namespace.");
+      }
+      // After Agent read, these name what the Agent lacks, as the request route's 409 does; they
+      // read only its active version's withdrawals, never the source (finding D762).
+      if (agent.activeRevisionId === undefined) {
+        throw new CredentialWithdrawalNotFoundError("no_active_version");
       }
       const withdrawal = await state.credentialSources.findCredentialWithdrawal(
         agent.namespaceId,
@@ -10390,9 +10418,7 @@ export class OpenClawController {
         input.credentialSourceId,
       );
       if (withdrawal === undefined) {
-        throw new ScopeViolationError(
-          "The credential source was not withdrawn from the Agent's active revision.",
-        );
+        throw new CredentialWithdrawalNotFoundError("not_withdrawn");
       }
       const withdrawals = [withdrawal];
       const revisions = await state.revisions.listRevisions(agent.namespaceId, agent.id);

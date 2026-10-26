@@ -17,7 +17,7 @@ const KIND_LABELS: Readonly<Record<ResourceKind, string>> = Object.freeze({
   secret: "Secret",
   agent: "Agent",
   agent_revision: "AgentRevision",
-  credential_source: "credential source",
+  credential_source: "CredentialSource",
   sandbox_policy: "SandboxPolicy",
 });
 
@@ -43,10 +43,14 @@ export const NATIVE_ADMIN_DENIAL = `${NAMED_DENIAL_PREFIX} opening this Agent's 
  *   whether a Restriction denied the request or no grant allowed it.
  * - It depends only on the request and the checked grant, never on whether the resource exists,
  *   so an unknown ID and one the caller cannot read get the same answer.
+ * - `qualifier` adds why the grant matters here: it is checked on the Agent's current Harness
+ *   authentication even by an update that replaces it (finding D763), or native admin is off on
+ *   this Installation, so the grant alone would not open it (finding D762).
  */
 export function callerDenialMessage(
   authorization: { readonly action: PermissionAction; readonly resource: ResourceRef },
   requested: (value: string) => boolean = () => false,
+  qualifier?: "current_harness_auth" | "native_admin_off",
 ): string {
   const { action, resource } = authorization;
   const kind = KIND_LABELS[resource.kind] ?? resource.kind;
@@ -76,6 +80,12 @@ export function callerDenialMessage(
   // (finding 2599); the text never tells whether a Restriction applied.
   const grant =
     action === "read_logs" ? "Agent read_logs (or Agent administer)" : `${kind} ${action}`;
+  if (qualifier === "current_harness_auth") {
+    return `${NAMED_DENIAL_PREFIX} this needs ${grant} on ${target}, the Agent's current Harness authentication: every update checks it, even one that replaces it. ${ASK}`;
+  }
+  if (qualifier === "native_admin_off") {
+    return `${NAMED_DENIAL_PREFIX} this needs ${grant} on ${target}. ${ASK} Native admin is also off on this Installation, so the grant alone would not open it.`;
+  }
   return `${NAMED_DENIAL_PREFIX} this needs ${grant} on ${target}. ${ASK}`;
 }
 

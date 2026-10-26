@@ -198,7 +198,7 @@ func TestRefusedCommandsNameTheGrantTheyNeed(t *testing.T) {
 // route gets OCC's admitted-Namespace refusal; the hint names the key's own
 // Namespace from the local key file, the same for any target.
 func TestNamespaceKeyRefusalNamesTheKeysNamespace(t *testing.T) {
-	const mismatch = "The admitted Namespace does not match."
+	const mismatch = "This service key works only in Namespace " + testNamespaceID + "; this request is outside it. Ask an Installation administrator to run it."
 	scoped := writeKeyFile(t, `{"data":{"key":"test-key","namespaceId":"`+testNamespaceID+`"}}`)
 	want := "\nhint: this service key is scoped to Namespace " + testNamespaceID + `; it cannot reach another Namespace or Installation-level commands such as "occ namespace list". Pass --namespace ` + testNamespaceID + ` (or set OCC_NAMESPACE), read it with "occ namespace get ` + testNamespaceID + `", or use an Installation-scoped key.`
 	for _, args := range [][]string{
@@ -235,7 +235,7 @@ func TestNamespaceKeyRefusalNamesTheKeysNamespace(t *testing.T) {
 // not tell the caller to pass the --namespace it already selected; it says the
 // command needs an Installation-scoped key and who can run it.
 func TestInstallationCommandRefusalAsksForAnInstallationKey(t *testing.T) {
-	const mismatch = "The admitted Namespace does not match."
+	const mismatch = "This service key works only in Namespace " + testNamespaceID + "; this request is outside it. Ask an Installation administrator to run it."
 	scoped := writeKeyFile(t, `{"data":{"key":"test-key","namespaceId":"`+testNamespaceID+`"}}`)
 	for _, args := range [][]string{
 		{"installation", "get"},

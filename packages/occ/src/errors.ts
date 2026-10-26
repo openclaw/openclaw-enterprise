@@ -2,6 +2,7 @@ import type {
   AuthorizationEvidence,
   AuthorizationRequest,
   ResourceRef,
+  RuntimeLogSourceId,
   SecretConsumers,
 } from "@openclaw-enterprise/contracts";
 
@@ -42,6 +43,33 @@ export class AuthorizationDeniedError extends Error {
     if (checkedPrincipalId !== undefined) {
       this.checkedPrincipalId = checkedPrincipalId;
     }
+  }
+}
+
+/**
+ * The caller's own denial where the named grant needs a reason to make sense: an Agent update
+ * checks the grant on the Agent's current Harness authentication even when it replaces it
+ * (finding D763), and native admin is off on this Installation, so the grant alone would not
+ * open it (finding D762). It keeps the wrapped denial's evidence, grant and checked principal,
+ * so its audit record is the same; HTTP adds only the reason to the caller's denial text.
+ */
+export class QualifiedAuthorizationDeniedError extends AuthorizationDeniedError {
+  readonly qualifier: "current_harness_auth" | "native_admin_off";
+
+  constructor(
+    denial: AuthorizationDeniedError,
+    qualifier: QualifiedAuthorizationDeniedError["qualifier"],
+  ) {
+    super(denial.message, denial.evidence, denial.authorization, denial.checkedPrincipalId);
+    this.qualifier = qualifier;
+  }
+
+  /** Qualifies a plain caller denial; any other error, a subclass included, passes unchanged. */
+  static qualify(error: unknown, qualifier: QualifiedAuthorizationDeniedError["qualifier"]) {
+    return error instanceof AuthorizationDeniedError &&
+      Object.getPrototypeOf(error) === AuthorizationDeniedError.prototype
+      ? new QualifiedAuthorizationDeniedError(error, qualifier)
+      : error;
   }
 }
 
@@ -223,7 +251,7 @@ export class SecretStorageDriverError extends SecretDriverOwnershipError {
 export class CredentialSourceDriverError extends DependencyUnavailableError {
   constructor() {
     super(
-      "The selected Credential Gateway Driver did not register this credential source. Bind a replacement registered through the selected driver instead. To update or delete this source, an administrator must first re-select the driver that registered it.",
+      "The selected Credential Gateway Driver did not register this credential source. Bind a replacement registered through the selected driver. To update or delete this source, an Installation administrator must first re-select the driver that registered it.",
     );
     this.name = "CredentialSourceDriverError";
   }
@@ -1283,7 +1311,7 @@ export class IAMRoleInUseError extends ResourceConflictError {
 export class CredentialGatewayNotConfiguredError extends Error {
   constructor() {
     super(
-      "This Installation has no Credential Gateway, so credential sources are unavailable. An administrator must select the OpenShell Credential Gateway Driver; see https://docs-enterprise.openclaw.org/reference/credential-sources/",
+      "This Installation has no Credential Gateway, so credential sources are unavailable. An Installation administrator must select the OpenShell Credential Gateway Driver; see https://docs-enterprise.openclaw.org/reference/credential-sources/",
     );
     this.name = "CredentialGatewayNotConfiguredError";
   }
@@ -1357,7 +1385,7 @@ export class StoredCredentialSourceConfigError extends ResourceStateConflictErro
 export class CredentialSourceTypeNotOfferedError extends ResourceStateConflictError {
   constructor() {
     super(
-      "The selected Credential Gateway does not offer this credential source type. An administrator must enable it, for example toolBinaries for OpenShell bearer-token; see https://docs-enterprise.openclaw.org/reference/drivers/openshell-credential-gateway/",
+      "The Credential Gateway does not offer this credential source type. An Installation administrator must enable it, for example toolBinaries for OpenShell bearer-token; see https://docs-enterprise.openclaw.org/reference/drivers/openshell-credential-gateway/",
     );
     this.name = "CredentialSourceTypeNotOfferedError";
   }
@@ -1372,7 +1400,7 @@ export class CredentialSourceTypeNotOfferedError extends ResourceStateConflictEr
  */
 export class RepositoryDriverNotConfiguredError extends ResourceStateConflictError {
   static readonly description =
-    "This Installation has no repository settings, so no repository credential Driver is selected and an Agent cannot bind repositories. Remove the repository bindings, or ask an administrator to configure repository in the Installation.";
+    "This Installation has no repository settings, so no repository credential Driver is selected and an Agent cannot bind repositories. Remove the repository bindings, or ask an Installation administrator to add repository settings to the Installation.";
 
   constructor() {
     super(RepositoryDriverNotConfiguredError.description);
@@ -1484,9 +1512,9 @@ export class RetryLaterError extends DependencyUnavailableError {
 
 const SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED_MESSAGES = Object.freeze({
   issue:
-    "This Installation has no ChatGPT Backend, so it cannot issue service-account credentials. An administrator must configure the ChatGPT Backend and select its ServiceAccount Driver; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
+    "This Installation has no ChatGPT Backend, so it cannot issue service-account credentials. An Installation administrator must configure it and select its ServiceAccount Driver; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
   deploy:
-    "ChatGPT Harness authentication requires an issued account access-token credential, and this Installation has no ChatGPT Backend to issue one. An administrator must configure it; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
+    "ChatGPT Harness authentication needs an issued access-token credential, and this Installation has no ChatGPT Backend to issue one. An Installation administrator must configure it; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
   delete:
     "This service account holds an issued access token, and this Installation has no ChatGPT Backend to revoke it. Re-add it, or force the delete and revoke the token at the provider; see https://docs-enterprise.openclaw.org/reference/service-accounts/",
 });
@@ -1569,6 +1597,22 @@ export class NotImplementedError extends Error {
   }
 }
 
+/**
+ * The Agent the caller may read has no withdrawal of the requested credential source on its
+ * active version (finding D762). Raised only after Agent read, and it reads only the active
+ * version's withdrawals, never the source, so an unknown source ID answers the same.
+ */
+export class CredentialWithdrawalNotFoundError extends Error {
+  constructor(reason: "no_active_version" | "not_withdrawn") {
+    super(
+      reason === "no_active_version"
+        ? "The Agent has no active version, so it has no credential withdrawals. Deploy the Agent first."
+        : "The Agent's active version has no withdrawal for this credential source: either the version does not use it, or no withdrawal was requested for it.",
+    );
+    this.name = "CredentialWithdrawalNotFoundError";
+  }
+}
+
 /** The cluster denied `pods/log` or `events`: an operator must grant the documented roles. */
 export class RuntimeLogsForbiddenByClusterError extends Error {
   constructor() {
@@ -1634,13 +1678,18 @@ export type RuntimeLogsErrorCode =
 export class RuntimeLogsError extends Error {
   readonly code: RuntimeLogsErrorCode;
   readonly retryAfterSeconds?: number;
+  /** For RUNTIME_LOGS_SOURCE_UNAVAILABLE: the requested source, one the contract accepts. */
+  readonly source?: RuntimeLogSourceId;
 
-  constructor(code: RuntimeLogsErrorCode, retryAfterSeconds?: number) {
+  constructor(code: RuntimeLogsErrorCode, retryAfterSeconds?: number, source?: RuntimeLogSourceId) {
     super(`Runtime log request failed: ${code}.`);
     this.name = "RuntimeLogsError";
     this.code = code;
     if (retryAfterSeconds !== undefined) {
       this.retryAfterSeconds = retryAfterSeconds;
+    }
+    if (source !== undefined) {
+      this.source = source;
     }
   }
 }

@@ -7,7 +7,12 @@ import test from "node:test";
 
 import { deriveNativeAdminHost } from "../../apps/controller/src/gateway/native-admin.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
-import { GENERIC_DENIAL, NATIVE_ADMIN_DENIED } from "../helpers/refusal-text.mjs";
+import {
+  callerDenied,
+  GENERIC_DENIAL,
+  NATIVE_ADMIN_DENIED,
+  nativeAdminOffDenied,
+} from "../helpers/refusal-text.mjs";
 import { createControllerAuth } from "../helpers/password-hasher.mjs";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
@@ -341,6 +346,11 @@ test("native admin status requires exact Agent administer and reports lifecycle 
   const limitedSession = await createReadOperateSession(context, "native-admin-reader");
   const denied = await nativeStatus(context, { session: limitedSession });
   assertApiError(denied, 403, "FORBIDDEN");
+  // With native admin on, the grant is all the caller lacks.
+  assert.equal(
+    denied.body.error.message,
+    callerDenied("Agent administer", `Agent ${context.agent.id}`),
+  );
 
   const missingStatus = await context.fixture.request(
     "GET",
@@ -462,6 +472,8 @@ test("native admin disabled status still requires exact Agent administer", async
   const limitedSession = await createReadOperateSession(context, "native-admin-disabled-reader");
   const denied = await nativeStatus(context, { session: limitedSession });
   assertApiError(denied, 403, "FORBIDDEN");
+  // With native admin off, the denial also says the grant alone would not open it (finding D762).
+  assert.equal(denied.body.error.message, nativeAdminOffDenied(`Agent ${context.agent.id}`));
 
   const missingStatus = await context.fixture.request(
     "GET",

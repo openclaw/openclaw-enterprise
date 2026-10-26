@@ -206,8 +206,9 @@ export const SANDBOX_POLICY_READ_DENIED = notIncluded(
 // The Logs tab's refusals use the API's grant words for log text (finding 2599).
 export const LOG_TEXT_DENIED =
   "Log text requires Agent read_logs (or Agent administer) on this Agent. Ask an Installation administrator to grant it.";
+// The status refusal names only status: the log pane names read_logs itself (finding D763).
 export const RUNTIME_STATUS_DENIED =
-  "Runtime status requires Agent operate on this Agent and AgentRevision read on this version. Log text needs Agent read_logs (or Agent administer). Ask an Installation administrator for the access you need.";
+  "Runtime status requires Agent operate on this Agent and AgentRevision read on this version. Ask an Installation administrator to grant them.";
 // A version link the page cannot list may name a version that does not exist: the API answers
 // both alike, so the console says either may be true (finding D750).
 export const VERSION_UNAVAILABLE =
@@ -565,3 +566,46 @@ export const AGENT_PAGE_READ_DENIED = notIncluded(
   "reading this Agent, its versions or its Configuration",
   "Agent read, AgentRevision read and Configuration read on them",
 );
+
+// API answers that are not permission refusals name their cause and next step (finding D762),
+// and who-to-ask text says "Installation administrator" (D763). The 401 for a missing, expired
+// or revoked credential gives header advice only to a request that sent an Authorization header.
+export const CREDENTIAL_REQUIRED =
+  "A valid session cookie or service API key is required: the credential sent is missing, invalid, expired, or revoked. Sign in again, or use a current service API key.";
+export const AUTHORIZATION_HEADER_REFUSED =
+  "The API does not accept an Authorization header. Send a service API key in the x-api-key header, or sign in for a session cookie.";
+export const BODY_NOT_JSON = "The request body is not valid JSON.";
+// A Namespace-scoped service key outside its Namespace: the text names only the key's own
+// Namespace, never the requested one.
+export const serviceKeyOutsideNamespace = (namespaceId) =>
+  `This service key works only in Namespace ${namespaceId}; this request is outside it. Ask an Installation administrator to run it.`;
+// `source` is the requested log source, or "such" when none is known.
+export const runtimeLogSourceUnavailable = (source) =>
+  `This Agent version has no ${source} log source. Every version has gateway; only a Dedicated Agent has agent, and only a version deployed with a Sandbox Driver has sandbox.`;
+// GET .../credential-sources/{id}/withdrawal on a readable Agent (404).
+export const WITHDRAWAL_NO_ACTIVE_VERSION =
+  "The Agent has no active version, so it has no credential withdrawals. Deploy the Agent first.";
+export const WITHDRAWAL_NOT_FOUND =
+  "The Agent's active version has no withdrawal for this credential source: either the version does not use it, or no withdrawal was requested for it.";
+export const POLICY_RECOMMENDATIONS_NO_SANDBOX =
+  "This version runs without a Sandbox, so it records no network denials to recommend policy from. Policy recommendations need an Agent deployed with a Sandbox Driver such as OpenShell.";
+export const DEVICE_LOGIN_NOT_CONFIGURED =
+  "Device login needs a Credential Gateway and a Credential Refresh Driver, and this Installation does not select both. Ask an Installation administrator to select them; see the credential lifecycle guide.";
+export const REPOSITORY_SETTINGS_MISSING =
+  "This Installation has no repository settings, so no repository credential Driver is selected and an Agent cannot bind repositories. Remove the repository bindings, or ask an Installation administrator to add repository settings to the Installation.";
+// The caller's own denial of the grant an Agent update checks on the Agent's current Harness
+// authentication, which an update that replaces it also needs (finding D763).
+export const currentHarnessAuthDenied = (grant, target) =>
+  `Not authorized: this needs ${grant} on ${target}, the Agent's current Harness authentication: every update checks it, even one that replaces it. Ask an Installation administrator to grant it.`;
+// Native admin status for a caller without Agent administer, on an Installation with native admin
+// off: the grant alone would not open it (finding D762).
+export const nativeAdminOffDenied = (target) =>
+  `${callerDenied("Agent administer", target)} Native admin is also off on this Installation, so the grant alone would not open it.`;
+// A request path no route has (finding D764): a trailing slash says so; any other names no route.
+export const ROUTE_TRAILING_SLASH = "No API route has this path: remove the trailing slash.";
+export const ROUTE_NOT_FOUND = "No API route has this path. Check it against the API reference.";
+// Credential Gateway refusals that name the Installation setting and who changes it (D763).
+export const CREDENTIAL_GATEWAY_NOT_CONFIGURED =
+  "This Installation has no Credential Gateway, so credential sources are unavailable. An Installation administrator must select the OpenShell Credential Gateway Driver; see https://docs-enterprise.openclaw.org/reference/credential-sources/";
+export const CREDENTIAL_SOURCE_DRIVER_CHANGED =
+  "The selected Credential Gateway Driver did not register this credential source. Bind a replacement registered through the selected driver. To update or delete this source, an Installation administrator must first re-select the driver that registered it.";
