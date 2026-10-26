@@ -549,16 +549,18 @@ export async function assertReadyGateway(namespaceName, agentId, namespaceId, sn
       optional: false,
     });
     const container = deployment.spec.template.spec.containers[0];
+    const unmanaged = snapshot.gatewayManagedMode === false;
     assert.deepEqual(
       container.volumeMounts.find(({ name }) => name === "openclaw-configuration"),
-      { name: "openclaw-configuration", mountPath: "/etc/openclaw", readOnly: true },
+      {
+        name: "openclaw-configuration",
+        mountPath: unmanaged ? "/etc/openclaw-managed" : "/etc/openclaw",
+        readOnly: true,
+      },
     );
     assert.equal(
-      container.env.some(
-        ({ name, value }) =>
-          name === "OPENCLAW_CONFIG_PATH" && value === "/etc/openclaw/openclaw.json",
-      ),
-      true,
+      container.env.find(({ name }) => name === "OPENCLAW_CONFIG_PATH")?.value,
+      unmanaged ? "/home/node/.openclaw/openclaw.json" : "/etc/openclaw/openclaw.json",
     );
     assert.equal(
       container.env.some(({ value }) => value === document),

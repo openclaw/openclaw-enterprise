@@ -1011,7 +1011,14 @@ test("Gateway password access saves the generated reference without changing adm
       `Gateway password access is enabled in the saved Configuration and included in v${freshV1.revision.revision}.`,
     )
     .waitFor();
-  assert.equal(await page.getByText(/Deploy a new version to apply it/).count(), 0);
+  assert.equal(
+    await page
+      .getByText(
+        "Gateway password access is enabled in the saved Configuration. Deploy a new version to apply it.",
+      )
+      .count(),
+    0,
+  );
 });
 
 test("Agent detail preserves admitted revision history while draft edits change current configuration", async (t) => {
@@ -1089,6 +1096,23 @@ test("Agent detail preserves admitted revision history while draft edits change 
   );
   assertRevisionUrl(page, "draft");
 
+  const deploy = page.getByRole("button", { name: "Deploy new version" });
+  assert.equal(await deploy.isEnabled(), true);
+  const savingMode = await holdRequests(
+    t,
+    page,
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`,
+    {
+      method: "PATCH",
+      once: true,
+    },
+  );
+  await page.getByRole("button", { name: "Turn off managed mode for next deployment" }).click();
+  await savingMode.requested;
+  assert.equal(await deploy.isDisabled(), true);
+  savingMode.release();
+  await page.getByRole("button", { name: "Turn on managed mode for next deployment" }).waitFor();
+
   await page.getByRole("button", { name: "Edit Configuration" }).click();
   await openAdvancedSettings(page);
   const editor = page.getByLabel("Configuration JSON");
@@ -1149,6 +1173,10 @@ test("Agent detail preserves admitted revision history while draft edits change 
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   assert.deepEqual(JSON.parse(await editor.inputValue()), editedValues);
   await page.getByLabel("Available versions").selectOption(second.revision.id);
+  const requestedMode = page.locator(".configuration-summary dt", {
+    hasText: "Requested Gateway managed mode",
+  });
+  assert.equal(await requestedMode.locator("xpath=following-sibling::dd[1]").textContent(), "On");
   await page.getByRole("button", { name: "Edit current Configuration" }).click();
   await waitForLiveControls(page, ["configuration-json"]);
   assert.deepEqual(JSON.parse(await editor.inputValue()), editedValues);
@@ -1241,6 +1269,19 @@ test("Agent detail preserves admitted revision history while draft edits change 
   await editor.fill(JSON.stringify(nativeValues("after-cancel")));
   await page.getByRole("button", { name: "Save Configuration" }).click();
   await page.getByText(/generation 7/).waitFor();
+
+  // Saving an Agent setting preserves both an unsaved editor and a concurrent reassignment.
+  await page.getByRole("button", { name: "Edit Configuration" }).click();
+  const unsaved = JSON.stringify(nativeValues("unsaved"));
+  await editor.fill(unsaved);
+  const reassigned = await fixture.createConfiguration(namespace.id, nativeValues("reassigned"));
+  await fixture.updateAgent(namespace.id, agent.id, { configurationId: reassigned.id });
+  await page.getByRole("button", { name: "Turn on managed mode for next deployment" }).click();
+  await page.getByRole("button", { name: "Turn off managed mode for next deployment" }).waitFor();
+  assert.equal(await editor.inputValue(), unsaved);
+  const savedAgent = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
+  assert.equal(savedAgent.data.gatewayManagedMode, true);
+  assert.equal(savedAgent.data.configurationId, reassigned.id);
 });
 
 test("Agent detail saves plugin changes for the next revision without changing admitted revisions", async (t) => {
@@ -3691,6 +3732,10 @@ test("a read-only principal sees Agent mutation controls disabled or absent befo
   await page.goto(draft.href);
   await page.getByText(AGENT_DEPLOY_NOT_INCLUDED, { exact: true }).waitFor();
   assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
+  assert.equal(
+    await page.getByRole("button", { name: "Turn off managed mode for next deployment" }).count(),
+    0,
+  );
 
   // The summary is a probe, not an attempted operation: no write was sent and nothing was
   // audited as a denial for the summary or the gated operations.

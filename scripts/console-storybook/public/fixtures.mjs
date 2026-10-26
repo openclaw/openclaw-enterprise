@@ -403,6 +403,7 @@ export function installFixture(scenario, evidence) {
     desiredRuntimeState: scenario.stopped ? "stopped" : scenario.deployed ? "running" : "stopped",
     configurationId: config.id,
     executionMode: "dedicated",
+    gatewayManagedMode: true,
     harnessAuth: selectedAuth,
     credentialSources: structuredClone(
       scenario.credentialSources ??
@@ -444,6 +445,7 @@ export function installFixture(scenario, evidence) {
       agentId: owner.id,
       revision,
       backendId: owner.backendId ?? null,
+      gatewayManagedMode: owner.gatewayManagedMode,
       configurationId: configuration.id,
       configurationKind: configuration.kind,
       configurationGeneration: configuration.generation,

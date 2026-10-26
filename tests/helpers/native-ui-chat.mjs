@@ -68,11 +68,8 @@ export async function submitChatTurnWithAssistantProof(
 }
 
 export async function waitForStockUi(page) {
-  // The UI mounts into a plain host; its readiness contract is renderer-independent.
   await page.waitForFunction(
-    () =>
-      globalThis.document.querySelector("openclaw-app") !== null &&
-      globalThis.openclawControlUi?.snapshot().ready === true,
+    () => globalThis.openclawControlUi?.snapshot().booted === true,
     undefined,
     { timeout: 120_000 },
   );

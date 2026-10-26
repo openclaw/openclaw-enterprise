@@ -187,6 +187,8 @@ async function createNativeAdminFixture(t, options = {}) {
       sharedCookieDomain: options.cookieDomain ?? cookieDomain,
     },
     nativeAdminGatewayApiKey: async () => nativeGatewayApiKey,
+    // The HTTPS upstream simulates the native admin endpoint; it is not an OC Gateway.
+    agentGatewayManagedMode: false,
     computeDriver: nativeComputeDriver(upstream.port, {
       exclusiveReplacement: options.exclusiveReplacement,
     }),

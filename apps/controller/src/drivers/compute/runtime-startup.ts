@@ -3,6 +3,19 @@
 
 const STARTUP_PHASE_EVENT = "runtime.startup_phase";
 
+// Apply the controls to the Gateway child, after OCE finishes configuration and plugin setup.
+export function gatewayManagedModeEnvironment(managedMode: boolean): string {
+  return JSON.stringify(
+    managedMode
+      ? {
+          OPENCLAW_CONFIG_READONLY: "1",
+          OPENCLAW_DISABLE_GATEWAY_LOCAL_TERMINALS: "1",
+          OPENCLAW_DISABLE_CRON_HOST_EXECUTION: "1",
+        }
+      : {},
+  );
+}
+
 // One stderr JSON line per startup phase, for deploy-time measurement. Callers
 // pass fixed phase names only: never provider, model, credential or path values.
 // A failed phase may add a fixed upper-case cause code, which the Collector exports,

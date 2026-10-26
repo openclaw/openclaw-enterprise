@@ -284,6 +284,8 @@ try {
       { modelProvider: "openai-compatible", model: scenario.model },
       `${scenario.agentId} thread/starts since its spawn: ${JSON.stringify(nativeStarts())}`,
     );
+    assert.equal(childTurn.params.model ?? native.params.model, scenario.model);
+    assert.equal(childTurn.params.cwd ?? native.params.cwd, scenario.cwd);
     // Settle this run, including its configured fallbacks, before the next case.
     const completed = await callGatewayFromCli(
       "agent.wait",

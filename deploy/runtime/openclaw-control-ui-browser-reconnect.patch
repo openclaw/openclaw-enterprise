@@ -193,22 +193,27 @@ index cdceb9d728d4241230465697b66ceafb32c04a13..7621dd1d7df48700dbe3a057d2c092db
                retryContext={view().context}
                retryEnabled={view().gatewayConnected}
 diff --git a/ui/src/app/gateway-store.observers.test.ts b/ui/src/app/gateway-store.observers.test.ts
-index dad9972f155e06dedf804f5372dc518cc41cb649..3a91605ad34020fa31103581a6bb7907a2973ebd 100644
+index dad9972f155e06dedf804f5372dc518cc41cb649..cc148301c01f0ba5a804b9c151d725c47d858260 100644
 --- a/ui/src/app/gateway-store.observers.test.ts
 +++ b/ui/src/app/gateway-store.observers.test.ts
-@@ -466,6 +466,18 @@ describe("createApplicationGateway connection ownership", () => {
+@@ -466,6 +466,23 @@ describe("createApplicationGateway connection ownership", () => {
      }
    });
- 
-+  it("offers browser recovery only after an established connection and clears it on hello", () => {
+
++  it("offers browser recovery only for an established connection and retires it on recovery or replacement", () => {
 +    gateway.start();
++    const original = current();
 +    const refused = { code: 1006, reason: "", willRetry: true, browserAccessDenied: true } as const;
-+    current().testOptions.onClose?.(refused);
++    original.testOptions.onClose?.(refused);
 +    expect(gateway.snapshot.browserAccessDenied).toBe(false);
-+    current().testOptions.onHello?.(HELLO);
-+    current().testOptions.onClose?.(refused);
++    original.testOptions.onHello?.(HELLO);
++    original.testOptions.onClose?.(refused);
 +    expect(gateway.snapshot.browserAccessDenied).toBe(true);
-+    current().testOptions.onHello?.(HELLO);
++    original.testOptions.onHello?.(HELLO);
++    expect(gateway.snapshot.browserAccessDenied).toBe(false);
++    original.testOptions.onClose?.(refused);
++    gateway.connect();
++    original.testOptions.onClose?.(refused);
 +    expect(gateway.snapshot.browserAccessDenied).toBe(false);
 +  });
 +
@@ -216,20 +221,18 @@ index dad9972f155e06dedf804f5372dc518cc41cb649..3a91605ad34020fa31103581a6bb7907
      const otherGateway = "wss://other-gateway.example.test";
      const selection = {
 diff --git a/ui/src/app/gateway-store.ts b/ui/src/app/gateway-store.ts
-index a17324787a8dbd1014de9e16d484afada1193a29..d9d5a8426873e71e2f977bc7f8452792f9b9624d 100644
+index a17324787a8dbd1014de9e16d484afada1193a29..2f0545d578a18a4969f222ce8536271399c60d5e 100644
 --- a/ui/src/app/gateway-store.ts
 +++ b/ui/src/app/gateway-store.ts
-@@ -155,6 +155,9 @@ export function createApplicationGateway(
-   const setSnapshot = (patch: Partial<ApplicationGatewaySnapshot>) => {
-     const previous = snapshot;
-     snapshot = { ...previous, ...patch };
-+    if (snapshot.phase !== "reconnecting" || snapshot.client !== previous.client) {
-+      snapshot.browserAccessDenied = false;
-+    }
-     messageBodies.synchronize();
-     presenceObserver.synchronize(snapshot.phase === "connected" ? snapshot.hello : null);
-     if (snapshot.phase !== "connecting" && snapshot.phase !== "reconnecting") {
-@@ -527,7 +530,7 @@ export function createApplicationGateway(
+@@ -184,6 +184,7 @@ export function createApplicationGateway(
+   };
+   const setConnectionSnapshot = (patch: Partial<ApplicationGatewaySnapshot>) =>
+     setSnapshot({
++      browserAccessDenied: false,
+       hello: null,
+       pluginCapabilities: null,
+       canvasPluginSurfaceUrl: null,
+@@ -527,7 +528,7 @@ export function createApplicationGateway(
            setSnapshot({ reconnectAt: Date.now() + delayMs });
          }
        },
@@ -238,7 +241,7 @@ index a17324787a8dbd1014de9e16d484afada1193a29..d9d5a8426873e71e2f977bc7f8452792
          if (client !== nextClient) {
            return;
          }
-@@ -597,6 +600,7 @@ export function createApplicationGateway(
+@@ -597,6 +598,7 @@ export function createApplicationGateway(
                  : t(willRetry ? "connection.interruptedRetrying" : "connection.interrupted", {
                      code: String(code),
                    }),

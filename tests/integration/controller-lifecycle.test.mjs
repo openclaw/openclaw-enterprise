@@ -96,7 +96,9 @@ function createDrivers(iam) {
     id: "compute-driver-a",
     capability: "compute",
     implementation: "test-only-compute",
-    // This passive lifecycle fixture admits synthetic API-key references, not provider login.
+    // This passive lifecycle fixture represents a managed-capable Compute Driver.
+    supportsGatewayManagedMode: true,
+    // It admits synthetic API-key references, not provider login.
     validateHarnessAuth(harness, auth) {
       if (
         auth.method !== "api_key" ||

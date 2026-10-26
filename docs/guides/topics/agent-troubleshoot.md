@@ -68,35 +68,34 @@ version or successful file read.
 
 ## An embedded Gateway reports an unverifiable state owner
 
-After an unclean stop, the replacement Gateway can find the old owner's records
-on the Agent's volume. An eligible embedded Kubernetes Gateway can verify the
-first container instance's signed record within the same Pod. A new Pod has no
-such record. If startup reports an unverifiable owner, an operator must
-establish who last used that volume before allowing another writer. A Gateway
-started on the older image did not record the original PID 1 start time. An
-unclean stop on that image also requires operator confirmation.
+A hard stop can leave the old Gateway's locks on the Agent's volume. With
+Gateway managed mode on or off, OCE can recover a verified Docker predecessor
+or the first eligible Kubernetes container in the same Pod. A new Pod cannot
+verify the previous Pod's owner. An older image may also lack a record of the
+original PID 1 start time. If the replacement reports an unverifiable owner,
+use the following procedure.
 
-1. Record the Agent, state volume, and original container ID. On Kubernetes,
-   also record the Pod UID and node. Stop the Agent in OCC to prevent another
-   startup. Verify with the compute provider that the original container
-   terminated. If its node is unreachable, keep the Agent stopped until the
-   infrastructure operator verifies shutdown. A missing Pod or expired
-   heartbeat cannot establish this.
-2. Run the Gateway's pinned image as its runtime user in a maintenance container.
-   Mount the same retained storage at the Gateway's paths and use its state
-   directory, configuration path, and profile. Inspect the recorded holders.
+1. Record the Agent, state volume and original container ID. On Kubernetes,
+   also record the Pod UID and node. Stop the Agent in OCC and verify with the
+   compute provider that the exact container exited. A missing Pod or expired
+   heartbeat alone cannot establish this. If its node is unreachable, keep the
+   Agent stopped until the infrastructure operator verifies shutdown.
+   [Stop and resume](../../reference/agents/deployment.md#stop-and-resume)
+2. Keep other writers off the volume. Start a maintenance container from the
+   Gateway's pinned image as its runtime user. Mount the retained volume and
+   configuration at the Gateway's paths and use its state directory and profile.
+   Inspect the holders without starting a Gateway.
 
    ```sh
    node /app/openclaw.mjs gateway recover-lock --json
    ```
 
-3. Match every listed holder to the stopped workload. If any holder could
-   still write, leave the records in place. Otherwise, repeat the command with
-   `--confirm` and the fingerprint shown by inspection. OpenClaw refuses a
-   changed record. Inspect it again before deciding whether to confirm.
-4. Exit the maintenance container, deploy a new Agent version, and send a chat
-   message. The first successful reply verifies the Agent can use its database
-   after startup. [Stop and resume](../../reference/agents/deployment.md#stop-and-resume)
+3. Match every reported holder to the stopped workload. If any holder could
+   still write or cannot be identified, leave all locks in place. Otherwise repeat the
+   command with `--confirm` and the exact `confirmation` fingerprint from the
+   inspection. If OpenClaw reports a changed record, inspect and verify its holders again.
+4. Exit the maintenance container, deploy the Agent again and send a chat
+   message to verify it can use its retained state.
 
 ## A save or deployment lost its response
 

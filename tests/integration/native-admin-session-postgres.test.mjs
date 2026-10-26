@@ -337,6 +337,7 @@ async function createNativeAgent(api, session, upstream) {
       name: `Native admin Agent ${randomUUID()}`,
       configurationId: configuration.id,
       harnessAuth: { method: "api_key", source: secret.ref },
+      gatewayManagedMode: false,
     },
   });
   assert.equal(agentResponse.statusCode, 201, agentResponse.body);

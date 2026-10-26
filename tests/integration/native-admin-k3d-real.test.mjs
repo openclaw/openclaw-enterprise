@@ -463,6 +463,22 @@ async function leaveNativeAccentDrift(page, nativeOrigin) {
   return driftAccent;
 }
 
+async function assertManagedNativeConfigWriteRejected(page, nativeOrigin, topology) {
+  const { editor, parsed } = await readRawConfig(page, nativeOrigin);
+  const originalAccent = configAccent(parsed);
+  parsed.ui = {
+    ...(parsed.ui ?? {}),
+    prefs: {
+      ...(parsed.ui?.prefs ?? {}),
+      accent: `#${randomUUID().replaceAll("-", "").slice(0, 6)}`,
+    },
+  };
+  await editor.fill(serializeConfig(parsed));
+  await page.locator(".config-raw-actions button.primary").first().click();
+  await page.getByText("Config is externally managed", { exact: false }).first().waitFor();
+  assert.equal(await readRuntimeAccent(topology), originalAccent);
+}
+
 async function readRuntimeAccent(topology) {
   const raw = await kubectl(
     "exec",
@@ -479,6 +495,17 @@ async function readRuntimeAccent(topology) {
 
 function agentPath(topology, suffix = "") {
   return `/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}${suffix}`;
+}
+
+async function saveGatewayManagedMode(topology, gatewayManagedMode) {
+  const updated = await topology.adminRequest("PATCH", agentPath(topology), {
+    configurationId: topology.agent.configurationId,
+    gatewayManagedMode,
+  });
+  assert.equal(updated.status, 200, JSON.stringify(updated.error));
+  assert.equal(updated.data.gatewayManagedMode, gatewayManagedMode);
+  assert.equal(updated.data.activeRevisionId, topology.revision.id);
+  topology.agent = { ...topology.agent, ...updated.data };
 }
 
 function workspaceFilePath(topology, name) {
@@ -502,6 +529,7 @@ async function assertStopRedeployPreservesWorkspaceFile(
   const beforeStop = await topology.workspaceRequest("GET", workspacePath);
   assert.equal(beforeStop.status, 200, JSON.stringify(beforeStop.error));
   assert.deepEqual(beforeStop.data, { name: filename, content });
+  await saveGatewayManagedMode(topology, true);
 
   const stopEventStart = topology.events.length;
   const stopped = await topology.request("POST", agentPath(topology, "/stop"));
@@ -534,6 +562,7 @@ async function assertStopRedeployPreservesWorkspaceFile(
   const deployEventStart = topology.events.length;
   const redeployed = await topology.request("POST", agentPath(topology, "/deploy"));
   assert.equal(redeployed.status, 202, JSON.stringify(redeployed.error));
+  assert.equal(redeployed.data.gatewayManagedMode, true);
   assert.notEqual(
     redeployed.data.id,
     previousRevisionId,
@@ -872,6 +901,7 @@ test(
       workspaceGateway: true,
     });
     ingress.setUpstream(topology.controllerUrl);
+    assert.equal(topology.revision.gatewayManagedMode, true);
     await assertActualModelTurn(topology);
 
     const unadmittedTarget = expectedNativeAdminTarget(topology, ingress.origin, nativeDomain);
@@ -883,11 +913,13 @@ test(
       "native admin must fail closed before the active runtime admits the exact browser origin and device approval policy",
     );
 
+    await saveGatewayManagedMode(topology, false);
     const expectedTarget = await redeployWithNativeAdminAccess(
       topology,
       ingress.origin,
       nativeDomain,
     );
+    assert.equal(topology.revision.gatewayManagedMode, false);
     const status = await nativeAdminStatus(topology);
     assert.equal(status.status, "available");
     assert.equal(status.host, expectedTarget.host, "Agent native host must be deterministic");
@@ -948,9 +980,7 @@ test(
     await login(page, topology.credentials);
     await page.getByRole("heading", { name: topology.agent.name }).waitFor();
     await page
-      .getByText(
-        "Manage configuration in OCE. Changes in the admin console aren’t saved to Agent versions",
-      )
+      .getByText("Gateway managed mode restricts administrative changes by default.")
       .waitFor();
     const nativePage = await openNativeAdminConsole(page, status.origin);
 
@@ -1056,9 +1086,14 @@ test(
       "the shared native admin session must reconnect to the current redeployed revision",
     );
     await waitForStockUi(currentSessionPage);
+    await assertManagedNativeConfigWriteRejected(
+      currentSessionPage,
+      currentStatus.origin,
+      topology,
+    );
     await currentSessionPage.close();
     context.diagnostic(
-      "Native admin browser proof loaded stock assets, opened a deep link, established a WebSocket, sent a real chat turn, made/reverted a native config edit, proved OCE redeploy restores managed config after native drift, denied a sibling host, preserved a workspace file across OCE stop/redeploy, wrote human connect/close audit evidence, reconnected to the current redeployed revision, and reloaded after gateway Pod replacement.",
+      "Native admin browser proof loaded stock assets, opened a deep link, established a WebSocket, sent a real chat turn, made/reverted a native config edit with managed mode off, restored OCE config and rejected a native config write after managed mode was re-enabled, denied a sibling host, preserved a workspace file across OCE stop/redeploy, wrote human connect/close audit evidence, reconnected to the current redeployed revision, and reloaded after gateway Pod replacement.",
     );
   },
 );

@@ -80,9 +80,9 @@ so builds do not export the large intermediate cache over the network. A custom
 non-Blacksmith runner uses the GitHub Actions cache with the same scope.
 Maintainers can also dispatch `container-check.yml`, or a manual `CI` run that
 calls it, on a branch for native image verification. It has no publication job or
-package-write permission.
-The build exports
-an OCI directory without registry publication or credentials.
+package-write permission. Standalone checks use the source's CI base; publication
+and manual `CI` use the approved repository base. Publication verifies it matches
+the source. Builds export OCI directories without registry credentials.
 Before Buildx runs, the workflow derives `SOURCE_DATE_EPOCH` from the exact
 OCE source commit. BuildKit rewrites image and filesystem timestamps to that epoch,
 so wall-clock time does not change the image manifests on a cold-cache rebuild.
@@ -244,6 +244,8 @@ owns package-write access and coordination.
 ## Changelog
 
 - 2026-10-26 10:23: Read OpenClaw source metadata from one manifest; validate build arguments and provenance. (authoring-run/3032d748-8d18-4cef-a903-f9a72ed8cda9 - 37d28e211ed5831dc201433d36bb23eadd834f6b)
+
+- 2026-10-23 16:52: Select the source's CI base for standalone checks and update OpenClaw for Gateway managed mode. (codex/01a1558e-c27f-7bc0-a403-af59e9364ddf)
 
 - 2026-10-16 22:41: Require the native reaper and caller-authority regression checks. (codex/01a13683-3916-7880-b1a6-27175b853600 - fd21b43ce92dbd44f98fce5fef29489b97d6352c)
 

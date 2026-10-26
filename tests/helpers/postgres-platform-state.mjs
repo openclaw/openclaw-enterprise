@@ -401,6 +401,8 @@ async function createKubernetesHarnessAuth(api, namespaceId) {
 async function createKubernetesConfiguredAgent(pool, api, namespaceId, name, values, body = {}) {
   const harnessAuth = await createKubernetesHarnessAuth(api, namespaceId);
   const created = await createConfiguredAgent(api, namespaceId, name, values, {
+    // The fixture image does not contain an OC Gateway runtime.
+    gatewayManagedMode: false,
     ...body,
     harnessAuth,
   });

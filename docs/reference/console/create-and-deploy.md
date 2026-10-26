@@ -257,14 +257,14 @@ provider acceptance, runtime readiness, or a channel connection.
 Open **Create new version** and select **Deploy new version** after storing
 credentials, saving channel Secret bindings, and selecting harness authentication.
 To change plugins, edit **Plugins**, select **Save plugin selections**, then
-deploy. Deployment uses saved Configuration and the Agent plugin map; it does
+deploy. Deployment uses saved Configuration, plugins, and [Gateway managed mode](../agent-native-admin.md#gateway-managed-mode); it does
 not redeploy or roll back viewed snapshots. Every accepted request creates an
 immutable Agent revision, even with unchanged Configuration generation. Earlier versions
 retain their snapshots; see the
 [Plugins tab guide](../../guides/console/configuration-plugins-and-files.md#plugins-tab).
 
 The console rereads Agent and Configuration before admission. Refresh if
-generation, association, authentication, or plugins changed since loading.
+generation, association, authentication, plugins, or managed mode changed since loading.
 These reads are not atomic with admission.
 Teams-enabled drafts cannot deploy through this console path because Teams credential
 readiness is not exposed; use the operator deployment workflow for those Agents.

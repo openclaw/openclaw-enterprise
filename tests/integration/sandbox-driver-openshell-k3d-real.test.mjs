@@ -2206,6 +2206,7 @@ async function prepareProductionInstallation(
     harnessId = "codex",
     controllerPort,
     controlUiOrigin,
+    gatewayManagedMode,
     withOAuthToolSources = true,
     enableCompatibilityBridges = harnessId === "openclaw",
   } = {},
@@ -2701,6 +2702,7 @@ async function prepareProductionInstallation(
     name: `openshell-${randomUUID()}`,
     configurationId: agentConfiguration.data.id,
     executionMode: "dedicated",
+    ...(gatewayManagedMode === undefined ? {} : { gatewayManagedMode }),
     harnessAuth: { method: "credential_source", sourceId: modelSource.data.id },
     // Console creation includes initial files. Keep this normal setup path in the
     // real Sandbox proof so credential-only fixtures cannot hide delivery gaps.
@@ -7344,6 +7346,8 @@ test(
     const topology = await prepareProductionInstallation(context, {
       harnessId: selectedHarness,
       controlUiOrigin,
+      // An administrator must be able to run the command that the model is denied.
+      gatewayManagedMode: false,
       withOAuthToolSources: false,
       enableCompatibilityBridges: false,
     });
@@ -7388,6 +7392,7 @@ test(
       return connectedClient;
     };
     let client = await connectGateway();
+    assert.equal(topology.revision.gatewayManagedMode, false);
     const sessionKey = `agent:main:gateway-policy-${randomUUID()}`;
     const execPod = async (pod, namespace, args) => ({
       label: `${namespace}/${pod.metadata.name}`,
@@ -8070,8 +8075,11 @@ test(
     await client.stopAndWait();
     await forwarding.stop();
     const agentPath = `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}`;
+    const managed = await topology.request("PATCH", agentPath, { gatewayManagedMode: true });
+    assert.equal(managed.status, 200, JSON.stringify(managed.error));
     const redeployed = await topology.request("POST", `${agentPath}/deploy`);
     assert.equal(redeployed.status, 202, JSON.stringify(redeployed.error));
+    assert.equal(redeployed.data.gatewayManagedMode, true);
     assert.notEqual(redeployed.data.id, oldRevisionId);
     assert.equal(redeployed.data.configurationGeneration, updated.data.generation);
     await waitFor("narrower Gateway policy revision activation", async () => {
@@ -8118,6 +8126,10 @@ test(
     client = await connectGateway();
     const currentConfig = await client.request("config.get", {});
     assert.deepEqual(currentConfig.config.tools.gatewayPolicy, values.tools.gatewayPolicy);
+    await assert.rejects(
+      client.request("cron.run", { id: humanCommandJob.id, mode: "force" }),
+      /OPENCLAW_DISABLE_CRON_HOST_EXECUTION/,
+    );
     const restored = await client.request("chat.history", { sessionKey, limit: 30 });
     assert.equal(restored.sessionId, beforeHistory.sessionId);
     assert.ok(

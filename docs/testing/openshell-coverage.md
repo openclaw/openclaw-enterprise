@@ -11,8 +11,10 @@ for either `OCC_TEST_OPENSHELL_HARNESS=openclaw` or `codex`. With an explicit
 `OCC_TEST_OPENSHELL_MODEL_BASE_URL`, both use `OPENAI_API_KEY`; the full lane still
 requires `CODEX_ACCESS_TOKEN` for its other owners.
 
-A live model turn enters through the authenticated Envoy route as a Control UI
-administrator. The test checks a shell task and child task on the Harness,
+The scenario deploys the first revision with Gateway managed mode off so a human
+administrator can run the command-job control. The dedicated model tool policy
+still applies. A live model turn enters through the authenticated Envoy route
+as a Control UI administrator. The test checks a shell task and child task on the Harness,
 creation and execution of a caller-owned schedule, and an allowed schedule update.
 It then checks refusals to convert that schedule to a command or retarget it to
 another Agent. After a human converts the same owned job to a disabled command,
@@ -26,7 +28,8 @@ OpenClaw also tests the individual guards independently.
 Separate `tools.invoke` probes check an excluded administrative tool and a denied
 message action. They are direct invocation checks, not model-origin execution.
 
-The scenario then saves a narrower policy and deploys a new Agent revision. It
+The scenario then enables Gateway managed mode and deploys a revision with a
+narrower tool policy. The Gateway refuses the saved command job. The test
 observes replacement Gateway and Harness Pods and retirement of the old Sandbox
 before continuing the same conversation. It checks that the removed tool is
 withheld from discovery or that its reconstructed callback refuses execution,

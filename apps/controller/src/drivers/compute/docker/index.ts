@@ -47,7 +47,11 @@ import {
   type ObservedEmbeddedGateway,
 } from "./embedded-gateway-recovery.ts";
 import { embeddedGatewayRecoveryPreamble } from "../embedded-gateway-owner.ts";
-import { gatewayStateMigrationHelper, startupPhaseHelper } from "../runtime-startup.ts";
+import {
+  gatewayManagedModeEnvironment,
+  gatewayStateMigrationHelper,
+  startupPhaseHelper,
+} from "../runtime-startup.ts";
 import {
   PLUGIN_RUNTIME_READY_MARKER,
   PLUGIN_RUNTIME_READY_MARKER_ENVIRONMENT,
@@ -234,7 +238,10 @@ function gatewayPasswordEnvironmentReference(
   return undefined;
 }
 
-export const GATEWAY_RUNTIME_ENTRYPOINT = String.raw`
+export const GATEWAY_RUNTIME_ENTRYPOINT = gatewayRuntimeEntrypoint(false);
+
+function gatewayRuntimeEntrypoint(managedMode: boolean): string {
+  return String.raw`
 const { chmodSync, mkdirSync, writeFileSync } = require("node:fs");
 const { spawn } = require("node:child_process");
 
@@ -259,7 +266,7 @@ function startGateway() {
   const child = spawn(
     "node",
     ["/app/openclaw.mjs", "gateway", "--port", process.env.OPENCLAW_GATEWAY_PORT],
-    { stdio: "inherit" },
+    { stdio: "inherit", env: { ...process.env, ...${gatewayManagedModeEnvironment(managedMode)} } },
   );
   forwardTermination(child);
   child.on("exit", (code, signal) => process.exit(code ?? (signal === "SIGTERM" ? 0 : 1)));
@@ -302,6 +309,7 @@ if (outdatedDatabases.length === 0) {
   if (!holdGatewayToolPolicyFailure(error) && !holdPluginApproverConfigurationFailure(error)) throw error;
 }
 `;
+}
 
 function required(value: unknown, description: string): string {
   if (!isNonEmptyString(value)) {
@@ -442,6 +450,7 @@ export class DockerComputeDriver implements ComputeDriver {
 
   readonly id = DRIVER_ID;
   readonly capability = "compute" as const;
+  readonly supportsGatewayManagedMode = true as const;
   readonly supportsWorkspaceSetup = true as const;
   readonly implementation = DRIVER_IMPLEMENTATION;
   private readonly options: DockerComputeDriverOptions;
@@ -1170,7 +1179,7 @@ ${WORKSPACE_SETUP_RUNTIME}`,
         (workspaceSetup === undefined
           ? ""
           : workspaceSetupVerifier(workspaceSetup, this.workspaceDirectory(revision))) +
-        GATEWAY_RUNTIME_ENTRYPOINT,
+        gatewayRuntimeEntrypoint(revision.gatewayManagedMode),
       healthcheckScript: `fetch("http://127.0.0.1:${GATEWAY_PORT}/readyz").then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1));`,
       exposedPort: GATEWAY_PORT,
       labels: {

@@ -79,6 +79,10 @@
                     "label": "Deployment"
                   },
                   {
+                    "page": "reference/agents/gateway-managed-mode",
+                    "label": "Gateway managed mode"
+                  },
+                  {
                     "page": "guides/topics/agent-presets",
                     "label": "Presets"
                   },

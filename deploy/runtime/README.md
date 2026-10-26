@@ -24,26 +24,24 @@ Codex and Slack come from that same source. The selected commit contains
 the restricted workspace-node commands and saved-token-first pairing required by
 split storage; published `2026.9.5` packages do not contain that complete contract.
 
-The source pin includes the reviewed Gateway tool policy and native child-worktree
-changes required by dedicated deployments. Child spawning waits for placement
-started by session creation, then rechecks parent authority and child placement
-before dispatch. The source also preserves shared host-module links during plugin capture
-and handles bundled WebAssembly and directory assets during fresh activation.
-It is not a published OpenClaw release.
+OCE builds an unreleased OpenClaw commit that supports Gateway managed mode
+and the separate tool policy for dedicated Harnesses. Managed mode restricts
+native config writes, Gateway-local terminals and Gateway-hosted command jobs.
+The tool policy limits model turns in both modes. When a child spawns, OpenClaw
+waits for placement started by session creation and rechecks the parent's
+authority before dispatch. The source also preserves shared host-module links
+during plugin capture and handles bundled WebAssembly and directory assets.
 Until [OpenClaw #158724](https://github.com/openclaw/openclaw/pull/158724) or
 an equivalent implementation is available upstream, the build applies its
 `readOnlyPaths` compatibility change as
 `openclaw-codex-read-only-paths.patch`. This preserves the restricted Codex
 filesystem profile required by the repository broker and selected plugins.
 The selected source preserves `on-request` when plugins use MCP elicitation,
-so managed requirements can continue matching that named approval policy.
-The selected source lets `connect --ephemeral` reconnect with saved device
-credentials after its setup code expires. A separate compatibility patch is
-no longer needed.
-The pinned source retains the original caller's authority while required-worker
-placement continues after session creation is acknowledged. Scope, role and
-profile revocation still stop dispatch. The OpenClaw build stage applies
-`openclaw-required-worker-authority-regression.patch`, verifies its checksum,
+reconnects `connect --ephemeral` with saved device credentials after its setup
+code expires, and retains the original caller's authority while required-worker
+placement continues after session creation is acknowledged. Scope, role, and
+profile revocation still stop dispatch. The OpenClaw build stage applies the
+checksum-verified `openclaw-required-worker-authority-regression.patch`
 and runs the real Gateway public-RPC cases without network access. The cases
 cover placement before and after acknowledgement, disconnect, and committed
 role, scope, and profile revocation. Test changes stay in the build stage.
@@ -113,9 +111,9 @@ The repository credential client stage needs only Node and pnpm, so it builds on
 slim base too. It compiles only the client's own sources without a type check, so
 other controller changes keep it cached; the service stage builds the full,
 type-checked workspace.
-Asset preparation installs all plugin build dependencies in a disposable stage.
-The production install selects upstream required bundled plugins plus Codex and Slack,
-installs dependencies for the target architecture with lifecycle
+Asset preparation installs plugin build dependencies in a disposable stage.
+The production stage selects upstream required bundled plugins plus Codex and
+Slack before installing dependencies for the target architecture with lifecycle
 scripts enabled and runs upstream postinstall, plugin pruning, import-closure,
 and native filesystem-addon checks. Extension tests, QA source, and documentation
 media are excluded; help text, skills, and runtime templates remain. A dependency
@@ -179,8 +177,8 @@ checksum-verifying download helper, and both installs read it from a loopback se
 instead of GitHub. When an OpenClaw update changes the locked
 `@matrix-org/matrix-sdk-crypto-nodejs` version, update that stage's version, URL and
 both SHA-256 values. Until then the install fails with a "no pinned file" message.
-The source manifest selects the commit to build. The
-[reviewed upstream Dockerfile](https://github.com/openclaw/openclaw/blob/cee236c9e9891396a7d672ab016a5e5d9d51a003/Dockerfile)
+The [source manifest](openclaw-source.json) selects the commit OCE builds. Its
+[upstream Dockerfile](https://github.com/openclaw/openclaw/blob/cee236c9e9891396a7d672ab016a5e5d9d51a003/Dockerfile)
 keeps plugin dependencies separate when their versions differ from core.
 Plugin chunks emitted directly under `dist` also need package-root resolution.
 The assembly links missing plugin dependencies into that root without replacing
