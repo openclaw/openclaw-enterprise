@@ -325,12 +325,10 @@ test("console Secret writes honor read-only access, revocation and a new Agent r
   // Without Secret create the page never offers creation that the API would refuse after the
   // dialog is filled in (finding 2365): Create Secret is disabled and the note names why.
   const createSecret = page.getByRole("button", { name: "Create Secret", exact: true });
-  const createReason = page
-    .getByRole("status")
-    .filter({
-      hasText:
-        "Your access does not include creating Secrets in this Namespace. Only an Installation administrator can create Secrets: ask one to create it and to give you Secret read and operate on it.",
-    });
+  const createReason = page.getByRole("status").filter({
+    hasText:
+      "Your access does not include creating Secrets in this Namespace. Only an Installation administrator can create Secrets: ask one to create it and to give you Secret read and operate on it.",
+  });
   await createReason.waitFor();
   assert.equal(await createSecret.isDisabled(), true);
   assert.equal(
