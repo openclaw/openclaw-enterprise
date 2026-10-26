@@ -81,7 +81,7 @@ exact `read`. A Gateway copy reports the Gateway's live `status` as `ready`,
 `pending`, `failed` or `absent`, with an optional reason. A Gateway outage
 produces `failed` status on a successful read. For a refresh source,
 `status.refresh` reports state, expiry and refresh times, and any failure code
-and recovery action. A prepared source can have record state `ready` and live
+and recovery action, never a token. A prepared source can have record state `ready` and live
 status `pending` while its worker prepares the token.
 
 `GET /namespaces/:namespaceId/credential-sources` requires Namespace `read`

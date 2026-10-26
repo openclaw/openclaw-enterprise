@@ -61,8 +61,8 @@ graph TD
   D -- "withdrawn, duplicate or uncertain" --> X
   D -- "acknowledged" --> E["Supervisor sends before deadline"]
   E --> F{"Protect response on the same exchange"}
-  F -- "approved and live" --> G["Release approved bytes"]
-  F -- "unsafe, late or failed" --> H["Withhold response"]
+  F -- "approved and live" --> G["Release approved bytes; delivery unconfirmed"]
+  F -- "unsafe, late or failed" --> H["Withhold response; provider effects may exist"]
 ```
 
 The diagram traces the source contract. Installed enforcement requires observing

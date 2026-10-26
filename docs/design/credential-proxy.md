@@ -44,7 +44,8 @@ ID, the sender withholds the provider response. The
 [request flow](../flows/credential-source-egress.md) traces both permission checks.
 
 **Deployment boundary.** The exchange requires an installed sender that enforces
-the route and controls the response. Stock OpenShell 0.1.5 offers a separate,
+the route and controls the response. No stock OpenShell deployment is qualified
+for it in this release. Stock OpenShell 0.1.5 offers a separate,
 opt-in installation-wide GitHub preview with a request hook observed at startup.
 The bundled Driver refuses repository-scoped `git-write`. Each profile needs
 its own [installed qualification](../testing/protected-repository-custody.md).
