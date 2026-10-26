@@ -42,7 +42,7 @@ test("a version link the page cannot list says the version may not exist", async
     detailUrl(fixture, namespace.id, agent.id, madeUp, "configuration"),
     reader.credentials,
   );
-  await page.getByRole("heading", { name: "Version unavailable", exact: true }).waitFor();
+  await page.getByRole("heading", { name: "Version not found or not shared" }).waitFor();
   await page.getByText(VERSION_UNAVAILABLE, { exact: true }).waitFor();
   // The current version is readable, so the status line speaks only of the requested one.
   const statusLine = page.locator(".agent-status-line");

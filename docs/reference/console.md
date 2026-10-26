@@ -173,7 +173,8 @@ disabled for lack of access, names the grant the API checks, such as Agent opera
 to stop an Agent or AgentRevision read on each new version. Other denials of your own
 permission show the API's sentence naming the missing grant; denials send you to an
 Installation administrator, who grants access. A version link the page cannot list says the
-version does not exist or your access does not include it, because the API answers both alike.
+version does not exist or your access does not include it, because a reader granted read per
+version cannot tell the two apart.
 A rejected model credential tells a person without Agent update to ask an Installation
 administrator to update it.
 A refusal the API explains, such as an invalid field, a name already in use or a

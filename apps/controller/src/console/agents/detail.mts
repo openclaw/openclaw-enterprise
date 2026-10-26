@@ -321,7 +321,7 @@ function errorPanel(
     heading = "You cannot read this version";
     reason = VERSION_READ_DENIED;
   } else if (version && !exists && (error.status === 403 || error.status === 404)) {
-    heading = "Version unavailable";
+    heading = "Version not found or not shared";
     reason = VERSION_UNAVAILABLE;
   }
   return element(
