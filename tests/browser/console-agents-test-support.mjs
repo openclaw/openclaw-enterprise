@@ -7,6 +7,7 @@ import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/driv
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { PROVISIONING_NOT_COMPLETED } from "../helpers/refusal-text.mjs";
 import {
   nativeValues,
   pathRequests,
@@ -195,6 +196,67 @@ export async function runProvisioningPolls(page, submit, jobPath, reads) {
     await page.clock.runFor(1_000);
   }
   await page.clock.resume();
+}
+
+const provisioningMeta = { requestId: "req_00000000-0000-4000-8000-000000000001" };
+
+// One provisioning job, `workId`, in `namespaceId`. `job(status, extra)` is one status read of
+// it; `failed(extra)` is the read that ends it after its retries (a dependency outage).
+export function provisioningJob(namespaceId, workId) {
+  const updatedAt = new Date().toISOString();
+  const url = `/namespaces/${namespaceId}/agents/provision/${workId}`;
+  const job = (status, extra = {}) => ({
+    workId,
+    status,
+    phase: "configuration",
+    attemptCount: 1,
+    updatedAt,
+    url,
+    ...extra,
+  });
+  const failed = (extra = {}) =>
+    job("failed", {
+      ...extra,
+      error: { code: "PROVISIONING_DEPENDENCY_UNAVAILABLE", message: PROVISIONING_NOT_COMPLETED },
+    });
+  return { namespaceId, workId, url, updatedAt, job, failed };
+}
+
+// Accepts each Create Agent provisioning request in the job's Namespace as that one queued job,
+// as the API does, and answers each status read of the job with the next of `reads` (the last
+// one repeats), or with `reads(index)` when it is a function. With `reads` null the caller
+// routes the job's reads itself. Returns live counts of the requests and reads.
+export async function routeProvisioningJob(page, work, reads) {
+  const state = { submitted: 0, reads: 0, requestId: undefined };
+  await page.route(`**/namespaces/${work.namespaceId}/agents/provision`, (route) => {
+    state.submitted += 1;
+    state.requestId = route.request().postDataJSON().requestId;
+    const accepted = work.job("queued", { phase: "accepted", attemptCount: 0 });
+    return route.fulfill({
+      status: 202,
+      contentType: "application/json",
+      body: JSON.stringify({
+        data: { provisioning: { ...accepted, requestId: state.requestId } },
+        meta: provisioningMeta,
+      }),
+    });
+  });
+  if (reads !== null) {
+    await page.route(`**${work.url}`, (route) => {
+      const index = state.reads++;
+      const read =
+        typeof reads === "function" ? reads(index) : reads[Math.min(index, reads.length - 1)];
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          data: { ...read, requestId: state.requestId },
+          meta: provisioningMeta,
+        }),
+      });
+    });
+  }
+  return state;
 }
 
 export function configurationPostRequests(requests, namespaceId) {

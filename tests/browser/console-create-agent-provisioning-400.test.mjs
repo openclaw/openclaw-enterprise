@@ -40,6 +40,8 @@ import {
   runProvisioningPolls,
   waitForProvisioningFailure,
   submitCreateAgent,
+  routeProvisioningJob,
+  provisioningJob,
 } from "./console-agents-test-support.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
@@ -2152,58 +2154,21 @@ test("Create Agent drops the Pod quota line when the deployment read is denied",
       body: JSON.stringify({ data: [], meta: { requestId: "req_repository_choices" } }),
     }),
   );
-  const updatedAt = new Date().toISOString();
+  const work = provisioningJob(namespace.id, "work_quota_denied");
+  const { url, updatedAt, job, failed } = work;
   const meta = { requestId: "req_00000000-0000-4000-8000-000000000001" };
-  const url = `/namespaces/${namespace.id}/agents/provision/work_quota_denied`;
-  let clientRequestId;
   const agentId = "agt_00000000-0000-4000-8000-00000000b637";
   const revisionId = "rev_00000000-0000-4000-8000-00000000b637";
-  const job = (status, extra = {}) => ({
-    workId: "work_quota_denied",
-    status,
-    phase: "configuration",
-    attemptCount: 1,
-    updatedAt,
-    url,
-    ...extra,
-  });
   const handedOff = { phase: "handoff", agentId, configurationId: "cfg_quota", revisionId };
-  await page.route(`**/namespaces/${namespace.id}/agents/provision`, (route) => {
-    clientRequestId = route.request().postDataJSON().requestId;
-    return route.fulfill({
-      status: 202,
-      contentType: "application/json",
-      body: JSON.stringify({
-        data: { provisioning: { ...job("queued"), requestId: clientRequestId } },
-        meta,
-      }),
-    });
-  });
   // Create Agent reads the handed-off deployment three times before the job fails.
   const reads = [
     job("running"),
     job("running", handedOff),
     job("running", handedOff),
     job("running", handedOff),
-    job("failed", {
-      ...handedOff,
-      error: {
-        code: "PROVISIONING_DEPENDENCY_UNAVAILABLE",
-        message: "Agent provisioning could not complete.",
-      },
-    }),
+    failed(handedOff),
   ];
-  let read = 0;
-  await page.route(`**/namespaces/${namespace.id}/agents/provision/work_quota_denied`, (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        data: { ...reads[Math.min(read++, reads.length - 1)], requestId: clientRequestId },
-        meta,
-      }),
-    }),
-  );
+  const served = await routeProvisioningJob(page, work, reads);
   // The first deployment read names the quota; every later one is denied.
   let deploymentReads = 0;
   await page.route(
@@ -2278,7 +2243,7 @@ test("Create Agent drops the Pod quota line when the deployment read is denied",
     reads.length,
   );
   await waitForProvisioningFailure(page);
-  assert.equal(read, reads.length);
+  assert.equal(served.reads, reads.length);
   assert.equal(deploymentReads, 3);
   assert.deepEqual(await page.evaluate(() => globalThis.provisioningWrites), [
     "Provisioning request accepted.",
