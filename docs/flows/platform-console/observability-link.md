@@ -1,7 +1,7 @@
 ---
 created: 2026-09-27
 updated: 2026-10-26
-last_updated_session: followups-1026c
+last_updated_session: fix-2620
 ---
 
 # Console external observability link
@@ -25,7 +25,7 @@ graph TD
   A["Read trusted startup YAML"] --> B["Validate external URL"]
   B --> C["Compose controller API"]
   D["Resolve browser session"] --> K["Read a Namespace permission answer"]
-  K -->|Agent create refused| H
+  K -->|Installation administer refused| H
   K -->|otherwise| E["GET /observability"]
   E --> F["Selected IAM Driver checks Installation administer"]
   F -->|allowed| G["Return URL or null"]
@@ -56,9 +56,9 @@ not persisted as an Installation resource or used as an OTLP export target.
 
 ### 2. Resolve the browser link
 
-After the session check and the Namespace collection, `loadPage` asks `apps/controller/src/console/console.mjs:installationAccess`. It first reads `GET /namespaces/{namespaceId}/permissions` for the selected Namespace, or the first readable one. Agent create is held only by the administrator Role and Namespace-wide grants, so a caller it refuses is not an Installation administrator: the console hides the link and sends no probe, because the API audits each denied probe. This answer is not settled: the next page load asks again. An administrator whose Restriction denies Agent create in one Namespace is probed from a Namespace that allows it. With no readable Namespace, or no permission answer, the console reads `GET /observability` (through `probeInstallationAccess`). The read outlives the view: a navigation while it is in flight joins it instead of aborting it and asking again. `apps/controller/src/index.ts:perform` calls `requireInstallationAdmin`, which authorizes the exact Installation through the selected IAM Driver and records denial evidence. An allowed response contains the startup URL or `null`. Denial or an unavailable optional read leaves the link hidden. A session `401` clears private console state.
+After the session check and the Namespace collection, `loadPage` asks `apps/controller/src/console/console.mjs:installationAccess`. It first reads `GET /namespaces/{namespaceId}/permissions` for the selected Namespace, or the first readable one. Its `installation.administer` field is the selected IAM Driver's Installation `administer` decision, the same check the probe makes, and the answer audits nothing. The field does not depend on the Namespace, so a Restriction that denies Agent create there does not change it. When it is `false`, the console hides the link and sends no probe, because the API audits each denied probe. When it is `true`, or with no readable Namespace or no permission answer, the console reads `GET /observability` (through `probeInstallationAccess`). The read outlives the view: a navigation while it is in flight joins it instead of aborting it and asking again. `apps/controller/src/index.ts:perform` calls `requireInstallationAdmin`, which authorizes the exact Installation through the selected IAM Driver and records denial evidence. An allowed response contains the startup URL or `null`. Denial or an unavailable optional read leaves the link hidden. A session `401` clears private console state.
 
-The console settles the probe once per session owner: an allowed response or a `403` is reused across navigation and, through tab `sessionStorage` keyed by the noncredential session binding, across reloads in the same tab. A user who may create Agents in a Namespace but is not an administrator produces one audited denial per session and tab; a user refused Agent create produces none. Transient failures retry on the next page load. Logout and an owner change clear the result. Revoking or granting administration takes effect in the console at the next sign-in or in a new tab; the API check still applies to every request. The settled answer also tells Agent detail whether to mount the Installation-admin sharing panel. **Backends** needs the same `administer` permission, so a caller this answer marks as no administrator gets the Backends refusal without `GET /backends`, which the API would audit as a denial.
+The console settles the probe once per session owner: an allowed response or a `403` is reused across navigation and, through tab `sessionStorage` keyed by the noncredential session binding, across reloads in the same tab. A `false` permission answer is reused across navigation but not kept across reloads, so a reload asks again without an audited denial. A user with a readable Namespace who is not an administrator produces no audited denial; a user with none produces one per session and tab. Transient failures retry on the next page load. Logout and an owner change clear the result. Revoking administration takes effect in the console at the next sign-in or in a new tab. Granting it takes effect at the next reload after a `false` permission answer, or at **Refresh** on the Backends refusal, which forgets the settled answer and asks again. The API check still applies to every request. The settled answer also tells Agent detail whether to mount the Installation-admin sharing panel. **Backends** needs the same `administer` permission, so a caller this answer marks as no administrator gets the Backends refusal without `GET /backends`, which the API would audit as a denial.
 
 `apps/controller/src/console/shell.mts:renderShell` adds **Observability** with an external-link icon only for a returned URL. It opens a separate tab with `noopener noreferrer`; the browser does not send the OCC session to the destination. The external service authenticates the user independently.
 
@@ -66,7 +66,7 @@ The console settles the probe once per session owner: an allowed response or a `
 
 - `node --test tests/integration/console-api.test.mjs` verifies the real API route, Installation IAM denial, and absent URL.
 - The focused `tests/browser/console.test.mjs` case verifies administrator visibility, Namespace-only hiding with no probe, one probe per session across navigation and reload, and safe new-tab attributes in Chrome.
-- `tests/browser/console-agent-state.test.mjs` verifies that a reader's page loads audit no observability, IAM, Backends or bound Secret denial, and that an administrator still reads each.
+- `tests/browser/console-agent-state.test.mjs` verifies that a reader's page loads audit no observability, IAM, Backends or bound Secret denial, and that an administrator still reads each. It also verifies that a Restriction on Agent create leaves an administrator the Installation pages, and that Refresh and reload on the Backends refusal find a new grant.
 - These tests do not verify access at the external observability service.
 
 ## Related docs
@@ -81,6 +81,8 @@ The console settles the probe once per session owner: an allowed response or a `
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-26 11:15: Ask the permission answer's `installation.administer` instead of inferring it from Agent create; reload and Backends Refresh ask again. (2620-2622)
 
 - 2026-10-14 12:20: Startup refuses a tab, newline, or a backslash before the query, and logs `OBSERVABILITY_URL_INVALID`. A backslash in the query stays. (2383)
 

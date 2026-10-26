@@ -175,10 +175,13 @@ test("a member with Agent create completes the default Preset path without Insta
       `POST /namespaces/${namespace.id}/agents 201`,
     ],
   );
-  // The session's /observability read already found Installation administration refused, so the
-  // form sends no IAM read the API is certain to refuse and audit as a denial, and offers no
-  // retry of it (finding 2109).
-  assert.ok(answers.includes("GET /observability 403"), answers.join("\n"));
+  // The Namespace permission answer already said the member does not administer the
+  // Installation, so the session sends no probe and the form no IAM read the API is certain to
+  // refuse and audit as a denial, and offers no retry of it (findings 2109, 2620).
+  assert.deepEqual(
+    answers.filter((answer) => answer.startsWith("GET /observability ")),
+    [],
+  );
   assert.deepEqual(
     answers.filter((answer) => answer.includes("/iam/")),
     [],
@@ -370,12 +373,23 @@ test("a member's unconfirmed credential grant offers a retry until the API refus
   const { page } = await newPage(t, fixture);
   const answers = apiResponses(page, fixture.origin);
   // The session never learns whether this account administers the Installation, so the form
-  // tries the grant.
+  // tries the grant: the page's permission answer and the probe both fail. The form's own
+  // permission retry then allows Agent create, but answers only for this Namespace.
   await page.route(`${fixture.origin}/observability`, unavailable);
+  await page.route(`${fixture.origin}/namespaces/${namespace.id}/permissions`, unavailable, {
+    times: 1,
+  });
   const rolesPath = `${fixture.origin}/namespaces/${namespace.id}/iam/roles`;
   await page.route(rolesPath, unavailable);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`, writer.credentials);
   await fillDefaultPreset(page, secret, "Member Agent");
+  const retryPermissions = page.getByRole("button", {
+    name: "Retry permission check",
+    exact: true,
+  });
+  await waitForEnabled(retryPermissions);
+  await retryPermissions.click();
+  await retryPermissions.waitFor({ state: "hidden" });
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   // An outage is not a refusal: the grant is unconfirmed and can be retried (finding 2113).
   await page.getByRole("alert").filter({ hasText: CREDENTIAL_ACCESS_UNCONFIRMED }).waitFor();

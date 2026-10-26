@@ -2708,11 +2708,14 @@ test("Agent credentials settle a member's harness Secret save and say who grants
     const url = detailUrl(fixture, namespace.id, agent.id, "draft", "credentials");
     const { page } = await newPage(t, fixture);
     const requests = apiRequests(page, fixture.origin);
-    const probe = page.waitForResponse(`${fixture.origin}/observability`);
     await login(page, fixture, url, writer.credentials);
     await page.getByRole("heading", { name: agent.name }).waitFor();
-    // The session's Installation read already found this account is no administrator.
-    assert.equal((await probe).status(), 403);
+    // The Namespace permission answer already said this account is no administrator, so the
+    // session sends no probe.
+    assert.deepEqual(
+      requests.filter(({ path }) => path === "/observability"),
+      [],
+    );
     await selectSecret(page, "API key Secret", replacementSecret);
     const save = page.getByRole("button", { name: "Save authentication source" });
     await save.click();

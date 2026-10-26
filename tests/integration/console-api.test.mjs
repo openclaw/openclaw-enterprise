@@ -205,7 +205,11 @@ test("the Namespace Secret create answer matches what Secret creation checks", a
   const create = (name) =>
     fixture.request("POST", secretsPath, { session, body: { name, value: "synthetic-value" } });
 
-  assert.deepEqual(await answer(), { agents: { create: true }, secrets: { create: false } });
+  assert.deepEqual(await answer(), {
+    agents: { create: true },
+    secrets: { create: false },
+    installation: { administer: false },
+  });
   // A false answer is not an attempted operation: only the real POST is audited as denied.
   const denials = () => auditSink.list().filter((event) => event.kind === "authorization_denial");
   assert.equal(denials().length, 0);
@@ -220,6 +224,68 @@ test("the Namespace Secret create answer matches what Secret creation checks", a
     .permissions.push({ action: "create", resourceKind: "secret" });
   assert.deepEqual((await answer()).secrets, { create: true });
   assert.equal((await create("Created token")).status, 201);
+});
+
+// The console reads this answer instead of probing GET /observability, whose refusal the API
+// audits, and gates Backends, Settings and the Access tab on it (findings 2620-2622). So it must
+// be the decision Installation-wide operations make, and not one inferred from a Namespace grant:
+// each step proves it against the real GET /backends.
+test("the Namespace Installation administer answer matches what Installation-wide reads check", async (t) => {
+  const auditSink = new InMemoryAuditSink();
+  const fixture = await createConsoleAppFixture(t, { auditSink });
+  const installation = await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Administer answer", { ready: true });
+  const permissionsPath = `/namespaces/${namespace.id}/permissions`;
+  const answer = async (session) => {
+    const summary = await fixture.request("GET", permissionsPath, { session });
+    assert.equal(summary.status, 200);
+    return summary.data;
+  };
+  const backends = (session) => fixture.request("GET", "/backends", { session });
+  const denials = () => auditSink.list().filter((event) => event.kind === "authorization_denial");
+
+  // A member with Namespace-wide Agent create does not administer the Installation.
+  const member = await fixture.createNamespaceMember("administer-answer", namespace.id, [
+    ["read", "namespace"],
+    ["create", "agent"],
+  ]);
+  const session = await fixture.signIn(member.credentials);
+  const memberAnswer = await answer(session);
+  assert.deepEqual(memberAnswer.agents, { create: true });
+  assert.deepEqual(memberAnswer.installation, { administer: false });
+  // A false answer is not an attempted operation: only the real read is audited as denied.
+  assert.deepEqual(denials(), []);
+  assertApiError(await backends(session), 403, "FORBIDDEN");
+  assert.deepEqual(
+    denials().map((event) => event.action),
+    ["openclaw.backends.list"],
+  );
+
+  // An administrator whose Restriction denies Agent create in this Namespace still administers
+  // the Installation: Agent create says nothing about it. The Restriction is Namespace-wide, so
+  // it applies to the member too; her answer was read above.
+  fixture.policy.restrictions.push({
+    id: "deny-agent-create-here",
+    namespaceId: namespace.id,
+    resourceKind: "agent",
+    action: "create",
+    effect: "deny",
+  });
+  const restricted = await answer();
+  assert.deepEqual(restricted.agents, { create: false });
+  assert.deepEqual(restricted.installation, { administer: true });
+  assert.equal((await backends()).status, 200);
+
+  // A Restriction on Installation administer changes the answer as it changes the read.
+  fixture.policy.restrictions.push({
+    id: "deny-installation-administer",
+    resourceKind: "installation",
+    resourceId: installation.id,
+    action: "administer",
+    effect: "deny",
+  });
+  assert.deepEqual((await answer()).installation, { administer: false });
+  assertApiError(await backends(), 403, "FORBIDDEN");
 });
 
 test("caller permission summaries report primary IAM decisions without authorizing a later operation", async (t) => {
@@ -250,7 +316,11 @@ test("caller permission summaries report primary IAM decisions without authorizi
   });
   const adminNamespace = await fixture.request("GET", namespacePath);
   assert.equal(adminNamespace.status, 200);
-  assert.deepEqual(adminNamespace.data, { agents: { create: true }, secrets: { create: true } });
+  assert.deepEqual(adminNamespace.data, {
+    agents: { create: true },
+    secrets: { create: true },
+    installation: { administer: true },
+  });
 
   // Namespace read plus exact read and deploy on one Agent: only deploy is reported.
   const limited = await fixture.createAccountWithPolicy("permission-summary", (principal) => {
@@ -361,6 +431,7 @@ test("caller permission summaries report primary IAM decisions without authorizi
   assert.deepEqual(namespaceSummary.data, {
     agents: { create: false },
     secrets: { create: false },
+    installation: { administer: false },
   });
   // A false flag is an answer, not an attempted operation, so nothing is audited as denied.
   const denials = () => auditSink.list().filter((event) => event.kind === "authorization_denial");

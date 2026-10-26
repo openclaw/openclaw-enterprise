@@ -1072,7 +1072,6 @@ describe("Agent channels", { concurrency: 3 }, () => {
       );
       const { page } = await newPage(t, fixture, { browser });
       const requests = apiRequests(page, fixture.origin);
-      const probe = page.waitForResponse(`${fixture.origin}/observability`);
       await login(
         page,
         fixture,
@@ -1086,8 +1085,12 @@ describe("Agent channels", { concurrency: 3 }, () => {
         writer.credentials,
       );
       await page.getByRole("heading", { name: "Member Slack Grant Agent" }).waitFor();
-      // The session's Installation read already found this account is no administrator.
-      assert.equal((await probe).status(), 403);
+      // The Namespace permission answer already said this account is no administrator, so the
+      // session sends no probe.
+      assert.deepEqual(
+        requests.filter(({ path }) => path === "/observability"),
+        [],
+      );
       if (entry === "drawer") {
         await page.getByRole("button", { name: "Edit Slack" }).click();
         const dialog = page.getByRole("dialog", { name: "Edit Slack" });

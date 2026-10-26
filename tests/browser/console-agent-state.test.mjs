@@ -13,6 +13,7 @@ import {
   detailUrl,
   hasFocus,
   holdRequests,
+  grantInstallationAdministration,
   login,
   nativeValues,
   newPage,
@@ -709,7 +710,7 @@ test("Only an administrator's session probes Installation administration and rea
   await member.getByRole("heading", { name: "Audited Agent" }).waitFor();
   await member.getByRole("tab", { name: "Configuration", selected: true }).waitFor();
   assert.equal(await member.getByRole("tab", { name: "Access" }).count(), 0);
-  // The Namespace permission answer is not kept as a settled answer, so a reload and another
+  // The Namespace permission answer's refusal is not kept across reloads, so a reload and another
   // page ask it again; none of them probes.
   await member.reload();
   await member.getByRole("tab", { name: "Configuration", selected: true }).waitFor();
@@ -803,8 +804,7 @@ test("Only an administrator's Backends page reads Backends", async (t) => {
   await login(member, fixture, backendsPage, reader.credentials);
   const denial = member.locator(".state-panel");
   await denial.getByText(BACKENDS_DENIED, { exact: true }).waitFor();
-  // The member answer is not kept as settled, so the header's Refresh asks it again; it still
-  // reads no Backends.
+  // The header's Refresh asks the permission answer again; it still reads no Backends.
   const oldPanel = await denial.elementHandle();
   await member.getByRole("button", { name: "Refresh", exact: true }).click();
   await member.waitForFunction((panel) => !panel.isConnected, oldPanel);
@@ -826,6 +826,115 @@ test("Only an administrator's Backends page reads Backends", async (t) => {
   assert.equal(backendsReads(adminRequests).length, 1);
   assert.equal(await admin.getByText(BACKENDS_DENIED, { exact: true }).count(), 0);
   assert.deepEqual(backendsDenials(), []);
+});
+
+// Findings 2620 and 2621. A Restriction that denies an administrator Agent create in a Namespace
+// says nothing about Installation administration. In that Namespace, the only one, so no other
+// Namespace's answer can settle it, the administrator still reads Backends and gets the
+// Observability link, Settings' Installation Driver configuration and an Agent's Access tab, on
+// the first page load and after a reload.
+test("A Restriction on Agent create leaves an administrator's Installation pages", async (t) => {
+  const auditSink = new InMemoryAuditSink();
+  const url = "https://metrics.example.test/d/operations";
+  const fixture = await createConsoleAppFixture(t, { auditSink, observabilityUrl: url });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Create restricted", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Restricted Agent", nativeValues("x"));
+  fixture.policy.restrictions.push({
+    id: "deny-agent-create-here",
+    namespaceId: namespace.id,
+    resourceKind: "agent",
+    action: "create",
+    effect: "deny",
+  });
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  const backendsRead = () =>
+    page.waitForResponse(
+      (response) => new URL(response.url()).pathname === "/backends" && response.status() === 200,
+    );
+  const observability = page.getByRole("link", { name: "Observability", exact: true });
+
+  let read = backendsRead();
+  await login(page, fixture, `/console/backends?namespace=${namespace.id}`);
+  await read;
+  await waitForIdleFetches(page);
+  assert.equal(await page.getByText(BACKENDS_DENIED, { exact: true }).count(), 0);
+  assert.equal(await observability.getAttribute("href"), url);
+  read = backendsRead();
+  await page.reload();
+  await read;
+  await waitForIdleFetches(page);
+  assert.equal(await page.getByText(BACKENDS_DENIED, { exact: true }).count(), 0);
+  assert.equal(await observability.getAttribute("href"), url);
+
+  await page.goto(`${fixture.origin}/console/settings?namespace=${namespace.id}`);
+  await page.getByRole("heading", { name: "Installation Driver configuration" }).waitFor();
+  await page.goto(String(detailUrl(fixture, namespace.id, agent.id, "draft", "configuration")));
+  await page.getByRole("heading", { name: "Restricted Agent" }).waitFor();
+  await page.getByRole("tab", { name: "Access", exact: true }).waitFor();
+  assert.deepEqual(
+    authorizationDenials(auditSink, /^openclaw\.(observability|backends|iam)\./),
+    [],
+  );
+});
+
+// Finding 2622. Refresh on the Backends refusal, and a reload, check Installation administration
+// again, so an account made administrator while signed in reads Backends. A member's refusal
+// reads no Backends and sends no probe (finding 2619). An account with no readable Namespace has
+// no permission answer to ask, so its one probe is refused and kept for the tab; Refresh probes
+// once more.
+test("Refresh and reload on the Backends refusal check Installation administration again", async (t) => {
+  const auditSink = new InMemoryAuditSink();
+  const fixture = await createConsoleAppFixture(t, { auditSink });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Administered later", { ready: true });
+  const memberGrants = [
+    ["read", "namespace"],
+    ["create", "agent"],
+  ];
+  const personas = [
+    { label: "refreshed-member", grants: memberGrants, recheck: "refresh", probes: 0 },
+    { label: "reloaded-member", grants: memberGrants, recheck: "reload", probes: 0 },
+    { label: "refreshed-outsider", grants: [], recheck: "refresh", probes: 1 },
+  ];
+  for (const { label, grants, recheck, probes } of personas) {
+    const account =
+      grants.length > 0
+        ? await fixture.createNamespaceMember(label, namespace.id, grants)
+        : await fixture.createAccountWithPolicy(label, () => {});
+    const { page } = await newPage(t, fixture);
+    await trackSettledFetches(page);
+    const requests = apiRequests(page, fixture.origin);
+    const reads = (path) => requests.filter((request) => request.path === path).length;
+    const path =
+      grants.length > 0 ? `/console/backends?namespace=${namespace.id}` : "/console/backends";
+    await login(page, fixture, path, account.credentials);
+    await page.locator(".state-panel").getByText(BACKENDS_DENIED, { exact: true }).waitFor();
+    await waitForIdleFetches(page);
+    assert.equal(reads("/backends"), 0, label);
+    assert.equal(reads("/observability"), probes, label);
+
+    grantInstallationAdministration(fixture, account.principal);
+    const read = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === "/backends" && response.status() === 200,
+    );
+    if (recheck === "refresh") {
+      await page.getByRole("button", { name: "Refresh", exact: true }).click();
+    } else {
+      await page.reload();
+    }
+    await read;
+    await waitForIdleFetches(page);
+    assert.equal(await page.getByText(BACKENDS_DENIED, { exact: true }).count(), 0, label);
+  }
+  // Only the outsider's first probe was refused; no Backends read was.
+  assert.deepEqual(
+    authorizationDenials(auditSink, /^openclaw\.(observability|backends)\./).map(
+      (event) => event.action,
+    ),
+    ["openclaw.observability.read"],
+  );
 });
 
 const FORBIDDEN = {

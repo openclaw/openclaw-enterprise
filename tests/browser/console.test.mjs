@@ -6,6 +6,7 @@ import test from "node:test";
 import { UNTRUSTED_ORIGIN_MESSAGE } from "../../apps/controller/src/admission/admission-verifier.ts";
 import { loadConsoleTheme } from "../../apps/controller/src/composition/console-theme.ts";
 
+import { apiErrorResponse } from "../helpers/api-error.mjs";
 import {
   describePendingBrowserRequests,
   noteBrowserEvent,
@@ -531,8 +532,8 @@ test("console shows the external observability link only to Installation adminis
   await login(page, fixture, "/console/", limited.credentials);
   // The limited user reads no Agents. The empty list renders only after the page applied the
   // Installation-access answer, so the link checks below see the settled shell, not the loading
-  // one. The Namespace permission answer refuses her Agent create, so she is no administrator and
-  // is not probed: the API would audit the probe's 403 as a denial (finding D45).
+  // one. The Namespace permission answer says she does not administer the Installation, so she is
+  // not probed: the API would audit the probe's 403 as a denial (finding D45).
   await page.getByRole("heading", { name: "No Agents are shared with you", exact: true }).waitFor();
   assert.equal(await page.getByRole("link", { name: "Observability" }).count(), 0);
   assert.equal(probes, 1);
@@ -572,12 +573,7 @@ test("a navigation while the Installation-access probe is answered does not ask 
     fixture.policy.roles.push({
       id: "role-browser-probe-reader",
       namespaceId: namespace.id,
-      // A Namespace-wide Agent create grant: the permission answer cannot rule out
-      // Installation administration, so the Console probes.
-      permissions: [
-        { action: "read", resourceKind: "namespace" },
-        { action: "create", resourceKind: "agent" },
-      ],
+      permissions: [{ action: "read", resourceKind: "namespace" }],
     });
     fixture.policy.bindings.push({
       id: "binding-browser-probe-reader",
@@ -588,6 +584,10 @@ test("a navigation while the Installation-access probe is answered does not ask 
     });
   });
   const { page } = await newPage(t, fixture);
+  // The permission answer that would rule out administration fails, so the Console probes.
+  await page.route(`${fixture.origin}/namespaces/${namespace.id}/permissions`, (route) =>
+    route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Try again.")),
+  );
   // The API has answered (and audited) the probe; its response reaches the page only later.
   const probe = await holdRoute(t, page, "**/observability", (route, response) =>
     route.fulfill({ response }),

@@ -816,6 +816,15 @@ export const NamespaceCallerPermissionsResponse = Type.Object(
           },
           { additionalProperties: false },
         ),
+        installation: Type.Object(
+          {
+            administer: Type.Boolean({
+              description:
+                "Whether the selected IAM Driver allows Installation administer now, which Installation-wide operations such as listing Backends need. The check targets the Installation, not this Namespace. Advisory only: a later authorization decision can still prevent the operation.",
+            }),
+          },
+          { additionalProperties: false },
+        ),
       },
       { additionalProperties: false },
     ),

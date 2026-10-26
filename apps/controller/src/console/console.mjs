@@ -44,7 +44,7 @@ let observabilityUrl = null;
 // Set while the last Backends read was denied, so Retry and Refresh do not show the Namespace
 // selector again before the same answer hides it (finding 1491).
 let backendsDenied = false;
-// Session owner whose Installation-admin observability read has settled.
+// Session owner whose Installation-admin answer has settled in this tab.
 let observabilityOwner = null;
 // The Installation-access probe still being answered, for the session owner that sent it.
 let installationAccessProbe = null;
@@ -399,13 +399,14 @@ function probeInstallationAccess(owner) {
 
 // Whether the caller administers the Installation, for this page load. The observability read
 // is the probe, and the API audits its 403 as an authorization denial, so the console first asks
-// a readable Namespace's permission answer, which audits nothing. Agent create is held only by
-// the administrator Role and Namespace-wide grants: no Namespace policy Role can hold create
-// (docs/reference/cheatsheets/permissions.md). A caller refused Agent create is therefore no
-// Installation administrator, and is not probed (finding D45). That inference is not kept as the
-// settled answer: the next page load asks again, so an administrator whose Restriction denies
-// Agent create in one Namespace is probed from a Namespace that allows it. Gating only: the API
-// still authorizes every request. With no readable Namespace, or no answer, the console probes.
+// a readable Namespace's permission answer, whose `installation.administer` is the same IAM
+// decision and audits nothing. Any readable Namespace gives that answer: it checks the
+// Installation, not the Namespace. A caller it refuses is not probed (findings D45, 2620). That
+// refusal is settled for this tab but not kept across reloads: a reload, or Refresh on the
+// Backends refusal, asks again at no audited cost, so a grant reaches the console (finding
+// 2622). An administrator is probed for the destination URL, which the API allows. Gating
+// only: the API still authorizes every request. With no readable Namespace, or no answer, the
+// console probes.
 function installationAccess(owner, selectedRead, selectedPath) {
   const readableId = namespaces.some((item) => item.id === namespaceId)
     ? namespaceId
@@ -421,8 +422,8 @@ function installationAccess(owner, selectedRead, selectedPath) {
               : `/namespaces/${encodeURIComponent(readableId)}/permissions`,
           ).catch(() => null);
   return permissions.then((answer) =>
-    answer?.agents?.create === false
-      ? { url: null, admin: false, settled: false }
+    answer?.installation?.administer === false
+      ? { url: null, admin: false, settled: true }
       : probeInstallationAccess(owner),
   );
 }
@@ -1336,6 +1337,13 @@ async function loadPage({
     reuseView = false;
   }
   namespaceId = current.namespace;
+  if (fromRefresh && current.feature === "backends" && installationAdmin === false) {
+    // Refresh on the Backends refusal checks Installation administration again instead of
+    // reusing the settled answer (finding 2622): a permission answer, or one probe without one.
+    forgetInstallationAccess();
+    observabilityOwner = null;
+    installationAdmin = null;
+  }
   if (fromRefresh && current.agentId && current.namespace) {
     // Refresh checks access again: an Agent's Logs view asks again instead of reusing a denial
     // remembered earlier in this sign-in (finding 2566).
