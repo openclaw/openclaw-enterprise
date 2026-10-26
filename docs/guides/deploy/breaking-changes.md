@@ -26,8 +26,13 @@ real Installation.
 **What breaks.** A `403 FORBIDDEN` for a grant the caller lacks no longer says
 `The exact platform operation was not authorized.` It names the grant and who
 grants it, for example `Not authorized: this needs Agent deploy on Agent <id>.
-Ask an Installation administrator to grant it.` Statuses and codes do not
-change. Denials that name no grant keep the old sentence.
+Ask an Installation administrator to grant it.` A create denial says only an
+Installation administrator can create it. A denial about the caller's own
+account, session or provisioning job now says so in one of six sentences, such
+as `The acting account is disabled.`; the
+[permissions cheat sheet](../../reference/cheatsheets/permissions.md#denial-messages)
+lists them. Statuses and codes do not change. Denials that name no grant keep
+the old sentence.
 
 **Who is affected.** Clients that match the old sentence exactly. The console
 and `occ` from this build accept both.

@@ -878,16 +878,16 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
   }
   if (isAuthorizationDenied(error)) {
     // The caller's own denial names the grant it checked, never the IAM decision's reason, so a
-    // Restriction and a missing grant read the same (finding 2534). A decision for another
-    // principal, such as an Agent's service principal checked without naming it, stays generic:
-    // its grant would read as the caller's own.
-    const decidedFor = error.evidence?.identityId;
-    const another =
-      decidedFor !== undefined && denied?.actorId !== undefined && decidedFor !== denied.actorId;
+    // Restriction and a missing grant read the same (finding 2534). Only a check of the caller's
+    // own grant is named: a decision for another principal, such as an Agent's service principal
+    // checked without naming it, stays generic, since its grant would read as the caller's own
+    // (finding 2586).
+    const own =
+      error.checkedPrincipalId !== undefined && error.checkedPrincipalId === denied?.actorId;
     return failure(
       403,
       "FORBIDDEN",
-      error.authorization === undefined || another
+      error.authorization === undefined || !own
         ? GENERIC_DENIAL
         : capped(callerDenialMessage(error.authorization, denied?.requested)),
     );

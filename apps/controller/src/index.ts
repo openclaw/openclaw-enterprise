@@ -4333,7 +4333,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     // A caller's own denial names a resource ID only when this request carried it.
     const actorId = contexts.get(request)?.actorId;
     let mapped = requestFailure(error, {
-      requested: requestedValues(request.params, request.query, request.body),
+      requested: requestedValues(request),
       ...(actorId === undefined ? {} : { actorId }),
     });
     if (error instanceof RuntimeLogsError && error.retryAfterSeconds !== undefined) {

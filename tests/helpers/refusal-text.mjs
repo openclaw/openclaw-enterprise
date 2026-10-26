@@ -14,11 +14,12 @@ export const callerDenied = (grant, target) =>
 // A denial echoes the ID its request sent, so a real and an unknown ID get answers that match once
 // each answer's own ID is hidden: the text never says whether the resource exists.
 export const sentIdHidden = (text, id) => text.replaceAll(id, "<id>");
-// A create needs the collection grant, which Namespace Roles cannot give.
-export const createDenied = (kind, namespaceId) =>
-  `Not authorized: this needs ${kind} create in Namespace ${namespaceId}. Namespace Roles cannot grant create: ask an Installation administrator to create the ${kind} for you or to grant it.`;
+// A create needs the collection grant, which no Role can hold: only an Installation
+// administrator creates one. `kinds` is the plural, such as "Secrets".
+export const createDenied = (kind, namespaceId, kinds = `${kind}s`) =>
+  `Not authorized: this needs ${kind} create in Namespace ${namespaceId}. Only an Installation administrator can create ${kinds}: ask one to create it.`;
 export const NAMESPACE_CREATE_DENIED =
-  "Not authorized: this needs Namespace create. Ask an Installation administrator to create the Namespace for you or to grant it.";
+  "Not authorized: this needs Namespace create. Only an Installation administrator can create Namespaces: ask one to create it.";
 export const INSTALLATION_ADMINISTER_DENIED =
   "Not authorized: this needs Installation administer. Ask an Installation administrator to do it for you or to grant it.";
 // The native admin host names the grant but no Agent: the host, not the caller, names the Agent.

@@ -21,6 +21,8 @@ const KIND_LABELS: Readonly<Record<ResourceKind, string>> = Object.freeze({
   sandbox_policy: "SandboxPolicy",
 });
 
+const pluralKind = (kind: string) => (kind.endsWith("y") ? `${kind.slice(0, -1)}ies` : `${kind}s`);
+
 // A resource ID shows only in this plain shape; any other reads as "a <Kind> this request uses".
 const SHOWN_ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
 
@@ -55,13 +57,15 @@ export function callerDenialMessage(
   }
   if (action === "create") {
     // A collection create targets its parent: the Installation for a Namespace, otherwise the
-    // Namespace. Namespace Roles cannot grant create, so only an Installation administrator can.
+    // Namespace. No Role can hold a create permission, so no grant helps: only an Installation
+    // administrator creates one, as the console's AGENT_CREATE_DENIED says (finding 2581).
+    const kinds = pluralKind(kind);
     if (resource.kind === "namespace") {
-      return `${NAMED_DENIAL_PREFIX} this needs Namespace create. Ask an Installation administrator to create the Namespace for you or to grant it.`;
+      return `${NAMED_DENIAL_PREFIX} this needs Namespace create. Only an Installation administrator can create ${kinds}: ask one to create it.`;
     }
     const namespaceId = named(resource.namespaceId);
     const where = namespaceId === undefined ? " in this Namespace" : ` in Namespace ${namespaceId}`;
-    return `${NAMED_DENIAL_PREFIX} this needs ${kind} create${where}. Namespace Roles cannot grant create: ask an Installation administrator to create the ${kind} for you or to grant it.`;
+    return `${NAMED_DENIAL_PREFIX} this needs ${kind} create${where}. Only an Installation administrator can create ${kinds}: ask one to create it.`;
   }
   const id = named(resource.id);
   const article = /^[AEIOU]/.test(kind) ? "an" : "a";
@@ -83,32 +87,53 @@ export interface DeniedRequest {
   readonly actorId?: string;
 }
 
+// A body or query field that names a resource: `id`, or a name ending in `Id` (one ID) or `Ids`
+// (a list). Free text, such as a search `q`, never counts as naming one (finding 2585).
+const REFERENCE_FIELD = /^(?:id|.*Id|.*Ids)$/;
+
 /**
- * The string values a request carried in its path, query and body, for `callerDenialMessage`.
- * The walk is bounded: a value past the bounds is simply not named.
+ * The resource IDs a request named, for `callerDenialMessage`: every path parameter, and the
+ * values of reference fields (`REFERENCE_FIELD`) at any depth of the query and body. The walk is
+ * bounded: a value past the bounds is simply not named.
  */
-export function requestedValues(...sources: readonly unknown[]): (value: string) => boolean {
+export function requestedValues(request: {
+  readonly params?: unknown;
+  readonly query?: unknown;
+  readonly body?: unknown;
+}): (value: string) => boolean {
   const found = new Set<string>();
   let budget = 4096;
-  const visit = (value: unknown, depth: number) => {
-    if (budget <= 0 || depth > 24) {
-      return;
-    }
-    budget -= 1;
+  const reference = (value: unknown) => {
     if (typeof value === "string") {
       found.add(value);
     } else if (Array.isArray(value)) {
-      for (const item of value) {
-        visit(item, depth + 1);
-      }
-    } else if (value !== null && typeof value === "object") {
-      for (const item of Object.values(value)) {
-        visit(item, depth + 1);
+      for (const item of value.slice(0, 256)) {
+        if (typeof item === "string") {
+          found.add(item);
+        }
       }
     }
   };
-  for (const source of sources) {
-    visit(source, 0);
+  const visit = (value: unknown, depth: number) => {
+    if (budget <= 0 || depth > 24 || value === null || typeof value !== "object") {
+      return;
+    }
+    budget -= 1;
+    for (const [key, item] of Array.isArray(value)
+      ? value.map((entry) => ["", entry] as const)
+      : Object.entries(value)) {
+      if (key !== "" && REFERENCE_FIELD.test(key)) {
+        reference(item);
+      }
+      visit(item, depth + 1);
+    }
+  };
+  if (request.params !== null && typeof request.params === "object") {
+    for (const value of Object.values(request.params)) {
+      reference(value);
+    }
   }
+  visit(request.query, 0);
+  visit(request.body, 0);
   return (value) => found.has(value);
 }

@@ -91,6 +91,9 @@ interface NativeAdminProxyDenial {
   readonly revisionId?: string;
   readonly host?: string;
   readonly actualAuthorizationDenied?: true;
+  // The signed-in person has no platform identity, so no grant was checked: the JSON refusal
+  // stays generic. It is decided before the host, so it tells nothing about the Agent.
+  readonly unprovisioned?: true;
   readonly evidence?: AuthorizationEvidence;
   readonly authorization?: NonNullable<AuthorizationDeniedError["authorization"]>;
 }
@@ -976,7 +979,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
     const actorSubject = admitted.externalIdentity.subject;
     const currentActor = await resolveNativeAdminActor({ actorIssuer, actorSubject });
     if (currentActor === undefined) {
-      return nativeAdminProxyDenial("authorization_denied");
+      return nativeAdminProxyDenial("authorization_denied", { unprovisioned: true });
     }
     const agent = await resolveNativeAdminAgentHost(hostname);
     if (agent === undefined) {
@@ -1096,7 +1099,8 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
         return true;
       }
       // A denial names the grant but not the Agent: the Agent was resolved from the host, not
-      // named by the caller, and an unknown host is denied with the same text.
+      // named by the caller, and an unknown host is denied with the same text. A person with no
+      // platform identity had no grant checked and gets the generic text (finding 2589).
       canonicalFailure(
         reply,
         admission === undefined
@@ -1104,7 +1108,9 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
           : failure(
               403,
               "FORBIDDEN",
-              admission.reason === "authorization_denied" ? NATIVE_ADMIN_DENIAL : GENERIC_DENIAL,
+              admission.reason === "authorization_denied" && admission.unprovisioned !== true
+                ? NATIVE_ADMIN_DENIAL
+                : GENERIC_DENIAL,
             ),
       );
       return true;

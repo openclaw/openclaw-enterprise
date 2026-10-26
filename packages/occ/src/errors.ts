@@ -11,6 +11,11 @@ export class AuthorizationDeniedError extends Error {
     readonly action: AuthorizationRequest["action"];
     readonly resource: ResourceRef;
   };
+  /**
+   * The principal whose grant was checked. HTTP names the missing grant only when it is the
+   * caller, since IAM Drivers need not report it in `evidence` (finding 2586).
+   */
+  readonly checkedPrincipalId?: string;
 
   constructor(
     message = "The exact platform operation was not authorized.",
@@ -19,6 +24,7 @@ export class AuthorizationDeniedError extends Error {
       readonly action: AuthorizationRequest["action"];
       readonly resource: ResourceRef;
     },
+    checkedPrincipalId?: string,
   ) {
     super(message);
     this.name = "AuthorizationDeniedError";
@@ -32,6 +38,9 @@ export class AuthorizationDeniedError extends Error {
         action: authorization.action,
         resource: Object.freeze({ ...authorization.resource }),
       });
+    }
+    if (checkedPrincipalId !== undefined) {
+      this.checkedPrincipalId = checkedPrincipalId;
     }
   }
 }

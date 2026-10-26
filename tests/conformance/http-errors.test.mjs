@@ -19,6 +19,7 @@ import {
   preAdmissionRefusal,
 } from "../../apps/controller/src/console/agents/list.mts";
 import { requestedValues } from "../../apps/controller/src/http/caller-denial.ts";
+import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import {
   ERROR_CODES,
   PresetValidationError,
@@ -800,17 +801,14 @@ const cases = [
     },
   ],
   [
-    "a caller denial names the grant it checked, never the IAM decision's reason",
-    new AuthorizationDeniedError(INTERNAL, undefined, {
-      action: "update",
-      resource: agentResource,
-    }),
-    {
-      status: 403,
-      code: "FORBIDDEN",
-      // Without the request's values no ID is named.
-      message: callerDenied("Agent update", "an Agent this request uses"),
-    },
+    "a checked grant stays generic when no acting caller is known",
+    new AuthorizationDeniedError(
+      INTERNAL,
+      undefined,
+      { action: "update", resource: agentResource },
+      "prn_caller",
+    ),
+    { status: 403, code: "FORBIDDEN", message: GENERIC_DENIAL },
   ],
   ...[
     "The acting account is disabled.",
@@ -1442,7 +1440,7 @@ test("a contract message shows fewer problems rather than cut a path below 32 ch
 test("a caller denial names each checked grant without disclosing a Restriction or an unsent ID", () => {
   const id = `id_${"a".repeat(125)}`;
   const evidence = (identityId, restrictionIds = []) => ({
-    identityId,
+    ...(identityId === undefined ? {} : { identityId }),
     groupIds: [],
     bindingIds: restrictionIds.length > 0 ? ["binding-1"] : [],
     roleIds: restrictionIds.length > 0 ? ["role-1"] : [],
@@ -1452,12 +1450,12 @@ test("a caller denial names each checked grant without disclosing a Restriction 
     for (const action of SUPPORTED_PERMISSION_ACTIONS[kind]) {
       const resource = { kind, id, namespaceId: "ns_1" };
       const label = `${kind}:${action}`;
-      const denied = (reason, decided, requested) =>
-        requestFailure(new AuthorizationDeniedError(reason, decided, { action, resource }), {
-          requested,
-          actorId: "prn_caller",
-        }).message;
-      const sent = requestedValues({ namespaceId: "ns_1", id }, {}, undefined);
+      const denied = (reason, decided, requested, checked = "prn_caller") =>
+        requestFailure(
+          new AuthorizationDeniedError(reason, decided, { action, resource }, checked),
+          { requested, actorId: "prn_caller" },
+        ).message;
+      const sent = requestedValues({ params: { namespaceId: "ns_1", resourceId: id } });
       const restricted = denied(
         "A matching Restriction denied the operation.",
         evidence("prn_caller", ["restriction-1"]),
@@ -1476,29 +1474,127 @@ test("a caller denial names each checked grant without disclosing a Restriction 
         /restriction-1|binding-1|role-1|prn_caller|matching|binding grants/,
         label,
       );
+      // No Role can hold create, so a create denial never asks for a grant (finding 2581).
+      if (action === "create" && kind !== "installation") {
+        assert.match(
+          restricted,
+          /Only an Installation administrator can create .+: ask one to create it\.$/,
+          label,
+        );
+        assert.doesNotMatch(restricted, /grant/, label);
+      }
       // An exact resource is named only when the request carried its ID; a create names the
       // Namespace it targets, and an Installation names nothing.
       const named = kind !== "installation" && action !== "create";
       assert.equal(restricted.includes(id), named, label);
-      const unsent = denied("", undefined, requestedValues({ other: "value" }));
+      // Free text and non-reference fields never count as sending an ID (finding 2585).
+      const unsent = denied(
+        "",
+        undefined,
+        requestedValues({ query: { q: id }, body: { name: id, note: "ns_1", tags: [id] } }),
+      );
       assert.equal(unsent.includes(id), false, label);
       assert.equal(unsent.includes("ns_1"), false, label);
-      // A decision for another principal, such as an Agent's own, names no grant at all.
-      assert.equal(denied("", evidence("prn_agent"), sent), GENERIC_DENIAL, label);
+      // A decision for another principal, such as an Agent's own, names no grant at all, whether
+      // or not the IAM Driver reported the identity it checked (finding 2586).
+      assert.equal(denied("", evidence("prn_agent"), sent, "prn_agent"), GENERIC_DENIAL, label);
+      assert.equal(denied("", evidence(undefined), sent, "prn_agent"), GENERIC_DENIAL, label);
+      assert.equal(denied("", evidence("prn_caller"), sent, "prn_agent"), GENERIC_DENIAL, label);
+      assert.equal(
+        requestFailure(
+          new AuthorizationDeniedError("", evidence("prn_caller"), { action, resource }),
+          {
+            requested: sent,
+            actorId: "prn_caller",
+          },
+        ).message,
+        GENERIC_DENIAL,
+        label,
+      );
     }
   }
   // An ID outside the plain shape is never echoed, even when the request carried it.
   const odd = "agt_1\u001b[2J";
   assert.equal(
     requestFailure(
-      new AuthorizationDeniedError("", undefined, {
-        action: "read",
-        resource: { kind: "agent", id: odd, namespaceId: "ns_1" },
-      }),
-      { requested: requestedValues({ agentId: odd }) },
+      new AuthorizationDeniedError(
+        "",
+        undefined,
+        { action: "read", resource: { kind: "agent", id: odd, namespaceId: "ns_1" } },
+        "prn_caller",
+      ),
+      { requested: requestedValues({ params: { agentId: odd } }), actorId: "prn_caller" },
     ).message,
     callerDenied("Agent read", "an Agent this request uses"),
   );
+});
+
+// Finding 2586: Native IAM reports no identity for a principal it has not provisioned, so only the
+// principal the error records as checked tells the caller's own denial from another's.
+test("a denial for an unprovisioned principal other than the caller names no grant", async () => {
+  const driver = new NativeIAMDriver({
+    loadNativeIAMState: async () => ({
+      identities: [],
+      groups: [],
+      memberships: [],
+      restrictions: [],
+      roles: [],
+      bindings: [],
+    }),
+  });
+  const resource = { kind: "secret", namespaceId: "ns_1", id: "sec_1" };
+  const checked = (principalId) =>
+    driver.authorize({ principalId, action: "operate", resource }).then((decision) => {
+      assert.equal(decision.allowed, false);
+      assert.equal(decision.evidence?.identityId, undefined);
+      return new AuthorizationDeniedError(
+        decision.reason,
+        decision.evidence,
+        { action: "operate", resource },
+        principalId,
+      );
+    });
+  const denied = {
+    requested: requestedValues({ params: { secretId: "sec_1" } }),
+    actorId: "prn_caller",
+  };
+  assert.equal(requestFailure(await checked("prn_agent"), denied).message, GENERIC_DENIAL);
+  assert.equal(
+    requestFailure(await checked("prn_caller"), denied).message,
+    callerDenied("Secret operate", "Secret sec_1"),
+  );
+});
+
+// Finding 2585: a request names an ID through a path parameter or a reference field (`id`, or a
+// name ending in `Id` or `Ids`) at any depth of its query or body, never through free text.
+test("only path parameters and reference fields count as IDs a request sent", () => {
+  const sent = requestedValues({
+    params: { namespaceId: "ns_path", agentId: "agt_path" },
+    query: { q: "agt_search", cursor: "agt_cursor", revisionId: "rev_query" },
+    body: {
+      configurationId: "cfg_body",
+      name: "cfg_name",
+      secretBindings: [{ name: "TOKEN", secretId: "sec_nested" }],
+      secretIds: ["sec_list"],
+      ref: { kind: "secret", id: "sec_ref" },
+      description: "sec_free",
+    },
+  });
+  for (const id of [
+    "ns_path",
+    "agt_path",
+    "rev_query",
+    "cfg_body",
+    "sec_nested",
+    "sec_list",
+    "sec_ref",
+  ]) {
+    assert.equal(sent(id), true, id);
+  }
+  for (const id of ["agt_search", "agt_cursor", "cfg_name", "TOKEN", "secret", "sec_free"]) {
+    assert.equal(sent(id), false, id);
+  }
+  assert.equal(requestedValues({})("anything"), false);
 });
 
 // The console shows the API's named denial where the view has no grant or refusal of its own,
