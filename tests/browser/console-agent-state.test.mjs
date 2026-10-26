@@ -1183,18 +1183,21 @@ test("Installation-administration reads after a revoke are refused and audited o
     assert.equal(adminDenials().length, round + 1, first);
   }
 
-  // One who may read the bound Secret herself still sees its name once her answer settles: her
-  // Secret read, refused unsent or allowed by her own grant, takes or matches the member path.
-  // Allowed, it proves nothing about administration, so the sharing reads still wait for theirs.
+  // One who may read the bound Secret herself reads it as before: her own grant allows it, so it
+  // proves nothing about administration. The sharing reads on the same page still go one at a
+  // time, and the first refusal settles her answer.
   grantMember(fixture, "revoked-walker", [["read", "secret"]]);
   const named = page.getByRole("link", { name: "Revoked model key", exact: true });
   revoke = grantInstallationAdministration(fixture, account.principal);
   await page.goto(settingsUrl);
   await driverSchemas.waitFor();
   revoke();
-  await page.goto(String(detailUrl(fixture, namespace.id, agent.id, "draft", "access")));
-  await page.getByText(ACCESS_TAB_UNAVAILABLE, { exact: true }).waitFor();
+  await page.goto(agentUrl);
   await named.waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(adminDenials().length, 3);
+  await page.getByRole("tab", { name: "Access", exact: true }).click();
+  await page.getByText(ACCESS_TAB_UNAVAILABLE, { exact: true }).waitFor();
   await waitForIdleFetches(page);
   assert.equal(await observability.count(), 0);
   assert.equal(adminDenials().length, 4);
