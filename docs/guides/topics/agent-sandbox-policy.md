@@ -22,7 +22,9 @@ says so. Policy reads and changes have independent permissions; see the
    Selection carries across pages; the count includes selections outside the
    current page. Exact executable, host, and port requests become proposed rules.
    Repeated requests and requests covered by saved or proposed rules do not add
-   duplicate rules. Incomplete metadata cannot prefill a rule.
+   duplicate rules. Incomplete metadata cannot prefill a rule. A denial that
+   names only OpenShell's placeholder address, without the record of its
+   hostname, reads **Hostname not logged** and proposes nothing.
 4. Administrators can use the **Policy editing** switch beside **Manage rules**.
    Its **On** or **Off** label states the current setting. Disabling editing preserves
    saved rules. **View rules** remains available with editing off. To change rules,
