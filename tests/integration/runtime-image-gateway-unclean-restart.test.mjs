@@ -188,11 +188,13 @@ for (const [recovery, title] of [
       recovery === "Docker"
         ? new DockerComputeDriver({ images: { gateway: image, agent: image } })
         : undefined;
+    const gatewayManagedMode = recovery === "Kubernetes";
     const first = await runStartupProbeScenario(t, {
       kind: "gateway",
       mode: "answer",
       ...stateMount,
       podOwner,
+      gatewayManagedMode,
       until: ({ events }) => events.some(observedValue("ready", true)),
       act: async ({ containerName }) => {
         firstTurn = await sendFirstTurn(containerName);
@@ -235,6 +237,7 @@ for (const [recovery, title] of [
       mode: "answer",
       ...stateMount,
       podOwner,
+      gatewayManagedMode,
       until: ({ phases }) => phaseAt(phases, "native-spawn") !== undefined,
       act: async ({ containerName }) => {
         // A failed exec is reported with the wrapper output below.
@@ -258,6 +261,23 @@ for (const [recovery, title] of [
       // the deferred check instead and no such line.
       assert.match(restarted.snapshot.output, /integrityGateReason=stale-lease-full because=[a-z]/);
       assert.match(restarted.snapshot.output, /recovered after background inspection/);
+      if (gatewayManagedMode) {
+        // The launcher sets these only on its native Gateway child, including after a restart.
+        await runDocker([
+          "exec",
+          restarted.containerName,
+          "sh",
+          "-ec",
+          String.raw`pid=$(pgrep -of '^openclaw-gateway')
+for flag do
+  tr '\0' '\n' < "/proc/$pid/environ" | grep -Fxq "$flag" || { echo "Missing $flag" >&2; exit 1; }
+done`,
+          "sh",
+          "OPENCLAW_CONFIG_READONLY=1",
+          "OPENCLAW_DISABLE_GATEWAY_LOCAL_TERMINALS=1",
+          "OPENCLAW_DISABLE_CRON_HOST_EXECUTION=1",
+        ]);
+      }
     });
   });
 }

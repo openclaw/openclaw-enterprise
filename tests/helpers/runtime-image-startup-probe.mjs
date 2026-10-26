@@ -16,7 +16,7 @@ import { imageSmokeTimeoutMultiplier } from "./image-smoke-timeout.mjs";
 import { changeSignal, followContainer } from "./docker-follow.mjs";
 import {
   AGENT_RUNTIME_ENTRYPOINT,
-  GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
+  gatewayRuntimeEntrypoint,
   RUNTIME_WRAPPER_COMMAND,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
@@ -86,7 +86,7 @@ function containerStartedAt(value) {
 
 // The wrapper environment the Kubernetes driver renders, including the private
 // runtime and plugin status ports.
-function startupProbeWrapper(kind) {
+function startupProbeWrapper(kind, gatewayManagedMode) {
   const container = kind === "codex" ? "agent" : "gateway";
   const status = [
     "OPENCLAW_PLUGIN_STATUS_PORT=18791",
@@ -128,7 +128,7 @@ function startupProbeWrapper(kind) {
       },
     };
     return {
-      entrypoint: KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
+      entrypoint: gatewayRuntimeEntrypoint(gatewayManagedMode),
       cpus: startupProbeCpuLimit,
       nativePort: 8080,
       configuration,
@@ -177,7 +177,7 @@ function startupProbeWrapper(kind) {
     },
   };
   return {
-    entrypoint: KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
+    entrypoint: gatewayRuntimeEntrypoint(gatewayManagedMode),
     cpus: gatewayStartupProbeCpuLimit,
     nativePort: 8080,
     configuration,
@@ -335,10 +335,11 @@ export async function runStartupProbeScenario(
     stateVolume,
     terminatedGatewayNamespace,
     podOwner,
+    gatewayManagedMode = false,
   },
 ) {
   const scenarioStartedAt = Date.now();
-  const wrapper = startupProbeWrapper(kind);
+  const wrapper = startupProbeWrapper(kind, gatewayManagedMode);
   const material = await createStartupProbeMaterial(t);
   if (wrapper.configuration !== undefined) {
     await writeFile(join(material, "openclaw.json"), JSON.stringify(wrapper.configuration));
