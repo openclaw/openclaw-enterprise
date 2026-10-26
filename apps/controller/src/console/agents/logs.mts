@@ -796,6 +796,8 @@ export function renderAgentLogs(
     updateFilterStatus();
   }
 
+  // The status is a live region: unchanged text is not written again, so a Follow poll that
+  // appends lines with no filter active does not re-announce it.
   function updateFilterStatus() {
     let text = "Filters search only the lines loaded in this view, not the whole container log.";
     if (hiddenLevels.size > 0 || filterInput.value.trim() !== "") {
@@ -804,7 +806,9 @@ export function renderAgentLogs(
       const shown = pane.querySelectorAll(":scope > [data-level]:not([hidden])").length;
       text = `Showing ${shown} of ${lines} loaded lines. ${text}`;
     }
-    filterStatus.textContent = text;
+    if (filterStatus.textContent !== text) {
+      filterStatus.textContent = text;
+    }
   }
 
   function appendRecords(records: readonly RuntimeLogRecord[]) {

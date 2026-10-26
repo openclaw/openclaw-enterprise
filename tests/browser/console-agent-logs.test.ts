@@ -1787,6 +1787,19 @@ test("Follow leaves filtered rows and status lines untouched on an idle poll", a
   assert.deepEqual(await writes.jsonValue(), ["childList log-filter-status"]);
   await writes.dispose();
 
+  // With no filter the status text does not depend on the rows, so appended lines leave the
+  // live region alone instead of re-announcing it on every poll.
+  await page.locator("#runtime-log-filter").fill("");
+  await status.filter({ hasText: /^Filters search only/u }).waitFor();
+  const unfiltered = await recordWrites(page, [[".log-filter-status", content]]);
+  computeDriver.state.lines.push(line(5, "keep unfiltered"));
+  await page.clock.runFor(2_000);
+  await waitForSettledFetches(page, path, before + 3);
+  await pane.getByText("keep unfiltered").waitFor();
+  assert.deepEqual(await unfiltered.jsonValue(), []);
+  await unfiltered.dispose();
+  await page.locator("#runtime-log-filter").fill("keep");
+
   // A refresh whose tail is now empty still recounts the cleared pane.
   await page.getByRole("button", { name: "Following", exact: true }).click();
   computeDriver.state.lines = [];
