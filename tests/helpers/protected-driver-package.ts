@@ -1,8 +1,8 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { stripTypeScriptTypes } from "node:module";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
+import { temporaryDirectory } from "./temporary-directory.mjs";
 
 /** Exercise the external package loader against an installed, independently authored Driver. */
 export async function protectedDriverPackage(
@@ -10,8 +10,7 @@ export async function protectedDriverPackage(
   id: string,
   filename: "index" | "repository-git" = "index",
 ) {
-  const directory = await mkdtemp(join(tmpdir(), "oce-protected-driver-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "oce-protected-driver-");
   const entry = join(directory, "node_modules", id);
   await mkdir(entry, { recursive: true });
   await writeFile(

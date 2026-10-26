@@ -1985,6 +1985,10 @@ export const preparedGitHubAttempts = occSchema.table(
     providerExpiresAt: timestamp("provider_expires_at", { withTimezone: true }),
     usableUntil: timestamp("usable_until", { withTimezone: true }),
     sealed: customType<{ data: Buffer }>({ dataType: () => "bytea" })("sealed"),
+    // Bounds an uncertain issue or revocation; see issueAttemptLiveBoundMs.
+    startedAt: timestamp("started_at", { withTimezone: true })
+      .notNull()
+      .default(sql`clock_timestamp()`),
   },
   (t) => [
     unique("prepared_github_attempt_version").on(t.id, t.materialVersion),
@@ -1994,7 +1998,11 @@ export const preparedGitHubAttempts = occSchema.table(
     ),
     check(
       "prepared_github_attempts_custody_check",
-      sql`custody IN ('intent', 'current', 'retire', 'revoking', 'revoked', 'expired', 'unknown')`,
+      sql`custody IN ('intent', 'current', 'retire', 'revoking', 'revoked', 'expired', 'unknown', 'not_issued')`,
+    ),
+    check(
+      "prepared_github_attempts_not_issued_check",
+      sql`custody <> 'not_issued' OR (state = 'quarantined' AND material_version IS NULL)`,
     ),
     check(
       "prepared_github_attempts_expired_check",

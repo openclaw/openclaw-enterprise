@@ -8,7 +8,10 @@ import { randomBytes } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
-import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
+import {
+  cpuScaledImageTimeoutMs,
+  imageSmokeTimeoutMultiplier,
+} from "../helpers/image-smoke-timeout.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import {
@@ -19,6 +22,7 @@ import {
   failureTail,
   createAdmittedRuntimeImageConfiguration,
   runGatewaySmoke,
+  waitForContainerReady,
 } from "../helpers/runtime-image-startup.mjs";
 import { eachSettled } from "../helpers/child-processes.mjs";
 
@@ -33,24 +37,24 @@ http.createServer((req, res) => {
 }).listen(18880, "127.0.0.1");
 `;
 
-async function waitForListenerReady(containerName, probe) {
-  let lastReadinessFailure = "No readiness probe ran.";
-  for (let attempt = 0; attempt < 80 * imageSmokeTimeoutMultiplier; attempt++) {
-    try {
-      await runDocker(["exec", containerName, "node", "-e", probe]);
-      return;
-    } catch (error) {
-      lastReadinessFailure = failureTail(error.message, 2048);
-      await new Promise((resolve) => setTimeout(resolve, 250));
-    }
+// One docker exec polls the listener (see waitForContainerReady). The wait scales
+// with the runner's CPUs: the lane's other files start runtimes at the same time
+// (finding 2448). The 90 s base keeps the former limit: 80 probes of about 1 s each.
+async function waitForListenerReady(containerName, request) {
+  try {
+    await waitForContainerReady(containerName, {
+      label: "Listener",
+      request,
+      timeoutMs: cpuScaledImageTimeoutMs(90_000),
+    });
+  } catch (error) {
+    const logs = await runDocker(["logs", containerName]).then(
+      (result) => failureTail(commandOutput(result)),
+      () => "Docker logs unavailable.",
+    );
+    error.message += `\nContainer logs:\n${logs}`;
+    throw error;
   }
-  const logs = await runDocker(["logs", containerName]).then(
-    (result) => failureTail(commandOutput(result)),
-    () => "Docker logs unavailable.",
-  );
-  throw new Error(
-    `Listener readiness timed out.\nLast readiness failure: ${lastReadinessFailure}\nContainer logs:\n${logs}`,
-  );
 }
 
 async function assertNoModelRequests(containerName) {
@@ -102,10 +106,11 @@ test(
           "OPENCLAW_POD_UID=owned-native-tls",
         ],
       });
-      const nativeProbe = enabled
-        ? `require("https").get({hostname:"127.0.0.1",port:8080,path:"/readyz",servername:"openclaw-gateway",ca:require("fs").readFileSync("/home/node/tls/cert.pem")},r=>{r.resume();process.exit(r.statusCode===200?0:1)}).on("error",()=>process.exit(1));`
-        : `fetch("http://127.0.0.1:8080/readyz").then(r=>process.exit(r.status===200?0:1)).catch(()=>process.exit(1));`;
-      await waitForListenerReady(containerName, nativeProbe);
+      // The TLS request reads the certificate the Gateway generates at startup.
+      const nativeRequest = enabled
+        ? `() => new Promise((resolve, reject) => require("https").get({hostname:"127.0.0.1",port:8080,path:"/readyz",servername:"openclaw-gateway",ca:require("fs").readFileSync("/home/node/tls/cert.pem"),timeout:5000},r=>{r.resume();resolve(r.statusCode)}).on("error",reject).on("timeout",function(){this.destroy(new Error("timeout"))}))`
+        : `() => fetch("http://127.0.0.1:8080/readyz",{signal:AbortSignal.timeout(5000)}).then(r=>r.status)`;
+      await waitForListenerReady(containerName, nativeRequest);
       const readiness = () =>
         runDocker([
           "exec",
@@ -200,23 +205,33 @@ test(
       );
       await waitForListenerReady(
         containerName,
-        'fetch("http://127.0.0.1:18791/readyz").then(r=>process.exit(r.status===200?0:1)).catch(()=>process.exit(1));',
+        '() => fetch("http://127.0.0.1:18791/readyz",{signal:AbortSignal.timeout(5000)}).then(r=>r.status)',
       );
       const inspected = JSON.parse((await runDocker(["inspect", containerName])).stdout)[0];
       const address = inspected.NetworkSettings.Networks[network].IPAddress;
       assert.ok(address);
-      const remote = await runDocker([
-        "run",
-        "--rm",
-        "--pull=never",
-        "--network",
-        network,
-        "--entrypoint",
-        "node",
-        image,
-        "-e",
-        `Promise.all([8080,18791].map(async port=>{try{const r=await fetch("http://${address}:"+port+"/readyz",{signal:AbortSignal.timeout(3000)});return {port,status:r.status};}catch(e){return {port,error:e.cause?.code??e.name};}})).then(v=>console.log(JSON.stringify(v)));`,
-      ]);
+      // One container on the network polls both ports until the status listener
+      // answers 200 and the native port settles (200 or refused). The status
+      // readiness asks the native Gateway with 2 s limits, so on a CPU-starved
+      // runner it can answer 503 once just after the private probe saw 200
+      // (finding 2468); a Kubernetes readiness probe retries the same way.
+      const remoteBudgetMs = cpuScaledImageTimeoutMs(15_000);
+      const remote = await runDocker(
+        [
+          "run",
+          "--rm",
+          "--pull=never",
+          "--network",
+          network,
+          "--entrypoint",
+          "node",
+          image,
+          "-e",
+          `const deadline=Date.now()+Number(process.argv[1]);const probe=async port=>{try{const r=await fetch("http://${address}:"+port+"/readyz",{signal:AbortSignal.timeout(3000)});return {port,status:r.status};}catch(e){return {port,error:e.cause?.code??e.name};}};(async()=>{for(;;){const v=await Promise.all([8080,18791].map(probe));if((v[1].status===200&&(v[0].status===200||v[0].error==="ECONNREFUSED"))||Date.now()>=deadline){console.log(JSON.stringify(v));return;}await new Promise(r=>setTimeout(r,500));}})();`,
+          String(remoteBudgetMs),
+        ],
+        { timeout: remoteBudgetMs + 60_000 * imageSmokeTimeoutMultiplier },
+      );
       const [native, status] = JSON.parse(remote.stdout.trim());
       assert.equal(status.status, 200);
       if (reachable) {

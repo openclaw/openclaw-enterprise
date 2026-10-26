@@ -181,11 +181,11 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
   );
   assert.deepEqual(selected.cells[1].unselected, [
     "console-secrets",
-    "git-full",
-    "git-read",
+    "git-write",
+    "git-push-denied",
     "slack",
   ]);
-  assert.deepEqual(selected.cells[0].notApplicable, ["calendar", "git-read", "slack"]);
+  assert.deepEqual(selected.cells[0].notApplicable, ["calendar", "git-push-denied", "slack"]);
   assert.throws(() => validateQaInputs(selected, {}), /OPENAI_KEY_FILE is required/);
   assert.throws(
     () => selectQaMatrix({ OCC_TEST_QA_SCENARIOS: "model-ui,typo" }),
@@ -203,7 +203,7 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
   assert.ok(!calendar.requiredEnv.includes("OCC_TEST_QA_OPENAI_KEY_FILE"));
   assert.deepEqual(calendar.cells[0].scenarios, []);
   const openclaw = selectQaMatrix({ OCC_TEST_QA_PRESET: "OpenClaw" });
-  assert.deepEqual(openclaw.cells[0].scenarios, ["model-ui", "console-secrets", "git-full"]);
+  assert.deepEqual(openclaw.cells[0].scenarios, ["model-ui", "console-secrets", "git-write"]);
   assert.ok(!openclaw.requiredEnv.some((name) => /CODEX|SLACK|CALENDAR/.test(name)));
   const secrets = selectQaMatrix({
     OCC_TEST_QA_SCENARIOS: "console-secrets",
@@ -230,7 +230,7 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
   assert.equal(full.scope, "full");
   assert.ok(full.repository);
   const isolated = selectQaMatrix({
-    OCC_TEST_QA_SCENARIOS: "git-full",
+    OCC_TEST_QA_SCENARIOS: "git-write",
     QA_REPOSITORY_FIXTURE: "isolated",
     OCC_TEST_QA_GITHUB_OBSERVER_BINARY: "gh",
     OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE: "/private/token",

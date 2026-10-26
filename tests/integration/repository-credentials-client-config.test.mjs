@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import childProcess from "node:child_process";
-import { spawnSync } from "node:child_process";
 import {
   chmod,
   cp,
@@ -35,6 +34,8 @@ import {
 import { readRuntimeRepositoryManifest } from "../../apps/controller/src/drivers/repo/github/credentials/client/manifest.ts";
 import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.mjs";
 import { startCredentialServiceFixture } from "../fixtures/repository-credentials/service.mjs";
+import { selfSigned } from "../helpers/certificates.mjs";
+import { fileCompileCache } from "../helpers/compile-cache.mjs";
 import { socketDirectory } from "../helpers/socket-directory.mjs";
 import {
   cleanEnvironment,
@@ -84,8 +85,13 @@ const opened = {
 };
 const protocol = (path = "example/project.git", extra = "") =>
   `protocol=https\nhost=credentials.example.test\npath=${path}\n${extra}\n`;
+// Children get an allowlisted environment, so they only share the Node compile cache when
+// it is passed explicitly. Git starts the credential helper, and in the push-policy case
+// the hook dispatcher for every hook (three times per ref update), as Node children.
+const compileCache = await fileCompileCache("repository-credentials-client-config");
+const clean = (extra = {}) => cleanEnvironment({ NODE_COMPILE_CACHE: compileCache, ...extra });
 const gitEnvironment = (root, extra = {}) => {
-  const env = cleanEnvironment({
+  const env = clean({
     HOME: root,
     GIT_CONFIG_SYSTEM: join(root, "gitconfig"),
     ...extra,
@@ -262,7 +268,7 @@ test("generated native configuration selects exact endpoint authority through st
     const result = await run(
       process.execPath,
       [helper, "manifest", material.root, material.manifest.generation, "get"],
-      { env: cleanEnvironment(), input, allowFailure: true },
+      { env: clean(), input, allowFailure: true },
     );
     assert.notEqual(result.code, 0);
     assert.equal(result.stdout, "");
@@ -272,7 +278,7 @@ test("generated native configuration selects exact endpoint authority through st
     const result = await run(
       process.execPath,
       [helper, "manifest", "/absent", "invalid", operation],
-      { env: cleanEnvironment(), input: "ignored\n", allowFailure: true },
+      { env: clean(), input: "ignored\n", allowFailure: true },
     );
     assert.equal(result.code, 0);
     assert.equal(result.stdout, "");
@@ -284,7 +290,7 @@ test("single-session launcher preserves native Git signal exit statuses", async 
   const session = join(parent, "signal-session");
   const repository = join(parent, "repository.git");
   await writeClientConfiguration(opened, session, undefined);
-  const env = cleanEnvironment({ HOME: parent, GIT_CONFIG_GLOBAL: "/dev/null" });
+  const env = clean({ HOME: parent, GIT_CONFIG_GLOBAL: "/dev/null" });
   await run("/usr/bin/git", ["init", "--bare", "--quiet", repository], { env });
 
   // Numeric Git errors must remain numeric; only signal termination gets 128 + signal.
@@ -376,7 +382,7 @@ test("single-session operator helper remains usable and rejects unsafe material"
   await writeClientConfiguration(opened, session, undefined);
   const invoke = (command, args = [], input) =>
     run(process.execPath, [launcher, session, command, ...args], {
-      env: cleanEnvironment({ HOME: parent }),
+      env: clean({ HOME: parent }),
       input,
       allowFailure: true,
     });
@@ -509,53 +515,21 @@ test(
   { timeout: 30000 },
   async (t) => {
     const parent = await temporaryDirectory(t);
-    const key = join(parent, "key.pem");
-    const cert = join(parent, "cert.pem");
-    const generated = spawnSync(
-      "openssl",
-      [
-        "req",
-        "-x509",
-        "-newkey",
-        "rsa:2048",
-        "-nodes",
-        "-keyout",
-        key,
-        "-out",
-        cert,
-        "-days",
-        "1",
-        "-subj",
-        "/CN=localhost",
-        "-addext",
-        "subjectAltName=IP:127.0.0.1",
-      ],
-      { encoding: "utf8", timeout: 10000 },
-    );
-    assert.equal(generated.status, 0, generated.stderr);
+    const { key, cert, certPath } = await selfSigned(parent, {
+      commonName: "localhost",
+      subjectAltName: "IP:127.0.0.1",
+    });
     const requests = [];
     let redirect = false;
-    const server = createServer(
-      { key: await readFile(key), cert: await readFile(cert) },
-      (request, response) => {
-        requests.push({ url: request.url, authorization: request.headers.authorization });
-        response.writeHead(
-          redirect ? 302 : request.headers.authorization ? 403 : 401,
-          redirect ? { location: "/redirected" } : { "www-authenticate": 'Basic realm="fixture"' },
-        );
-        response.end();
-      },
-    );
-    server.listen(0, "127.0.0.1");
-    await once(server, "listening");
-    t.after(
-      () =>
-        new Promise((done) => {
-          server.closeAllConnections();
-          server.close(done);
-        }),
-    );
-    const origin = `https://127.0.0.1:${server.address().port}`;
+    const server = createServer({ key, cert }, (request, response) => {
+      requests.push({ url: request.url, authorization: request.headers.authorization });
+      response.writeHead(
+        redirect ? 302 : request.headers.authorization ? 403 : 401,
+        redirect ? { location: "/redirected" } : { "www-authenticate": 'Basic realm="fixture"' },
+      );
+      response.end();
+    });
+    const origin = await listen(t, server);
     const input = {
       ...opened,
       client: {
@@ -571,7 +545,7 @@ test(
     const trusted = await createNativeClientMaterial(
       t,
       [{ opened: input, repositoryRef: "project" }],
-      { ca: await readFile(cert) },
+      { ca: await readFile(certPath) },
     );
     const refused = await git(untrusted.root, ["ls-remote", "https://github.com/example/project"]);
     assert.notEqual(refused.code, 0);
@@ -607,7 +581,7 @@ test("encoded session files support the actual client without the operator write
     await writeFile(join(parent, name), value, { mode: 0o600 });
   }
   const result = await run(process.execPath, [launcher, parent, "git", "credential", "fill"], {
-    env: cleanEnvironment({ HOME: parent }),
+    env: clean({ HOME: parent }),
     input: protocol(),
   });
   assert.equal(result.code, 0, result.stderr);
@@ -661,7 +635,7 @@ test("operator rejects unsafe or conflicting bound request files before admissio
         path,
         ...extra,
       ],
-      { allowFailure: true },
+      { env: clean(), allowFailure: true },
     );
   const failed = (result) => {
     assert.equal(result.code, 1);

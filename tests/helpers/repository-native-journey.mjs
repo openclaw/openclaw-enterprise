@@ -93,6 +93,8 @@ export async function verifyNativeRepositoryJourney({
   remote,
   readSession,
   submitViaLoopback = false,
+  // Prepared native Git with git-only transport grants one branch and no PR route.
+  pullRequest = true,
 }) {
   const agentPath = `/namespaces/${agent.namespaceId}/agents/${agent.id}`;
   let remoteEvidence;
@@ -173,8 +175,10 @@ export async function verifyNativeRepositoryJourney({
       argv: ["git", "push", "origin", `HEAD:refs/heads/${branch}`],
     },
     ...(!readOnly
+      ? [{ operation: "readCommit", workdir: checkout, argv: ["git", "rev-parse", "HEAD"] }]
+      : []),
+    ...(!readOnly && pullRequest
       ? [
-          { operation: "readCommit", workdir: checkout, argv: ["git", "rev-parse", "HEAD"] },
           {
             operation: "nativePr",
             workdir: checkout,
@@ -210,15 +214,18 @@ export async function verifyNativeRepositoryJourney({
         `${operation}: working directory=${JSON.stringify(workdir)}\n\`\`\`sh\n${argv.map(quoteArgument).join(" ")}\n\`\`\``,
     )
     .join("\n");
+  const deliverable = pullRequest
+    ? "exactly one commit and exactly one same-repository ready-for-review PR. readCommit prints the full commit SHA and nativePr prints the PR URL; do not substitute echo commands for either operation. Do not close the PR or delete its branch."
+    : "exactly one commit and do not open a PR. readCommit prints the full commit SHA; do not substitute an echo command for it. Do not delete the branch.";
   const embeddedPrompt = `Complete this authorized disposable repository task once with your exec tool and normal image-installed git/gh commands. Each Git/gh operation below must be its own standalone exec.command, with the specified exec.workdir. Execute the exact arguments in the listed order. Do not use shell cd, chaining, pipelines, redirection, comments, substitutions or wrappers in those Git/gh commands. Run foreground commands and stop on any failure. If exec nevertheless reports a running process, use process.poll on that exact session until completion before continuing. Do not install tools, read credentials, use alternate tokens, force push, call a provider HTTP API to create the PR, or delegate.
-After clone, its natural destination is ${checkout}. The readBase output must equal ${baseSha}; stop if it differs. Between branch and add, use exec.workdir=${JSON.stringify(checkout)} for every configuration and file-writing exec call. Configure local disposable Git identity Repository proof <repository-proof@example.invalid>, then use a separate exec call of your own to write exactly the following JSON-encoded bytes to the new file at absolute path ${JSON.stringify(`${checkout}/${file}`)}: ${JSON.stringify(content)}. Author that file yourself; do not change any other file. Make exactly one commit and exactly one same-repository ready-for-review PR. readCommit prints the full commit SHA and nativePr prints the PR URL; do not substitute echo commands for either operation. Do not close the PR or delete its branch. Finish your final response with the exact token ${completionMarker} on its own line.
+After clone, its natural destination is ${checkout}. The readBase output must equal ${baseSha}; stop if it differs. Between branch and add, use exec.workdir=${JSON.stringify(checkout)} for every configuration and file-writing exec call. Configure local disposable Git identity Repository proof <repository-proof@example.invalid>, then use a separate exec call of your own to write exactly the following JSON-encoded bytes to the new file at absolute path ${JSON.stringify(`${checkout}/${file}`)}: ${JSON.stringify(content)}. Author that file yourself; do not change any other file. Make ${deliverable} Finish your final response with the exact token ${completionMarker} on its own line.
 ${commands}`;
   const sandboxInstructions =
     "sandboxProbe intentionally attempts a forbidden outside-workspace write. Exit status 0 with SANDBOX_DENIED followed by SANDBOX_PROBE_PASSED is the expected successful result: the sandbox blocked that write. Continue with clone and the remaining operations after this success. A nonzero probe exit status is a failure.";
   const dedicatedPrompt = `Complete this authorized disposable repository task once using native Codex shell commands in your workspace. Execute every listed operation, including sandboxProbe, once, in order, as a separate foreground command with its specified working directory. Use the exact arguments; do not add shell cd, chaining, pipelines, redirection, comments, substitutions or wrappers to Git/gh commands. Use non-login shells. ${sandboxInstructions} Stop on any command failure. Do not request escalation, install tools, read credentials, use alternate tokens, force push, call a provider HTTP API to create the PR, or delegate.
-After clone, its natural destination is ${checkout}. readBase must equal ${baseSha}; stop if it differs. Between branch and add, configure local Git identity Repository proof <repository-proof@example.invalid> and author exactly these JSON-encoded bytes in the new file ${JSON.stringify(`${checkout}/${file}`)}: ${JSON.stringify(content)}. Do not change any other file. Make one commit and one same-repository ready-for-review PR. readCommit must print the actual commit SHA and nativePr the actual PR URL. Do not close the PR or delete the branch. Finish your final response with the exact token ${completionMarker} on its own line.
+After clone, its natural destination is ${checkout}. readBase must equal ${baseSha}; stop if it differs. Between branch and add, configure local Git identity Repository proof <repository-proof@example.invalid> and author exactly these JSON-encoded bytes in the new file ${JSON.stringify(`${checkout}/${file}`)}: ${JSON.stringify(content)}. Do not change any other file. Make ${deliverable} Finish your final response with the exact token ${completionMarker} on its own line.
 ${nativeCommands}`;
-  const readOnlyPrompt = `Complete this authorized read-only repository check using native Codex shell commands. Execute every listed operation once, in order, as a separate foreground command with the specified working directory and exact arguments. Use non-login shells and do not use shell cd, chaining, pipelines, redirection, substitutions or wrappers. Do not request escalation, use alternate credentials, or delegate. ${sandboxInstructions} The sandboxProbe must succeed; clone and fetch must succeed and readBase must equal ${baseSha}. The push is intentionally unauthorized: attempt it exactly once and continue after it fails. Do not create a PR or retry; the attempted push must be the only remote write attempt. Finish your final response with the exact token ${completionMarker} on its own line.
+  const readOnlyPrompt = `Complete this authorized repository check using native Codex shell commands: read the repository, then attempt one push to a branch outside your grant. Execute every listed operation once, in order, as a separate foreground command with the specified working directory and exact arguments. Use non-login shells and do not use shell cd, chaining, pipelines, redirection, substitutions or wrappers. Do not request escalation, use alternate credentials, or delegate. ${sandboxInstructions} The sandboxProbe must succeed; clone and fetch must succeed and readBase must equal ${baseSha}. The push is intentionally unauthorized: attempt it exactly once and continue after it fails. Do not create a PR or retry; the attempted push must be the only remote write attempt. Finish your final response with the exact token ${completionMarker} on its own line.
 ${nativeCommands}`;
   const prompt = readOnly ? readOnlyPrompt : dedicated ? dedicatedPrompt : embeddedPrompt;
 
@@ -312,11 +319,12 @@ ${nativeCommands}`;
       threadId: nativeTrace.threadId,
       turnId: nativeTrace.turnId,
       commands: nativeTrace.commands.map(
-        ({ operations, status, exitCode, http400, sandboxDenied }) => ({
+        ({ operations, status, exitCode, http400, pushRefRefused, sandboxDenied }) => ({
           operations,
           status,
           exitCode,
           http400,
+          pushRefRefused,
           sandboxDenied,
         }),
       ),
@@ -488,9 +496,15 @@ ${nativeCommands}`;
         assert.equal(command.status, "failed");
         assert.ok(
           Number.isInteger(command.exitCode) && command.exitCode !== 0,
-          "the read-only push must fail",
+          "the push outside the grant must fail",
         );
-        assert.equal(command.http400, true, "the broker must reject receive-pack discovery");
+        // Prepared native Git grants git-write on one branch: the client's pre-push
+        // guard refuses any other branch before anything is sent.
+        assert.equal(
+          command.pushRefRefused,
+          true,
+          "the pre-push guard must refuse the branch outside the grant",
+        );
       } else {
         assert.equal(command.status, "completed");
         assert.equal(command.exitCode, 0, `${operation} must succeed`);
@@ -526,17 +540,19 @@ ${nativeCommands}`;
       "GET",
       `pulls?state=all&head=${encodeURIComponent(repository.split("/")[0] + ":" + branch)}&per_page=100`,
     );
-    assert.equal(pulls.length, 1);
+    assert.equal(pulls.length, pullRequest ? 1 : 0);
     const pull = pulls[0];
-    assert.equal(pull.head.repo.id, Number(app.repositoryId));
-    assert.equal(pull.head.ref, branch);
-    assert.equal(pull.head.sha, commitSha);
-    assert.equal(pull.base.repo.id, Number(app.repositoryId));
-    assert.equal(pull.base.ref, base);
-    assert.equal(pull.body, marker);
-    assert.equal(pull.state, "open");
-    assert.equal(pull.draft, false);
-    remoteEvidence = { commitSha, pullNumber: pull.number };
+    if (pull) {
+      assert.equal(pull.head.repo.id, Number(app.repositoryId));
+      assert.equal(pull.head.ref, branch);
+      assert.equal(pull.head.sha, commitSha);
+      assert.equal(pull.base.repo.id, Number(app.repositoryId));
+      assert.equal(pull.base.ref, base);
+      assert.equal(pull.body, marker);
+      assert.equal(pull.state, "open");
+      assert.equal(pull.draft, false);
+    }
+    remoteEvidence = { commitSha, ...(pull ? { pullNumber: pull.number } : {}) };
     assert.equal(trace.exists, true);
     if (!dedicated) {
       assert.equal(trace.promptReportSource, "run");
@@ -604,16 +620,18 @@ ${nativeCommands}`;
       ),
       "the successful git rev-parse HEAD result must identify the independently observed commit",
     );
-    const expectedPullUrl = `https://github.com/${remote.full_name}/pull/${pull.number}`;
-    assert.equal(pull.html_url, expectedPullUrl);
-    assert.ok(
-      paired.some(
-        (call) =>
-          call.operations.includes("nativePr") &&
-          call.completion.pullUrls.includes(expectedPullUrl),
-      ),
-      "the successful native gh pr create result must identify this authorized repository PR",
-    );
+    if (pull) {
+      const expectedPullUrl = `https://github.com/${remote.full_name}/pull/${pull.number}`;
+      assert.equal(pull.html_url, expectedPullUrl);
+      assert.ok(
+        paired.some(
+          (call) =>
+            call.operations.includes("nativePr") &&
+            call.completion.pullUrls.includes(expectedPullUrl),
+        ),
+        "the successful native gh pr create result must identify this authorized repository PR",
+      );
+    }
     assert.equal(taskFailure, undefined, "task transport failed despite reconciled remote outcome");
     await f.record("Model tools and independent provider readback agree", {
       sessionKey,
@@ -626,7 +644,7 @@ ${nativeCommands}`;
       baseSha,
       branch,
       file,
-      pullNumber: pull.number,
+      ...(pull ? { pullNumber: pull.number } : {}),
       toolCallIds: paired.map((call) => call.id),
     });
   }

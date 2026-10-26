@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
+import { isAbsolute, resolve } from "node:path";
 import { SandboxRepositoryRecipientUnverifiedError } from "@openclaw-enterprise/occ";
 import type { GitHubRepositoryCredentialBackendDefinition } from "@openclaw-enterprise/contracts";
 import {
+  rejectNativeRepositoryPath,
   closed,
   nonempty,
   object,
@@ -9,17 +11,28 @@ import {
 } from "../../../composition/installation-fields.ts";
 import type { SelectedDriverConfiguration } from "../../../composition/installation-config.ts";
 import type { PreparedRepositoryGitConfiguration } from "../../../backends/repository-credentials/prepared-git-owner.ts";
-import { GitHubNativeRepositorySender } from "./driver.ts";
 import { preparedGitHubConfiguration } from "./credentials/prepared-configuration.ts";
 import type { GitHubRepositoryRegistry } from "./credentials/registry.ts";
 
 function nativeRepositorySenderConfiguration(input: unknown) {
   const native = object(input, "repository.nativeSender");
   closed(native, ["controlSocket", "publicCaPath"], "repository.nativeSender");
-  return GitHubNativeRepositorySender.requireConfiguration({
+  const configuration = {
     controlSocket: nonempty(native.controlSocket, "repository.nativeSender.controlSocket"),
     publicCaPath: nonempty(native.publicCaPath, "repository.nativeSender.publicCaPath"),
-  });
+  };
+  for (const field of ["controlSocket", "publicCaPath"] as const) {
+    const path = configuration[field];
+    if (!isAbsolute(path) || resolve(path) !== path || /\p{Cc}/u.test(path)) {
+      rejectNativeRepositoryPath(
+        field === "publicCaPath" ? "public-ca-format" : "control-socket-format",
+      );
+    }
+    if (field === "controlSocket" && Buffer.byteLength(path, "utf8") > 103) {
+      rejectNativeRepositoryPath("control-socket-length");
+    }
+  }
+  return configuration;
 }
 
 /** Interpret the existing public GitHub selection at its Repo owner. */

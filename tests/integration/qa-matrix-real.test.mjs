@@ -238,10 +238,10 @@ test(
                     },
                   ],
                   [
-                    "git-full",
+                    "git-write",
                     async (agent, step) => {
                       await step(
-                        "native repository clone/edit/commit/push/PR and disposal",
+                        "native repository clone/edit/commit/push to the granted branch and disposal",
                         async () => {
                           assert.ok(repositoryReady, "blocked by repository setup failure");
                           await verifyQaRepository(f, agent);
@@ -274,13 +274,13 @@ test(
                       },
                     ],
                     [
-                      "git-read",
+                      "git-push-denied",
                       async (agent, step) => {
                         await step(
-                          "read-only repository push rejected and session disposed",
+                          "push outside the granted branch rejected and session disposed",
                           async () => {
                             assert.ok(repositoryReady, "blocked by repository setup failure");
-                            await verifyQaRepository(f, agent, "git-read");
+                            await verifyQaRepository(f, agent, "git-push-denied");
                           },
                         );
                       },

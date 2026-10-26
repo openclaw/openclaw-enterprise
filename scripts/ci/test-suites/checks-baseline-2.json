@@ -55,6 +55,7 @@
     "tests/conformance/slack-proxy-tunnel.test.mjs",
     "tests/conformance/native-admin-websocket-relay.test.mjs",
     "tests/integration/qa-fixture-inputs.test.mjs",
+    "tests/integration/qa-repository-installation.test.ts",
     "tests/integration/repository-runtime-materialization.test.mjs",
     "tests/conformance/repository-credentials-contracts.test.mjs",
     "tests/integration/plugin-driver-startup.test.mjs",
@@ -91,6 +92,7 @@
     "tests/conformance/repository-material-store.test.mjs",
     "tests/conformance/plugin-runtime-templates.test.mjs",
     "tests/integration/ci-logging.test.mjs",
+    "tests/integration/ci-go-test.test.mjs",
     "tests/conformance/slack-proxy-reset.test.mjs",
     "tests/conformance/native-admin-upgrade-reset.test.mjs",
     "tests/conformance/repository-credentials-custody.test.mjs",
@@ -118,6 +120,9 @@
       "path": "tests/integration/qa-fixture-inputs.test.mjs"
     },
     {
+      "path": "tests/integration/qa-repository-installation.test.ts"
+    },
+    {
       "path": "tests/integration/github-app-observer.test.mjs"
     },
     {
@@ -137,6 +142,9 @@
     {
       "path": "tests/integration/first-agent-smoke.test.mjs",
       "expectedTests": [
+        "chat proof accepts the deterministic assistant answer",
+        "chat proof rejects a prompt echo, missing role, and other non-assistant replies",
+        "chat proof still requires HTTP success and the current nonce as text",
         "stop observation accepts a fast shutdown and checks Pods afterward",
         "default stop observation covers the selected gateway grace",
         "the second stop can wait behind the serial worker's first gateway drain",
@@ -218,6 +226,9 @@
     },
     {
       "path": "tests/integration/ci-logging.test.mjs"
+    },
+    {
+      "path": "tests/integration/ci-go-test.test.mjs"
     },
     {
       "path": "tests/integration/container-release.test.mjs"

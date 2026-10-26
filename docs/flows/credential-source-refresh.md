@@ -97,8 +97,10 @@ NetworkPolicy does not police (finding 1356):
   (`grpc.tcp.<service>`), so the label count decides, not the port name (finding 1366). An `endpoint` host
   `<service>.<namespace>.svc[.<domain>]` or a dotted `serviceName` names one
   namespace at save. A bare `serviceName` runs in each tenant namespace, so only
-  registration and attach know it; registration's profile check refuses the
-  name before any gateway write. An IP address, node address, two-label
+  registration and attach know it. Registration refuses the name before any
+  gateway write with `400` naming `/config/token_url`. Attach runs only in the
+  worker: it refuses a stored one with a message that names the replacement, and
+  the worker retries the revision. An IP address, node address, two-label
   `<service>.<namespace>` or other `endpoint` host names no namespace, and only
   Pod names are refused.
 
@@ -267,6 +269,11 @@ key across restarts; the API does not receive it. Only the worker prepares mater
 The Installation owns the HTTPS issuer and its trust roots; a source cannot redirect the issuer. A cold or
 expired read cannot start an exchange, and uncertain issuance blocks another attempt.
 
+The grant names one Agent. Once that Agent's deletion begins, the shared live predicate
+stops claims, renewal and use. The worker's next pass disables the family and retires its
+current token for revocation. Agent deletion never waits on GitHub. Deleting the source
+waits up to 25 seconds for a revocation in flight; other unsettled custody still returns `409`.
+
 `apps/controller/src/drivers/repo/github/credentials/prepared-postgres.ts:store`
 clears the previous committed buffer and token buffers still on the publication
 draft in `finally`, even if the callback, sealing or SQL publication fails. Callers
@@ -283,7 +290,7 @@ own their detached warm reads. Clearing a local buffer does not revoke a provide
   it is not production durability, process-crash, live-provider, installed-runtime,
   cluster or regular Agent workflow proof.
   `postgres-prepared-github-lifecycle.test.mjs` exercises the durable lifecycle,
-  signed protected exchange, issuer rotation, withdrawal and quarantine over loopback.
+  signed protected exchange, issuer rotation, withdrawal, Agent deletion and quarantine over loopback.
 
 - Read the source: `status.refresh.state`, `lastRefreshAt`, `failureCode`, and
   `recoveryAction` explain the last mint without exposing a token.

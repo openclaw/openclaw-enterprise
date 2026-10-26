@@ -1,14 +1,15 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { readFile, mkdtemp, writeFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import {
   OpenShellPreparedGitProvider,
   OpenShellPreparedGitProviderError,
+  deleteOpenShellPreparedGitProviders,
 } from "../../apps/controller/src/drivers/egress-proxy/openshell-prepared-git-provider.ts";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
 const grpc = require("@grpc/grpc-js");
@@ -30,8 +31,7 @@ const token = (suffix = "first") => ({
 const signal = () => AbortSignal.timeout(5_000);
 
 async function wire(t) {
-  const directory = await mkdtemp(join(tmpdir(), "prepared-git-wire-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "prepared-git-wire-");
   // Independent pinned v0.1.5 oracle, extended with fields from upstream
   // openshell.proto at bdb956f2cd65a635f1294fccf1d138d263bf650f; never load the client schema.
   let proto = await readFile(
@@ -120,13 +120,23 @@ async function wire(t) {
     conflict: false,
     lost: false,
     workspaceId: scope.workspaceId,
+    workspaceReads: 0,
     status: undefined,
+    // Runs as each recorded request arrives, before the server answers it.
+    onRequest: undefined,
+    // Holds the provider write's answer this long (a slow but healthy gateway).
+    writeDelayMs: 0,
   };
   const server = new grpc.Server();
   const record = (call) => {
     state.requests.push(call.request);
     assert.equal(call.request.workspace_scope.workspace, scope.workspace);
+    state.onRequest?.(call.request);
   };
+  const answerWrite = (callback, ...answer) =>
+    state.writeDelayMs
+      ? setTimeout(() => callback(...answer), state.writeDelayMs)
+      : callback(...answer);
   server.addService(OpenShell.service, {
     GetSandboxProviderStatus(call, callback) {
       record(call);
@@ -135,11 +145,16 @@ async function wire(t) {
       callback(null, { status: state.status ?? { state: "PROVIDER_READINESS_STATE_PENDING" } });
     },
     GetWorkspace(call, callback) {
+      state.workspaceReads += 1;
       assert.equal(call.request.name, scope.workspace);
       callback(null, { workspace: { metadata: { name: scope.workspace, id: state.workspaceId } } });
     },
     GetProviderProfile(call, callback) {
       record(call);
+      if (state.denyReads) {
+        callback({ code: grpc.status.PERMISSION_DENIED, details: "workspace" });
+        return;
+      }
       if (!state.profile) {
         callback({ code: grpc.status.NOT_FOUND });
         return;
@@ -172,7 +187,7 @@ async function wire(t) {
           resource_version: "1",
         },
       };
-      callback(null, { provider: state.provider });
+      answerWrite(callback, null, { provider: state.provider });
     },
     UpdateProvider(call, callback) {
       record(call);
@@ -197,7 +212,7 @@ async function wire(t) {
         });
         return;
       }
-      callback(null, { provider: state.provider });
+      answerWrite(callback, null, { provider: state.provider });
     },
   });
   const port = await new Promise((resolve, reject) =>
@@ -339,6 +354,94 @@ test("prepared Git preserves uncertain write outcomes and redacts private gatewa
   );
 });
 
+test("prepared Git writes outlive the caller's read budget, and a caller out of time sends nothing", async (t) => {
+  // Finding 2211: the caller's signal is a reconcile pass's read budget. A write, once sent,
+  // runs to its own deadline: abandoning it would leave its outcome unknown and close the route.
+  const { state, binding } = await wire(t);
+  const abortOn = (sent) => {
+    const caller = new AbortController();
+    state.onRequest = (request) => {
+      if (sent(request)) {
+        caller.abort(new Error("the pass ran out of time"));
+      }
+    };
+    return caller.signal;
+  };
+  state.writeDelayMs = 200;
+  const bootstrap = await binding.bootstrap(abortOn((request) => "profiles" in request));
+  assert.equal(bootstrap.credentialState, "bootstrap");
+  assert.equal(state.provider.credentials.GITHUB_TOKEN, "oce-unprivileged-bootstrap-sentinel");
+  const isUpdate = (request) => !!request.provider?.metadata?.resource_version;
+  const active = await binding.rotate(bootstrap, async () => token(), abortOn(isUpdate));
+  assert.equal(active.credentialState, "active");
+  assert.equal(active.resourceVersion, "2");
+  state.writeDelayMs = 0;
+
+  // Out of time before the write, for any reason (here the worker's claim ended): nothing is
+  // sent, and the refusal is a timeout the caller retries, not a verdict on the provider.
+  const late = new AbortController();
+  const skipped = await binding.rotate(
+    active,
+    async () => {
+      late.abort(new Error("claim lost"));
+      return token("late");
+    },
+    late.signal,
+  );
+  assert.equal(skipped, undefined);
+  assert.equal(state.requests.filter(isUpdate).length, 1);
+  const fresh = await wire(t);
+  const caller = new AbortController();
+  fresh.state.onRequest = (request) => {
+    if (request.name !== undefined) {
+      caller.abort(new Error("claim lost"));
+    }
+  };
+  await assert.rejects(
+    fresh.binding.bootstrap(caller.signal),
+    (error) =>
+      error instanceof OpenShellPreparedGitProviderError &&
+      error.outcome === "refused" &&
+      error.readFailure === "timeout",
+  );
+  assert.deepEqual([fresh.state.profile, fresh.state.provider], [undefined, undefined]);
+  // Out of time just after the last read answered: the write does not start.
+  const between = await wire(t);
+  const ended = new AbortController();
+  const getProvider = between.client.getProvider.bind(between.client);
+  between.client.getProvider = async (...args) => {
+    const answer = await getProvider(...args);
+    ended.abort(new Error("claim lost"));
+    return answer;
+  };
+  await assert.rejects(
+    between.binding.bootstrap(ended.signal),
+    (error) => error.outcome === "refused" && error.readFailure === "timeout",
+  );
+  assert.deepEqual([between.state.profile, between.state.provider], [undefined, undefined]);
+
+  // A gateway that refuses the worker's identity is a refusal, never a retryable read failure,
+  // even when the caller's signal ends at the same moment.
+  const denied = await wire(t);
+  denied.state.denyReads = true;
+  const refusedAs = (readFailure) => (error) =>
+    error instanceof OpenShellPreparedGitProviderError &&
+    error.outcome === "refused" &&
+    error.readFailure === readFailure;
+  await assert.rejects(denied.binding.bootstrap(signal()), refusedAs(undefined));
+  const deniedCaller = new AbortController();
+  const getProfile = denied.client.getProviderProfile.bind(denied.client);
+  denied.client.getProviderProfile = async (...args) => {
+    try {
+      return await getProfile(...args);
+    } finally {
+      deniedCaller.abort(new Error("claim lost"));
+    }
+  };
+  await assert.rejects(denied.binding.bootstrap(deniedCaller.signal), refusedAs(undefined));
+  assert.equal(denied.state.provider, undefined);
+});
+
 test("prepared Git sends a CAS precondition and fails closed on a concurrent gateway update", async (t) => {
   const { state, binding } = await wire(t);
   const receipt = await binding.prepare(token(), signal());
@@ -447,6 +550,27 @@ test("prepared Git bootstraps without privilege and distinguishes accepted rotat
     await binding.observe(active, "sandbox-id", signal()),
     installed,
     "heartbeat sequence is not a new installed identity",
+  );
+
+  // A restored generation names the same provider but cannot establish supervisor readiness.
+  const { providerId, profileVersion, resourceVersion, expiresAt, credentialState } = active;
+  const generation = { providerId, profileVersion, resourceVersion, expiresAt, credentialState };
+  const requestCounts = [state.workspaceReads, state.requests.length];
+  const restored = binding.restore(generation);
+  assert.deepEqual(restored, active);
+  assert.ok(Object.isFrozen(restored) && Object.isFrozen(restored.readiness));
+  const expired = { ...generation, expiresAt: new Date(Date.now() - 60_000).toISOString() };
+  const finite = binding.restore(expired);
+  assert.equal(finite.credentialState, "bootstrap");
+  assert.equal(finite.expiresAt, "");
+  const standing = binding.restore(expired, true);
+  assert.equal(standing.credentialState, "active");
+  assert.equal(standing.expiresAt, expired.expiresAt);
+  assert.equal(await binding.observe(standing, "sandbox-id", signal()), undefined);
+  assert.deepEqual(
+    [state.workspaceReads, state.requests.length],
+    requestCounts,
+    "restore and expired observation make no gateway requests",
   );
 });
 
@@ -620,4 +744,59 @@ test("prepared Git keeps its verified installation while only another attached p
   const moved = await binding.observe(active, "sandbox-id", signal(), installed);
   assert.equal(moved.providerEnvRevision, "102");
   assert.deepEqual({ ...moved, providerEnvRevision: "101" }, installed);
+});
+
+// Namespace cleanup (finding 2206) deletes only the Workspace's own prepared Git profiles: the
+// listing also returns platform and static profiles, and an unprepared or foreign-named one.
+test("Namespace cleanup deletes only workspace-scoped prepared Git profiles", async () => {
+  const owner = "b".repeat(48);
+  const prepared = "oce-git-" + "b".repeat(32);
+  const installation = "oce-github-installation-" + "b".repeat(32);
+  const profile = (id, scope, annotations = { "openclaw.dev/prepared-git-binding": owner }) => ({
+    id,
+    resourceVersion: "1",
+    annotations,
+    definition: { id, scope },
+  });
+  const calls = [];
+  await deleteOpenShellPreparedGitProviders(
+    {
+      async deleteProvider(_workspace, name) {
+        calls.push(["deleteProvider", name]);
+      },
+      async listProviderProfiles(workspace) {
+        calls.push(["listProviderProfiles", workspace]);
+        return [
+          profile(prepared, "workspace"),
+          profile(installation, "workspace"),
+          profile(prepared, "platform"),
+          profile("oce-git-" + "c".repeat(32), "workspace"),
+          profile("github", "workspace"),
+          profile(prepared, "workspace", {}),
+        ];
+      },
+      async deleteProviderProfile(_workspace, id) {
+        calls.push(["deleteProviderProfile", id]);
+      },
+    },
+    "git-dogfood",
+    [
+      { name: prepared, type: prepared, labels: { "openclaw.dev/prepared-git-binding": owner } },
+      { name: "github", type: "github", labels: { "openclaw.dev/prepared-git-binding": owner } },
+      { name: "oce-git-" + "c".repeat(32), type: "oce-git-" + "c".repeat(32), labels: {} },
+      // A preparation names the provider after its own profile; another type is not one.
+      {
+        name: installation,
+        type: "github",
+        labels: { "openclaw.dev/prepared-git-binding": owner },
+      },
+    ],
+    signal(),
+  );
+  assert.deepEqual(calls, [
+    ["deleteProvider", prepared],
+    ["listProviderProfiles", "git-dogfood"],
+    ["deleteProviderProfile", prepared],
+    ["deleteProviderProfile", installation],
+  ]);
 });

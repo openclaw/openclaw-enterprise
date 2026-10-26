@@ -38,7 +38,11 @@ import {
 import { bindRuntimeSource } from "../helpers/postgres-protected-scenarios.mjs";
 import { postgresApp } from "../helpers/postgres-egress-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
-import { captureMetadata, dispatchMetadata } from "../helpers/github-metadata-exchange.mjs";
+import {
+  captureMetadata,
+  dispatchMetadata,
+  raceMaintenance,
+} from "../helpers/github-metadata-exchange.mjs";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
 import { temporaryDirectory } from "../fixtures/repository-credentials/process.mjs";
 import {
@@ -632,11 +636,19 @@ test(
     // Advance only the polling schedule, not token validity. Separate owners must coalesce
     // against the same durable family even though the rejected token is still fresh.
     await due();
-    const results = await Promise.all([
-      restarted.maintain(t.signal),
-      competitor.maintain(t.signal),
-    ]);
-    assert.deepEqual(results.sort(), ["committed", "idle"]);
+    // Revocations of the rejected token: the test's own revocation of `late`, then retirement.
+    const [{ index: rejected }] = gh.issuesOfTokens;
+    const revocations = (index = rejected) =>
+      gh.trace.filter(
+        ({ method, target, tokenIndex }) =>
+          method === "DELETE" && target === "/installation/token" && tokenIndex === index,
+      ).length;
+    assert.equal(revocations(), 1);
+    // The commit moves the rejected token into retirement custody. A loser whose pass reaches
+    // its retirement step after that commit retires it (`retired`); otherwise the next pass does.
+    const [loser] = await raceMaintenance([restarted, competitor], t.signal);
+    assert(loser === "idle" || loser === "retired", `unexpected losing pass: ${loser}`);
+    assert.equal(revocations(), loser === "retired" ? 2 : 1);
     const replacement = await restarted.readWarm(source, window());
     assert(replacement);
     assert.notEqual(replacement.materialVersion, old.materialVersion);
@@ -646,6 +658,7 @@ test(
     assert.equal(await restartedReceipts.reject(late.sender, late, late.material), "fenced");
     await due();
     assert.equal(await restarted.maintain(t.signal), "ready");
+    assert.equal(revocations(), 2, "exactly one pass retires the rejected token");
     assert.equal(
       (await restarted.readWarm(source, window()))?.materialVersion,
       replacement.materialVersion,
@@ -662,6 +675,7 @@ test(
       ).length,
       2,
     );
+    assert.equal(revocations(gh.issuesOfTokens[1]!.index), 0, "never retire the replacement");
     const next = await dispatched(true);
     gh.disconnectAfterMutation("POST", `/app/installations/${fixtureInstallationId}/access_tokens`);
     await due();
@@ -672,6 +686,7 @@ test(
     assert.equal(await competitor.maintain(t.signal), "blocked");
     assert.equal(gh.issuesOfTokens.length, 3, "rejection cannot replay uncertain issuance");
     assert.equal(await competitor.readWarm(source, window()), undefined);
+    assert.equal(revocations(), 2, "later passes never replay the rejected token's retirement");
     assert.deepEqual(gh.errors, []);
   },
 );

@@ -1,19 +1,4 @@
 {
-  "apps/controller/src/drivers/compute/docker/index.ts": {
-    "preserve-caught-error": {
-      "count": 1
-    }
-  },
-  "apps/controller/src/drivers/compute/kubernetes/index.ts": {
-    "preserve-caught-error": {
-      "count": 1
-    }
-  },
-  "apps/controller/src/drivers/compute/ssh/index.ts": {
-    "preserve-caught-error": {
-      "count": 1
-    }
-  },
   "apps/controller/src/drivers/compute/ssh/remote-helper.cjs": {
     "no-control-regex": {
       "count": 1

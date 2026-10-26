@@ -1,6 +1,7 @@
 import {
   openShellGitRuntimeFixture,
   registry as runtimeRegistry,
+  takeUnloggedRuntimeFields,
 } from "../helpers/openshell-git-runtime.ts";
 import {
   createGitHubRepositoryDeliveryResolver,
@@ -15,12 +16,11 @@ import {
   type OpenShellSandboxDriverOptions,
 } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import assert from "node:assert/strict";
-import { once } from "node:events";
 import { writeFile } from "node:fs/promises";
 import { createServer } from "node:https";
 import { protectedDriverPackage } from "../helpers/protected-driver-package.ts";
 import { join } from "node:path";
-import test from "node:test";
+import test, { afterEach } from "node:test";
 import type {
   AgentRevision,
   ComputeDriver,
@@ -38,6 +38,10 @@ import { createInstallationDriverConfiguration } from "../helpers/installation-d
 import { routedRevision } from "../helpers/kubernetes-routed-scenarios.mjs";
 import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
+import { listen } from "../helpers/listen.mjs";
+
+// Every field the OpenShell Git runtime emits reaches the worker log (finding 2244).
+afterEach(() => assert.deepEqual(takeUnloggedRuntimeFields(), []));
 
 test("one installed Driver owns both protected capabilities, lifecycle and verified release", async (t) => {
   const id = "release-fixture";
@@ -55,10 +59,8 @@ test("one installed Driver owns both protected capabilities, lifecycle and verif
     requestedPaths.push(req.url ?? "");
     assert.equal(req.headers.authorization, "Bearer test-supervisor");
     res.writeHead(trusted ? 200 : 401).end(JSON.stringify(installed));
-  }).listen(0, "127.0.0.1");
-  t.after(() => new Promise<void>((resolve) => peer.close(() => resolve())));
-  await once(peer, "listening");
-  const endpoint = "https://127.0.0.1:" + (peer.address() as { port: number }).port;
+  });
+  const endpoint = "https://127.0.0.1:" + (await listen(t, peer));
   const base = createInstallationDriverConfiguration();
   const configuration = {
     ...base,

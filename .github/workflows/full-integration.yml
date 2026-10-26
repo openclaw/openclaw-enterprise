@@ -118,10 +118,6 @@ jobs:
             title: Images and Packaging
             profile: full
             timeout: 45
-          - lane: images-model-probes
-            title: Image Model Probes
-            profile: images
-            timeout: 25
           - lane: images-runtime-startup
             title: Image Runtime Startup
             profile: full
@@ -615,11 +611,12 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: ${{ env.NODE_VERSION }}
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+      # The action retries after a pause and says why.
+      - name: Download full integration results
+        uses: ./.github/actions/download-results
         with:
           pattern: full-results-*
           path: ${{ runner.temp }}/results
-          merge-multiple: true
       - name: Write selected job state
         env:
           NEEDS_JSON: ${{ toJson(needs) }}
@@ -633,7 +630,7 @@ jobs:
           const out = { preflight: needs.preflight };
           if (lane === "all") {
             out["runtime-image-fixture"] = needs["runtime-image-fixture"] ?? { result: "missing" };
-            for (const name of ["checks-baseline-1", "checks-baseline-2", "checks-browser", "checks-browser-2", "postgres", "postgres-application", "postgres-auth", "postgres-platform", "images-packaging", "images-model-probes", "images-runtime-startup", "images-runtime-startup-2", "images-runtime-startup-3", "k3d-fixture-configuration", "k3d-fixture-state", "k3d-fixture-plugins", "k3d-observability", "k3d-observability-demo", "logging-collector", "repository-credentials-container", "keycloak-oidc"]) {
+            for (const name of ["checks-baseline-1", "checks-baseline-2", "checks-browser", "checks-browser-2", "postgres", "postgres-application", "postgres-auth", "postgres-platform", "images-packaging", "images-runtime-startup", "images-runtime-startup-2", "images-runtime-startup-3", "k3d-fixture-configuration", "k3d-fixture-state", "k3d-fixture-plugins", "k3d-observability", "k3d-observability-demo", "logging-collector", "repository-credentials-container", "keycloak-oidc"]) {
               out[name] = { result: needs["pr-safe-same-sha"]?.result ?? "missing" };
             }
           } else if (lane === "logging-collector") {

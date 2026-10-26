@@ -502,6 +502,11 @@ export interface OpenShellGatewayClient
     expectedResourceVersion: string,
     signal: AbortSignal,
   ): Promise<void>;
+  /** Every profile the Workspace resolves, platform and static profiles included. */
+  listProviderProfiles(
+    workspace: string,
+    signal: AbortSignal,
+  ): Promise<readonly OpenShellStoredProviderProfile[]>;
   deleteProviderProfile(workspace: string, id: string, signal: AbortSignal): Promise<void>;
   createProvider(
     request: OpenShellProviderCreateRequest,
@@ -620,6 +625,7 @@ type OpenShellMethod =
   | "ListProviders"
   | "DeleteProvider"
   | "GetProviderProfile"
+  | "ListProviderProfiles"
   | "ImportProviderProfiles"
   | "UpdateProviderProfiles"
   | "DeleteProviderProfile"
@@ -799,6 +805,15 @@ function stringMap(value: unknown, description: string): Readonly<Record<string,
     throw new OpenShellGatewayFailure(`OpenShell ${description} must be a string map.`);
   }
   return Object.freeze({ ...(record as Record<string, string>) });
+}
+
+function storedProviderProfile(profile: RecordValue, id: string): OpenShellStoredProviderProfile {
+  return Object.freeze({
+    id,
+    definition: Object.freeze({ ...profile }),
+    resourceVersion: String(profile.resource_version ?? "0"),
+    annotations: stringMap(profile.annotations, "profile annotations"),
+  });
 }
 
 function providerResponse(value: unknown, operation: string): OpenShellProviderResponse {
@@ -1969,12 +1984,33 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     if (typeof profile?.id !== "string" || profile.id !== id) {
       throw new OpenShellGatewayFailure("OpenShell GetProviderProfile returned another profile.");
     }
-    return Object.freeze({
-      id: profile.id,
-      definition: Object.freeze({ ...profile }),
-      resourceVersion: String(profile.resource_version ?? "0"),
-      annotations: stringMap(profile.annotations, "profile annotations"),
-    });
+    return storedProviderProfile(profile, profile.id);
+  }
+
+  async listProviderProfiles(
+    workspace: string,
+    signal: AbortSignal,
+  ): Promise<readonly OpenShellStoredProviderProfile[]> {
+    const profiles: OpenShellStoredProviderProfile[] = [];
+    let pageToken = "";
+    do {
+      const response = await this.unary(
+        "ListProviderProfiles",
+        { page_size: 100, page_token: pageToken, workspace_scope: { workspace } },
+        signal,
+      );
+      for (const value of Array.isArray(response.profiles) ? response.profiles : []) {
+        const profile = asRecord(value);
+        if (typeof profile?.id !== "string" || profile.id.length === 0) {
+          throw new OpenShellGatewayFailure(
+            "OpenShell ListProviderProfiles returned a profile without an ID.",
+          );
+        }
+        profiles.push(storedProviderProfile(profile, profile.id));
+      }
+      pageToken = typeof response.next_page_token === "string" ? response.next_page_token : "";
+    } while (pageToken.length > 0);
+    return Object.freeze(profiles);
   }
 
   async importProviderProfile(

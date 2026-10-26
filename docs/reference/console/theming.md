@@ -54,7 +54,9 @@ the logo renders at 20 pixels in navigation and 40 pixels on sign-in.
 
 Colors accept `#RRGGBB` or `#RRGGBBAA`. CSS expressions are rejected. The generated
 stylesheet overrides semantic tokens after the bundled styles without changing
-typography, spacing, or layout.
+typography, spacing, or layout. A translucent `bg` blends once with the browser’s
+canvas color. A modal dims that same background across the page and any empty
+scrollbar gutter.
 
 | Roles                                               | Surfaces                                                    |
 | --------------------------------------------------- | ----------------------------------------------------------- |

@@ -9,23 +9,26 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import type { Static } from "typebox";
 import { type RequestOptions, requestFailure } from "../api-client.mjs";
-import { button, element, setText, statusBlock } from "../dom.mjs";
+import { button, element, setText, statusBlock, requestIdLine } from "../dom.mjs";
 import type { createDraftStore } from "../drafts.mjs";
+import { DELETE_CONFIRMATION, stopConfirmation, keptResources } from "./lifecycle-confirmation.mjs";
 import {
-  DELETE_CONFIRMATION,
-  STOP_CONFIRMATION,
-  keptResourcesText,
-} from "./lifecycle-confirmation.mjs";
+  agentCreateDenied,
+  AGENT_DELETE_DENIED,
+  AGENT_STOP_DENIED,
+  askForGrant,
+  notIncluded,
+} from "./access-reasons.mjs";
 import {
   type AgentNavigation,
   NAMESPACE_MISSING,
   NAMESPACE_RECHECK_MS,
   NEUTRAL_DEPLOYMENT_NOTES,
   deploymentOutcome,
+  describeFailure,
   displayDate,
   hasUnbrokenRun,
   link,
-  message,
   namespaceCreation,
   namespacePath,
   neutralDeploymentOutcome,
@@ -187,6 +190,24 @@ export function renderAgentList(context: AgentListContext) {
   // Agents whose last row action had a conflicting or unconfirmed outcome. Their actions stay
   // disabled until Refresh rereads the list, so the console never repeats an uncertain write.
   const unsettled = new Set<string>();
+  // Each row's latest deployment outcome, once its read shows one. With no version selected, a
+  // failed one leaves nothing to stop, as on Agent detail (finding 2385), and one queued or in
+  // progress makes the row's Stop dialog say it cancels that deployment (finding D691). A row
+  // without one (no visible deployment, or a failed read) keeps Stop: the API answers.
+  const latestDeployments = new Map<string, string>();
+  const failedFirst = (item: AgentRead) =>
+    !item.activeRevisionId && latestDeployments.get(item.id) === "failed";
+  function setLatestDeployment(item: AgentRead, outcome: string | null) {
+    const before = failedFirst(item);
+    if (outcome) {
+      latestDeployments.set(item.id, outcome);
+    } else {
+      latestDeployments.delete(item.id);
+    }
+    if (failedFirst(item) !== before) {
+      updateRowActions(item.id);
+    }
+  }
   const rowControls = new Map<
     string,
     ReturnType<typeof rowActions> & {
@@ -205,6 +226,8 @@ export function renderAgentList(context: AgentListContext) {
   // enabled and then refused, and the note never pushes the table down (finding 1517). Gating
   // only: the API still authorizes creation, so an unknown answer keeps the control.
   const createDenied = context.permissions?.agents?.create === false;
+  // An administrator a Restriction keeps from creating still reads every Agent here (finding D759).
+  const sharedOnly = createDenied && context.permissions?.installation?.administer !== true;
   // A Namespace that is not ready names its status here, so the first sign is never a refused
   // Secret or submit, and one that takes no new Agent never invites creating one (finding 1895).
   let notReady = namespaceCreation(context.namespace);
@@ -247,7 +270,7 @@ export function renderAgentList(context: AgentListContext) {
           element(
             "p",
             { className: "muted", role: "status", id: "agents-create-denied" },
-            "Your access does not include creating Agents in this Namespace.",
+            agentCreateDenied(context.permissions),
           ),
         ]
       : []),
@@ -366,10 +389,14 @@ export function renderAgentList(context: AgentListContext) {
           return;
         }
         if (result === null) {
+          setLatestDeployment(item, null);
           fill("No visible deployments");
           return;
         }
         const neutral = neutralDeploymentOutcome(result.status);
+        // Each read decides again: a retained list rereads on resume, and a first deployment
+        // retried since then (queued or deploying) keeps Stop, as on Agent detail (finding 2580).
+        setLatestDeployment(item, deploymentOutcome(result.status));
         const failure =
           !neutral && result.status.status === "failed"
             ? (result.status.error?.message ?? "Deployment failed.")
@@ -397,6 +424,7 @@ export function renderAgentList(context: AgentListContext) {
         if (!context.isCurrent()) {
           return;
         }
+        setLatestDeployment(item, null);
         fill(
           requestFailure(error).status === 403
             ? "Deployment access denied"
@@ -425,9 +453,7 @@ export function renderAgentList(context: AgentListContext) {
               "div",
               { className: "status", "data-tone": "danger", role: "alert" },
               element("p", { className: "status-body" }, error),
-              requestId
-                ? element("p", { className: "request-id" }, `Request ID: ${requestId}`)
-                : null,
+              requestId ? requestIdLine(requestId) : null,
             ),
           ]
         : []),
@@ -499,16 +525,17 @@ export function renderAgentList(context: AgentListContext) {
     if (error.status === 403) {
       text =
         kind === "stop"
-          ? `You do not have permission to stop ${item.name}. Ask an administrator for Agent operate access.`
-          : `You do not have permission to delete ${item.name}. Ask an administrator for Agent delete access.`;
+          ? `You do not have permission to stop ${item.name}. ${askForGrant("Agent operate on it")}`
+          : `You do not have permission to delete ${item.name}. ${askForGrant("Agent delete on it")}`;
     } else if (error.status === 400 || error.status === 429) {
-      text = message(error, true);
+      text = `Could not ${kind === "stop" ? "stop" : "delete"} ${item.name}. ${describeFailure(cause, { mutation: true })}`;
     } else {
       unsettled.add(item.id);
       if (error.status === 404) {
         text = `${item.name} is no longer available. Select Refresh to update the list.`;
       } else if (error.status === 409) {
-        text = `${item.name} changed while the request was sent. Select Refresh before trying again.`;
+        // The API's own reason, such as a lifecycle change while the request ran.
+        text = `Could not ${kind === "stop" ? "stop" : "delete"} ${item.name}. ${describeFailure(cause, { mutation: true, conflict: `${item.name} changed while the request was sent.`, next: "Select Refresh before trying again." })}`;
       } else {
         text = `Outcome unknown. ${kind === "stop" ? "Stop" : "Deletion"} may have been accepted for ${item.name}. Select Refresh before trying again.`;
       }
@@ -536,7 +563,7 @@ export function renderAgentList(context: AgentListContext) {
         notice:
           stopped.status === "deleting"
             ? `${item.name} is being deleted.`
-            : `Stop requested for ${item.name}. OCC will not start it again until you deploy a new version. Runtime shutdown completion is not exposed in Console.`,
+            : `Stop requested for ${item.name}. It will not start again until you deploy a new version. The console does not show when its runtime finishes shutting down.`,
       });
     } catch (error) {
       reportFailure(item, error, "stop");
@@ -565,15 +592,16 @@ export function renderAgentList(context: AgentListContext) {
 
   function confirmAction(item: AgentRead, kind: RowAction, invoker: HTMLButtonElement) {
     const stopping = kind === "stop";
-    const descriptions = stopping
-      ? [STOP_CONFIRMATION]
-      : [DELETE_CONFIRMATION, keptResourcesText(item)];
+    const description = element(
+      "p",
+      { id: "agent-row-confirm-description", "aria-live": "polite" },
+      stopping ? stopConfirmation(item, latestDeployments.get(item.id)) : DELETE_CONFIRMATION,
+    );
+    const kept = stopping ? null : keptResources(item);
     const dialog = element("dialog", {
       className: stopping ? "dialog agent-stop-dialog" : "dialog agent-delete-dialog",
       "aria-labelledby": "agent-row-confirm-title",
-      "aria-describedby": descriptions
-        .map((_, index) => `agent-row-confirm-description-${index}`)
-        .join(" "),
+      "aria-describedby": kept ? `${description.id} ${kept.summary.id}` : description.id,
     });
     let pending = false;
     let submitted = false;
@@ -598,13 +626,6 @@ export function renderAgentList(context: AgentListContext) {
       },
       { className: "danger" },
     );
-    const descriptionNodes = descriptions.map((text, index) =>
-      element(
-        "p",
-        { id: `agent-row-confirm-description-${index}`, "aria-live": index ? "off" : "polite" },
-        text,
-      ),
-    );
     // A refusal that arrives while the dialog is open disables confirmation, as on Agent
     // detail. A late answer cannot recall a request already sent.
     const restrict: RestrictDialog = (id, answer) => {
@@ -612,9 +633,7 @@ export function renderAgentList(context: AgentListContext) {
         return;
       }
       confirm.disabled = true;
-      descriptionNodes[0]!.textContent = stopping
-        ? "Your access does not include stopping this Agent."
-        : "Your access does not include deleting this Agent.";
+      description.textContent = stopping ? AGENT_STOP_DENIED : AGENT_DELETE_DENIED;
       cancel.focus();
     };
     restrictOpenDialog = restrict;
@@ -624,7 +643,8 @@ export function renderAgentList(context: AgentListContext) {
         { id: "agent-row-confirm-title" },
         `${stopping ? "Stop" : "Delete"} ${item.name}?`,
       ),
-      ...descriptionNodes,
+      description,
+      ...(kept ? [kept.summary, kept.commands] : []),
       element("div", { className: "dialog-actions" }, cancel, confirm),
     );
     dialog.addEventListener("cancel", (event) => {
@@ -662,21 +682,33 @@ export function renderAgentList(context: AgentListContext) {
     // A deleting Agent keeps its retry and status controls on its detail page.
     const available = item.status !== "deleting" && !unsettled.has(item.id);
     const stopped = item.desiredRuntimeState === "stopped";
-    // New Agents start stopped with no version, so there is nothing to stop yet; Agent detail
-    // shows no Stop control then either.
-    const neverStarted = stopped && !item.activeRevisionId;
+    // New Agents start stopped with no version, and a first deployment that failed selects none,
+    // so there is nothing to stop yet; Agent detail shows no Stop control then either.
+    const neverStarted = !item.activeRevisionId && (stopped || failedFirst(item));
     const allowed = permissions.get(item.id);
     const canStop = neverStarted || allowed?.operate !== false;
     const canDelete = allowed?.delete !== false;
     const noteId = `agent-row-note-${item.id}`;
     const badgeId = `agent-row-badge-${item.id}`;
+    // The note names the grant and who gives it (findings 2539, 2548). Its reserved line fits
+    // only the grant, so the line shows that and the whole reason is its tooltip and what
+    // assistive technology reads.
     let restriction = null;
+    let grant = null;
     if (!canStop && !canDelete) {
-      restriction = "No access to stop or delete";
+      restriction = notIncluded(
+        "stopping or deleting this Agent",
+        "Agent operate and Agent delete on it",
+      );
+      // "Needs Agent operate and delete" overflows the reserved line on a 1280-pixel viewport;
+      // the tooltip and the description name both grants in full.
+      grant = "Needs operate and delete";
     } else if (!canStop) {
-      restriction = "No access to stop";
+      restriction = AGENT_STOP_DENIED;
+      grant = "Needs Agent operate";
     } else if (!canDelete) {
-      restriction = "No access to delete";
+      restriction = AGENT_DELETE_DENIED;
+      grant = "Needs Agent delete";
     }
     const describedBy = (blocked: boolean, badge: string | null) => {
       const ids = [blocked ? noteId : null, badge].filter(Boolean);
@@ -711,7 +743,12 @@ export function renderAgentList(context: AgentListContext) {
     const note = element(
       "span",
       { className: "row-action-note", id: noteId, ...(restriction ? { title: restriction } : {}) },
-      restriction ?? "",
+      ...(restriction
+        ? [
+            element("span", { "aria-hidden": "true" }, grant ?? ""),
+            element("span", { className: "visually-hidden" }, restriction),
+          ]
+        : []),
     );
     return { stop, delete: remove, note };
   }
@@ -760,7 +797,17 @@ export function renderAgentList(context: AgentListContext) {
         element(
           "section",
           { className: "state-panel" },
-          element("h2", {}, query ? "No matching Agents" : "No Agents yet"),
+          // A reader without create sees only Agents shared with them, not every Agent here
+          // (finding 2548).
+          element(
+            "h2",
+            {},
+            query
+              ? "No matching Agents"
+              : sharedOnly
+                ? "No Agents are shared with you"
+                : "No Agents yet",
+          ),
           element(
             "p",
             {},
@@ -769,7 +816,9 @@ export function renderAgentList(context: AgentListContext) {
               : createDenied
                 ? // Under the note above: say what the reader can expect, not invite creating
                   // (finding 1521).
-                  "Agents in this Namespace that are shared with you appear here."
+                  sharedOnly
+                  ? "Agents in this Namespace that are shared with you appear here."
+                  : "Agents in this Namespace appear here."
                 : notReady?.blocked
                   ? context.namespace?.status === "provisioning" && !notReady.missing
                     ? "You can create Agents here once this Namespace is ready."
@@ -827,52 +876,68 @@ export function renderAgentList(context: AgentListContext) {
       );
       cells.set(deployment, { item, current });
       showDeployment(item, deployment, current);
-      body.append(
+      const row = element(
+        "tr",
+        {},
         element(
-          "tr",
+          "td",
           {},
-          element(
-            "td",
-            {},
-            name,
-            element("span", { className: "resource-id" }, item.id),
-            item.status === "deleting"
-              ? element(
-                  "span",
-                  { className: "badge", "data-tone": "warning", id: `agent-row-badge-${item.id}` },
-                  "Deleting",
-                )
-              : null,
-            // New Agents start stopped; only a stop with a selected version awaits shutdown.
-            item.status === "active" &&
-              item.desiredRuntimeState === "stopped" &&
-              item.activeRevisionId
-              ? element(
-                  "span",
-                  { className: "badge", "data-tone": "info", id: `agent-row-badge-${item.id}` },
-                  "Stop requested",
-                )
-              : null,
-            "configurationReadError" in item && item.configurationReadError
-              ? element(
-                  "span",
-                  { className: "badge", "data-tone": "danger" },
-                  "Saved configuration unreadable",
-                )
-              : null,
-          ),
-          // On a phone each cell shows its column's name (console.css, `data-label`).
-          element(
-            "td",
-            { "data-label": "Execution mode" },
-            item.executionMode === "dedicated" ? "Dedicated" : "Embedded",
-          ),
-          current,
-          deployment,
-          element("td", { "data-label": "Created" }, displayDate(item.createdAt)),
-          cell,
+          name,
+          element("span", { className: "resource-id" }, item.id),
+          item.status === "deleting"
+            ? element(
+                "span",
+                { className: "badge", "data-tone": "warning", id: `agent-row-badge-${item.id}` },
+                "Deleting",
+              )
+            : null,
+          // New Agents start stopped; only a stop with a selected version awaits shutdown.
+          item.status === "active" &&
+            item.desiredRuntimeState === "stopped" &&
+            item.activeRevisionId
+            ? element(
+                "span",
+                { className: "badge", "data-tone": "info", id: `agent-row-badge-${item.id}` },
+                "Stop requested",
+              )
+            : null,
+          "configurationReadError" in item && item.configurationReadError
+            ? element(
+                "span",
+                { className: "badge", "data-tone": "danger" },
+                "Saved configuration unreadable",
+              )
+            : null,
         ),
+        // On a phone each cell shows its column's name (console.css, `data-label`).
+        element(
+          "td",
+          { "data-label": "Execution mode" },
+          item.executionMode === "dedicated" ? "Dedicated" : "Embedded",
+        ),
+        current,
+        deployment,
+        element("td", { "data-label": "Created" }, displayDate(item.createdAt)),
+        cell,
       );
+      row.addEventListener("click", (event) => {
+        if (
+          event.defaultPrevented ||
+          event.button !== 0 ||
+          event.metaKey ||
+          event.ctrlKey ||
+          event.shiftKey ||
+          event.altKey ||
+          (event.target instanceof Element && event.target.closest("a, button")) ||
+          window.getSelection()?.isCollapsed === false
+        ) {
+          return;
+        }
+        // Reuse the name link so navigation and return focus follow the same path.
+        name.focus({ preventScroll: true });
+        name.click();
+      });
+      body.append(row);
     }
     table.append(body);
     // On a phone the rows stack (console.css), and a table part whose CSS display changes can

@@ -8,6 +8,7 @@ import {
   openShellEgressConfiguration,
   type OpenShellProxyOptions,
 } from "../egress-proxy/openshell.ts";
+import { deleteOpenShellPreparedGitProviders } from "../egress-proxy/openshell-prepared-git-provider.ts";
 import { type ErrorDetail } from "@openclaw-enterprise/contracts";
 import {
   requireConfiguration,
@@ -28,7 +29,13 @@ import type {
   SandboxPolicyRecommendations,
   SandboxPolicyRecommendation,
 } from "@openclaw-enterprise/contracts";
-import { asRecord, immutableCopy, isNonEmptyString, sha256Hex } from "@openclaw-enterprise/utils";
+import {
+  asRecord,
+  immutableCopy,
+  isNonEmptyString,
+  MAX_TIMER_DELAY_MS,
+  sha256Hex,
+} from "@openclaw-enterprise/utils";
 import {
   KubernetesObjectApi,
   type KubernetesObject,
@@ -103,6 +110,10 @@ import {
 import { OpenShellServiceTransportError } from "./openshell-service-transport.ts";
 import { RUNTIME_WRAPPER_COMMAND } from "../compute/kubernetes/runtime-entrypoints.ts";
 import { harnessWorkspacePreparationScript } from "../compute/kubernetes/index.ts";
+import {
+  compareResourceQuantities,
+  isResourceQuantity,
+} from "../compute/kubernetes/resource-quantities.ts";
 import { nodeProgramArguments } from "../compute/node-program.ts";
 import {
   requireWorkspaceSetupConfiguration,
@@ -1243,10 +1254,12 @@ async function waitForGatewayReadiness(
       }
       unavailable = "OpenShell gateway Pod is not ready.";
     }
-    if (Date.now() >= deadline) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
       throw new OpenShellSandboxConfigurationFailure(unavailable);
     }
-    await delay(pollIntervalMs, undefined, { signal: context.signal });
+    // Check once more at the deadline rather than a whole poll interval past it.
+    await delay(Math.min(pollIntervalMs, remaining), undefined, { signal: context.signal });
   }
 }
 
@@ -1559,6 +1572,15 @@ async function cleanupNativeWorkspace(
   }
 }
 
+/** The ServiceAccounts operator mode applies; native workspace preparation runs as at most one. */
+function sandboxServiceAccounts(
+  options: OpenShellSandboxDriverOptions,
+): readonly KubernetesNamespacedResource[] {
+  return (options.gateway.operatorWorkspaceResources ?? []).filter(
+    (resource) => resource.kind === "ServiceAccount",
+  );
+}
+
 // TODO(openshell-private-subpath-preparation): Remove if OpenShell adds support for preparing private subpaths
 // and OCE adopts that support.
 // Use existing Deployment permissions; never grant OCC direct Pod creation for this.
@@ -1595,9 +1617,7 @@ async function prepareNativeWorkspace(
   if (uid < 1 || gid < 1) {
     throw new OpenShellSandboxConfigurationFailure("Workspace preparation requires non-root IDs.");
   }
-  const accounts = (options.gateway.operatorWorkspaceResources ?? []).filter(
-    (resource) => resource.kind === "ServiceAccount",
-  );
+  const accounts = sandboxServiceAccounts(options);
   if (accounts.length > 1) {
     throw new OpenShellSandboxConfigurationFailure(
       "OpenShell workspace requires one Sandbox ServiceAccount.",
@@ -1827,14 +1847,178 @@ function sandboxDataMount(
   };
 }
 
+const FILESYSTEM_PATH_RULE =
+  "Use an absolute path that is not the filesystem root and has no .. segment.";
+
+/**
+ * The gateway's filesystem path rule (`validate_filesystem_paths`), narrowed to exact
+ * non-root paths: startup and Sandbox provisioning both apply it.
+ */
+function isFilesystemPolicyPath(path: unknown): path is string {
+  return (
+    typeof path === "string" &&
+    path.startsWith("/") &&
+    !/^\/+$/u.test(path) &&
+    !path.includes("\0") &&
+    !path.split("/").includes("..")
+  );
+}
+
 function validateFilesystemPolicyPath(path: string, description: string): string {
-  const value = nonempty(path, description);
-  if (value === "/" || !value.startsWith("/") || value.includes("\0")) {
+  if (!isFilesystemPolicyPath(path)) {
     throw new OpenShellSandboxConfigurationFailure(
       `${description} must be an exact non-root absolute path.`,
     );
   }
-  return value;
+  return path;
+}
+
+// OpenShell's `is_valid_sandbox_identity`: its own user name, or a numeric ID that is not
+// root and not the u32 sentinel.
+const MAX_SANDBOX_IDENTITY = 4_294_967_294;
+
+function isSandboxIdentity(value: unknown): boolean {
+  if (value === "sandbox") {
+    return true;
+  }
+  if (typeof value !== "string" || !/^\+?[0-9]+$/u.test(value)) {
+    return false;
+  }
+  const id = Number(value);
+  return id >= 1 && id <= MAX_SANDBOX_IDENTITY;
+}
+
+/**
+ * Settings the gateway refuses only in CreateSandbox, which a dedicated deploy reaches after
+ * its predecessors have stopped, so startup refuses them first (findings 2331, 2332).
+ */
+function validatePolicySettings(options: OpenShellSandboxDriverOptions): void {
+  const details: ErrorDetail[] = [];
+  for (const field of ["runAsUser", "runAsGroup"] as const) {
+    if (!isSandboxIdentity(options.policy.process[field])) {
+      details.push({
+        path: `/policy/process/${field}`,
+        code: "INVALID_VALUE",
+        message: `Use sandbox or a numeric ID from 1 to ${MAX_SANDBOX_IDENTITY}; OpenShell refuses other identities.`,
+      });
+    }
+  }
+  const filesystem = options.policy.filesystem;
+  for (const field of ["readOnly", "readWrite"] as const) {
+    filesystem?.[field]?.forEach((path, index) => {
+      if (!isFilesystemPolicyPath(path)) {
+        details.push({
+          path: `/policy/filesystem/${field}/${index}`,
+          code: "INVALID_VALUE",
+          message: FILESYSTEM_PATH_RULE,
+        });
+      }
+    });
+  }
+  const dataMount = options.kubernetes.sandboxDataMount;
+  const writable = dataMount.readOnly
+    ? (filesystem?.readWrite?.indexOf(dataMount.mountPath) ?? -1)
+    : -1;
+  if (writable !== -1) {
+    details.push({
+      path: `/policy/filesystem/readWrite/${writable}`,
+      code: "INVALID_VALUE",
+      message: "The Sandbox data mount is read-only; remove it from readWrite.",
+    });
+  }
+  // The API server refuses the Sandbox Pod otherwise, after a deploy stopped its predecessors.
+  // Startup reports problems under each map's own path, so messages name the resource.
+  const agentResources = {
+    requests: asRecord(options.kubernetes.agentResources?.requests) ?? {},
+    limits: asRecord(options.kubernetes.agentResources?.limits) ?? {},
+  };
+  const quantitiesValid = { requests: true, limits: true };
+  for (const section of ["requests", "limits"] as const) {
+    if (
+      Object.values(agentResources[section]).some(
+        (quantity) =>
+          typeof quantity !== "string" ||
+          !isResourceQuantity(quantity) ||
+          (compareResourceQuantities(quantity, "0") ?? 0) < 0,
+      )
+    ) {
+      quantitiesValid[section] = false;
+      details.push({
+        path: `/kubernetes/agentResources/${section}`,
+        code: "INVALID_VALUE",
+        message:
+          "Each value must be a quoted, non-negative Kubernetes quantity, such as 500m or 1Gi.",
+      });
+    }
+  }
+  if (quantitiesValid.requests && quantitiesValid.limits) {
+    for (const [resource, request] of Object.entries(agentResources.requests)) {
+      const limit = agentResources.limits[resource];
+      if (
+        typeof request === "string" &&
+        typeof limit === "string" &&
+        (compareResourceQuantities(request, limit) ?? 0) > 0
+      ) {
+        details.push({
+          path: "/kubernetes/agentResources/requests",
+          code: "INVALID_RANGE",
+          message: `The ${resource} request (${request}) cannot exceed its limit (${limit}).`,
+        });
+      }
+    }
+  }
+  const policies: readonly OpenShellNetworkPolicyRule[] = Array.isArray(
+    options.policy.networkPolicies,
+  )
+    ? options.policy.networkPolicies
+    : [];
+  policies.forEach((policy, index) => {
+    const endpoints: readonly OpenShellNetworkEndpoint[] = Array.isArray(policy?.endpoints)
+      ? policy.endpoints
+      : [];
+    endpoints.forEach((endpoint, at) => {
+      const message = endpointProtocolProblem(endpoint);
+      if (message !== undefined) {
+        details.push({
+          path: `/policy/networkPolicies/${index}/endpoints/${at}/protocol`,
+          code: "INVALID_VALUE",
+          message,
+        });
+      }
+    });
+  });
+  const [first, ...rest] = details;
+  if (first !== undefined) {
+    throw new ConfigurationValidationError([first, ...rest]);
+  }
+}
+
+// The pinned Gateway refuses these at CreateSandbox (validate_l7_endpoint_semantics and the
+// sandbox policy checks). Its L7 protocols need an access preset or rules; this configuration has
+// no rules, so json-rpc and mcp cannot be expressed. The Gateway reads protocol names in any letter
+// case, but some of its checks compare lowercase names, so OCE sends them lowercase.
+const ACCESS_PRESET_PROTOCOLS = new Set(["rest", "websocket", "graphql", "sql"]);
+
+function endpointProtocolProblem(endpoint: OpenShellNetworkEndpoint): string | undefined {
+  const protocol = endpoint.protocol;
+  if (protocol === undefined || protocol === "") {
+    return undefined;
+  }
+  const normalized = typeof protocol === "string" ? protocol.toLowerCase() : "";
+  if (normalized === "tcp") {
+    return endpoint.access === undefined && endpoint.enforcement === undefined
+      ? undefined
+      : "Protocol tcp takes neither an access preset nor enforcement; remove them, or use an L7 protocol.";
+  }
+  if (ACCESS_PRESET_PROTOCOLS.has(normalized)) {
+    if (endpoint.access === undefined) {
+      return `Protocol ${normalized} needs an access preset (read_only, read_write or full).`;
+    }
+    return normalized === "sql" && endpoint.enforcement === "enforce"
+      ? "Protocol sql supports enforcement audit only, since OpenShell cannot fully parse SQL."
+      : undefined;
+  }
+  return "Use tcp, rest, websocket, graphql or sql, or omit protocol; OpenShell needs rules for json-rpc and mcp, which this setting cannot express.";
 }
 
 function filesystemPolicy(
@@ -1913,7 +2097,9 @@ function networkPolicies(options: OpenShellSandboxDriverOptions) {
           return {
             host: nonempty(endpoint.host, `${description} host`),
             ports: endpoint.ports.map((value) => port(value, `${description} port`)),
-            ...(endpoint.protocol === undefined ? {} : { protocol: endpoint.protocol }),
+            ...(endpoint.protocol === undefined
+              ? {}
+              : { protocol: endpoint.protocol.toLowerCase() }),
             ...(tls === undefined ? {} : { tls }),
             ...(enforcement === undefined ? {} : { enforcement }),
             ...(access === undefined ? {} : { access }),
@@ -2135,10 +2321,12 @@ function validateOptions(options: OpenShellSandboxDriverOptions): void {
     const pollIntervalMs = options.gateway.readiness.pollIntervalMs;
     if (
       pollIntervalMs !== undefined &&
-      (!Number.isSafeInteger(pollIntervalMs) || pollIntervalMs < 1)
+      (!Number.isSafeInteger(pollIntervalMs) ||
+        pollIntervalMs < 1 ||
+        pollIntervalMs > MAX_TIMER_DELAY_MS)
     ) {
       throw new OpenShellSandboxConfigurationFailure(
-        "OpenShell gateway readiness poll interval must be a positive safe integer.",
+        `OpenShell gateway readiness poll interval must be a positive safe integer no greater than ${MAX_TIMER_DELAY_MS}.`,
       );
     }
   }
@@ -2164,8 +2352,7 @@ function validateOptions(options: OpenShellSandboxDriverOptions): void {
       "OpenShell policy.landlockCompatibility must be hard_requirement or omitted; best_effort is not supported.",
     );
   }
-  nonempty(options.policy.process.runAsUser, "OpenShell process runAsUser");
-  nonempty(options.policy.process.runAsGroup, "OpenShell process runAsGroup");
+  validatePolicySettings(options);
   if (
     !Array.isArray(options.policy.networkPolicies) ||
     options.policy.networkPolicies.length === 0
@@ -2236,25 +2423,70 @@ export const configurationSchema = Object.freeze({
         readiness: {
           type: "object",
           required: ["serviceName", "podSelector", "timeoutMs"],
+          additionalProperties: false,
           properties: {
             serviceName: { type: "string" },
             podSelector: { type: "object" },
             timeoutMs: { type: "integer", minimum: 1 },
-            pollIntervalMs: { type: "integer", minimum: 1 },
+            // A Node.js timer fires a longer delay after 1 ms.
+            pollIntervalMs: { type: "integer", minimum: 1, maximum: MAX_TIMER_DELAY_MS },
           },
         },
       },
     },
+    // Closed objects: an unknown key here is a typo the Driver would otherwise ignore.
     kubernetes: {
       type: "object",
+      additionalProperties: false,
       properties: {
-        serviceAccount: { type: "object", properties: { mode: { const: "gatewayConfigured" } } },
+        runtimeClassName: { type: "string" },
+        serviceAccount: {
+          type: "object",
+          additionalProperties: false,
+          properties: { mode: { const: "gatewayConfigured" } },
+        },
+        sandboxDataMount: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            claimName: { type: "string" },
+            subPath: { type: "string" },
+            mountPath: { type: "string" },
+            readOnly: { type: "boolean" },
+          },
+        },
+        // The protobuf serializer sends a quoted "false" as true.
+        userNamespaces: { type: "boolean" },
+        // The Gateway refuses unknown keys at CreateSandbox and decodes these into string maps;
+        // validatePolicySettings checks each quantity.
+        agentResources: {
+          type: "object",
+          additionalProperties: false,
+          properties: { requests: { type: "object" }, limits: { type: "object" } },
+        },
       },
     },
     policy: {
       type: "object",
+      required: ["process", "networkPolicies"],
+      additionalProperties: false,
       properties: {
+        filesystem: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            includeWorkdir: { type: "boolean" },
+            readOnly: { type: "array", items: { type: "string" } },
+            readWrite: { type: "array", items: { type: "string" } },
+          },
+        },
         landlockCompatibility: { const: "hard_requirement" },
+        process: {
+          type: "object",
+          required: ["runAsUser", "runAsGroup"],
+          additionalProperties: false,
+          properties: { runAsUser: { type: "string" }, runAsGroup: { type: "string" } },
+        },
         networkPolicies: {
           type: "array",
           minItems: 1,
@@ -2282,7 +2514,8 @@ export const configurationSchema = Object.freeze({
                   required: ["host", "ports"],
                   properties: {
                     host: { type: "string" },
-                    ports: { type: "array", items: { type: "integer" } },
+                    // The Gateway refuses an endpoint without ports at CreateSandbox.
+                    ports: { type: "array", minItems: 1, items: { type: "integer" } },
                     protocol: { type: "string" },
                     tls: { type: "string", enum: Object.keys(NETWORK_TLS_MODES) },
                     enforcement: { type: "string", enum: Object.keys(NETWORK_ENFORCEMENT_MODES) },
@@ -2688,6 +2921,17 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     if (harness.id !== "openclaw" && harness.id !== "codex") {
       throw new OpenShellSandboxConfigurationFailure(
         "OpenShell SandboxDriver does not support the selected Harness runtime.",
+      );
+    }
+    // prepareNativeWorkspace refuses these only after a deploy has stopped its predecessors.
+    if (harness.id === "openclaw" && this.options.kubernetes.userNamespaces !== false) {
+      throw new ConfigurationHarnessError(
+        "Dedicated OpenClaw needs kubernetes.userNamespaces: false in the OpenShell Sandbox Driver configuration. Select Codex, or ask an operator to set it.",
+      );
+    }
+    if (harness.id === "openclaw" && sandboxServiceAccounts(this.options).length > 1) {
+      throw new ConfigurationHarnessError(
+        "Dedicated OpenClaw needs at most one ServiceAccount in gateway.operatorWorkspaceResources of the OpenShell Sandbox Driver configuration. Select Codex, or ask an operator to remove the others.",
       );
     }
     const agents = optionalAgentConfiguration(
@@ -3802,6 +4046,23 @@ export class OpenShellSandboxDriver implements SandboxDriver {
           await client.deleteProvider(workspace, provider, context.signal);
         }
       }
+      const git = this.openShellGit;
+      const revision = context.revision;
+      if (git !== undefined && revision.repositoryCredentials !== undefined) {
+        // cleanup() withdrew the route and the Sandbox is gone: nothing uses the revision's
+        // Git provider, which would otherwise keep DeleteWorkspace refused (finding 2206).
+        const attached = present?.spec?.providers;
+        await refused(() =>
+          git.removeProvider(
+            revision,
+            client,
+            workspace,
+            sandbox.resourceName,
+            Array.isArray(attached) ? attached.filter((name) => typeof name === "string") : [],
+            context.signal,
+          ),
+        );
+      }
       return;
     }
     this.requireOperatorWorkspaceMode("clean up a Namespace");
@@ -3812,7 +4073,8 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       // A prior delete can have reached TERMINATING before its response was lost.
       // Ownership remains the cleanup boundary, and DeleteWorkspace is idempotent.
       verifyWorkspaceOwnership(workspace, context.namespace);
-      for (const provider of await client.listProviders(workspace.name, context.signal)) {
+      const providers = await client.listProviders(workspace.name, context.signal);
+      for (const provider of providers) {
         if (
           Object.values(RUNTIME_PROFILE_IDS).some((id) => provider.type === id) &&
           provider.labels[OPENSHELL_MANAGED_BY_LABEL] === OPENSHELL_MANAGED_BY &&
@@ -3821,6 +4083,8 @@ export class OpenShellSandboxDriver implements SandboxDriver {
           await client.deleteProvider(workspace.name, provider.name, context.signal);
         }
       }
+      // Revisions cleaned up before finding 2206's fix left their Git providers behind.
+      await deleteOpenShellPreparedGitProviders(client, workspace.name, providers, context.signal);
       for (const profileId of Object.values(RUNTIME_PROFILE_IDS)) {
         await this.deleteRuntimeProfileIfUnused(client, workspace.name, profileId, context.signal);
       }

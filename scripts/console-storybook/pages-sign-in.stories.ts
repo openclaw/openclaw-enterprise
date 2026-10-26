@@ -5,6 +5,7 @@ export default { title: "Pages/Sign in" };
 export const Login = { ...story("login"), name: "Signed out" };
 export const LoginError = { ...story("loginError"), name: "Invalid credentials" };
 export const Expired = { ...story("expired"), name: "Session expired" };
+export const FirstVisit = { ...story("firstVisit"), name: "Deep link, first visit" };
 export const SessionUnavailable = { ...story("sessionUnavailable"), name: "Session unavailable" };
 export const Loading = { ...story("loading"), name: "Checking session" };
 export const LogoutFailure = { ...story("logoutFailure"), name: "Sign-out unconfirmed" };

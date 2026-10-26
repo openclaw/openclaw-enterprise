@@ -19,6 +19,7 @@ import {
   runtimeFailure,
 } from "../helpers/runtime-image-model-probe.mjs";
 import { jsonLines } from "../helpers/json-lines.mjs";
+import { isModelTurn } from "../helpers/runtime-image-startup-probe.mjs";
 
 // The embedded Gateway's startup model probe on the real runtime image under CPU
 // contention (setup: tests/helpers/runtime-image-model-probe.mjs). Its other
@@ -81,7 +82,7 @@ test(
       assert.ok(probe, `the wrapper logged its probe${detail}`);
       assert.equal(probe.capMs, 110_000, `cap from the 500m cgroup limit${detail}`);
       assert.notEqual(probe.cpuWaitMs, null, `the cgroup reported CPU waiting${detail}`);
-      assert.ok(probe.cpuWaitMs > probe.elapsedMs / 4, `mostly waiting for CPU${detail}`);
+      assert.ok(probe.cpuWaitMs > 0, `the hogs made the probe wait for CPU${detail}`);
       if (probe.code === "READY") {
         assert.equal(runtimeFailure(events), undefined, detail);
         assert.ok(
@@ -93,9 +94,18 @@ test(
         assert.ok(events.some(observed("ready", true)), detail);
         assert.ok(events.some(observed("plugin", "ready")), detail);
       } else {
-        assert.equal(probe.code, "MODEL_PROBE_CPU_STARVED", detail);
+        // A probe that reaches its cap is classified by the wrapper's own CPU-wait reading: over
+        // a quarter of the time waiting is CPU_STARVED, otherwise TIMEOUT (the rule itself is in
+        // runtime-probe-cpu-counter.test.mjs). The reading here is normally about twice the
+        // elapsed time, but one CI VM reported 0.24 of it while the hogs kept the probe from
+        // ever reaching its model turn (finding 2271, run 40270134616). Require the code the
+        // rule gives for the reading, and a TIMEOUT only when the fixture saw no model turn.
+        const starved = probe.cpuWaitMs > probe.elapsedMs / 4;
+        const capCode = starved ? "MODEL_PROBE_CPU_STARVED" : "MODEL_PROBE_TIMEOUT";
+        assert.equal(probe.code, capCode, detail);
         assert.ok(probe.elapsedMs >= probe.capMs, `the probe reached its cap${detail}`);
-        assert.equal(runtimeFailure(events), "MODEL_PROBE_CPU_STARVED", detail);
+        assert.ok(starved || !events.some(isModelTurn), `starved before its turn${detail}`);
+        assert.equal(runtimeFailure(events), capCode, detail);
         assert.equal(phaseAt(phases, "model-probe")?.outcome, "failed", detail);
         assert.equal(phaseAt(phases, "native-spawn"), undefined, detail);
       }

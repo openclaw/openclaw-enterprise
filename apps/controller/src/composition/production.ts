@@ -1,5 +1,5 @@
 import { installEgressAuthority } from "./egress-authority.ts";
-import { installationDriverConfigurations } from "./installation-config.ts";
+import { installationControllerOptions } from "./installation-config.ts";
 import type { AuditEvent } from "@openclaw-enterprise/contracts";
 import {
   validateAuthAccountPrincipalSeed,
@@ -68,6 +68,11 @@ export interface ProductionConfig {
   readonly gatewayApiKeyPath?: string;
   readonly channelDirectoryProxyUrl?: string;
   readonly channelDirectoryManagedProxyHost?: string;
+  /**
+   * OCC_API_HTTPS_EGRESS_OPEN: a sign-in egress rule lets the API reach any address on TCP 443,
+   * so Slack can answer without a proxy. Default: closed.
+   */
+  readonly apiHttpsEgressOpen?: boolean;
   readonly nativeAdmin?: NativeAdminAccessConfig;
   /** Default: enabled. `false` makes both runtime routes answer 501. */
   readonly agentRuntimeLogsEnabled?: boolean;
@@ -274,8 +279,7 @@ export async function composeProduction(
 
     phaseCompleted("computePreflight");
     const controller = new OpenClawController(persistedInstallation, {
-      driverConfigurations: installationDriverConfigurations(config.drivers.installation),
-      sandboxNetworkPolicyCeiling: config.drivers.installation.sandboxNetworkPolicyCeiling ?? [],
+      ...installationControllerOptions(config.drivers.installation),
       state,
       ...(config.drivers.tokenService && { preparedTokens: config.drivers.tokenService }),
       recordOperations: true,
@@ -284,9 +288,6 @@ export async function composeProduction(
       bundledPresetVersions: config.drivers.bundledPresetVersions ?? [],
       refreshBundledDefaultPresets: config.drivers.installation.presets?.includeDefaults === true,
       loggingLevel: config.drivers.installation.logging.level,
-      ...(installation.runtime === undefined
-        ? {}
-        : { nativeWorkerSupport: installation.runtime.nativeWorkerSupport }),
     });
     controller.registerDriver(iamDriver);
     controller.selectDriver("iam", driverId);
@@ -303,6 +304,9 @@ export async function composeProduction(
             config.channelDirectoryManagedProxyHost === undefined
               ? []
               : [config.channelDirectoryManagedProxyHost],
+          // A closed egress reaches Slack only through a proxy; an open one may reach it
+          // directly, so a timeout there stays a retryable outage (finding 2533).
+          expectProxy: config.apiHttpsEgressOpen !== true,
         },
       );
       controller.registerDriver(channelDriver);

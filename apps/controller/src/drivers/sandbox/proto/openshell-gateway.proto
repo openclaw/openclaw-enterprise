@@ -53,6 +53,7 @@ service OpenShell {
   rpc ListProviders(ListProvidersRequest) returns (ListProvidersResponse);
   rpc DeleteProvider(DeleteProviderRequest) returns (DeleteProviderResponse);
   rpc GetProviderProfile(GetProviderProfileRequest) returns (ProviderProfileResponse);
+  rpc ListProviderProfiles(ListProviderProfilesRequest) returns (ListProviderProfilesResponse);
   rpc ImportProviderProfiles(ImportProviderProfilesRequest)
       returns (ImportProviderProfilesResponse);
   rpc UpdateProviderProfiles(UpdateProviderProfilesRequest)
@@ -1001,6 +1002,17 @@ message GetProviderProfileRequest {
 
 message ProviderProfileResponse {
   ProviderProfile profile = 1;
+}
+
+message ListProviderProfilesRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+  WorkspaceSelector workspace_scope = 3;
+}
+
+message ListProviderProfilesResponse {
+  repeated ProviderProfile profiles = 1;
+  string next_page_token = 2;
 }
 
 message ImportProviderProfilesRequest {

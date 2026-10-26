@@ -6,6 +6,12 @@ import { authenticatedHeaders } from "./auth-session.mjs";
  * see authenticatedHeaders) or a service API `key` (`x-api-key`). `body` is JSON-encoded (a
  * string too) and sets the content type. `headers` replace any header but that content type.
  * Returns the raw Fastify response.
+ * @param {any} app
+ * @param {string} method
+ * @param {string} url
+ * @param {{ body?: unknown, session?: string | { cookie: string, origin?: string },
+ *   key?: string, headers?: Record<string, string>, host?: string, remoteAddress?: string }}
+ *   [options]
  */
 export function injectJson(
   app,

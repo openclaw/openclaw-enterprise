@@ -15,11 +15,26 @@ import {
   requiredPresetVariables,
   validatePresetTemplate,
 } from "../preset-variables.mjs";
-import { message, namespacePath } from "./list.mjs";
+import { describeFailure, message, namespaceListNeed, namespacePath } from "./list.mjs";
+import type { SecretsOperateDenied } from "./credential-access.mjs";
+import {
+  NEW_SECRET_OPERATE_DENIED,
+  NEW_SECRET_OPERATE_REMEDY,
+  SECRET_OPERATE_DENIED,
+} from "./secret-picker.mjs";
+import {
+  askAdministratorTo,
+  NO_SECRETS_CREATE_DENIED,
+  SECRET_CREATE_DENIED,
+} from "./access-reasons.mjs";
 
 type PresetContext = Pick<NamespacePageContext, "request" | "isCurrent" | "onExpired"> & {
   namespaceId: string;
   drafts: ReturnType<ReturnType<typeof createDraftStore>["scope"]>;
+  // The readable Secrets the caller may not operate; undefined when the answer is unknown.
+  secretsOperateDenied?: SecretsOperateDenied | undefined;
+  // The Namespace permission answer's secrets.create: undefined when it is unknown.
+  secretsCreateAllowed?: (() => Promise<boolean | undefined>) | undefined;
 };
 
 interface VariableField {
@@ -37,6 +52,8 @@ interface SecretField extends VariableField {
   secretField: HTMLElement;
   restoredSecret: string | undefined;
   secrets: SecretMetadata[];
+  // Listed Secrets the caller may not operate: listed disabled, never used (finding 2469).
+  operateDenied: ReadonlySet<string>;
   secretsState: "loading" | "ready" | "failed";
 }
 
@@ -109,10 +126,23 @@ function sameNamespaceSecret(context: PresetContext, value: unknown): value is S
   );
 }
 
-function renderSecretOptions(secrets: readonly SecretMetadata[]) {
+// A Secret the caller may read but not operate is listed disabled with the shared reason: Agent
+// create binds it as the Harness authentication Secret and would refuse it (finding 2469).
+function renderSecretOptions(
+  secrets: readonly SecretMetadata[],
+  operateDenied: ReadonlySet<string>,
+) {
   return [
     element("option", { value: "" }, "Choose an existing Secret"),
-    ...secrets.map((secret) => element("option", { value: secret.id }, secret.name)),
+    ...secrets.map((secret) =>
+      operateDenied.has(secret.id)
+        ? element(
+            "option",
+            { value: secret.id, disabled: true },
+            `${secret.name} (${SECRET_OPERATE_DENIED})`,
+          )
+        : element("option", { value: secret.id }, secret.name),
+    ),
   ];
 }
 
@@ -217,23 +247,66 @@ export function createPresetFields(
       updatePasswordField(field);
     }
     try {
-      const secrets = await context.request(`${namespacePath(context.namespaceId)}/secrets`);
+      // The list shows once the operate answer is in, so no denied Secret is ever choosable.
+      const [secrets, operateDenied, createAllowed] = await Promise.all([
+        context.request(`${namespacePath(context.namespaceId)}/secrets`),
+        (context.secretsOperateDenied?.() ?? Promise.resolve(undefined)).catch(() => undefined),
+        (context.secretsCreateAllowed?.() ?? Promise.resolve(undefined)).catch(() => undefined),
+      ]);
       if (!context.isCurrent() || !section.isConnected || version !== loadVersion) {
         return;
       }
       for (const field of passwordFields) {
+        field.operateDenied = operateDenied ?? new Set();
         field.secrets = Array.isArray(secrets)
           ? secrets.filter((value: unknown): value is SecretMetadata =>
               sameNamespaceSecret(context, value),
             )
           : [];
         field.secretsState = "ready";
-        field.secretSelect.replaceChildren(...renderSecretOptions(field.secrets));
-        field.secretSelect.value = field.restoredSecret ?? "";
+        field.secretSelect.replaceChildren(
+          ...renderSecretOptions(field.secrets, field.operateDenied),
+        );
+        // A restored choice the answer now denies is not kept.
+        const restored = field.restoredSecret ?? "";
+        field.secretSelect.value = field.operateDenied.has(restored) ? "" : restored;
         field.restoredSecret = undefined;
-        field.secretStatus.textContent = field.secrets.length
-          ? "Existing Secrets in this Namespace are available. Secret values are never shown."
-          : "No existing Secrets are available in this Namespace. Create a new Secret instead.";
+        // Without Secret create, the create-new source is listed disabled with the reason and
+        // the field binds an existing Secret, as the other Secret fields do (finding 2483). So it
+        // is when operate is denied on any readable Secret: operate is then granted per Secret,
+        // and a new Secret has none, so Agent create would refuse it once saved (finding 2492).
+        const createDenied = createAllowed === false;
+        const newSecretDenied = createDenied
+          ? SECRET_CREATE_DENIED
+          : field.operateDenied.size
+            ? NEW_SECRET_OPERATE_DENIED
+            : undefined;
+        const createOption = field.mode.querySelector<HTMLOptionElement>(
+          `option[value="${NEW_SECRET}"]`,
+        );
+        if (createOption) {
+          createOption.disabled = newSecretDenied !== undefined;
+          createOption.textContent = newSecretDenied
+            ? `Create new Secret (${newSecretDenied})`
+            : "Create new Secret";
+        }
+        // Per-Secret operate also names the grant that would let an Agent use a new Secret.
+        const newSecretHint =
+          newSecretDenied === NEW_SECRET_OPERATE_DENIED
+            ? `${newSecretDenied} ${NEW_SECRET_OPERATE_REMEDY}`
+            : newSecretDenied;
+        if (newSecretDenied && field.mode.value === NEW_SECRET) {
+          field.mode.value = EXISTING_SECRET;
+          field.input.dataset.supplied = "false";
+        }
+        field.secretStatus.textContent =
+          createDenied && !field.secrets.length
+            ? NO_SECRETS_CREATE_DENIED
+            : newSecretDenied
+              ? `Choose an existing Secret. ${newSecretHint}`
+              : field.secrets.length
+                ? "Existing Secrets in this Namespace are available. Secret values are never shown."
+                : "No existing Secrets are available in this Namespace. Create a new Secret instead.";
         updatePasswordField(field);
       }
     } catch (error) {
@@ -250,7 +323,7 @@ export function createPresetFields(
         field.secretSelect.replaceChildren(
           element("option", { value: "" }, "Existing Secrets unavailable"),
         );
-        field.secretStatus.textContent = `Existing Secrets unavailable. ${message(error)} Choose create-new mode to enter a new token.`;
+        field.secretStatus.textContent = `Existing Secrets unavailable. ${message(error, false, namespaceListNeed("Secrets"))} Choose create-new mode to enter a new token.`;
         updatePasswordField(field);
       }
     }
@@ -278,6 +351,10 @@ export function createPresetFields(
             const secret = field.secrets.find((item) => item.id === field.secretSelect.value);
             if (!sameNamespaceSecret(context, secret)) {
               feedback.textContent = "Choose an existing Secret from this Namespace.";
+              return;
+            }
+            if (field.operateDenied.has(secret.id)) {
+              feedback.textContent = `${secret.name} cannot be chosen. ${SECRET_OPERATE_DENIED}`;
               return;
             }
             modelSecret = { kind: "existing", secret };
@@ -479,6 +556,7 @@ export function createPresetFields(
           secretField,
           restoredSecret: saved?.type === "password" ? saved.secret : undefined,
           secrets: [],
+          operateDenied: new Set(),
           secretsState: "loading",
         };
         mode.addEventListener("change", () => {
@@ -518,7 +596,7 @@ export function createPresetFields(
       if (requestFailure(error).status === 401) {
         context.onExpired();
       } else {
-        feedback.textContent = message(error);
+        feedback.textContent = `This Preset could not be loaded. ${describeFailure(error)}`;
         // Use Preset stays disabled, so the filled style goes back to the shortcut.
         emphasize(false);
       }
@@ -564,8 +642,9 @@ export function createPresetFields(
         selector.dispatchEvent(new Event("change"));
       }
       if (presets.length === 0) {
-        status.textContent =
-          "No Presets available to you in this Namespace. Ask an administrator to install default-codex or another Preset, or to give you read access to a Preset.";
+        status.textContent = `No Presets available to you in this Namespace. ${askAdministratorTo(
+          "install default-codex or another Preset, or to give you Preset read on one",
+        )}`;
       } else {
         status.textContent = chooseHint();
       }
@@ -577,7 +656,7 @@ export function createPresetFields(
       if (requestFailure(error).status === 401) {
         context.onExpired();
       } else {
-        status.textContent = `Presets unavailable. ${message(error)} Try again or ask an administrator to check Preset access.`;
+        status.textContent = `Presets unavailable. ${message(error, false, namespaceListNeed("Presets"))}`;
       }
     });
   return { section, startDefault, defaultHint };

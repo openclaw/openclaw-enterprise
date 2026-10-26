@@ -1,9 +1,14 @@
+import { randomUUID } from "node:crypto";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { validateInstallationTokenResponse } from "../../apps/controller/src/drivers/repo/github/credentials/driver/acquisition-response.ts";
 import { githubMetadataProvider } from "../../apps/controller/src/drivers/egress-proxy/github-metadata.ts";
 import { captureMetadata, dispatchMetadata } from "../helpers/github-metadata-exchange.mjs";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
+import {
+  CREDENTIAL_SOURCE_SECRETS_CROSS_NAMESPACES,
+  credentialSourceFieldRequired,
+} from "../helpers/refusal-text.mjs";
 import { createPreparedStore } from "../fixtures/repository-credentials/github/prepared-store.mjs";
 import {
   startGitHubFixture,
@@ -25,6 +30,7 @@ import {
 // installed custody and PostgreSQL recovery have their own qualifications.
 test("consented protected repository read uses only exact, already prepared metadata grant", async (t) => {
   let forbiddenTrailer = false;
+  let spelling;
   const clock = createSystemClock();
   const gh = await startGitHubFixture(t, {
     clock,
@@ -33,6 +39,7 @@ test("consented protected repository read uses only exact, already prepared meta
         response.addTrailers({ "x-forbidden-last": "last" });
       }
     },
+    metadataResponse: (body) => (spelling === undefined ? body : { ...body, full_name: spelling }),
   });
   const key = createGitHubKeyOwner({ appId: fixtureAppId, clock, privateKey: gh.privateKey });
   t.after(() => key.close());
@@ -123,10 +130,26 @@ test("consented protected repository read uses only exact, already prepared meta
         secrets: { private_key: secret.ref },
       };
       const missingConsent = await app.request("POST", path, { body: input });
-      // OCC intentionally hides out-of-scope catalog fields. No lifecycle was configured; the only added field is consent.
-      assert.equal(missingConsent.status, 404);
+      // No lifecycle was configured; the catalog requires consent, and the refusal names it.
+      assert.equal(missingConsent.status, 400);
+      assert.equal(
+        missingConsent.body.error.message,
+        credentialSourceFieldRequired("github-app-metadata", "config.authority"),
+      );
       assert.equal(owner, undefined);
       input.config.authority = "execution";
+      // An issuer Secret reference to another Namespace is the request's own error, refused as
+      // the Credential Gateway path refuses it (finding 2536), before any issuer work.
+      const crossed = await app.request("POST", path, {
+        body: {
+          ...input,
+          secrets: { private_key: { ...secret.ref, namespaceId: `ns_${randomUUID()}` } },
+        },
+      });
+      assert.equal(crossed.status, 400, JSON.stringify(crossed.body));
+      assert.equal(crossed.body.error.code, "INVALID_REQUEST");
+      assert.equal(crossed.body.error.message, CREDENTIAL_SOURCE_SECRETS_CROSS_NAMESPACES);
+      assert.equal(owner, undefined);
       const created = await app.request("POST", path, { body: input });
       assert.equal(created.status, 201, JSON.stringify(created.body));
       const source = created.data;
@@ -175,19 +198,36 @@ test("consented protected repository read uses only exact, already prepared meta
   );
   assert.equal(gh.issuesOfTokens.length, 1);
 
-  for (const block of [false, true]) {
+  // The registry lowercases the repository; GitHub answers with its own spelling, and the
+  // response releases the admitted name (finding 2239). Another name is never released.
+  for (const [block, spelled, released = true] of [
+    [false],
+    [false, "Fixture/Repository"],
+    [false, "FIXTURE/REPOSITORY"],
+    [false, "fixture/repository-other", false],
+    [false, "fixture/repository.git", false],
+    // Only ASCII letter case may differ: no lookalike letters, no non-string names.
+    [false, "fixture/repo\u017Fitory", false],
+    [false, null, false],
+    [true],
+  ]) {
     forbiddenTrailer = block;
+    spelling = spelled;
     const captured = captureMetadata(f);
     const { ready } = await f.resolve(captured);
     assert.ok(ready);
     const safe = await dispatchMetadata(f, gh, captured, ready, block);
-    if (!block) {
+    if (!block && released) {
       assert.equal(
         safe.body.toString(),
         JSON.stringify({ id: Number(fixtureRepositoryId), full_name: fixtureRepository }),
+        String(spelled),
       );
+    } else if (!block) {
+      assert.deepEqual(safe, { blocked: true }, String(spelled));
     }
   }
+  spelling = undefined;
   const captured = captureMetadata(f);
   const { ready } = await f.resolve(captured);
   await store.transact(admission.familyId, (row) => {
@@ -197,7 +237,7 @@ test("consented protected repository read uses only exact, already prepared meta
     (await f.authorize(f.permitRequest(captured, ready))).refused.code,
     f.refusalCode("DENIED"),
   );
-  assert.equal(sendChecks, 3);
+  assert.equal(sendChecks, 9);
   assert.equal(gh.issuesOfTokens.length, 1, "no request may renew or issue");
 });
 

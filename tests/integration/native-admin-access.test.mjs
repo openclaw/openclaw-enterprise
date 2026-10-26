@@ -2,13 +2,17 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:https";
 import { once } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { getCACertificates, setDefaultCACertificates } from "node:tls";
 import test from "node:test";
 
 import { deriveNativeAdminHost } from "../../apps/controller/src/gateway/native-admin.ts";
+import { assertApiError } from "../helpers/api-error.mjs";
+import {
+  callerDenied,
+  GENERIC_DENIAL,
+  NATIVE_ADMIN_DENIED,
+  nativeAdminOffDenied,
+} from "../helpers/refusal-text.mjs";
 import { createControllerAuth } from "../helpers/password-hasher.mjs";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
@@ -25,6 +29,7 @@ import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { sharedRsaPrivateKeyPem } from "../fixtures/repository-credentials/shared-keys.mjs";
 import { selfSigned } from "../helpers/certificates.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const cookieDomain = "oce.example.test";
 const nativeDomain = `agents.${cookieDomain}`;
@@ -94,8 +99,7 @@ function nativeComputeDriver(upstreamPort, { exclusiveReplacement = false } = {}
 }
 
 async function startNativeHttpsUpstream(t) {
-  const directory = await mkdtemp(join(tmpdir(), "openclaw-native-admin-upstream-"));
-  t.after(async () => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "openclaw-native-admin-upstream-");
   const { key, cert } = await selfSigned(directory, {
     keyPem: sharedRsaPrivateKeyPem("native-admin-upstream"),
     days: 2,
@@ -341,8 +345,12 @@ test("native admin status requires exact Agent administer and reports lifecycle 
 
   const limitedSession = await createReadOperateSession(context, "native-admin-reader");
   const denied = await nativeStatus(context, { session: limitedSession });
-  assert.equal(denied.status, 403);
-  assert.equal(denied.body.error.code, "FORBIDDEN");
+  assertApiError(denied, 403, "FORBIDDEN");
+  // With native admin on, the grant is all the caller lacks.
+  assert.equal(
+    denied.body.error.message,
+    callerDenied("Agent administer", `Agent ${context.agent.id}`),
+  );
 
   const missingStatus = await context.fixture.request(
     "GET",
@@ -382,8 +390,7 @@ test("native admin status requires exact Agent administer and reports lifecycle 
   assert.equal(fullyStopped.status, 200);
   assert.deepEqual(fullyStopped.data, { status: "stopped" });
   const stillDenied = await nativeStatus(context, { session: limitedSession });
-  assert.equal(stillDenied.status, 403);
-  assert.equal(stillDenied.body.error.code, "FORBIDDEN");
+  assertApiError(stillDenied, 403, "FORBIDDEN");
   const serviceKey = await issueServiceKeyForNativeAgent(context);
   const serviceDenied = await injectJson(
     context.fixture,
@@ -464,8 +471,9 @@ test("native admin disabled status still requires exact Agent administer", async
 
   const limitedSession = await createReadOperateSession(context, "native-admin-disabled-reader");
   const denied = await nativeStatus(context, { session: limitedSession });
-  assert.equal(denied.status, 403);
-  assert.equal(denied.body.error.code, "FORBIDDEN");
+  assertApiError(denied, 403, "FORBIDDEN");
+  // With native admin off, the denial also says the grant alone would not open it (finding D762).
+  assert.equal(denied.body.error.message, nativeAdminOffDenied(`Agent ${context.agent.id}`));
 
   const missingStatus = await context.fixture.request(
     "GET",
@@ -648,7 +656,9 @@ test("a copied Agent chat link redirects an activated browser navigation to the 
     });
     assert.equal(unauthorized.statusCode, 403);
     assert.equal(unauthorized.headers.location, undefined);
-    assert.match(unauthorized.headers["content-type"], /^application\/json/);
+    assert.match(unauthorized.headers["content-type"], /^text\/html/);
+    assert.match(unauthorized.body, /Go to your Agents/);
+    assert.equal(unauthorized.body.includes(context.agent.id), false);
   }
   const endpoint = `/native-admin/return/${key}`;
   const found = await injectJson(context.fixture, "GET", endpoint, {
@@ -937,12 +947,27 @@ test("native admin proxy strips browser credentials and preserves the Agent gate
     headers: nativeHeaders,
   });
   assert.equal(iamDenied.statusCode, 403, iamDenied.body);
+  // A Restriction reads the same as a missing grant.
+  assert.equal(iamDenied.json().error.message, NATIVE_ADMIN_DENIED);
   assert.equal(iamDenied.headers["set-cookie"], undefined);
   assert.equal(
     context.upstream.requests.length,
     7,
     "authorization-denied proxy requests must not reach native gateway",
   );
+
+  // A signed-in person with no platform identity had no grant checked: the refusal names none
+  // (finding 2589), and it is decided before the host, so it tells nothing about the Agent.
+  const identities = context.fixture.policy.identities;
+  const principal = adminPrincipal(context.fixture);
+  identities.splice(identities.indexOf(principal), 1);
+  const unprovisioned = await injectJson(context.fixture, "GET", "/settings/profile", {
+    headers: nativeHeaders,
+  });
+  assert.equal(unprovisioned.statusCode, 403, unprovisioned.body);
+  assert.deepEqual(unprovisioned.json().error, { code: "FORBIDDEN", message: GENERIC_DENIAL });
+  identities.push(principal);
+  assert.equal(context.upstream.requests.length, 7);
 });
 test("native admin proxy resolves a host only to the live Agent it names", async (t) => {
   const state = new InMemoryPlatformState();
@@ -976,6 +1001,8 @@ test("native admin proxy resolves a host only to the live Agent it names", async
   ]) {
     const denied = await proxied(namespaceId, agentId);
     assert.equal(denied.statusCode, 403, `${label}: ${denied.body}`);
+    // The same text as a caller denied on a live Agent, so a host reveals no Agent.
+    assert.deepEqual(denied.json().error, { code: "FORBIDDEN", message: NATIVE_ADMIN_DENIED });
   }
   // Another Namespace's Agent resolves to itself alone; it has no active revision to serve.
   const otherHost = await proxied(other.id, otherAgent.id);
@@ -1291,3 +1318,37 @@ for (const changedField of [undefined, "id", "implementation"]) {
     assert.deepEqual(persisted, revision, "selection changes must not rewrite the active revision");
   });
 }
+
+test("a browser Back to a denied Agent gateway stays 403 and links to the console", async (t) => {
+  const context = await createNativeAdminFixture(t);
+  const status = await nativeStatus(context);
+  const host = nativeAuthority(status.data);
+  const limited = await createReadOperateSession(context);
+  const navigation = {
+    host,
+    accept: "text/html,application/xhtml+xml",
+    cookie: limited.cookie,
+    "sec-fetch-mode": "navigate",
+    "sec-fetch-dest": "document",
+    "sec-fetch-user": "?1",
+  };
+  const page = await injectJson(context.fixture, "GET", "/", { headers: navigation });
+  assert.equal(page.statusCode, 403);
+  assert.equal(page.headers.location, undefined);
+  assert.match(page.headers["content-type"], /^text\/html/);
+  assert.equal(page.headers["cache-control"], "no-store");
+  assert.equal(page.headers["referrer-policy"], "no-referrer");
+  assert.equal(page.headers["set-cookie"], undefined);
+  assert.match(page.body, /Go to your Agents/);
+  assert.match(page.body, new RegExp(`href="${publicOrigin}/console/agents"`));
+  assert.equal(page.body.includes(context.agent.id), false);
+  assert.equal(page.body.includes(status.data.host), false);
+
+  const api = await injectJson(context.fixture, "GET", "/", {
+    headers: { host, accept: "application/json", cookie: limited.cookie },
+  });
+  assert.equal(api.statusCode, 403);
+  assert.match(api.headers["content-type"], /^application\/json/);
+  // The JSON refusal names the grant but not the Agent, which the host named, not the caller.
+  assert.deepEqual(api.json().error, { code: "FORBIDDEN", message: NATIVE_ADMIN_DENIED });
+});

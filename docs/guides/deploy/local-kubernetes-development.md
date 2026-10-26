@@ -389,24 +389,24 @@ reachable from the node network for a fresh startup:
 OCC_DEVELOPMENT_K3D_DNS_RESOLVER='<reachable-dns-ip>' ./scripts/dev-up
 ```
 
-The host resolver is unchanged. The
+The host resolver is unchanged; the
 [setting reference](../../reference/settings/development.md#required-development-controller-environment)
-describes its node effect and the `k3d` value.
+covers its node effect and the `k3d` value.
 
 ## Stop and clean up
 
 If repository access was enabled, first follow the
-[credential cleanup guidance](local-repository-credentials.md). The launcher
-does not verify repository credential disposal before removing the cluster.
+[credential cleanup guidance](local-repository-credentials.md); the launcher
+does not verify credential disposal before removing the cluster.
 Then remove only the cluster and private state the launcher recorded:
 
 ```bash
 ./scripts/dev-down
 ```
 
-Cleanup reads the recorded engine endpoint and cluster name. If cluster deletion
-fails, it preserves the state directory so the same command can retry without
-discovering or deleting an unrelated cluster.
+Cleanup uses the recorded engine endpoint and cluster name. If deletion fails, it
+keeps the state directory so a retry never discovers or deletes an unrelated
+cluster.
 
 ## Limits
 
@@ -424,9 +424,8 @@ credentialed real-cluster checks.
 ## Gateway placement boundary
 
 Dedicated Gateways and Harnesses share one tenant namespace but retain separate
-Pods, ServiceAccounts, credentials and storage. The local development profile
-selects its single k3d server for Gateway scheduling; this does not prove
-production node isolation. Production must configure
+Pods, ServiceAccounts, credentials and storage. The local profile schedules
+Gateways on its single k3d server, which does not prove production node isolation. Production must configure
 `runtime.gatewayNodeSelector` and `runtime.nodeSelector` for disjoint trusted and
 data-plane pools. See [production Namespace preparation](production-agents.md#prepare-each-namespace)
 for the scoped RoleBindings.

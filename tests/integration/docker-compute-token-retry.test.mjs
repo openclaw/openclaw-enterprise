@@ -9,10 +9,10 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { waitForResult } from "../helpers/wait-for.mjs";
 
 const execute = promisify(execFile);
 const selected = process.env.OCC_TEST_DOCKER_TOKEN_RETRY === "1";
@@ -98,20 +98,10 @@ async function networkIds(namespaceId) {
   ]);
 }
 
-async function waitFor(description, operation, timeoutMs = 120_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      const value = await operation();
-      if (value !== undefined && value !== false) {
-        return value;
-      }
-    } catch {
-      // Containers may disappear between listing and inspection during startup.
-    }
-    await delay(500);
-  }
-  assert.fail(`Timed out waiting for ${description}.`);
+// Containers may disappear between listing and inspection during startup, so a failed
+// read means "not yet".
+function waitFor(description, operation, timeoutMs = 120_000) {
+  return waitForResult(description, operation, { timeoutMs, intervalMs: 500, retryErrors: true });
 }
 
 function containerEnv(container, name) {

@@ -1,6 +1,6 @@
 // Shared by the runtime image model probe tests, which CI runs in two lanes:
-// the CPU contention case (Image Model Probes) and the other outcomes (Image
-// Runtime Startup 2). File names are left out so CI Impact can still select a
+// the CPU contention case (Image Runtime Startup 3) and the other outcomes
+// (Image Runtime Startup 2). File names are left out so CI Impact can still select a
 // test-only change to either file by its lane.
 import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mjs";
 import assert from "node:assert/strict";

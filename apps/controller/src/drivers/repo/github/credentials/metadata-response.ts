@@ -1,6 +1,10 @@
 import type { ResponsePolicy } from "../../credentials/backend-contracts.ts";
+import { isSameGitHubRepository } from "../../credentials/client-contracts.ts";
 
-/** Closed metadata reads release configured identity, never provider display data. */
+/**
+ * Closed metadata reads release configured identity, never provider display data. GitHub
+ * answers with the repository's own spelling, so its letter case may differ (finding 2239).
+ */
 export function createMetadataResponsePolicy(
   repository: string,
   repositoryId: string,
@@ -24,7 +28,7 @@ export function createMetadataResponsePolicy(
         typeof value !== "object" ||
         Array.isArray(value) ||
         value.id !== id ||
-        value.full_name !== repository
+        !isSameGitHubRepository(value.full_name, repository)
       ) {
         throw new Error("invalid-upstream");
       }

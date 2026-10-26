@@ -14,8 +14,12 @@ import type {
   SandboxDriver,
   SandboxRepositoryAccess,
 } from "../../packages/contracts/src/index.ts";
-import { InstalledDriver } from "../../packages/occ/src/index.ts";
+import {
+  InstalledDriver,
+  RepositoryGitSenderUnqualifiedError,
+} from "../../packages/occ/src/index.ts";
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
+import { CREDENTIAL_PROXY_INSTALLATION_PREVIEW } from "./refusal-text.mjs";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { ProtectedExecutionDriver } from "../../apps/controller/src/drivers/compute/protected-execution-driver.ts";
 import {
@@ -103,14 +107,16 @@ export function protectedRepositoryGitRelease(
   Object.assign(sandbox, { repositoryAccess: access });
   class ObservedOnlineSender extends OpenShellCredentialProxyDriver {
     protected override assertRepositoryGitProfileAvailable(profile?: RepositoryGitDeliveryProfile) {
-      if (profile !== "github_installation") {
+      if (profile === undefined) {
         return super.assertRepositoryGitProfileAvailable(profile);
       }
-      // Only this fixture supplies both the profile and the enforcement observation. Keep an
-      // executable check that ordinary production capability negotiation refuses the profile.
+      // Only this fixture supplies both profiles and the enforcement observation. Keep an
+      // executable check that ordinary production capability negotiation refuses each one.
       assert.throws(
         () => super.assertRepositoryGitProfileAvailable(profile),
-        /not qualified for GitHub installation/,
+        profile === "github_installation"
+          ? { message: CREDENTIAL_PROXY_INSTALLATION_PREVIEW }
+          : RepositoryGitSenderUnqualifiedError,
       );
     }
     protected override repositoryGitEnforcement(

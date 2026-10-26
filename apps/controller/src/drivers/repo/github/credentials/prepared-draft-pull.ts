@@ -5,6 +5,7 @@ import type {
 import type { Denied, RequestHead, RequestPlan } from "../../credentials/backend-contracts.ts";
 import type { JsonValue } from "../../credentials/json-value.ts";
 import { parseJsonMembers, parseUnambiguousJson } from "../../credentials/json-members.ts";
+import { isGitHubPullUrl } from "../../credentials/client-contracts.ts";
 
 export const draftOperationId =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -56,7 +57,8 @@ export function validateDraftProjection(
     number < 1 ||
     state !== "open" ||
     draft !== true ||
-    url !== "https://github.com/" + target.repository + "/pull/" + String(number)
+    // GitHub's spelling of the lowercased name; stored lowercase URLs still match (finding 2236).
+    !isGitHubPullUrl(url, target.repository, number)
   ) {
     return refuse();
   }

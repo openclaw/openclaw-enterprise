@@ -97,18 +97,22 @@ backend:
       registryPath: /etc/openclaw/repository-registry/registry.json
     drivers:
       repo: repository-credentials
-drivers:
-  repo:
-    id: repository-credentials
-    configuration:
-      controlSocket: /run/openclaw/repository-control/private/control.sock
-      sessionDurationSeconds: 86400
-      publicCaPath: /etc/openclaw/repository-ca/ca.crt
+repository:
+  id: repository-credentials
+  configuration:
+    sessionDurationSeconds: 86400
+  nativeSender:
+    controlSocket: /run/openclaw/repository-control/private/control.sock
+    publicCaPath: /etc/openclaw/repository-ca/ca.crt
+  preparedGitHub:
+    custodyKeyPath: /etc/openclaw/prepared-repository/custody.key
+    privateKeyPath: /etc/openclaw/prepared-repository/private-key.pem
 ```
 
 Keep the ordinary required Driver settings alongside this fragment. One GitHub
 Backend is supported and may coexist with one ChatGPT Backend. Its member ID
-must match the selected `repo` Driver. The registry's Backend
+must match `repository.id`. Startup rejects the retired Installation `drivers.repo`
+selection; see [prepared native Git](repository-credentials/prepared-native-git.md#install-and-check). The registry's Backend
 ID must match the definition, and the session duration must fit the registry's
 maximum. Unsupported Driver packages or configuration keys fail startup.
 
@@ -123,7 +127,12 @@ Driver; admitted Agents must use a supported
 
 ### OpenShell gateway
 
-The OpenShell Backend holds the connection to one OpenShell gateway deployment:
+The OpenShell Backend holds the connection to one OpenShell gateway deployment.
+These paths are the files Helm `backend.openshell.clientSecretName` projects
+(`ca.crt`, `tls.crt`, `tls.key` under `/etc/openclaw/openshell`). The chart
+mounts no bearer token file or separate `operatorTls` pair, so chart installs
+cannot retrieve Codex OAuth access tokens; other packaging must mount those files
+itself.
 
 ```yaml
 backend:
@@ -132,12 +141,10 @@ backend:
     configuration:
       endpoint: https://openshell-gateway.openshell-system.svc:8080
       auth:
-        mode: bearerTokenFile
-        path: /etc/openclaw/openshell/token
+        mode: mtls
+        certificatePath: /etc/openclaw/openshell/tls.crt
+        privateKeyPath: /etc/openclaw/openshell/tls.key
       rootCertificatePath: /etc/openclaw/openshell/ca.crt
-      operatorTls:
-        certificatePath: /etc/openclaw/openshell/operator.crt
-        privateKeyPath: /etc/openclaw/openshell/operator.key
     drivers:
       sandbox: openshell-sandbox
       credential_gateway: openshell-credentials

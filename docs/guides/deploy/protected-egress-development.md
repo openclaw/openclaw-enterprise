@@ -8,8 +8,9 @@ verification. This page retains links from earlier development instructions.
 ## Upgrade an existing development installation
 
 Follow the [upgrade procedure](credential-proxy-upgrade.md): the published product
-upgrades recognized schema 59 to 62. Historical 71-receipt preview state needs its
-matching release. Check replacement support before interrupting access.
+upgrades the recognized 59- and 62-receipt histories to 63. Historical 71-receipt
+preview state needs its matching release. Check replacement support before
+interrupting access.
 
 ## Select fresh whole-execution protection
 

@@ -28,11 +28,11 @@ images; individual Agents cannot choose their own implementations.
    Kubernetes, [verify an existing Agent's model response](../../guides/operate/model-verification.md).
    On SSH, follow the [host-managed credential requirements](ssh-compute.md#credentials-and-supported-boundaries)
    and send a model request through the host's configured gateway or channel;
-   the Kubernetes verification commands do not apply. Successful OCC startup
-   or gateway readiness alone does not prove that an Agent can use its model.
+   the Kubernetes verification commands do not apply. OCC startup or gateway
+   readiness alone does not prove the Agent can use its model.
 
-Default Docker or Podman Compose can run the control plane for development,
-but its Docker Compute Driver rejects the authentication used for new Agents.
+Default Docker or Podman Compose runs a development control plane, but its
+Docker Compute Driver rejects new Agents' authentication.
 The OpenShell development path remains experimental and unqualified; see its
 [qualification requirements](openshell-sandbox.md#qualification-contract).
 
@@ -78,9 +78,9 @@ contract still requires the Secret selection.
 
 ## Select a protected sender
 
-Implementers should start with the [Credential Proxy contract](credential-proxy.md)
-and [Driver walkthrough](../../contributing/credential-proxy-driver.md). The contract
-distinguishes request-time exchange, recipient installation and sender guarantees.
+Implementers start with the [Credential Proxy contract](credential-proxy.md), which
+distinguishes request-time exchange, recipient installation and sender guarantees,
+and the [Driver walkthrough](../../contributing/credential-proxy-driver.md).
 
 With bundled Kubernetes Compute, select the trusted package under
 `drivers.sandbox.package`, then set `drivers.credential_proxy.id` to the
@@ -97,13 +97,13 @@ both Sandbox repository access and the Credential Proxy's `bindRepositoryGit`.
 At release, Compute checks the installed recipient. Select the guarantee that
 the actual sender can enforce:
 
-| Admission | Required behavior                                                                                                                                 |
-| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| v3        | Protected request-time routes and response custody; not repository delivery.                                                                      |
-| v4        | Exact dispatch: enforce exclusive `sendStartBy` before connecting and again before writing if setup took time.                                    |
-| v5        | Online authorization: return the decision by `replyBy`; an authorized request may finish after withdrawal. External packages can select this too. |
-| v6        | Bundled OpenShell preview: observe the request hook per start; this does not prove the hook cannot later be disabled.                             |
-| v7        | Exact dispatch plus verified policy reduction v2; can retain independently admitted routes and the same recipient when Git is removed.            |
+| Admission | Required behavior                                                                                                                                                                                      |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| v3        | Protected request-time routes and response custody; not repository delivery.                                                                                                                           |
+| v4        | Exact dispatch: enforce exclusive `sendStartBy` before connecting and again before writing if setup took time.                                                                                         |
+| v5        | Online authorization: return the decision by `replyBy`; an authorized request may finish after withdrawal. Only external packages; bundled OpenShell refuses it (`REPOSITORY_GIT_SENDER_UNQUALIFIED`). |
+| v6        | Bundled OpenShell preview: observe the request hook per start; this does not prove the hook cannot later be disabled.                                                                                  |
+| v7        | Exact dispatch plus verified policy reduction v2; can retain independently admitted routes and the same recipient when Git is removed.                                                                 |
 
 A lost authorization reply leaves possible use recorded; do not retry that
 exchange. v7 support in OCC is available to a capable Driver, not evidence that
@@ -133,7 +133,9 @@ mounts `/etc/openclaw/repository-registry/registry.json` for the API, worker and
 upgrade check. Only the worker gets `private-key.pem` and `custody.key` under
 `/etc/openclaw/prepared-repository`, plus an egress rule to the issuer on TCP 443.
 Your sender supplies its own listener, trust and network policy. Before switching from
-a broker, stop admissions and settle existing sessions with their original owner.
+a broker, stop admissions and settle existing sessions with their original owner. Then
+remove Compute `network.repositoryCredentials`. Startup refuses it without
+`repository.nativeSender`.
 The worker's `Recreate` rollout cannot establish that custody is settled.
 
 ## Backend membership
@@ -149,9 +151,9 @@ Gateway Drivers, and its Credential Refresh Driver when it declares one. A
 selected Credential Gateway or Credential Refresh Driver must belong to a
 configured Backend. There is no per-Agent Driver selection.
 
-Runtime Backend injection is limited to those bundled Drivers. Installed factory
-arguments remain the contract below; Backend loading or injection into
-installed packages is deferred.
+Runtime Backend injection is limited to those bundled Drivers; installed
+packages keep the factory arguments below, and Backend loading or injection into
+them is deferred.
 
 ## Configuration definitions and discovery
 

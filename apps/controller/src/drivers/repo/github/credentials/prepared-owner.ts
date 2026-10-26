@@ -48,7 +48,7 @@ export function createGitHubPreparationOwner(options: PreparationOptions) {
     clock,
     renewBeforeMs,
     minimumValidityMs,
-    async issue({ bounds, assertIssuing, capture }) {
+    async issue({ bounds, assertIssuing, capture, refused }) {
       let verified: { providerExpiresAt: number; usableUntil: number } | undefined;
       const key = await getKey(structuredClone(admission));
       const assertAdmitted = () => {
@@ -87,6 +87,14 @@ export function createGitHubPreparationOwner(options: PreparationOptions) {
             );
             if (result.kind === "validated") {
               verified = result;
+            } else if (
+              result.kind === "reauthorization-required" &&
+              packet !== undefined &&
+              !Object.hasOwn(packet, "token")
+            ) {
+              // GitHub refused (401/403/404/422) the one request, and its well-formed answer
+              // has no token member. A malformed or ambiguous answer stays uncertain.
+              refused();
             }
           },
         );

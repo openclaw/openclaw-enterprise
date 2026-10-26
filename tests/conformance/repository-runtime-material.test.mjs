@@ -11,8 +11,14 @@ import { staticEgressFixture } from "../helpers/static-egress.mjs";
 import { SETUP_WRAPPER_COMMAND } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { pluginRuntimeSpecForRevision } from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
 import { encodeRepositoryCredentialSessionFiles } from "../../apps/controller/src/drivers/repo/github/credentials/client/config.ts";
+import { openShellRepositoryAccess } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { runOpenClawRuntimeHelper } from "../helpers/plugin-runtime.mjs";
+import {
+  BROKER_PROXY_DISABLED,
+  BROKER_HOST_DENIED,
+  BROKER_PROXY_DOMAINS,
+} from "../helpers/refusal-text.mjs";
 
 const deadlineWallMs = Date.now() + 86400000;
 function repositoryClient(gatewayOrigin = "https://git.credentials.svc.cluster.local") {
@@ -113,11 +119,17 @@ async function fixture(mode = "embedded", nodeEnrollment, options = {}) {
         ...(nodeEnrollment === undefined
           ? { gatewayClients: [{ namespace: "controller", podLabels: { app: "controller" } }] }
           : {}),
-        repositoryCredentials: {
-          namespace: options.repositoryNamespace ?? "credentials",
-          podLabels: options.repositoryPodLabels ?? { app: "credentials" },
-          port: 8443,
-        },
+        // An Installation whose Sandbox delivers repository Git material configures no
+        // repository credential endpoint (chart repositoryCredentials.enabled=false).
+        ...(options.repositoryBroker === false
+          ? {}
+          : {
+              repositoryCredentials: {
+                namespace: options.repositoryNamespace ?? "credentials",
+                podLabels: options.repositoryPodLabels ?? { app: "credentials" },
+                port: 8443,
+              },
+            }),
         ...(options.publicGithubRead === undefined
           ? {}
           : { publicGithubRead: options.publicGithubRead }),
@@ -139,7 +151,11 @@ async function fixture(mode = "embedded", nodeEnrollment, options = {}) {
         gatewayNodeSelector: { "oce-role": "control-plane" },
       },
     },
-    { nodeEnrollment, preparedRepositoryIngress: options.preparedRepositoryIngress },
+    {
+      nodeEnrollment,
+      preparedRepositoryIngress: options.preparedRepositoryIngress,
+      sandboxDriver: options.sandboxDriver,
+    },
   );
   // Fixture failures are final; skip the driver's API retry waits.
   driver.waitBeforeRetry = async () => {};
@@ -442,6 +458,12 @@ async function fixture(mode = "embedded", nodeEnrollment, options = {}) {
       ],
     };
   };
+  if (options.repositoryBroker === false) {
+    // Without that endpoint the chart grants the worker no Secret list (rbac.yaml).
+    clients.core.listNamespacedSecret = async () => {
+      throw failure(403);
+    };
+  }
   driver.apiClients = Promise.resolve(clients);
   const preparedNamespace = await driver.ensureNamespace({
     id: revision.namespaceId,
@@ -1386,10 +1408,9 @@ test("Dedicated Codex repository policy preserves compatible domain decisions", 
 test("Dedicated Codex repository policy preserves an explicitly disabled network proxy", async () => {
   const f = await fixture("dedicated");
   f.revision.configuration.plugins.entries.codex.config.appServer.networkProxy = { enabled: false };
-  await assert.rejects(
-    f.driver.prepareRevision(f.revision, f.context([runtimeBinding()])),
-    /explicitly disabled Codex network proxy/,
-  );
+  await assert.rejects(f.driver.prepareRevision(f.revision, f.context([runtimeBinding()])), {
+    message: BROKER_PROXY_DISABLED,
+  });
   assert.deepEqual(
     runtimeWrites(f.calls),
     [],
@@ -1399,14 +1420,29 @@ test("Dedicated Codex repository policy preserves an explicitly disabled network
 
 test("Dedicated Codex repository policy preserves explicit broker host denies", async () => {
   const f = await fixture("dedicated");
+  // The Helm default broker host is git.<Namespace>.svc.<cluster domain>; a 63-character
+  // Namespace name, the Kubernetes maximum, gives the longest realistic host.
+  const host = `git.${"n".repeat(63)}.svc.cluster.local`;
   f.revision.configuration.plugins.entries.codex.config.appServer.networkProxy ??= {};
   f.revision.configuration.plugins.entries.codex.config.appServer.networkProxy.domains = {
-    " Git.Credentials.SVC.Cluster.Local ": "deny",
-    "git.credentials.svc.cluster.local": "allow",
+    [` ${host.toUpperCase()} `]: "deny",
+    [host]: "allow",
   };
   await assert.rejects(
-    f.driver.prepareRevision(f.revision, f.context([runtimeBinding()])),
-    /broker host is explicitly denied/,
+    f.driver.prepareRevision(
+      f.revision,
+      f.context([runtimeBinding(undefined, undefined, `https://${host}`)]),
+    ),
+    (error) => {
+      assert.equal(error.message, BROKER_HOST_DENIED);
+      // Only preparation catches this deny, and the worker drops the whole
+      // worker.compute-prepare-failed line when the message is over 256 characters
+      // (apps/controller/src/worker.ts MAX_COMPUTE_FAILURE_MESSAGE_LENGTH): the text must fit.
+      const diagnostic = f.driver.describePrepareRevisionFailure(error);
+      assert.equal(diagnostic.message, BROKER_HOST_DENIED);
+      assert.ok(diagnostic.message.length <= 256, `${diagnostic.message.length} characters`);
+      return true;
+    },
   );
   assert.deepEqual(
     runtimeWrites(f.calls),
@@ -1437,12 +1473,12 @@ test("Dedicated Codex repository policy rejects malformed domain policy containe
     [
       "domains array",
       { enabled: true, mode: "limited", domains: ["github.com"] },
-      /network policy domains must be an object/,
+      { message: BROKER_PROXY_DOMAINS },
     ],
     [
       "domains scalar",
       { enabled: true, mode: "limited", domains: "github.com" },
-      /network policy domains must be an object/,
+      { message: BROKER_PROXY_DOMAINS },
     ],
   ]) {
     await t.test(name, async () => {
@@ -1986,6 +2022,67 @@ test("stop and retirement fence an admitted reader when the Sandbox is unavailab
     await assert.rejects(f.driver[operation](f.revision), /SandboxDriver|Sandbox-owned/);
     assert.ok(!f.deployments().some(({ metadata }) => metadata.name === selected.metadata.name));
     assert.equal(publicReaderPolicies(f).length, 0);
+  }
+});
+
+// With an OpenShell repository-access Sandbox the worker transfers repository Git material to
+// the Sandbox, so Compute projects no material Secret and the Installation configures no
+// repository credential endpoint; the chart then grants the worker no Secret list. Stopping,
+// retiring or deleting such a revision must finish without listing Secrets: the refused list
+// once left repository cleanup retrying forever and Agent deletion failing (finding 2201).
+test("a repository-access Sandbox revision stops, retires and is deleted without listing Secrets", async () => {
+  for (const operation of ["stopRevision", "retireRevision"]) {
+    const cleanups = [];
+    const sandboxDriver = {
+      id: "openshell-sandbox",
+      implementation: "openshell",
+      capability: "sandbox",
+      facets: ["networking", "filesystem", "process"],
+      repositoryAccess: openShellRepositoryAccess(
+        {
+          route: () => ({ state: "installed" }),
+          materialInstalledAt: () => undefined,
+        },
+        () => undefined,
+      ),
+      async provisionHarness(context) {
+        return {
+          namespaceName: context.namespace.name,
+          resourceName: "openshell-harness",
+          agentId: context.revision.agentId,
+          revisionId: context.revision.id,
+        };
+      },
+      async cleanup(context) {
+        cleanups.push(context.revision.id);
+      },
+    };
+    const f = await fixture("dedicated", undefined, { repositoryBroker: false, sandboxDriver });
+    f.revision.sandboxDriverId = sandboxDriver.id;
+    f.revision.repositoryCredentials.bindings[0].profile = "git-write";
+    // Preparation projects no material: the Sandbox receives it from the worker.
+    await f.driver.prepareRevision(f.revision, f.context(undefined));
+    assert.deepEqual(f.secrets(), []);
+    await f.driver[operation](f.revision);
+    assert.deepEqual(cleanups, [f.revision.id], operation);
+    // A fresh deploy with no active predecessor prepares without material either.
+    const next = { ...structuredClone(f.revision), id: "revision-repository-material-next" };
+    await f.driver.prepareRevision(next, f.context(undefined));
+    assert.deepEqual(f.secrets(), []);
+    // Agent deletion retires each revision, then removes the Agent's runtime credentials.
+    for (const revision of [f.revision, next]) {
+      await f.driver.retireRevision(revision);
+    }
+    await f.driver.deleteAgentRuntimeCredentials({
+      namespace: { id: f.revision.namespaceId },
+      agent: { id: f.revision.agentId, namespaceId: f.revision.namespaceId },
+    });
+    assert.deepEqual(cleanups, [f.revision.id, f.revision.id, next.id], operation);
+    assert.equal(
+      f.apiCalls.includes("core.listNamespacedSecret"),
+      false,
+      `${operation} must not list Secrets`,
+    );
   }
 });
 

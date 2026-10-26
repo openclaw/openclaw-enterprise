@@ -4,7 +4,7 @@ import { createControlledClock } from "../fixtures/repository-credentials/clock.
 import { run } from "../fixtures/repository-credentials/process.mjs";
 import { controlRequest } from "../fixtures/repository-credentials/service.mjs";
 import { socketDirectory } from "../helpers/socket-directory.mjs";
-import { setTimeout as delay } from "node:timers/promises";
+import { waitUntil } from "../helpers/wait-for.mjs";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { randomUUID } from "node:crypto";
@@ -240,15 +240,11 @@ test(
     }
 
     for (const result of opened) {
-      let status;
-      for (let index = 0; index < 100; index++) {
-        status = await driver.sender.status(result.session.sessionId, signal);
-        if (status?.state === "DISPOSED") {
-          break;
-        }
-        await delay(20);
-      }
-      assert.equal(status?.state, "DISPOSED");
+      await waitUntil(
+        `session ${result.session.sessionId} to be disposed`,
+        async () =>
+          (await driver.sender.status(result.session.sessionId, signal))?.state === "DISPOSED",
+      );
     }
     await fixture.restart();
     assert.equal(

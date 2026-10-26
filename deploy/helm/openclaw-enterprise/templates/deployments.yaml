@@ -368,6 +368,7 @@ spec:
             {{- end }}
             - name: OCC_CONFIG_PATH
               value: /etc/openclaw/installation/installation.yaml
+            {{- include "openclaw.listenerEnv" $ | trim | nindent 12 }}
             {{- with $.Values.preprovisionedNamespace }}
             - name: OCC_PREPROVISIONED_NAMESPACE
               value: {{ . | toJson | quote }}
@@ -467,6 +468,8 @@ spec:
             - name: OCC_CHANNEL_DIRECTORY_PROXY_URL
               value: {{ $.Values.api.channelDirectoryProxyUrl | quote }}
             {{- end }}
+            - name: OCC_API_HTTPS_EGRESS_OPEN
+              value: {{ include "openclaw.api.httpsEgressOpen" $ | quote }}
             - name: OCC_AGENT_NATIVE_ADMIN_ENABLED
               value: {{ ternary "true" "false" $.Values.agentNativeAdmin.enabled | quote }}
             - name: OCC_AGENT_RUNTIME_LOGS_ENABLED
@@ -483,9 +486,9 @@ spec:
             - name: OCC_WORKER_LIVENESS_PATH
               value: /run/openclaw-worker/alive
             - name: OCC_WORKER_POLL_INTERVAL_MS
-              value: {{ include "openclaw.positiveSafeInteger" (dict "name" "worker.pollIntervalMs" "value" $.Values.worker.pollIntervalMs) | quote }}
+              value: {{ include "openclaw.positiveSafeInteger" (dict "name" "worker.pollIntervalMs" "value" $.Values.worker.pollIntervalMs "timer" true) | quote }}
             - name: OCC_WORKER_LEASE_DURATION_MS
-              value: {{ include "openclaw.positiveSafeInteger" (dict "name" "worker.leaseDurationMs" "value" $.Values.worker.leaseDurationMs) | quote }}
+              value: {{ include "openclaw.positiveSafeInteger" (dict "name" "worker.leaseDurationMs" "value" $.Values.worker.leaseDurationMs "timer" true) | quote }}
             - name: OCC_WORKER_MAX_ATTEMPTS
               value: {{ include "openclaw.positiveSafeInteger" (dict "name" "worker.maxAttempts" "value" $.Values.worker.maxAttempts) | quote }}
             - name: OCC_WORKER_CONVERGENCE_TIMEOUT_MS

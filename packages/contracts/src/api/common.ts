@@ -169,7 +169,7 @@ export const ServiceAccountDeleteQuery = Type.Object(
     force: Type.Optional(
       Type.Union([Type.Literal("true"), Type.Literal("false")], {
         description:
-          "`true` deletes an account whose issued access token no ChatGPT Backend can revoke, and leaves the token for an administrator to revoke at the provider. With a ChatGPT Backend configured it is ignored and the token is revoked as usual.",
+          "`true` deletes an account whose issued access token no ChatGPT Backend can revoke, and leaves the token for a ChatGPT workspace administrator to revoke at the provider. With a ChatGPT Backend configured it is ignored and the token is revoked as usual.",
       }),
     ),
   },
@@ -776,17 +776,47 @@ export const ProvisionAgentBody = Type.Object(
 
 export const ValidateAgentCreateBody = Type.Object(
   {
+    name: Type.Optional(
+      Type.String({
+        minLength: 1,
+        maxLength: NAME_MAX_CHARACTERS,
+        pattern: PLAIN_TEXT_PATTERN,
+        description:
+          "The Agent name create will use. A name that another Agent in the Namespace has is refused with create's `409`.",
+      }),
+    ),
     initialWorkspaceFiles: Type.Optional(CreateAgentBody.properties.initialWorkspaceFiles),
     configuration: Type.Object(
-      { kind: ConfigurationKindSchema, values: ConfigurationValues },
+      {
+        kind: ConfigurationKindSchema,
+        values: ConfigurationValues,
+        secretBindings: Type.Optional(SecretBindings),
+      },
       {
         additionalProperties: false,
-        description: "The Agent Configuration the caller will save, not yet saved.",
+        description:
+          "The Agent Configuration the caller will save, not yet saved. With `secretBindings`, a channel credential reference without a binding is refused where Configuration create refuses it (the bundled Kubernetes Compute); the bound Secrets are not read. Without them, that check is skipped.",
       },
     ),
     executionMode: Type.Optional(HarnessExecutionModeSchema),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     pluginApprovers: Type.Optional(Type.Ref("PluginApprovers")),
+    harnessAuth: Type.Optional(
+      Type.Union(
+        [
+          HarnessAuthBindingSchema,
+          Type.Object(
+            { method: Type.Union([Type.Literal("api_key"), Type.Literal("codex_pat")]) },
+            { additionalProperties: false },
+          ),
+          Type.Null(),
+        ],
+        {
+          description:
+            "The Harness authentication Agent create will name, so Agent save's check of it against the execution mode and Compute settings runs here too. For a Secret the caller saves next, send only its `method`. The Secret and credential source are not read; omitted or null skips this check.",
+        },
+      ),
+    ),
   },
   { additionalProperties: false },
 );
@@ -918,7 +948,10 @@ export const ERROR_CODES = Object.freeze([
   "DEPENDENCY_UNAVAILABLE",
   "CREDENTIAL_GATEWAY_NOT_CONFIGURED",
   "CREDENTIAL_WITHDRAWAL_IN_PROGRESS",
+  "CREDENTIAL_TOKEN_UNSETTLED",
   "SANDBOX_POLICY_PROTECTED_EXECUTION",
+  "REPOSITORY_GIT_SENDER_UNQUALIFIED",
+  "REPOSITORY_GIT_PROFILE_UNSUPPORTED",
   "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED",
   "REPOSITORY_OPTIONS_UNAVAILABLE",
   "MODEL_DISCOVERY_CREDENTIALS_REJECTED",
@@ -1002,9 +1035,21 @@ export const ErrorResponse = Type.Object(
             description:
               "Only credential withdrawal work still queued or running for an Agent revision that held the source keeps it from being deleted.",
           }),
+          Type.Literal("CREDENTIAL_TOKEN_UNSETTLED", {
+            description:
+              "A provider token issued for the source may still be valid after a lost issue or revocation outcome; retry the deletion after the time in the message.",
+          }),
           Type.Literal("SANDBOX_POLICY_PROTECTED_EXECUTION", {
             description:
               "Protected execution keeps only its Credential Proxy egress policy: Agent network policy additions are refused at save and deploy while the running or next revision is protected, and live application to a protected revision is refused.",
+          }),
+          Type.Literal("REPOSITORY_GIT_SENDER_UNQUALIFIED", {
+            description:
+              "Deploy is refused because the selected Credential Proxy has no qualified enforcement for the Agent's git-write repository binding; the version could never start.",
+          }),
+          Type.Literal("REPOSITORY_GIT_PROFILE_UNSUPPORTED", {
+            description:
+              "Deploy is refused because the selected Credential Proxy delivers repository Git only for one binding with the git-write or github-installation profile; git-read, git-full or several bindings could never start.",
           }),
           Type.Literal("SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED", {
             description:

@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
-updated: "2026-10-22"
-last_updated_session: "authoring-run/ee617f7c-b2e1-4dbb-ace9-7908ebc5cfd6"
+updated: 2026-10-25
+last_updated_session: authoring-run/b7994562-b460-4667-9017-4c62c3f56eb0
 ---
 
 # Agent sandbox policy flow
@@ -45,6 +45,13 @@ The solid arrows trace source paths, not a claim that all providers are verified
 ## Execution Trace
 
 ### 1. Admit and persist desired additions
+
+`internal/occcli/agent_policy.go:agentPolicyCommand` declares JSON and YAML
+output for each policy subcommand. `internal/occcli/cli.go:validateOptions` selects JSON only when `--output` is
+omitted and refuses unsupported explicit formats before any request. It then
+prints the acknowledged result through
+`internal/occcli/output.go:printStructured`. A successful mutation therefore
+returns its result without a later table-format error.
 
 `OpenClawController.discoverConfigurations` filters registry contributions by the
 server-selected Driver, scope, and resource-owner read authority. Installation
@@ -140,6 +147,9 @@ native draft approval cannot bypass OCC admission.
 `console/driver-configurations.mts:renderAgentDriverConfigurations` discovers
 sections and selects resource-owner controls. `console/configuration-fields.mts`
 renders schema fields and JSON fallback, with safe field/root diagnostics.
+String controls retain the complete draft. Length validation stays with the
+policy owner: JSON Schema counts Unicode code points, while HTML length
+attributes count UTF-16 code units and can truncate a valid executable path.
 `console/agents/sandbox-policy.mts:renderPolicy` keeps proposed rules local until
 preview. Review shows the rules the controller validated, and Save sends those
 rules with the reviewed policy version. Superseded preview and read responses
@@ -165,7 +175,15 @@ destinations, preserving an Agent's Policy denials link after sign-in.
 The console reads the policy owner even when discovery returns no descriptor. This
 read establishes an unsupported capability or a permission refusal before log and
 suggestion reads continue under their own permissions. It cannot leave those reads
-waiting for a policy request that never starts.
+waiting for a policy request that never starts. When the caller's permission answer
+reports `sandboxPolicyRead` as `false`, the console skips the policy and suggestion
+reads and says so; an unknown answer keeps the reads. A tab opened after the answer
+settled rereads it first, so a later grant applies. A version snapshot without
+`sandboxDriverId` runs without a Sandbox, so the tab skips its log and suggestion reads
+and says no denials are recorded. A `RUNTIME_LOGS_SOURCE_UNAVAILABLE` answer shows the same.
+Then, and on the draft, which reads no log, the denial count, refresh, follow and filter
+controls and the empty denial rows are hidden. When the permission answer refuses
+the policy read, only the network policy card states it; the suggestions card is hidden.
 
 ## Debugging and Verification
 
@@ -188,7 +206,19 @@ waiting for a policy request that never starts.
 
 ## Changelog
 
+- 2026-10-25: Hide the empty denial rows and state a refused policy read once. (finding 2522)
+- 2026-10-25: Hide the denial window's controls on the draft. (finding 2509)
+- 2026-10-25: Skip the policy and suggestion reads that the permission answer refuses. (finding 2454)
+
+- 2026-10-24 18:15: Preserve complete Unicode string drafts for owner validation and add a simulated policy Review/Save walkthrough. (authoring-run/b7994562-b460-4667-9017-4c62c3f56eb0 - 6857956afcfee0b88563ea882c95034b5780cbec)
+
+- 2026-10-24 13:19: Refuse explicit unsupported CLI formats before policy requests. (authoring-run/3954aa04-12f8-4a8e-bb62-a4d9a8603edd - 1b59554add06e9f7be0b0a730202f558c939a661)
+
+- 2026-10-22 23:45: Preserve CLI output guidance alongside upstream grant admission rules after conflict resolution. (authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d - c574fc743b21599c51d3809365039010a7e077d2)
+
 - 2026-10-22 13:40: Run the shared grant rules before a Driver contribution, at every admission (preview, save, apply, deploy) and the worker recheck; empty or reversed ranges never satisfy the ceiling. (bughunt-1022c)
+
+- 2026-10-21 04:25: Declare structured policy CLI output before requests. (authoring-run/a66234ce-95fd-4d64-9fe8-3ce3d143e572 - e8185dac805b737363c7178d3068b310a53a7c24)
 
 - 2026-10-20 03:48: Complete policy capability reads without discovery metadata and omit terminal controls from CLI diagnostics. (authoring-run/ee617f7c-b2e1-4dbb-ace9-7908ebc5cfd6 - df244b6bd678acad513a02b5eb5d69e13f2d68dc)
 

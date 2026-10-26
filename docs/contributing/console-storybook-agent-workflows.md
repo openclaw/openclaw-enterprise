@@ -85,6 +85,19 @@ or Namespaces, and return with Back/Forward. Check empty and invalid text, then
 explicit Cancel or Reload. The Configuration story keeps deployment disabled;
 workspace Save changes only the selected simulated file.
 
+**Components/Workspace → Save needs Agent operate** is only the first denial.
+**Operate answer on return** keeps that editor mounted. The preview runs the
+visits: the first Logs visit records the runtime-status refusal and Workspace
+files stays read-only; the next Logs visit reads a simulated operate grant and
+AGENTS.md is editable on return, the Stop row shows and Configuration offers Run
+diagnostics; after the edit, the following Logs visit reads a revocation, and
+returning keeps that unsaved text and makes the file read-only, hides Stop and
+disables Run diagnostics.
+Reset story replays it. The permission changes and the runtime refusal are
+simulated. A failed permission read is not this story; the page keeps the previous
+answer. The controller still authorizes every write. The browser test changes the
+controller's real IAM policy across the same tab visits.
+
 In **Flows → Keep an Agent draft**, fill a default starter form, leave, and
 re-enter, also after a refused Create: it returns; Cancel clears it.
 
@@ -109,6 +122,12 @@ In **Discard an unsaved Secret choice**, that Secret isn’t listed; reload to d
 **Secret list denied** retains IDs. **Slack grant denied** requires recovery.
 In **Issued service accounts unavailable**, switch authentication methods:
 account feedback hides, then returns with the saved issued-account selection.
+
+**Components/Credentials → Parked authentication grant** opens Credentials while
+the simulated Namespace IAM read is still answering, selects Configuration, then
+returns with **Set up credentials**. The missing-grant warning is written on the
+parked form and is visible on return; Deploy stays disabled. The delay is
+simulated. The browser test holds the controller's real IAM read.
 
 In **Components/Channels → Slack Secret menu**, search names/IDs and select with
 arrows and Enter. **Slack create Secret modal** shows Name and masked value.

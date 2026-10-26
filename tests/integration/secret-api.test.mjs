@@ -8,6 +8,7 @@ import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/sr
 import { createControllerApp } from "../../apps/controller/src/index.ts";
 import { requestFailure } from "../../apps/controller/src/http/errors.ts";
 import { resolveApprovedHarness as resolveApprovedDevelopmentHarness } from "../../apps/controller/src/composition/production-harness.ts";
+import { assertApiError } from "../helpers/api-error.mjs";
 import {
   authenticatedHeaders,
   createTestAuthPrincipal,
@@ -19,6 +20,7 @@ import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { grantRole } from "../helpers/iam-grants.mjs";
+import { agentPrincipalDenied } from "../helpers/refusal-text.mjs";
 
 const uuidV4 = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
 const identifier = (prefix) => new RegExp(`^${prefix}_${uuidV4}$`);
@@ -380,8 +382,7 @@ test("Agent model discovery requires namespace Agent-create permission before pr
   const denied = await request(readerApp, "POST", `/namespaces/${namespace.id}/agents/models`, {
     body: { provider: "openai", authMethod: "api_key", apiKey },
   });
-  assert.equal(denied.status, 403);
-  assert.equal(denied.body.error.code, "FORBIDDEN");
+  assertApiError(denied, 403, "FORBIDDEN");
   assert.equal(transport.mock.callCount(), 0);
   const denial = fixture.auditSink.events.at(-1);
   assert.equal(denial.kind, "authorization_denial");
@@ -538,8 +539,7 @@ test("Secret API stores values through the selected driver and returns metadata 
       body: { agentId: agent.id, name: "Removed owner key", value: `secret-value-${randomUUID()}` },
     },
   );
-  assert.equal(removedOwnerField.status, 400);
-  assert.equal(removedOwnerField.body.error.code, "INVALID_REQUEST");
+  assertApiError(removedOwnerField, 400, "INVALID_REQUEST");
 
   const created = await request(fixture.app, "POST", `/namespaces/${namespace.id}/secrets`, {
     body: { name: "Backend API key", value: originalValue },
@@ -599,7 +599,8 @@ test("Secret API stores values through the selected driver and returns metadata 
     `/namespaces/${namespace.id}/secrets/${created.data.id}`,
   );
   assert.equal(detail.status, 200);
-  // The exact read adds the Secret's consumers; nothing references this one yet.
+  // The exact read adds the Secret's consumers, and what the caller may do to it; nothing
+  // references this one yet, and the administrator may replace and delete it.
   assert.deepEqual(detail.data, {
     ...created.data,
     consumers: {
@@ -610,6 +611,7 @@ test("Secret API stores values through the selected driver and returns metadata 
       unreadable: 0,
       truncated: false,
     },
+    callerPermissions: { update: true, delete: true },
   });
 
   const updated = await request(
@@ -629,8 +631,7 @@ test("Secret API stores values through the selected driver and returns metadata 
       `/namespaces/${namespace.id}/secrets/${created.data.id}`,
       { body: { value: invalid } },
     );
-    assert.equal(rejected.status, 400);
-    assert.equal(rejected.body.error.code, "INVALID_REQUEST");
+    assertApiError(rejected, 400, "INVALID_REQUEST");
   }
   // An empty value or name also names the schema's minimum length, so the caller can fix it.
   for (const [method, path, body, field] of [
@@ -716,8 +717,7 @@ test("Secret API accepts the largest default JSON body and rejects one byte over
       body: oversizedCreateBody,
     },
   );
-  assert.equal(oversizedCreate.status, 413);
-  assert.equal(oversizedCreate.body.error.code, "PAYLOAD_TOO_LARGE");
+  assertApiError(oversizedCreate, 413, "PAYLOAD_TOO_LARGE");
   assert.equal(JSON.stringify(oversizedCreate.body).includes(syntheticSecretSentinel), false);
 
   const updateEnvelope = bodyAtJsonLimit(defaultControllerBodyLimit, (value) => ({ value }));
@@ -739,8 +739,7 @@ test("Secret API accepts the largest default JSON body and rejects one byte over
     `/namespaces/${namespace.id}/secrets/${created.data.id}`,
     { body: oversizedUpdateBody },
   );
-  assert.equal(oversizedUpdate.status, 413);
-  assert.equal(oversizedUpdate.body.error.code, "PAYLOAD_TOO_LARGE");
+  assertApiError(oversizedUpdate, 413, "PAYLOAD_TOO_LARGE");
   assert.equal(JSON.stringify(oversizedUpdate.body).includes(syntheticSecretSentinel), false);
   assert.equal(fixture.secretDriver.valueFor(created.data), updateEnvelope.value);
   assert.equal(JSON.stringify(fixture.auditSink.events).includes(syntheticSecretSentinel), false);
@@ -768,8 +767,7 @@ test("Secret API denial and storage failures return value-free errors", async ()
     "GET",
     `/namespaces/${namespace.id}/secrets/${created.data.id}`,
   );
-  assert.equal(denied.status, 403);
-  assert.equal(denied.body.error.code, "FORBIDDEN");
+  assertApiError(denied, 403, "FORBIDDEN");
   const denial = fixture.auditSink.events.at(-1);
   assert.equal(denial.kind, "authorization_denial");
   assert.deepEqual(denial.authorization, {
@@ -886,8 +884,7 @@ for (const [model, method, executionMode] of [
       "DELETE",
       `/namespaces/${namespace.id}/secrets/${key.data.id}`,
     );
-    assert.equal(forbidden.status, 403);
-    assert.equal(forbidden.body.error.code, "FORBIDDEN");
+    assertApiError(forbidden, 403, "FORBIDDEN");
     // Administrative rights on the actor do not give the Agent permission to receive a key.
     const { servicePrincipalId } = await fixture
       .controller()
@@ -906,10 +903,21 @@ for (const [model, method, executionMode] of [
       (event) => event.kind === "authorization_denial",
     );
     assert.equal(agentDenial.reasonCode, "AGENT_PRINCIPAL_NOT_AUTHORIZED");
+    // The caller may read the key, so the answer names it; it never names the principal, which
+    // the audit event records (finding 2592).
+    assert.equal(
+      denied.body.error.message,
+      agentPrincipalDenied(`Agent ${agent.id}`, `Secret ${key.data.id}`),
+    );
     // The route's reason passes through the audit factory like any other: redacted and capped
     // at 120 characters. The details below still name the principal, action and resource.
-    assert.ok(denied.body.error.message.length > 120);
-    assert.equal(agentDenial.decisionReason, denied.body.error.message.slice(0, 120));
+    assert.equal(
+      agentDenial.decisionReason,
+      `The Agent service principal ${servicePrincipalId} is not authorized to operate secret ${key.data.id}. Grant that principal operate on the secret, then deploy again.`.slice(
+        0,
+        120,
+      ),
+    );
     assert.deepEqual(agentDenial.authorization, {
       principalId: fixture.principal.id,
       action: "deploy",
@@ -1055,8 +1063,7 @@ test("Secret consumers name only readable references, on GET and in the delete c
     truncated: false,
   });
   const memberDelete = await request(memberApp, "DELETE", keyPath);
-  assert.equal(memberDelete.status, 409);
-  assert.equal(memberDelete.body.error.code, "RESOURCE_CONFLICT");
+  assertApiError(memberDelete, 409, "RESOURCE_CONFLICT");
   assert.equal(
     memberDelete.body.error.message,
     `The Secret is still referenced by Configuration ${visible}; 2 resources you cannot read. Remove those references first.`,

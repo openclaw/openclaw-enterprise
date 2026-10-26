@@ -2,7 +2,8 @@
 
 Open an Agent in the OCE console, select its running version, and choose
 **Policy denials**. You need the Agent's existing Sandbox log permissions to see
-observed denials. Policy reads and changes have independent permissions; see the
+observed denials. A version that runs without a Sandbox records none, and the tab
+says so. Policy reads and changes have independent permissions; see the
 [policy reference](../../reference/sandbox-policies.md).
 
 1. Read **Denials in the loaded window** and any gap notices. Expand a row for
@@ -68,6 +69,9 @@ occ agent policy update AGENT_ID --facet networking --file additions.json
 occ agent policy apply AGENT_ID --revision REVISION_ID --expected-version 2
 occ agent policy get AGENT_ID --facet networking -o json
 ```
+
+The `occ agent policy` commands print JSON by default. Use `-o yaml` for YAML.
+These commands return the complete policy or application result rather than a table.
 
 `additions.json` contains `expectedVersion` and the complete desired `additions`
 array. Get the current version first; an empty array removes Agent-specific

@@ -49,6 +49,7 @@ const ALLOWED_FIELDS = new Set([
   "attempt",
   "candidatePreparationReached",
   "cause",
+  "cleanupCause",
   "code",
   "computeDriverId",
   "deployPasses",
@@ -203,6 +204,46 @@ function safePath(value: unknown): string | undefined {
     : undefined;
 }
 
+// Fields that name a fixed code, from any emitter: for example an OpenShell Git expiry check, a
+// failure class, the reason code an Agent is shown, a Harness lifecycle state or the operator
+// guidance a refusal names. Only a short identifier passes, never free text. `command` passes
+// only on auth:maintain events, whose commands are a fixed list (AUTH_MAINTAIN_COMMANDS).
+const CODE_FIELDS = new Set([
+  "check",
+  "command",
+  "failure",
+  "harnessState",
+  "hintCode",
+  "reasonCode",
+]);
+const SAFE_CODE = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
+const UUID_V4 = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
+// Identifiers OCC assigns, kept only in their own format: the Installation a bootstrap or
+// maintenance run names, and a Configuration a refused provisioning job left behind.
+const INSTALLATION_ID = new RegExp(`^ins_${UUID_V4}$`);
+const IDENTIFIER_FIELDS: ReadonlyMap<string, RegExp> = new Map([
+  ["installationId", INSTALLATION_ID],
+  ["orphanedConfigurationId", new RegExp(`^cfg_${UUID_V4}$`)],
+]);
+// A bootstrap attempt names the same Installation, and the administrator Principal and service
+// Principal OCC assigns for it, each kept only in its own format (finding 2246). The auth account
+// and service key IDs come from the auth library, not OCC, so they keep the generic string check.
+const ATTEMPT_IDENTIFIER_FIELDS: ReadonlyMap<string, RegExp> = new Map([
+  ["installationId", INSTALLATION_ID],
+  ["principalId", new RegExp(`^prn_${UUID_V4}$`)],
+  ["servicePrincipalId", new RegExp(`^spn_${UUID_V4}$`)],
+]);
+
+function safeIdentifier(format: RegExp, value: unknown): string | undefined {
+  return typeof value === "string" && format.test(value) ? value : undefined;
+}
+
+function safeCode(value: unknown): string | undefined {
+  return typeof value === "string" && SAFE_CODE.test(value) && !resemblesToken(value)
+    ? value
+    : undefined;
+}
+
 function safeNumber(key: string, value: number): number | undefined {
   if (!Number.isFinite(value)) {
     return undefined;
@@ -297,7 +338,9 @@ function safeAttempt(
       }
       continue;
     }
-    const safe = safeScalar(key, field);
+    const identifier = ATTEMPT_IDENTIFIER_FIELDS.get(key);
+    const safe =
+      identifier === undefined ? safeScalar(key, field) : safeIdentifier(identifier, field);
     if (safe !== undefined) {
       result[key] = safe;
     }
@@ -326,13 +369,36 @@ function sanitizedEvent(
     typeof rawEvent === "string" ? (safeString(rawEvent) ?? "occ.event") : "occ.event";
   const result: Record<string, unknown> = { event: eventName };
   for (const [key, value] of Object.entries(event)) {
+    if (CODE_FIELDS.has(key)) {
+      const code = safeCode(value);
+      if (code !== undefined && (key !== "command" || eventName.startsWith("auth-maintain."))) {
+        result[key] = code;
+      }
+      continue;
+    }
+    const identifier = IDENTIFIER_FIELDS.get(key);
+    if (identifier !== undefined) {
+      const id = safeIdentifier(identifier, value);
+      if (id !== undefined) {
+        result[key] = id;
+      }
+      continue;
+    }
+    if (key === "fence") {
+      // A route generation, such as the OpenShell Git fence a worker holds: a non-negative integer.
+      if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) {
+        result.fence = value;
+      }
+      continue;
+    }
     if (key === "event" || !ALLOWED_FIELDS.has(key)) {
       continue;
     }
     if (key === "details") {
       if (
         (eventName === "startup-error" || eventName === "worker.startup-error") &&
-        event.code === "DRIVER_CONFIGURATION_INVALID" &&
+        (event.code === "DRIVER_CONFIGURATION_INVALID" ||
+          event.code === "CHART_LISTENER_MISMATCH") &&
         Array.isArray(value)
       ) {
         result.details = configurationLogDetails(value);

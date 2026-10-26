@@ -56,15 +56,21 @@ history, repeat the startup model probe, or prove message delivery.
 
 **Save authentication source** stores the binding and confirms exact
 `secret:operate` access for the Agent principal on an API-key or Service Accounts
-Secret. Grant changes require Namespace IAM authority; issued ChatGPT accounts
-and operator-managed authentication skip the grant. A failed grant reports
-partial success and offers **Retry credential access** without repeating the
-Agent update. Partial saves survive navigation. Grants do not prove runtime or
+Secret. Grant changes require Installation `administer`; issued ChatGPT accounts
+and operator-managed authentication skip the grant. A member's save sends no
+grant: the form stays editable and says that deploying checks the Agent's access
+and that an Installation administrator gives it. Opening Credentials as an administrator reads Namespace IAM and blocks
+deployment while that grant is missing. A refused or failed grant request offers **Retry credential access**
+without repeating the Agent update. Partial saves survive navigation. Grants do not prove runtime or
 provider readiness.
 
 Configuration and Slack summaries show bound Secret names and IDs for the viewed
-draft or version. Names require exact same-Namespace Secret `read`; denied,
-missing, or failed reads show the ID with **Metadata unavailable**. **No Secret
+draft or version. Names require exact same-Namespace Secret `read`; a denied
+read says a Secret is bound and its name is hidden, with the ID in the tooltip, and
+missing or failed reads show the ID with **Metadata unavailable**. For a caller
+who is not an Installation administrator, a Secret that the readable Secret list
+leaves out is not read: it shows as unavailable, because the caller cannot read
+it or it was deleted, with the ID in the tooltip. **No Secret
 bound** means no binding. Values are never read, and metadata does not prove
 credential validity.
 
@@ -102,7 +108,8 @@ Channel edits preserve group policies. Change DM access with
 
 Model, Harness, and Slack credentials share one searchable Secret picker; the
 [Slack editor](../../guides/console/channels-and-credentials.md#slack-editor) lists
-its controls. Escape restores the binding, and **Create new Secret...** stays
+its controls. On the Agent page and in Create Agent, it lists a readable Secret the caller may
+not `operate` disabled with the reason, because a save that binds it is refused. Escape restores the binding, and **Create new Secret...** stays
 available without matches, with **Name** defaulting to the Agent name and
 purpose. A name conflict keeps both inputs and overwrites no Secret. Namespace
 readiness errors require refresh.
@@ -115,7 +122,8 @@ resubmission: the Secret may exist, so refresh and inspect metadata first.
 Selections stay staged until **Save configuration**; Cancel discards them.
 Saving patches Configuration, then grants Agent access through Namespace IAM;
 both require caller permission. A failed grant leaves Configuration saved and
-requires access recovery. Neither creation nor saving deploys a Secret.
+requires access recovery. A member's session sends no grant and reports that access
+was not verified until **Reload draft**. Neither creation nor saving deploys a Secret.
 
 Secret metadata links open new tabs, preserving edits. Save channel changes
 before editing credentials on the Credentials tab.
@@ -124,4 +132,11 @@ The simple editor may reject native channel documents it cannot round-trip,
 including non-Socket Slack settings, non-standard credential references, mixed
 per-channel mention settings or sender lists, `*` channel maps, or unsupported
 plugin shapes. Inspect those settings in the native Configuration view; edit them
-through the API or operator workflow.
+through the API or operator workflow. Slack's standard token references are the
+env SecretRefs and the whole `${SLACK_APP_TOKEN}` and `${SLACK_BOT_TOKEN}`
+strings; the editor saves each in its existing form. For any other token, the
+card uses Configuration save's term and never shows the value. A string is a
+reference only in a form the runtime reads as one, or with a `${` it keeps as
+written. An object without a `source` is an object the Slack Channel Driver
+cannot read. Any other value that is not a SecretRef is an inline credential
+value.

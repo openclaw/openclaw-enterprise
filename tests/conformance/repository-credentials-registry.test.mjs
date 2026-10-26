@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { chmod, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
 import {
   resolveGitHubRepositoryBinding,
   validateGitHubRepositoryRegistry,
 } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import { loadGitHubRepositoryRegistry } from "../../apps/controller/src/composition/repository-credentials/registry.ts";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 function registryInput() {
   return {
@@ -323,8 +323,7 @@ test("registry refuses ambiguous repositories, wildcard policy, unsupported prof
 });
 
 test("registry loader accepts a bounded projected regular file and rejects unsafe file contents", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "repository-registry-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "repository-registry-");
   const file = join(directory, "registry.json");
   const projected = join(directory, "projected.json");
   await writeFile(file, JSON.stringify(registryInput()), { mode: 0o644 });

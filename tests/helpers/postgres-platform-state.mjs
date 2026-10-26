@@ -47,6 +47,7 @@ const requiresPostgresAndKubernetesConfiguration = {
 };
 const useKubernetesDrivers = process.env.OCC_TEST_KUBERNETES_CONFIGURATION === "1";
 const kubernetesStartupEnvironments = new WeakMap();
+const caseDatabases = new WeakMap();
 const kubernetesWorkloadResources = Object.freeze({
   requests: Object.freeze({ cpu: "25m", memory: "48Mi" }),
   limits: Object.freeze({ cpu: "250m", memory: "192Mi" }),
@@ -70,6 +71,41 @@ async function kubectl(...args) {
     { maxBuffer: 4 * 1024 * 1024 },
   );
   return stdout;
+}
+
+// Under the CI runner (prepared ownership in OPENCLAW_ENTERPRISE_CI_STATE) a case can own a
+// database: prepareFile's fresh copy of the lane's migrated template, the same empty database
+// the runner prepared for the file (OCC_TEST_DATABASE_URL), which such a file leaves unused.
+// Nothing connects to the lane template (PostgreSQL copies only a database without sessions),
+// so a step that still used OCC_TEST_DATABASE_URL could not break another case's copy. The OCC
+// processes started below with the same context use the copy. It is dropped after the case's
+// other after hooks, which stop those processes and end its pools: node:test runs a hook added
+// while the after hooks run after the ones already registered. A failing after hook makes
+// node:test skip the later ones, the drop included; lane cleanup drops that copy. Without
+// prepared ownership the cases share OCC_TEST_DATABASE_URL, so they must run one at a time.
+const caseDatabasesAvailable = Boolean(process.env.OPENCLAW_ENTERPRISE_CI_STATE);
+// The worker revision fixture's limit for the drop's wait for the CI state lock.
+const caseDatabaseDropLockTimeoutMs = 120_000;
+
+async function prepareCaseDatabase(context, { lane, testFile }) {
+  if (!caseDatabasesAvailable) {
+    return databaseUrl;
+  }
+  const { prepareFile } = await import("../../scripts/ci/prepare.mjs");
+  const prepared = await prepareFile({
+    lane,
+    file: fileURLToPath(testFile),
+    statePath: process.env.OPENCLAW_ENTERPRISE_CI_STATE,
+  });
+  context.after(() =>
+    context.after(() => prepared.cleanup({ lockTimeoutMs: caseDatabaseDropLockTimeoutMs })),
+  );
+  caseDatabases.set(context, prepared.env.OCC_TEST_DATABASE_URL);
+  return prepared.env.OCC_TEST_DATABASE_URL;
+}
+
+function contextDatabaseUrl(context) {
+  return caseDatabases.get(context) ?? databaseUrl;
 }
 
 async function configuredDriverEnvironment(context, kubernetesDrivers) {
@@ -386,8 +422,9 @@ async function startController(context, { kubernetesDrivers = false } = {}) {
   context.after(async () => {
     await rm(configurationRoot, { recursive: true, force: true });
   });
+  const occDatabaseUrl = contextDatabaseUrl(context);
   await ensureDevelopmentBootstrap(context, {
-    databaseUrl,
+    databaseUrl: occDatabaseUrl,
     email: adminEmail,
     password: adminPassword,
     authSecret,
@@ -403,7 +440,7 @@ async function startController(context, { kubernetesDrivers = false } = {}) {
       NODE_ENV: "development",
       OCC_HOST: "127.0.0.1",
       OCC_PORT: String(port),
-      OCC_DATABASE_URL: databaseUrl,
+      OCC_DATABASE_URL: occDatabaseUrl,
       OCC_AUTH_BASE_URL: `http://127.0.0.1:${port}`,
       OCC_AUTH_SECRET: authSecret,
       OCC_DEVELOPMENT_CONFIGURATION_ROOT: configurationRoot,
@@ -446,14 +483,15 @@ async function startController(context, { kubernetesDrivers = false } = {}) {
 
 async function spawnWorker(context, { kubernetesDrivers = false } = {}) {
   const driverEnvironment = await configuredDriverEnvironment(context, kubernetesDrivers);
+  const occDatabaseUrl = contextDatabaseUrl(context);
   const child = spawn(process.execPath, [workerEntrypoint], {
     cwd: repository,
     env: {
       ...process.env,
       NODE_ENV: "development",
-      DATABASE_URL: databaseUrl,
-      OCC_DATABASE_URL: databaseUrl,
-      OCC_TEST_DATABASE_URL: databaseUrl,
+      DATABASE_URL: occDatabaseUrl,
+      OCC_DATABASE_URL: occDatabaseUrl,
+      OCC_TEST_DATABASE_URL: occDatabaseUrl,
       OCC_WORKER_POLL_INTERVAL_MS: "20",
       OCC_WORKER_LEASE_DURATION_MS: "5000",
       OCC_AUTH_BASE_URL: "http://127.0.0.1",
@@ -571,6 +609,7 @@ export {
   adminEmail,
   adminPassword,
   admitted,
+  caseDatabasesAvailable,
   cleanupKubernetesNamespaces,
   createConfiguration,
   createConfiguredAgent,
@@ -582,6 +621,7 @@ export {
   grantTenantAccess,
   parseJsonLines,
   pollUntil,
+  prepareCaseDatabase,
   request,
   requiresPostgres,
   requiresPostgresAndKubernetesConfiguration,

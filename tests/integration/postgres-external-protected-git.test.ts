@@ -36,11 +36,18 @@ import {
 import { createBackendController } from "../helpers/postgres-backend-state.mjs";
 import { protectedDriverPackage } from "../helpers/protected-driver-package.ts";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { createGatewayNodeEnrollment } from "../../apps/controller/src/gateway/node-enrollment-client.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 import { standingExecutionPlatform } from "../helpers/postgres-standing-execution.ts";
 import { standingGitOrigin } from "../helpers/prepared-standing-git-peer.ts";
 import { waitFor } from "../helpers/wait-for.mjs";
+import {
+  expireStoppedClaims,
+  nextMaintenancePass,
+  settleRevisionMaintenance,
+  waitForRevisionPass,
+} from "../helpers/postgres-worker-revision-support.mjs";
 import { installationOrigin } from "../fixtures/driver-packages/protected-execution-driver/installation-origin.ts";
 
 import { standingGitConversation } from "../helpers/standing-git-conversation.ts";
@@ -67,6 +74,11 @@ if (conversationRequired) {
   assert.ok(codex, "external conversation qualification requires the shipped Codex executable");
   await access(codex, constants.X_OK);
 }
+
+// The worker reconciles a protected Git Driver every second. Cases here count reconcile passes
+// and wait for passes to settle deliveries, so every binding in this file uses the same loop with
+// a shorter wait between passes.
+const transportOptions = { reconcileIntervalMs: 100 };
 
 // Production package selection, OCC deployment, worker and custody. The external package,
 // its workload, Kubernetes placement, GitHub and the private Git origin are controlled locally.
@@ -111,6 +123,10 @@ function repositoryConfiguration(input: {
   apiOrigin: string;
 }) {
   const base = createInstallationDriverConfiguration();
+  // Dedicated Agents need gateway routing with runtime storage (finding 2349); routing derives
+  // the Gateway client peer.
+  const compute = base.drivers.compute.configuration;
+  const { gatewayClients: _gatewayClients, ...network } = compute.network;
   return {
     ...base,
     presets: { includeDefaults: false },
@@ -134,6 +150,19 @@ function repositoryConfiguration(input: {
     },
     drivers: {
       ...base.drivers,
+      compute: {
+        ...base.drivers.compute,
+        configuration: {
+          ...compute,
+          network,
+          gatewayRouting: {
+            hostname: "agents.example.test",
+            gatewayName: "gateways",
+            gatewayNamespace: "occ-system",
+            envoyNamespace: "envoy",
+          },
+        },
+      },
       sandbox: { id: input.id, package: input.id, configuration: input.sandbox },
       credential_proxy: { id: input.id, configuration: {} },
     },
@@ -363,9 +392,14 @@ function externalGitJourney(
       };
     };
     let deliveryDiagnostic = () => ({});
+    // Completed passes, for nextMaintenancePass.
+    const completions: Readonly<Record<string, unknown>>[] = [];
     const emit = (event: Readonly<Record<string, unknown>>) => {
       if (typeof event.event !== "string") {
         return;
+      }
+      if (event.event === "worker.completed") {
+        completions.push(event);
       }
       const code = typeof event.code === "string" ? event.code : undefined;
       const outcome = typeof event.outcome === "string" ? event.outcome : undefined;
@@ -558,6 +592,8 @@ function externalGitJourney(
             implementation: apiDrivers.computeDriver.implementation,
             protectedDriver: apiOwner,
             credentialGatewayDriver: modelGateway,
+            // As production composition selects it; this test never enrolls a node.
+            nodeEnrollment: createGatewayNodeEnrollment(async () => "unused"),
           },
         )
       : (apiDrivers.computeDriver as KubernetesComputeDriver);
@@ -577,7 +613,13 @@ function externalGitJourney(
         report: (code) => emit({ event: "worker.repository-owner", code }),
       });
     prepared = await startOwner();
-    transport = await bindRepositoryGitTransport(drivers, prepared, f.observerPool, emit);
+    transport = await bindRepositoryGitTransport(
+      drivers,
+      prepared,
+      f.observerPool,
+      emit,
+      transportOptions,
+    );
     assert.ok(transport);
     const { peer } = cedar;
     deliveryDiagnostic = () => ({
@@ -592,6 +634,10 @@ function externalGitJourney(
     let preparations = 0;
     let withdrawalStarted = false;
     let preparationsBeforeWithdrawal: number;
+    // The assertion in prepareRevision below throws inside a worker pass, which only records the
+    // failure; this count fails the test.
+    const assertNoPreparationAfterWithdrawal = () =>
+      assert.equal(preparations, preparationsBeforeWithdrawal, "must not prepare after withdrawal");
     let checkedNegativeCapability = false;
     let stopAttempts = 0;
     t.after(() => {
@@ -602,8 +648,10 @@ function externalGitJourney(
     const compute: ComputeDriver = {
       ...f.compute,
       capability: "compute",
-      async stopRevision() {
-        if (withdrawalStarted) {
+      async stopRevision(stopped) {
+        // The cases share one database, so this worker can also claim an earlier case's due
+        // retirement. Count only this case's Agent.
+        if (withdrawalStarted && stopped.namespaceId === namespaceId) {
           stopAttempts++;
           assert.equal(reducible, false, "Git binding withdrawal must never stop the execution");
         }
@@ -949,6 +997,8 @@ function externalGitJourney(
     }
     const ref = { ...key, revisionId: revision.id };
     t.diagnostic("journey revision " + revision.id);
+    // Queue cadences are not under test here: waits on a worker pass make this revision's
+    // queued passes due.
     try {
       await f.start(compute, {
         emit,
@@ -958,8 +1008,10 @@ function externalGitJourney(
           configurationDriver: controller.selectedDriver("configuration"),
         }),
       });
-      await waitFor(
+      await waitForRevisionPass(
         "worker's standing execution",
+        f,
+        revision,
         () => f.state.read((v) => v.repositorySessions.findStandingExecution(ref)),
         25_000,
       );
@@ -1382,18 +1434,15 @@ function externalGitJourney(
       }
 
       // Real owner deadlines: the 5-minute fixture token is inside the 10-minute renewal window.
-      // Wait for the persisted next check, without extending or editing a token or session deadline.
+      // Make the persisted next check due now for the owner's background loop, without
+      // extending or editing a token or session deadline.
       let second = first;
       if (!broad) {
-        const {
-          rows: [{ delay_ms }],
-        } = await pool.query(
-          "SELECT extract(epoch FROM next_check_at-clock_timestamp())*1000 AS delay_ms FROM occ.prepared_github_families WHERE enabled AND source #>> '{session,revisionId}'=$1",
+        const { rowCount } = await pool.query(
+          "UPDATE occ.prepared_github_families SET next_check_at=clock_timestamp() WHERE enabled AND source #>> '{session,revisionId}'=$1",
           [revision.id],
         );
-        await delay(Math.max(0, Number(delay_ms) + 25), undefined, {
-          signal: t.signal,
-        });
+        assert.equal(rowCount, 1);
         if (!lostRotation) {
           second = await waitFor(
             "worker rotates material",
@@ -1520,7 +1569,14 @@ function externalGitJourney(
           await transport!.close();
           await prepared.close();
           prepared = await startOwner();
-          transport = await bindRepositoryGitTransport(drivers, prepared, pool, emit);
+          transport = await bindRepositoryGitTransport(
+            drivers,
+            prepared,
+            pool,
+            emit,
+            transportOptions,
+          );
+          await expireStoppedClaims(f, revision);
           await f.start(compute, {
             emit,
             transformDrivers: () => ({
@@ -1594,11 +1650,12 @@ function externalGitJourney(
             10_000,
           );
           await deniedFetch();
-          assert.equal(preparations, preparationsBeforeWithdrawal);
+          assertNoPreparationAfterWithdrawal();
           assert.equal(stopAttempts, 0);
           assert.deepEqual((await readReduction()).records, []);
           peer.reduction.loseReply = true;
           peer.reduction.hideObservation = true;
+          await expireStoppedClaims(f, revision);
           await f.start(compute, {
             emit,
             transformDrivers: () => ({
@@ -1648,16 +1705,24 @@ function externalGitJourney(
           await deniedFetch();
           // A lost apply response and a hidden observation require real cleanup retries.
           // They must GET the original operation, never send its POST again.
-          await waitFor(
+          await waitForRevisionPass(
             "cleanup observes the original operation while hidden",
-            () => peer.reduction.observations.includes(original.request.operationId) || undefined,
+            f,
+            revision,
+            async () => {
+              return (
+                peer.reduction.observations.includes(original.request.operationId) || undefined
+              );
+            },
             65_000,
           );
           assertNoEffect();
           assert.deepEqual((await readReduction()).records, [original]);
           peer.reduction.hideObservation = false;
-          const settledReduction = await waitFor(
+          const settledReduction = await waitForRevisionPass(
             "authorized Git withdrawal is durably observed",
+            f,
+            revision,
             async () => {
               const durable = await readReduction();
               return durable.records[0]?.observed ? durable : undefined;
@@ -1677,7 +1742,7 @@ function externalGitJourney(
             { operation: original.request, current: original.request.expected },
           ]);
           assert.deepEqual(await readDelivery(), settled);
-          assert.equal(preparations, preparationsBeforeWithdrawal);
+          assertNoPreparationAfterWithdrawal();
           assert.equal(stopAttempts, 0);
           t.diagnostic(
             `withdrawal settled: ${JSON.stringify({
@@ -1730,6 +1795,11 @@ function externalGitJourney(
         ).length,
         issues: gh.issuesOfTokens.length,
       });
+      // Withdraw between worker passes, and snapshot the provider once none is running. A pass
+      // that checked the approval just before removal may still prepare after it commits; its
+      // Git is still denied per request and cleanup reduces after it. Every pass that starts
+      // after the withdrawal must never prepare.
+      await settleRevisionMaintenance(f, revision);
       const before = providerTraffic();
       const decisions = peer.decisions.length;
       if (reducible) {
@@ -1781,8 +1851,10 @@ function externalGitJourney(
       }
       if (reducible) {
         releaseReduction!();
-        await waitFor(
+        await waitForRevisionPass(
           "Git reduction applied by ordinary cleanup",
+          f,
+          revision,
           () => peer.reduction.applies === 1 || undefined,
           25_000,
         );
@@ -1796,7 +1868,14 @@ function externalGitJourney(
         await transport!.close();
         await prepared.close();
         prepared = await startOwner();
-        transport = await bindRepositoryGitTransport(drivers, prepared, pool, emit);
+        transport = await bindRepositoryGitTransport(
+          drivers,
+          prepared,
+          pool,
+          emit,
+          transportOptions,
+        );
+        await expireStoppedClaims(f, revision);
         await f.start(compute, {
           emit,
           transformDrivers: () => ({
@@ -1805,10 +1884,13 @@ function externalGitJourney(
             configurationDriver: controller.selectedDriver("configuration"),
           }),
         });
-        await waitFor(
+        // Cleanup retries after the lost reply on its 30-second cadence.
+        await waitForRevisionPass(
           "replacement worker observes the original reduction",
-          () =>
-            f.state.read(
+          f,
+          revision,
+          async () => {
+            return f.state.read(
               async (view) =>
                 (
                   await view.credentialSources.listCredentialPolicyReductions(
@@ -1817,14 +1899,14 @@ function externalGitJourney(
                   )
                 ).find((reduction) => reduction.bindingId === "policy:repository-git")?.observed ||
                 undefined,
-            ),
-          // Cleanup retries on its ordinary 30-second cadence after the lost reply.
+            );
+          },
           45_000,
         );
         assert.equal(peer.reduction.attempts, 1, "lost acknowledgment never replays POST");
         assert.equal(peer.reduction.applies, 1);
         t.diagnostic("reduction after replacement: attempts=1 applies=1");
-        assert.equal(preparations, preparationsBeforeWithdrawal);
+        assertNoPreparationAfterWithdrawal();
         assert.equal(
           (await f.state.read((view) => view.agents.findAgent(namespaceId, agentId)))
             ?.activeRevisionId,
@@ -1874,7 +1956,7 @@ function externalGitJourney(
         t.diagnostic(
           "final reduction: attempts=2 applies=2; metadata requests=2, final read denied",
         );
-        assert.equal(preparations, preparationsBeforeWithdrawal);
+        assertNoPreparationAfterWithdrawal();
         assert.equal(independentRequests, 2, "deny-all prevents a new independent origin request");
         assert.equal(
           (await f.state.read((view) => view.agents.findAgent(namespaceId, agentId)))
@@ -1884,18 +1966,27 @@ function externalGitJourney(
       }
       if (broad) {
         await broad.installation.verifyTokenStillWorks();
-        t.diagnostic(
-          "one installation token, private Git v2 pack and two distinct commits pushed to the same PR head, updated PR readback, provider-protected ref, REST and GraphQL; fresh Git denied after withdrawal, zero provider connection or HTTP, then direct proof the same token was still accepted",
-        );
-        return;
+      } else {
+        assert.ok("tokenState" in gh);
+        const [, live] = gh.tokenState();
+        assert.equal(live?.uses, 2);
+        assert.equal(live.revoked, false);
+        assert.equal(await receiptCount(), 2);
       }
-      assert.ok("tokenState" in gh);
-      const [, live] = gh.tokenState();
-      assert.equal(live?.uses, 2);
-      assert.equal(live.revoked, false);
-      assert.equal(await receiptCount(), 2);
+      // The worker keeps running. A maintenance pass that starts after the withdrawal must
+      // neither prepare nor reach the provider.
+      const settledTraffic = providerTraffic();
+      await nextMaintenancePass(f, revision, completions);
+      assertNoPreparationAfterWithdrawal();
+      assert.deepEqual(
+        providerTraffic(),
+        settledTraffic,
+        "maintenance after withdrawal reaches no provider",
+      );
       t.diagnostic(
-        "fetched two previously absent commits using distinct material; withdrawn request reached the same sender, with zero additional origin connections or HTTP requests",
+        broad
+          ? "one installation token, private Git v2 pack and two distinct commits pushed to the same PR head, updated PR readback, provider-protected ref, REST and GraphQL; fresh Git denied after withdrawal, zero provider connection or HTTP, then direct proof the same token was still accepted; a later maintenance pass did not prepare"
+          : "fetched two previously absent commits using distinct material; withdrawn request reached the same sender, with zero additional origin connections or HTTP requests; a later maintenance pass did not prepare",
       );
     } catch (error) {
       failed = true;

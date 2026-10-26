@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { cp, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { cp, mkdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { parsers } from "prettier/plugins/typescript";
 import { verifyRepositoryCredentialBoundary as verify } from "../../scripts/verify-repository-credentials-boundary.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const sourceRoot = fileURLToPath(new URL("../../apps/controller/src/", import.meta.url));
 const sharedFields = "composition/installation-fields.ts";
@@ -44,9 +44,8 @@ test("credential source boundary rejects new raw capabilities in the real source
     }
     return parsed.get(text);
   });
-  const temporary = await mkdtemp(join(tmpdir(), "repository-credentials-boundary-"));
+  const temporary = await temporaryDirectory(t, "repository-credentials-boundary-");
   const root = join(temporary, "src");
-  t.after(() => rm(temporary, { recursive: true, force: true }));
   await cp(sourceRoot, root, { recursive: true });
   assert.ok((await verify(root)) > 0);
 
@@ -64,7 +63,7 @@ test("credential source boundary rejects new raw capabilities in the real source
     [
       "repository installation admits its exact field helpers",
       installation,
-      'import { object as record, closed as check, nonempty as text, openShellRepositoryConfiguration as repository } from "../../../composition/installation-fields.ts"; void record; void check; void text; void repository;',
+      'import { object as record, closed as check, nonempty as text, openShellRepositoryConfiguration as repository, rejectNativeRepositoryPath as diagnostic } from "../../../composition/installation-fields.ts"; void record; void check; void text; void repository; void diagnostic;',
     ],
     [
       "prepared Git admits its existing transaction class and worker identity",
@@ -169,6 +168,30 @@ test("credential source boundary rejects new raw capabilities in the real source
   });
 
   const cases = [
+    [
+      "repository parser cannot construct arbitrary public field errors",
+      'import { InstallationFieldError } from "../../../composition/installation-fields.ts";',
+      /unreviewed shared field validation/,
+      installation,
+    ],
+    [
+      "native diagnostic factory rejects an adjacent caller",
+      'import { rejectNativeRepositoryPath } from "../../../../composition/installation-fields.ts";',
+      /unreviewed shared field validation/,
+      preparedConfiguration,
+    ],
+    [
+      "native diagnostic factory rejects an alternate module spelling",
+      'import { rejectNativeRepositoryPath as diagnostic } from "../../../composition/./installation-fields.ts";',
+      /unreviewed shared field validation/,
+      installation,
+    ],
+    [
+      "native diagnostic factory cannot be re-exported",
+      "export { rejectNativeRepositoryPath };",
+      /raw I\/O binding cannot be re-exported/,
+      installation,
+    ],
     [
       "shared fields reject direct file IO",
       'import { readFile } from "node:fs/promises";',

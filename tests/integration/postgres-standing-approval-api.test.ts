@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { randomUUID } from "node:crypto";
-import pg from "pg";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import type {
   ComputeDriver,
@@ -21,17 +20,22 @@ import {
   PostgresPlatformState,
 } from "../../packages/occ/src/index.ts";
 import { grantAgentSecretOperate } from "../helpers/postgres-harness-auth.mjs";
-import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
 import { ensurePostgresAgentBootstrap } from "../helpers/postgres-agent-app.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { cookieHeaderFromSetCookie, signInToControllerApp } from "../helpers/auth-session.mjs";
+import { injectJson } from "../helpers/inject-json.mjs";
+import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
 import {
-  authenticatedHeaders,
-  cookieHeaderFromSetCookie,
-  signInToControllerApp,
-} from "../helpers/auth-session.mjs";
+  STANDING_APPROVAL_BINDING_LOCKED,
+  STANDING_APPROVAL_NOT_PERMITTED,
+  STANDING_APPROVAL_ONE_BINDING,
+  STANDING_APPROVAL_POLICY_CHANGED,
+  STANDING_APPROVAL_SCOPE_CHANGED,
+} from "../helpers/refusal-text.mjs";
 
 const authSecret = "standing-approval-source-test-auth-secret-32";
 // Proves registered HTTP/IAM/State behavior. No Compute operation or provider call is executed.
@@ -40,8 +44,7 @@ test(
   requiresPostgres,
   async (t) => {
     await ensurePostgresAgentBootstrap(t, { label: "standing-approval", authSecret });
-    const pool = new pg.Pool({ connectionString: databaseUrl, max: 6 });
-    t.after(() => pool.end());
+    const pool = testPool(t, { connectionString: databaseUrl, max: 6 });
     const state = new PostgresPlatformState(pool);
     const installation = await state.loadInstallation();
     assert.ok(installation);
@@ -149,14 +152,11 @@ test(
     }
     await selectRepo(registry);
     t.after(() => app.close());
-    const login = await app.inject({
-      method: "POST",
-      url: "/api/auth/sign-in/email",
-      headers: { host: "127.0.0.1", "content-type": "application/json" },
-      payload: JSON.stringify({
+    const login = await injectJson(app, "POST", "/api/auth/sign-in/email", {
+      body: {
         email: "postgres-admin@openclaw.local",
         password: "postgres-development-password",
-      }),
+      },
     });
     assert.equal(login.statusCode, 200, login.body);
     const cookies = login.headers["set-cookie"];
@@ -169,17 +169,7 @@ test(
       url: string,
       payload?: unknown,
       actorSession = session,
-    ) =>
-      app.inject({
-        method,
-        url,
-        headers: {
-          host: "127.0.0.1",
-          ...authenticatedHeaders(actorSession),
-          ...(payload ? { "content-type": "application/json" } : {}),
-        },
-        ...(payload ? { payload: JSON.stringify(payload) } : {}),
-      });
+    ) => injectJson(app, method, url, { body: payload, session: actorSession });
     // The ready Namespace fixture does not grant standing approval.
     await state.transact((unit) =>
       unit.namespaces.createNamespace({
@@ -280,6 +270,8 @@ test(
     await selectRepo(widenedBeforeApproval);
     const staleReview = await request("PATCH", path, grant);
     assert.equal(staleReview.statusCode, 409, staleReview.body);
+    // Each standing approval refusal names its fix instead of "already exists" (finding 2536).
+    assert.equal(staleReview.json().error.message, STANDING_APPROVAL_SCOPE_CHANGED);
     assert.deepEqual(
       await read(),
       [],
@@ -319,9 +311,11 @@ test(
       },
     ]) {
       await selectRepo(JSON.parse(JSON.stringify(changed)));
+      // The caller administers the Agent, so policy is a named conflict, not a 404.
       const denied = await request("PATCH", path, grant);
-      assert.equal(denied.statusCode, 404, denied.body);
-      assert.equal(denied.json().error.code, "NOT_FOUND");
+      assert.equal(denied.statusCode, 409, denied.body);
+      assert.equal(denied.json().error.code, "RESOURCE_CONFLICT");
+      assert.equal(denied.json().error.message, STANDING_APPROVAL_NOT_PERMITTED);
       assert.deepEqual(await read(), []);
     }
     await selectRepo(registry);
@@ -354,22 +348,15 @@ test(
         );
         assert.equal(locked.rowCount, 1);
         pending = send();
-        const deadline = performance.now() + 10_000;
-        for (;;) {
-          const waiting = await pool.query(
-            `SELECT pid FROM pg_stat_activity
-             WHERE $1=ANY(pg_blocking_pids(pid)) AND wait_event_type='Lock'
-             AND query LIKE '%FROM occ.namespaces%FOR UPDATE%'`,
-            [locked.rows[0].pid],
-          );
-          if (waiting.rowCount === 1) {
-            break;
-          }
-          assert.ok(
-            performance.now() < deadline,
-            "HTTP request did not wait on our Namespace lock",
-          );
-        }
+        await waitForLockWaiter(
+          pool,
+          locked.rows[0].pid,
+          "the HTTP request to wait on our Namespace lock",
+          {
+            queryLike: "%FROM occ.namespaces%FOR UPDATE%",
+            timeoutMs: 10_000,
+          },
+        );
         // Like an IAM policy write, the admitted session already holds the user row.
         // An account disable taking its normal user lock cannot pass us during that wait.
         await assert.rejects(
@@ -423,6 +410,7 @@ test(
       repositoryBindings: [...agent.repositoryBindings, secondBinding],
     });
     assert.equal(addBinding.statusCode, 409, addBinding.body);
+    assert.equal(addBinding.json().error.message, STANDING_APPROVAL_BINDING_LOCKED);
     assert.deepEqual(
       (await request("GET", path)).json().data.repositoryBindings,
       agent.repositoryBindings,
@@ -441,6 +429,7 @@ test(
     );
     const multiGrant = await request("PATCH", multiPath, grant);
     assert.equal(multiGrant.statusCode, 409, multiGrant.body);
+    assert.equal(multiGrant.json().error.message, STANDING_APPROVAL_ONE_BINDING);
     assert.deepEqual(
       (await request("GET", multiPath + "/repository-approvals")).json().data,
       [],
@@ -484,7 +473,13 @@ test(
     await selectRepo(widened);
     const broaden = await request("PATCH", path, grant);
     assert.equal(broaden.statusCode, 409, broaden.body);
+    assert.equal(broaden.json().error.message, STANDING_APPROVAL_SCOPE_CHANGED);
     assert.deepEqual(await read(), [first]);
+    // Deploy refuses the approval that no longer matches policy and says how to recover.
+    const staleDeploy = await request("POST", path + "/deploy");
+    assert.equal(staleDeploy.statusCode, 409, staleDeploy.body);
+    assert.equal(staleDeploy.json().error.message, STANDING_APPROVAL_POLICY_CHANGED);
+    assert.doesNotMatch(staleDeploy.body, new RegExp(approvalId));
     await selectRepo(registry);
     const savedConfig = configuration.stored({ namespaceId, id: configurationId });
     await configuration.delete({ namespaceId, id: configurationId });

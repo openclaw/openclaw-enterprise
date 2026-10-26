@@ -2,7 +2,7 @@
 {{- $authority := .Values.egressAuthority }}
 {{- include "openclaw.validateResourceName" (dict "label" "egressAuthority.tlsSecretName" "value" (required "egressAuthority.tlsSecretName is required" $authority.tlsSecretName)) }}
 {{- include "openclaw.validateResourceName" (dict "label" "egressAuthority.issuerSecretName" "value" (required "egressAuthority.issuerSecretName is required" $authority.issuerSecretName)) }}
-{{- $port := include "openclaw.positiveSafeInteger" (dict "name" "egressAuthority.port" "value" $authority.port) | int }}
+{{- $port := include "openclaw.positiveSafeInteger" (dict "name" "egressAuthority.port" "value" $authority.port "port" true) | int }}
 {{- if or (gt $port 65535) (eq $port (int .Values.api.port)) (and .Values.metrics.enabled (eq $port (int .Values.metrics.port))) }}
 {{- fail "egressAuthority.port must be a distinct TCP port from 1 to 65535" }}
 {{- end }}

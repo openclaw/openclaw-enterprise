@@ -8,6 +8,7 @@ import {
   createRuntimeLogCursorCodec,
   RuntimeLogsForbiddenByClusterError,
 } from "../../packages/occ/src/index.ts";
+import { assertApiError } from "../helpers/api-error.mjs";
 import { authenticatedHeaders, cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
@@ -22,6 +23,14 @@ import {
   tenantANamespaceId,
   tenantRequest as request,
 } from "../helpers/tenant-reader-app.mjs";
+import {
+  BODY_NOT_JSON,
+  POLICY_RECOMMENDATIONS_NO_SANDBOX,
+  RESOURCE_NOT_FOUND,
+  ROUTE_NOT_FOUND,
+  ROUTE_TRAILING_SLASH,
+  runtimeLogSourceUnavailable,
+} from "../helpers/refusal-text.mjs";
 
 const installationId = "ins_3033697e-6397-4cc6-9b04-8ec17af78cf1";
 const missingRevisionId = "rev_3dd29693-ce8b-4b4c-97c4-14b4c68c6e9c";
@@ -178,10 +187,24 @@ test("existing namespace adoption requires installation administration and waits
   });
   assert.equal(duplicate.response.status, 409);
 
-  const invalid = await request(fixture.app, "/namespaces", {
-    body: { name: "Invalid adoption", existingNamespace: "Operator.Owned" },
-  });
-  assert.equal(invalid.response.status, 400);
+  // A Kubernetes Namespace name: a DNS label of at most 63 characters.
+  for (const [existingNamespace, code] of [
+    ["Operator.Owned", "INVALID_FORMAT"],
+    ["a".repeat(64), "TOO_LONG"],
+    ["operator-", "INVALID_FORMAT"],
+    ["-operator", "INVALID_FORMAT"],
+  ]) {
+    const invalid = await request(fixture.app, "/namespaces", {
+      body: { name: "Invalid adoption", existingNamespace },
+    });
+    assert.equal(invalid.response.status, 400, existingNamespace);
+    assert.equal(invalid.payload.error.code, "INVALID_REQUEST", existingNamespace);
+    assert.deepEqual(
+      invalid.payload.error.details,
+      [{ path: "/existingNamespace", code }],
+      existingNamespace,
+    );
+  }
 
   // Unauthorized callers cannot infer provisioning state or bypass denial auditing.
   const unauthorizedConfiguration = await request(
@@ -730,6 +753,50 @@ test("concurrent streaming bootstrap creates one audited Installation", async ()
   ]);
 });
 
+test("a bootstrap that arrives while another is still in progress is refused", async () => {
+  const fixture = await createFixture();
+  const append = fixture.auditSink.append.bind(fixture.auditSink);
+  let release;
+  const held = new Promise((resolve) => {
+    release = resolve;
+  });
+  let started;
+  const inProgress = new Promise((resolve) => {
+    started = resolve;
+  });
+  // Hold the first bootstrap at its audit write, after it has passed the guard but before
+  // it publishes the controller. A second bootstrap that gets this far releases it.
+  let bootstraps = 0;
+  fixture.auditSink.append = async (event) => {
+    if (event.kind === "bootstrap") {
+      bootstraps += 1;
+      if (bootstraps === 1) {
+        started();
+        await held;
+      } else {
+        release();
+      }
+    }
+    return append(event);
+  };
+  const first = request(fixture.app, "/installation/bootstrap", { body: { name: "First" } });
+  // Fail clearly, rather than waiting forever, if the bootstrap never reaches its audit write.
+  await Promise.race([
+    inProgress,
+    first.then((result) => {
+      throw new Error(`bootstrap ended before its audit write: ${result.response.status}`);
+    }),
+  ]);
+  const second = await request(fixture.app, "/installation/bootstrap", {
+    body: { name: "Second" },
+  });
+  release();
+  assert.equal(second.response.status, 409);
+  assert.equal(second.payload.error.code, "INSTALLATION_EXISTS");
+  assert.equal((await first).response.status, 201);
+  assert.equal(fixture.auditSink.events.filter((event) => event.kind === "bootstrap").length, 1);
+});
+
 test("an existing controller cannot be configured for a different Installation", async () => {
   const fixture = await createFixture();
   const installation = await bootstrap(fixture);
@@ -778,6 +845,20 @@ test("malformed, non-JSON, invalid, and oversized inputs fail without mutations"
     assert.equal(result.response.status, candidate.expectedStatus, JSON.stringify(candidate.body));
     assert.equal(fixture.controller.pendingOperations().length, before);
   }
+
+  // Text that is not JSON says so (finding D762). JSON the prototype-poisoning guard refuses is
+  // valid JSON, so it keeps the contract message.
+  const notJson = await request(fixture.app, "/namespaces", { body: '{"name":"a\nb"}' });
+  assert.equal(notJson.response.status, 400);
+  assert.deepEqual(notJson.payload.error, { code: "INVALID_REQUEST", message: BODY_NOT_JSON });
+  const poisoned = await request(fixture.app, "/namespaces", {
+    body: '{"__proto__":{"x":1},"name":"p"}',
+  });
+  assert.equal(poisoned.response.status, 400);
+  assert.equal(
+    poisoned.payload.error.message,
+    "The request does not match the operation contract.",
+  );
 
   // Route-specific Preset defaults must still obey an explicitly smaller application limit.
   for (const method of ["POST", "PATCH"]) {
@@ -1056,18 +1137,8 @@ test("router failures answer the error envelope without echoing the path", async
       `${contract}: a path parameter is too long.`,
     ],
     // Role IDs may hold 200 characters, so a long one reaches the route.
-    [
-      `${roles}/${"r".repeat(200)}`,
-      404,
-      "NOT_FOUND",
-      "The requested platform resource was not found.",
-    ],
-    [
-      `${roles}/${"%F0%9F%98%80".repeat(200)}`,
-      404,
-      "NOT_FOUND",
-      "The requested platform resource was not found.",
-    ],
+    [`${roles}/${"r".repeat(200)}`, 404, "NOT_FOUND", RESOURCE_NOT_FOUND],
+    [`${roles}/${"%F0%9F%98%80".repeat(200)}`, 404, "NOT_FOUND", RESOURCE_NOT_FOUND],
   ]) {
     const { response, payload } = await request(fixture.app, pathname);
     assert.equal(response.status, status, pathname.slice(0, 80));
@@ -1122,8 +1193,6 @@ test("exact Namespace ownership prevents cross-tenant access and resource traver
     `/namespaces/${namespaceA.id}/agents/${agentB.id}/revisions`,
     `/namespaces/${namespaceA.id}/agents/${agentA.id}/revisions/${missingRevisionId}`,
     `/namespaces/${namespaceB.id}/agents/${agentB.id}/revisions/${missingRevisionId}`,
-    `/namespaces/${namespaceA.id}%2F..%2F${namespaceB.id}`,
-    `/namespaces/${namespaceA.id}/agents/${agentB.id}%2F..`,
     "/namespaces/%00",
     "/namespaces/%5Ctenant",
   ]) {
@@ -1132,6 +1201,61 @@ test("exact Namespace ownership prevents cross-tenant access and resource traver
       result.response.status === 400 || result.response.status === 404,
       `${pathname}: ${result.response.status}`,
     );
+  }
+  // An encoded "../" stays inside its path parameter: the router never decodes it into a path,
+  // never redirects, and every ID parameter refuses it as a malformed ID that it names
+  // (finding D764). The answer depends only on the path, so a real and an unknown Agent match.
+  const traversal = (id) => `${id}%2F..%2F..%2Fnamespaces`;
+  const configuration = `cfg_${agentA.id.slice(4)}`;
+  const unknownAgentId = "agt_5c1e8d2a-6b3f-4d7e-9a2c-1f8e3b6d4a90";
+  const unknownSecretId = "sec_7d2f9e3b-1a4c-4e8d-b6f2-3c9a1e7d5b02";
+  for (const [pathname, parameter, prefix] of [
+    [`/namespaces/${traversal(namespaceA.id)}`, "namespaceId", "ns_"],
+    [`/namespaces/${namespaceA.id}/agents/${traversal(agentA.id)}`, "agentId", "agt_"],
+    [`/namespaces/${namespaceA.id}/agents/${traversal(unknownAgentId)}`, "agentId", "agt_"],
+    [`/namespaces/${namespaceA.id}/agents/${agentB.id}%2F..`, "agentId", "agt_"],
+    [
+      `/namespaces/${namespaceA.id}/agents/${agentA.id}/revisions/${traversal(missingRevisionId)}`,
+      "revisionId",
+      "rev_",
+    ],
+    [
+      `/namespaces/${namespaceA.id}/configurations/${traversal(configuration)}`,
+      "configurationId",
+      "cfg_",
+    ],
+    [`/namespaces/${namespaceA.id}/secrets/${traversal(unknownSecretId)}`, "secretId", "sec_"],
+  ]) {
+    const result = await request(fixture.app, pathname);
+    assert.equal(result.response.status, 400, pathname);
+    assert.equal(result.response.headers.get("location"), null, pathname);
+    assert.deepEqual(
+      result.payload.error,
+      {
+        code: "INVALID_REQUEST",
+        message: `The request does not match the operation contract: params /${parameter} has an invalid format; expected ${prefix} followed by a lowercase version 4 UUID.`,
+        details: [{ path: `/${parameter}`, code: "INVALID_FORMAT" }],
+      },
+      pathname,
+    );
+  }
+  // A path no route has gets route text, not "resource not found", and the same answer for a
+  // readable and an unknown Agent (finding D764).
+  for (const [suffix, message] of [
+    ["/", ROUTE_TRAILING_SLASH],
+    ["/no-such-route", ROUTE_NOT_FOUND],
+  ]) {
+    const answers = [];
+    for (const id of [agentA.id, unknownAgentId]) {
+      const result = await request(
+        fixture.app,
+        `/namespaces/${namespaceA.id}/agents/${id}${suffix}`,
+      );
+      assert.equal(result.response.status, 404, suffix);
+      assert.deepEqual(result.payload.error, { code: "NOT_FOUND", message }, suffix);
+      answers.push([result.response.status, result.payload.error]);
+    }
+    assert.deepEqual(answers[0], answers[1]);
   }
 
   const reader = fixture.tenantAReader;
@@ -1405,8 +1529,7 @@ test("runtime status and log reads enforce their permission tiers before any Dri
 
   for (const path of [target.runtimePath, target.logsPath()]) {
     const denied = await fixture.request("GET", path, { session: reader.session });
-    assert.equal(denied.status, 403, path);
-    assert.equal(denied.body.error.code, "FORBIDDEN");
+    assertApiError(denied, 403, "FORBIDDEN", path);
     assert.equal(fixture.auditSink.events.at(-1).kind, "authorization_denial");
   }
   // Operate is the status audience: it sees Pods and Events but never log text.
@@ -1702,8 +1825,7 @@ test("runtime log cursors bind one principal and view and are re-authorized on e
       target.logsPath(`source=gateway&cursor=${encodeURIComponent(forged)}`),
       { session },
     );
-    assert.equal(rejected.status, 400, label);
-    assert.equal(rejected.body.error.code, "RUNTIME_LOGS_CURSOR_INVALID", label);
+    assertApiError(rejected, 400, "RUNTIME_LOGS_CURSOR_INVALID", label);
   }
   assert.equal(driverReads(fixture).length, readsBefore);
 
@@ -1715,12 +1837,29 @@ test("runtime log cursors bind one principal and view and are re-authorized on e
       session: viewer.session,
     },
   );
-  assert.equal(unknownPod.status, 400);
-  assert.equal(unknownPod.body.error.code, "RUNTIME_LOGS_POD_INVALID");
+  assertApiError(unknownPod, 400, "RUNTIME_LOGS_POD_INVALID");
   const unsupported = await fixture.request("GET", target.logsPath("source=gateway&follow=true"), {
     session: viewer.session,
   });
   assert.equal(unsupported.status, 400);
+  // Bounds are exact decimal text: 1 to 1000 lines and 1 to 86400 seconds, never clamped.
+  for (const query of [
+    "tailLines=0",
+    "tailLines=01",
+    "tailLines=1001",
+    "sinceSeconds=0",
+    "sinceSeconds=86401",
+  ]) {
+    const outOfRange = await fixture.request("GET", target.logsPath(`source=gateway&${query}`), {
+      session: viewer.session,
+    });
+    assertApiError(outOfRange, 400, "INVALID_REQUEST", query);
+    assert.deepEqual(
+      outOfRange.body.error.details,
+      [{ path: `/${query.split("=")[0]}`, code: "INVALID_FORMAT" }],
+      query,
+    );
+  }
   assert.equal(driverReads(fixture).length, readsBefore);
 
   // Revocation between polls is honoured with the same cursor.
@@ -2124,6 +2263,15 @@ test("contract error details stay within the published path cap and name what a 
     emptyBody.payload.error.message,
     "The request does not match the operation contract: this operation accepts no request body.",
   );
+  // A chunked body declares no length and a GET body is never parsed; the framing still counts.
+  const chunked = await request(fixture.app, `/namespaces/${namespace.id}`, {
+    headers: { "transfer-encoding": "chunked" },
+  });
+  assert.equal(chunked.response.status, 400);
+  assert.equal(
+    chunked.payload.error.message,
+    "The request does not match the operation contract: this operation accepts no request body.",
+  );
   const kept = await request(fixture.app, `/namespaces/${namespace.id}`);
   assert.equal(kept.response.status, 200);
   assert.equal(kept.payload.data.id, namespace.id);
@@ -2211,6 +2359,24 @@ test("runtime log failures are fixed, content-free and never read after an audit
   const hostile = await fixture.request("GET", target.runtimePath);
   assert.equal(hostile.status, 503);
   assert.equal(hostile.body.error.code, "RUNTIME_LOGS_UNAVAILABLE");
+});
+
+// Finding D762: refusals that are not about a grant name their cause and what would help. This
+// version runs without a Sandbox Driver and, as an embedded Agent, without an agent container.
+test("a version without a Sandbox names the log sources and policy suggestions it lacks", async () => {
+  const fixture = await createRuntimeLogFixture();
+  const target = await fixture.deployAgent();
+  for (const source of ["sandbox", "agent"]) {
+    const refused = await fixture.request("GET", target.logsPath(`source=${source}`));
+    assertApiError(refused, 400, "RUNTIME_LOGS_SOURCE_UNAVAILABLE", source);
+    assert.equal(refused.body.error.message, runtimeLogSourceUnavailable(source));
+  }
+  const suggestions = await fixture.request(
+    "GET",
+    `/namespaces/${target.namespace.id}/agents/${target.agent.id}/revisions/${target.revisionId}/sandbox-policy/networking/recommendations`,
+  );
+  assertApiError(suggestions, 409, "RESOURCE_CONFLICT");
+  assert.equal(suggestions.body.error.message, POLICY_RECOMMENDATIONS_NO_SANDBOX);
 });
 
 test("runtime log reads retain allowance through backward and restored wall clocks", async (t) => {
@@ -2419,8 +2585,7 @@ test("runtime log downloads use the log tier and are audited once per download",
     target.logsPath(`source=gateway&download=true&cursor=${encodeURIComponent(page.data.cursor)}`),
     { session: administrator.session },
   );
-  assert.equal(withCursor.status, 400);
-  assert.equal(withCursor.body.error.code, "INVALID_REQUEST");
+  assertApiError(withCursor, 400, "INVALID_REQUEST");
   assert.match(withCursor.body.error.message, /\/cursor cannot be combined with \/download/);
   assert.deepEqual(withCursor.body.error.details, [{ path: "/cursor", code: "INVALID_VALUE" }]);
   assert.equal(driverReads(fixture).length, readsBefore);

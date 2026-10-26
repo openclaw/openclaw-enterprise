@@ -201,7 +201,8 @@ tests fail before creating resources. Do not use that lane for qualification.
 
 Use the [QA matrix](ci.md#qa-matrix) for an installed Agent's real Git journey. It
 requires an authorized disposable repository and independent provider readback;
-check the commit, pull request, credential disposal, and cleanup results. A direct
+check the commit, the refused push outside the granted branch, credential disposal,
+and cleanup results. Its `git-only` grant opens no pull request. A direct
 container command or ready Pod does not prove an Agent model turn.
 
 ## Record each evidence boundary

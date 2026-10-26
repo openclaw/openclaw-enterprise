@@ -4,12 +4,12 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, copyFile, chmod, readFile, writeFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { allowsPushRef } from "../../apps/controller/src/drivers/repo/credentials/client-contracts.ts";
 import { nativeAdminTarget } from "../../apps/controller/src/gateway/native-admin.ts";
 import { renderPresetTemplate } from "../../packages/contracts/src/index.ts";
 import { availablePort } from "./available-port.mjs";
 import { createNativePluginAssertions } from "./plugin-driver-real.mjs";
 import { prepareHybridInstallation } from "./qa-hybrid.mjs";
+import { grantQaRepositoryBranch } from "./qa-repository.mjs";
 import { loadYaml, dumpYaml, waitFor } from "./qa-utils.mjs";
 import {
   protectedText,
@@ -418,19 +418,7 @@ export async function createQaInstallation(
     const registry = JSON.parse(
       await protectedText(join(sourceInput, "registry.json"), "repository registry"),
     );
-    assert.equal(registry.repositories.length, 1, "select exactly one authorized repository");
-    const refs = ["openclaw-git-full", "codex-git-full", "codex-git-read"].map(
-      (name) => `refs/heads/oce-qa-${suffix}-${name}`,
-    );
-    for (const policy of registry.repositories[0].namespaces) {
-      if (policy.pushRefAllowlist) {
-        assert.ok(
-          refs.every((ref) => allowsPushRef(policy.pushRefAllowlist, ref)),
-          "selected registry must authorize the run-owned branch names",
-        );
-      }
-      policy.pushRefAllowlist = refs;
-    }
+    grantQaRepositoryBranch(registry, suffix);
     await writeFile(join(repositoryInput, "registry.json"), JSON.stringify(registry), {
       mode: 0o600,
     });

@@ -11,6 +11,7 @@ import {
   ComputeGatewaySettingError,
   ConfigurationHarnessError,
 } from "../../packages/occ/src/index.ts";
+import { assertCleanupFailure } from "../helpers/compute-cleanup-failure.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 
 test("Docker preflight rejects an interrupted response and can retry", async () => {
@@ -633,9 +634,11 @@ function splitEnvironment(entry) {
   return [entry.slice(0, separator), entry.slice(separator + 1)];
 }
 
-test("Docker Compute recovery keeps dedicated transport paired across container reuse and replacement", async () => {
-  // Model only the Docker inspect/create boundary; token selection and reconciliation
-  // run in the real Driver. The Compose integration separately kills a real worker.
+/**
+ * Models only the Docker inspect/create/start/delete boundary over one in-memory container map;
+ * reconciliation runs in the real Driver. `createDriver()` returns a fresh Driver on that map.
+ */
+function fakeDockerEngine() {
   const containers = new Map();
   const createDriver = () => {
     const driver = new DockerComputeDriver({
@@ -670,31 +673,58 @@ test("Docker Compute recovery keeps dedicated transport paired across container 
     driver.container = async (name) => containers.get(name);
     return driver;
   };
-  const driver = createDriver();
-  const revision = {
-    id: "revision-docker-recovery",
+  return { containers, createDriver };
+}
+
+function dockerAgentRevision(driver, { id, agentId, revision = 1, mode }) {
+  return {
+    id,
     namespaceId: tenant.id,
-    agentId: "agent-recovery",
-    revision: 1,
+    agentId,
+    revision,
     configurationId: "cfg_00000000-0000-4000-8000-000000000001",
     configurationKind: "agent",
     configurationGeneration: 1,
     executionAdmission: { version: 2, mode: "unprotected" },
     configuration: admitLoggingConfiguration({}, "info"),
-    harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
+    harness: { id: mode === "dedicated" ? "codex" : "openclaw", version: "1.0.0", mode },
     compute: { id: driver.id, implementation: driver.implementation },
-    servicePrincipalId: "service-principal-docker-recovery",
+    servicePrincipalId: `service-principal-${agentId}`,
     createdAt: tenant.createdAt,
   };
+}
+
+/** Runs `body` with the model credential the Docker runtime requires, then restores it. */
+async function withModelKey(body) {
+  const previousKey = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = "test-openai-api-key";
+  try {
+    return await body();
+  } finally {
+    if (previousKey === undefined) {
+      delete process.env.OPENAI_API_KEY;
+    } else {
+      process.env.OPENAI_API_KEY = previousKey;
+    }
+  }
+}
+
+test("Docker Compute recovery keeps dedicated transport paired across container reuse and replacement", async () => {
+  // The Compose integration separately kills a real worker.
+  const { containers, createDriver } = fakeDockerEngine();
+  const driver = createDriver();
+  const revision = dockerAgentRevision(driver, {
+    id: "revision-docker-recovery",
+    agentId: "agent-recovery",
+    mode: "dedicated",
+  });
   const role = (name) =>
     [...containers.entries()].find(
       ([, value]) => value.Config.Labels["org.openclaw.enterprise.role"] === name,
     );
   const token = (container) =>
     container.Config.Env.find((value) => value.startsWith("APP_SERVER_TOKEN="));
-  const previousKey = process.env.OPENAI_API_KEY;
-  process.env.OPENAI_API_KEY = "test-openai-api-key";
-  try {
+  await withModelKey(async () => {
     assert.equal((await driver.prepareRevision(revision)).ready, true);
     const [agentName, agent] = role("agent");
     const [gatewayName, gateway] = role("gateway");
@@ -730,14 +760,100 @@ test("Docker Compute recovery keeps dedicated transport paired across container 
       invalidAgent,
       "missing credentials must fail closed without adopting a new token",
     );
-  } finally {
-    if (previousKey === undefined) {
-      delete process.env.OPENAI_API_KEY;
-    } else {
-      process.env.OPENAI_API_KEY = previousKey;
-    }
-  }
+  });
 });
+
+// Finding 2268: when preparation fails and its cleanup fails too, the preparation's own failure
+// stays first, so the worker classifies the deployment by it. Every cleanup still runs after an
+// earlier one fails: the created container's removal, then the lifecycle cleanup.
+test("Docker preparation keeps its own failure first when every cleanup also fails", async () => {
+  const { containers, createDriver } = fakeDockerEngine();
+  const driver = createDriver();
+  driver.setLifecycleDrivers([
+    {
+      id: "hooks",
+      capability: "configuration",
+      implementation: "test",
+      computeLifecycleHooks: {
+        async beforeWorkloadStart() {},
+        async beforeWorkloadStop() {
+          throw new Error("lifecycle cleanup refused");
+        },
+      },
+    },
+  ]);
+  const revision = dockerAgentRevision(driver, {
+    id: "revision-docker-cleanup",
+    agentId: "agent-cleanup",
+    mode: "dedicated",
+  });
+  const primary = new Error("gateway reconcile refused");
+  driver.reconcileGateway = async () => {
+    throw primary;
+  };
+  const removed = [];
+  driver.removeContainer = async (name) => {
+    removed.push(name);
+    throw new Error("container removal refused");
+  };
+  const error = await withModelKey(() =>
+    driver.prepareRevision(revision).then(
+      () => assert.fail("the preparation must fail"),
+      (failure) => failure,
+    ),
+  );
+  assertCleanupFailure(error, primary, [
+    /container removal refused/,
+    /lifecycle hook beforeWorkloadStop failed/,
+  ]);
+  assert.deepEqual(removed, [driver.agentContainerName(tenant.id, revision.agentId, revision.id)]);
+  assert.equal(containers.size, 1, "only the agent container was created");
+});
+
+// Every topology keeps one gateway container per Agent, so preparing a redeploy candidate
+// replaces the active revision's gateway. The worker stops a refused candidate beside an active
+// revision only when Compute declares exclusive replacement; without it the candidate's gateway
+// kept serving under the predecessor's active pointer (finding 1800).
+for (const mode of ["embedded", "dedicated"]) {
+  test(`Docker ${mode} redeploy is exclusive, so a refused candidate leaves nothing serving`, async () => {
+    const { containers, createDriver } = fakeDockerEngine();
+    const driver = createDriver();
+    const agentId = `agent-redeploy-${mode}`;
+    const active = dockerAgentRevision(driver, { id: `revision-${mode}-1`, agentId, mode });
+    const candidate = dockerAgentRevision(driver, {
+      id: `revision-${mode}-2`,
+      agentId,
+      revision: 2,
+      mode,
+    });
+    const serving = () =>
+      [...containers.values()].map(
+        ({ Config }) =>
+          `${Config.Labels["org.openclaw.enterprise.role"]}:${Config.Labels["org.openclaw.enterprise.revision-id"]}`,
+      );
+    await withModelKey(async () => {
+      assert.equal((await driver.prepareRevision(active)).ready, true);
+      assert.ok(serving().includes(`gateway:${active.id}`));
+
+      assert.equal(
+        driver.requiresStoppedPredecessors?.(candidate),
+        true,
+        "the candidate takes the Agent's only gateway, so Docker must declare exclusive replacement",
+      );
+      // The worker sequence is simulated here (the postgres worker suites cover the worker's
+      // side): exclusive replacement stops every predecessor, then prepares the candidate.
+      await driver.stopRevision(active);
+      assert.deepEqual(serving(), []);
+      assert.equal((await driver.prepareRevision(candidate)).ready, true);
+      assert.ok(serving().includes(`gateway:${candidate.id}`));
+      assert.ok(serving().every((entry) => !entry.endsWith(active.id)));
+
+      // A refused candidate is stopped, so the Agent is unavailable rather than serving it.
+      await driver.stopRevision(candidate);
+      assert.deepEqual(serving(), []);
+    });
+  });
+}
 
 // These checks exercise the real Driver at Docker's API boundary. Container exit
 // status is an external observation; native file writes are covered separately by

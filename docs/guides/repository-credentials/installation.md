@@ -123,8 +123,9 @@ Backend `drivers.repo` policy member. The worker alone mounts the App key and
 and omits the native sender; see [sender selection](../../reference/drivers/selection.md#select-a-protected-sender). Keep the shown registry, control socket
 and public CA paths; Helm mounts exactly those locations.
 
-Add this peer under the existing
-`drivers.compute.configuration.network` object, retaining its other settings:
+For native delivery only, add this peer under the existing
+`drivers.compute.configuration.network` object, retaining its other settings.
+Startup refuses it without `repository.nativeSender`:
 
 ```yaml
 repositoryCredentials:
@@ -279,9 +280,21 @@ those mounts from the rendered manifests before deploying an Agent.
 A ready sidecar confirms protected startup and the control listener. Continue
 with [Agent creation, deployment and a repository task](../repository-credentials.md#create-and-deploy-an-agent)
 to verify the actual consumer. Registry or certificate mismatch fails closed;
-check IDs, exact paths, DNS SAN and public trust first. A service restart loses
-in-memory sessions. A lost session already delivered to an Agent fails its
-version and queues runtime retirement; worker maintenance does not recreate it.
+check IDs, exact paths, DNS SAN and public trust first.
+
+A worker Pod restart, such as a rollout, upgrade or node drain, stops the
+credential service and its in-memory sessions. On a normal shutdown the service
+records that each session is disposed. At its next maintenance pass, within
+about 30 seconds, the worker opens a new session for each running version and
+delivers new session files. This recreates each dedicated Codex Pod; Git works
+again without a new deployment, and the deployment status does not change. The
+Agent's workspace volume keeps `/home/node/workspace`, generated images and
+Codex thread history. Other Pod-local state is lost: files elsewhere in the home
+directory or in `/tmp`, and running processes. Plan restarts for times when
+Agents are idle.
+
+If the service stops without recording disposal, for example when its container
+is killed, the worker cannot prove the old session ended and does not replace it.
 Inspect retained cleanup obligations before explicitly deploying a new authorized
 version. That deployment does not settle old cleanup or replay repository
 operations. See [restart and cleanup limits](../../reference/repository-credentials.md#repo-driver-contract).

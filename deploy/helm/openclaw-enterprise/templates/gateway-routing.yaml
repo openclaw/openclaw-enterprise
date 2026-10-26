@@ -226,14 +226,7 @@ spec:
     {{- if $routing.sandbox.enabled }}
     - from:
         {{- range $index, $peer := $routing.sandbox.ingressPeers -}}
-        {{- if kindIs "map" $peer -}}
-        {{- range $selectorName := list "namespaceSelector" "podSelector" -}}
-        {{- $selector := index $peer $selectorName -}}
-        {{- if and (kindIs "map" $selector) (hasKey $selector "matchLabels") -}}
-        {{- $_ := include "openclaw.networkPolicy.matchLabels" (dict "name" (printf "gatewayRouting.sandbox.ingressPeers[%d].%s.matchLabels" $index $selectorName) "value" $selector.matchLabels) -}}
-        {{- end -}}
-        {{- end -}}
-        {{- end -}}
+        {{- include "openclaw.networkPolicy.peer" (dict "name" (printf "gatewayRouting.sandbox.ingressPeers[%d]" $index) "value" $peer) -}}
         {{- end -}}
         {{- toYaml $routing.sandbox.ingressPeers | nindent 8 }}
       ports:

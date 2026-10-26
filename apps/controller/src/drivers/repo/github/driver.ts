@@ -6,7 +6,6 @@ import type {
   RepositoryCredentialSessionStatus,
 } from "@openclaw-enterprise/contracts";
 import { DependencyUnavailableError, ScopeViolationError } from "@openclaw-enterprise/occ";
-import { isAbsolute, resolve } from "node:path";
 import {
   RepositoryCredentialControlError,
   type RepositoryCredentialControlClient,
@@ -16,11 +15,6 @@ import { encodeRepositoryCredentialSessionFiles } from "./credentials/client/con
 import type { SessionStatus } from "../credentials/service-contracts.ts";
 import { sameBinding } from "../credentials/sessions.ts";
 import { hasControlCharacter } from "../credentials/client-contracts.ts";
-
-type NativeRepositorySenderConfiguration = Readonly<{
-  controlSocket: string;
-  publicCaPath: string;
-}>;
 
 function publicStatus(status: SessionStatus): RepositoryCredentialSessionStatus {
   return Object.freeze({
@@ -36,23 +30,6 @@ function publicStatus(status: SessionStatus): RepositoryCredentialSessionStatus 
 }
 
 export class GitHubNativeRepositorySender implements NativeRepositorySender {
-  static requireConfiguration(
-    configuration: NativeRepositorySenderConfiguration,
-  ): NativeRepositorySenderConfiguration {
-    for (const field of ["controlSocket", "publicCaPath"] as const) {
-      const path = configuration[field];
-      if (
-        !isAbsolute(path) ||
-        resolve(path) !== path ||
-        hasControlCharacter(path) ||
-        (field === "controlSocket" && Buffer.byteLength(path) > 103)
-      ) {
-        throw new Error(`repository.nativeSender.${field} is invalid.`);
-      }
-    }
-    return configuration;
-  }
-
   readonly id: string;
   readonly implementation = "github";
   readonly maintenanceIntervalMs = 30_000;
