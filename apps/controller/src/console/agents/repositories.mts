@@ -23,7 +23,7 @@ type RepositoryContext = Pick<NamespacePageContext, "request" | "isCurrent" | "o
 };
 
 // An Installation without repository access (no Repo Driver selected, or draft-only discovery).
-export const REPOSITORY_ACCESS_NOT_CONFIGURED =
+const REPOSITORY_ACCESS_NOT_CONFIGURED =
   "This Installation has no repository access, so this Agent cannot use repositories.";
 const REPOSITORY_SETUP_GUIDE =
   "https://github.com/openclaw/openclaw-enterprise/blob/main/docs/guides/repository-credentials/team-runbook.md";
