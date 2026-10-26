@@ -2368,7 +2368,9 @@ test("Agent sharing grants existing people exact discovery and native access, th
   const recipientRequests = apiRequests(recipient, fixture.origin);
   await login(recipient, fixture, detail, person.credentials);
   // Agent sharing does not include version read, so the version pane says so.
-  await recipient.getByRole("heading", { name: VERSION_READ_DENIED_HEADING }).waitFor();
+  await recipient
+    .getByRole("heading", { name: VERSION_READ_DENIED_HEADING, exact: true })
+    .waitFor();
   // The policy reads are denied, so the sharing card is hidden instead of showing an error.
   await recipient.locator(".agent-access").waitFor({ state: "hidden" });
   assert.equal(
@@ -2424,7 +2426,9 @@ test("Agent sharing grants existing people exact discovery and native access, th
   const advice = await refreshedAdvice;
   assert.equal(advice.status(), 200);
   assert.equal((await advice.json()).data.operate, true);
-  await recipient.getByRole("heading", { name: VERSION_READ_DENIED_HEADING }).waitFor();
+  await recipient
+    .getByRole("heading", { name: VERSION_READ_DENIED_HEADING, exact: true })
+    .waitFor();
   await recipient.getByRole("button", { name: "Stop Agent", exact: true }).click();
   await recipient
     .getByRole("dialog")

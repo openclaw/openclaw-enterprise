@@ -125,7 +125,7 @@ test("a listed version the reader can no longer read is not called possibly miss
     detailUrl(fixture, namespace.id, agent.id, next.id, "configuration"),
     reader.credentials,
   );
-  await page.getByRole("heading", { name: VERSION_READ_DENIED_HEADING }).waitFor();
+  await page.getByRole("heading", { name: VERSION_READ_DENIED_HEADING, exact: true }).waitFor();
   assert.equal(await page.getByText("Version not found or not shared").count(), 0);
 });
 
@@ -228,7 +228,7 @@ test("a member's own deploy of a version she cannot read is accepted, not possib
   await summary.getByText(DEPLOYED_VERSION_UNREADABLE, { exact: true }).waitFor();
   assert.equal(await summary.getByText("No readable deployments.").count(), 0);
   const panel = page.locator(".state-panel");
-  await panel.getByRole("heading", { name: VERSION_READ_DENIED_HEADING }).waitFor();
+  await panel.getByRole("heading", { name: VERSION_READ_DENIED_HEADING, exact: true }).waitFor();
   await panel.getByText(VERSION_READ_DENIED, { exact: true }).waitFor();
   assert.equal(await panel.getByRole("button", { name: "Retry" }).count(), 0);
   assert.equal(await panel.getByText(/^Request ID/).count(), 0);

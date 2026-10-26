@@ -887,7 +887,7 @@ test("Agent detail says when the current or requested version cannot be read", a
       ),
     )
     .waitFor();
-  await page.getByRole("heading", { name: VERSION_READ_DENIED_HEADING }).waitFor();
+  await page.getByRole("heading", { name: VERSION_READ_DENIED_HEADING, exact: true }).waitFor();
   assert.equal(await page.getByText("Configuration unavailable").count(), 0);
 
   // After a deploy the console opens the requested version; its outcome stays hidden too.
