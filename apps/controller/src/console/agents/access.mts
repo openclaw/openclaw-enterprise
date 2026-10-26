@@ -17,7 +17,7 @@ import {
   policyList,
   policyRole,
 } from "./credential-access.mjs";
-import { describeFailure, namespacePath } from "./list.mjs";
+import { describeFailure, message, namespacePath } from "./list.mjs";
 
 const discoveryPermissions = [{ action: "read", resourceKind: "namespace" }] satisfies Permission[];
 // People receive `prn_` Principal IDs; emails and other text never name an IAM subject.
@@ -257,9 +257,8 @@ export function renderAgentAccess(
       return;
     }
     state.needsRefresh = true;
-    // A rejected write shows the API's sentence. Once a write in this change was accepted, the
-    // form no longer holds what was sent, so an unexplained 400 never asks to check entered values
-    // and a typed 409 still shows its reason (finding 2538).
+    // A rejected write shows the API's sentence; once a write in this change was accepted,
+    // later failures keep the generic text.
     state.error =
       status === 403
         ? "Sharing policy requires Installation administration. Your other Agent controls remain available according to their own permissions."
@@ -267,7 +266,7 @@ export function renderAgentAccess(
           ? "No existing person with that Principal ID can be granted access here, or this Agent is no longer available. Check the Principal ID."
           : mutation && !state.saved
             ? describeFailure(error, { mutation, form: true, next: "" })
-            : describeFailure(error, { mutation, next: "" });
+            : message(error, mutation);
     state.error += " Refresh sharing to inspect current policy before another change.";
     if (requestId) {
       state.error = withRequestId(state.error, requestId);

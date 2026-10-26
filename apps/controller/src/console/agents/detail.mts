@@ -304,9 +304,6 @@ const DRAFT_CONFIGURATION_NEED: AccessNeed = {
   grant: "Configuration read",
 };
 
-// Retry credential access first rereads the Agent, which authorizes Agent read.
-const AGENT_READ_NEED: AccessNeed = { task: "reading this Agent", grant: "Agent read on it" };
-
 function errorPanel(
   cause: unknown,
   context: DetailContext,
@@ -4575,7 +4572,7 @@ export async function renderAgentDetail(
               // A retry rereads the Agent before any grant request: its failure is about that
               // read, not the grant, and Retry stays for when the Agent reads again.
               say(
-                `Authentication source saved, but this Agent could not be read before retrying its credential access. ${message(error, false, AGENT_READ_NEED)}${requestNote} Select Retry credential access once the Agent can be read.`,
+                `Authentication source saved, but this Agent could not be read before retrying its credential access. ${message(error)}${requestNote} Select Retry credential access once the Agent can be read.`,
                 "warning",
               );
             } else {
@@ -4588,7 +4585,7 @@ export async function renderAgentDetail(
                   // The grant request's own reason, never a form's "entered values".
                   (grantProblem === "refused"
                     ? ""
-                    : ` ${describeFailure(error, { mutation: true })}`) +
+                    : ` ${describeFailure(error)}`) +
                   requestNote,
                 "warning",
               );

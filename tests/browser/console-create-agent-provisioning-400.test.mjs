@@ -862,7 +862,8 @@ test("Credential registration removal preserves the safety fence and retries the
   assert.notEqual(calls[1].sourceId, sourceId);
   assert.deepEqual(calls[0].input, calls[1].input);
   assert.deepEqual(removals, [sourceId, sourceId, sourceId]); // Initial abandonment, then both DELETEs.
-  assert.equal(pathRequests(requests, "DELETE", sourcePath).length, 2);
+  // The refused DELETE (answered in the page), then the two that reached the API.
+  assert.equal(pathRequests(requests, "DELETE", sourcePath).length, 3);
   assert.deepEqual(
     pathRequests(requests, "POST", `/namespaces/${namespace.id}/credential-sources`)[1].body
       .secrets,

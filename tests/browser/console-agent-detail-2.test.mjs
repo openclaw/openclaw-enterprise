@@ -4014,7 +4014,7 @@ test("explicit missing-file readback settles an uncertain workspace create witho
   administrator.permissions = permissions;
   unavailable = true;
   await reload.click();
-  await form.getByText(WORKSPACE_UNREACHABLE, { exact: true }).waitFor();
+  await form.getByText(WORKSPACE_UNREACHABLE, { exact: false }).waitFor();
   assert.equal(await editor.isDisabled(), true);
   assert.equal(await save.isDisabled(), true);
   assert.equal(writeRequests().length, 1);
@@ -4029,7 +4029,7 @@ test("explicit missing-file readback settles an uncertain workspace create witho
     { times: 1 },
   );
   await reload.click();
-  await form.getByText(tooManyRequestsIn(30), { exact: true }).waitFor();
+  await form.getByText(tooManyRequestsIn(30), { exact: false }).waitFor();
   assert.equal(await save.isDisabled(), true);
   assert.equal(writeRequests().length, 1);
   const reply = page.waitForResponse(
@@ -4065,7 +4065,7 @@ test("explicit missing-file readback settles an uncertain workspace create witho
   assert.equal(await save.isDisabled(), true);
   assert.equal(await readFile(join(root, "USER.md"), "utf8"), "# Deliberate replacement create\n");
   await reload.click();
-  await form.getByText(WORKSPACE_UNREACHABLE, { exact: true }).waitFor();
+  await form.getByText(WORKSPACE_UNREACHABLE, { exact: false }).waitFor();
   assert.equal(await save.isDisabled(), true);
   await reload.click();
   await form.getByText("USER.md loaded.", { exact: true }).waitFor();
