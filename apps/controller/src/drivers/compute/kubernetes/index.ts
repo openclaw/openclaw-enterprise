@@ -12853,6 +12853,22 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
               },
             },
           ];
+    // A managed OpenShell Sandbox runs in a separate namespace the gateway's
+    // workspace driver creates; its workload must reach the Agent Gateway for
+    // node enrollment and app-server transport. Admit namespaces carrying the
+    // operator workspace selector the OCC sandbox driver applies.
+    const openShellSandboxIngress =
+      this.sandboxDriver?.implementation === "openshell" &&
+      this.options.network.providerHarness !== undefined &&
+      isRemoteProviderHarness(this.options.network.providerHarness)
+        ? [
+            {
+              namespaceSelector: {
+                matchLabels: { "openshell.ai/managed-by": "openshell" },
+              },
+            },
+          ]
+        : [];
     const policy = (
       name: string,
       spec: KubernetesRecord,
@@ -12892,6 +12908,14 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
             from: gatewayIngressPeers.map((peer) => this.peer(peer)),
             ports: [{ protocol: "TCP", port: network.gatewayPort }],
           },
+          ...(openShellSandboxIngress.length === 0
+            ? []
+            : [
+                {
+                  from: openShellSandboxIngress,
+                  ports: [{ protocol: "TCP", port: network.gatewayPort }],
+                },
+              ]),
         ],
       }),
     ];
