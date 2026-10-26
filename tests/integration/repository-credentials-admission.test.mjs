@@ -54,7 +54,10 @@ import {
   BROKER_PROXY_MODE,
   COMPUTE_REPOSITORY_UNSUPPORTED,
   CREDENTIAL_PROXY_INSTALLATION_ACCESS,
+  CREDENTIAL_PROXY_INSTALLATION_PREVIEW,
   DEPENDENCY_UNAVAILABLE,
+  PREVIEW_GATEWAY_VERSION,
+  PROXY_REGISTRATION_UNAVAILABLE,
   REPOSITORY_ACCESS_OR_BINDINGS,
   REPOSITORY_SELECTION_NOT_APPROVED,
   SAVED_REPOSITORY_SELECTION_NOT_APPROVED,
@@ -1699,7 +1702,10 @@ test("OpenShell Git refuses an Agent network grant to the Git hosts at save, bin
 // execution profile to the stock 0.1.5 registration, as a gateway with a stronger exchange would;
 // `registered: false` leaves the registration out of gateway info; `extension` overrides fields
 // of the registration gateway info reports; `middlewareName` names a separate egress
-// registration; `credentialGateway` also selects the bundled OpenShell Credential Gateway.
+// registration; `credentialGateway` also selects the bundled OpenShell Credential Gateway;
+// `installationAccess` offers github-installation and composes the Proxy with its Git transport,
+// as repository.openShell does; `preview` opts in to the observed-hook preview, and
+// `gatewayVersion` replaces the version the gateway reports.
 async function protectedOpenShellComposition(
   t,
   {
@@ -1709,6 +1715,9 @@ async function protectedOpenShellComposition(
     extension = {},
     middlewareName,
     credentialGateway = false,
+    installationAccess = false,
+    preview = false,
+    gatewayVersion = "0.1.5",
   } = {},
 ) {
   class ProtectedGitComputeDriver extends OpenShellGitComputeDriver {
@@ -1734,7 +1743,8 @@ async function protectedOpenShellComposition(
     // Every bound repository other than the fixture's own is approved for the Namespace too.
     extraRepositories: bindings
       .map(({ repositoryRef }) => repositoryRef)
-      .filter((repositoryRef) => repositoryRef !== "project"),
+      .filter((repositoryRef) => repositoryRef !== "project" && repositoryRef !== "installation"),
+    installationAccess,
   });
   const sandbox = repositorySandbox(f.registry);
   const registration = "oce-prepared-git";
@@ -1744,7 +1754,7 @@ async function protectedOpenShellComposition(
       gatewayReads += 1;
       // What stock 0.1.5 reports once the request-phase service is registered.
       return {
-        gateway_version: "0.1.5",
+        gateway_version: gatewayVersion,
         extensions: registered
           ? [
               {
@@ -1766,13 +1776,32 @@ async function protectedOpenShellComposition(
     middlewareName: middlewareName ?? registration,
     repositoryMiddlewareName: registration,
     authorityScope: "execution",
+    ...(preview && { observedHookPreviewWorkspace: "preview-1" }),
   };
   const backend = {
     id: "openshell",
     drivers: credentialGateway ? { credential_gateway: "openshell-credentials" } : {},
     client: { clientForNamespace: () => gateway, placement: () => undefined },
   };
-  const proxy = new OpenShellCredentialProxyDriver(options, { id: sandbox.id, sandbox, backend });
+  // Production composes the Proxy with the Git runtime's transport whenever repository Git is
+  // protected; admission only checks that it is there.
+  const git =
+    installationAccess &&
+    new OpenShellGitRuntime(
+      { protectedExecution: true },
+      createGitHubRepositoryDeliveryResolver(
+        validateGitHubRepositoryRegistry(f.registry, backendId),
+      ),
+    );
+  const proxy = new OpenShellCredentialProxyDriver(options, {
+    id: sandbox.id,
+    sandbox,
+    backend,
+    ...(git && {
+      bindRepositoryGit: git.bindRepositoryGit.bind(git),
+      previewEnforcement: git.previewEnforcement.bind(git),
+    }),
+  });
   const owner = new InstalledDriver(
     { id: sandbox.id, implementation: sandbox.implementation, configuration: options },
     { capabilities: { sandbox, credential_proxy: proxy } },
@@ -1814,6 +1843,61 @@ test("Deploy refuses OpenShell Git when its Credential Proxy has no qualified se
   assert.equal(response.error.message, RepositoryGitSenderUnqualifiedError.description);
   assert.deepEqual(revisions, []);
   assert.equal(gatewayReads, 0, "the refusal needs no gateway read");
+});
+
+test("Deploy names what installation-wide access needs from the OpenShell Proxy and its gateway", async (t) => {
+  // Finding 2536: without observedHookPreviewWorkspace the OpenShell Credential Proxy cannot
+  // enforce a github-installation binding, an Installation setting no retry changes; with it,
+  // the preview needs gateway 0.1.5, a gateway state an operator changes. Deploy answered both
+  // with a generic 503. Now the setting is a 409 before any gateway read, and the gateway state a
+  // 503 that names it. Neither creates a revision.
+  const installation = [{ repositoryRef: "installation", profile: "github-installation" }];
+  for (const [label, options, status, code, message, reads] of [
+    ["no preview", {}, 409, "RESOURCE_CONFLICT", CREDENTIAL_PROXY_INSTALLATION_PREVIEW, 0],
+    [
+      "preview on another gateway",
+      { preview: true, gatewayVersion: "0.1.6" },
+      503,
+      "DEPENDENCY_UNAVAILABLE",
+      PREVIEW_GATEWAY_VERSION,
+      1,
+    ],
+  ]) {
+    const f = await protectedOpenShellComposition(t, {
+      ...options,
+      bindings: installation,
+      installationAccess: true,
+    });
+    const agent = await f.createAgent({
+      executionMode: "dedicated",
+      repositoryBindings: installation,
+    });
+    await f.prepareDeployment(agent);
+    const response = await f.request("POST", `${f.collection}/${agent.id}/deploy`);
+    assert.equal(response.status, status, `${label}: ${JSON.stringify(response)}`);
+    assert.equal(response.error.code, code, label);
+    assert.equal(response.error.message, message, label);
+    assert.deepEqual(
+      (await f.request("GET", `${f.collection}/${agent.id}/revisions`)).data,
+      [],
+      label,
+    );
+    assert.equal(f.gatewayReads(), reads, label);
+    // The refusal comes after the deploy grant: a caller without it gets the same answer for
+    // this Agent and a missing one, each request's ID hidden.
+    const outsider = await f.requestWithoutGrants(f.app);
+    const answers = [];
+    for (const id of [agent.id, `agt_${randomUUID()}`]) {
+      const denied = await outsider("POST", `${f.collection}/${id}/deploy`);
+      answers.push({
+        status: denied.status,
+        code: denied.error.code,
+        message: sentIdHidden(denied.error.message, id),
+      });
+    }
+    assert.equal(answers[0].status, 403, `${label}: ${JSON.stringify(answers[0])}`);
+    assert.deepEqual(answers[1], answers[0], label);
+  }
 });
 
 test("Deploy refuses a repository profile a Credential Proxy cannot deliver by name", async (t) => {
@@ -1867,15 +1951,20 @@ test("A Git-only Credential Proxy names repository.openShell instead of a 503 or
     });
     assert.equal(secret.status, 201, JSON.stringify(secret));
     const sourceInput = { type: "openai", config: {}, secrets: { api_key: secret.data.ref } };
-    if (label === "stock 0.1.5") {
+    if (label !== "with the execution profile") {
       // The Installation refusal comes before any Secret read: this fixture's Secret Driver
-      // has no versioned reads, which would otherwise answer first.
+      // has no versioned reads, which would otherwise answer first. A gateway without the
+      // registration is a state an operator fixes: a 503 that names it (finding 2536).
       const created = await f.request("POST", `/namespaces/${namespaceId}/credential-sources`, {
         name: "fresh-model",
         ...sourceInput,
       });
-      assert.equal(created.status, 409, `${label}: ${JSON.stringify(created)}`);
-      assert.equal(created.error.message, CredentialProxyRepositoryOnlyError.description);
+      const [status, message] =
+        label === "stock 0.1.5"
+          ? [409, CredentialProxyRepositoryOnlyError.description]
+          : [503, PROXY_REGISTRATION_UNAVAILABLE];
+      assert.equal(created.status, status, `${label}: ${JSON.stringify(created)}`);
+      assert.equal(created.error.message, message, label);
     }
     // A Gateway-owned source registered before the Installation selected the Proxy.
     const sourceId = `cs_${randomUUID()}`;

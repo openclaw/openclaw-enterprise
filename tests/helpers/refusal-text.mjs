@@ -441,3 +441,20 @@ export const BROKER_HOST_DENIED = brokerProxyRefusal(
   "denies the repository credential broker's host",
   "Delete that deny",
 );
+
+// Finding 2536, slice 4. The bundled OpenShell Credential Proxy refuses installation-wide
+// repository access without its preview opt-in (409), and names the gateway states an operator
+// fixes (503); a stored source that breaks a later OpenShell Credential Gateway rule (409); a
+// ChatGPT service account whose credential does not belong to the Agent's Backend (409).
+export const CREDENTIAL_PROXY_INSTALLATION_PREVIEW =
+  "Installation-wide repository access (profile github-installation) needs the OpenShell Credential Proxy's observed-hook preview, which this Installation does not enable. Choose another profile, or ask an Installation administrator to enable the preview.";
+export const PROXY_REGISTRATION_UNAVAILABLE =
+  "The OpenShell gateway does not offer the protected egress middleware the Credential Proxy is configured to use. Ask an operator to check the gateway's middleware registration and version, then retry.";
+export const PREVIEW_GATEWAY_VERSION =
+  "Installation-wide repository access uses the observed-hook preview, which needs OpenShell gateway 0.1.5, and the gateway reports another version. Ask an operator to run 0.1.5 or turn the preview off, then retry.";
+export const storedCredentialSourceConfig = (field) =>
+  `This credential source's saved ${field} no longer meets the OpenShell Credential Gateway's rules, so it cannot be used. Create a new source with a valid ${field}, bind it in place of this one, then delete this one.`;
+export const SERVICE_ACCOUNT_NO_BACKEND_BINDING =
+  "ChatGPT service-account authentication needs the Agent's Backend set to the Installation's ChatGPT Backend and an account credential issued there. Set the Agent's backendId, or bind a service account with an issued credential.";
+export const SERVICE_ACCOUNT_BACKEND_MISMATCH =
+  "This service account's credential was not issued by the Agent's ChatGPT Backend, Driver and workspace, or was never issued. Bind a service account with a credential issued there, or ask an Installation administrator to restore that Backend.";

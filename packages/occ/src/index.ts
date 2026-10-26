@@ -312,6 +312,7 @@ import {
   RuntimeLogsSandboxNotFoundError,
   ScopeViolationError,
   SecretBindingDriverError,
+  ServiceAccountBackendBindingError,
   ServiceAccountDriverNotConfiguredError,
   SecretBindingValidationError,
   SecretDriverOwnershipError,
@@ -441,6 +442,7 @@ export {
   CredentialProxyRepositoryOnlyError,
   CredentialSourceConfigError,
   CredentialSourceDriverError,
+  CredentialSourceRegistrationConfigError,
   CredentialSourceRevisionError,
   CredentialSourceTypeNotOfferedError,
   CredentialSourceUnprotectedError,
@@ -488,12 +490,14 @@ export {
   SavedRepositorySelectionError,
   ScopeViolationError,
   SecretBindingDriverError,
+  ServiceAccountBackendBindingError,
   ServiceAccountCredentialSecretExistsError,
   ServiceAccountDriverNotConfiguredError,
   SecretBindingValidationError,
   SecretDriverOwnershipError,
   SecretStorageDriverError,
   SecretValueError,
+  StoredCredentialSourceConfigError,
   TransientDependencyError,
   type ActivationFailedCode,
   type ActivationPendingCode,
@@ -1430,8 +1434,9 @@ function provisioningFailureMessage(code: string, error: unknown): string {
       error instanceof ComputeProvisioningRefusedError ||
       // Fixed, id-free text that names the fix (save replacement Secrets, submit a new request).
       error instanceof SecretDriverOwnershipError ||
-      // Fixed, id-free text naming the missing ChatGPT Backend.
+      // Fixed, id-free texts naming the missing or mismatched ChatGPT Backend.
       error instanceof ServiceAccountDriverNotConfiguredError ||
+      error instanceof ServiceAccountBackendBindingError ||
       // Fixed, id-free text naming the missing repository settings (finding 2362).
       error instanceof RepositoryDriverNotConfiguredError ||
       // Fixed, id-free repository and protected admission texts (finding 2536): a Compute

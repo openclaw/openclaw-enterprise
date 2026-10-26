@@ -16,6 +16,7 @@ import {
   CredentialGatewayNotConfiguredError,
   CredentialSourceConfigError,
   CredentialSourceDriverError,
+  CredentialSourceRegistrationConfigError,
   CredentialTokenUnsettledError,
   CredentialWithdrawalInProgressError,
   DependencyUnavailableError,
@@ -729,9 +730,12 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
   if (error instanceof IAMRoleInUseError) {
     return failure(409, "RESOURCE_CONFLICT", error.message);
   }
-  if (error instanceof CredentialSourceConfigError) {
+  if (
+    error instanceof CredentialSourceConfigError ||
+    error instanceof CredentialSourceRegistrationConfigError
+  ) {
     // OCC's catalog check names a submitted field, which can be any key: cap the message and
-    // escape the detail path.
+    // escape the detail path. A registration-time refusal names a catalog field the same way.
     return failure(
       400,
       "INVALID_REQUEST",

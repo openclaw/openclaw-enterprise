@@ -21,10 +21,12 @@ import type {
   SandboxDriver,
 } from "@openclaw-enterprise/contracts";
 import {
+  CredentialProxyAdmissionError,
   CredentialProxyRepositoryOnlyError,
   DependencyUnavailableError,
   RepositoryGitProfileUnsupportedError,
   RepositoryGitSenderUnqualifiedError,
+  RetryLaterError,
 } from "@openclaw-enterprise/occ";
 import { asRecord, immutableCopy, sha256Hex } from "@openclaw-enterprise/utils";
 import { type OpenShellGateway, openShellWorkspaceName } from "../../backends/openshell.ts";
@@ -386,9 +388,9 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
           ) {
             throw new CredentialProxyRepositoryOnlyError();
           }
-          throw new DependencyUnavailableError(
-            "The selected OpenShell counterpart has no negotiated protected egress authority.",
-          );
+          // A gateway state an operator fixes (registration, protocol or capability version),
+          // which can also be a gateway still rolling out: a 503 that names it (finding 2536).
+          throw new RetryLaterError("proxyRegistration");
         }
         // Advertise the explicitly selected assurance. The held launcher, actual policy and
         // recipient must still be verified before any usable Git credential is selected.
@@ -402,9 +404,8 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
         }
         if (git) {
           if (this.options.observedHookPreviewWorkspace && profile === "github_installation") {
-            throw new DependencyUnavailableError(
-              "The observed-hook preview requires the qualified stock 0.1.5 gateway.",
-            );
+            // The gateway's version is live state an operator fixes (finding 2536).
+            throw new RetryLaterError("previewGatewayVersion");
           }
           return { profile, authorization: "online-request" as const };
         }
@@ -427,9 +428,10 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       profile === "github_installation" &&
       !(this.options.observedHookPreviewWorkspace && this.previewEnforcement)
     ) {
-      throw new DependencyUnavailableError(
-        "This OpenShell Driver is not qualified for GitHub installation access.",
-      );
+      // An Installation setting no retry changes: a 409 like the git-write refusal above
+      // (finding 2536). Protected Git always composes the preview enforcement, so only the
+      // Proxy's observedHookPreviewWorkspace opt-in is missing.
+      throw new CredentialProxyAdmissionError("installationPreview");
     }
   }
 

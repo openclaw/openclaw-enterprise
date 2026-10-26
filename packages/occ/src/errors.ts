@@ -1309,6 +1309,45 @@ export class CredentialSourceConfigError extends Error {
 }
 
 /**
+ * A Credential Gateway refuses, at registration, a config value of the create request that
+ * `validateSourceConfig` could not check, because the rule needs the Namespace's runtime
+ * placement (OpenShell: a `token_url` naming the tenant's own gateway). The Driver refuses it
+ * before any gateway write. A ScopeViolationError, so OCC's gateway wrapper passes it through;
+ * HTTP answers 400 with the field, as for CredentialSourceConfigError (finding 2536). Raised after
+ * the create grant; the message names only the type and the rule, never a submitted value.
+ */
+export class CredentialSourceRegistrationConfigError extends ScopeViolationError {
+  readonly field: string;
+  readonly group = "config" as const;
+
+  constructor(field: string, message: string) {
+    super(message);
+    this.name = "CredentialSourceRegistrationConfigError";
+    this.field = field;
+  }
+}
+
+/**
+ * A stored credential source's config breaks a Credential Gateway rule added after it was saved
+ * (OpenShell: an IP or numeric host, findings 1293 and 1360). Updating it, or deploying an Agent
+ * that binds it, can never succeed, so it is a 409 naming the fix, not a 404 (finding 2536).
+ * Raised after the caller's grant on the source and its lookup; the text names only the field.
+ */
+export class StoredCredentialSourceConfigError extends ResourceStateConflictError {
+  static message(field: string): string {
+    return `This credential source's saved ${field} no longer meets the OpenShell Credential Gateway's rules, so it cannot be used. Create a new source with a valid ${field}, bind it in place of this one, then delete this one.`;
+  }
+
+  readonly field: string;
+
+  constructor(field: string) {
+    super(StoredCredentialSourceConfigError.message(field));
+    this.name = "StoredCredentialSourceConfigError";
+    this.field = field;
+  }
+}
+
+/**
  * The selected Credential Gateway's catalog lacks a source type: registration names one it does
  * not offer, or a configuration change dropped an existing source's type (OpenShell offers
  * `bearer-token` only with `toolBinaries`). An Installation property, raised only after the
@@ -1383,6 +1422,8 @@ const CREDENTIAL_PROXY_ADMISSION_MESSAGES = Object.freeze({
     "With a Credential Proxy, an Agent deploys only as a dedicated Agent under a Sandbox, and this Installation selects no Sandbox Driver. Ask an Installation administrator to select one, or to drop drivers.credential_proxy.",
   gitAlone:
     "The selected Credential Proxy cannot add other credential sources beside this Agent's repository Git. Remove those sources or the repository binding, or ask an Installation administrator to select a Proxy with policy reduction.",
+  installationPreview:
+    "Installation-wide repository access (profile github-installation) needs the OpenShell Credential Proxy's observed-hook preview, which this Installation does not enable. Choose another profile, or ask an Installation administrator to enable the preview.",
 });
 
 /**
@@ -1390,7 +1431,8 @@ const CREDENTIAL_PROXY_ADMISSION_MESSAGES = Object.freeze({
  * Credential Proxy can never start (finding 2536). Each is an Installation property or the
  * Agent's own saved bindings, raised after the caller's deploy grant and the authorization of
  * every bound credential source; the fixed texts name no source, repository or ID. A retry
- * never helps, so HTTP answers 409 and provisioning fails the job at once.
+ * never helps, so HTTP answers 409 and provisioning fails the job at once. The bundled OpenShell
+ * Proxy raises `installationPreview` from its availability check, which admission calls last.
  */
 export class CredentialProxyAdmissionError extends ResourceStateConflictError {
   static readonly messages = CREDENTIAL_PROXY_ADMISSION_MESSAGES;
@@ -1408,6 +1450,10 @@ const RETRY_LATER_MESSAGES = Object.freeze({
     `This credential source was registered moments ago, and its registration may still be completing. Retry the deletion in ${seconds === 1 ? "1 second" : `${seconds} seconds`}; nothing else needs to change.`,
   deviceLoginFailed: () =>
     "The sign-in service did not complete this device login, so it was cancelled. Start a new device login. If it keeps failing, ask an operator to check the API logs.",
+  proxyRegistration: () =>
+    "The OpenShell gateway does not offer the protected egress middleware the Credential Proxy is configured to use. Ask an operator to check the gateway's middleware registration and version, then retry.",
+  previewGatewayVersion: () =>
+    "Installation-wide repository access uses the observed-hook preview, which needs OpenShell gateway 0.1.5, and the gateway reports another version. Ask an operator to run 0.1.5 or turn the preview off, then retry.",
 });
 
 /**
@@ -1416,12 +1462,16 @@ const RETRY_LATER_MESSAGES = Object.freeze({
  * returns the text instead of the generic one. It stays a DependencyUnavailableError, so
  * workers still retry it. A failed device login keeps the Refresh Driver's error as `cause`, so
  * the API's 503 log record, which the text points the caller to, names that error's class and
- * code (never its message).
+ * code (never its message). The bundled OpenShell Credential Proxy raises the gateway states an
+ * operator can fix (`proxyRegistration`, `previewGatewayVersion`) from its availability check.
  */
 export class RetryLaterError extends DependencyUnavailableError {
+  static readonly messages = RETRY_LATER_MESSAGES;
+
   constructor(reason: "deviceLoginFailed", cause: unknown);
   constructor(reason: "registrationFence", seconds: number);
-  constructor(reason: keyof typeof RETRY_LATER_MESSAGES, detail: unknown) {
+  constructor(reason: "proxyRegistration" | "previewGatewayVersion");
+  constructor(reason: keyof typeof RETRY_LATER_MESSAGES, detail?: unknown) {
     super(
       RETRY_LATER_MESSAGES[reason](
         Math.max(1, Math.ceil(reason === "registrationFence" ? Number(detail) : 0)),
@@ -1454,6 +1504,29 @@ export class ServiceAccountDriverNotConfiguredError extends ResourceConflictErro
   constructor(operation: "issue" | "deploy" | "delete") {
     super(SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED_MESSAGES[operation]);
     this.name = "ServiceAccountDriverNotConfiguredError";
+  }
+}
+
+const SERVICE_ACCOUNT_BACKEND_BINDING_MESSAGES = Object.freeze({
+  noBinding:
+    "ChatGPT service-account authentication needs the Agent's Backend set to the Installation's ChatGPT Backend and an account credential issued there. Set the Agent's backendId, or bind a service account with an issued credential.",
+  mismatch:
+    "This service account's credential was not issued by the Agent's ChatGPT Backend, Driver and workspace, or was never issued. Bind a service account with a credential issued there, or ask an Installation administrator to restore that Backend.",
+});
+
+/**
+ * A ChatGPT service-account Harness binding whose account credential does not belong to the
+ * Agent's Backend: the Agent selects no ChatGPT Backend, or the credential was issued by another
+ * Backend, Driver or workspace, or never issued. Deploy and provisioning can never admit it, so
+ * it is a 409 naming the fix, not "already exists" (finding 2536). Raised after the caller's
+ * read grant on the account and its lookup; the texts name no account, Backend or workspace.
+ */
+export class ServiceAccountBackendBindingError extends ResourceStateConflictError {
+  static readonly messages = SERVICE_ACCOUNT_BACKEND_BINDING_MESSAGES;
+
+  constructor(reason: keyof typeof SERVICE_ACCOUNT_BACKEND_BINDING_MESSAGES) {
+    super(SERVICE_ACCOUNT_BACKEND_BINDING_MESSAGES[reason]);
+    this.name = "ServiceAccountBackendBindingError";
   }
 }
 

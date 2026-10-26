@@ -16,8 +16,10 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import {
   CredentialSourceConfigError,
+  CredentialSourceRegistrationConfigError,
   CredentialSourceRevisionError,
   ScopeViolationError,
+  StoredCredentialSourceConfigError,
 } from "@openclaw-enterprise/occ";
 import {
   asRecord,
@@ -328,11 +330,12 @@ function validateOAuth2Config(
 /**
  * Re-checks a stored source's protected `host` before its profile is written, first as at save.
  * A source stored before the host rules (finding 1360) fails here until it is replaced
- * (finding 1363).
+ * (finding 1363). Registration checks the request first (`registerSource`), so only a stored
+ * source reaches this: a 409 that names the replacement (finding 2536).
  */
-function checkStoredHost(type: string, config: Readonly<Record<string, string>>): void {
+function checkStoredHost(config: Readonly<Record<string, string>>): void {
   if (!exactDnsName(config.host ?? "")) {
-    throw new ScopeViolationError(`The ${type} host must be an exact DNS name.`);
+    throw new StoredCredentialSourceConfigError("host");
   }
 }
 
@@ -385,16 +388,14 @@ function oauth2SourceType(
     credentials: (config) => Object.freeze({ access_token: config.env_var ?? "" }),
     // The token endpoint lives only in the profile: OpenShell refuses it as refresh material.
     profile: (sourceId, config, options, gateway) => {
-      checkStoredHost(type, config);
+      checkStoredHost(config);
       // A source stored before the token_url host rules fails here until it is replaced.
-      if (!tokenUrlHostAllowed(config.token_url ?? "")) {
-        throw new ScopeViolationError(tokenUrlHostMessage(type));
-      }
-      if (!tokenUrlHostOutsideGateway(config.token_url ?? "", gateway)) {
-        throw new ScopeViolationError(tokenUrlGatewayMessage(type));
-      }
-      if (!tokenUrlPortAllowed(config.token_url ?? "")) {
-        throw new ScopeViolationError(tokenUrlPortMessage(type));
+      if (
+        !tokenUrlHostAllowed(config.token_url ?? "") ||
+        !tokenUrlHostOutsideGateway(config.token_url ?? "", gateway) ||
+        !tokenUrlPortAllowed(config.token_url ?? "")
+      ) {
+        throw new StoredCredentialSourceConfigError("token_url");
       }
       return bearerProfile(sourceId, config, options, `OAuth2 ${type} (OpenClaw Enterprise)`, {
         name: "access_token",
@@ -609,7 +610,7 @@ const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
     validate: (config) => validateEndpointConfig("bearer-token", config),
     credentials: (config) => Object.freeze({ token: config.env_var ?? "" }),
     profile: (sourceId, config, options) => {
-      checkStoredHost("bearer-token", config);
+      checkStoredHost(config);
       return bearerProfile(sourceId, config, options, "Bearer token (OpenClaw Enterprise)", {
         name: "token",
       });
@@ -794,10 +795,11 @@ function normalizedSourceBaseUrl(config: Readonly<Record<string, string>>): stri
   return baseUrl !== undefined && exactDnsName(new URL(baseUrl).hostname) ? baseUrl : undefined;
 }
 
+/** Only a stored source fails here: registration checks the request first (finding 2536). */
 function sourceBaseUrl(config: Readonly<Record<string, string>>): string {
   const baseUrl = normalizedSourceBaseUrl(config);
   if (baseUrl === undefined) {
-    throw new ScopeViolationError(SOURCE_ENDPOINT_REQUIREMENTS);
+    throw new StoredCredentialSourceConfigError(OPENAI_BASE_URL_CONFIG);
   }
   return baseUrl;
 }
@@ -891,9 +893,18 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     input: CredentialSourceInput,
   ): Promise<CredentialSourceStatus> {
     const type = sourceType(input.type, this.options, this.refresh);
-    // Without the gateway placement: ensureProfile below checks it and throws ScopeViolationError,
-    // which OCC passes through; a CredentialSourceConfigError here would surface as a 503.
-    type.validate(input.config);
+    // validateSourceConfig sees no tenant Namespace, so a gateway in each tenant namespace is
+    // known only here. Refuse the request's own value before any gateway write, by field, as
+    // validateSourceConfig does (400); OCC passes this ScopeViolationError through, while a
+    // CredentialSourceConfigError would surface as a 503 (finding 2536).
+    try {
+      type.validate(input.config, this.placement(context));
+    } catch (error) {
+      if (error instanceof CredentialSourceConfigError) {
+        throw new CredentialSourceRegistrationConfigError(error.field, error.message);
+      }
+      throw error;
+    }
     const workspace = openShellWorkspaceName(context.namespace);
     const client = this.client(context);
     const credentials = providerCredentials(type, input);
