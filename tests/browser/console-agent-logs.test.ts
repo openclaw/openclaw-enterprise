@@ -1610,7 +1610,10 @@ test("rate limits keep Follow and status automatic, but not a download made whil
   // Status has its own ten-second poll. Neither automatic read repeats the download.
   await page.clock.runFor(6_000);
   await waitForIdleFetches(page);
-  assert.equal(await page.getByRole("status").filter({ hasText: waiting }).textContent(), waiting);
+  // The Pod cards stay, so the strip dates them with their last observation.
+  const strip = (await page.locator(".agent-logs > p > [role='status']").textContent()) ?? "";
+  assert.match(strip, /^Showing runtime status last observed /u);
+  assert.ok(strip.endsWith(`. ${waiting}`), strip);
   assert.equal(counts.status, 1);
   await page.clock.runFor(10_000);
   await waitForIdleFetches(page);
