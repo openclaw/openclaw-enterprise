@@ -9,6 +9,8 @@ import { grantRole } from "../helpers/iam-grants.mjs";
 import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.mjs";
 import {
   apiRequests,
+  authorizationDenials,
+  denyRevisionRead,
   detailUrl,
   fileBrowser,
   holdRequests,
@@ -148,13 +150,7 @@ for (const tab of ["configuration", "logs", "channels"]) {
     assert.equal(await logs.getAttribute("class"), "button button--primary");
     assert.equal(await recovery.getByRole("link", { name: "Deploy again" }).count(), 0);
     assert.equal(await page.evaluate(() => globalThis.deployAgainSeen), false);
-    const configurationDenials = auditSink
-      .list()
-      .filter(
-        (event) =>
-          event.kind === "authorization_denial" && event.action === "openclaw.configurations.read",
-      );
-    assert.equal(configurationDenials.length, 1);
+    assert.equal(authorizationDenials(auditSink, "openclaw.configurations.read").length, 1);
   });
 }
 
@@ -391,13 +387,7 @@ test("A deployer who cannot read the Configuration gets no Open version draft", 
   assert.equal(await logs.getAttribute("class"), "button button--primary");
   assert.equal(await recovery.getByRole("link", { name: "Open version draft" }).count(), 0);
   assert.equal(await page.evaluate(() => globalThis.openDraftSeen), false);
-  const configurationDenials = auditSink
-    .list()
-    .filter(
-      (event) =>
-        event.kind === "authorization_denial" && event.action === "openclaw.configurations.read",
-    );
-  assert.equal(configurationDenials.length, 1);
+  assert.equal(authorizationDenials(auditSink, "openclaw.configurations.read").length, 1);
 });
 
 // A deployer who can read it gets the link once the read succeeds, not before.
@@ -702,14 +692,7 @@ test("A failed reread leaves the newest readable version Historical under a hidd
   const next = await fixture.deployAgent(namespace.id, agent.id);
   const hidden = await fixture.deployAgent(namespace.id, agent.id);
   await fixture.activateRevision(namespace.id, agent.id, hidden.id, first.id);
-  fixture.policy.restrictions.push({
-    id: `deny-read-${hidden.id}`,
-    namespaceId: namespace.id,
-    resourceKind: "agent_revision",
-    resourceId: hidden.id,
-    action: "read",
-    effect: "deny",
-  });
+  denyRevisionRead(fixture, namespace, hidden);
   const { page } = await newPage(t, fixture, { browser });
   let agentFail = false;
   await page.route(

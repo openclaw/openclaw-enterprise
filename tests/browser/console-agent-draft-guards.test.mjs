@@ -55,6 +55,7 @@ import {
   REPOSITORY_EDITS_PENDING,
   RESOURCE_CONFLICT,
   permissionRefused,
+  GRANT_EXCEEDS_CEILING,
 } from "../helpers/refusal-text.mjs";
 
 test("Agent policy ceiling rejection is announced in view and preserves unsaved additions", async (t) => {
@@ -116,10 +117,7 @@ test("Agent policy ceiling rejection is announced in view and preserves unsaved 
   // The list names the setting as a dotted path, as the API's refusals do, never a JSON pointer
   // (finding 2538).
   await page
-    .getByText(
-      "Configuration setting additions[0]: The grant exceeds the Installation delegation ceiling.",
-      { exact: true },
-    )
+    .getByText(`Configuration setting additions[0]: ${GRANT_EXCEEDS_CEILING}`, { exact: true })
     .waitFor();
   assert.equal(await page.getByText(/^\/additions/).count(), 0);
   assert.equal(
@@ -688,11 +686,7 @@ test("Agent policy combined save distinguishes ceiling rejection from a saved po
   await page.getByRole("spinbutton", { name: "Start port", exact: true }).fill("443");
   await page.getByRole("spinbutton", { name: "End port", exact: true }).fill("443");
   await page.getByRole("button", { name: "Review changes", exact: true }).click();
-  await page
-    .getByRole("alert")
-    .filter({ hasText: "The grant exceeds the Installation delegation ceiling" })
-    .first()
-    .waitFor();
+  await page.getByRole("alert").filter({ hasText: GRANT_EXCEEDS_CEILING }).first().waitFor();
   assert.equal(
     pathRequests(requests, "POST", `${base}/apply`).length,
     0,

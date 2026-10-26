@@ -479,3 +479,18 @@ export const SERVICE_ACCOUNT_NO_BACKEND_BINDING =
   "ChatGPT service-account authentication needs the Agent's Backend set to the Installation's ChatGPT Backend and an account credential issued there. Set the Agent's backendId, or bind a service account with an issued credential.";
 export const SERVICE_ACCOUNT_BACKEND_MISMATCH =
   "This service account's credential was not issued by the Agent's ChatGPT Backend, Driver and workspace, or was never issued. Bind a service account with a credential issued there, or ask an Installation administrator to restore that Backend.";
+// The Agent page's heading for a version that exists but the reader's access does not include
+// (agents/detail.mts); VERSION_READ_DENIED is its reason.
+export const VERSION_READ_DENIED_HEADING = "You cannot read this version";
+// The version draft a reader without Agent update views (finding 2421), and its plugin list.
+export const READ_ONLY_DRAFT_NOTICE =
+  "Version draft · read-only with your access. The next deployment uses it as saved.";
+export const PLUGINS_READ_ONLY =
+  "These are the version draft's plugin selections, read-only with your access. The next deployment uses them as saved.";
+// Why a running version reads "Not verified" (finding 2367).
+export const NO_TEST_REQUEST = "OpenClaw Enterprise sends no test request.";
+// The API's refusal of a sandbox policy rule outside the Installation delegation ceiling.
+export const GRANT_EXCEEDS_CEILING = "The grant exceeds the Installation delegation ceiling.";
+// Plugin discovery with a credential the plugin service rejected (agents/plugin-discovery.mts).
+export const PLUGIN_CREDENTIALS_REJECTED =
+  "The credential was rejected or cannot access plugins. Check its permissions.";

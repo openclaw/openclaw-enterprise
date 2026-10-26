@@ -100,6 +100,9 @@ import {
   secretOperateRefused,
   stopRefused,
   stopStatusRefreshFailed,
+  NO_TEST_REQUEST,
+  PLUGINS_READ_ONLY,
+  READ_ONLY_DRAFT_NOTICE,
 } from "../helpers/refusal-text.mjs";
 
 test("Agent detail separates the current version, viewed version, and latest deployment", async (t) => {
@@ -164,10 +167,7 @@ test("Agent detail separates the current version, viewed version, and latest dep
   await overview.nth(1).getByText("v2 · Queued").waitFor();
   await overview.nth(2).getByText("Not verified").waitFor();
   // A running version's unverified serving says why (finding 2367).
-  await overview
-    .nth(2)
-    .getByText("OpenClaw Enterprise sends no test request.", { exact: true })
-    .waitFor();
+  await overview.nth(2).getByText(NO_TEST_REQUEST, { exact: true }).waitFor();
   const activity = await expectDeploymentOutcome(page, "Queued");
   await activity.getByText("Most recent visible deployment · v2").waitFor();
   await activity.getByText("Waiting for a worker claim.").waitFor();
@@ -4146,10 +4146,6 @@ const SOCKET_SLACK = {
   allowFrom: ["U123"],
   channels: { C123: { requireMention: true } },
 };
-const READ_ONLY_DRAFT_NOTICE =
-  "Version draft · read-only with your access. The next deployment uses it as saved.";
-const PLUGINS_READ_ONLY =
-  "These are the version draft's plugin selections, read-only with your access. The next deployment uses them as saved.";
 
 // A member who can only read the Agent views its draft: the saved JSON with no editor whose
 // Save answers 403, and no editor's copy or checklist (finding 2421).

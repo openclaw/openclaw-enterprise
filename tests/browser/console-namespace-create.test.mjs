@@ -12,6 +12,7 @@ import {
 } from "../helpers/refusal-text.mjs";
 import {
   apiRequests,
+  authorizationDenials,
   expectWriteAsksBeforeUnload,
   fileBrowser,
   holdRequests,
@@ -414,14 +415,7 @@ test("a member is not invited to create, and a real IAM denial disables Create N
     ),
     false,
   );
-  assert.ok(
-    audit
-      .list()
-      .some(
-        (event) =>
-          event.kind === "authorization_denial" && event.action === "openclaw.namespaces.create",
-      ),
-  );
+  assert.ok(authorizationDenials(audit, "openclaw.namespaces.create").length > 0);
 });
 
 // Creates a Namespace through the open page's dialog and returns its error alert, if any.

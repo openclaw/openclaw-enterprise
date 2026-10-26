@@ -77,6 +77,7 @@ import {
   callerDenied,
   READ_UNAVAILABLE,
   namespaceListDenied,
+  PLUGIN_CREDENTIALS_REJECTED,
 } from "../helpers/refusal-text.mjs";
 
 type ConsoleFixture = Awaited<ReturnType<typeof createBaseConsoleAppFixture>>;
@@ -1473,11 +1474,7 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
     detailRelease.resolve();
   }
   // The request ID uses the one label every console failure uses (finding 2538).
-  await dialog
-    .getByText(
-      /credential was rejected or cannot access plugins\. Check its permissions\. Request ID: req_/,
-    )
-    .waitFor();
+  await dialog.getByText(`${PLUGIN_CREDENTIALS_REJECTED} Request ID: req_`).waitFor();
   assert.equal(await heading.evaluate((node) => node === node.ownerDocument.activeElement), true);
   assert.equal((await dialog.textContent())?.includes("private upstream response"), false);
   failTools = false;
@@ -1487,10 +1484,7 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
     await dialog.locator('details.plugin-tool-row[data-tool="app_shared/events%2Flist"]').count(),
     1,
   );
-  assert.equal(
-    await dialog.getByText(/credential was rejected or cannot access plugins/).count(),
-    0,
-  );
+  assert.equal(await dialog.getByText(PLUGIN_CREDENTIALS_REJECTED).count(), 0);
   const detailLogo = dialog.locator(".plugin-detail-header .plugin-logo img");
   await detailLogo.evaluate((image: HTMLImageElement) => image.decode());
   assert.ok(await detailLogo.evaluate((image: HTMLImageElement) => image.naturalWidth > 0));

@@ -8,6 +8,8 @@ import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   AGENT_READ,
   apiRequests,
+  authorizationDenials,
+  denyRevisionRead,
   detailUrl,
   hasFocus,
   holdRequests,
@@ -20,6 +22,7 @@ import {
   takeLayoutShifts,
   trackSettledFetches,
   shortId,
+  stopAgentButton,
   waitForEnabled,
   waitForIdleFetches,
 } from "./console-agents-browser-helpers.mjs";
@@ -43,6 +46,7 @@ import {
   NEW_VERSIONS_READ,
   STOP_UNKNOWN_DEPLOYMENT_CONFIRMATION,
   VERSION_UNAVAILABLE,
+  VERSION_READ_DENIED_HEADING,
 } from "../helpers/refusal-text.mjs";
 
 function deploymentBody(
@@ -694,14 +698,7 @@ test("Only an administrator's session probes Installation administration and rea
     requests
       .filter(({ path }) => path === "/observability" || path.includes("/iam/"))
       .map(({ method, path }) => `${method} ${path}`);
-  const adminDenials = () =>
-    auditSink
-      .list()
-      .filter(
-        (event) =>
-          event.kind === "authorization_denial" &&
-          /^openclaw\.(observability|iam)\./.test(event.action),
-      );
+  const adminDenials = () => authorizationDenials(auditSink, /^openclaw\.(observability|iam)\./);
 
   const { page: member } = await newPage(t, fixture);
   await trackSettledFetches(member);
@@ -848,17 +845,6 @@ function routeDeploymentStatus(page, fixture, namespace, agent, revision, status
   );
 }
 
-function denyRevisionRead(fixture, namespace, revision) {
-  fixture.policy.restrictions.push({
-    id: `deny-read-${revision.id}`,
-    namespaceId: namespace.id,
-    resourceKind: "agent_revision",
-    resourceId: revision.id,
-    action: "read",
-    effect: "deny",
-  });
-}
-
 test("Agent detail says when the current or requested version cannot be read", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -901,7 +887,7 @@ test("Agent detail says when the current or requested version cannot be read", a
       ),
     )
     .waitFor();
-  await page.getByRole("heading", { name: "You cannot read this version" }).waitFor();
+  await page.getByRole("heading", { name: VERSION_READ_DENIED_HEADING }).waitFor();
   assert.equal(await page.getByText("Configuration unavailable").count(), 0);
 
   // After a deploy the console opens the requested version; its outcome stays hidden too.
@@ -949,9 +935,7 @@ test("Agent detail says an Agent's versions are hidden, not missing, when none i
   // cannot read the deploying version, so Stop stays on the page and the Agents list: the API
   // answers if nothing runs. Its dialog cannot say which, so it names both outcomes instead of
   // describing a gateway that may not exist (finding D691).
-  const stop = page
-    .getByRole("region", { name: "Stop Agent", exact: true })
-    .getByRole("button", { name: "Stop Agent", exact: true });
+  const stop = stopAgentButton(page);
   await waitForEnabled(stop);
   await stop.click();
   let dialog = page.getByRole("dialog", { name: "Stop this Agent?" });
