@@ -74,12 +74,28 @@ async function collectorFixture(t, prefix) {
     join(directory, "backend.yaml"),
     `receivers:\n  otlp:\n    protocols:\n      http:\n        endpoint: 0.0.0.0:4318\nexporters:\n  file:\n    path: /out/logs.jsonl\nservice:\n  telemetry:\n    logs:\n      level: error\n  pipelines:\n    logs:\n      receivers: [otlp]\n      exporters: [file]\n`,
   );
+  let networkCreated = false;
+  // node:test runs after hooks in registration order, so this hook runs before any hook a
+  // test adds for a container it attaches to the network later. Remove every container on
+  // the network (backend, Collector and those test fixtures) before the network itself:
+  // Docker refuses to remove a network with attached containers, and each leaked network
+  // keeps an address pool until Compose networks on the host find none left. A failed
+  // removal fails the test instead of leaking silently.
   t.after(async () => {
-    await docker(["rm", "--force", collector, backend]).catch(() => {});
-    await docker(["network", "rm", network]).catch(() => {});
-    await rm(directory, { recursive: true, force: true });
+    try {
+      if (networkCreated) {
+        const attached = await docker(["ps", "--all", "--quiet", "--filter", `network=${network}`]);
+        if (attached.length > 0) {
+          await docker(["rm", "--force", ...attached.split("\n")]);
+        }
+        await docker(["network", "rm", network]);
+      }
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
   await docker(["network", "create", network]);
+  networkCreated = true;
   await docker([
     "run",
     "--detach",
@@ -2243,8 +2259,8 @@ test(
   },
   async (t) => {
     const fixture = await collectorFixture(t, "sync");
+    // The fixture's cleanup removes this container with the rest of its network.
     const api = `oce-otel-sync-api-${fixture.suffix}`;
-    t.after(() => docker(["rm", "--force", api]).catch(() => {}));
     const namespace = `system-${fixture.suffix}`;
     const podName = `openclaw-enterprise-worker-${fixture.suffix}`;
     const podUid = randomUUID();
