@@ -3,6 +3,7 @@ export {
   RUNTIME_LOG_CURSOR_TTL_MS,
   type RuntimeLogCursorBinding,
   type RuntimeLogCursorCodec,
+  validRuntimeLogFrontierTime,
 } from "./cursor.ts";
 export { InvalidRuntimeDescriptionError, validRuntimeDescription } from "./description.ts";
 export {

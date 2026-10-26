@@ -6,6 +6,7 @@ import test from "node:test";
 import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
 import { ChannelDirectoryError } from "../../packages/occ/src/index.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
+import { SLACK_ROUTE_NOT_CONFIGURED } from "../helpers/refusal-text.mjs";
 import {
   connectThroughProxy,
   requestThroughProxy,
@@ -65,6 +66,13 @@ test("Slack directory accepts only literal IP or managed Service proxy endpoints
     "http://openclaw-enterprise-slack-proxy.openclaw-system.svc:65536",
   ]) {
     assert.throws(() => new SlackChannelDriver(globalThis.fetch, proxyUrl), /managed Kubernetes/);
+  }
+  // The unspecified address names no proxy.
+  for (const proxyUrl of ["http://0.0.0.0:3128", "https://0.0.0.0:8443"]) {
+    assert.throws(
+      () => new SlackChannelDriver(globalThis.fetch, proxyUrl),
+      /^Error: Slack directory proxy must not use host 0\.0\.0\.0, which names no proxy address\.$/,
+    );
   }
 });
 
@@ -403,4 +411,147 @@ test("Slack HTTP errors release the connection for a subsequent directory lookup
       assert.equal(calls, 3, "the retry reaches both auth.test and users.list");
     });
   }
+});
+
+test("Slack credential checks refuse redirects instead of resending the bot token", async (t) => {
+  // Undici follows these by default and resends the authorization header to the same origin;
+  // a redirect to an {ok:true} body then passed the check (finding 1349).
+  for (const status of [301, 302, 307, 308]) {
+    await t.test(`HTTP ${status}`, async (t) => {
+      const requests = [];
+      const server = createServer((request, response) => {
+        requests.push(request.url);
+        if (request.url === "/api/auth.test") {
+          response.writeHead(status, { location: "/api/redirected", "content-length": "0" });
+          response.end();
+          return;
+        }
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({ ok: true, bot_id: "BBOT123", team_id: "TWORKSPACE" }));
+      });
+      t.after(async () => {
+        server.closeAllConnections();
+        await new Promise((resolve) => server.close(resolve));
+      });
+      await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const origin = `http://127.0.0.1:${server.address().port}`;
+      const driver = new SlackChannelDriver((url, options) =>
+        globalThis.fetch(new URL(new URL(url).pathname, origin), options),
+      );
+
+      await assert.rejects(
+        driver.validateCredentials(
+          { channels: { slack: { mode: "http", botToken: { source: "env", id: "SLACK_BOT" } } } },
+          async (_id, _field, use) => use(token),
+        ),
+        { reason: "unavailable", path: "/channels/slack/botToken" },
+      );
+      assert.deepEqual(requests, ["/api/auth.test"]);
+    });
+  }
+});
+
+test("Slack credential checks read only a whole ${NAME} token string as an env reference", async () => {
+  const driver = new SlackChannelDriver(
+    async () => new Response(JSON.stringify({ ok: true, bot_id: "BBOT123", team_id: "TTEAM" })),
+  );
+  const read = [];
+  const check = (botToken) =>
+    driver.validateCredentials(
+      { channels: { slack: { mode: "http", botToken } } },
+      async (id, _field, use) => {
+        read.push(id);
+        return use(token);
+      },
+    );
+  // OpenClaw reads exactly one `${NAME}` as the env SecretRef to NAME (finding 2511).
+  await check("${SLACK_BOT_TOKEN}");
+  assert.deepEqual(read, ["SLACK_BOT_TOKEN"]);
+  // Any other string would reach the runtime as text, or as a fallback for an unset name, so it
+  // still asks for a Secret binding without reading one.
+  for (const botToken of [
+    "xoxb-${SLACK_BOT_TOKEN}",
+    "${SLACK_BOT_TOKEN} ",
+    " ${SLACK_BOT_TOKEN}",
+    "${SLACK_BOT_TOKEN}${SLACK_APP_TOKEN}",
+    "${SLACK_BOT_TOKEN:-}",
+    "${SLACK_BOT_TOKEN:-xoxb-fallback}",
+    "$SLACK_BOT_TOKEN",
+    "$${SLACK_BOT_TOKEN}",
+    "${slack_bot}",
+    token,
+  ]) {
+    await assert.rejects(check(botToken), {
+      reason: "binding_required",
+      path: "/channels/slack/botToken",
+    });
+  }
+  assert.deepEqual(read, ["SLACK_BOT_TOKEN"]);
+});
+
+test("Slack credential checks name the missing proxy only when production expects one and Slack never answered", async (t) => {
+  // Finding 2521: production composition passes expectProxy. With no proxy URL, an auth.test
+  // that Slack never answers usually means the Installation has no Slack route, so the refusal
+  // names the Helm setting and still allows a retry for an open route that timed out (2531).
+  const check = (driver, value = token) =>
+    driver.validateCredentials(
+      { channels: { slack: { mode: "http", botToken: "${SLACK_BOT_TOKEN}" } } },
+      async (_id, _field, use) => use(value),
+    );
+  const noRoute = {
+    name: "SlackRouteNotConfiguredError",
+    message: SLACK_ROUTE_NOT_CONFIGURED,
+  };
+  const unavailable = { reason: "unavailable", path: "/channels/slack/botToken" };
+  // Node's own fetch sends the request to local endpoints, so each failure has the real shape.
+  const listen = async (server) => {
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    t.after(() => server.close());
+    return `http://127.0.0.1:${server.address().port}/`;
+  };
+  const sendTo = (url) => (_slack, options) => globalThis.fetch(url, options);
+  const closed = net.createServer();
+  const closedUrl = await listen(closed);
+  closed.close();
+  // A refused connection and an expired time budget are the two ways Slack never answers.
+  await assert.rejects(
+    check(new SlackChannelDriver(sendTo(closedUrl), undefined, { expectProxy: true })),
+    noRoute,
+  );
+  const timedOut = async () => {
+    throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+  };
+  await assert.rejects(
+    check(new SlackChannelDriver(timedOut, undefined, { expectProxy: true })),
+    noRoute,
+  );
+  // Finding 2532: a redirect refused by redirect: "error" and an invalid header value are fetch
+  // rejections after or without a connection attempt, not a missing route: they stay transient.
+  const redirectUrl = await listen(
+    createServer((_request, response) => {
+      response.writeHead(302, { location: "https://slack.com/api/auth.test" }).end();
+    }),
+  );
+  await assert.rejects(
+    check(new SlackChannelDriver(sendTo(redirectUrl), undefined, { expectProxy: true })),
+    unavailable,
+  );
+  await assert.rejects(
+    check(
+      new SlackChannelDriver(sendTo(redirectUrl), undefined, { expectProxy: true }),
+      "xoxb-a\u0000b",
+    ),
+    unavailable,
+  );
+  // Development composition expects no proxy: the same failure stays the transient outage.
+  await assert.rejects(check(new SlackChannelDriver(sendTo(closedUrl))), unavailable);
+  // With a proxy configured, a refused tunnel is an outage of that route, not a missing setting.
+  const proxy = createServer();
+  proxy.on("connect", (_request, socket) => {
+    socket.end("HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n");
+  });
+  const proxied = new SlackChannelDriver(globalThis.fetch, (await listen(proxy)).slice(0, -1), {
+    expectProxy: true,
+  });
+  await assert.rejects(check(proxied), unavailable);
 });

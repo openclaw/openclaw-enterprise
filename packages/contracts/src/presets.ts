@@ -42,6 +42,9 @@ export interface Preset {
   readonly createdAt: string;
 }
 
+/** A Preset without its template, as list routes return it. */
+export type PresetSummary = Pick<Preset, "id" | "namespaceId" | "name" | "createdAt">;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }

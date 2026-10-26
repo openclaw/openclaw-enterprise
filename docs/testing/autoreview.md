@@ -1,56 +1,41 @@
 # Review changes with autoreview
 
-For test audits, proof selection, and cleanup before review, see
-[Developer skills](developer-skills.md).
+## Overview
 
-When the user or owning workflow requests independent developer review, follow
-the [shared skill setup](../../.agents/skills/autoreview/SKILL.md) once and read
-the complete installed skill. Run from the Enterprise repository root:
+Use autoreview to get an independent review of local changes or a committed branch.
+
+## Run a review
+
+When independent review is requested, follow the [shared skill setup](../../.agents/skills/autoreview/SKILL.md)
+and read the installed skill. From the repository root:
 
 ```sh
 python3 "$HOME/.agents/skills/autoreview/scripts/autoreview" --mode local --model codex=gpt-6-astra
 ```
 
-Use your selected installation path if it differs from the default. On Windows,
-use Python or the installed `scripts/autoreview.ps1` launcher.
-The helper requires Python 3.10 or newer and an installed, authenticated reviewer
-CLI (Codex by default). Image review also requires Pillow. Pass
-`--model codex=gpt-6-astra` to select the Enterprise standard; the shared helper
-owns its default when the option is omitted. It needs no Enterprise runtime or
-pnpm dependencies. For a committed branch in a
-fork checkout, use `--mode branch --base upstream/main` when `upstream` points
-to `openclaw/openclaw-enterprise`. Verify the remote URL and fetch the intended
-base first; use the actual target branch for an existing or dependent PR.
-Pass `--base` explicitly: the helper's `origin/main` default may refer to the
-fork rather than the upstream base. Follow the
-[fork PR policy](../../CONTRIBUTING.md#prepare-a-pull-request) without renaming
-existing remotes.
-Local mode includes untracked files and staged and unstaged changes. The default
-threshold is P0; pass `--max-priority P2` when that broader scope is requested.
+The helper requires Python 3.10+ and an authenticated reviewer CLI; image
+review also requires Pillow. Local mode includes untracked, staged, and unstaged
+changes. Use `--dry-run` to check preparation and `--max-priority P2` when that
+scope is requested; the default threshold is P0.
 
-Use `--dry-run` to verify preparation without contacting a reviewer. If a CLI,
-authentication, or isolation prerequisite is missing, resolve the reported error;
-do not bypass isolation or interpret an absent report as clean. Keep report paths
-outside the repository. Verify findings against the change before applying them.
-This workflow reviews developer changes; it does not configure runtime approvals.
-See the installed skill for engines, context inputs, exit codes, and results.
+For a committed branch, use `--mode branch --base upstream/main` only after
+verifying and fetching the intended upstream. For an existing or dependent PR,
+select its actual target branch. Pass `--base` explicitly: the default
+`origin/main` can point to a fork. Verify findings before applying them, keep
+reports outside the repository, and do not bypass isolation or treat an absent
+report as clean. See the installed skill for options and results.
 
 ## Upstream provenance
 
 [openclaw/agent-skills](https://github.com/openclaw/agent-skills/tree/main/skills/autoreview)
-owns the implementation, instructions, and tests. Enterprise keeps only a Markdown
-entrypoint. Repository-specific reviewer choices and validation stay on this page.
-The upstream [MIT license](../../.agents/skills/LICENSE.agent-skills) is retained.
+owns the implementation, instructions, and tests. Enterprise keeps a Markdown
+entrypoint and the upstream [MIT license](../../.agents/skills/LICENSE.agent-skills).
 
 ## Sync the skill
 
-Contribute shared changes to `openclaw/agent-skills` and validate them there first.
-After active reviews finish, update the shared checkout once: symlinked installs
-serve that version to every repository. Copy-mode installs need a reinstall with
-`python3 scripts/install-skills --mode copy --force autoreview` from the updated
-source checkout. Review runs do not download or update code automatically.
-
-Do not restore repository-local helper or test copies. If the entrypoint itself
-changes upstream, copy `skills/autoreview/references/repository-entrypoint.md`
-to `.agents/skills/autoreview/SKILL.md`. Run the relevant documentation and
-formatting checks with existing dependencies and inspect `git diff --check`.
+Contribute and validate shared changes upstream first. After active reviews
+finish, update the shared checkout. Copy-mode installations need reinstalling:
+`python3 scripts/install-skills --mode copy --force autoreview`. Review runs do
+not update code. If the entrypoint changes, copy upstream's
+`skills/autoreview/references/repository-entrypoint.md` to
+`.agents/skills/autoreview/SKILL.md`. Do not restore local helper or test copies.

@@ -193,6 +193,9 @@ export async function runWritableGatewayRestart(t) {
       volumes: [`${volume}:/home/node`, `${sourcePath}:/etc/openclaw-managed/openclaw.json:ro`],
       extraEnvironment: [
         "OPENCLAW_DEBUG=1",
+        // No Gateway cron, as in runtime-image-gateway-peer.test.mjs (finding 1875): cron work
+        // in flight at a peer change holds the old process's stop drain.
+        "OPENCLAW_SKIP_CRON=1",
         `APP_SERVER_URL=ws://${peerName}:4500`,
         `OPENCLAW_PLUGIN_RUNTIME_JSON=${JSON.stringify({ manifest })}`,
         "OPENCLAW_PLUGIN_STATUS_CONTAINER=gateway",

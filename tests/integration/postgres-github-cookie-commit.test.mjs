@@ -6,7 +6,7 @@ import {
   PostgresPlatformState,
 } from "../../packages/occ/src/index.ts";
 import { betterAuthIssuer } from "../../apps/controller/src/auth/index.ts";
-import { composePostgresDevelopment } from "../../apps/controller/src/composition/development-postgres.ts";
+import { composePostgresDevelopment } from "../helpers/password-hasher.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
@@ -356,7 +356,11 @@ test(
         });
         assert.equal(callbackProxy.observedCommit, true);
         assert.equal(unknownCallback.statusCode, 302);
-        assert.equal(unknownCallback.headers.location, "/console/?authError=github");
+        // The outcome is unknown inside OCE, so the Console reports an outage, not a refusal.
+        assert.equal(
+          unknownCallback.headers.location,
+          "/console/?authError=github&authReason=unavailable",
+        );
         assert.equal(unknownCallback.headers["set-cookie"], undefined);
         assert.equal(exchanges, 1, "the uncertain operation is not replayed");
         assert.deepEqual(await counts(), {

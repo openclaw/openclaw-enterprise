@@ -2,14 +2,13 @@ import type {
   OpenClawConfigurationDocument,
   PluginDesiredState,
 } from "@openclaw-enterprise/contracts";
-import { ComputeGatewaySettingError, ConfigurationHarnessError } from "@openclaw-enterprise/occ";
+import {
+  CODEX_APPROVAL_POLICY_SETTING as SETTING,
+  codexApprovalPolicy,
+  ComputeGatewaySettingError,
+  ConfigurationHarnessError,
+} from "@openclaw-enterprise/occ";
 import { asRecord } from "@openclaw-enterprise/utils";
-
-// Codex session approval policy as the pinned OpenClaw Gateway reads it from
-// `plugins.entries.codex.config.appServer.approvalPolicy` (openclaw/openclaw
-// `extensions/codex/src/app-server/config-parsing.ts` and `config-options.ts` at the
-// `OPENCLAW_COMMIT` in `deploy/runtime/Dockerfile`). Update these rules when that pin changes.
-const SETTING = "plugins.entries.codex.config.appServer.approvalPolicy";
 
 function configuredApprovalPolicy(configuration: Readonly<OpenClawConfigurationDocument>): unknown {
   const codex = asRecord(asRecord(asRecord(configuration.plugins)?.entries)?.codex);
@@ -17,22 +16,17 @@ function configuredApprovalPolicy(configuration: Readonly<OpenClawConfigurationD
 }
 
 /**
- * The Gateway refuses `untrusted` when it loads its configuration, and its
- * `openclaw doctor --fix` hint cannot edit the read-only configuration Compute renders.
+ * The Gateway refuses an approval policy outside its enum, `untrusted` included (its
+ * `openclaw doctor --fix` hint cannot edit the read-only configuration Compute renders).
  * Compute Drivers refuse it with their other gateway settings: at provisioning, deployment
- * admission, and preparation.
+ * admission, and preparation; Configuration save applies the same rule (codexApprovalPolicy).
  */
 export function validateCodexApprovalPolicySetting(
   configuration: Readonly<OpenClawConfigurationDocument>,
   createError: (setting: string, requirement: string) => Error = (setting, requirement) =>
     new ComputeGatewaySettingError(setting, requirement),
 ): void {
-  if (configuredApprovalPolicy(configuration) === "untrusted") {
-    throw createError(
-      SETTING,
-      'must not be "untrusted", which the OpenClaw runtime retired: use "on-request"',
-    );
-  }
+  codexApprovalPolicy(configuration, createError);
 }
 
 /**

@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
+import { compileCacheEnvironment } from "../helpers/compile-cache.mjs";
+import { jsonEvent } from "../helpers/json-lines.mjs";
 
 const startupEnvironment = {
+  ...compileCacheEnvironment,
   PATH: process.env.PATH,
   NODE_ENV: "development",
   OCC_HOST: "127.0.0.1",
@@ -18,14 +21,7 @@ const startupCases = [
 
 function diagnostic(result, path) {
   const event = path.endsWith("server.mjs") ? "startup-error" : "installation.bootstrap-failed";
-  const line = result.stderr
-    .trim()
-    .split("\n")
-    .filter(Boolean)
-    .map((entry) => JSON.parse(entry))
-    .find((entry) => entry.event === event);
-  assert.ok(line, result.stderr);
-  return line;
+  return jsonEvent(result.stderr, event, { strict: true });
 }
 
 function run(path, env) {
@@ -52,6 +48,16 @@ test("development API and both bootstrap modes accept bracketed IPv6 loopback au
     assert.equal(diagnostic(result, path).code, "AUTH_SECRET_INVALID");
     assert.doesNotMatch(result.stderr, /OCC_AUTH_SECRET|loopback host|loopback HTTP\(S\) URL/);
   }
+});
+
+test("development controller accepts reserved localhost subdomains for its browser origin", () => {
+  const result = run("apps/controller/src/server.mjs", {
+    OCC_AUTH_BASE_URL: "https://console.occ-dev-example.oce.localhost:8443",
+    OCC_AUTH_SECRET: "short",
+  });
+  assert.equal(result.status, 1);
+  assert.equal(diagnostic(result, "apps/controller/src/server.mjs").code, "AUTH_SECRET_INVALID");
+  assert.doesNotMatch(result.stderr, /loopback host|AUTH_BASE_URL_INVALID/);
 });
 
 test("development API and bootstrap accept localhost auth origins", () => {

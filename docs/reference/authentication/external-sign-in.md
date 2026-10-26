@@ -5,6 +5,13 @@ Plane (OCC) accounts, and the session, recovery, and account controls that apply
 once an external provider is enabled. The [authentication reference](../authentication.md)
 covers bootstrap, password sessions, request origin, provisioning, and failures.
 
+## Console sign-in destinations
+
+Sign-in restores the validated page, Namespace, and Agent tab or version after
+expiry, then rechecks access. It clears private views and drafts and never
+replays writes. Logout or failed external sign-in clears the destination. Agent
+recovery ends at its console page; opening native UI remains a separate action.
+
 ## GitHub sign-in for existing accounts
 
 GitHub sign-in requires one serving controller, one Installation, PostgreSQL with
@@ -73,10 +80,9 @@ transfer, and self-service linking are rejected. For unknown identities, follow 
 [enrollment procedure](../../guides/deploy/production-installation.md#enable-github-browser-sign-in).
 
 Without an [allowlist](#organization-and-team-allowlist), OCE does not check GitHub
-organization or team membership: any attached GitHub user ID signs in. Either way, OCE
-does not learn when someone leaves the organization or GitHub suspends them: without
-an allowlist someone who left can still sign in, and live sessions continue until they
-expire (at most 8 hours). Offboarding also means acting in OCE
+organization or team membership: any attached GitHub user ID signs in, including someone
+who left. Either way, OCE does not learn when someone leaves or GitHub suspends them, and
+live sessions continue until they expire (at most 8 hours). Offboarding also means acting in OCE
 ([account controls](#session-and-recovery-controls)): disable the account to end all
 access and its sessions, or detach its GitHub method to end GitHub sign-in and all its
 sessions; revoke ends sessions but allows a fresh sign-in. None of these ends a
@@ -97,8 +103,9 @@ Unknown identities fail without signup. Success returns to exactly `/console/`
 and sets a two-minute HttpOnly, `SameSite=Strict` login receipt; failure returns
 to `/console/?authError=github` without automatic retry. An identity attached to a
 disabled account returns with `authReason=account-disabled`, audited as `ACCOUNT_DISABLED`
-with the account's `userId`; only the person the provider just authenticated reaches it,
-and every other refusal stays generic. The starting tab sends its
+with the account's `userId`; only the person the provider just authenticated reaches it.
+Provider outages and allowlist refusals (below) carry their own reasons; a rejected
+identity stays generic. The starting tab sends its
 `attemptId` with the configured Origin to `POST /api/auth/providers/github/result`,
 which returns the callback session's `sessionKey` once, only while that session's
 cookie is current. It never issues or extends a session.
@@ -118,11 +125,16 @@ or `temporarily_unavailable`), or its token endpoint refuses the configured clie
 and registered callback), the denial is audited as `PROVIDER_UNAVAILABLE` and the API
 logs one `authentication.provider-unavailable-warning` at WARN. It carries `provider`
 (`github`, `google`, or `oidc`), the provider instance `providerId`, `step`
-(`authorization`, `token`, `jwks`, `profile`, or `membership`), a bounded `cause` (`connect_refused`,
+(`authorization`, `token`, `jwks`, `profile`, or `membership`), a `cause` from a fixed list (`connect_refused`,
 `dns`, `timeout`, `tls`, `connection_reset`, `network`, `redirect`, `http_status`,
 `oversized_response`, `malformed_response`, `provider_error`, or `client_rejected`), and,
 when present, the HTTP `status` or transport `code` such as `ECONNREFUSED`. It never carries URLs,
 authorization codes, tokens, response bodies, or user data. A rejected identity logs nothing.
+After that denial the callback returns to
+`/console/?authError=<provider>&authReason=provider-unavailable`, and the Console says sign-in is
+unavailable right now instead of suggesting an attach; the failure precedes any identity lookup,
+so the reason reveals nothing about accounts. A callback that fails inside OCE (its database or
+audit store) returns with `authReason=unavailable`.
 
 ### Organization and team allowlist
 
@@ -153,8 +165,11 @@ scope is requested.
 | Not an active member of any entry           | `MEMBERSHIP_REQUIRED`    | `membership`             |
 | No match, and a lookup GitHub didn't answer | `MEMBERSHIP_UNAVAILABLE` | `membership-unavailable` |
 
-Both are `authentication.login` denials whose `details` carry `provider: github` and the
-numeric GitHub `subject`. The callback returns to
+Both are `authentication.login` denials whose `details` carry `provider: github`, the
+numeric GitHub `subject`, a valid login returned by GitHub when available, and the attempt ID.
+Successful GitHub sign-ins and refusals after profile verification record the same identity
+fields. The login is diagnostic only; authorization uses the immutable subject. See
+[sign-in audit troubleshooting](../../guides/topics/audit-log.md#investigate-a-github-sign-in). The callback returns to
 `/console/?authError=github&authReason=<reason>`, and the Console explains the refusal.
 `MEMBERSHIP_UNAVAILABLE` covers a transport failure, the deadline, a redirect, an oversized or
 malformed answer, and any status other than `200` or `404`. It fails closed and logs
@@ -166,12 +181,11 @@ GitHub may answer `404`, not `403`, for an organization where the App is not ins
 misspelled organization or team slug, or (unverified) an unauthorized SAML session. That
 refuses every member as `MEMBERSHIP_REQUIRED` with no warning log. If known members are
 refused, check the slugs, that the App is installed on each listed organization, and that its
-owner accepted Members: read.
+owner accepted Members: read. [Issue #3300](https://github.com/openclaw/openclaw-enterprise/issues/3300) tracks verification of GitHub’s responses when App or SAML access is missing.
 
 Membership is checked only at sign-in. Turning the list on applies from the next sign-in
 after the API restarts; existing sessions run until they expire (at most 8 hours), so revoke
-them to apply it at once. Removing someone from the organization or team stops their next
-GitHub sign-in but not a live session; disable or detach in OCE to end it.
+them to apply it at once.
 
 ## Recovery-only password sign-in
 
@@ -180,8 +194,7 @@ provider is enabled, so strangers who know an email can spend that account's
 password sign-in budget. `OCC_AUTH_PASSWORD_SIGN_IN=recovery-only` (Helm
 `auth.passwordSignIn: recovery-only`; default `all`) removes that surface:
 only the recovery account signs in with a password, and every other account uses
-its attached GitHub, Google or OIDC identity. It is the target posture once every
-ordinary account has an external identity. It requires a configured provider;
+its attached GitHub, Google or OIDC identity. It requires a configured provider;
 startup and Helm refuse it otherwise, and any other value.
 
 Every other email, existing or not, receives the ordinary `401` bad-credential
@@ -284,7 +297,7 @@ spends one of each. Without
 [trusted proxies](../cheatsheets/environment-variables.md#controller-and-authentication)
 every browser behind an ingress shares its address, so the address is never a key:
 callback and result key on the browser's attempt and receipt cookies, and start is
-bounded only by the active cap and the 1,000 pending attempts (oldest evicted).
+limited only by the active request cap and the 1,000 pending attempts (oldest evicted).
 Startup and Helm's install notes warn
 ([trusted proxies](../settings/production.md#github-sign-in-and-trusted-proxies)).
 A 4,096-key table bounds memory. Provider calls share a ten-second deadline, refuse

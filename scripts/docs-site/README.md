@@ -35,7 +35,9 @@ Pagefind indexing to the root `docs:build` command. `--check` validates without
 writing output. Paths resolve against Markdown source files; README pages map to
 folder indexes and links outside `docs/` point to the Enterprise GitHub source.
 Fragments on those links must match a GitHub heading slug or HTML anchor in the
-target (`github-anchors.mjs`); `scripts/check-specs.mjs` applies the same check to
+target (`github-anchors.mjs`). HTML examples in code and comments do not create
+fragment targets. Parsed HTML elements contribute `id` targets; only `<a>` elements
+contribute `name` targets. `scripts/check-specs.mjs` applies the same check to
 spec links.
 Markdown links in full-line comments under `deploy/examples/` (`.yaml` and
 `.yml`) use the same validation.
@@ -68,7 +70,8 @@ examples, while excluding frontmatter, HTML comments, Markdown syntax, and link
 destinations. Symlinks resolve to one real file so aliases cannot duplicate
 counts or bypass the limit.
 
-`serve.mjs` serves only `dist/docs/` on `127.0.0.1`. It accepts an optional
+`serve.mjs` serves only `dist/docs/` on `127.0.0.1`. MP4 walkthrough links open
+in the browser player with the `video/mp4` media type. It accepts an optional
 `--port` for parallel local previews and tests. These two small internal CLIs use
 built-in Node argument handling because each has one option and no subcommands.
 

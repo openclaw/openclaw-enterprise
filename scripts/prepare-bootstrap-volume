@@ -18,6 +18,9 @@ die() {
   exit "${2:-1}"
 }
 
+# Resolve symlinks, and ignore CDPATH, so the image check helper is found from any directory.
+script_dir=$(CDPATH="" cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pwd)
+
 quote_command() {
   local quoted=()
   local value
@@ -73,9 +76,28 @@ is_label_value() {
   [[ -z "$value" ]] || is_label_name "$value"
 }
 
-immutable_image() {
+# Kubernetes refuses to pull a reference its parser refuses (InvalidImageName), such as one
+# with an uppercase repository path; only the registry host and the tag may use uppercase.
+# Profile preflight, the chart and Compute apply the same rule
+# (packages/occ/src/image-reference.ts), which a small Node helper runs here.
+require_immutable_image() {
+  local flag=$1
+  local image=$2
+  local problem
   local LC_ALL=C
-  [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[a-f0-9]{64}$ ]]
+  [[ "$image" =~ @sha256:[a-f0-9]{64}$ ]] ||
+    die "$flag must be an approved immutable SHA-256 image reference."
+  local helper=$script_dir/lib/image-reference-problem.mjs
+  [[ -f "$helper" ]] || die "could not find $helper to check $flag."
+  problem=$(node "$helper" "$image") ||
+    die "could not run the image reference check for $flag (it needs Node.js 24 or later)."
+  case "$problem" in
+    "") ;;
+    uppercase-repository)
+      die "$flag repository path must be lowercase; Kubernetes refuses to pull an uppercase one."
+      ;;
+    *) die "$flag must be an approved immutable SHA-256 image reference." ;;
+  esac
 }
 
 add_node_selector() {
@@ -154,8 +176,7 @@ is_dns_label "$namespace" ||
   die "--namespace must be a DNS label."
 is_dns_subdomain "$claim" ||
   die "--claim must be a DNS subdomain."
-immutable_image "$image" ||
-  die "--image must be an approved immutable SHA-256 image reference."
+require_immutable_image --image "$image"
 
 suffix=$(LC_ALL=C tr -dc 'a-z0-9' </dev/urandom | head -c 10 || true)
 [[ -n "$suffix" ]] || suffix=$$
@@ -209,7 +230,7 @@ spec:
       type: RuntimeDefault
 ${node_selector_yaml}  containers:
     - name: prepare
-      image: ${image}
+      image: "${image}"
       command: ["node"]
       args:
         - -e

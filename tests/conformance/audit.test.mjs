@@ -183,3 +183,11 @@ test("audit event kinds default to their own outcome", () => {
   );
   assert.equal(factory.create({ ...base, kind: "access", outcome: "failure" }).outcome, "failure");
 });
+
+test("audit redaction matches real GitHub token spellings", () => {
+  const github = "ghp_aaaaaaaaaaaaaaaa";
+  const oauth = "gho_bbbbbbbbbbbbbbbb";
+  assert.equal(redactAuditDetails({ note: `used ${github} here` }).note, "used [REDACTED] here");
+  assert.equal(redactAuditDetails(oauth), "[REDACTED]");
+  assert.equal(redactAuditDetails("ghp-aaaaaaaaaaaaaaaa"), "ghp-aaaaaaaaaaaaaaaa");
+});

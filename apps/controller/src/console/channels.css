@@ -1,24 +1,24 @@
 .channels-section {
   display: grid;
-  gap: 1rem;
+  gap: var(--space-4);
 }
 
 .channel-heading {
   display: flex;
   justify-content: space-between;
-  gap: 1rem;
+  gap: var(--space-4);
   align-items: start;
 }
 
 .channel-card {
   display: grid;
-  gap: 0.75rem;
+  gap: var(--space-3);
 }
 
 .channel-card-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 1rem;
+  gap: var(--space-4);
   align-items: start;
 }
 
@@ -27,13 +27,13 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.5rem;
+  gap: var(--space-2);
 }
 
 .channel-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
+  gap: var(--space-2);
   justify-content: flex-end;
 }
 
@@ -42,54 +42,51 @@
   overflow: auto;
 }
 
-.channel-dialog {
-  width: min(42rem, calc(100vw - 2rem));
-  max-height: calc(100vh - 2rem);
-  margin: auto 0 auto auto;
-  border: 0;
-  border-radius: 0;
-  padding: 0;
-  box-shadow: var(--shadow);
-}
-
-.channel-dialog::backdrop {
-  background: var(--overlay);
-}
-
 .channel-drawer-form {
   display: grid;
-  gap: 1rem;
-  padding: 1.5rem;
+  gap: var(--space-4);
 }
 
 .channel-drawer-head {
   display: flex;
   justify-content: space-between;
-  gap: 1rem;
+  gap: var(--space-4);
   align-items: start;
 }
 
+/* The form field pattern (console.css "Form field"); the drawer's grid gap spaces the fields. */
 .channel-field {
-  display: grid;
-  gap: 0.35rem;
+  margin: 0;
+}
+
+.channel-field > label {
+  display: block;
+  font-weight: var(--weight-medium);
+  margin-bottom: var(--space-2);
 }
 
 .channel-field input,
 .channel-field select {
   width: 100%;
-  padding: 11px 12px;
-  border: 1px solid var(--input-border);
-  border-radius: var(--radius);
-  background: var(--surface);
-  color: var(--text);
+  min-height: var(--control-h);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text);
   font: inherit;
+}
+
+.channel-field > .hint {
+  margin-top: var(--space-1);
+  font-size: var(--text-md);
 }
 
 .channel-check {
   display: flex;
-  gap: 0.5rem;
+  gap: var(--space-2);
   align-items: center;
-  font-weight: 600;
+  font-weight: var(--weight-semibold);
 }
 
 .channel-check input {
@@ -113,23 +110,15 @@
   }
 
   .channel-heading,
-  .channel-card-row,
-  .channel-drawer-head {
+  .channel-card-row {
     grid-template-columns: 1fr;
   }
 
-  .channel-card-row,
-  .channel-drawer-head {
+  .channel-card-row {
     display: grid;
   }
 
   .channel-actions {
     justify-content: flex-start;
-  }
-
-  .channel-dialog {
-    width: 100vw;
-    max-height: 92vh;
-    margin: auto 0 0;
   }
 }

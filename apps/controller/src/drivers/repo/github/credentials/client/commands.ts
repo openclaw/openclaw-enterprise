@@ -46,7 +46,9 @@ export function parseGhInvocation(input: readonly string[]): ParsedGhInvocation 
           !/^[A-Za-z0-9_/?=&.%+-]+$/.test(argument) ||
           argument.startsWith("/") ||
           argument.includes(":") ||
-          argument.includes("..")
+          argument.includes("..") ||
+          // The gateway refuses any escape in a path; only query values may carry one.
+          argument.split("?", 1)[0]!.includes("%")
         ) {
           throw new Error("unsupported-client-command");
         }

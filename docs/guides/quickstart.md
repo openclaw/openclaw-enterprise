@@ -65,8 +65,9 @@ then open the printed HTTPS console URL. Startup generates a local CA; it does
 not install it in a trust store. Without that step, the browser can report
 `NET::ERR_CERT_AUTHORITY_INVALID` even when the stack is ready. Follow
 [local browser CA trust and verification](operate/troubleshooting.md#the-local-console-reports-a-certificate-error)
-for macOS instructions, certificate checks, and removal. Keep the CA private key
-and the entire state directory private.
+for macOS instructions, certificate checks, and removal. The CA can vouch only
+for that installation's console and Agent hosts, and startup discards its
+private key. Keep the entire state directory private.
 
 Open the printed URL on the machine that ran `./bin/occ dev up`. Kubernetes-only
 mode publishes the console port on that machine's loopback, and the hostname
@@ -147,7 +148,8 @@ the stock local-path StorageClass supports the Harness-only claim.
 
 ## Open an Agent's native admin UI
 
-For a separate console-managed Agent, follow [local native admin setup](deploy/native-admin.md#local-development).
-It requires exact-Agent `administer` permission and the Agent's native access policy.
-The first-Agent helper disables native UI and refuses to reuse its Agent after
-outside Configuration edits.
+Follow [local native admin setup](deploy/native-admin.md#local-development). It
+requires exact-Agent `administer` permission and the Agent's native access
+policy. The first-Agent helper can opt in a new Agent when Local setup uses the
+Compose control plane with Kubernetes Compute and OpenShell; other profiles use
+a separate console-managed Agent.

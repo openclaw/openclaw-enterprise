@@ -28,14 +28,22 @@ assign existing issues to a two-week iteration in the project.
 
 - [Local development](local-development.md) covers the checkout, a running local
   platform, and how to choose checks for your change.
+- [Console components and styles](console-ui.md) shows how to build a page with
+  the shared controls, typography, and layout.
 - [Console Storybook](console-storybook.md) lets you inspect console pages, states,
-  and Agent flows with simulated API responses.
+  and Agent flows with simulated API responses; its
+  [Agent workflows](console-storybook-agent-workflows.md) walk through each Agent story.
 - [Runtime flows](runtime-flows.md) helps you trace requests, worker operations,
   and Agent deployment in the source.
 - [Documentation](documentation.md) explains where pages belong, how to name them,
   and how to build and check the site.
 - [Documentation hosting](documentation-hosting.md) covers private publication,
   the custom domain, and the approval required to enable public access.
+
+## Release
+
+Use the [release guides](../release/README.md) to configure publication workflows
+and publish containers, Helm charts, and OCC CLI binaries.
 
 Read the [contribution policy](../../CONTRIBUTING.md) before opening a pull
 request. It covers repository access, verification, review, and private security

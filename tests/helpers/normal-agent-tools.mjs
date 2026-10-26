@@ -407,6 +407,7 @@ export const codexRepositoryEvidenceScript = String.raw`
                 status: item.status,
                 exitCode: item.exitCode,
                 http400: /returned error: 400\b/i.test(item.aggregatedOutput ?? ""),
+                pushRefRefused: /repository-push-ref-not-allowed\b/.test(item.aggregatedOutput ?? ""),
                 sandboxDenied: /SANDBOX_DENIED:(?:EACCES|EPERM|EROFS)\b/.test(item.aggregatedOutput ?? ""),
                 commitShas: lines.filter(line => /^[a-f0-9]{40}$/.test(line)),
                 pullUrls: lines.filter(line => /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/[1-9][0-9]*$/.test(line)),

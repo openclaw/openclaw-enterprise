@@ -24,15 +24,9 @@ together with GitHub and Google. One issuer is supported per Installation.
 - An IdP that serves its issuer, authorization, token and JWKS URLs over HTTPS on port
   443 from one DNS host name, and signs ID tokens with RS256 keys of at least 2,048 bits.
 - API Pod HTTPS egress to that host. Browsers, not the API, visit the authorization URL.
-- A certificate the API trusts. Public CAs use Node's default CA store. For a private
-  IdP CA, use an explicit, upgrade-safe deployment customization to mount a combined
-  public CA bundle in the API Pod, set `NODE_EXTRA_CA_CERTS` to that bundle, and restart
-  Node after trust changes. Include the IdP CA and any existing Gateway CA roots: the
-  chart may already set this variable for Gateway routing, and replacing its bundle with
-  only the IdP CA breaks Gateway trust. The chart version covered by this guide has
-  no dedicated OIDC CA value or turnkey mount. Verify the customized deployment and
-  trust after each upgrade; see
-  [Gateway trust and rotation](../../reference/gateway-routing.md#tls-and-certificate-lifecycle).
+- A certificate the API and users' browsers trust. Publicly trusted certificates need
+  no extra chart configuration. For a private IdP CA, use the
+  [CA Secret settings](#trust-a-private-idp-ca) below; browser trust is managed separately.
 
 ## Register the client
 
@@ -130,7 +124,7 @@ spec:
 ```
 
 The API reads these variables; see
-[production settings](../../reference/settings/production.md#oidc-sign-in):
+[production settings](../../reference/settings/oidc.md):
 
 | Variable                                                     | Source                                                    |
 | ------------------------------------------------------------ | --------------------------------------------------------- |
@@ -148,6 +142,138 @@ Enable it with the same stopped maintenance as
 anyone who can reach the Console can read the label and the IdP's authorization URL, as
 they could by starting a sign-in; neither is secret, but choose a label you are content to
 publish.
+
+## Trust a private IdP CA
+
+Create a Secret in the OCE namespace, distinct from the OIDC client credential
+Secret, containing only approved CA certificates in PEM format. Do not
+include private keys or leaf certificates:
+
+```bash
+kubectl -n openclaw-system create secret generic occ-oidc-ca-v1 \
+  --from-file=ca.pem=/secure/occ/idp-ca-bundle.pem
+```
+
+First select the database's existing approved CA roots through
+`database.caSecretName`. The application database URL must name the database by
+DNS hostname, not an IP address, and use
+`sslmode=verify-full&sslrootcert=/etc/openclaw/database-ca/ca.pem` (adjust the path
+to `database.caMountPath` and `database.caKey`). A mounted CA without this URL
+selection, or an IP database host, is refused before the API starts. See the
+[database trust prerequisite](../../reference/settings/oidc.md) for accepted configuration.
+
+Add these values alongside the enabled OIDC configuration:
+
+```yaml
+auth:
+  oidc:
+    caSecretName: occ-oidc-ca-v1
+    caSecretKey: ca.pem
+```
+
+Set both values or neither. Clear both when disabling OIDC. The IdP CA Secret may
+be the public trust bundle Secret named by `gatewayRouting.caSecretName` (with its
+own key), never a credential Secret or `database.caSecretName`. The API's
+`assemble-api-ca` init container validates this bundle and any selected Gateway
+CA bundle, then combines them. Each input must contain only PEM CA certificates
+and be no larger than 1 MiB. Before enabling this setting, check that any
+existing Gateway bundle also meets these requirements. On the protected host,
+every certificate in the file should show `CA:TRUE`:
+
+```bash
+openssl storeutl -noout -text -certs /secure/occ/idp-ca-bundle.pem | grep -E '^ +Subject:|CA:'
+```
+
+A trust-only change, where the upgrade changes nothing but these values, needs no
+writer stop and no ingress closure, like
+[rotating the client secret](oidc-operations.md#rotate-the-client-secret). The API
+Deployment uses `Recreate`, so it answers `503` while its single Pod is replaced; the
+worker keeps running. If the same upgrade also changes the image or other sign-in
+settings, follow that change's procedure. Run `helm upgrade`, then wait for the API:
+
+```bash
+kubectl -n openclaw-system rollout status deployment/openclaw-enterprise-api --timeout=5m
+```
+
+`helm upgrade` prints `STATUS: deployed` even when the bundle is bad. The rollout then
+times out with the Pod in `Init:Error` or `Init:CrashLoopBackOff` and ingress answering
+`503`. Read the init container's error:
+
+```bash
+kubectl -n openclaw-system logs deployment/openclaw-enterprise-api -c assemble-api-ca
+```
+
+It is one line that names the value, Secret and key you set and the problem, for example:
+
+```text
+assemble-api-ca: auth.oidc.caSecretName Secret "occ-oidc-ca-v1" key "ca.pem": certificate 1 of 1 (CN=sso.example.com) is not a CA certificate; use the issuing root or intermediate CA, not the server certificate
+```
+
+A Gateway bundle problem names `gatewayRouting.caSecretName` (or the chart-managed
+Gateway root) the same way. A database CA problem stops the `api` container instead,
+with a `check-api-database-ca:` line naming `database.caSecretName` and its key. A
+missing Secret or key leaves the Pod at `Init:0/1`; its events
+(`kubectl -n openclaw-system describe pod -l app.kubernetes.io/component=api`) show
+`FailedMount`. To recover, restore the previous values and run `helm upgrade`, or fix the
+input as described under [Rotate the IdP CA](#rotate-the-idp-ca).
+
+Once the rollout succeeds, list the roots the API trusts. The image has no `openssl`,
+so this uses its Node and changes nothing:
+
+```bash
+kubectl -n openclaw-system exec deployment/openclaw-enterprise-api -c api -- node -e '
+const { X509Certificate } = require("node:crypto");
+const pem = require("node:fs").readFileSync(process.env.NODE_EXTRA_CA_CERTS, "utf8");
+for (const block of pem.match(/-----BEGIN CERTIFICATE-----[^-]+-----END CERTIFICATE-----/g)) {
+  const certificate = new X509Certificate(block);
+  console.log(certificate.subject.replace(/\n/g, ", "), "|", certificate.fingerprint256);
+}'
+```
+
+It prints the IdP roots, then any Gateway roots. Then check recovery password sign-in,
+IdP sign-in and Gateway access.
+
+This extends public trust **process-wide in the API** for clients that use
+Node's default trust. The chart does not add IdP roots to workers or Jobs, and
+dedicated Agent (Harness) Pods receive only the Gateway CA through
+`OCC_GATEWAY_CA_PATH`, or no extra CA without one. It preserves the Gateway CA selected by the chart, including an
+external issuer's `gatewayRouting.caSecretName` and `caSecretKey`. Do not replace
+`NODE_EXTRA_CA_CERTS` separately. URL, port, hostname, certificate and token checks
+still apply. If the IdP certificate already chains to a root in the
+`gatewayRouting.caSecretName` bundle, the API trusts it without these values, but that
+bundle also reaches workers and database clients; use these values to keep IdP trust
+API-only with isolated database trust. See the [trust contract](../../reference/settings/oidc.md).
+
+### Rotate the IdP CA
+
+The init container copies the inputs once, when the Pod starts. Prefer a new
+versioned Secret for every change: changing `caSecretName` changes the Pod template,
+so `helm upgrade` alone replaces the API Pod.
+
+1. Overlap: create `occ-oidc-ca-v2` holding the old and new CA certificates together,
+   set `caSecretName: occ-oidc-ca-v2`, run `helm upgrade` and the `rollout status`
+   check above, and list the trusted roots.
+2. Move the IdP to certificates from the new CA, and check IdP sign-in.
+3. Remove the old CA: create `occ-oidc-ca-v3` holding only the new CA, and upgrade and
+   check the same way.
+4. Delete the superseded Secrets once you no longer need them to roll back:
+   `kubectl -n openclaw-system delete secret occ-oidc-ca-v1 occ-oidc-ca-v2`.
+
+Editing a Secret in place, including a combined Gateway CA Secret, changes nothing
+until the API Pod is replaced, and restarting only the API container keeps the old
+snapshot. The plain `kubectl create secret` command fails once the Secret exists, so
+replace its contents and then the Pod:
+
+```bash
+kubectl -n openclaw-system create secret generic occ-oidc-ca-v2 \
+  --from-file=ca.pem=/secure/occ/idp-ca-bundle.pem \
+  --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n openclaw-system rollout restart deployment/openclaw-enterprise-api
+kubectl -n openclaw-system rollout status deployment/openclaw-enterprise-api --timeout=5m
+```
+
+Replacing the single API replica interrupts service until it is ready. Ordinary leaf
+renewal under the same CA needs no restart.
 
 ## Find a person's subject
 
@@ -196,30 +322,20 @@ afterwards. To add someone who should sign in only through the IdP, follow
   new instance: attach every identity again, then detach the old methods. Sessions
   signed in through the old instance, or through OIDC once it is removed, end on their
   next request. Detaching an old method ends every session of that account.
-- To rotate the client secret, close ingress and stop writers using the
-  [stopped-maintenance procedure](auth-maintenance.md#stop-every-writer). Coordinate
-  the replacement secret in the IdP and the protected OCE Secret, then restart the
-  single API controller to load its environment. Verify new OIDC sign-in and recovery
-  password sign-in through restricted access before restoring ingress. Once the changed configuration
-  loads, attachments remain and pending sign-ins are invalidated.
-- The API reads the JWKS on every callback, so IdP key rotation needs no restart.
-- OCE does not learn when the IdP disables someone: that person's OCE sessions continue
-  until they expire (at most 8 hours). For offboarding, disable the OCE account to end
-  its sessions and prevent further human sign-in. Separately revoke applicable
-  [service keys](../../reference/authentication/service-api-keys.md#revoke-or-rotate-a-service-key).
-- Sign-out is local: while the IdP session lives, one click signs in again.
-- An IdP outage, blocked egress or a rejected ID token fails that sign-in closed and
-  returns the browser to `/console/?authError=oidc`; the recovery account's password
-  still signs in. OIDC shares the external sign-in budgets with GitHub and Google.
-  An IdP that cannot answer, or that refuses the configured client
-  (`cause: client_rejected`), also logs `authentication.provider-unavailable-warning`
-  with the failing step and cause; see the
-  [external sign-in reference](../../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts).
+- Rotating only the client secret needs one API restart and keeps attachments; signing-key
+  rotation needs none. See [Rotate the client secret](oidc-operations.md#rotate-the-client-secret).
+- An IdP outage fails sign-in closed while sessions and the recovery password keep
+  working. When the IdP is down before the person reaches it, OCE sees nothing; when it
+  fails after, the Console says sign-in is unavailable. OIDC shares the external sign-in
+  budgets with GitHub and Google. See [Read an outage](oidc-operations.md#read-an-outage).
+- OCE does not learn when the IdP disables someone, and sign-out is local. For
+  offboarding, see [Offboard a person](oidc-operations.md#offboard-a-person).
 
 ## Related
 
 - [External sign-in reference](../../reference/authentication/external-sign-in.md)
 - [Google sign-in](google-sign-in.md)
+- [Operate OIDC sign-in](oidc-operations.md)
 - [Keycloak for OIDC sign-in](oidc-keycloak.md)
 - [Sign-in maintenance](auth-maintenance.md)
-- [Production settings](../../reference/settings/production.md#oidc-sign-in)
+- [Production settings](../../reference/settings/oidc.md)

@@ -44,9 +44,9 @@ index a55b665f..83a04188 100644
 +    expect(mocks.runNodeHost.mock.calls[0]?.[0]).not.toHaveProperty("gatewayBootstrapExpiresAtMs");
 +  });
 +
-   it.skipIf(process.platform === "win32")(
-     "rejects a socket target without removing it",
-     async () => {
+   it.skipIf(process.platform === "win32").each([" setup-code", "setup-code "])(
+     "consumes only the literal target file %j",
+     async (fileName) => {
 diff --git a/src/cli/connect-cli.ts b/src/cli/connect-cli.ts
 index 11cf5373..b388a411 100644
 --- a/src/cli/connect-cli.ts

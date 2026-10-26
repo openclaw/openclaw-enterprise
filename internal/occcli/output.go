@@ -1,6 +1,7 @@
 package occcli
 
 import (
+	"cmp"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"fmt"
@@ -117,17 +118,26 @@ func (app *application) printCredentialSource(value any, collection bool) error 
 	if collection {
 		return app.printItems(value, collection, columns)
 	}
+	columns = append(columns, column{title: "GATEWAY STATUS", key: "gatewayStatus"})
 	if app.output == "table" {
 		if resource, ok := value.(map[string]any); ok {
 			if status, ok := resource["status"].(map[string]any); ok {
-				// Table output shows the live gateway state; structured output keeps the full status.
+				// Table output shows the live gateway state and, when the driver
+				// reported one, the refresh state. Structured output keeps the
+				// full status and is not given these table-only keys.
 				row := maps.Clone(resource)
 				row["gatewayStatus"] = status["state"]
+				if refresh, ok := status["refresh"].(map[string]any); ok {
+					if state, ok := refresh["state"].(string); ok && state != "" {
+						row["refreshStatus"] = state
+						columns = append(columns, column{title: "REFRESH", key: "refreshStatus"})
+					}
+				}
 				value = row
 			}
 		}
 	}
-	return app.printItems(value, collection, append(columns, column{title: "GATEWAY STATUS", key: "gatewayStatus"}))
+	return app.printItems(value, collection, columns)
 }
 
 func (app *application) printCredentialWithdrawal(value any) error {
@@ -153,6 +163,7 @@ func (app *application) printIAMRole(value any, collection bool) error {
 func (app *application) printIAMAccessBinding(value any, collection bool) error {
 	return app.printItems(value, collection, []column{
 		{title: "ID", key: "id"},
+		{title: "SUBJECT KIND", key: "subjectKind"},
 		{title: "SUBJECT", key: "subjectId"},
 		{title: "ROLE", key: "roleId"},
 		{title: "RESOURCE KIND", key: "resourceKind"},
@@ -220,11 +231,13 @@ func (app *application) printAgentRevisionList(rows []any) error {
 
 // printDeploymentStatus shows startup warnings in the table too: a succeeded
 // deployment can still have disabled a selected plugin (PLUGIN_AUTH_REQUIRED,
-// PLUGIN_INSTALL_FAILED). Structured output keeps the full warnings array.
+// PLUGIN_INSTALL_FAILED). The ERROR cell reads "CODE: message" (D608).
+// Structured output keeps the full error and warnings.
 func (app *application) printDeploymentStatus(value any) error {
 	if app.output == "table" {
 		if resource, ok := value.(map[string]any); ok {
 			row := maps.Clone(resource)
+			row["error"] = deploymentErrorText(resource["error"])
 			row["warnings"] = deploymentWarningsText(resource["warnings"])
 			value = row
 		}
@@ -236,6 +249,42 @@ func (app *application) printDeploymentStatus(value any) error {
 		{title: "ERROR", key: "error"},
 		{title: "WARNINGS", key: "warnings"},
 	})
+}
+
+// deploymentErrorText renders a deployment error as "CODE: message" on one
+// line, then the classified cause of a failed startup model check (finding 323)
+// or a pointer to the diagnostic data that only structured output shows. A
+// value without a string code is left as it is, so the table still shows it.
+// Free text (message, cause detail) is collapsed to one line; code and cause
+// kind are schema tokens, and tableCell escapes anything hidden in any of them.
+func deploymentErrorText(value any) any {
+	deploymentError, ok := value.(map[string]any)
+	if !ok {
+		return value
+	}
+	code, ok := deploymentError["code"].(string)
+	if !ok || code == "" {
+		return value
+	}
+	text := code
+	if message, ok := deploymentError["message"].(string); ok && strings.TrimSpace(message) != "" {
+		text += ": " + strings.Join(strings.Fields(message), " ")
+	}
+	data, hasData := deploymentError["data"]
+	if !hasData || data == nil {
+		return text
+	}
+	if data, ok := data.(map[string]any); ok {
+		failure, _ := data["runtimeFailure"].(map[string]any)
+		if cause, ok := failure["cause"].(map[string]any); ok {
+			kind, _ := cause["kind"].(string)
+			detail, _ := cause["detail"].(string)
+			if kind != "" || detail != "" {
+				return text + " (cause: " + strings.TrimSpace(kind+" "+strings.Join(strings.Fields(detail), " ")) + ")"
+			}
+		}
+	}
+	return text + " (details: -o json)"
 }
 
 // deploymentWarningsText renders warnings as "pluginId (CODE)" pairs, or nil
@@ -287,7 +336,7 @@ func (app *application) printUnrevokedServiceAccountDeletion(warnings io.Writer,
 	}
 	noticef(
 		warnings,
-		"warning: the access token of service account %s was not revoked; an administrator must revoke it at the provider (%s). The audit event names its credential ID.",
+		"warning: the access token of service account %s was not revoked; a ChatGPT workspace administrator must revoke it at the provider (%s). The audit event names its credential ID.",
 		id,
 		backend,
 	)
@@ -315,8 +364,33 @@ func (app *application) printItems(value any, collection bool, columns []column)
 		if !ok {
 			return fmt.Errorf("OCC returned an invalid resource collection")
 		}
+		if len(items) == 0 {
+			return app.printEmptyList()
+		}
 	}
 	return printTable(app.out, items, columns)
+}
+
+// emptyListTexts answer an empty list per command. OCC filters these lists by
+// what the caller may read, so an empty list does not mean nothing exists
+// (finding D746).
+var emptyListTexts = map[string]string{
+	"namespace list":             "No Namespaces you can read.",
+	"secret list":                "No Secrets you can read.",
+	"preset list":                "No Presets you can read.",
+	"credential-source list":     "No credential sources you can read.",
+	"service-account list":       "No ServiceAccounts you can read.",
+	"agent list":                 "No Agents you can read.",
+	"iam role list":              "No Roles you can read.",
+	"iam access-binding list":    "No AccessBindings you can read.",
+	"iam service-principal list": "No ServicePrincipals you can read.",
+	"agent revisions":            "No revisions you can read. Revisions need AgentRevision read; ask an Installation administrator.",
+}
+
+// printEmptyList prints the running command's empty-list sentence.
+func (app *application) printEmptyList() error {
+	_, err := fmt.Fprintln(app.out, cmp.Or(emptyListTexts[app.commandPath], "No resources found."))
+	return err
 }
 
 // printBrowsingItems keeps metadata readable while making saved-settings errors visible.
@@ -331,6 +405,9 @@ func (app *application) printBrowsingItems(value any, collection bool, columns [
 		items, ok = value.([]any)
 		if !ok {
 			return fmt.Errorf("OCC returned an invalid resource collection")
+		}
+		if len(items) == 0 {
+			return app.printEmptyList()
 		}
 	}
 	rows := make([]any, 0, len(items))

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { ConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
 import { loadInstallationFile } from "../helpers/installation-file.mjs";
 
@@ -56,26 +57,59 @@ test("Installation selects hosted discovery by default and can select the curate
 });
 
 test("Installation rejects untrusted PluginDriver packages, unknown selections and configuration", async (t) => {
-  for (const selection of [
-    { id: "unknown-plugin-driver", configuration: {} },
-    { id: "occ-plugin", package: "@untrusted/driver", configuration: {} },
-    { id: "codex-plugin", configuration: { arbitrarySource: "https://example.test/plugin" } },
-    { id: "codex-plugin", configuration: { catalogSource: "unknown" } },
-    { id: "codex-plugin", configuration: { catalogSource: 1 } },
-    { id: "codex-plugin", configuration: { catalogSource: null } },
-    { id: "codex-plugin", configuration: { codexExecutable: "/tmp/codex" } },
-    {
-      id: "codex-plugin",
-      configuration: {
-        codexExecutable: "/tmp/codex",
-        codexHome: "/tmp/codex-home",
-        requestTimeoutMs: 0,
+  const refusal = (path, code, message) => [{ path, code, message }];
+  for (const [selection, expected] of [
+    [
+      { id: "unknown-plugin-driver", configuration: {} },
+      /drivers\.plugin\.id must select occ-plugin or codex-plugin/,
+    ],
+    [
+      { id: "occ-plugin", package: "@untrusted/driver", configuration: {} },
+      /drivers\.plugin contains unsupported option package/,
+    ],
+    [
+      { id: "codex-plugin", configuration: { arbitrarySource: "https://example.test/plugin" } },
+      refusal("", "UNKNOWN_FIELD", "Configuration does not satisfy additionalProperties."),
+    ],
+    [
+      { id: "codex-plugin", configuration: { catalogSource: "unknown" } },
+      refusal("/catalogSource", "INVALID_VALUE", "Configuration does not satisfy enum."),
+    ],
+    ...[1, null].map((catalogSource) => [
+      { id: "codex-plugin", configuration: { catalogSource } },
+      [
+        ...refusal("/catalogSource", "INVALID_TYPE", "Configuration does not satisfy type."),
+        ...refusal("/catalogSource", "INVALID_VALUE", "Configuration does not satisfy enum."),
+      ],
+    ]),
+    [
+      { id: "codex-plugin", configuration: { codexExecutable: "/tmp/codex" } },
+      refusal(
+        "/codexHome",
+        "REQUIRED",
+        "This field is required for a configured native catalog reader.",
+      ),
+    ],
+    [
+      {
+        id: "codex-plugin",
+        configuration: {
+          codexExecutable: "/tmp/codex",
+          codexHome: "/tmp/codex-home",
+          requestTimeoutMs: 0,
+        },
       },
-    },
+      refusal("/requestTimeoutMs", "INVALID_VALUE", "Configuration does not satisfy minimum."),
+    ],
   ]) {
-    await assert.rejects(
-      load(t, selection),
-      /drivers\.plugin|codexHome|requestTimeoutMs|catalogSource/,
-    );
+    if (expected instanceof RegExp) {
+      await assert.rejects(load(t, selection), expected);
+    } else {
+      await assert.rejects(load(t, selection), (error) => {
+        assert.ok(error instanceof ConfigurationValidationError);
+        assert.deepEqual(error.error.details, expected);
+        return true;
+      });
+    }
   }
 });

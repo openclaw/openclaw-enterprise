@@ -14,12 +14,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+  WORKSPACE_SETUP_REFUSED_EXIT_STATUS,
   WORKSPACE_SETUP_RUNTIME,
   workspaceSetupVerifier,
 } from "../../apps/controller/src/drivers/compute/workspace-setup-runtime.ts";
 import {
   WORKSPACE_DEFAULTS,
   WORKSPACE_DEFAULTS_ID,
+  WORKSPACE_DEFAULTS_VERSION,
 } from "../../packages/contracts/src/workspace-defaults.mjs";
 
 const executable = process.env.OCC_TEST_WORKSPACE_OPENCLAW_PATH;
@@ -83,8 +85,10 @@ function fixture(t) {
       execute(WORKSPACE_SETUP_RUNTIME, JSON.stringify(payload), extraEnv),
   };
 }
-function failed(result) {
-  assert.equal(result.status, 1);
+// A refusal exits WORKSPACE_SETUP_REFUSED_EXIT_STATUS, which Kubernetes Compute fails at once;
+// a failure a restart may clear, and the completion verifier, exit 1 (finding 1677).
+function failed(result, status = WORKSPACE_SETUP_REFUSED_EXIT_STATUS) {
+  assert.equal(result.status, status);
   assert.equal(result.stdout, "");
   assert.equal(result.stderr, "WORKSPACE_SETUP_FAILED\n");
 }
@@ -102,12 +106,86 @@ test("workspace setup fails closed for invalid delivery, lost completed workspac
   ]) {
     failed(f.run({ ...identity, completed: false, files }));
   }
+  // An oversized or unexpected delivery, and a workspace path that is not absolute and
+  // normalized, are refused alike: every restart reads the same input.
+  const setup = { ...identity, completed: false, files: { "USER.md": "secret" } };
+  failed(f.execute(WORKSPACE_SETUP_RUNTIME, JSON.stringify(setup) + " ".repeat(400_000)));
+  failed(f.run({ ...setup, extra: true }));
+  failed(f.run(setup, { OPENCLAW_WORKSPACE_DIR: "workspace" }));
   failed(f.run({ ...identity, completed: true }));
   assert.equal(existsSync(f.workspace), false);
   mkdirSync(join(f.root, "outside"));
   symlinkSync(join(f.root, "outside"), f.workspace);
-  failed(f.run({ ...identity, completed: false, files: { "USER.md": "secret" } }));
+  failed(f.run(setup));
   assert.equal(existsSync(join(f.root, "outside", "USER.md")), false);
+});
+
+test("workspace setup exits 2 for a refusal and 1 for a failure a restart may clear", (t) => {
+  const f = fixture(t);
+  const setup = { ...identity, completed: false, files: { "USER.md": "profile" } };
+  assert.equal(WORKSPACE_SETUP_REFUSED_EXIT_STATUS, 2);
+  // The runtime it sets up with is missing: not a refusal of this workspace, so it keeps the
+  // retrying wait.
+  failed(f.run(setup, { OPENCLAW_EXECUTABLE: join(f.root, "absent-runtime.mjs") }), 1);
+  assert.equal(existsSync(f.workspace), false);
+  // Native setup itself failed, here in a stand-in OpenClaw with the pinned release and
+  // templates: a restart may pass.
+  const runtime = join(f.root, "stand-in-runtime");
+  const templates = join(runtime, "docs", "reference", "templates");
+  mkdirSync(templates, { recursive: true });
+  writeFileSync(
+    join(runtime, "package.json"),
+    JSON.stringify({ name: "openclaw", version: WORKSPACE_DEFAULTS_VERSION }),
+  );
+  for (const [name, content] of Object.entries(WORKSPACE_DEFAULTS)) {
+    writeFileSync(join(templates, name), content);
+  }
+  writeFileSync(
+    join(runtime, "openclaw.mjs"),
+    'import { writeFileSync } from "node:fs"; writeFileSync(new URL("ran", import.meta.url), ""); process.exit(3);',
+  );
+  const standIn = { OPENCLAW_EXECUTABLE: join(runtime, "openclaw.mjs") };
+  failed(f.run(setup, standIn), 1);
+  assert.equal(existsSync(join(runtime, "ran")), true, "native setup ran");
+  // Templates that differ from the Console's defaults fail every restart the same way.
+  writeFileSync(join(templates, "USER.md"), "changed");
+  failed(f.run(setup, standIn));
+  // A completed setup whose workspace lost its record fails the same way on every restart.
+  failed(f.run({ ...identity, completed: true }));
+  // So does a setup record the workspace has since overwritten with something other than JSON.
+  mkdirSync(f.workspace, { recursive: true });
+  writeFileSync(join(f.workspace, ".oce-workspace-setup.json"), "not a setup record");
+  failed(f.run({ ...identity, completed: true }));
+});
+
+test("workspace completion verification uses the Sandbox runtime path and retains edited files", (t) => {
+  const f = fixture(t);
+  const sandboxWorkspace = join(f.root, "sandbox-workspace");
+  mkdirSync(sandboxWorkspace);
+  // A prior successful initializer left this exact identity marker. Its workspace is
+  // now mounted at the Sandbox path rather than Compute's native path.
+  writeFileSync(join(sandboxWorkspace, ".oce-workspace-setup.json"), JSON.stringify(identity));
+  writeFileSync(join(sandboxWorkspace, "USER.md"), "edited after initialization");
+  const verify = workspaceSetupVerifier(identity, { environment: "OPENCLAW_WORKSPACE_DIR" });
+  const verified = f.execute(verify, "", { OPENCLAW_WORKSPACE_DIR: sandboxWorkspace });
+  assert.equal(verified.status, 0, verified.stderr);
+  assert.equal(
+    readFileSync(join(sandboxWorkspace, "USER.md"), "utf8"),
+    "edited after initialization",
+  );
+  assert.equal(
+    existsSync(f.workspace),
+    false,
+    "verification must not initialize the old mount path",
+  );
+  failed(f.execute(verify, ""), 1);
+  writeFileSync(
+    join(sandboxWorkspace, ".oce-workspace-setup.json"),
+    JSON.stringify({ ...identity, agentId: "another-agent" }),
+  );
+  failed(f.execute(verify, "", { OPENCLAW_WORKSPACE_DIR: sandboxWorkspace }), 1);
+  rmSync(join(sandboxWorkspace, ".oce-workspace-setup.json"));
+  failed(f.execute(verify, "", { OPENCLAW_WORKSPACE_DIR: sandboxWorkspace }), 1);
 });
 
 const native = {

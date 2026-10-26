@@ -9,9 +9,9 @@ to require a bot identity and identify its workspace, then [`users.list`](https:
 or [`conversations.list`](https://docs.slack.dev/reference/methods/conversations.list/).
 The bot needs `users:read` for people, `channels:read` for public channels, and
 `groups:read` for private channels. Slack returns only resources visible to the
-bot. The Driver scans a bounded number of pages per query and returns a cursor
-when more pages remain. The Console displays the workspace and saves selected
-IDs, never names.
+bot. The Driver scans up to three provider pages for a nonempty search query and
+one page without a query. It returns a cursor when more pages remain. The
+Console displays the workspace and saves selected IDs, never names.
 
 For exact-ID searches and saved IDs, the Driver calls [`users.info`](https://docs.slack.dev/reference/methods/users.info/)
 or [`conversations.info`](https://docs.slack.dev/reference/methods/conversations.info/)
@@ -34,14 +34,25 @@ directory browsing is unavailable.
 ## Credential validation
 
 Before API provisioning or deployment, enabled Slack accounts require
-Secret-backed native environment references. Socket Mode app tokens must start
-with `xapp-`; bot tokens must start with `xoxb-` and pass `auth.test` with a bot
-identity and workspace. HTTP mode skips the app-token check. Disabled Slack
+Secret-backed native environment references: an env SecretRef, or a token that
+is exactly one `${NAME}`, with `NAME` bound to a Secret. Socket Mode app tokens
+must start with `xapp-`; bot tokens must start with `xoxb-` and pass `auth.test`
+with a bot identity. An explicit Enterprise Grid installation requires an enterprise ID;
+other installations require a workspace ID. User and channel lookup still
+require a workspace ID. HTTP mode skips the app-token check. Disabled Slack
 accounts make no provider call. Validation has an eight-second request budget
 and never opens a Socket Mode connection or sends a message.
 
 Failures return sanitized `CHANNEL_CREDENTIAL_*` errors with the native field
-path. App-token prefixes do not prove validity, scopes, or app/bot pairing.
+path. A retryable `503` means Slack or its route failed. When the production API
+has no proxy URL, its egress is closed (`OCC_API_HTTPS_EGRESS_OPEN` is not `true`),
+and `auth.test` gets no answer from Slack (connection, DNS, or time budget
+failure), validation instead returns `409` `RESOURCE_CONFLICT`. Helm sets
+`OCC_API_HTTPS_EGRESS_OPEN` to `true` when GitHub, Google or OIDC sign-in is
+enabled with empty `egressCidrs`, because that rule allows TCP 443 to any address. The
+message names the [proxy settings](#enable-lookup-in-production) and says to try
+again if the API has another approved route to Slack, because an open route that
+timed out gets the same answer. App-token prefixes do not prove validity, scopes, or app/bot pairing.
 Validation checks the current values; credentials can change before runtime
 startup, which remains a separate connectivity check.
 
@@ -64,17 +75,17 @@ The API accepts a DNS proxy URL only when Helm also sets the matching
 Operators can instead set Helm `api.channelDirectoryProxyUrl` to an approved
 external HTTP or HTTPS proxy, such as `http://198.51.100.25:3128` with the
 example IP and port replaced. The value must contain one literal IPv4 address
-and an explicit port, without credentials or a path. The chart passes it to the
-API as `OCC_CHANNEL_DIRECTORY_PROXY_URL` and allows API Pod egress only to that
-IP and port. The proxy must permit `CONNECT slack.com:443`; restrict its other
+other than `0.0.0.0` and an explicit port, without credentials or a path. The
+chart passes it to the API as `OCC_CHANNEL_DIRECTORY_PROXY_URL` and allows API
+Pod egress only to that IP and port. The proxy must permit `CONNECT slack.com:443`; restrict its other
 destinations at the proxy. The chart does not grant the worker or Agent Pods this
 egress.
 
 The Driver sends Slack API requests through the selected tunnel and verifies
 Slack's TLS certificate. Keep the selected bot token in the same-Namespace
 Secret; Helm values need no token or other credential for the proxy.
-Without a reachable Slack route, lookup and credential validation return
-unavailable. Exact-ID entry does not bypass credential validation. See the
+Without a reachable Slack route, lookup returns unavailable, and credential
+validation answers as described in [Credential validation](#credential-validation). Exact-ID entry does not bypass credential validation. See the
 [production controller settings](../settings/production.md) for the environment
 contract.
 

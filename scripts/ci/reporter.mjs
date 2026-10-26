@@ -64,6 +64,9 @@ function safeMeasurement(message) {
   if (isRecord(value) && value.kind === "runtime-model-probe") {
     return safeModelProbeMeasurement(value);
   }
+  if (isRecord(value) && value.kind === "runtime-sigterm") {
+    return safeSigtermMeasurement(value);
+  }
   if (
     !isRecord(value) ||
     value.kind !== "kubelet-volume-refresh" ||
@@ -136,12 +139,43 @@ function safeModelProbeMeasurement(value) {
   return measurement;
 }
 
+const sigtermMeasurementCases = new Set([
+  "codex-model-probe",
+  "codex-held-failure",
+  "codex-ready",
+  "gateway-model-probe",
+  "gateway-held-failure",
+  "gateway-ready",
+  "dedicated-gateway-harness-wait",
+]);
+
+// How long a runtime wrapper took to stop after SIGTERM in one startup phase, against the
+// budget the termination test allows it, in whole milliseconds up to an hour.
+function safeSigtermMeasurement(value) {
+  if (!sigtermMeasurementCases.has(value.case) || typeof value.stopped !== "boolean") {
+    return undefined;
+  }
+  for (const key of ["elapsedMs", "budgetMs"]) {
+    if (!(Number.isInteger(value[key]) && value[key] >= 0 && value[key] <= 3_600_000)) {
+      return undefined;
+    }
+  }
+  return {
+    kind: value.kind,
+    case: value.case,
+    stopped: value.stopped,
+    elapsedMs: value.elapsedMs,
+    budgetMs: value.budgetMs,
+  };
+}
+
 const safeRuntimeImageStockBrokerStages = new Set([
   "material-init",
   "native-git-init",
   "config-patch",
   "fixture-reachability",
   "initialize",
+  "bundled-system-skill",
   "proxy-env",
   "broker-denial",
   "outside-home-read",
@@ -378,10 +412,36 @@ function relayNodeDiagnostic(value) {
   };
 }
 
+// The proof runs in a separate controller process. Both its test and the CI
+// reporter use this closed vocabulary; neither publishes arbitrary stage text.
+export function nativeFirstAgentProofDiagnostic(failureStage) {
+  const stages = [
+    "startup",
+    "connect",
+    "create",
+    "create-session-id-missing",
+    "required-placement",
+    "required-placement-describe-rejected",
+    "required-placement-terminal-failed",
+    "required-placement-terminal-reclaimed",
+    "required-placement-terminal-local",
+    "session-identity",
+    "send",
+    "model-and-exec",
+    "current-placement",
+  ];
+  return stages.includes(failureStage)
+    ? { kind: "native-first-agent-proof", failureStage }
+    : undefined;
+}
+
 function failureDiagnostic(error) {
   const diagnostic = error?.openclawCiDiagnostic;
   if (!isRecord(diagnostic)) {
     return undefined;
+  }
+  if (diagnostic.kind === "native-first-agent-proof") {
+    return nativeFirstAgentProofDiagnostic(diagnostic.failureStage);
   }
   if (diagnostic.kind === "runtime-model-probe") {
     if (

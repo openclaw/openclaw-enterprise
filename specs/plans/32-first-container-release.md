@@ -26,7 +26,7 @@ Before a production release, resolve the SecOps-only ownership prerequisite in
   credential; no workstation package token is required.
 - Complete the existing environment, package-linkage, destination, and exact-CI
   prerequisites, then run and verify the first private publication.
-- Update the [operator procedure](../../.github/containers.md) and document the
+- Update the [operator procedure](../../docs/release/containers.md) and document the
   bootstrap flow. Preserve both Dockerfiles, release gates, and chart defaults.
 - Replace each retried CI lane's earlier result artifact so exact-source CI
   aggregates the successful retry instead of stale failure evidence.
@@ -55,12 +55,12 @@ retries; other API failures stop the run. GHCR can omit repository metadata, so
 marker bootstrap does not establish linkage. Before real-image publication or
 promotion, missing linkage metadata requires the independent environment
 reviewer's recorded confirmation of live package settings, bound to the package,
-repository, source, current run and attempt. The [operator procedure](../../.github/containers.md#confirm-package-linkage)
+repository, source, current run and attempt. The [operator procedure](../../docs/release/containers.md#confirm-package-linkage)
 defines the evidence; explicit conflicting metadata always fails. Bootstrap
 never changes visibility, grants, or Enterprise source tags. Its unique
 `bootstrap-<run-id>-<attempt>` tag is not a deployable release.
 
-The regular publisher retains the [existing contract](../../.github/containers.md):
+The regular publisher retains the [existing contract](../../docs/release/containers.md):
 source equals the selected trusted workflow revision; the real CI workflow's
 main-push run and `CI Required` aggregate succeed for that source; the approved
 Node digest matches CI and the runtime recipe. Both `linux/amd64` OCI archives
@@ -93,7 +93,7 @@ the publication receipt's digest references, not the bootstrap tag or chart vers
 
 Two-image publication is not atomic. On partial failure, inspect both destinations
 before retrying. Preserve already-published source tags; a fresh build may resolve
-different runtime dependencies and must fail on a digest conflict. Use the protected [recovery workflow](../../.github/containers.md#recover-a-partial-publication)
+different runtime dependencies and must fail on a digest conflict. Use the protected [recovery workflow](../../docs/release/containers.md#recover-a-partial-publication)
 to resume from the original retained archives after fixing the cause. Recovery
 separately verifies current workflow CI and original image CI, preserves the
 producer seals, and requires a fresh independent approval. Expired archives

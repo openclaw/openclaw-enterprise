@@ -232,7 +232,7 @@
     {
       "id": "prepare",
       "category": "Lifecycle",
-      "name": "Prepare immutable AgentRevision",
+      "name": "Prepare an Agent revision",
       "requirement": "required contract",
       "requirementEvidence": [
         {
@@ -277,7 +277,7 @@
         },
         "ssh": {
           "status": "supported",
-          "detail": "Writes immutable snapshot without changing current serving revision.",
+          "detail": "Writes saved settings without changing the running version.",
           "evidence": [
             {
               "path": "apps/controller/src/drivers/compute/ssh/index.ts",
@@ -341,7 +341,7 @@
         },
         "kubernetes": {
           "status": "supported",
-          "detail": "Production stages verify exact workload readiness and update revision-aware Service routing.",
+          "detail": "Production stages verify workload readiness and update Service routing for the selected version.",
           "evidence": [
             {
               "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
@@ -365,7 +365,7 @@
         },
         "ssh": {
           "status": "partial",
-          "detail": "Activation switches snapshot and restarts gateway; deactivation only verifies revision because dedicated topology is unsupported.",
+          "detail": "Activation switches saved settings and restarts the gateway; deactivation only verifies the Agent revision because dedicated topology is unsupported.",
           "evidence": [
             {
               "path": "apps/controller/src/drivers/compute/ssh/index.ts",
@@ -399,7 +399,7 @@
     {
       "id": "stop",
       "category": "Lifecycle",
-      "name": "Stop exact revision without retiring it",
+      "name": "Stop an Agent revision by ID without retiring it",
       "requirement": "required contract",
       "requirementEvidence": [
         {
@@ -411,7 +411,7 @@
       "cells": {
         "docker": {
           "status": "supported",
-          "detail": "Removes exact revision containers; leaves persisted revision outside Driver untouched; runtime tmpfs is lost.",
+          "detail": "Removes containers with matching Agent revision IDs; leaves the saved Agent revision unchanged; runtime tmpfs is lost.",
           "evidence": [
             {
               "path": "apps/controller/src/drivers/compute/docker/index.ts",
@@ -496,7 +496,7 @@
       "cells": {
         "docker": {
           "status": "supported",
-          "detail": "Removes exact revision Agent container; removes gateway only if its revision ID still matches.",
+          "detail": "Removes the Agent container for the requested version; removes the gateway only if its Agent revision ID still matches.",
           "evidence": [
             {
               "path": "apps/controller/src/drivers/compute/docker/index.ts",
@@ -535,7 +535,7 @@
         },
         "ssh": {
           "status": "supported",
-          "detail": "Retires only exact snapshot; stops unit only when retired revision is current.",
+          "detail": "Retires only the requested version; stops the unit only when the host's current Agent revision ID matches the requested ID.",
           "evidence": [
             {
               "path": "apps/controller/src/drivers/compute/ssh/index.ts",
@@ -637,7 +637,7 @@
       "cells": {
         "docker": {
           "status": "partial",
-          "detail": "Separate gateway and exact-revision Codex container; transport retry limitation is listed separately.",
+          "detail": "Separate gateway and Codex container for that version; transport retry limitation is listed separately.",
           "evidence": [
             {
               "path": "apps/controller/src/drivers/compute/docker/index.ts",
@@ -651,7 +651,7 @@
         },
         "kubernetes": {
           "status": "supported",
-          "detail": "Separate exact-revision Codex Deployment or selected Sandbox workload.",
+          "detail": "Separate Codex Deployment for that version or selected Sandbox workload.",
           "evidence": [
             {
               "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
@@ -1158,7 +1158,7 @@
         },
         "ssh": {
           "status": "unsupported",
-          "detail": "Rejects revisions whose admitted plugin map is nonempty; an empty map does not trigger this check.",
+          "detail": "Rejects Agent revisions whose saved plugin map is nonempty; an empty map does not trigger this check.",
           "evidence": [
             {
               "path": "apps/controller/src/drivers/compute/ssh/index.ts",
@@ -1269,7 +1269,7 @@
       "cells": {
         "docker": {
           "status": "unsupported",
-          "detail": "Container create sets bounded tmpfs, but no CPU/memory resource limits or tenant quota.",
+          "detail": "Container create sets tmpfs size limits, but no CPU/memory resource limits or tenant quota.",
           "evidence": [
             {
               "path": "apps/controller/src/drivers/compute/docker/index.ts",
@@ -1415,7 +1415,7 @@
       "cells": {
         "docker": {
           "status": "supported",
-          "detail": "Read-only rootfs, dropped capabilities, no-new-privileges and bounded writable tmpfs.",
+          "detail": "Read-only rootfs, dropped capabilities, no-new-privileges and writable tmpfs with size limits.",
           "evidence": [
             {
               "path": "apps/controller/src/drivers/compute/docker/index.ts",
@@ -1429,7 +1429,7 @@
         },
         "kubernetes": {
           "status": "supported",
-          "detail": "Restricted Pod context, read-only rootfs, no escalation and dropped capabilities; bounded emptyDir.",
+          "detail": "Restricted Pod context, read-only rootfs, no escalation and dropped capabilities; emptyDir with a size limit.",
           "evidence": [
             {
               "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
@@ -1491,7 +1491,7 @@
         },
         "kubernetes": {
           "status": "supported",
-          "detail": "Projects bounded audience-scoped ServiceAccount token read-only; disables ambient automount.",
+          "detail": "Projects an audience-scoped ServiceAccount token read-only with a set lifetime; disables ambient automount.",
           "evidence": [
             {
               "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
@@ -1672,7 +1672,7 @@
         },
         "ssh": {
           "status": "supported",
-          "detail": "Private home/state directories persist across stop and revision retirement.",
+          "detail": "Private home/state directories persist across stop and version retirement.",
           "evidence": [
             {
               "path": "apps/controller/src/drivers/compute/ssh/remote-helper.cjs",

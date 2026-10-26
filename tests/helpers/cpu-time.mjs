@@ -18,3 +18,19 @@ export function cpuTimeMs(work, { budgetMs = Number.POSITIVE_INFINITY, runs = 3 
   }
   return cheapest;
 }
+
+/**
+ * `cpuTimeMs` for asynchronous work, such as a page read through its awaited Driver
+ * call. Only the awaited work may run in the process meanwhile: CPU time is not
+ * attributed to a promise.
+ */
+export async function cpuTimeMsAsync(work, { budgetMs = Number.POSITIVE_INFINITY, runs = 3 } = {}) {
+  let cheapest = Number.POSITIVE_INFINITY;
+  for (let run = 0; run < runs && cheapest >= budgetMs; run += 1) {
+    const before = process.cpuUsage();
+    await work();
+    const used = process.cpuUsage(before);
+    cheapest = Math.min(cheapest, (used.user + used.system) / 1000);
+  }
+  return cheapest;
+}

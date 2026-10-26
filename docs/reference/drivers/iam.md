@@ -33,6 +33,16 @@ and Restrictions. OCC uses it to attribute audit records. The worker rejects
 malformed decisions, including a mismatched Driver identity; an invalid result
 cannot grant permission.
 
+### Namespace policy operations
+
+Optional Namespace policy methods list, read, create, or delete Roles and
+AccessBindings, and list, read, or create ServicePrincipals. OCC supplies their
+policy repository. Writes require the Driver to declare
+`namespacePolicyTransaction: "platform-unit-of-work"` and participate in that
+original transaction; policy and audit must commit or roll back together.
+OCC rejects a write before invoking a Driver without that declaration. Reads
+remain available when their methods are implemented.
+
 ## IAM
 
 The authentication system verifies credentials; the IAM Driver resolves the
@@ -51,13 +61,16 @@ a denied request or unavailable authority cannot become an allow. See
 
 Startup creates the selected IAM Driver. The API and worker use it for later
 lookups and decisions; policy remains persisted platform state and is not frozen
-in Installation YAML or a deployment. The shared interface has no startup,
-disposal, identity-provisioning, or policy-mutation method.
+in Installation YAML or a deployment. The shared interface has no startup or
+disposal hook.
 
 ### Native IAM behavior
 
-The native Driver reads controller-owned IAM state on every lookup and decision
-and accepts only an empty startup configuration. Lookup returns no identity for
+The native Driver reads controller-owned IAM state once per PostgreSQL State unit
+of work, such as one list request, and validates and indexes it once there; a
+lookup or decision outside a unit opens its own. A later unit reads the policy
+again, so a revocation applies to the next request. The Driver accepts only an
+empty startup configuration. Lookup returns no identity for
 an absent or ambiguous match, invalid scope, or invalid policy. Authorization
 denies invalid requests or policy, unknown identities, cross-Namespace identity
 use, and requests without an applicable grant. A storage error propagates instead

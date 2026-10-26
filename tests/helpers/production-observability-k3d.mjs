@@ -17,7 +17,7 @@ export const observabilitySelection = {
   skip:
     process.env.OCC_TEST_PRODUCTION_OBSERVABILITY === "1"
       ? false
-      : "Select k3d-observability with the CI runner; see docs/testing/metrics.md.",
+      : "Select k3d-observability with the CI runner; see docs/testing/local.md#kubernetes-observability-acceptance.",
   timeout: 1_200_000,
 };
 

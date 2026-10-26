@@ -3,7 +3,7 @@
 A Preset stores reusable Agent launch settings and variables in a Namespace.
 Select it during Agent creation, fill its variables, and edit copied settings before
 saving. Later Preset edits or deletion cannot change the Agent, Configuration, or
-deployed revisions.
+deployed versions.
 See [Create an Agent from a Preset](../guides/topics/agent-presets.md).
 
 The checked-in [standard Codex Preset](../guides/topics/standard-codex-preset.md)
@@ -114,9 +114,9 @@ OpenClaw instead routes `openai/<model>` through `agentRuntime.id: openclaw` and
 `https://api.openai.com/v1` with `openai-responses`.
 
 The standard Codex network proxy enables the `workspace` base profile in
-`limited` mode. Its nine allowed build domains and disabled proxy/socket escape
-options are listed in the [standard Codex guide](../guides/topics/standard-codex-preset.md#build-network-allowlist).
-Cached search uses `tools.web.search.openaiCodex.mode: cached`.
+`limited` mode. Its build domains and disabled escape options are listed in the
+[standard Codex guide](../guides/topics/standard-codex-preset.md#build-network-allowlist).
+The OpenShell SandboxDriver drops it ([details](drivers/openshell-sandbox.md#configuration)).
 
 Omitted fields inherit the selected native runtime's defaults; omission does
 not establish a particular reviewer, network policy, or tool permission. Compute
@@ -177,8 +177,7 @@ with it. Omitted settings use the form's normal defaults.
 
 `agent.pluginApprovers` uses the Agent default plugin approver semantics from
 [Agent Plugins](agent-plugins.md#slack-approver-users). Omit it to inherit
-the form default. Use an empty array to select no Slack approvers, or a
-list of channel user identities to prefill selected approvers. Variable tokens
+the form default; `[]` selects no Slack approvers. Variable tokens
 can appear inside those identity strings; the completed Agent request still
 validates the rendered approvers with the selected Plugin Driver.
 
@@ -223,16 +222,17 @@ Declare variables inside `template.variables`, then refer to them with
 }
 ```
 
-This is a partial template, not a complete deployment configuration. Add the
-native settings and credentials required by your Installation before deploying.
+This partial template needs your Installation's native settings and credentials
+before deployment.
 
-- Names match `[A-Za-z_][A-Za-z0-9_]*`. Types are `string`, `number`, `boolean`, and
-  `password`; numbers must be finite. Optional `description` text labels inputs.
-- Defaults must match the declared type. Omitted inputs use defaults; `false`,
-  `0`, and empty strings override them. Referenced variables without defaults
-  require input. Unknown names and wrong types fail; the `400` message names the
-  template path, such as `Preset variables.model:`, and what that field accepts,
-  not the submitted value.
+- Names match `[A-Za-z_][A-Za-z0-9_]*`; types are `string`, `number`, `boolean`, or
+  `password`. Numbers are finite; optional `description` labels inputs.
+- String controls accept multiple lines. Unedited defaults and restored drafts
+  retain exact line endings, including CRLF; edits use browser LF.
+- Defaults must match their type; omission uses them. Explicit `false`, `0`, and
+  empty strings override defaults. Referenced variables without defaults require
+  input. Unknown names or wrong types fail with `400`, naming the path and accepted
+  shape (e.g. `Preset variables.model:`), without values.
 - Whole-string tokens retain scalar type; embedded tokens require strings.
   `"{{ vars.count }}"` can become a JSON number; `"worker-{{ vars.name }}"` stays a string.
 - `configuration.values` keys, including model catalog keys, can use string
@@ -294,20 +294,21 @@ The collection path is `/namespaces/:namespaceId/presets`; an exact Preset adds
 `/:presetId`. Use the [generated API reference](api.md#presets) for full schemas
 and response envelopes.
 
-| Request                                            | Result                  | Required permission                                             |
-| -------------------------------------------------- | ----------------------- | --------------------------------------------------------------- |
-| `POST` collection with `{name, template}`          | `201`, created Preset   | `preset:create` on the Namespace collection.                    |
-| `GET` collection                                   | `200`, readable Presets | Namespace `read`, then `preset:read` checked on each candidate. |
-| `GET` exact Preset                                 | `200`, Preset           | `preset:read` on that Preset.                                   |
-| `PATCH` exact Preset with `name` and/or `template` | `200`, updated Preset   | `preset:update` on that Preset.                                 |
-| `DELETE` exact Preset                              | `204`                   | `preset:delete` on that Preset.                                 |
+| Request                                            | Result                           | Required permission                                             |
+| -------------------------------------------------- | -------------------------------- | --------------------------------------------------------------- |
+| `POST` collection with `{name, template}`          | `201`, created Preset            | `preset:create` on the Namespace collection.                    |
+| `GET` collection                                   | `200`, readable Preset summaries | Namespace `read`, then `preset:read` checked on each candidate. |
+| `GET` exact Preset                                 | `200`, Preset                    | `preset:read` on that Preset.                                   |
+| `PATCH` exact Preset with `name` and/or `template` | `200`, updated Preset            | `preset:update` on that Preset.                                 |
+| `DELETE` exact Preset                              | `204`                            | `preset:delete` on that Preset.                                 |
 
 An included `template` replaces the whole template, including variable
 definitions; omitted fields stay unchanged. Writes check the template structure,
 variable syntax and default types, credential-binding structure, known
 cross-Namespace credential references, and credential literals at their native
-use sites. Ordinary launch-field errors, such as an invalid execution mode or
-plugin policy, can remain in a saved Preset. The console checks values needed
+use sites. A literal `agent.name`, `executionMode`, `backendId` or
+`pluginApprovers` that Agent create refuses is refused; plugin selections and
+tokens wait. The console checks values needed
 to populate its form; the existing creation APIs validate completed settings.
 The selected
 [Configuration Driver](drivers/configuration.md#optional-validation) must support
@@ -346,11 +347,10 @@ and an Agent separately. Follow [partial-save recovery](console/create-and-deplo
 if the second save fails or a response is lost.
 
 A Preset is read once when selected. **Use Preset** renders its variables and
-opens an ordinary editable Agent form. The chooser closes; changing the draft
-does not update or reread the Preset. **Start over** discards the unsaved draft
+opens an ordinary editable Agent form; changing the draft does not update or
+reread the Preset. **Start over** discards the unsaved draft
 and returns to the chooser, but is disabled once a Configuration has saved or a
 save outcome is uncertain.
 
-A valid Preset is not necessarily a valid Agent configuration. A later Agent
-validation error can leave a saved Configuration; follow the recovery steps
-above. Later deployments read the Agent's own draft.
+A valid Preset is not necessarily a valid Agent configuration. Later deployments
+read the Agent's own draft.

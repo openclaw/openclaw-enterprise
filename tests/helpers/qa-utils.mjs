@@ -1,5 +1,4 @@
 import { createRequire } from "node:module";
-import { createServer } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
 
 export const { loadYaml, dumpYaml } = createRequire(
@@ -14,25 +13,30 @@ export function yamlDocuments(text) {
     );
 }
 
-export async function waitFor(description, observe, timeout = 300_000) {
-  const deadline = Date.now() + timeout;
-  while (Date.now() < deadline) {
+// `describe` reports the last state `observe` saw (kept by the caller), so a
+// timeout says what was still missing instead of only what was awaited. `now`
+// lets a test drive the deadline with its own clock.
+export async function waitFor(
+  description,
+  observe,
+  timeout = 300_000,
+  { describe, interval = 1000, now = () => Date.now() } = {},
+) {
+  const deadline = now() + timeout;
+  while (now() < deadline) {
     const result = await observe();
     if (result) {
       return result;
     }
-    await delay(1000);
+    await delay(interval);
   }
-  throw new Error(`Timed out: ${description}`);
-}
-
-export async function unusedPort() {
-  const server = createServer();
-  await new Promise((accept, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", accept);
-  });
-  const port = server.address().port;
-  await new Promise((accept) => server.close(accept));
-  return port;
+  let detail = "";
+  if (describe) {
+    try {
+      detail = `; last observation: ${describe()}`;
+    } catch (error) {
+      detail = `; last observation unavailable (${error?.message ?? error})`;
+    }
+  }
+  throw new Error(`Timed out: ${description}${detail}`);
 }

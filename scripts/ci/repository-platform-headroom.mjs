@@ -157,12 +157,9 @@ async function main() {
       /^\d+$/.test(process.env.GITHUB_RUN_ATTEMPT ?? ""),
   );
   assert(
-    [
-      "repository-credentials-platform",
-      "container-runtime-build",
-      "k3d-observability",
-      "k3d-observability-demo",
-    ].includes(process.env.OPENCLAW_CI_HEADROOM_LANE) && process.argv.length === 2,
+    ["container-runtime-build", "k3d-observability", "k3d-observability-demo"].includes(
+      process.env.OPENCLAW_CI_HEADROOM_LANE,
+    ) && process.argv.length === 2,
   );
   const os = await readFile("/etc/os-release", "utf8");
   const expectedVersion = process.env.ImageOS === "ubuntu22" ? "22.04" : "24.04";

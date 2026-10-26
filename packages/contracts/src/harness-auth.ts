@@ -13,8 +13,7 @@ export function isSecretHarnessAuth<T extends HarnessAuthBinding | null | undefi
   auth: T,
 ): auth is Extract<T, { readonly source: SecretReference }> {
   return (
-    (auth?.method === "api_key" || auth?.method === "codex_pat" || auth?.method === "oauth") &&
-    auth.source.kind === "secret"
+    (auth?.method === "api_key" || auth?.method === "codex_pat") && auth.source.kind === "secret"
   );
 }
 
@@ -37,9 +36,6 @@ export function normalizeHarnessAuthBinding(input: unknown): HarnessAuthBinding 
 
 /** Public intent excludes private admission and delivery metadata. */
 export function harnessAuthBindingFromSnapshot(snapshot: HarnessAuthSnapshot): HarnessAuthBinding {
-  if (snapshot.method === "oauth") {
-    return { method: "oauth", source: snapshot.source };
-  }
   if (isSecretHarnessAuth(snapshot)) {
     return snapshot.method === "api_key"
       ? { method: "api_key", source: snapshot.source }

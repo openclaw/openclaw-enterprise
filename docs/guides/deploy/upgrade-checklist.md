@@ -42,8 +42,20 @@ command; use this page as its migration inventory.
 - [ ] Decide whether this is a controller-only, runtime-only, or coordinated
       release. A controller-only release does not request Agent deployments,
       but the new worker can restart existing Agent Pods once and interrupt
-      repository-bound revisions. A runtime
-      release creates new revisions from current Agent and Configuration drafts.
+      repository-bound versions. A runtime
+      release creates new versions from current Agent and Configuration drafts.
+      To classify a source diff, compare its paths with what
+      `deploy/runtime/Dockerfile` copies into its final `runtime` stage, directly
+      or through a stage that stage copies from (`COPY --from=`);
+      `grep -nE '^(FROM|COPY)' deploy/runtime/Dockerfile` lists them. A change to
+      one of those paths, or to the OpenClaw commit or Codex version the
+      Dockerfile pins, needs the new runtime image. For example, the repository
+      credential client in
+      `apps/controller/src/drivers/repo/github/credentials/client/` is built into
+      the runtime image. Other controller source ships only in the controller
+      image. This includes the Agent Pod specs that the controller renders, such
+      as `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts`:
+      existing Agents get that change when the controller renders their Pods again.
 - [ ] Check controller/runtime compatibility. Upgrade the controller first when
       it supports the deployed runtime. Use a release-specific sequence when the
       versions cannot run together.
@@ -57,13 +69,13 @@ Create a private evidence directory and record these values before mutation.
 [The pre-upgrade baseline](upgrade-baseline.md) gives commands for many:
 
 - [ ] OCC Installation ID, cluster/context, Helm release or Compose project,
-      source revision, chart revision, and all running image digests.
+      source commit, chart revision, and all running image digests.
 - [ ] Protected Helm values and Installation YAML, plus the live rendered values
       and mounted Installation Secret or file. Resolve unexplained drift first.
 - [ ] Database migration catalog and receipts. Back up PostgreSQL when
       recovery could require restoring control-plane data.
 - [ ] Namespace, Agent, Configuration, Preset, Secret metadata, IAM Role,
-      AccessBinding, Backend, service account, active revision, desired state,
+      AccessBinding, Backend, service account, selected version, desired state,
       deployment work, and audit-record inventories. Never record Secret values.
 - [ ] Kubernetes Namespace labels, RoleBindings, Services, NetworkPolicies,
       Gateway resources, storage classes, seccomp profiles, and supporting
@@ -97,7 +109,7 @@ Create a private evidence directory and record these values before mutation.
       [broker upgrade and recovery procedure](../repository-credentials/installation.md#select-composition-and-network-access).
 - [ ] If a rollout replaces the worker's enabled repository broker, identify
       running Agents with delivered repository sessions. Plan an interruption
-      and authorized replacement revisions for affected Agents, including for a
+      and authorized replacement versions for affected Agents, including for a
       controller-only release. Review their current drafts and required deploy
       grants. Stop if that recovery cannot be performed safely.
 
@@ -131,7 +143,7 @@ Agent. Existing RWO-backed Agents need no recreation.
 ## Apply the release in dependency order
 
 1. Install cluster prerequisites (on two clusters, upgrade the
-   [execution chart](../../testing/two-cluster-local.md#upgrade-the-execution-chart)
+   [execution chart](../../testing/kubernetes.md#upgrade-the-execution-chart)
    first) and reconcile protected inputs without replacing retained data.
 2. Run the canonical migration preflight. Stop if the history is unsupported or
    a required quiescence step is unresolved.
@@ -158,11 +170,11 @@ Agent. Existing RWO-backed Agents need no recreation.
       newly created replacement Agents. IAM, Backend, service-account, deployment-work,
       and audit-record inventories also reconcile. The controller-only helper
       requests no deployments, but affected Agents' Pods can restart once on the
-      same image; check for revisions affected by broker restart.
+      same image; check for versions affected by broker restart.
 - [ ] Persisted Preset templates match the intended source definitions. Missing
       defaults were created, intended same-name copies were updated in place,
       and obsolete copies were handled deliberately.
-- [ ] Runtime releases selected new successful revisions. Gateway and Agent Pods
+- [ ] Runtime releases selected new successful versions. Gateway and Agent Pods
       are ready on the requested digest; stopped Agents were not started.
 - [ ] PVC and PV identities, workspace hashes, gateway state, and representative
       sessions match the baseline for retained Agents. Recreated legacy RWX Agents

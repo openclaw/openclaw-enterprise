@@ -293,7 +293,13 @@ test(
     await t.test("an IdP outage fails OIDC closed and leaves recovery working", async () => {
       idp.mode = "error";
       try {
-        await assertRefused({ subject: memberSubject }, "IdP outage", "PROVIDER_UNAVAILABLE");
+        // The Console says the IdP is unavailable, not to get attached (finding 1193).
+        await assertRefused(
+          { subject: memberSubject },
+          "IdP outage",
+          "PROVIDER_UNAVAILABLE",
+          "provider-unavailable",
+        );
         assert.equal((await passwordSignIn(app, origin, admin, address())).statusCode, 200);
       } finally {
         idp.mode = "up";
@@ -313,7 +319,7 @@ test(
       assert.equal(await currentSession(app, cookie), null);
       // The IdP proved this identity, and it is attached: the person is told the account is
       // disabled rather than to retry or ask for an attach. Only their own browser gets this.
-      await assertRefused(
+      const attemptId = await assertRefused(
         { subject: disabledSubject },
         "disabled account",
         "ACCOUNT_DISABLED",
@@ -323,7 +329,11 @@ test(
       const refusals = (await state.transact((unit) => unit.audit.list())).filter(
         ({ reasonCode }) => reasonCode === "ACCOUNT_DISABLED",
       );
-      assert.deepEqual(refusals.at(-1).details, { provider: "oidc", userId: disabled.id });
+      assert.deepEqual(refusals.at(-1).details, {
+        provider: "oidc",
+        userId: disabled.id,
+        attemptId,
+      });
     });
 
     await t.test("the coverage report drops accounts once their identity is attached", async () => {

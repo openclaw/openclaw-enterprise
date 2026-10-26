@@ -4,7 +4,6 @@ import { readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import pg from "pg";
-import { composeProduction } from "../../apps/controller/src/composition/production.ts";
 import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import {
   clientAddressConfiguration,
@@ -15,6 +14,7 @@ import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { createInstallationDriverConfiguration } from "./installation-driver-configuration.mjs";
 import { createTestConfigurationDriver } from "./configuration-driver.mjs";
+import { jsonLineDestination } from "./json-lines.mjs";
 import { createTestSecretDriver } from "./secret-driver.mjs";
 import {
   privateBootstrapDirectory,
@@ -25,6 +25,7 @@ import { cookieHeaderFromSetCookie } from "./auth-session.mjs";
 import { createReadyComputeDriver } from "./development.mjs";
 import { idTokenSigner, rsaSigningKey } from "./id-token.mjs";
 import { databaseUrl as testDatabaseUrl } from "./postgres-database.mjs";
+import { composeProduction } from "./password-hasher.mjs";
 
 // Only Compute is passive: no Agent is deployed, so sign-in proofs need no cluster.
 // Authentication, State, IAM, audit and Fastify are the production implementations.
@@ -59,16 +60,7 @@ export function memoryLogger() {
     events,
     logger: createOccLogger({
       component: "occ-api-sign-in-proof",
-      destination: {
-        write(chunk) {
-          for (const line of String(chunk).split("\n")) {
-            if (line.length > 0) {
-              events.push(JSON.parse(line));
-            }
-          }
-          return true;
-        },
-      },
+      destination: jsonLineDestination(events),
     }),
   };
 }
@@ -204,10 +196,10 @@ function resolveSettings(settings, secrets) {
 }
 
 /**
- * Composes the production API from rendered API Pod settings, parsing the sign-in and
- * native-admin names the way apps/controller/src/server.mjs does.
+ * The production composition's configuration for rendered API Pod settings, parsing the
+ * sign-in and native-admin names the way apps/controller/src/api-startup.mjs does.
  */
-export async function composeProductionSignIn(
+export async function productionSignInConfiguration(
   context,
   { databaseUrl, settings, secrets, logger, metrics, passwordSlowLaneFloors },
 ) {
@@ -229,7 +221,7 @@ export async function composeProductionSignIn(
   const humanLogin = humanLoginConfiguration(environment);
   const clientAddress = clientAddressConfiguration(environment);
   const nativeAdminEnabled = environment.OCC_AGENT_NATIVE_ADMIN_ENABLED === "true";
-  return composeProduction({
+  return {
     mode: "production",
     host: "127.0.0.1",
     databaseUrl,
@@ -265,7 +257,19 @@ export async function composeProductionSignIn(
           implementation: installation.drivers.iam.implementation,
         }),
     },
-  });
+  };
+}
+
+/**
+ * Composes the production API from rendered API Pod settings (see
+ * productionSignInConfiguration). It hashes with the fixtures' cheap hasher unless
+ * `passwordHasher` is given (see password-hasher.mjs).
+ */
+export async function composeProductionSignIn(context, { passwordHasher, ...options }) {
+  return composeProduction(
+    await productionSignInConfiguration(context, options),
+    passwordHasher === undefined ? {} : { passwordHasher },
+  );
 }
 
 /** Password sign-in through the public route, from one client address. */
@@ -318,8 +322,9 @@ export async function loginDenialCount(state, reason, provider) {
 /**
  * Asserts that an external provider's callback was refused: a redirect to the Console with
  * `authError=<provider>`, no session cookie, no new user, method or session row, and one more
- * login denial with `reason`. `signIn()` resolves to `{ callback }`; `denials(reason)` resolves
- * to the number of matching denials so far (usually `loginDenialCount`).
+ * login denial with `reason`. `signIn()` resolves to `{ callback, attemptId }`; `denials(reason)`
+ * resolves to the number of matching denials so far (usually `loginDenialCount`).
+ * Returns that attempt ID so callers can check which sign-in the audit event describes.
  */
 export async function assertExternalSignInRefused(
   { pool, provider, denials, signIn },
@@ -329,7 +334,7 @@ export async function assertExternalSignInRefused(
 ) {
   const before = await authRowCounts(pool);
   const deniedBefore = await denials(reason);
-  const { callback } = await signIn();
+  const { callback, attemptId } = await signIn();
   assert.equal(callback.statusCode, 302, message);
   assert.equal(
     callback.headers.location,
@@ -345,6 +350,7 @@ export async function assertExternalSignInRefused(
   );
   assert.deepEqual(await authRowCounts(pool), before, `${message}: no user, method or session`);
   assert.equal(await denials(reason), deniedBefore + 1, `${message}: the denial is audited`);
+  return attemptId;
 }
 
 /**
@@ -828,6 +834,7 @@ export async function createAccount(app, headers, { email, password, roleId }) {
  * (from `remoteAddress` when given) and creates one password account per `accounts` entry,
  * then closes that app. `accounts` maps a name to its email and its Installation Role from
  * installationRoles: "reader" (the default) or "admin". Every account uses `password`.
+ * `passwordHasher` replaces the fixtures' cheap hasher for the accounts it creates.
  * Returns `{ admin: { email, password, id }, roles, accounts: { [name]: { id, email, password } } }`.
  */
 export async function onboardPasswordAccounts(
@@ -843,6 +850,7 @@ export async function onboardPasswordAccounts(
     accounts = {},
     remoteAddress,
     passwordSlowLaneFloors,
+    passwordHasher,
   },
 ) {
   const admin = {
@@ -855,6 +863,7 @@ export async function onboardPasswordAccounts(
     settings: defaultInstallSettings,
     secrets,
     passwordSlowLaneFloors,
+    passwordHasher,
   });
   try {
     const headers = await signedInHeaders(app, consoleOrigin, admin, remoteAddress);

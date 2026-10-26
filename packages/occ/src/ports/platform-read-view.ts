@@ -8,6 +8,7 @@ export function createPlatformReadView(
   lifetime: RepositoryTransactionLifetime,
 ): PlatformReadView {
   return Object.freeze({
+    sandboxPolicies: bindRepository(repositories.sandboxPolicies, lifetime, ["find"]),
     operations: bindRepository(repositories.operations, lifetime, [
       "list",
       "findWork",
@@ -23,13 +24,21 @@ export function createPlatformReadView(
       "listNamespaces",
     ]),
     configurations: bindRepository(repositories.configurations, lifetime, ["findConfiguration"]),
-    presets: bindRepository(repositories.presets, lifetime, ["findPreset", "listPresets"]),
+    presets: bindRepository(repositories.presets, lifetime, [
+      "findPreset",
+      "listPresets",
+      "listPresetSummaries",
+    ]),
     secrets: bindRepository(repositories.secrets, lifetime, [
       "findSecret",
       "listSecrets",
       "listReferences",
     ]),
     credentialSources: bindRepository(repositories.credentialSources, lifetime, [
+      "findEgressInstallation",
+      "findRevisionEgressInstallation",
+      "listCredentialPolicyReductions",
+      "isEgressMaterialRejected",
       "findCredentialSource",
       "listCredentialSources",
       "findCredentialWithdrawal",
@@ -44,14 +53,18 @@ export function createPlatformReadView(
     agents: bindRepository(repositories.agents, lifetime, [
       "findAgent",
       "listAgents",
+      "hasAgentNamed",
       "findAgentForBrowsing",
       "listAgentsForBrowsing",
+      "listAgentReferences",
     ]),
     revisions: bindRepository(repositories.revisions, lifetime, [
       "findRevision",
       "listRevisions",
       "findRevisionForBrowsing",
       "listRevisionsForBrowsing",
+      "listRevisionMetadata",
+      "pageRevisionSummaries",
     ]),
     iamPolicy: bindRepository(repositories.iamPolicy, lifetime, [
       "listRoles",
@@ -63,6 +76,10 @@ export function createPlatformReadView(
       "getServicePrincipal",
     ]),
     repositorySessions: bindRepository(repositories.repositorySessions, lifetime, [
+      "findStandingExecution",
+      "listStandingApprovals",
+      "findStandingApproval",
+
       "findAttempt",
       "findBrokerReceipt",
       "findBrokerReceiptBySession",

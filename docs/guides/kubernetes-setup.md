@@ -5,6 +5,20 @@ Prepare a Kubernetes cluster you already operate, then follow the shared
 and authenticate to the OpenClaw Control Plane (OCC). If you want to try
 OpenClaw Enterprise on your machine, use [Local Setup](quickstart.md).
 
+## What the install creates
+
+On a single cluster, one Helm chart, `deploy/helm/openclaw-enterprise`, installs
+OCC: API and worker Deployments, an initialization Job that runs before each
+install and upgrade, and their RBAC, NetworkPolicies and private-routing objects.
+The log collector and Slack proxy are also in the chart, off by default. OCC uses
+an external PostgreSQL. There is no Kubernetes Operator, and the chart adds no
+CustomResourceDefinitions. In these guides, "operator" means the person who
+installs and runs OpenClaw Enterprise.
+
+The chart does not create Agents. After OCC is running, you create them through
+the console, CLI or API, and the Kubernetes Compute Driver starts their workloads
+in tenant namespaces.
+
 ## Before you start
 
 You need:

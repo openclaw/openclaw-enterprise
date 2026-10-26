@@ -10,7 +10,7 @@ last_updated_session: authoring-run/b28f3746-f8be-4f03-9f5e-33cf08d9a535
 
 An operator selects Slack users for an Agent's plugin approvals. OpenClaw
 Control Plane (OCC) stores exact Slack user identities, freezes the policy in a
-deployment revision, and passes it to the selected PluginDriver. OpenClaw owns
+deployment version, and passes it to the selected PluginDriver. OpenClaw owns
 authorization of each later plugin approval request. The optional name lookup
 is described in the [channel directory flow](agent-channel-directory.md).
 
@@ -31,7 +31,7 @@ graph TD
   A["Operator selects Slack user IDs"] --> B["OCC validates approvers with PluginDriver"]
   B -->|unsupported or invalid| X["Reject Agent save"]
   B -->|valid| C["Agent stores default, plugin, and tool approvers"]
-  C --> D["Deployment freezes Agent policy in revision"]
+  C --> D["Deployment freezes Agent policy in version"]
   D --> E["PluginDriver renders OpenClaw approval policy"]
   E --> S{"Slack configured and enabled?"}
   S -->|no| N["Retain stored policy without generating Slack configuration"]
@@ -53,8 +53,8 @@ and `[]` denies Slack approvers at that scope. The selected PluginDriver
 validates supported identities before OCC saves the Agent. The Codex
 PluginDriver rejects plugin and tool approvers because Codex approval requests
 carry no plugin or tool identity; it accepts only the Agent default. Deploying the Agent
-records the current default and selection map in an immutable AgentRevision.
-Later edits do not change the admitted revision.
+records the current default and selection map in an immutable Agent revision.
+Later edits do not change the saved version.
 An Agent update sends `pluginApprovers: null` to remove a previously saved
 default and return to omitted-policy behavior.
 
@@ -68,7 +68,7 @@ settings and rejects native lists that conflict with an inherited managed list.
 An omitted Agent default leaves the runtime's legacy Slack account
 approval destinations in effect for scopes without an override; an explicit
 empty list denies them. The prepared gateway receives this configuration only
-for the admitted revision.
+for the saved version.
 
 ### 3. Check the selected gateway before launch
 
@@ -90,18 +90,19 @@ An unsupported policy or unavailable validator holds startup unready before
 launching the gateway. Logs tell the operator to select a compatible gateway
 image or remove the approver overrides. Kubernetes publishes
 `plugin-approvers / INCOMPATIBLE_RESPONSE` startup evidence through its existing
-runtime status endpoint. Revision admission still precedes this runtime check;
+runtime status endpoint. Version admission still precedes this runtime check;
 the worker reads startup evidence during reconciliation. A compatible runtime
 owns each subsequent request-time approval decision.
 
 ## Debugging and Verification
 
 - Compare `Agent.pluginApprovers`, nested selection overrides, and the admitted
-  AgentRevision. A successful save does not prove the running gateway applies
+  Agent revision. A successful save does not prove the running gateway applies
   the new policy; check deployment status and use a real plugin approval request
   to verify the runtime image.
-- Raw Slack user IDs can be pasted when directory lookup is unavailable. Directory
-  selection still stores workspace-qualified IDs.
+- Selecting a directory result displays its name and handle immediately. The Console
+  saves the workspace-qualified user ID and resolves its current name when reopened.
+  If lookup is unavailable, the selection stays in place and exact IDs can still be pasted.
 - The channel directory flow describes Secret permissions and lookup failures.
   Approval enforcement needs a compatible runtime and an authorized test bot.
 - For a gateway that remains unready, check its runtime startup evidence and

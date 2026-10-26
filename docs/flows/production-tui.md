@@ -102,9 +102,9 @@ service principal need exact Secret `operate`; the API checks physical backend
 identity before admission. An administrator with controller-owned IAM-state access
 must establish the Agent grant before this request.
 
-The API response returns the frozen revision as `data`. The operator keeps both
+The API response returns the frozen Agent revision as `data`. The operator keeps both
 `data.id` and the Agent's later `data.activeRevisionId`; the deployment request
-does not by itself prove that Kubernetes is serving the new revision.
+does not by itself prove that Kubernetes is serving the new Agent revision.
 
 ### 3. The worker prepares and activates the gateway workload
 
@@ -112,7 +112,7 @@ does not by itself prove that Kubernetes is serving the new revision.
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.prepareRevision`
 
 The worker claims the durable AgentRevision work, reloads the Namespace, Agent,
-revision, and previous active revision, reauthorizes the deployment actor, and
+Agent revision, and previous selected version, reauthorizes the deployment actor, and
 resolves the Secret delivery context from authoritative OCC metadata without
 calling the Kubernetes Secret API. The broader activation contract lives in
 the [controller worker flow](controller-worker.md#6-persist-the-result-and-finish-revision-activation)
@@ -129,21 +129,21 @@ with `Recreate` strategy.
 For embedded OpenClaw, the gateway Deployment is also the Harness workload. Its
 container receives `OPENCLAW_CONFIG_PATH=/etc/openclaw/openclaw.json`,
 `OPENCLAW_GATEWAY_PORT`, opt-in `OPENCLAW_GATEWAY_PASSWORD`, `OPENCLAW_STATE_DIR`, and
-the exact OCC Secret model credential selected by revision `harnessAuth`. The
-API handles the protected initial Secret write; the worker never reads its value. For the first embedded revision, `prepareRevision` creates
+the exact OCC Secret model credential selected by Agent revision `harnessAuth`. The
+API handles the protected initial Secret write; the worker never reads its value. For the first embedded Agent revision, `prepareRevision` creates
 the Deployment and keeps the Service on the inactive selector until the gateway
 is ready. When a predecessor gateway exists, embedded replacement preparation
 returns ready after staging the immutable ConfigMap and related ownership
 resources; it does not start the replacement gateway process.
 
 For the bundled Kubernetes Compute Driver, the worker first records the active
-revision through a guarded `Agent.activeRevisionId` compare-and-set. Because the
+Agent revision through a guarded `Agent.activeRevisionId` compare-and-set. Because the
 driver does not request `beforeCommit` activation, production then calls
 `KubernetesComputeDriver.activateRevision` after that commit. Embedded
 `activateRevision` rechecks the existing gateway Deployment, then replaces that
-same `Recreate` Deployment with the new revision configuration, applies Agent
+same `Recreate` Deployment with the new Agent revision configuration, applies Agent
 runtime NetworkPolicies, updates the gateway Service selector, and waits for the
-exact revision gateway to become ready. This replacement can make the gateway
+gateway for the expected Agent revision ID to become ready. This replacement can make the gateway
 temporarily unavailable while Kubernetes recreates the Pod.
 
 After post-commit activation succeeds, the worker retires the predecessor and
@@ -167,7 +167,7 @@ ConfigMap-mounted gateway is Running and Ready.
   ```
 
   Run from the repository root with `OCC_URL` and `OCC_SERVICE_KEY_FILE` set in
-  the operator shell. Expect `ACTIVE REVISION` to equal the intended revision ID.
+  the operator shell. Expect `ACTIVE REVISION` to equal the intended Agent revision ID.
 
 - Confirm the selected gateway mounts the active immutable ConfigMap:
 

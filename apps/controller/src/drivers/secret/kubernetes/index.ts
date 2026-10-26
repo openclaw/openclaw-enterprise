@@ -1,4 +1,8 @@
+import { type ErrorDetail } from "@openclaw-enterprise/contracts";
+import { requireConfiguration, ConfigurationValidationError } from "@openclaw-enterprise/contracts";
 /// <reference lib="es2024.string" />
+
+import type { CredentialInputRead, VersionedSecretValue } from "@openclaw-enterprise/contracts";
 
 import {
   asRecord,
@@ -20,9 +24,12 @@ import {
   ResourceConflictError,
   ScopeViolationError,
 } from "@openclaw-enterprise/occ";
-import { resolveKubernetesControlNamespace } from "../../compute/kubernetes/index.ts";
+import {
+  type PreprovisionedKubernetesNamespace,
+  resolveKubernetesControlNamespace,
+} from "../../compute/kubernetes/index.ts";
+import { withComputeOperationDeadline } from "../../compute/operation-context.ts";
 import { createKubernetesClientConfiguration } from "../../kubernetes/client.ts";
-import { OAUTH_PHASE_ANNOTATION } from "../../kubernetes/oauth-seal.ts";
 import { kubernetesRequest } from "../../kubernetes/request.ts";
 import {
   createKubernetesAuthenticationOptionsSchema,
@@ -37,6 +44,7 @@ export interface KubernetesSecretDriverOptions {
 }
 
 interface KubernetesSecretDriverSelection {
+  readonly preprovisionedNamespace?: PreprovisionedKubernetesNamespace | undefined;
   readonly id?: string;
   readonly implementation?: string;
 }
@@ -161,25 +169,34 @@ function timeoutFailure(action: string): Error {
 export class KubernetesSecretDriver implements SecretDriver {
   static readonly configurationSchema: JSONSchema = createKubernetesAuthenticationOptionsSchema();
 
-  static validateConfiguration(configuration: unknown): void {
-    const value = asRecord(configuration);
-    if (value === undefined) {
-      throw new SecretValidationError("Kubernetes Secret options are required.");
-    }
-    if ("clients" in value || Object.keys(value).some((key) => key !== "authentication")) {
-      throw new SecretValidationError(
-        "Injected clients and unknown Kubernetes Secret options are not supported.",
+  static validateConfiguration(
+    configuration: Readonly<KubernetesSecretDriverOptions>,
+  ): readonly ErrorDetail[] {
+    try {
+      validateKubernetesAuthentication(
+        configuration.authentication,
+        (message, path) =>
+          new ConfigurationValidationError([{ path, code: "INVALID_FORMAT", message }]),
       );
+
+      return [];
+    } catch (error) {
+      return error instanceof ConfigurationValidationError
+        ? error.error.details
+        : [
+            {
+              path: "",
+              code: "INVALID_VALUE",
+              message: "Configuration violates the Driver's constraints.",
+            },
+          ];
     }
-    validateKubernetesAuthentication(
-      value.authentication,
-      (message) => new SecretValidationError(message),
-    );
   }
 
   readonly id: string;
   readonly capability = "secret" as const;
   readonly implementation: string;
+  private readonly preprovisionedNamespace: PreprovisionedKubernetesNamespace | undefined;
   private readonly options: KubernetesSecretDriverOptions;
   private client: Promise<CoreV1Api> | undefined;
 
@@ -187,12 +204,13 @@ export class KubernetesSecretDriver implements SecretDriver {
     options: KubernetesSecretDriverOptions,
     selection: KubernetesSecretDriverSelection = {},
   ) {
-    KubernetesSecretDriver.validateConfiguration(options);
+    options = requireConfiguration(KubernetesSecretDriver, options);
     this.id = required(selection.id ?? "secret-kubernetes", "Secret Driver ID");
     this.implementation = selection.implementation ?? IMPLEMENTATION;
     if (this.implementation !== IMPLEMENTATION) {
       throw new SecretValidationError("Unsupported Kubernetes Secret implementation.");
     }
+    this.preprovisionedNamespace = selection.preprovisionedNamespace;
     this.options = Object.freeze({ authentication: Object.freeze({ ...options.authentication }) });
   }
 
@@ -218,7 +236,59 @@ export class KubernetesSecretDriver implements SecretDriver {
       await this.discardFailedCreate(client, namespace, name, identity);
       throw error;
     }
-    return this.checkedBackendRef(observed, identity, namespace);
+    try {
+      const reference = this.checkedBackendRef(observed, identity, namespace);
+      // An answer under another name would record a backendRef that does not name what this
+      // create stored, so it is refused like any other nonconforming answer (finding 1121).
+      if (reference.name !== name) {
+        throw new SecretOwnershipError("Secret backend does not match exact OCC ownership.");
+      }
+      return reference;
+    } catch (error) {
+      await this.discardRefusedCreate(client, namespace, name, observed);
+      throw error;
+    }
+  }
+
+  /**
+   * A create the API server stored but answered with an object that fails the ownership check
+   * (a mutating admission webhook rewrote it, or a nonconforming server) is refused, yet the
+   * stored object holds the value and no OCC metadata names it (finding 1111). Re-checking
+   * ownership, as discardFailedCreate does, would find the same rewrite and keep it. So the
+   * driver deletes the object it was answered with, by its own name with the answered uid and
+   * resourceVersion as preconditions: a different object under that name, or a later version,
+   * is never deleted. When that delete cannot finish, the outcome is reported as unknown, as it
+   * is when nothing is found under that name but the answer named another object, which may
+   * be where it was stored (finding 1121).
+   */
+  private async discardRefusedCreate(
+    client: CoreV1Api,
+    namespace: string,
+    name: string,
+    observed: V1Secret,
+  ): Promise<void> {
+    const uid = observed.metadata?.uid;
+    const resourceVersion = observed.metadata?.resourceVersion;
+    if (!isNonEmptyString(uid) || !isNonEmptyString(resourceVersion)) {
+      throw this.unknownCreateOutcome();
+    }
+    try {
+      await this.request(
+        () =>
+          client.deleteNamespacedSecret({
+            namespace,
+            name,
+            body: { preconditions: { uid, resourceVersion } },
+          }),
+        "delete",
+        { mutating: true },
+      );
+    } catch (error) {
+      if (error instanceof SecretBackendMissingError && observed.metadata?.name === name) {
+        return;
+      }
+      throw this.unknownCreateOutcome();
+    }
   }
 
   /**
@@ -284,9 +354,6 @@ export class KubernetesSecretDriver implements SecretDriver {
   async update(secret: Secret, value: string): Promise<void> {
     validateValue(value);
     const { observed } = await this.readOwnedSecret(secret);
-    if (observed.metadata?.annotations?.[OAUTH_PHASE_ANNOTATION] !== undefined) {
-      throw new SecretConflictError("The Agent owns this OAuth credential; it cannot be updated.");
-    }
     await this.replaceOwnedSecret(secret, observed, value);
   }
 
@@ -294,10 +361,7 @@ export class KubernetesSecretDriver implements SecretDriver {
     validateValue(expected);
     validateValue(value);
     const { observed } = await this.readOwnedSecret(secret);
-    if (
-      observed.metadata?.annotations?.[OAUTH_PHASE_ANNOTATION] !== undefined ||
-      decodedValue(observed) !== expected
-    ) {
+    if (decodedValue(observed) !== expected) {
       return false;
     }
     try {
@@ -380,6 +444,26 @@ export class KubernetesSecretDriver implements SecretDriver {
   async resolve(secret: Secret): Promise<SecretBackendRef> {
     const { reference } = await this.readOwnedSecret(secret);
     return reference;
+  }
+
+  async readCredentialInput(input: CredentialInputRead): Promise<VersionedSecretValue> {
+    if (input.retention !== "none") {
+      throw new SecretOwnershipError("Credential read retention must be none.");
+    }
+    // Namespace verification, Secret GET and retries share the effective enclosing lifetime.
+    return withComputeOperationDeadline(input.lifetime, async (lifetime) => {
+      const { observed } = await this.readOwnedSecret(input.secret);
+      lifetime.signal.throwIfAborted();
+      const version = observed.metadata?.resourceVersion;
+      if (!isNonEmptyString(version) || lifetime.deadline <= Date.now()) {
+        throw new SecretOwnershipError("Versioned credential material is unavailable.");
+      }
+      return {
+        value: decodedValue(observed),
+        version,
+        authoritativeObservedAt: new Date().toISOString(),
+      };
+    });
   }
 
   async withValue<T>(secret: Secret, use: (value: string) => Promise<T>): Promise<T> {
@@ -508,7 +592,9 @@ export class KubernetesSecretDriver implements SecretDriver {
   private async readyNamespace(client: CoreV1Api, namespaceId: string): Promise<string> {
     try {
       const placement = await this.request(
-        () => resolveKubernetesControlNamespace(client, namespaceId),
+        () =>
+          this.preprovisionedNamespace?.read(client, namespaceId) ??
+          resolveKubernetesControlNamespace(client, namespaceId),
         "namespace verification",
       );
       return placement.name;

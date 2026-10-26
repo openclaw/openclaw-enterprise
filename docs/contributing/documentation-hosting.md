@@ -9,8 +9,9 @@ the site's visibility.
 
 The [documentation workflow](../../.github/workflows/docs-pages.yml) builds
 `dist/docs`, including search, and deploys it to GitHub Pages after pushes to
-`main`. Its manual trigger also deploys only `main`. It uses the existing
-`github-pages` environment and does not need a Cloudflare credential.
+`main`. Its manual trigger also deploys only `main`. Select GitHub Actions as the Pages source and use the `github-pages` environment.
+The job grants `pages: write` and `id-token: write`; no deployment secret or
+Cloudflare credential is needed.
 
 The custom domain is `docs-enterprise.openclaw.org`. Its DNS record is
 `docs-enterprise CNAME openclaw.github.io` in the `openclaw.org` zone. The zone is
@@ -48,8 +49,8 @@ gh api --method PUT repos/openclaw/openclaw-enterprise/pages \
 Public access is a separate maintainer action, not a deployment side effect.
 Before authorizing it, review the generated site's contents, including hidden
 navigation pages and search results: hidden pages are still published. Record
-the approved deployment revision and team approval in the launch PR or issue.
-Confirm the latest successful documentation deployment is that reviewed revision,
+the approved deployment commit and team approval in the launch PR or issue.
+Confirm the latest successful documentation deployment is that reviewed commit,
 the repository is still private, and the domain has working enforced HTTPS.
 
 An authorized maintainer or agent can then run this explicit launch command:

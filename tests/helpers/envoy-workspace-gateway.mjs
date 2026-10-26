@@ -205,9 +205,18 @@ export async function createEnvoyWorkspaceGatewayPlan(
   }
   const gatewayClassName = `oce-workspace-files-${hash(platformNamespace)}`;
   await ensureGatewayClass(helpers, gatewayClassName);
+  // Envoy Gateway holds a finalizer on the class while a Gateway uses it, so a waiting delete
+  // would block until the platform Namespace's Gateway is gone. That Namespace may be deleted
+  // after this cleanup (finding 1711): request the deletion and let the finalizer complete it.
   context.after(async () => {
     await helpers
-      .kubectl("delete", "gatewayclass", gatewayClassName, "--ignore-not-found=true")
+      .kubectl(
+        "delete",
+        "gatewayclass",
+        gatewayClassName,
+        "--ignore-not-found=true",
+        "--wait=false",
+      )
       .catch(() => undefined);
   });
   const gatewayRoutingManifests = await renderGatewayRoutingManifests({

@@ -10,11 +10,20 @@
     <link rel="icon" type="image/png" sizes="16x16" href="/console/favicon-16.png" />
     <link rel="icon" type="image/png" sizes="32x32" href="/console/favicon-32.png" />
     <link rel="apple-touch-icon" sizes="180x180" href="/console/apple-touch-icon.png" />
+    <!-- Fetch the web font with the stylesheet, not after first paint, so text does not reflow. -->
+    <link
+      rel="preload"
+      href="/console/fonts/instrument-sans-latin.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
     <link rel="stylesheet" href="/console/console.css" />
     <link rel="stylesheet" href="/console/channels.css" />
     <script type="module" src="/console/console.mjs"></script>
   </head>
   <body>
+    <!-- Painted before any script runs; the console takes this status over in place. -->
     <div id="app"><p class="startup" role="status">Loading OpenClaw Enterprise…</p></div>
     <noscript>This console requires JavaScript to sign in and read resources.</noscript>
   </body>

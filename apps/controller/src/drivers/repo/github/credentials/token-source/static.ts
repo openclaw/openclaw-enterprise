@@ -1,4 +1,4 @@
-import type { GitHubTokenSource, TokenSourceOptions } from "../token-source.ts";
+import type { GitHubTokenSource } from "../token-source.ts";
 import type {
   GitHubStaticTokenOwner,
   GitHubTokenConfiguration,
@@ -9,6 +9,7 @@ import {
   createUnsupportedRetirement,
 } from "../driver/static-acquisition.ts";
 import { staticTokenCapabilityPolicy } from "../profiles.ts";
+import type { ServiceLimits } from "../../../credentials/service-contracts.ts";
 
 /**
  * Development-only static token. It cannot be narrowed per session, so the route
@@ -17,7 +18,7 @@ import { staticTokenCapabilityPolicy } from "../profiles.ts";
  */
 export function createStaticTokenSource(
   owner: GitHubStaticTokenOwner,
-  { config, limits }: TokenSourceOptions & Readonly<{ config: GitHubTokenConfiguration }>,
+  { config, limits }: Readonly<{ config: GitHubTokenConfiguration; limits: ServiceLimits }>,
 ): GitHubTokenSource {
   const leaseMs = config.leaseSeconds * 1000;
   // The lifecycle asks for validity covering a waiter's exchange deadline plus its margin.

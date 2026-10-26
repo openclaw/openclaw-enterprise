@@ -1,10 +1,8 @@
 # View Agent runtime status and logs
 
-The **Logs** tab on an Agent version shows its Pods, restarts, recent Kubernetes
-Events and a bounded, redacted page of container output or, for OpenShell
-sandboxed Agents, sandbox policy decisions. Use it to find out why a
-version crashes, restarts or stops serving. Nothing is stored on the server: each
-read fetches one page from the cluster through the Compute Driver.
+Use an Agent version’s **Logs** tab to inspect Pods, container exits, Events,
+redacted output or Sandbox policy decisions. Reads fetch through Compute;
+raw logs are not persisted.
 
 Runtime status and logs are available for **Kubernetes Compute** only. Docker and
 SSH Compute, and Drivers that own their runtime logging (`runtimeLogging:
@@ -14,15 +12,15 @@ SSH Compute, and Drivers that own their runtime logging (`runtimeLogging:
 
 1. Open the Agent and select a deployed version. The editable draft is not a
    version and has no runtime; a version without a running Pod shows no Pod.
-   When the latest deployment failed, **Deployment activity** links straight to
-   that version's Logs tab.
 2. Select **Logs**. The runtime strip refreshes every 10 seconds. Each Pod card
-   lists its recent warning Events, prefixed with their container. Last termination
+   lists every main and init container's state and recent warning Events, prefixed
+   with their container. Last termination
    shows the current exit for a terminated container, otherwise its prior exit.
 3. Choose a **Source**: **Gateway** (the OpenClaw Gateway container),
    **Agent (Harness)** (the dedicated Codex or OpenClaw Harness container, only
    for dedicated execution) or **Sandbox (policy decisions)** (see
-   [Sandbox source](#sandbox-source)), and a **Pod** when there are several.
+   [Sandbox source](#sandbox-source)), then a **Pod / container** stream.
+   A successful init container does not establish that the main process succeeded.
    While no Harness Pod is ready, the Gateway logs failed connections to it
    (`ECONNREFUSED`); the console then points you to the **Agent (Harness)**
    source for the cause (such as a failed model probe), or to Deployment
@@ -30,47 +28,50 @@ SSH Compute, and Drivers that own their runtime logging (`runtimeLogging:
 4. Select **Follow** to poll for new lines every 2 seconds. Following pauses while
    the browser tab is hidden or you scroll up, and stops after a permission denial.
 5. Select **Previous instance** after a restart to read the exited container's
-   output. Following is off for the previous instance.
+   output. Following is off for it.
 
 ### Filter the loaded output
 
 The server returns **info** and above (and lines of unknown level) unless you
 select **Include debug**, which starts a new view. The level chips and the
 case-insensitive **Filter** box (message, kind, subsystem and field values)
-narrow only the rows already loaded (up to 5000). To look further back, use
-**Download** or the CLI with `--since`. Gap and withheld rows always stay
+narrow only the rows already loaded (up to 5000). For older output, use
+**Download** or CLI `--since`. Gap and withheld rows always stay
 visible.
 
 ### Download
 
-**Download** saves the last 1000 lines of the selected source, Pod and instance
-as a text file named `<agent>-<revision>-<source>-<pod>.log`, using IDs. The
-file holds the same classified and redacted records as the page, one per line
-(`TIME LEVEL KIND [SUBSYSTEM] MESSAGE key=value`, plus `GAP` and `WITHHELD`
-rows), after a `#` header naming the Agent, revision, Pod and container.
-Only **Include debug** applies to the download. Redaction is best-effort:
-handle the file as sensitive and delete it when done.
+**Download** requests the last 1000 lines. Only **Include debug** affects the export.
+Container filenames use `<agent>-<revision>-<source>-<pod>.log`; **Previous
+instance** adds `-previous` before `.log`.
 
-The HTTP API has the same two reads:
+The `#` header names the Agent and version, plus the Pod and container if available.
+`instance=current` or `instance=previous` is what you requested, not a guarantee that logs exist.
+Records follow the page format (`TIME LEVEL KIND [SUBSYSTEM] MESSAGE key=value`,
+`GAP` or `WITHHELD`), with the same best-effort redaction. Treat the file as
+sensitive; delete it when done.
+
+The HTTP API offers these reads:
 
 ```sh
 GET /namespaces/{namespaceId}/agents/{agentId}/deployments/{revisionId}/runtime
 GET /namespaces/{namespaceId}/agents/{agentId}/deployments/{revisionId}/runtime/logs?source=gateway&tailLines=200
 ```
 
-Container timestamps are returned in UTC, preserving their available nanosecond precision.
+Container timestamps are in UTC, with their available nanosecond precision.
 
-`runtime/logs` accepts only `source` (`gateway`, `agent` or `sandbox`), `pod`, `previous`,
+`runtime/logs` accepts only `source` (`gateway`, `agent` or `sandbox`), `pod`, `container`, `previous`,
 `tailLines` (1 to 1000, default 200), `sinceSeconds` (1 to 86400), `cursor`,
-`download` and `minLevel` (`error`, `warn`, `info` or `debug`: drop lines below it;
-unknown-level lines, gaps and withheld counts stay). Pass the returned `cursor` to
-read only newer lines of the same view. Container cursors count the lines delivered at their newest timestamp, so a
-later line at that timestamp is returned once, even with identical text. When a
-tail or Driver byte cut leaves unknown whether a read began at that timestamp's
-first line, or an older cursor lacks the count, such a line can stay hidden until
-a later timestamp: OCC cannot tell it from an older line the tail omitted.
-`download=true` answers `text/plain` with `Content-Disposition: attachment`,
-always reads 1000 lines, and cannot be combined with `cursor` (`400`). See the
+`download` and `minLevel` (`error`, `warn`, `info` or `debug`: drops only lines
+of a known lower level). Pass the returned `cursor` to
+read only newer lines of the same view. Select an advertised main or init
+container; omission selects the first main container. Changing containers starts
+a new audited view. Container cursors count the lines delivered at their newest
+timestamp, so a later line at that timestamp is returned once, even with identical
+text. After a tail or Driver byte cut, or with an older cursor, such a line can
+stay hidden until a later timestamp.
+`download=true` answers `text/plain` as an attachment and cannot be combined
+with `cursor` (`400`). See the
 [API reference](../../reference/api.md).
 
 ## Command line
@@ -84,31 +85,30 @@ occ agent logs agt_... --source agent --previous -o json
 occ agent logs agt_... --source sandbox --follow
 ```
 
-Without `--revision`, both prefer a newer revision that has Pods (a deploy in
-progress or failed) and name the revision on stderr. The
-[CLI reference](../../reference/cli.md#runtime-status-and-logs) owns revision
+Without `--revision`, both prefer a newer version that has Pods (a deploy in
+progress or failed) and name the version on stderr. The
+[CLI reference](../../reference/cli.md#runtime-status-and-logs) owns version
 selection, flags, output formats, retries and exit codes.
 
 ## Who can see what
 
-| Read                                                                       | Required grants                                       | Audited                                                   |
-| -------------------------------------------------------------------------- | ----------------------------------------------------- | --------------------------------------------------------- |
-| Runtime status: Pods, phase, readiness, restarts, last termination, Events | Agent `operate` and `read`, and `read` on the version | No, like [diagnostics](../../reference/agents.md)         |
-| Log text                                                                   | Agent `read_logs` or `administer`, and Agent `read`   | Once per view as `openclaw.agents.runtime_logs.view`      |
-| Log download                                                               | Same as log text                                      | Every download as `openclaw.agents.runtime_logs.download` |
+| Read                                                                       | Required grants                                              | Audited                                                   |
+| -------------------------------------------------------------------------- | ------------------------------------------------------------ | --------------------------------------------------------- |
+| Runtime status: Pods, phase, readiness, restarts, last termination, Events | Agent `operate` and `read`, and `read` on the Agent revision | No, like [diagnostics](../../reference/agents.md)         |
+| Log text                                                                   | Agent `read_logs` or `administer`, and Agent `read`          | Once per view as `openclaw.agents.runtime_logs.view`      |
+| Log download                                                               | Same as log text                                             | Every download as `openclaw.agents.runtime_logs.download` |
 
-Installation administrators hold Agent `administer`, which already reaches Gateway
+Installation administrators hold Agent `administer`, which also reaches Gateway
 log text in the [native admin UI](../../reference/agent-native-admin.md). To
 delegate log reading, bind a Namespace Role with Agent `read_logs` and `read` to
-the exact Agent; it covers every version, including later deployments. Opening
-the Agent in the console also needs Namespace `read` bound to that Namespace
-(otherwise it shows "Namespace unavailable"). Runtime status needs `read`
-bound to each exact version. A `read_logs` Restriction blocks log text even for
-administrators. Without `operate`, the Logs tab has no runtime strip or Pod
-picker; it reads each source's current Pod and says when a source is missing.
-Service principals use the same grants. Every request and follow poll is
-authorized again, so revoking a grant stops the next poll. See
-[authorization](../../reference/authorization.md).
+the exact Agent; it covers every version. Opening the Agent in the console also
+needs Namespace `read` (otherwise it shows "Namespace unavailable"). Runtime
+status needs `read` bound to each Agent revision by ID. A `read_logs`
+Restriction blocks log text even for administrators. Without `operate`, the Logs
+tab has no runtime strip or Pod picker; it reads each source's current Pod and
+says when one is missing. Service principals use the same grants. Every
+request and poll is authorized again, so revoking a grant stops the next poll.
+See [authorization](../../reference/authorization.md).
 
 ## What the output contains
 
@@ -188,7 +188,10 @@ A page never silently skips output; it labels each gap:
 | Sandbox buffer lost | The sandbox buffer no longer holds the lines after the last page.  |
 
 Limits per request: 1000 lines, 1 MiB read from the cluster, 32 KiB per input
-line, 512 KiB per response, the newest 100 Events per Pod, 10 seconds overall. Each API
+line, 512 KiB per response (including JSON escaping, cursor and metadata),
+the newest 100 Events per Pod, 10 seconds overall. A cut response keeps its
+progress; continue with the returned cursor for lines beyond a page limit. Output
+replaced by identical text cannot be detected. Each API
 replica allows each principal 2 requests per second per Agent with a burst of
 10 (`429` with `Retry-After`) and 16 concurrent reads (`503`). Both limits apply
 after [authorization](../../reference/security.md#console-and-api-runtime-log-reads),
@@ -214,9 +217,12 @@ available here; operators can read it and the supervisor log with
   previous instance (`pod` or `previous=true` answers `400
 RUNTIME_LOGS_POD_INVALID`).
 - Lines are kind `sandbox`. Kept fields:
-  `activity`, `action`, `disposition`, `dst_host`, `dst_port`, `method`, `path`,
-  `binary`, `pid`, `rule_name`, `rule_type`, `policy_generation`, `reason`,
-  `source`, `cmd_line` and `url`. Command lines and URLs often carry tokens:
+  `activity`, `action`, `disposition`, `dst_host`, `dst_port`,
+  `dst_placeholder_ip`, `method`, `path`, `binary`, `pid`, `rule_name`,
+  `rule_type`, `policy_generation`, `reason`, `source`, `cmd_line` and `url`.
+  `dst_placeholder_ip` is the policy DNS placeholder address a denial named;
+  the decision's host comes from the policy DNS record for it in the same read,
+  and is absent when that record is not there. Command lines and URLs often carry tokens:
   they are redacted like every string and cut to 1 KiB. In command lines the
   value after a credential flag is masked too (`-p`, `-pass`, `--pass`,
   `--token`, `--with-token`, `--username`, `-u`, `--user`, `-U` or
@@ -228,17 +234,13 @@ RUNTIME_LOGS_POD_INVALID`).
   its gateway restarts; a follow poll whose last line is gone reports
   **Sandbox buffer lost** or **Lines skipped**. Lines the sandbox drops under
   load are not reported.
-- The sandbox stamps lines when it records them but sends them in batches, so
-  a line can arrive after a newer one was shown. A follow poll re-reads the
-  5 seconds before the newest line it showed and shows each line once, repeats
-  included. A line that arrives more than 5 seconds late, or behind more than
-  48 lines in those 5 seconds, can be missed. When more than 48 lines share one
-  millisecond, the poll shows **Lines skipped** at that time.
+- Follow polls re-read a 5-second overlap and count up to 48 delivered lines.
+  Later arrivals outside that history can be missed; over-capacity timestamp
+  groups show **Lines skipped**.
 - OCC reads through the read-only `GetSandboxLogs` call. Its OpenShell identity
   needs the `sandbox:read` scope (otherwise `503 RUNTIME_LOGS_CLUSTER_RBAC`)
-  and Workspace role `user`. OpenShell hides sandboxes outside the identity's
-  Workspace, so a missing role answers `503 RUNTIME_LOGS_SANDBOX_NOT_FOUND`,
-  like a sandbox not yet provisioned or removed.
+  and Workspace role `user` (otherwise OpenShell hides the sandbox: `503
+RUNTIME_LOGS_SANDBOX_NOT_FOUND`).
 
 ### Which rule decided
 

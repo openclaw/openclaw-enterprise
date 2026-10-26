@@ -4,12 +4,14 @@ import { ResourceStateConflictError } from "./errors.ts";
 /** Private Secret-backed state; provider payloads never enter platform rows or API responses. */
 export interface DeviceAuthorizationSession {
   readonly kind: "harness_device_authorization";
-  readonly version: 1;
+  readonly version: 2;
   readonly actorId: string;
   readonly namespaceId: string;
   readonly agentId?: string;
   readonly harnessId: string;
-  readonly computeDriverId: string;
+  readonly credentialGatewayId: string;
+  readonly credentialRefreshId: string;
+  readonly sourceId: string;
   readonly phase: "pending" | "polling" | "ready" | "cancelled";
   readonly expiresAt: string;
   readonly nextPollAt: string;
@@ -19,7 +21,6 @@ export interface DeviceAuthorizationSession {
     readonly intervalSeconds: number;
   };
   readonly privateState?: string;
-  readonly credential?: string;
 }
 
 export function deviceAuthorizationSession(value: string): DeviceAuthorizationSession {
@@ -32,11 +33,13 @@ export function deviceAuthorizationSession(value: string): DeviceAuthorizationSe
   const authorization = asRecord(record?.authorization);
   if (
     record?.kind !== "harness_device_authorization" ||
-    record.version !== 1 ||
+    record.version !== 2 ||
     !isNonEmptyString(record.actorId) ||
     !isNonEmptyString(record.namespaceId) ||
     !isNonEmptyString(record.harnessId) ||
-    !isNonEmptyString(record.computeDriverId) ||
+    !isNonEmptyString(record.credentialGatewayId) ||
+    !isNonEmptyString(record.credentialRefreshId) ||
+    !isNonEmptyString(record.sourceId) ||
     (record.agentId !== undefined && !isNonEmptyString(record.agentId)) ||
     !["pending", "polling", "ready", "cancelled"].includes(String(record.phase)) ||
     !isNonEmptyString(record.expiresAt) ||
@@ -47,9 +50,9 @@ export function deviceAuthorizationSession(value: string): DeviceAuthorizationSe
     !isNonEmptyString(authorization?.userCode) ||
     typeof authorization.intervalSeconds !== "number" ||
     authorization.intervalSeconds < 1 ||
-    (record.phase === "ready"
-      ? !isNonEmptyString(record.credential)
-      : record.phase !== "cancelled" && !isNonEmptyString(record.privateState))
+    (record.phase !== "ready" &&
+      record.phase !== "cancelled" &&
+      !isNonEmptyString(record.privateState))
   ) {
     throw new ResourceStateConflictError(
       "This login is no longer available in OCE. Connect again.",

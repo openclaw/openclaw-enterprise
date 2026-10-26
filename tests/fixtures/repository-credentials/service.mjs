@@ -4,13 +4,14 @@ import { chmod } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { request } from "node:https";
 import { createControlledClock } from "./clock.mjs";
-import { createTlsMaterial, temporaryDirectory } from "./process.mjs";
+import { createTlsMaterial } from "./process.mjs";
 import { startGitHubFixture } from "./github.mjs";
 import { startGitSmartHttpFixture } from "./git.mjs";
 import { createResourceScope } from "./resources.mjs";
+import { socketDirectory } from "../../helpers/socket-directory.mjs";
 import { serviceConfigurationData } from "./builders.mjs";
 import {
-  createGitHubServiceFactory,
+  createGitHubTokenServiceFactory,
   startServiceListeners,
   writeSessionClientConfiguration,
 } from "./service-resources.mjs";
@@ -25,9 +26,13 @@ export {
   repositoryRoot,
 } from "./runtime.mjs";
 
-export async function createServiceConfiguration(t, limits = {}) {
+export async function createServiceConfiguration(
+  t,
+  limits = {},
+  sessionPolicy = { maximumDurationSeconds: 172800 },
+) {
   const { validateServiceConfig } = await appModule("drivers/repo/credentials/configuration");
-  const directory = await temporaryDirectory(t, "rcs-");
+  const directory = await socketDirectory(t, "rcs-");
   await chmod(directory, 0o700);
   return validateServiceConfig(
     serviceConfigurationData({
@@ -36,7 +41,7 @@ export async function createServiceConfiguration(t, limits = {}) {
         listen: "0.0.0.0:443",
         controlSocket: join(directory, "control.sock"),
       },
-      sessionPolicy: { maximumDurationSeconds: 172800 },
+      sessionPolicy,
       limits,
     }),
   );
@@ -52,22 +57,25 @@ export async function startCredentialServiceFixture(t, options = {}) {
   const resources = createResourceScope();
   try {
     const clock = options.clock ?? createControlledClock();
-    const tls = await createTlsMaterial(resources);
-    const configured = await createServiceConfiguration(resources, options.limits);
+    const tls = options.tls ?? (await createTlsMaterial(resources));
+    const configured = await createServiceConfiguration(
+      resources,
+      { gitPushInputBytes: 64 * 1024 * 1024, ...options.limits },
+      { maximumDurationSeconds: 28_800 },
+    );
     const config =
       options.gateway === undefined
         ? configured
         : { ...configured, gateway: { ...configured.gateway, ...options.gateway } };
-    const github = await startGitHubFixture(resources, {
-      clock,
-      tls,
-      tokenLifetimeMs: options.tokenLifetimeMs,
-    });
+    const github = await startGitHubFixture(resources, { clock, tls });
     const git = await startGitSmartHttpFixture(resources, { authorize: github.authorize, tls });
-    const factory = await createGitHubServiceFactory(resources, {
+    const token = `github_pat_${"t".repeat(36)}`;
+    github.acceptStatic(token);
+    const factory = await createGitHubTokenServiceFactory(resources, {
       config,
       clock,
-      privateKey: github.privateKey,
+      token,
+      configuration: { pushRefAllowlist: ["refs/heads/agent-feature"], ...options.configuration },
       trustedEndpoints: { apiOrigin: github.origin, gitOrigin: git.origin, ca: tls.ca },
     });
     const { service, listeners } = await startServiceListeners(resources, {
@@ -77,7 +85,7 @@ export async function startCredentialServiceFixture(t, options = {}) {
       tls,
       upstreamOrigins: [github.origin, git.origin],
     });
-    const opened = service.open({ durationSeconds: 86400, profile: options.profile ?? "git-full" });
+    const opened = service.open({ durationSeconds: 3600, profile: options.profile ?? "git-full" });
     const clientDirectory = await writeSessionClientConfiguration(resources, {
       opened,
       ca: tls.ca,

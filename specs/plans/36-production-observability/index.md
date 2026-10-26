@@ -177,7 +177,7 @@ node scripts/ci/cleanup.mjs --state "$OBS_STATE"
 The local wrapper sets private absolute state/result paths and guarantees cleanup
 on failure; users do not have to invent these variables. Update
 `docs/flows/common-logging.md`, `docs/testing/kubernetes.md`, and
-`docs/testing/metrics.md` with actual proof boundaries.
+`docs/testing/local.md#metrics-and-observability-tests` with actual proof boundaries.
 
 ## Task 3: Package and smoke-test the demonstration stack
 
@@ -222,7 +222,7 @@ receives filtered Collector OTLP logs. No operator CRDs or cloud service require
 
 The completed wrapper tasks below record the original implementation. The
 wrapper and its package commands were later removed; use the current
-[CI lane procedures](../../../docs/testing/metrics.md#kubernetes-observability-acceptance).
+[CI lane procedures](../../../docs/testing/local.md#kubernetes-observability-acceptance).
 
 **Files:** Create `scripts/test-observability.mjs`; modify `package.json`,
 `scripts/ci/test-suites.json`, `.github/workflows/ci.yml`,
@@ -275,7 +275,7 @@ wrapper and its package commands were later removed; use the current
       `pnpm docs:check`, `pnpm docs:check-length`, and `git diff --check` as applicable
       with matching installed dependencies. Do not install dependencies as verification.
 - [ ] Run the credential-free lanes locally using the current
-      [CI lane procedures](../../../docs/testing/metrics.md#kubernetes-observability-acceptance),
+      [CI lane procedures](../../../docs/testing/local.md#kubernetes-observability-acceptance),
       then obtain passing required CI for the final revision. Qualify model
       turns separately using the retained model lane and protected CI;
       report missing runtime evidence without presenting default checks as runtime proof.

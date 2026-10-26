@@ -8,6 +8,32 @@ This record preserves the dated changes to the Agent workspace files flow. See t
 
 ## Changelog
 
+- 2026-10-09 20:28: Keep private workspace repair while removing retired native OAuth storage. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - ece639c78)
+
+- 2026-10-09 19:20: Dedicated Codex deployment requires `main`. (fix-969)
+
+- 2026-10-08 23:20: Initialize the approved Harness PVC before Sandbox provisioning, retain exact completion guards after relocation, and remove private writers during shutdown. (01a0e8ec-d02f-7b93-a59b-5b7fccf2ebaa)
+
+- 2026-10-08 14:42: Initialize OpenShell workspaces privately before Harness startup. (authoring-run/91f18132-f597-42a4-b024-036a23b5313d - ece639c78765727a67753639f6ab225a243e064d)
+
+- 2026-10-07 17:36: Remove the persistent OAuth exception from Harness credential storage. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - da984340ae4aafb03bb0c66bfd94ba40252625a5)
+
+- 2026-10-06 18:40: Say that OCC's model check refuses malformed provider rows before the Codex Gateway shape check, without naming the path. (dogfood-r38)
+
+- 2026-10-04 00:40: Fail activation at once when the Gateway refuses its own SDK connection as unauthorized. (f351-gateway-unauthorized)
+
+- 2026-10-01 15:11: Query Gateway workspace binding state through bounded SDK calls. (authoring-run/24df37c6-7eef-483a-a31c-d2c14a51ca6c - 521549df)
+
+- 2026-10-01 11:27: Authorize dedicated Skill source trees and lifecycle metadata in the default node policy. (authoring-run/944b9f5c-dd07-45f4-8179-ed96b2ba3e79 - 836a88e048dc79dfb42066fd0cf868e7405a2f98)
+
+- 2026-09-30 16:29: Require RWO for new and reused Harness claims, including final deletion. (authoring-run/e062d2c6-e51f-42eb-8046-fd6ec6d6b3c4 - 4baeb8f6d21ff0d73102e0800c4e6cc0ed6a6366)
+
+- 2026-09-29 08:09: Align the documented workspace version. (authoring-run/5e3ebbae-97b8-4709-8c03-6a032657e102 - 395c735c3915135e4d5fe533041b3d2c04e995ea)
+
+- 2026-09-28 21:47: Defer enrollment checks until Gateway readiness. (authoring-run/1b67a5da-eea7-4eb4-a91f-38abd1fb5792 - 1365d9b33eec2de2452bd3142f57a1729cccd559)
+
+- 2026-09-27 05:17: Give native workspace initialization the Gateway resource budget. (01a0cf72-6985-7712-ba92-d8cc32470f24 - c0f792d5b92e2dee596711654784759d327e0817)
+
 - 2026-09-26 10:10: Documented Gateway endpoint ports. (authoring-run/a4d4256b-3bac-4c88-84aa-cd3501b80aa8 - ee8c080b578b7cce1787e55ac41eabe112cc2f74)
 
 - 2026-09-24 11:28: Document exclusive dedicated preparation and durable RWO workspaces in the accompanying change. (01a0cf72-6985-7712-ba92-d8cc32470f24 - 14a4508baad876d3eea4e6fe6388f8d8a91559b7)

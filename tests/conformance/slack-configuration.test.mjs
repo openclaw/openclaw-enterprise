@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { slack } from "../../apps/controller/src/console/channels/slack.mjs";
+import { slack } from "../../apps/controller/src/console/channels/slack.mts";
 import { missingChannelCredentialGroups } from "../../apps/controller/src/console/agents/credentials.mjs";
 
 // These are form inputs, not a replacement for configuration or threading logic.
@@ -68,6 +68,39 @@ test("the Slack editor steers named accounts away from the default account's tok
     support.reason,
     /own token environment names, not SLACK_APP_TOKEN or SLACK_BOT_TOKEN/,
   );
+});
+
+// The card names a token it cannot edit as Configuration save names it (finding 2530): a string is
+// a reference only in a form the runtime reads, or with a `${` it keeps as written; an object with
+// no source is the object save refuses; every other value holds the credential inline.
+test("the Slack editor names a bot token it cannot edit the way Configuration save does", () => {
+  const inline = "holds a credential value inline, where a reference is required";
+  const reference = "uses a credential reference this editor does not write";
+  for (const [botToken, form] of [
+    ["xoxb-pasted", inline],
+    // A `$` before a name the runtime does not read, an escape, and blank text are no reference.
+    ["$xoxbSECRET", inline],
+    ["$${SLACK_BOT_TOKEN}", inline],
+    ["", inline],
+    ["   ", inline],
+    [["xoxb-pasted"], inline],
+    ["$SLACK_SPARE_TOKEN", reference],
+    ["xoxb-${SLACK_BOT_TOKEN}", reference],
+    ["${SLACK_BOT_TOKEN:-xoxb-fallback}", reference],
+    ["${slack_bot_token}", reference],
+    [{ source: "file", provider: "default", id: "/slack/bot" }, reference],
+    [{ value: "xoxb-pasted" }, "holds an object the Slack Channel Driver cannot read"],
+  ]) {
+    const support = slack.support({
+      channels: { slack: { appToken: "${SLACK_APP_TOKEN}", botToken } },
+    });
+    assert.equal(support.supported, false, JSON.stringify(botToken));
+    assert.equal(
+      support.reason,
+      `Slack bot token ${form}. To edit Slack here, set botToken to \${SLACK_BOT_TOKEN} in the Configuration JSON.`,
+      JSON.stringify(botToken),
+    );
+  }
 });
 
 test("the deploy gate requires a named Slack account's own keys, not the default account's", () => {

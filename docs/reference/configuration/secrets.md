@@ -73,6 +73,39 @@ within `values`, never the value. Unresolved references remain valid
 Configuration data; deployment separately rejects model credential selectors
 that compete with the Agent's binding.
 
+Writes and deployment also require a `${NAME}` reference or a SecretRef in the
+other key and credential header slots the Gateway sends: MCP server `headers`
+(also under `nodeHost`), `memory.search.remote.apiKey` and `.headers` (also
+under `agents.entries.<id>`), every `tools.media` request (`models[]` and each
+capability's defaults: `headers`, `request.headers`, `request.auth`, the TLS
+client keys and credential-named `providerOptions`, also in the per-capability
+`models` lists older releases read), speech (`tts`, personas, per-Agent and
+voice blocks) and Talk provider `apiKey`s, `tools.web.fetch.headers`,
+`diagnostics.otel.headers`, `gateway.remote.edgeAuth`,
+`skills.entries.<id>.apiKey` and `cron.webhookToken`. Headers follow the model
+provider's credential name rule, and a name that is not an HTTP field name is
+refused.
+
+The other slots OpenClaw marks sensitive need one too (`${NAME}` works in every
+slot, a SecretRef where OpenClaw takes one):
+`gateway.auth.token`, `gateway.remote.token` and `.password`,
+`gateway.controlUi.github.token`, `hooks.token`, `hooks.gmail.pushToken`, sandbox
+SSH `identityData`, `certificateData` and `knownHostsData` (under
+`agents.defaults` and `agents.entries.<id>`), and
+`storage.locations.<name>.encryption.passphrase`. Under `channels.<id>` and
+`plugins.entries.<id>.config`, a string whose key OpenClaw treats as secret needs
+one: a key ending in `token`, or naming a password, secret, API key, encryption
+or private key, or service account, such as `botToken` or `webSearch.apiKey`. A
+key naming where a credential is read from (ending in `File`, `Path`, `Dir` or
+`Env`) is not secret. Fields bundled manifests mark sensitive count too
+(`telnyx.publicKey`, Synology Chat `incomingUrl` and `webhookUrl`), and a
+`headers` map there follows the header rule. Environment maps keep their own
+rules, and a hook mapping's `sessionKey`, a routing key, stays as written. A
+literal `gateway.auth.password` is refused on Configuration and Preset saves.
+
+A stored document that predates one of these rules still reads, so its
+operator can replace it.
+
 OpenClaw owns SecretRef syntax, provider configuration, and validation. OCC,
 ConfigurationDriver, and Kubernetes Compute preserve native `env`, `file`, and
 `exec` SecretRefs as unresolved JSON. The selected SecretDriver only stores OCC
@@ -99,9 +132,39 @@ gateway-only credential values:
 | `slack`   | `SLACK_APP_TOKEN` and `SLACK_BOT_TOKEN` for the default account; account-specific keys for named accounts |
 | `msteams` | `MSTEAMS_APP_PASSWORD`                                                                                    |
 
-Every environment SecretRef used by an enabled native channel must have a
-matching `secretBindings` entry before deployment admission. Disabled channel
-provider blocks do not require bindings.
+On the bundled Kubernetes Compute, every `${NAME}` reference and environment
+SecretRef in an enabled native channel needs a matching `secretBindings` entry,
+including a reference inside other text (`xoxb-${NAME}`). Outside credential
+fields a reference with a fallback (`${NAME:-text}`) needs none: the fallback
+fills the unset name. `$${NAME}` is literal text, not a reference.
+
+A channel secret-input field (Slack `appToken`, `botToken`, `signingSecret`,
+`userToken` and `relay.authToken`, on the channel or a named account; Teams
+`appPassword` on the channel) has stricter rules:
+
+- A Slack `appToken` or `botToken` written as an object must be an env SecretRef
+  with provider `default`: the Slack Channel Driver reads no other SecretRef or
+  object. The rule covers the tokens that Driver checks, so it skips the app
+  token in HTTP mode and disabled accounts.
+- A reference with a fallback needs a binding: this Compute sets only bound
+  names, so the fallback, often empty, would replace the credential.
+- OpenClaw reads a whole `$NAME` value as an environment SecretRef, so it needs
+  a binding too.
+- OpenClaw substitutes only uppercase names, so any other `${`, such as
+  `${slack_bot}` or `${NAME-text}`, is refused: OpenClaw would send that text
+  as the credential. The message quotes no other text of the value than a lowercase
+  `${name}` or the name before `-`.
+- The Configuration Driver accepts a credential field only as exactly one
+  `${NAME}` or a SecretRef, so even with a binding it refuses a fallback, a
+  `$NAME` value, or a reference with other text, spaces or references. The
+  message names the form.
+
+Configuration create and update and Agent provisioning refuse these values with
+`400 INVALID_REQUEST`. The message names the setting, and also the binding when
+one is missing, so send the values and their bindings in one request.
+Deployment refuses a stored Configuration that predates this rule with the same
+message. Disabled channel provider blocks do not require
+bindings.
 
 Add a native default Slack account with environment SecretRefs:
 

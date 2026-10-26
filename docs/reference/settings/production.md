@@ -8,8 +8,9 @@ For startup configuration and precedence, see the
 The production API is internal-only by default. Operators must provision an
 internal Kubernetes `ClusterIP` Service and a default-deny ingress
 `NetworkPolicy` that allows only explicitly approved namespace and Pod
-selectors. Production Helm validates peer label maps. The cluster must enforce NetworkPolicies. Do not expose the listener
-through a `NodePort`, `LoadBalancer`, `hostNetwork`, or public endpoint.
+selectors. Production Helm validates peer label maps. The cluster must enforce
+NetworkPolicies. Do not expose the listener through a `NodePort`,
+`LoadBalancer`, `hostNetwork`, or public endpoint.
 
 The Helm charts allow DNS egress on UDP/TCP ports `53` and `5353` to their
 configured `dns.namespace` and `dns.podLabels` peers. Port `5353` supports
@@ -23,19 +24,21 @@ procedure in [Deploy native admin UI access](../../guides/deploy/native-admin.md
 Envoy and Agent gateway Services remain private, and OCC strips the shared OCE
 session cookie before forwarding to the native gateway.
 
-| Variable                                   | Required value or format                                                                                           | Behavior                                                                                                                |
-| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
-| `NODE_ENV`                                 | Exactly `production`.                                                                                              | Enables durable production controller composition.                                                                      |
-| `OCC_HOST`                                 | One explicit Pod interface IP address.                                                                             | Wildcard addresses and implicit hostnames are rejected.                                                                 |
-| `OCC_PORT`                                 | Decimal integer from `1` through `65535`.                                                                          | Selects the internal listener port exposed by the operator's Service.                                                   |
-| `OCC_DATABASE_URL`                         | Explicit PostgreSQL application-role URL.                                                                          | Must connect to the already migrated controller database.                                                               |
-| `OCC_CONFIG_PATH`                          | Absolute path to trusted Installation startup YAML.                                                                | Selects Configuration, IAM, Compute, and optional account Drivers.                                                      |
-| `OCC_AUTH_SECRET`                          | Mounted high-entropy Better Auth secret.                                                                           | Signs and verifies session material without logging it.                                                                 |
-| `OCC_AUTH_BASE_URL`                        | HTTP(S) origin without path, query, fragment or user info; IPv4 as four decimal octets, no leading zeros.          | Defines the Better Auth base URL and cookie origin.                                                                     |
-| `OCC_GATEWAY_API_KEY_PATH`                 | Optional absolute path to the private gateway service-key file.                                                    | API only; validates at startup and reads each operation for rotation. Requires Compute endpoint resolution.             |
-| `OCC_CHANNEL_DIRECTORY_PROXY_URL`          | Optional HTTP(S) proxy URL with one literal IPv4 address and explicit port, or the exact Helm-managed Service URL. | API only; routes Slack lookup and credential validation through an HTTP CONNECT tunnel. Invalid values fail startup.    |
-| `OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST` | Optional exact Helm-managed proxy Service host.                                                                    | API only; the one DNS host the Slack directory Driver accepts in the proxy URL instead of an IPv4 address.              |
-| `NODE_EXTRA_CA_CERTS`                      | Optional PEM bundle for a private gateway CA.                                                                      | Node reads it at process startup. Normal leaf renewal under that CA does not require a restart; root-bundle changes do. |
+| Variable                                   | Required value or format                                                                                           | Behavior                                                                                                                     |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
+| `NODE_ENV`                                 | Exactly `production`.                                                                                              | Enables durable production controller composition.                                                                           |
+| `OCC_HOST`                                 | One explicit Pod interface IP address.                                                                             | Wildcard addresses and implicit hostnames are rejected.                                                                      |
+| `OCC_PORT`                                 | Decimal integer from `1` through `65535`.                                                                          | Selects the internal listener port exposed by the operator's Service.                                                        |
+| `OCC_DATABASE_URL`                         | Explicit PostgreSQL application-role URL.                                                                          | Must connect to the already migrated controller database. With TLS verification, an IP host must match an IP subjectAltName. |
+| `OCC_CONFIG_PATH`                          | Absolute path to trusted Installation startup YAML.                                                                | Selects Configuration, IAM, Compute, and optional account Drivers.                                                           |
+| `OCC_AUTH_SECRET`                          | Mounted high-entropy Better Auth secret.                                                                           | Signs and verifies session material without logging it.                                                                      |
+| `OCC_AUTH_BASE_URL`                        | HTTP(S) origin without path, query, fragment or user info; IPv4 as four decimal octets, no leading zeros.          | Defines the Better Auth base URL and cookie origin.                                                                          |
+| `OCC_GATEWAY_API_KEY_PATH`                 | Optional absolute path to the private gateway service-key file.                                                    | API only; validates at startup and reads each operation for rotation. Requires Compute endpoint resolution.                  |
+| `OCC_CHANNEL_DIRECTORY_PROXY_URL`          | Optional HTTP(S) proxy URL with one literal IPv4 address and explicit port, or the exact Helm-managed Service URL. | API only; routes Slack lookup and credential validation through an HTTP CONNECT tunnel. Invalid values fail startup.         |
+| `OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST` | Optional exact Helm-managed proxy Service host.                                                                    | API only; the one DNS host the Slack directory Driver accepts in the proxy URL instead of an IPv4 address.                   |
+| `OCC_API_HTTPS_EGRESS_OPEN`                | Optional `true` or `false`, default `false`; set by Helm.                                                          | API only; `true` (open sign-in egress) makes an unanswered Slack check a retryable `503`.                                    |
+| `NODE_EXTRA_CA_CERTS`                      | Optional PEM bundle for private Gateway or IdP CAs.                                                                | Node reads it at process startup. Normal leaf renewal under that CA does not require a restart; root-bundle changes do.      |
+| `OCC_GATEWAY_CA_PATH`                      | Optional absolute path to the Gateway-only CA bundle; empty means no private Gateway CA.                           | API only; Harness node enrollment reads it instead of `NODE_EXTRA_CA_CERTS`. Helm sets it with OIDC CA values.               |
 
 For Helm, prefer `slackProxy.enabled` over an external
 `api.channelDirectoryProxyUrl`; the
@@ -65,21 +68,16 @@ and stored ownership before accepting work. With the bundled Kubernetes Compute
 Driver, `drivers.compute.configuration` holds the
 [`KubernetesComputeDriverOptions` shape](../drivers/kubernetes-compute.md#configuration).
 Production use of that Driver requires `images.requireImmutableDigest: true`,
-digest-pinned gateway and Agent image references, and exactly one in-cluster
+digest-pinned gateway and Agent image references, projected ServicePrincipal
+credentials unless a Sandbox Driver is selected, and exactly one in-cluster
 identity or explicitly named kubeconfig/context. The processes then verify
 authenticated, TLS-checked, read-only Kubernetes Namespace access before serving
 requests or claiming work. Installed Drivers validate their own reviewed
 configuration and implementation-specific prerequisites.
 
 Agent workspace-file requests use the selected Compute Driver's private gateway
-endpoint. Kubernetes derives the URL from the optional `gatewayRouting.hostname`
-and the admitted Namespace and Agent IDs. If the hostname is omitted or empty,
-Compute derives the chart's Service DNS hostname from the required `gatewayName`,
-`gatewayNamespace`, and `envoyNamespace`. It derives the allowed Envoy peer from
-those settings and rejects explicit `network.gatewayClients` in routed mode. It
-does not read a per-Agent endpoint file or persist a URL in Agent Configuration.
-See [private Agent gateway routes](../drivers/kubernetes-compute/networking-and-isolation.md#private-agent-gateway-routes)
-for the hostname contract and each setting's role.
+endpoint; [private Agent gateway routes](../drivers/kubernetes-compute/networking-and-isolation.md#private-agent-gateway-routes)
+define the hostname contract and each setting's role.
 
 `OCC_GATEWAY_API_KEY_PATH` mounts a dedicated, high-entropy Envoy service key;
 never reuse the Better Auth signing secret or a model-provider credential.
@@ -88,12 +86,8 @@ during rotation makes new requests unavailable. The worker needs
 route configuration and namespace-bound HTTPRoute permissions, but no service
 key or CA bundle for native file access.
 
-With Helm routing enabled and no `gatewayRouting.issuerRef.name`, cert-manager
-bootstraps a private CA and issues Envoy's certificate. The chart projects only
-the generated root Secret's public `tls.crt` into the API and sets
-`NODE_EXTRA_CA_CERTS`; the CA signing key is never mounted into OCC. An explicit
-issuer selects operator-managed issuance instead. Its optional `caSecretName`
-and `caSecretKey` must be supplied together when additional CA trust is needed.
+The [TLS lifecycle](../gateway-routing.md#tls-and-certificate-lifecycle) covers
+the generated private CA, explicit issuers, and the trust OCC loads.
 
 See the [deployment procedure](../../guides/deploy/workspace-routing.md#agent-workspace-files)
 for Envoy, cert-manager, native trusted-proxy configuration, and key/certificate rotation.
@@ -114,8 +108,7 @@ Revoking one account's cookies needs no rotation: reset its password.
 
 ### GitHub sign-in and trusted proxies
 
-These optional variables apply to the API only. The chart never passes them to
-other workloads.
+These optional variables reach only the API, never other workloads.
 
 | Variable                           | Helm value                                 | Behavior                                                                                                                                                                                                                 |
 | ---------------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -129,20 +122,24 @@ other workloads.
 | `OCC_AUTH_TRUSTED_PROXY_PRESET`    | `api.trustedProxy.preset`                  | `ingress-nginx` (default), `aws` or `generic`. Named presets read `x-forwarded-for`. Set with the CIDRs.                                                                                                                 |
 | `OCC_AUTH_CLIENT_IP_HEADER`        | `api.trustedProxy.clientAddressHeader`     | Lowercase header name, up to 64 characters, `generic` only. Sign-in limits key on the client address it carries from a trusted peer.                                                                                     |
 
-The chart's API Deployment always uses the `Recreate` strategy: an upgrade stops
-the old API Pod before starting the new one, so two controllers never serve
-together. Activation still requires closed ingress and stopped identity writers.
+The API Deployment uses `Recreate`: an upgrade stops the old API Pod first, so
+two controllers never serve together. Activation still requires closed ingress and stopped identity writers.
 
 With `auth.github.enabled`, the chart adds an API-only egress policy on TCP 443
 for `github.com` and `api.github.com`. Empty `auth.github.egressCidrs` allows
 any address except link-local `169.254.0.0/16`. To narrow it, list the `web` and `api`
-IPv4 ranges from `https://api.github.com/meta`, and update them when GitHub changes them.
+IPv4 ranges from `https://api.github.com/meta` and keep them current.
 A non-empty list replaces the default, so an egress proxy on a link-local address is
 reached by listing its CIDR; the same holds for Google and OIDC. Listed CIDRs carry no
 link-local exception, so keep them narrow.
 
 `api.trustedProxy` defaults off: `Forwarded`, `X-Forwarded-*`, and `X-Real-IP`
-return `403`. Failed password sign-ins have per-email limits only: browsers behind
+return `403` on API calls (sign-in still works), and the API logs
+`authentication.forwarded-refused-warning` at most once a minute: code
+`TRUSTED_PROXY_NOT_CONFIGURED`, or `TRUSTED_PROXY_PEER_UNTRUSTED` when the sending
+peer is outside `api.trustedProxy.cidrs`. Without a proxy, a
+scanner sending `X-Forwarded-For` can trigger `TRUSTED_PROXY_NOT_CONFIGURED`;
+ignore it and leave `api.trustedProxy` unset. Failed password sign-ins have per-email limits only: browsers behind
 a proxy share its address. With GitHub, Google or OIDC, start, callback, and result
 key on browser cookies; start has only an active cap and the 1,000-pending-attempt
 cap. Startup logs `authentication.sign-in-limit-warning`; Helm notes and profile
@@ -188,24 +185,9 @@ domain that is not a DNS name.
 
 ### OIDC sign-in
 
-These optional variables also apply to the API only, with the same guarded profile and
-recovery user; see [OIDC sign-in](../../guides/deploy/oidc-sign-in.md).
-
-| Variable                                                     | Helm value                                          | Behavior                                                                                    |
-| ------------------------------------------------------------ | --------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| `OCC_AUTH_OIDC_ISSUER`                                       | `auth.oidc.issuer`                                  | The exact `iss`; with the client ID it determines the provider instance.                    |
-| `OCC_AUTH_OIDC_AUTHORIZATION_URL`, `_TOKEN_URL`, `_JWKS_URL` | `auth.oidc.authorizationUrl`, `tokenUrl`, `jwksUrl` | `https:` on 443 on the issuer's DNS host, no userinfo, query or fragment. Never discovered. |
-| `OCC_AUTH_OIDC_CLIENT_ID`, `OCC_AUTH_OIDC_CLIENT_SECRET`     | `auth.oidc` Secret keys                             | Read from the dedicated `auth.oidc.secretName` Secret. All required values or none.         |
-| `OCC_AUTH_OIDC_TOKEN_AUTH`                                   | `auth.oidc.tokenAuth`                               | `client_secret_post` (default, not rendered) or `client_secret_basic`.                      |
-| `OCC_AUTH_OIDC_DISPLAY_NAME`                                 | `auth.oidc.displayName`                             | Optional Console label, 1–40 printable characters.                                          |
-
-With `auth.oidc.enabled`, the chart adds the API-only egress policy
-`openclaw-enterprise-api-oidc-login-egress` on TCP 443. Empty `auth.oidc.egressCidrs`
-allows any address except link-local `169.254.0.0/16`. The port is the destination Pod's
-port; an IdP inside the cluster on another target port needs
-[its own egress policy](../../guides/deploy/oidc-sign-in.md#configure-the-chart). Rendering fails on values the API refuses,
-a Secret shared with GitHub, Google or any other chart Secret, `agentNativeAdmin.enabled`
-with OIDC, or an HTTP base URL.
+[OIDC controller settings](oidc.md) defines the provider URLs, client credentials,
+API egress and optional private CA trust. These API-only settings require the
+same guarded sign-in profile and recovery user as GitHub and Google.
 
 ### Production Installation bootstrap environment
 
@@ -258,11 +240,9 @@ and delivery checks, use
 
 When enabled, the chart requires a digest-pinned image, an exact exporter
 destination (IPv4 `/32` or paired namespace/Pod selectors), a TCP port, and
-nonempty dedicated configuration and environment Secret names. Neither Secret
-may reuse the Installation, database, auth, or ChatGPT Backend Secret, or, when
-the feature is enabled, a GitHub, Google, or OIDC sign-in Secret, the gateway API
-key, a repository-credentials Secret, or an execution-cluster kubeconfig. The named
-Secrets must be in the control-plane namespace:
+nonempty configuration and environment Secret names that differ from each other
+and from every other Secret the chart reads or cert-manager writes for an enabled
+feature. The named Secrets must be in the control-plane namespace:
 
 - `configSecretName` supplies `collector.yaml`, `kubernetes.yaml`, and
   `exporter.yaml` keys.
@@ -291,11 +271,12 @@ See [chart defaults](../../../deploy/helm/openclaw-enterprise/values.yaml) for
 credential, runtime-export, and workload isolation boundaries.
 
 The chart rejects obvious malformed quantities such as `foo`, `10MiB`, and
-`1K` in top-level `resources`, Collector `resources`, and Collector volume size
-limits, with an error naming the setting. Kubernetes remains responsible for
-complete quantity validation; exponent ranges and numeric parsing edge cases
-are not checked during rendering. A successful render does not prove API
-acceptance. Setting a resource map or Collector size limit to `null` clears its
+`1K` in top-level `resources`, `slackProxy.resources`, Collector `resources`,
+and Collector volume size limits, with an error naming the setting. It also
+rejects a value with a leading `-` (negative) and resource names Kubernetes
+refuses. Kubernetes remains responsible for complete quantity validation;
+exponent ranges, numeric parsing edge cases and a request above its limit are
+not checked during rendering. A successful render does not prove API acceptance. Setting a resource map or Collector size limit to `null` clears its
 chart default; a null size limit leaves that volume unlimited.
 
 ### Private telemetry defaults

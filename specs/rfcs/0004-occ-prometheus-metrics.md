@@ -274,7 +274,7 @@ Implementation is in the working-tree change based on `bbb9def2`, with
 `@prometheus-io/client@0.16.1`. Current owners are the
 [metrics reference](../../docs/reference/metrics.md),
 [production scraping guide](../../docs/guides/observability/metrics.md), and
-[development dashboard/testing guide](../../docs/testing/metrics.md).
+[development dashboard/testing guide](../../docs/testing/local.md#metrics-and-observability-tests).
 
 Local proof passed: HTTP and PostgreSQL metrics, simultaneous scrape timeouts
 under a real database lock and subsequent recovery, 19 existing worker

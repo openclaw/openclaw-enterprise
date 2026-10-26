@@ -87,6 +87,43 @@ func addComposeGatewayRouting(rendered any, state *developmentState) error {
 	return nil
 }
 
+func validateComposeNativeAdmin(rendered any, state *developmentState) error {
+	config, _ := rendered.(map[string]any)
+	services, _ := config["services"].(map[string]any)
+	controller, _ := services["controller"].(map[string]any)
+	proxy, _ := services["browser-proxy"].(map[string]any)
+	if controller == nil || proxy == nil {
+		return fmt.Errorf("Compose native admin requires controller and browser-proxy services")
+	}
+	environment, _ := controller["environment"].(map[string]any)
+	_, agentDomain, cookieDomain := developmentBrowserHosts(state.Cluster)
+	expected := map[string]string{
+		"OCC_AUTH_BASE_URL":              state.BrowserOrigin,
+		"OCC_AGENT_NATIVE_ADMIN_ENABLED": "true",
+		"OCC_AGENT_NATIVE_ADMIN_DOMAIN":  agentDomain,
+		"OCC_AUTH_COOKIE_DOMAIN":         cookieDomain,
+		"OCC_GATEWAY_API_KEY_PATH":       developmentGatewayAPIKeyMount,
+		"NODE_EXTRA_CA_CERTS":            developmentGatewayCAMount,
+	}
+	for key, value := range expected {
+		if composeValue(environment[key]) != value {
+			return fmt.Errorf("Compose controller must set %s to the development native admin value", key)
+		}
+	}
+	ports, _ := proxy["ports"].([]any)
+	if len(ports) != 1 {
+		return fmt.Errorf("Compose browser proxy must publish exactly one port")
+	}
+	host, published, target, protocol, err := parsePublication(ports[0])
+	if err != nil {
+		return err
+	}
+	if host != "127.0.0.1" || published != strconv.Itoa(state.BrowserPort) || target != "8443" || protocol != "tcp" {
+		return fmt.Errorf("Compose browser proxy must publish the selected HTTPS port only on 127.0.0.1")
+	}
+	return nil
+}
+
 type composeService struct {
 	Ports       []any          `json:"ports"`
 	Environment map[string]any `json:"environment"`

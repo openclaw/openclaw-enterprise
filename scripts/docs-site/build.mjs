@@ -9,7 +9,7 @@ import {
   parseFrontmatter,
   resolveDocsFragment,
 } from "./vendor/docs-markdown.mjs";
-import { createGithubAnchorReader } from "./github-anchors.mjs";
+import { createGithubAnchorReader, githubHeadingVisibleText } from "./github-anchors.mjs";
 import { publicMarkdown } from "./public-markdown.mjs";
 
 if (process.argv.slice(2).some((arg) => arg !== "--check")) {
@@ -89,7 +89,7 @@ for (const file of walk(docs)) {
     if (token.type !== "heading_open") {
       continue;
     }
-    const alias = github.slug(parsed.tokens[i + 1].content);
+    const alias = github.slug(githubHeadingVisibleText(parsed.tokens[i + 1]));
     if (!ids.has(alias)) {
       githubAliases.set(token.attrGet("id"), alias);
       ids.add(alias);

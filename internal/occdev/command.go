@@ -14,12 +14,14 @@ import (
 
 // Options selects the checkout and output destinations for a development command.
 type Options struct {
-	Repository  string
-	KeyOutput   string
-	ComposeArgs []string
-	Volumes     bool
-	Out         io.Writer
-	Err         io.Writer
+	Repository                      string
+	KeyOutput                       string
+	SandboxNetworkPolicyFile        string
+	SandboxNetworkPolicyCeilingFile string
+	ComposeArgs                     []string
+	Volumes                         bool
+	Out                             io.Writer
+	Err                             io.Writer
 }
 
 type runner struct {
@@ -32,6 +34,9 @@ type runner struct {
 	// legacyNATUnconfirmed records that the preflight could not confirm the
 	// host's legacy iptables nat table, so a k3d failure names it.
 	legacyNATUnconfirmed bool
+	// imageRegistry is the loopback registry the k3d node pulls selected
+	// images from (OCC_DEVELOPMENT_IMAGE_REGISTRY_CONTAINER); nil without it.
+	imageRegistry *developmentImageRegistry
 }
 
 func newRunner(opts Options) *runner {

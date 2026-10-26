@@ -31,7 +31,7 @@ start a gateway or prove model access.
 `apps/controller/src/drivers/compute/docker/index.ts:DockerComputeDriver.validateHarnessAuth`
 
 Deployment requires Agent `harnessAuth`. The Docker Driver rejects bindings,
-so deployment cannot queue a new AgentRevision or reach workload preparation.
+so deployment cannot queue a new Agent revision or reach workload preparation.
 Exporting a model key to the worker cannot bypass this admission boundary.
 The retained container preparation and TUI test helpers do not establish a
 supported authenticated Agent journey. Use the

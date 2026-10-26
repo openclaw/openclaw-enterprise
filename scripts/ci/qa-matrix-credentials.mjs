@@ -55,6 +55,7 @@ function validateRepositoryFixture() {
 
 // A workflow-scoped materializer: no secrets are written into the checkout,
 // test results, command arguments, or the environment file itself.
+const repositoryFixture = process.env.QA_REPOSITORY_FIXTURE ?? "default";
 validateRepositoryFixture();
 const directory = join(process.env.RUNNER_TEMP, "qa-matrix-credentials");
 await mkdir(directory, { mode: 0o700 });
@@ -88,6 +89,10 @@ if (selection.repository) {
     await writeFile(join(repository, name), process.env[source], { mode: 0o600, flag: "wx" });
   }
   entries.push(`OCC_TEST_QA_REPOSITORY_INPUT_DIRECTORY=${repository}`);
+  if (repositoryFixture === "isolated") {
+    entries.push("QA_REPOSITORY_FIXTURE=isolated");
+    entries.push(`OCC_TEST_QA_GITHUB_OBSERVER_APP_INPUT_DIRECTORY=${repository}`);
+  }
 }
 entries.push(`OCC_TEST_QA_ARTIFACTS=${join(process.env.RUNNER_TEMP, "qa-matrix-evidence")}`);
 validateQaInputs(selection, {

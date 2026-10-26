@@ -25,6 +25,11 @@ repository terminology. This skill needs no global tools or skill installation.
 
 ## Write precise prose
 
+Apply ASD-STE100 (Simplified Technical English). Before and after a documentation
+update, complete the [terminology and limits pass](./references/terminology-and-limits.md).
+Keep official resource names and public identifiers. Check each replacement
+against its meaning and current source.
+
 - Use present tense, active voice, concrete nouns, and one term per concept.
   Expand unfamiliar abbreviations at first use; use established product names.
 - Define unfamiliar concepts through their owner, action, and observable role.

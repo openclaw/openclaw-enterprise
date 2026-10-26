@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { waitFor } from "./wait-for.mjs";
+import { waitForLockWaiter } from "./postgres-lock-waits.mjs";
 
 // Holds a Namespace row lock on its own connection while `probe` runs, as the Namespace-first
 // paths take it (deployment admission, withdrawal requests, Agent stop and delete). Lock-order
@@ -18,15 +18,7 @@ export async function withNamespaceLockHeld(pool, namespaceId, probe) {
     const backend = await holder.query("SELECT pg_backend_pid() AS pid");
     await holder.query("SELECT id FROM occ.namespaces WHERE id = $1 FOR UPDATE", [namespaceId]);
     const result = await probe({
-      waitForBlocked: (description) =>
-        waitFor(description, async () => {
-          const waiting = await pool.query(
-            `SELECT pid FROM pg_stat_activity
-             WHERE wait_event_type = 'Lock' AND $1 = ANY(pg_blocking_pids(pid))`,
-            [backend.rows[0].pid],
-          );
-          return waiting.rowCount > 0 ? true : undefined;
-        }),
+      waitForBlocked: (description) => waitForLockWaiter(pool, backend.rows[0].pid, description),
       assertNotHeld: (sql, params, message) =>
         assert.doesNotReject(holder.query(sql, params), message),
     });

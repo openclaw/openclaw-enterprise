@@ -3,10 +3,16 @@ import type {
   ChannelDirectoryResult,
   ChannelDriver,
 } from "@openclaw-enterprise/contracts";
-import { ChannelCredentialError, ChannelDirectoryError } from "@openclaw-enterprise/occ";
-import { asRecord } from "@openclaw-enterprise/utils";
+import {
+  ChannelCredentialError,
+  ChannelDirectoryError,
+  ResourceStateConflictError,
+  slackAccountTargets,
+  wholeEnvironmentReferenceName,
+} from "@openclaw-enterprise/occ";
+import { asRecord, readCappedBody } from "@openclaw-enterprise/utils";
 import { isIP } from "node:net";
-import { fetch as undiciFetch, ProxyAgent } from "undici";
+import { fetch as undiciFetch, ProxyAgent, type Response as UndiciResponse } from "undici";
 
 const SLACK_API = "https://slack.com/api/";
 const PAGE_SIZE = 100;
@@ -20,10 +26,48 @@ const MANAGED_SERVICE_PROXY_ENDPOINT =
 
 type SlackRecord = Record<string, unknown>;
 
-function configuredValue(value: unknown): boolean {
-  return typeof value === "string"
-    ? value.trim().length > 0
-    : value !== undefined && value !== null;
+/**
+ * Finding 2521: the production API's egress is default-deny unless sign-in settings open it. With
+ * no Slack proxy configured, a token check that gets no answer from Slack usually means the
+ * Installation has no Slack route, but an open route can also time out (finding 2531). The fixed
+ * text names the setting and keeps the retry for that case. It is raised only after the binding
+ * and token-prefix checks, and it names no token. The error contract caps messages at 256
+ * characters.
+ */
+export class SlackRouteNotConfiguredError extends ResourceStateConflictError {
+  constructor() {
+    super(
+      "The API could not reach Slack and has no Slack proxy. If the API has another approved route to Slack, try again. Otherwise ask an Installation administrator to give the API a route to Slack; the Slack integration guide lists the Helm settings.",
+    );
+    this.name = "SlackRouteNotConfiguredError";
+  }
+}
+
+/** A request that got no HTTP answer: no connection, no DNS answer, or the time budget ran out. */
+class SlackUnansweredError extends ChannelDirectoryError {
+  constructor() {
+    super("unavailable");
+  }
+}
+
+// Fetch failure causes that mean Slack never answered (finding 2532). A redirect that
+// `redirect: "error"` refuses, a TLS failure or an invalid header value is a different failure.
+const UNANSWERED_CAUSES = new Set([
+  "ECONNREFUSED",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "ETIMEDOUT",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "UND_ERR_CONNECT_TIMEOUT",
+]);
+
+function neverAnswered(error: unknown): boolean {
+  const failure = asRecord(error);
+  return (
+    failure?.name === "TimeoutError" ||
+    UNANSWERED_CAUSES.has(String(asRecord(failure?.cause)?.code))
+  );
 }
 
 function boundedString(value: unknown, maxLength = 200): string | undefined {
@@ -76,13 +120,21 @@ export class SlackChannelDriver implements ChannelDriver {
   readonly implementation = "occ/slack-channel";
   private readonly request: typeof fetch;
   private readonly proxy?: ProxyAgent;
+  // Production sets expectProxy unless Helm reports open HTTPS egress: its default-deny API
+  // egress reaches Slack through a configured proxy. Without one, an unanswered check names that
+  // setting; a route an operator approved instead still works.
+  private readonly proxyMissing: boolean;
 
   constructor(
     request: typeof fetch = globalThis.fetch,
     proxyUrl?: string,
-    options: { readonly managedProxyHosts?: readonly string[] } = {},
+    options: {
+      readonly managedProxyHosts?: readonly string[];
+      readonly expectProxy?: boolean;
+    } = {},
   ) {
     this.request = request;
+    this.proxyMissing = options.expectProxy === true && proxyUrl === undefined;
     if (proxyUrl !== undefined) {
       const endpoint = PROXY_ENDPOINT.exec(proxyUrl);
       const managedEndpoint = MANAGED_SERVICE_PROXY_ENDPOINT.exec(proxyUrl);
@@ -101,6 +153,12 @@ export class SlackChannelDriver implements ChannelDriver {
           "Slack directory proxy must be an HTTP(S) literal IPv4 endpoint or the exact managed Kubernetes Service endpoint with an explicit port.",
         );
       }
+      // Like Compute's channel proxy rule: the unspecified address names no proxy.
+      if (address === "0.0.0.0") {
+        throw new Error(
+          "Slack directory proxy must not use host 0.0.0.0, which names no proxy address.",
+        );
+      }
       this.proxy = new ProxyAgent(proxyUrl);
     }
   }
@@ -114,22 +172,15 @@ export class SlackChannelDriver implements ChannelDriver {
       return;
     }
     const signal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
-    const accounts = asRecord(slack.accounts);
-    const named = accounts === undefined ? [] : Object.entries(accounts);
     // OpenClaw still starts an implicit "default" account from the top-level bot and app
     // tokens when named accounts exist, unless one of them is named "default".
-    const implicitDefault =
-      named.length === 0 ||
-      (!Object.hasOwn(accounts ?? {}, "default") &&
-        configuredValue(slack.botToken) &&
-        (slack.mode === "http" || configuredValue(slack.appToken)));
-    const targets = [
-      ...(implicitDefault ? [{ config: slack, path: "/channels/slack" }] : []),
-      ...named.map(([id, value]) => ({
-        config: { ...slack, ...asRecord(value) },
-        path: `/channels/slack/accounts/${id.replaceAll("~", "~0").replaceAll("/", "~1")}`,
-      })),
-    ];
+    const targets = slackAccountTargets(slack).map(({ account, config }) => ({
+      config,
+      path:
+        account === undefined
+          ? "/channels/slack"
+          : `/channels/slack/accounts/${account.replaceAll("~", "~0").replaceAll("/", "~1")}`,
+    }));
     for (const { config, path } of targets) {
       if (config.enabled === false) {
         continue;
@@ -139,7 +190,12 @@ export class SlackChannelDriver implements ChannelDriver {
           continue;
         }
         const field = `${path}/${role}`;
-        const ref = asRecord(config[role]);
+        // OpenClaw reads a token that is exactly one `${NAME}` as the env SecretRef to NAME, and
+        // Configuration save accepts that form (finding 2511). Any other string stays refused.
+        const token = config[role];
+        const whole = typeof token === "string" ? wholeEnvironmentReferenceName(token) : undefined;
+        const ref: Record<string, unknown> | undefined =
+          whole === undefined ? asRecord(token) : { source: "env", id: whole };
         if (
           ref?.source !== "env" ||
           (ref.provider !== undefined && ref.provider !== "default") ||
@@ -148,6 +204,7 @@ export class SlackChannelDriver implements ChannelDriver {
         ) {
           throw new ChannelCredentialError("binding_required", field);
         }
+        let unanswered = false;
         await withSecret(ref.id, field, async (value) => {
           if (!(role === "appToken" ? /^xapp-/ : /^xoxb-/).test(value)) {
             throw new ChannelCredentialError("role_mismatch", field);
@@ -161,12 +218,22 @@ export class SlackChannelDriver implements ChannelDriver {
             if (typeof identity.bot_id !== "string" || !/^B[A-Z0-9]+$/.test(identity.bot_id)) {
               throw new ChannelCredentialError("credentials_rejected", field);
             }
-            if (typeof identity.team_id !== "string" || !/^T[A-Z0-9]+$/.test(identity.team_id)) {
+            const validIdentity =
+              identity.is_enterprise_install === true
+                ? typeof identity.enterprise_id === "string" &&
+                  /^E[A-Z0-9]+$/.test(identity.enterprise_id)
+                : typeof identity.team_id === "string" && /^T[A-Z0-9]+$/.test(identity.team_id);
+            if (!validIdentity) {
               throw new ChannelCredentialError("unavailable", field);
             }
           } catch (error) {
             if (error instanceof ChannelCredentialError) {
               throw error;
+            }
+            if (error instanceof SlackUnansweredError && this.proxyMissing) {
+              // Refused below: OCC wraps any other error from this callback as unavailable.
+              unanswered = true;
+              return;
             }
             throw new ChannelCredentialError(
               error instanceof ChannelDirectoryError &&
@@ -177,6 +244,9 @@ export class SlackChannelDriver implements ChannelDriver {
             );
           }
         });
+        if (unanswered) {
+          throw new SlackRouteNotConfiguredError();
+        }
       }
     }
   }
@@ -191,13 +261,13 @@ export class SlackChannelDriver implements ChannelDriver {
     if (method !== "auth.test") {
       url.search = parameters.toString();
     }
-    let response: Pick<Response, "status" | "ok" | "text"> & {
-      readonly body: { cancel(): Promise<void> } | null;
-    };
+    let response: Response | UndiciResponse;
     try {
       const options = {
         method: method === "auth.test" ? "POST" : "GET",
         headers: { authorization: `Bearer ${token}` },
+        // Never send the bot token to a redirect target, even on slack.com (finding 1349).
+        redirect: "error" as const,
         signal:
           signal === undefined
             ? AbortSignal.timeout(REQUEST_TIMEOUT_MS)
@@ -208,8 +278,10 @@ export class SlackChannelDriver implements ChannelDriver {
         this.proxy === undefined
           ? await this.request(url, options)
           : await undiciFetch(url, { ...options, dispatcher: this.proxy });
-    } catch {
-      throw new ChannelDirectoryError("unavailable");
+    } catch (error) {
+      throw neverAnswered(error)
+        ? new SlackUnansweredError()
+        : new ChannelDirectoryError("unavailable");
     }
     if (!response.ok) {
       await response.body?.cancel().catch(() => {});
@@ -217,8 +289,14 @@ export class SlackChannelDriver implements ChannelDriver {
     }
     let body: SlackRecord | undefined;
     try {
-      const content = await response.text();
-      body = content.length <= 2_000_000 ? asRecord(JSON.parse(content)) : undefined;
+      // Each UTF-16 unit decodes from at most three UTF-8 bytes, so a body over 8,000,000
+      // bytes is always over the 2,000,000-character limit: stop reading there.
+      const bytes = await readCappedBody(response.body, 8_000_000);
+      const content = bytes === undefined ? undefined : new TextDecoder().decode(bytes);
+      body =
+        content !== undefined && content.length <= 2_000_000
+          ? asRecord(JSON.parse(content))
+          : undefined;
     } catch {
       throw new ChannelDirectoryError("invalid_response");
     }

@@ -6,13 +6,13 @@ These steps continue [the observability demonstration stack](demo.md). Run them 
 
 Do not rerun failed or interrupted commands: an absent marker does not prove
 no changes. The one exception is a demo install that timed out waiting; rerun
-that block as the [setup guide](demo.md#install-private-backends) describes. Confirm cluster UID, OCC status, complete history, saved revision
+that block as the [setup guide](demo.md#install-private-backends) describes. Confirm cluster UID, OCC status, complete history, saved Helm revision
 and live resources. If upgrade was never invoked and OCC matches the saved
-revision, no rollback is needed. Otherwise retain dependencies and inspect for
+Helm revision, no rollback is needed. Otherwise retain dependencies and inspect for
 rollback below or escalate. If backup or cluster identity is unavailable, stop
 and reconcile with a qualified operator.
 
-Inspect demo status, every relevant history revision, manifests, hooks and live objects
+Inspect demo status, every relevant Helm revision in its history, manifests, hooks and live objects
 in both namespaces, including the OCC discovery Role and RoleBinding, Grafana
 Secret and both Collector Secrets. Record UIDs and establish creation and ownership
 from independent records, not names or labels. Check workloads, Pods and external
@@ -20,7 +20,7 @@ Collectors for references. Retain and escalate on failed reads or ambiguity.
 Account for objects without a release record or outside the latest manifest.
 
 Once OCC and external exporters no longer depend on the demo, if the release
-exists, a qualified operator must establish ownership and revision. Inspect the
+exists, a qualified operator must establish ownership and Helm revision. Inspect the
 latest manifest, pre/post-delete hooks, policies and effects, and every live
 object Helm can delete. Confirm unchanged release and object UIDs and exclude
 other writers. Run `helm uninstall demo -n oce-observability-demo --wait --timeout 5m`
@@ -95,11 +95,11 @@ replaced or ambiguous object. Preserve backend, Secrets, history and backup; do
 not blindly repeat operations. After inspection, `touch "$OBS_FILES/rollback-inspected"`;
 the command consumes it before rollback. Reinspect after failure or interruption.
 
-Rollback uses the original revision's chart, values, manifest and hooks. Only it
-or the immediately following demo revision is accepted. Stop for manual
+Rollback uses the original Helm revision's chart, values, manifest and hooks. Only it
+or the immediately following demo Helm revision is accepted. Stop for manual
 reconciliation on pending or unexpected states, pruned or changed backup, UID,
 chart or values, or interrupted rollback. `--history-max 0` prevents pruning the
-original revision.
+original Helm revision.
 
 ```bash
 (
@@ -159,7 +159,7 @@ PY_VALUES
 
 Rollback completion does not prove restoration or deletion. Keep dependencies
 and backup while a qualified operator compares status, history, restored manifest
-and live resources with the saved revision. Save DaemonSets and Pods; their
+and live resources with the saved Helm revision. Save DaemonSets and Pods; their
 configuration may be sensitive:
 
 ```bash
@@ -177,4 +177,4 @@ ambiguous readback.
 
 Stop the port-forward and follow
 [cleanup](#recover-an-incomplete-setup) for the release and remaining resources.
-See [observability acceptance](../../testing/metrics.md#kubernetes-observability-acceptance) for local and CI proof.
+See [observability acceptance](../../testing/local.md#kubernetes-observability-acceptance) for local and CI proof.

@@ -1,3 +1,4 @@
+import { sandboxPolicyHandlers } from "./http/sandbox-policy.ts";
 import swagger from "@fastify/swagger";
 import type { TypeBoxTypeProvider } from "@fastify/type-provider-typebox";
 import { AuditEventFactory, type AuditSink } from "@openclaw-enterprise/audit";
@@ -9,6 +10,8 @@ import {
   CredentialSourceResponse,
   ErrorDetail as ErrorDetailSchema,
   ErrorResponse,
+  isSecretHarnessAuth,
+  isServiceAccountHarnessAuth,
   JsonValue,
   occApiRoutes,
   PluginApproversSchema,
@@ -19,6 +22,7 @@ import {
   PluginToolPolicySchema,
   PRESET_JSON_MAX_BYTES,
   SecretResponse,
+  type Agent,
   type AgentRuntimeLogsQuery,
   type AuditEvent,
   type AuditEventKind,
@@ -36,6 +40,7 @@ import {
   type SandboxDriver,
   type SecretDriver,
   type SecretReference,
+  type CredentialSourceReference,
   type UpdateWorkspaceFileBody,
   type WorkspaceFileName,
 } from "@openclaw-enterprise/contracts";
@@ -54,6 +59,7 @@ import {
   createRuntimeLogCursorCodec,
   DependencyUnavailableError,
   DeviceAuthorizationStartError,
+  NoActiveAgentRevisionError,
   ResourceConflictError,
   RuntimeCredentialsForbiddenByClusterError,
   RuntimeLogsError,
@@ -63,8 +69,6 @@ import {
   type OpenClawController,
 } from "@openclaw-enterprise/occ";
 import { isNonEmptyString } from "@openclaw-enterprise/utils";
-import SerializerSelector from "@fastify/fast-json-stringify-compiler";
-import ajvFormats from "ajv-formats";
 import Fastify, {
   LogController,
   type FastifyBaseLogger,
@@ -74,10 +78,15 @@ import Fastify, {
   type FastifySchema,
   type HTTPMethods,
   type InjectOptions,
+  type RouteGenericInterface,
 } from "fastify";
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { AdmittedCaller } from "./admission/admission-verifier.ts";
+import {
+  DEVELOPMENT_BROWSER_ORIGIN_RULE,
+  isDevelopmentBrowserOrigin,
+} from "./auth/configuration.ts";
 import {
   OCC_SERVICE_KEY_HEADER,
   SERVICE_KEY_NAME_MAX_LENGTH,
@@ -87,6 +96,7 @@ import {
   type PreparedAuthAccount,
 } from "./auth/index.ts";
 import { CONSOLE_CONTENT_SECURITY_POLICY, readConsoleAsset } from "./console-assets.ts";
+import type { ConsoleTheme } from "./console-theme.ts";
 import {
   ControllerWorkspaceFileUnknownOutcomeError,
   isAllowedWorkspaceFileName,
@@ -96,6 +106,7 @@ import {
 } from "./gateway/contracts.ts";
 import type { NativeAdminAccessConfig } from "./gateway/native-admin.ts";
 import { createAgentHandlers } from "./http/agents.ts";
+import { callerDenialMessage, GENERIC_DENIAL, requestedValues } from "./http/caller-denial.ts";
 import { configurationHandlers } from "./http/configurations.ts";
 import { credentialSourceHandlers } from "./http/credential-sources.ts";
 import { jsonPointer, type ErrorDetail } from "./http/error-details.ts";
@@ -111,12 +122,17 @@ import {
   requestFailure,
   responseHeaders,
   unstorableTextFailure,
+  workspaceWithoutRunningVersion,
 } from "./http/errors.ts";
 import { iamHandlers } from "./http/iam.ts";
+import { MAX_JSON_BODY_DEPTH, tooDeepFailure, tooDeepJsonPath } from "./http/json-depth.ts";
 import {
   createNativeAdminAccess,
   nativeAdminStatusOperation,
   nativeAdminStatusSchema,
+  nativeAdminReturnOperation,
+  nativeAdminReturnSchema,
+  limitNativeAdminReturn,
 } from "./http/native-admin.ts";
 import { presetHandlers } from "./http/presets.ts";
 import {
@@ -129,17 +145,29 @@ import {
   runtimeLogQuery,
   type AgentRuntimeLogsConfig,
 } from "./http/runtime-logs.ts";
+import { RequestRateLimiter } from "./http/request-rate-limiter.ts";
+import {
+  cachedRequestValidators,
+  cachedResponseSerializers,
+  defaultPrecompiledRouteCompilers,
+  formatsPlugin,
+} from "./http/route-compilers.ts";
 import { secretHandlers } from "./http/secrets.ts";
 import { serviceAccountHandlers } from "./http/service-accounts.ts";
 import type { RequestContext, ResourceHandlers } from "./http/types.ts";
 
+export { cachedRequestValidators, cachedResponseSerializers } from "./http/route-compilers.ts";
+
 export interface DevelopmentAdmission {
   readonly enabled: boolean;
   readonly installationId?: string;
+  /** Exact browser origin for a loopback-owned development endpoint. */
+  readonly browserOrigin?: string;
   readonly trustedCidrs?: readonly string[];
 }
 
 export interface ControllerAppOptions {
+  readonly consoleTheme?: ConsoleTheme;
   readonly metrics?: import("./metrics/index.ts").OccMetrics;
   readonly controller?: OpenClawController;
   readonly createController?: (installation: Installation) => OpenClawController;
@@ -221,8 +249,14 @@ const DEFAULT_BODY_LIMIT = 64 * 1024;
 const AGENT_CREATE_BODY_LIMIT = 448 * 1024;
 // A bounded template may use six-byte JSON escapes; reserve space for its name and envelope.
 const PRESET_BODY_LIMIT = 6 * PRESET_JSON_MAX_BYTES + 8 * 1024;
-const WORKSPACE_FILE_BODY_LIMIT = 48 * 1024;
+// The bundled Kubernetes Configuration Driver stores values up to 1 MiB of JSON (its ConfigMap
+// cap). A Configuration write must admit that plus the envelope (`kind` and up to 64 Secret
+// bindings, each a 253-character name and a reference: under 32 KiB), all written with
+// six-byte JSON escapes. Like Preset writes, these routes check the grant before the body.
+const CONFIGURATION_BODY_LIMIT = 6 * (1024 * 1024 + 32 * 1024);
 const WORKSPACE_FILE_CONTENT_LIMIT = 16 * 1024;
+// 16 KiB of content may need six bytes per UTF-8 byte in JSON (`\u0001`), plus `{"content":""}`.
+const WORKSPACE_FILE_BODY_LIMIT = 6 * WORKSPACE_FILE_CONTENT_LIMIT + 1024;
 // Path parameters such as IAM Role and AccessBinding IDs hold up to 200 characters (code
 // points). The router compares a parameter's decoded UTF-16 length, so 200 characters need
 // at most 400 units; its default of 100 refused contract-valid IDs before any handler ran.
@@ -247,63 +281,15 @@ const RESOURCE_ID = Object.fromEntries(
   ]),
 ) as Readonly<Record<keyof typeof RESOURCE_ID_PREFIX, RegExp>>;
 
-function formatsPlugin(ajv: Parameters<typeof ajvFormats.default>[0]) {
-  return ajvFormats.default(ajv);
-}
-
-// Fastify compiles one response serializer per route and status code, and rebuilds its
-// serializer factory for every route in a plugin that added shared schemas; each
-// fast-json-stringify build then re-validates every shared schema. That was about 1,100
-// builds (830 of them the same ErrorResponse reference) and most of the API's boot at the
-// chart's 500m CPU limit. A serializer depends only on its schema, the shared schemas and
-// the serializer options, so build each distinct combination once.
-function cachedResponseSerializers(): SerializerSelector.SerializerFactory {
-  const buildSerializerCompiler = SerializerSelector();
-  const sharedSchemaIds = new WeakMap<object, number>();
-  // Never pruned. That is safe only while every serializer is built at route registration,
-  // a fixed set. Compiling per request (reply.compileSerializationSchema or serializeInput
-  // with a schema assembled at request time) would grow this Map without bound; such a
-  // route must set its own serializerCompiler.
-  const serializers = new Map<string, SerializerSelector.Serializer>();
-  let nextSharedSchemaId = 0;
-  const sharedSchemaId = (schema: object) => {
-    let id = sharedSchemaIds.get(schema);
-    if (id === undefined) {
-      id = nextSharedSchemaId++;
-      sharedSchemaIds.set(schema, id);
-    }
-    return id;
-  };
-  return (externalSchemas, options) => {
-    const compile = buildSerializerCompiler(externalSchemas, options);
-    const sharedSchemas = Object.entries((externalSchemas ?? {}) as Record<string, unknown>);
-    // Shared schemas are keyed by object identity in a WeakMap; a context with any shared
-    // schema that is not a plain object compiles uncached instead.
-    if (sharedSchemas.some(([, schema]) => typeof schema !== "object" || schema === null)) {
-      return compile;
-    }
-    // Fastify passes the same stored schema objects each time; identity names the set.
-    const shared = sharedSchemas
-      .map(([id, schema]) => `${id}=${sharedSchemaId(schema as object)}`)
-      .join(",");
-    const prefix = `${JSON.stringify(options ?? {})}|${shared}|`;
-    // Route schemas are fixed at registration. A schema JSON cannot express (a cycle or a
-    // BigInt keyword) compiles uncached rather than failing registration here.
-    return (route) => {
-      let key: string;
-      try {
-        key = prefix + JSON.stringify(route.schema);
-      } catch {
-        return compile(route);
-      }
-      let serializer = serializers.get(key);
-      if (serializer === undefined) {
-        serializer = compile(route);
-        serializers.set(key, serializer);
-      }
-      return serializer;
-    };
-  };
+// Runs only after the JSON parser refused a body, to tell text that is not JSON from JSON its
+// poisoning guard refused.
+function isJson(text: string): boolean {
+  try {
+    JSON.parse(text);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function ipv4(value: string): number | undefined {
@@ -376,6 +362,16 @@ function validateTrustedDevelopmentCidrs(development: DevelopmentAdmission): voi
   }
 }
 
+function developmentBrowserOrigin(development: DevelopmentAdmission): URL | undefined {
+  if (development.browserOrigin === undefined) {
+    return undefined;
+  }
+  if (!development.enabled || !isDevelopmentBrowserOrigin(development.browserOrigin)) {
+    throw new Error(`The development browser origin must be ${DEVELOPMENT_BROWSER_ORIGIN_RULE}.`);
+  }
+  return new URL(development.browserOrigin);
+}
+
 function validAuthorizationEvidence(value: unknown): value is AuthorizationEvidence {
   if (typeof value !== "object" || value === null) {
     return false;
@@ -392,11 +388,34 @@ function validAuthorizationEvidence(value: unknown): value is AuthorizationEvide
   ].every((entries) => Array.isArray(entries) && entries.every(isNonEmptyString));
 }
 
+/**
+ * The grants each Agent update checks on the sources the Agent binds now, besides its
+ * Configuration's Secret bindings (`updateAgent`, finding 2441): operate on each listed
+ * credential source and on a Secret or credential source Harness authentication, read on a
+ * ServiceAccount one.
+ */
+function agentBoundSourceGrants(
+  namespaceId: string,
+  agent: Pick<Agent, "harnessAuth" | "credentialSources">,
+): [PermissionAction, ResourceRef][] {
+  const grants: [PermissionAction, ResourceRef][] = (agent.credentialSources ?? []).map(
+    ({ sourceId }) => ["operate", { kind: "credential_source", namespaceId, id: sourceId }],
+  );
+  const harnessAuth = agent.harnessAuth;
+  if (harnessAuth?.method === "credential_source") {
+    grants.push(["operate", { kind: "credential_source", namespaceId, id: harnessAuth.sourceId }]);
+  } else if (isSecretHarnessAuth(harnessAuth)) {
+    grants.push(["operate", { kind: "secret", namespaceId, id: harnessAuth.source.id }]);
+  } else if (isServiceAccountHarnessAuth(harnessAuth)) {
+    grants.push(["read", { kind: "service_account", namespaceId, id: harnessAuth.source.id }]);
+  }
+  return grants;
+}
+
 function validateConfiguration(value: unknown, depth = 0, path = ""): void {
-  if (depth > 24) {
-    throw failure(400, "INVALID_REQUEST", "The supplied configuration is invalid.", [
-      { path: cappedPath(path), code: "TOO_DEEP" },
-    ]);
+  // The JSON body parser already refuses deeper bodies; this keeps the rule for any other input.
+  if (depth > MAX_JSON_BODY_DEPTH) {
+    throw tooDeepFailure(path);
   }
   if (value === null || typeof value !== "object") {
     return;
@@ -419,7 +438,12 @@ function validateConfiguration(value: unknown, depth = 0, path = ""): void {
 
 /** Operations whose grant check runs before their body is read (see authorizeBeforeBody). */
 function authorizesBeforeBody(operation: OccApiRoute): boolean {
-  return operation.operationId === "createPreset" || operation.operationId === "updatePreset";
+  return (
+    operation.operationId === "createPreset" ||
+    operation.operationId === "updatePreset" ||
+    operation.operationId === "createConfiguration" ||
+    operation.operationId === "updateConfiguration"
+  );
 }
 
 function operationTarget(
@@ -484,6 +508,7 @@ function operationTarget(
   }
   if (
     (operation.operationId === "createAgent" ||
+      operation.operationId === "validateAgentCreate" ||
       operation.operationId === "provisionAgent" ||
       operation.operationId === "listRepositoryOptions") &&
     namespaceId
@@ -515,6 +540,30 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
     action: operation.iamAction,
     resourceKind: operation.resourceKind,
   };
+
+  if (
+    [
+      "getAgentSandboxPolicy",
+      "getAgentSandboxRecommendations",
+      "updateAgentSandboxPolicy",
+      "applyAgentSandboxPolicy",
+    ].includes(operation.operationId)
+  ) {
+    return [
+      { ...permission, scope: "requested" },
+      {
+        action: operation.iamAction === "read" ? "read" : "update",
+        resourceKind: "sandbox_policy",
+        scope: "requested",
+      },
+    ];
+  }
+  if (operation.operationId === "TEMPORARY_API_WILL_BREAK_IN_FUTURE_setAgentSandboxPolicyEditing") {
+    return [
+      { ...permission, scope: "requested" },
+      { action: "administer", resourceKind: "installation", scope: "installation" },
+    ];
+  }
 
   if (operation.operationId.endsWith("DeviceAuthorization")) {
     const saved = operation.operationId.includes("SavedAgent");
@@ -925,8 +974,9 @@ function permissionDescription(
     service_account: "ServiceAccount",
     secret: "Secret",
     agent: "Agent",
-    agent_revision: "AgentRevision",
+    agent_revision: "Agent revision",
     credential_source: "CredentialSource",
+    sandbox_policy: "SandboxPolicy",
   };
 
   const description = permissions
@@ -1031,6 +1081,7 @@ function clientInstallation(
 
 export function createFastifyApp(options: ControllerAppOptions): FastifyInstance {
   const development = Object.freeze({ ...options.development });
+  const browserOrigin = developmentBrowserOrigin(development);
   if (
     options.controller &&
     development.installationId !== undefined &&
@@ -1041,6 +1092,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     );
   }
   const bodyLimit = options.maxBodyBytes ?? DEFAULT_BODY_LIMIT;
+  const precompiledRouteCompilers = defaultPrecompiledRouteCompilers();
   if (!Number.isSafeInteger(bodyLimit) || bodyLimit < 1) {
     throw new Error("The controller request-body limit must be a positive integer.");
   }
@@ -1131,7 +1183,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       },
       plugins: [formatsPlugin],
     },
-    schemaController: { compilersFactory: { buildSerializer: cachedResponseSerializers() } },
+    schemaController: {
+      compilersFactory: {
+        buildValidator: cachedRequestValidators(precompiledRouteCompilers),
+        buildSerializer: cachedResponseSerializers(precompiledRouteCompilers),
+      },
+    },
   }).withTypeProvider<TypeBoxTypeProvider>();
 
   // Shutdown (app.close) drains admitted requests, but Node and Fastify close only the
@@ -1156,6 +1213,32 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   });
 
   app.removeContentTypeParser("text/plain");
+  // Refuse a body nested deeper than any document the API stores before it is parsed: parsing
+  // allocates every level, and schema validation recurses through them (a 6 MB body of nested
+  // arrays cost about 300 MB of heap, then overflowed the stack into a 500).
+  const parseJson = app.getDefaultJsonParser(
+    app.initialConfig.onProtoPoisoning ?? "error",
+    app.initialConfig.onConstructorPoisoning ?? "error",
+  );
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {
+    const tooDeep = tooDeepJsonPath(body as string);
+    if (tooDeep !== undefined) {
+      done(tooDeepFailure(tooDeep), undefined);
+      return;
+    }
+    parseJson(request, body as string, (error, parsed) => {
+      // Text that is not JSON at all gets its own message (finding D762). Valid JSON the
+      // poisoning guard refused, such as a __proto__ key, keeps the generic contract message.
+      if (
+        (error as { code?: unknown } | null)?.code === "FST_ERR_CTP_INVALID_JSON_BODY" &&
+        !isJson(body as string)
+      ) {
+        done(failure(400, "INVALID_REQUEST", "The request body is not valid JSON."), undefined);
+        return;
+      }
+      done(error, parsed);
+    });
+  });
   app.addSchema(JsonValue);
   app.addSchema(PluginDriverIdentitySchema);
   app.addSchema(PluginApproversSchema);
@@ -1201,7 +1284,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     iamAction: "administer",
     resourceKind: "installation",
     authorizationTarget: "installation",
-    summary: "Create an administrator-controlled local auth account",
+    summary: "Create a local auth account as an Installation administrator",
     tags: ["Authentication"],
     schema: {
       body: {
@@ -1393,6 +1476,20 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     }
   }
 
+  function pluginDiscoveryRequestSignal(reply: FastifyReply): AbortSignal {
+    // The POST can finish parsing and its client disconnect while IAM resolves the caller.
+    if (reply.raw.destroyed) {
+      return AbortSignal.abort();
+    }
+    const disconnected = new AbortController();
+    reply.raw.once("close", () => {
+      if (!reply.raw.writableEnded) {
+        disconnected.abort();
+      }
+    });
+    return disconnected.signal;
+  }
+
   function workspaceFileRequestSignal(
     request: FastifyRequest,
     reply: FastifyReply,
@@ -1515,6 +1612,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     if (
       !decision ||
       typeof decision.allowed !== "boolean" ||
+      typeof decision.reason !== "string" ||
       decision.driverId !== selected.id ||
       !validAuthorizationEvidence(decision.evidence)
     ) {
@@ -1522,9 +1620,42 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     }
     if (!decision.allowed) {
       await denial(operation, request, "authorization_denial", context, decision.evidence);
-      throw failure(403, "FORBIDDEN", "The exact platform operation was not authorized.");
+      throw failure(
+        403,
+        "FORBIDDEN",
+        callerDenialMessage({ action: "administer", resource: target }),
+      );
     }
     return { selected, target, decision };
+  }
+
+  // Report the primary IAM decision without auditing a mutation the caller never attempted.
+  async function callerDecision(actorId: string, action: PermissionAction, resource: ResourceRef) {
+    const selected = selectedIAMDriver();
+    let decision;
+    try {
+      decision = await selected.authorize({ principalId: actorId, action, resource });
+    } catch {
+      throw dependencyUnavailable();
+    }
+    if (
+      !decision ||
+      typeof decision.allowed !== "boolean" ||
+      typeof decision.reason !== "string" ||
+      decision.driverId !== selected.id ||
+      !validAuthorizationEvidence(decision.evidence)
+    ) {
+      throw dependencyUnavailable();
+    }
+    return { allowed: decision.allowed, restricted: decision.evidence.restrictionIds.length > 0 };
+  }
+
+  async function callerMay(
+    actorId: string,
+    action: PermissionAction,
+    resource: ResourceRef,
+  ): Promise<boolean> {
+    return (await callerDecision(actorId, action, resource)).allowed;
   }
 
   async function denial(
@@ -1607,6 +1738,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
   const handlers: ResourceHandlers = {
     ...resourceHandlers,
+    ...sandboxPolicyHandlers,
     ...createAgentHandlers({
       resolveHarness: options.resolveHarness,
       requireCredentialCsrf: (request) => requireWorkspaceFileCsrf(request, true),
@@ -1652,6 +1784,25 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     });
   });
 
+  // A proxy that adds forwarded headers, with api.trustedProxy unset or not covering it,
+  // makes every API call fail with 403 while sign-in still works. Tell the operator why, at
+  // most once a minute; the record names the cause only, never an address.
+  let forwardedRefusalWarnedAt: number | undefined;
+  function warnForwardedRefusal(): void {
+    const now = performance.now();
+    if (forwardedRefusalWarnedAt !== undefined && now - forwardedRefusalWarnedAt < 60_000) {
+      return;
+    }
+    forwardedRefusalWarnedAt = now;
+    options.logger?.warn({
+      event: "authentication.forwarded-refused-warning",
+      code:
+        options.trustedProxies === undefined
+          ? "TRUSTED_PROXY_NOT_CONFIGURED"
+          : "TRUSTED_PROXY_PEER_UNTRUSTED",
+    });
+  }
+
   async function admit(request: FastifyRequest, operation: OccApiRoute): Promise<void> {
     if (
       request.headers[OCC_SERVICE_KEY_HEADER] !== undefined &&
@@ -1666,7 +1817,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       operation.operationId !== "listRepositoryOptions" &&
       operation.operationId !== "listAgentRepositoryOptions" &&
       operation.operationId !== "getAgentDeploymentRuntimeLogs" &&
-      operation.operationId !== "deleteServiceAccount"
+      operation.operationId !== "deleteServiceAccount" &&
+      operation.operationId !== "listAgentRevisions"
     ) {
       throw failure(
         400,
@@ -1692,10 +1844,14 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
     const host = request.headers.host;
     let hostname: string;
+    let requestHost: string;
     try {
-      hostname = new URL(`http://${host ?? "127.0.0.1"}`).hostname;
+      const parsed = new URL(`http://${host ?? "127.0.0.1"}`);
+      hostname = parsed.hostname;
+      requestHost = parsed.host;
     } catch {
       hostname = "";
+      requestHost = "";
     }
     const remoteAddress = request.raw.socket.remoteAddress ?? "127.0.0.1";
     const origin = request.headers.origin;
@@ -1709,6 +1865,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     } else if (Array.isArray(origin)) {
       originAllowed = false;
     }
+    const browserEndpointAllowed =
+      browserOrigin !== undefined &&
+      requestHost === browserOrigin.host &&
+      (origin === undefined || origin === browserOrigin.origin);
     // Forwarded headers are never used for admission. They are tolerated only from a
     // configured trusted proxy, which adds them to every request it relays.
     const forwarded =
@@ -1716,11 +1876,13 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       Object.keys(request.headers).some(
         (name) => name === "forwarded" || name === "x-real-ip" || name.startsWith("x-forwarded-"),
       );
+    if (forwarded && !development.enabled) {
+      warnForwardedRefusal();
+    }
     if (
       forwarded ||
       (development.enabled &&
-        (!LOOPBACK_HOSTNAMES.has(hostname) ||
-          !originAllowed ||
+        (((!LOOPBACK_HOSTNAMES.has(hostname) || !originAllowed) && !browserEndpointAllowed) ||
           !trustedDevelopmentAddress(development, remoteAddress)))
     ) {
       throw failure(
@@ -1728,7 +1890,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         "FORBIDDEN",
         development.enabled
           ? "Development admission is restricted to direct loopback requests."
-          : "Production admission requires a direct request.",
+          : "Production admission requires a direct request or forwarded headers from a configured trusted proxy.",
       );
     }
 
@@ -1826,7 +1988,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           identity.subject !== admitted.externalIdentity.subject)
     ) {
       await denial(operation, request, "authorization_denial");
-      throw failure(403, "FORBIDDEN", "The exact platform operation was not authorized.");
+      throw failure(403, "FORBIDDEN", GENERIC_DENIAL);
     }
 
     const context: RequestContext = {
@@ -1843,16 +2005,22 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       admitted.admittedScope.namespaceId !== (request.params as Record<string, unknown>).namespaceId
     ) {
       await denial(operation, request, "authorization_denial", context);
-      throw failure(403, "FORBIDDEN", "The admitted Namespace does not match.");
+      // Names only the key's own Namespace, never the requested one (finding D763).
+      throw failure(
+        403,
+        "FORBIDDEN",
+        `This service key works only in Namespace ${admitted.admittedScope.namespaceId}; this request is outside it. Ask an Installation administrator to run it.`,
+      );
     }
   }
 
   /**
-   * Preset writes accept bodies up to PRESET_BODY_LIMIT (6 MiB + 8 KiB), far above the
-   * general limit. Their grant check needs only the path and the caller, so it runs here,
-   * in onRequest, before the body is read: a caller without the grant gets the same 403 or
-   * 404 and audit row as when the check ran in the handler, and the controller never
-   * buffers the body. The handler repeats the check in its transaction.
+   * Preset and Configuration writes accept bodies of about 6 MiB (PRESET_BODY_LIMIT,
+   * CONFIGURATION_BODY_LIMIT), far above the general limit. Their grant check needs only the
+   * path and the caller, so it runs here, in onRequest, before the body is read: a caller
+   * without the grant gets the same 403 or 404 and audit row as when the check ran in the
+   * handler, and the controller never buffers the body. The handler repeats the check in its
+   * transaction, with the Secret binding checks that need the body.
    */
   async function authorizeBeforeBody(request: FastifyRequest, operation: OccApiRoute) {
     const context = contexts.get(request);
@@ -1863,6 +2031,17 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       throw failure(404, "NOT_FOUND", "The requested platform resource was not found.");
     }
     const params = request.params as Record<string, string>;
+    if (
+      operation.operationId === "createConfiguration" ||
+      operation.operationId === "updateConfiguration"
+    ) {
+      await controller.authorizeConfigurationWrite(
+        context.actorId,
+        params.namespaceId as string,
+        operation.operationId === "updateConfiguration" ? params.configurationId : undefined,
+      );
+      return;
+    }
     await controller.authorizePresetWrite(
       context.actorId,
       params.namespaceId as string,
@@ -1958,6 +2137,14 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       throw failure(404, "NOT_FOUND", "The requested platform resource was not found.");
     }
 
+    if (operation.operationId === "discoverInstallationConfigurations") {
+      const configurations = await controller.discoverConfigurations(context.actorId, {
+        scope: "installation",
+      });
+      reply.send({ data: { configurations }, meta: { requestId: request.id } });
+      return;
+    }
+
     if (operation.operationId === "getInstallation") {
       reply.send({
         data: clientInstallation(
@@ -2036,6 +2223,48 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         data: await controller.getNamespace(context.actorId, namespaceId),
         meta: { requestId: request.id },
       });
+      return;
+    }
+
+    if (operation.operationId === "getNamespaceCallerPermissions") {
+      await controller.getNamespace(context.actorId, namespaceId);
+      // Each creation target matches operationTarget() for createAgent and createSecret, and
+      // the Installation target matches requireInstallationAdmin. The console reads this answer
+      // instead of an Installation-only read, which the API audits when it is refused.
+      const [agentCreate, secretCreate, installationAdminister] = await Promise.all([
+        ...(["agent", "secret"] as const).map((kind) =>
+          callerMay(context.actorId, "create", { kind, id: namespaceId, namespaceId }),
+        ),
+        callerMay(context.actorId, "administer", { kind: "installation", id: installationId }),
+      ]);
+      reply.send({
+        data: {
+          agents: { create: agentCreate },
+          secrets: { create: secretCreate },
+          installation: { administer: installationAdminister },
+        },
+        meta: { requestId: request.id },
+      });
+      return;
+    }
+
+    if (operation.operationId === "getNamespaceSecretPermissions") {
+      // Namespace read, checked and audited as the Namespace permission answer checks it
+      // (finding 2478), so listing the Secrets below is never a refused, audited read.
+      await controller.getNamespace(context.actorId, namespaceId);
+      // Agent create authorizes Secret operate on its Harness authentication source and on its
+      // Configuration's Secret bindings, and a directory search before it needs the same two
+      // grants (finding 2469). Only a caller who may create an Agent here gets an answer, so it
+      // reports nothing such a request would not, and only on the Secrets the caller may list.
+      // The target matches operationTarget() for createAgent.
+      const operateDenied = (await callerMay(context.actorId, "create", {
+        kind: "agent",
+        id: namespaceId,
+        namespaceId,
+      }))
+        ? await controller.listSecretsOperateDenied(context.actorId, namespaceId)
+        : [];
+      reply.send({ data: { operateDenied }, meta: { requestId: request.id } });
       return;
     }
 
@@ -2126,31 +2355,41 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     }
 
     if (operation.operationId === "discoverAgentPlugins") {
-      const catalog = await controller.discoverAgentPlugins(context.actorId, namespaceId, {
-        ...(body?.oauthLogin === undefined
-          ? {}
-          : { oauthLogin: body.oauthLogin as SecretReference }),
-        ...(body?.secretRef === undefined
-          ? { accessToken: body?.accessToken as string }
-          : { secretRef: body.secretRef as SecretReference }),
-        ...(body?.cursor === undefined ? {} : { cursor: body.cursor as string }),
-        ...(body?.q === undefined ? {} : { q: body.q as string }),
-      });
+      const catalog = await controller.discoverAgentPlugins(
+        context.actorId,
+        namespaceId,
+        {
+          ...(body?.credentialSource === undefined
+            ? {}
+            : { credentialSource: body.credentialSource as CredentialSourceReference }),
+          ...(body?.secretRef === undefined
+            ? { accessToken: body?.accessToken as string }
+            : { secretRef: body.secretRef as SecretReference }),
+          ...(body?.cursor === undefined ? {} : { cursor: body.cursor as string }),
+          ...(body?.q === undefined ? {} : { q: body.q as string }),
+        },
+        pluginDiscoveryRequestSignal(reply),
+      );
       reply.header("cache-control", "no-store");
       reply.send({ data: catalog, meta: { requestId: request.id } });
       return;
     }
 
     if (operation.operationId === "discoverAgentPluginDetails") {
-      const plugin = await controller.discoverAgentPluginDetails(context.actorId, namespaceId, {
-        ...(body?.oauthLogin === undefined
-          ? {}
-          : { oauthLogin: body.oauthLogin as SecretReference }),
-        ...(body?.secretRef === undefined
-          ? { accessToken: body?.accessToken as string }
-          : { secretRef: body.secretRef as SecretReference }),
-        pluginId: body?.pluginId as string,
-      });
+      const plugin = await controller.discoverAgentPluginDetails(
+        context.actorId,
+        namespaceId,
+        {
+          ...(body?.credentialSource === undefined
+            ? {}
+            : { credentialSource: body.credentialSource as CredentialSourceReference }),
+          ...(body?.secretRef === undefined
+            ? { accessToken: body?.accessToken as string }
+            : { secretRef: body.secretRef as SecretReference }),
+          pluginId: body?.pluginId as string,
+        },
+        pluginDiscoveryRequestSignal(reply),
+      );
       reply.header("cache-control", "no-store");
       reply.send({ data: plugin, meta: { requestId: request.id } });
       return;
@@ -2173,12 +2412,13 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         namespaceId,
         params.agentId as string,
         {
-          ...(body?.oauthLogin === undefined
+          ...(body?.credentialSource === undefined
             ? {}
-            : { oauthLogin: body.oauthLogin as SecretReference }),
+            : { credentialSource: body.credentialSource as CredentialSourceReference }),
           ...(body?.cursor === undefined ? {} : { cursor: body.cursor as string }),
           ...(body?.q === undefined ? {} : { q: body.q as string }),
         },
+        pluginDiscoveryRequestSignal(reply),
       );
       reply.header("cache-control", "no-store");
       reply.send({ data: catalog, meta: { requestId: request.id } });
@@ -2192,10 +2432,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         params.agentId as string,
         {
           pluginId: body?.pluginId as string,
-          ...(body?.oauthLogin === undefined
+          ...(body?.credentialSource === undefined
             ? {}
-            : { oauthLogin: body.oauthLogin as SecretReference }),
+            : { credentialSource: body.credentialSource as CredentialSourceReference }),
         },
+        pluginDiscoveryRequestSignal(reply),
       );
       reply.header("cache-control", "no-store");
       reply.send({ data: plugin, meta: { requestId: request.id } });
@@ -2229,6 +2470,25 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         params,
         body,
         namespaceId,
+        callerMay: (action, resource) => callerMay(context.actorId, action, resource),
+        transactIAM: async (work) => {
+          const admitted = admissions.get(request);
+          if (admitted === undefined) {
+            throw failure(503, "DEPENDENCY_UNAVAILABLE", "The request admission is unavailable.");
+          }
+          if (admitted.method !== "session") {
+            return controller!.transact(work);
+          }
+          return options.auth.withSessionAuthority(admitted.session, () =>
+            controller!.transact(async (unit) => {
+              await options.auth.holdSession(unit, admitted.session, request);
+              const result = await work(unit);
+              // Recheck the session after the protected policy and audit work.
+              await options.auth.holdSession(unit, admitted.session, request);
+              return result;
+            }),
+          );
+        },
         mutationEvent: (resource, details, authorization, failure) => {
           const recorded = event(
             operation,
@@ -2256,6 +2516,200 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       throw failure(400, "INVALID_REQUEST", "The request does not match the operation contract.");
     }
 
+    if (operation.operationId === "getAgentCallerPermissions") {
+      // Route authorization already required Agent read; the read also proves the Agent
+      // exists before the mutating actions are probed.
+      const agent = await controller.getAgentForBrowsing(context.actorId, namespaceId, agentId);
+      const target: ResourceRef = { kind: "agent", id: agentId, namespaceId };
+      // The Agent read names its Configuration, so its update bit discloses nothing new.
+      const configuration: ResourceRef = {
+        kind: "configuration",
+        id: agent.configurationId,
+        namespaceId,
+      };
+      // The Agent's network policy and its suggestions authorize read on the Agent's own
+      // sandbox_policy resource, which no other answer covers; the console skips both reads
+      // for a caller without it (finding 2454).
+      const sandboxPolicy: ResourceRef = {
+        kind: "sandbox_policy",
+        id: `sbp_${agentId.slice(4)}`,
+        namespaceId,
+      };
+      const [
+        [
+          update,
+          deploy,
+          operate,
+          remove,
+          // Native admin UI access authorizes Agent administer on the exact Agent, so the console
+          // skips its audited probe for a caller without it.
+          administer,
+          configurationUpdate,
+          configurationRead,
+          sandboxPolicyRead,
+        ],
+        readLogsDecision,
+      ] = await Promise.all([
+        Promise.all([
+          ...(["update", "deploy", "operate", "delete", "administer"] as const).map((action) =>
+            callerMay(context.actorId, action, target),
+          ),
+          callerMay(context.actorId, "update", configuration),
+          callerMay(context.actorId, "read", configuration),
+          callerMay(context.actorId, "read", sandboxPolicy),
+        ]),
+        callerDecision(context.actorId, "read_logs", target),
+      ]);
+      // Log text authorizes Agent read_logs or, without a Restriction on read_logs, Agent
+      // administer in its place, as the runtime log read decides it. The console skips that
+      // audited read for a caller without either (finding D758).
+      const readLogs = readLogsDecision.allowed || (!readLogsDecision.restricted && administer);
+      // One IAM call per distinct grant, shared by the answers below. A Secret bound to several
+      // names is one decision.
+      const decisions = new Map<string, Promise<boolean>>();
+      const decide = (action: PermissionAction, resource: ResourceRef) => {
+        const key = JSON.stringify([action, resource.kind, resource.namespaceId, resource.id]);
+        let decision = decisions.get(key);
+        if (decision === undefined) {
+          decision = callerMay(context.actorId, action, resource);
+          decisions.set(key, decision);
+        }
+        return decision;
+      };
+      const callerMayAll = async (grants: readonly [PermissionAction, ResourceRef][]) =>
+        (await Promise.all(grants.map(([action, resource]) => decide(action, resource)))).every(
+          Boolean,
+        );
+      // Each Configuration save authorizes Secret operate on every Secret it binds, so
+      // Configuration update alone does not say a save can succeed (finding 2437); each Agent
+      // update checks them too (finding 2441). Only a caller who may read the Configuration and
+      // update it or the Agent gets an answer: the bindings are visible to them, and a save
+      // would report the same decision.
+      const boundSecrets: [string, ResourceRef][] =
+        configurationRead && (configurationUpdate || update)
+          ? Object.entries(
+              await controller.getConfigurationSecretBindingSources(
+                context.actorId,
+                namespaceId,
+                agent.configurationId,
+              ),
+            )
+          : [];
+      const bindingGrants = boundSecrets.map(([, source]): [PermissionAction, ResourceRef] => [
+        "operate",
+        source,
+      ]);
+      // A save that submits bindings is checked only on those, so one that rebinds each name
+      // listed here to a Secret the caller may operate needs nothing on the Secrets they bind
+      // now (finding 2444). Names only: the caller reads them on the Configuration already.
+      const configurationSecretsOperateDeniedBindings =
+        configurationUpdate && configurationRead
+          ? (
+              await Promise.all(
+                boundSecrets.map(async ([name, source]) =>
+                  (await decide("operate", source)) ? [] : [name],
+                ),
+              )
+            )
+              .flat()
+              .sort()
+          : [];
+      const configurationSecretsOperate =
+        configurationUpdate &&
+        configurationRead &&
+        configurationSecretsOperateDeniedBindings.length === 0;
+      // An Agent update needs Configuration read and checks the sources the Agent binds now,
+      // which the Agent read shows. Unreadable saved settings leave it unanswered.
+      const agentSourcesOperate =
+        update &&
+        configurationRead &&
+        !("configurationReadError" in agent) &&
+        (await callerMayAll([...bindingGrants, ...agentBoundSourceGrants(namespaceId, agent)]));
+      reply.send({
+        data: {
+          update,
+          deploy,
+          operate,
+          delete: remove,
+          administer,
+          configurationUpdate,
+          configurationRead,
+          configurationSecretsOperate,
+          configurationSecretsOperateDeniedBindings,
+          agentSourcesOperate,
+          sandboxPolicyRead,
+          readLogs,
+        },
+        meta: { requestId: request.id },
+      });
+      return;
+    }
+
+    if (operation.operationId === "getAgentSecretPermissions") {
+      // Route authorization already required Agent read, and the read proves the Agent exists.
+      const agent = await controller.getAgentForBrowsing(context.actorId, namespaceId, agentId);
+      const configuration: ResourceRef = {
+        kind: "configuration",
+        id: agent.configurationId,
+        namespaceId,
+      };
+      const agentRef: ResourceRef = { kind: "agent", id: agentId, namespaceId };
+      const [update, deploy, configurationUpdate, configurationRead, namespaceRead] =
+        await Promise.all([
+          callerMay(context.actorId, "update", agentRef),
+          callerMay(context.actorId, "deploy", agentRef),
+          callerMay(context.actorId, "update", configuration),
+          callerMay(context.actorId, "read", configuration),
+          // Checked first, so listing the Secrets below is never a refused, audited read.
+          callerMay(context.actorId, "read", { kind: "namespace", id: namespaceId, namespaceId }),
+        ]);
+      // Binding a Secret to the Agent's Configuration, or as its Harness authentication source,
+      // authorizes Secret operate on it (finding 2453), and so does deploying a draft that binds
+      // it (finding 2546). Only a caller who may make such a save or deployment gets an answer,
+      // so it reports nothing that request would not, and only on the Secrets the caller may
+      // list.
+      const mayBind = configurationUpdate || update;
+      const reported = namespaceRead && configurationRead && (mayBind || deploy);
+      // A deployment checks only the Secrets the draft binds now: its Configuration's Secret
+      // bindings and a Secret Harness authentication source.
+      const bound = new Set<string>();
+      if (reported) {
+        for (const source of Object.values(
+          await controller.getConfigurationSecretBindingSources(
+            context.actorId,
+            namespaceId,
+            agent.configurationId,
+          ),
+        )) {
+          if (source.kind === "secret" && source.namespaceId === namespaceId) {
+            bound.add(source.id);
+          }
+        }
+        // Unreadable saved settings hide the Agent's sources, so the answer leaves them out.
+        if (
+          !("configurationReadError" in agent) &&
+          isSecretHarnessAuth(agent.harnessAuth) &&
+          agent.harnessAuth.source.namespaceId === namespaceId
+        ) {
+          bound.add(agent.harnessAuth.source.id);
+        }
+      }
+      // One Secret scan answers both: the listed Secrets the caller may read but not operate, and
+      // how many bound ones it may neither read nor operate, a count, never their IDs, so a
+      // console can hold Deploy without naming them (finding D756).
+      const { readable: listed, unreadableCount: unreadableOperateDenied } = reported
+        ? await controller.secretsOperateDenied(context.actorId, namespaceId, bound)
+        : { readable: [], unreadableCount: 0 };
+      // A caller who may deploy but bind nothing learns only those, which the Agent and
+      // Configuration reads already name (finding 2565).
+      const operateDenied = mayBind ? listed : listed.filter((id) => bound.has(id));
+      reply.send({
+        data: { operateDenied, unreadableOperateDenied },
+        meta: { requestId: request.id },
+      });
+      return;
+    }
+
     if (
       operation.operationId === "getAgentWorkspaceFile" ||
       operation.operationId === "putAgentWorkspaceFile"
@@ -2266,9 +2720,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       const deadline = new Date(Date.now() + deadlineMs);
       try {
         requireWorkspaceFileCsrf(request, operation.operationId === "putAgentWorkspaceFile");
-        if (options.workspaceFilesAccess === undefined) {
-          throw dependencyUnavailable();
-        }
         const filename = params.name;
         if (filename === undefined || !isAllowedWorkspaceFileName(filename)) {
           throw failure(
@@ -2285,9 +2736,17 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           operation.operationId === "getAgentWorkspaceFile"
             ? controller.getReadableActiveAgentRevision(context.actorId, namespaceId, agentId)
             : controller.getOperableActiveAgentRevision(context.actorId, namespaceId, agentId),
-        );
+        ).catch((error: unknown) => {
+          // Raised after the Agent read or operate authorization, so a caller without the grant
+          // still gets its 403; this names the Agent's state instead of a 503 (finding D768).
+          throw error instanceof NoActiveAgentRevisionError
+            ? workspaceWithoutRunningVersion(agentId, error.stopped)
+            : error;
+        });
         const target = { kind: "agent" as const, id: agent.id, namespaceId: agent.namespaceId };
-        if (signal.aborted) {
+        // After authorization, so a caller without the grant gets its 403, not this 503
+        // (finding 2584).
+        if (options.workspaceFilesAccess === undefined || signal.aborted) {
           throw dependencyUnavailable();
         }
 
@@ -2501,12 +2960,13 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             [{ path: "/cursor", code: "INVALID_VALUE" }],
           );
         }
+        const logQuery = runtimeLogQuery(query);
         const page = await controller!.readAgentRuntimeLogs(
           context.actorId,
           namespaceId,
           agentId,
           params.deploymentId as string,
-          runtimeLogQuery(query),
+          logQuery,
           {
             codec: runtimeLogCursor,
             signal: disconnected.signal,
@@ -2536,9 +2996,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             .header("content-type", "text/plain; charset=utf-8")
             .header(
               "content-disposition",
-              `attachment; filename="${runtimeLogDownloadFileName(page, agentId)}"`,
+              `attachment; filename="${runtimeLogDownloadFileName(page, agentId, logQuery.previous)}"`,
             )
-            .send(runtimeLogDownloadBody(page, agentId));
+            .send(runtimeLogDownloadBody(page, agentId, logQuery.previous));
           return;
         }
         reply.send({ data: runtimeLogPageBody(page), meta: { requestId: request.id } });
@@ -2592,6 +3052,14 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     const bodyErrors = {
       413: { description: "Payload Too Large", ...error },
       415: { description: "Unsupported Media Type", ...error },
+    };
+    // Refuse request text that cannot be stored unchanged, as on OCC API routes.
+    const refuseUnstorableText = (request: FastifyRequest, body: unknown = request.body) => {
+      const unstorable =
+        unstorableTextFailure("params", request.params) ?? unstorableTextFailure("body", body);
+      if (unstorable !== undefined) {
+        throw unstorable;
+      }
     };
     const accountBody = (
       createAuthAccountOperation.schema as {
@@ -2694,6 +3162,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           },
         } as DocumentedFastifySchema,
         onRequest: async (request) => admit(request, operation),
+        preValidation: async (request) => refuseUnstorableText(request),
         preHandler: async (request) => resolveIdentity(request, operation),
         handler: async (request, reply) => {
           const context = contexts.get(request);
@@ -3136,13 +3605,17 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                 },
               },
             }),
+            400: { description: "Bad Request", ...error },
             403: { description: "Forbidden", ...error },
             404: { description: "Not Found", ...error },
             409: { description: "Conflict", ...error },
           },
         },
         onRequest: async (request) => admit(request, accountReadOperation),
-        preValidation: async (request) => resolveIdentity(request, accountReadOperation),
+        preValidation: async (request) => {
+          refuseUnstorableText(request);
+          await resolveIdentity(request, accountReadOperation);
+        },
       },
       async (request, reply) => {
         const context = contexts.get(request);
@@ -3272,7 +3745,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             },
           },
           onRequest: async (request) => admit(request, operation),
-          preValidation: async (request) => resolveIdentity(request, operation),
+          preValidation: async (request) => {
+            refuseUnstorableText(request);
+            await resolveIdentity(request, operation);
+          },
         },
         async (request, reply) => {
           const context = contexts.get(request);
@@ -3387,7 +3863,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       resourceKind: "installation",
       authorizationTarget: "installation",
       tags: ["Authentication"],
-      summary: "Move the recovery designation to another administrator",
+      summary: "Move the recovery designation to another Installation administrator",
       schema: {},
     } as unknown as OccApiRoute;
     routes.post(
@@ -3427,7 +3903,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           },
         },
         onRequest: async (request) => admit(request, recoveryReplaceOperation),
-        preValidation: async (request) => resolveIdentity(request, recoveryReplaceOperation),
+        preValidation: async (request) => {
+          refuseUnstorableText(request);
+          await resolveIdentity(request, recoveryReplaceOperation);
+        },
       },
       async (request, reply) => {
         const context = contexts.get(request);
@@ -3533,13 +4012,17 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                 created: { type: "boolean" },
               },
             }),
+            400: { description: "Bad Request", ...error },
             403: { description: "Forbidden", ...error },
             404: { description: "Not Found", ...error },
             409: { description: "Conflict", ...error },
           },
         },
         onRequest: async (request) => admit(request, enrolOperation),
-        preValidation: async (request) => resolveIdentity(request, enrolOperation),
+        preValidation: async (request) => {
+          refuseUnstorableText(request);
+          await resolveIdentity(request, enrolOperation);
+        },
       },
       async (request, reply) => {
         const context = contexts.get(request);
@@ -3563,7 +4046,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           operationId: "signInEmail",
           summary: "Sign in with email and password",
           description:
-            "Authenticates a local account and issues a user session cookie. In the password-only profile, repeated failed attempts for one email, or from one client address behind a trusted proxy, are limited and return 429; with GitHub, Google or OIDC sign-in, every attempt counts, successful ones included. A successful sign-in also sets an HttpOnly known-device cookie; later attempts for that email from the same browser spend the browser's own budget instead of the email's. The cookie never authenticates.",
+            "Authenticates a local account and issues a user session cookie. In both profiles, repeated failed attempts for one email, or from one client address behind a trusted proxy, spend the password budget and may return 429 once it is spent. A successful sign-in also sets an HttpOnly known-device cookie; later attempts for that email from the same browser spend the browser's own budget instead of the email's. The cookie never authenticates. An email with a NUL character or an unpaired UTF-16 surrogate is refused with 400 INVALID_REQUEST and spends budget like a rejected password; the password is not checked for either.",
           tags: ["Authentication"],
           security: [],
           body: {
@@ -3681,7 +4164,18 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           },
         },
         onRequest: async (request) => admit(request, createAuthAccountOperation),
-        preValidation: async (request) => resolveIdentity(request, createAuthAccountOperation),
+        preValidation: async (request) => {
+          // Passwords are hashed before persistence; their existing schema and hashing
+          // rules remain authoritative. Validate every other submitted field unchanged.
+          const body = request.body;
+          refuseUnstorableText(
+            request,
+            typeof body === "object" && body !== null && !Array.isArray(body)
+              ? { ...body, password: undefined }
+              : body,
+          );
+          await resolveIdentity(request, createAuthAccountOperation);
+        },
       },
       async (request, reply) => {
         const context = contexts.get(request);
@@ -3809,6 +4303,21 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     routes.addSchema(AgentRuntimeCredentialResponse);
     routes.addSchema(SecretResponse);
     routes.addSchema(CredentialSourceResponse);
+    routes.get<RouteGenericInterface, { rateLimit: RequestRateLimiter }>(
+      nativeAdminReturnOperation.path,
+      {
+        schema: nativeAdminReturnSchema,
+        // Bound session admission per direct peer. Proxies share this more generous budget;
+        // the resolver separately limits expensive lookups by authenticated principal.
+        config: { rateLimit: new RequestRateLimiter(60, 5) },
+        onRequest: async (request, reply) => {
+          limitNativeAdminReturn(request.routeOptions.config.rateLimit, request.ip, reply);
+          await admit(request, nativeAdminReturnOperation);
+        },
+        preHandler: async (request) => resolveIdentity(request, nativeAdminReturnOperation),
+      },
+      nativeAdmin.resolveReturn,
+    );
     routes.route({
       method: "GET",
       url: nativeAdminStatusOperation.path,
@@ -3835,11 +4344,16 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         url: operation.path,
         ...(operation.operationId === "putAgentWorkspaceFile"
           ? { bodyLimit: WORKSPACE_FILE_BODY_LIMIT }
-          : operation.operationId === "createAgent" || operation.operationId === "provisionAgent"
+          : operation.operationId === "createAgent" ||
+              operation.operationId === "validateAgentCreate" ||
+              operation.operationId === "provisionAgent"
             ? { bodyLimit: options.maxBodyBytes ?? AGENT_CREATE_BODY_LIMIT }
             : operation.operationId === "createPreset" || operation.operationId === "updatePreset"
               ? { bodyLimit: options.maxBodyBytes ?? PRESET_BODY_LIMIT }
-              : {}),
+              : operation.operationId === "createConfiguration" ||
+                  operation.operationId === "updateConfiguration"
+                ? { bodyLimit: options.maxBodyBytes ?? CONFIGURATION_BODY_LIMIT }
+                : {}),
         schema,
         onRequest: async (request) => {
           await admit(request, operation);
@@ -3888,9 +4402,23 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
   async function serveConsole(request: FastifyRequest, reply: FastifyReply): Promise<void> {
     const pathname = request.url.split("?", 1)[0] ?? "";
-    const asset = await readConsoleAsset(pathname);
+    const asset = await readConsoleAsset(
+      pathname,
+      request.headers["accept-encoding"],
+      options.consoleTheme,
+    );
+    if (asset.contentType.startsWith("text/html") || pathname.startsWith("/console/theme/")) {
+      reply.header("cache-control", "no-store");
+    }
     reply.header("content-security-policy", CONSOLE_CONTENT_SECURITY_POLICY);
     reply.header("content-type", asset.contentType);
+    reply.header("content-length", asset.body.length);
+    if (asset.variesByEncoding) {
+      reply.header("vary", "Accept-Encoding");
+    }
+    if (asset.contentEncoding !== undefined) {
+      reply.header("content-encoding", asset.contentEncoding);
+    }
     reply.status(asset.statusCode).send(request.method === "HEAD" ? undefined : asset.body);
   }
 
@@ -3912,14 +4440,116 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       );
       return;
     }
+    // No route has this path's shape, so the answer says that rather than "resource not found"
+    // (finding D764). It reads only the path, never stored state, so it is the same for every ID.
+    const trimmed = pathname.length > 1 ? pathname.replace(/\/+$/, "") : pathname;
     canonicalFailure(
       reply,
-      failure(404, "NOT_FOUND", "The requested platform resource was not found."),
+      failure(
+        404,
+        "NOT_FOUND",
+        trimmed !== pathname && methodRoutes.some(({ pattern }) => pattern.test(trimmed))
+          ? "No API route has this path: remove the trailing slash."
+          : "No API route has this path. Check it against the API reference.",
+      ),
     );
   });
 
+  /**
+   * Which IDs a caller's own denial may name: those the request carried and, for a resource read
+   * from stored state, such as a Secret an Agent or Configuration binds, that resource when the
+   * caller may already read it (finding 2594) and may read every record the route's path names,
+   * such as that Agent or Configuration: the binding is part of that record (finding 2614). Only the
+   * caller's own denial of an action other than read or create asks; an IAM failure while asking
+   * only hides the ID.
+   */
+  async function nameableIds(
+    error: unknown,
+    actorId: string | undefined,
+    sent: (value: string) => boolean,
+    owners: readonly ResourceRef[],
+  ): Promise<(value: string) => boolean> {
+    if (
+      actorId === undefined ||
+      !isAuthorizationDenied(error) ||
+      isDependencyUnavailable(error) ||
+      error instanceof AgentPrincipalAuthorizationError ||
+      error.authorization === undefined ||
+      error.checkedPrincipalId !== actorId
+    ) {
+      return sent;
+    }
+    const { action, resource } = error.authorization;
+    if (
+      action === "read" ||
+      action === "create" ||
+      resource.kind === "installation" ||
+      sent(resource.id)
+    ) {
+      return sent;
+    }
+    for (const reference of [...owners, resource]) {
+      if (!(await callerMay(actorId, "read", reference).catch(() => false))) {
+        return sent;
+      }
+    }
+    return (value) => value === resource.id || sent(value);
+  }
+
+  /**
+   * The records a route's path names that bind other resources, for `nameableIds`: an Agent, a
+   * Configuration (its Secret bindings) or a credential source (its Secrets).
+   */
+  function routeOwners(request: FastifyRequest): ResourceRef[] {
+    const params = request.params as Record<string, unknown> | undefined;
+    const namespaceId = params?.namespaceId;
+    if (typeof namespaceId !== "string") {
+      return [];
+    }
+    return (
+      [
+        ["agentId", "agent"],
+        ["configurationId", "configuration"],
+        ["credentialSourceId", "credential_source"],
+      ] as const
+    ).flatMap(([param, kind]) => {
+      const id = params?.[param];
+      return typeof id === "string" ? [{ kind, id, namespaceId }] : [];
+    });
+  }
+
+  /**
+   * Whether `error` is the caller's own create denial, by a Restriction, while the caller
+   * administers the Installation: only then does the text name the Restriction (finding D769).
+   * Administration is the non-auditing check the Namespace permission answer makes; a failed
+   * check keeps the plain text.
+   */
+  async function administratorRestricted(error: unknown, actorId: string | undefined) {
+    if (
+      actorId === undefined ||
+      !isAuthorizationDenied(error) ||
+      isDependencyUnavailable(error) ||
+      error.checkedPrincipalId !== actorId ||
+      error.authorization?.action !== "create" ||
+      error.authorization.resource.kind === "namespace" ||
+      (error.evidence?.restrictionIds.length ?? 0) === 0
+    ) {
+      return false;
+    }
+    return callerMay(actorId, "administer", { kind: "installation", id: installationId }).catch(
+      () => false,
+    );
+  }
+
   app.setErrorHandler(async (error, request, reply) => {
-    let mapped = requestFailure(error);
+    // A caller's own denial names a resource ID only when this request carried it or the caller
+    // may already read that resource.
+    const actorId = contexts.get(request)?.actorId;
+    let mapped = requestFailure(error, {
+      requested: await nameableIds(error, actorId, requestedValues(request), routeOwners(request)),
+      ...(actorId === undefined ? {} : { actorId }),
+      ...((await administratorRestricted(error, actorId)) ? { administratorRestricted: true } : {}),
+    });
     if (error instanceof RuntimeLogsError && error.retryAfterSeconds !== undefined) {
       reply.header("retry-after", String(error.retryAfterSeconds));
     }
@@ -4001,7 +4631,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         event: "device_authorization.start_failed",
         requestId: request.id,
         route: request.routeOptions.url ?? "unmatched",
-        host: "auth.openai.com",
+        boundary: "credential_refresh",
         reason: error.reason,
         failure: error.failure,
       });

@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   arrangeProductionTopology,
   assertActualModelTurn,
+  assertActualPublicGithubRead,
   assertRoutedWorkspaceFileReads,
   assertRoutedWorkspaceFilesThroughOcc,
   assertRoutedWorkspaceModelTurn,
@@ -22,10 +23,12 @@ test(
         gatewayPassword: true,
         workspaceGateway: true,
         sandboxPreview: true,
+        publicGithubRead: true,
       });
       const connection = await topology.workspaceGateway.connect(topology);
       // Trusted-proxy routing must retain password-authenticated direct loopback access.
       await assertActualModelTurn(topology);
+      await assertActualPublicGithubRead(topology);
       const routeBefore = await resource(
         "httproute",
         topology.gatewayServiceName,

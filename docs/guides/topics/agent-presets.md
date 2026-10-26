@@ -140,7 +140,7 @@ replace its complete `template`, and `DELETE` on the same path, or
 `occ preset delete ID`, to remove it. `occ preset list` shows the IDs.
 You need the corresponding permission on the exact Preset. These operations
 affect future selections only. Already selected copies, saved Agents, and
-running revisions stay unchanged. See [CRUD and permissions](../../reference/presets.md#crud-and-permissions).
+running versions stay unchanged. See [CRUD and permissions](../../reference/presets.md#crud-and-permissions).
 
 If a Preset is missing from the selector, check the current Namespace and your
 exact Preset `read` grant. If applying fails, check the named variable and its

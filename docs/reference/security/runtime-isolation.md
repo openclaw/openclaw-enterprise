@@ -13,8 +13,8 @@ profile retains its separate control storage target.
 
 Dedicated Agents retain separate canonical app-server transport and Gateway
 password Secrets in their tenant storage namespace. Compute delivers the
-app-server token, never the Gateway password, into a revision-owned Harness
-Secret in the data plane. Kubernetes gateway authentication uses trusted proxy,
+app-server token, never the Gateway password, into a Harness
+Secret for that Agent revision in the data plane. Kubernetes gateway authentication uses trusted proxy,
 with an optional separately configured loopback password. Dedicated Codex and
 its Gateway use the existing capability-token app-server protocol over
 `ws://`; the server verifies the token's SHA-256 digest.
@@ -26,7 +26,7 @@ combined transport Secret into the separate Secret and keeps the combined key fo
 older Gateway Pods.
 
 The initial credential API requires exact Agent read and operate access, a ready
-Namespace, and no historical revisions. It generates an app-server transport
+Namespace, and no historical versions. It generates an app-server transport
 token and a local gateway password internally in separately owned canonical Secrets.
 Channel credentials use the separately authorized OCC Secret API.
 Those values pass transiently through the authorized API; they are excluded from
@@ -41,17 +41,19 @@ There are two supported model-credential paths:
 - **Existing API key:** Agent `harnessAuth` references a same-Namespace OCC
   Secret. Admission requires the actor and Agent principal's exact Secret
   `operate`; dispatch rechecks both. The Secret Driver owns storage, and
-  Kubernetes supplies `OPENAI_API_KEY` only to dedicated Codex or the combined
-  embedded OpenClaw gateway/Harness through a revision-owned runtime projection.
+  Kubernetes supplies `OPENAI_API_KEY` only to the combined embedded OpenClaw
+  gateway/Harness or the selected dedicated Harness (Codex or experimental
+  [native OpenClaw](../harness-execution.md#native-worker-support)), through a
+  runtime projection for that Agent revision.
 
 - **Driver-issued access token:** After exact OCC and independent ChatGPT
   authorization, API-side Kubernetes Compute creates one account-owned Secret
   in the tenant storage namespace. Its `token` key is delivered into each
-  selected revision's data-plane Secret and exposed as `CODEX_ACCESS_TOKEN`.
+  selected version's data-plane Secret and exposed as `CODEX_ACCESS_TOKEN`.
   Kubernetes resolves that runtime Secret reference. As with a directly supplied
   `codex_pat`, Compute selects `CODEX_LOGIN_MODE=codex_pat`; Codex logs in with
   `--with-access-token`, derives account identity from the token, and stores
-  login state only in its bounded ephemeral workload volume. Embedded access
+  login state only in its temporary workload volume, which has a `1Gi` size limit. Embedded access
   tokens are rejected before deployment. Control-plane checks still enforce
   the managed account's Backend and workspace ownership; no workspace override
   reaches the runtime.
@@ -73,7 +75,7 @@ Its operator-provisioned RoleBindings grant no cluster-wide Secret access or
 Secret `list` or `watch` permissions.
 
 The Helm worker role reads canonical Secrets and creates, updates and deletes
-revision-owned runtime Secrets in the data plane. Enabling
+runtime Secrets for each Agent revision in the data plane. Enabling
 [repository credentials](../repository-credentials.md) also permits Secret listing
 for session material cleanup. Grants are namespace-scoped; Compute checks exact
 owner and admitted source identities before normal operations.
@@ -133,7 +135,7 @@ Driver selection alone. See the [Sandbox overview](../../guides/topics/sandbox.m
 
 Production Agent dispatch supports embedded OpenClaw, dedicated Codex, and
 sandbox-provisioned dedicated native OpenClaw. Each
-Agent has its own gateway, one selected active revision, and an exact-owner
+Agent has its own gateway, one selected version, and an exact-owner
 Service. Guarded routing does not guarantee a physical process singleton during
 Kubernetes node partitions or manual replacement; the
 [Compute reference](../drivers/kubernetes-compute.md#execution-modes) records that
@@ -152,7 +154,7 @@ OpenShell treats the AgentRevision as its containment boundary. It provisions
 one Sandbox for the dedicated Harness, disables nested Codex containment, and
 runs native OpenClaw session workers without an additional inner process
 sandbox. Dedicated Codex sessions share one app server; native OpenClaw admits
-a bounded, configurable set of session-owned workers with separate managed
+up to the configured limit of session-owned workers with separate managed
 workspaces in one node host. Those sessions share the Sandbox's user,
 filesystem, process, and network boundary and therefore must belong to the same
 Agent trust domain. This model does not provide mutual operating-system

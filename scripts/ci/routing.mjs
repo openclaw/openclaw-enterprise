@@ -297,6 +297,12 @@ async function applyControllers({ cluster, execFile, certManagerManifest, envoyG
 export async function prepareGatewayRouting({ cluster, execFile }) {
   assert.equal(typeof execFile, "function", "prepareGatewayRouting requires an execFile callback.");
   const ownedCluster = assertCluster(cluster);
+  // K3s installs the Gateway API CRDs with Traefik, and applyControllers waits for them, so
+  // a cluster created without it would wait out 180 s per CRD before failing.
+  assert.ok(
+    !ownedCluster.disabledK3sAddons?.includes("traefik"),
+    "Gateway routing needs K3s's Traefik add-on, which this lane's cluster disables; remove the lane from lanesWithoutK3sAddons in scripts/ci/prepare.mjs.",
+  );
   const directory = join(ownedCluster.directory, "gateway-routing");
   assertInsideDirectory(ownedCluster.directory, directory, "routing artifact directory");
   await mkdir(directory, { recursive: true, mode: 0o700 });

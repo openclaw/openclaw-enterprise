@@ -9,9 +9,11 @@ let pool;
 let logger = createOccLogger({ component: "occ-migration", level: "info", destination: "stderr" });
 
 try {
-  const checkOnly = process.argv.length === 3 && process.argv[2] === "--check";
-  if (process.argv.length > 2 && !checkOnly) {
-    throw new Error("The migration command accepts only --check.");
+  const [option, ...extra] = process.argv.slice(2);
+  const checkOnly = option === "--check";
+  const expectEmpty = option === "--expect-empty";
+  if (extra.length || (option !== undefined && !checkOnly && !expectEmpty)) {
+    throw new Error("The migration command accepts no arguments, --check, or --expect-empty.");
   }
   const logging = await loadOperationalLoggingConfiguration({
     mode: process.env.NODE_ENV === "development" ? "development" : "production",
@@ -30,16 +32,17 @@ try {
   }
 
   pool = await createPostgresPool(databaseUrl, { max: 1 });
-  const history = await migrateWithHistory(pool, { checkOnly });
+  const history = await migrateWithHistory(pool, { checkOnly, expectEmpty });
   const event = checkOnly ? "migration.checked" : "migration.completed";
   process.stdout.write(`${JSON.stringify({ event, history })}\n`);
   emitOccLogEvent(logger, { event });
 } catch (error) {
-  const code =
-    error?.code === "MIGRATION_HISTORY_UNSUPPORTED"
-      ? "MIGRATION_HISTORY_UNSUPPORTED"
-      : "MIGRATION_FAILED";
-  if (code === "MIGRATION_HISTORY_UNSUPPORTED") {
+  const code = ["MIGRATION_HISTORY_UNSUPPORTED", "MIGRATION_HISTORY_NOT_EMPTY"].includes(
+    error?.code,
+  )
+    ? error.code
+    : "MIGRATION_FAILED";
+  if (code !== "MIGRATION_FAILED") {
     process.stderr.write(`${error.message}\n`);
   }
   emitOccLogEvent(logger, {

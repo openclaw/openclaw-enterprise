@@ -3,6 +3,7 @@ import type {
   Bounds,
   Denied,
   PrivateUpstreamRequest,
+  OperationReceipt,
   RequestHead,
   RequestPlan,
 } from "./backend-contracts.ts";
@@ -15,6 +16,7 @@ export interface DispatchGate {
   track(io: Promise<void>): void;
 }
 export type ExchangeOutcome =
+  | OperationReceipt
   | Readonly<{ kind: "completed"; status: number }>
   | Readonly<{ kind: "not-dispatched" | "possibly-dispatched"; code: string }>;
 export type ExchangeSender = (
@@ -31,10 +33,22 @@ export interface RunningListeners {
   stopAdmission(): void;
   close(): Promise<void>;
 }
+/** Non-secret identifiers of the session a bearer opened, for operator logs only. */
+export type SessionLogIdentity = Readonly<{
+  sessionId: string;
+  namespaceId?: string;
+  repositoryRef?: string;
+}>;
 export interface ExchangeService {
+  /** The open session this bearer authenticates, if any; never the bearer or a credential. */
+  identify(bearer: string): SessionLogIdentity | undefined;
   reserve(bearer: string, head: RequestHead, signal: AbortSignal): ExchangeRef | Denied;
   plan(exchange: ExchangeRef): RequestPlan;
-  execute(exchange: ExchangeRef, send: ExchangeSender): Promise<ExchangeOutcome>;
+  execute(
+    exchange: ExchangeRef,
+    send: ExchangeSender,
+    requestDigestSha256?: string,
+  ): Promise<ExchangeOutcome>;
   cancel(exchange: ExchangeRef): void;
 }
 /** One runtime owner supplies both views; no separate lifecycle is introduced. */

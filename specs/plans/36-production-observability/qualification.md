@@ -34,7 +34,7 @@ two-case `k3d-observability` lane was included in ordinary and full CI. Real
 model log checks used `pnpm test:observability:models` and the protected
 `k3d-otel` dispatch. The wrapper and package commands were later removed. For current
 production, demo, and model procedures, see the
-[CI lane procedures](../../../docs/testing/metrics.md#kubernetes-observability-acceptance).
+[CI lane procedures](../../../docs/testing/local.md#kubernetes-observability-acceptance).
 
 ## Evidence
 
@@ -82,7 +82,7 @@ stack-location logging and is not acceptance evidence; it did not bypass
 readiness or replace the runtime.
 
 That run did not verify real model turns or gateway/Codex log attribution.
-Run the retained [model lane procedure](../../../docs/testing/metrics.md#kubernetes-observability-acceptance)
+Run the retained [model lane procedure](../../../docs/testing/local.md#kubernetes-observability-acceptance)
 with a valid authorized credential to qualify that path. Protected hosted
 execution remains unverified. Hosted CI is configured
 but has not run for these unpublished worktree changes. No merge or deployment

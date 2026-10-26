@@ -27,8 +27,10 @@ export function isTransientPullFailure(error) {
   return !permanentPullFailure.test(output) && transientPullFailure.test(output);
 }
 
-// Worst case: no retry starts after budgetMs, and one attempt can then run for
-// attemptTimeoutMs more, so a pull gives up within about 15 minutes.
+// Worst case: four attempts of attemptTimeoutMs plus 35 s of backoff, about 9
+// minutes; no retry starts after budgetMs. The slowest healthy CI pulls (Grafana,
+// Keycloak) finish within about 45 s, so a stalled attempt is retried after 2
+// minutes instead of 5.
 export async function pullImage(
   image,
   {
@@ -36,7 +38,7 @@ export async function pullImage(
     docker = "docker",
     attempts = 4,
     firstDelayMs = 5_000,
-    attemptTimeoutMs = 300_000,
+    attemptTimeoutMs = 120_000,
     budgetMs = 600_000,
     sleep = delay,
     log = (message) => process.stderr.write(`${message}\n`),

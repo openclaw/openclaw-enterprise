@@ -9,6 +9,7 @@ import type { GitHubTokenProfile } from "./types.ts";
 import { allowsGraphqlInput, allowsReadOnlyGraphqlInput } from "./graphql-input.ts";
 import { allowsReceivePackInput } from "./routes/receive-pack.ts";
 import { createResponsePolicy } from "./response.ts";
+import { createMetadataResponsePolicy } from "./metadata-response.ts";
 import { classifyRoute, nativeGraphqlAccept } from "./routes/classification.ts";
 import type { GitHubGraphqlMode, Route } from "./routes/classification.ts";
 
@@ -101,6 +102,7 @@ function planRequest(
     return deny();
   }
   const git = selected.kind !== "api";
+  const uploadPack = selected.kind === "git-fetch";
   if (head.contentEncoding === "gzip" && (!git || head.method !== "POST")) {
     return deny();
   }
@@ -119,11 +121,17 @@ function planRequest(
     limits: Object.freeze({
       inputWireBytes: input,
       inputDecodedBytes: input,
-      responseBytes: git ? options.limits.gitResponseBytes : options.limits.apiResponseBytes,
-      totalMs: options.limits.exchangeMs,
+      responseBytes: uploadPack
+        ? options.limits.gitFetchResponseBytes
+        : git
+          ? options.limits.gitResponseBytes
+          : options.limits.apiResponseBytes,
+      totalMs: uploadPack ? options.limits.gitFetchExchangeMs : options.limits.exchangeMs,
       inputMs: selected.kind === "git-push" ? options.limits.exchangeMs : options.limits.inputMs,
-      firstHeaderMs: options.limits.firstHeaderMs,
-      stallMs: options.limits.stallMs,
+      firstHeaderMs: uploadPack
+        ? options.limits.gitFetchFirstHeaderMs
+        : options.limits.firstHeaderMs,
+      stallMs: uploadPack ? options.limits.gitFetchStallMs : options.limits.stallMs,
       connectMs: options.limits.connectMs,
     }),
     responsePolicy: dependencies.responsePolicy(git, selected.target, selected.rawResponse),
@@ -142,7 +150,13 @@ export function createRoutePolicy(options: RoutePolicyOptions): RoutePolicy {
       targetBytes: options.limits.targetBytes,
       graphql: options.graphql ?? "token-bounded",
     });
-  const responsePolicy = createResponsePolicy(options, (head) => route(head) !== undefined);
+  const metadataPolicy =
+    options.profile === "metadata-read"
+      ? createMetadataResponsePolicy(options.repository, options.repositoryId)
+      : undefined;
+  const responsePolicy = metadataPolicy
+    ? () => metadataPolicy
+    : createResponsePolicy(options, (head) => route(head) !== undefined);
   const dependencies: PlanDependencies = {
     route,
     responsePolicy,

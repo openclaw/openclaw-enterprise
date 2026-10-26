@@ -55,3 +55,272 @@ test("the full real plugin proof rejects shared or missing scenario databases be
   });
   assert.equal(result.status, 0, result.stderr || result.error?.message);
 });
+
+// Finding 2019: a Codex turn whose prompt mirror falls before the evidence window failed with
+// only the turn object. Its failure now lists every marker-bearing user message. The stub runs
+// the evidence script against a local transcript instead of the gateway Pod's.
+test("a Codex turn without its prompt mirror names the marker-bearing user messages", async (t) => {
+  const { mkdtemp, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { DatabaseSync } = await import("node:sqlite");
+  const { createNativePluginAssertions } = await import("../helpers/plugin-driver-real.mjs");
+  const directory = await mkdtemp(join(tmpdir(), "codex-prompt-evidence-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const marker = "calendar-marker-2019";
+  const user = (seq, mirrorIdentity) => ({
+    role: "user",
+    content: `List my calendars ${marker}`,
+    ...(mirrorIdentity ? { __openclaw: { mirrorIdentity, mirrorOrigin: "codex-app-server" } } : {}),
+    timestamp: 1_000 + seq,
+  });
+  const call = {
+    role: "assistant",
+    content: [{ type: "toolCall", id: "c1", name: "list_calendars", arguments: {} }],
+    __openclaw: { mirrorIdentity: "turn-1:tool:c1:call" },
+  };
+  const result = {
+    role: "toolResult",
+    toolCallId: "c1",
+    toolName: "list_calendars",
+    content: [{ type: "text", text: '{"calendars":["Work"]}' }],
+    isError: false,
+    __openclaw: { mirrorIdentity: "turn-1:tool:c1:result" },
+  };
+  const answer = {
+    role: "assistant",
+    content: [{ type: "text", text: `Work ${marker}` }],
+    stopReason: "stop",
+    __openclaw: { mirrorIdentity: "turn-1:assistant" },
+  };
+  function transcript(name, messages) {
+    const path = join(directory, `${name}.sqlite`);
+    const db = new DatabaseSync(path);
+    try {
+      db.exec(
+        "CREATE TABLE session_nodes (session_key TEXT, current_session_id TEXT, entry_json TEXT); CREATE TABLE transcript_events (session_id TEXT, seq INTEGER, event_json TEXT)",
+      );
+      db.prepare("INSERT INTO session_nodes VALUES (?, ?, ?)").run("proof", "session", "{}");
+      for (const [seq, message] of messages.entries()) {
+        db.prepare("INSERT INTO transcript_events VALUES (?, ?, ?)").run(
+          "session",
+          seq,
+          JSON.stringify({ type: "message", message }),
+        );
+      }
+    } finally {
+      db.close();
+    }
+    return createNativePluginAssertions({
+      proofMode: "codex",
+      async execGateway(_agent, [, , script, ...args]) {
+        const run = spawnSync(
+          process.execPath,
+          [
+            "-e",
+            script.replace(
+              '"/home/node/.openclaw/agents/main/agent/openclaw-agent.sqlite"',
+              JSON.stringify(path),
+            ),
+            ...args,
+          ],
+          { encoding: "utf8" },
+        );
+        assert.equal(run.status, 0, run.stderr);
+        return { label: "stub-runtime", stdout: run.stdout };
+      },
+    });
+  }
+  const options = { sessionKey: "proof", turnMarker: marker, toolName: "list_calendars" };
+
+  // One mirrored prompt: the turn is proven, and the listing marks the prompt in the window.
+  const proven = await transcript("proven", [
+    user(0, "turn-1:prompt"),
+    call,
+    result,
+    answer,
+  ]).assertSessionToolCallEvidence({}, options);
+  assert.equal(proven.codexMirrorTurnVerified, true);
+
+  // An unmirrored copy after the mirrored prompt starts the window past the prompt mirror.
+  const late = transcript("late", [user(0, "turn-1:prompt"), user(1), call, result, answer]);
+  const expected = [
+    {
+      seq: 0,
+      inWindow: false,
+      mirrorIdentity: "turn-1:prompt",
+      mirrorOrigin: "codex-app-server",
+      idempotencyKey: null,
+      timestamp: 1000,
+    },
+    {
+      seq: 1,
+      inWindow: true,
+      mirrorIdentity: null,
+      mirrorOrigin: null,
+      idempotencyKey: null,
+      timestamp: 1001,
+    },
+  ];
+  await assert.rejects(late.assertSessionToolCallEvidence({}, options), (error) => {
+    assert.match(error.message, /^proof Codex native turn must include prompt, tool call/);
+    const details = JSON.parse(error.message.slice(error.message.indexOf("{")).split("\n")[0]);
+    assert.equal(details.turn.promptSeen, false);
+    assert.deepEqual(details.markerUserMessages, expected);
+    return true;
+  });
+  // The disabled-tool phase's check lists them too.
+  const quiet = transcript("quiet", [user(0, "turn-1:prompt"), user(1), answer]);
+  await assert.rejects(quiet.assertNoSessionToolCallEvidence({}, options), (error) => {
+    assert.match(
+      error.message,
+      /^proof must include a completed marker-bearing native Codex turn: /,
+    );
+    const details = JSON.parse(error.message.slice(error.message.indexOf("{")).split("\n")[0]);
+    assert.deepEqual(details.markerUserMessages, expected);
+    return true;
+  });
+});
+
+// Findings 2029 and 2030: the evidence script reads every transcript row of the session, so a row
+// that is not JSON must not fail it, and a denied Codex turn without its prompt mirror lists the
+// newest ten marker-bearing user messages, as the allowed turn's check does. The stub runs the
+// evidence script against a local transcript instead of the gateway Pod's.
+test("the session evidence tolerates malformed rows and lists the newest marker messages on denial", async (t) => {
+  const { mkdtemp, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { DatabaseSync } = await import("node:sqlite");
+  const { createNativePluginAssertions } = await import("../helpers/plugin-driver-real.mjs");
+  const directory = await mkdtemp(join(tmpdir(), "codex-session-evidence-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const marker = "calendar-marker-2030";
+  const user = (seq, extra = {}) => ({
+    role: "user",
+    content: `List my calendars ${marker}`,
+    timestamp: 1_000 + seq,
+    ...extra,
+  });
+  const prompt = (seq, extra = {}) =>
+    user(seq, {
+      __openclaw: { mirrorIdentity: "turn-1:prompt", mirrorOrigin: "codex-app-server" },
+      ...extra,
+    });
+  const call = {
+    role: "assistant",
+    content: [{ type: "toolCall", id: "c1", name: "list_calendars", arguments: {} }],
+    __openclaw: { mirrorIdentity: "turn-1:tool:c1:call" },
+  };
+  const result = (isError) => ({
+    role: "toolResult",
+    toolCallId: "c1",
+    toolName: "list_calendars",
+    content: [
+      { type: "text", text: isError ? "user rejected MCP tool call" : '{"calendars":["Work"]}' },
+    ],
+    isError,
+    __openclaw: { mirrorIdentity: "turn-1:tool:c1:result" },
+  });
+  const answer = {
+    role: "assistant",
+    content: [{ type: "text", text: `Done ${marker}` }],
+    stopReason: "stop",
+    __openclaw: { mirrorIdentity: "turn-1:assistant" },
+  };
+  // Each row is a message, or a raw event_json string written as is.
+  function transcript(name, rows) {
+    const path = join(directory, `${name}.sqlite`);
+    const db = new DatabaseSync(path);
+    try {
+      db.exec(
+        "CREATE TABLE session_nodes (session_key TEXT, current_session_id TEXT, entry_json TEXT); CREATE TABLE transcript_events (session_id TEXT, seq INTEGER, event_json TEXT)",
+      );
+      db.prepare("INSERT INTO session_nodes VALUES (?, ?, ?)").run("proof", "session", "{}");
+      for (const [seq, row] of rows.entries()) {
+        db.prepare("INSERT INTO transcript_events VALUES (?, ?, ?)").run(
+          "session",
+          seq,
+          typeof row === "string" ? row : JSON.stringify({ type: "message", message: row }),
+        );
+      }
+    } finally {
+      db.close();
+    }
+    return createNativePluginAssertions({
+      proofMode: "codex",
+      async execGateway(_agent, [, , script, ...args]) {
+        const run = spawnSync(
+          process.execPath,
+          [
+            "-e",
+            script.replace(
+              '"/home/node/.openclaw/agents/main/agent/openclaw-agent.sqlite"',
+              JSON.stringify(path),
+            ),
+            ...args,
+          ],
+          { encoding: "utf8" },
+        );
+        assert.equal(run.status, 0, run.stderr);
+        return { label: "stub-runtime", stdout: run.stdout };
+      },
+    });
+  }
+  const options = { sessionKey: "proof", turnMarker: marker, toolName: "list_calendars" };
+
+  // A truncated row from an earlier turn, before the evidence window, leaves the proof intact.
+  const proven = await transcript("malformed", [
+    '{"type":"message","message":{"role":"user"',
+    prompt(1),
+    call,
+    result(false),
+    answer,
+  ]).assertSessionToolCallEvidence({}, options);
+  assert.equal(proven.codexMirrorTurnVerified, true);
+
+  // A truncated row inside the window could be the tool call the disabled-tool phase must not
+  // make, so the check that the turn made none fails on it instead of passing over it.
+  const hidden = transcript("hidden", [
+    '{"type":"message","message":{"role":"user"',
+    prompt(1),
+    '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"c1"',
+    answer,
+  ]);
+  await assert.rejects(hidden.assertNoSessionToolCallEvidence({}, options), (error) => {
+    assert.match(error.message, /transcript row 2 in the evidence window is not JSON/);
+    return true;
+  });
+
+  // Ten earlier marker-bearing retries, then the mirrored prompt and an unmirrored copy after it,
+  // which starts the window past the prompt mirror: the denied turn's check fails and lists the
+  // newest ten. Only a string idempotency key is reported.
+  const denied = transcript("denied", [
+    ...Array.from({ length: 10 }, (_, seq) => user(seq)),
+    prompt(10, { idempotencyKey: "retry-10" }),
+    user(11, { idempotencyKey: 11 }),
+    call,
+    result(true),
+    answer,
+  ]);
+  const listed = (seq) => ({
+    seq,
+    inWindow: seq === 11,
+    mirrorIdentity: seq === 10 ? "turn-1:prompt" : null,
+    mirrorOrigin: seq === 10 ? "codex-app-server" : null,
+    idempotencyKey: seq === 10 ? "retry-10" : null,
+    timestamp: 1_000 + seq,
+  });
+  await assert.rejects(denied.assertSessionToolDeniedEvidence({}, options), (error) => {
+    assert.match(
+      error.message,
+      /^proof denied Codex native turn must include prompt, tool call, tool result, and terminal assistant mirror identities: \{/,
+    );
+    const details = JSON.parse(error.message.slice(error.message.indexOf("{")).split("\n")[0]);
+    assert.equal(details.turn.promptSeen, false);
+    assert.deepEqual(
+      details.markerUserMessages,
+      Array.from({ length: 10 }, (_, index) => listed(index + 2)),
+    );
+    return true;
+  });
+});

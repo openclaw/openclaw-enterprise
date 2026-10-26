@@ -20,11 +20,13 @@ required. Restore any paused management service and verify its health before
 continuing; do not disable the K3s check. Confirm `cpuset` is available inside the
 k3d server and that K3s starts successfully.
 
-## Local K3s image lookup times out
+## Local K3s image lookup fails
 
 The Compose control-plane profile without OpenShell resolves a K3s channel
-unless `OCC_DEVELOPMENT_K3S_IMAGE` selects an explicit image. If that lookup times out,
-select an approved Kubernetes 1.35-or-newer image through the
+through `update.k3s.io` unless `OCC_DEVELOPMENT_K3S_IMAGE` selects an explicit
+image. If that lookup fails or times out, startup stops with `k3d failed` and
+k3d's `error getting K3s version for channel` line. Select an approved
+Kubernetes 1.35-or-newer image through the
 [profile settings](../../reference/settings/development.md).
 
 After a failed creation, wait for startup to exit, then run `./scripts/dev-down`
@@ -50,7 +52,9 @@ that the local k3d node needs`, followed by the `modprobe` command below. A kern
 that ships no `iptable_nat` module stops with `provides no legacy iptables nat table
 (iptable_nat)` instead; see the end of this section. If it cannot tell, it prints
 `Warning: could not confirm that the host kernel provides the legacy iptables nat
-table (iptable_nat)` and continues, and the timeout above still applies.
+table (iptable_nat)` and continues, and the timeout above still applies. If
+creation then fails, the error repeats the `modprobe` command below unless
+k3d's last error names another cause.
 
 In a second terminal, while that wait is still running, read the node log.
 `<cluster>` is the cluster name from the startup output.
@@ -218,7 +222,7 @@ CONSOLE_URL='<printed-HTTPS-browser-console-URL>'
 [local browser CA trust](#the-local-console-reports-a-certificate-error) on the
 browser computer using the local `BROWSER_CA` value above instead of the startup
 machine's CA path. Keep the printed hostname and port in `CONSOLE_URL`. Leave the
-CA private key and the state directory on the startup machine. Open the printed
+state directory, which holds the TLS key, on the startup machine. Open the printed
 URL. The console sign-in page loads. Stop the forward when you are done. Do
 not publish the console port on an address other than loopback. This name and
 certificate are for the private development installation.
@@ -253,12 +257,17 @@ If the Job started, inspect the failing container:
 
 ```bash
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
+  logs "$INITIALIZATION_JOB" -c installation-check # upgrades only
+kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
   logs "$INITIALIZATION_JOB" -c migration
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
   logs "$INITIALIZATION_JOB" -c bootstrap
 ```
 
-Migration runs before bootstrap; an unstarted bootstrap container has no logs.
+On an upgrade, `installation-check` runs first. It loads any Console theme
+bundle and the Installation as API startup does. It names the refused setting or
+file. The running API keeps serving. Migration runs before bootstrap; an
+unstarted container has no logs.
 For image, scheduling, or volume errors, use the Pod events reported by
 `kubectl describe pod <pod-name>` with the same context and namespace. Fix the
 specific image, scheduling, or storage error. For a bootstrap failure, follow
@@ -286,6 +295,19 @@ worker logs and the [tenant RoleBindings](../deploy/production-agents.md#grant-t
 After fixing the cause, repeat `occ installation get` and confirm the Namespace
 reports `ready` before creating an Agent there. A healthy control plane does
 not prove an Agent has deployed or can run a model.
+
+## A deployment fails because Kubernetes refused a Secret
+
+`KUBERNETES_SECRET_WRITE_FORBIDDEN` means Kubernetes answered `403` to one of
+the version's private Secret writes or readbacks, so the worker failed the
+deployment without retrying. A preparation failure's
+`worker.compute-prepare-failed` log line names the `step`. Check that the worker's
+[tenant RoleBindings](../deploy/production-agents.md#grant-tenant-rolebindings)
+grant `get`, `create` and `update` on `secrets` in the Agent's Kubernetes
+namespaces (with an execution cluster, also the control cluster's Gateway
+namespace), and that no admission policy or ResourceQuota refuses Secrets
+there. Then deploy again. A running version's maintenance does not fail: it
+retries and recovers by itself once the grant is fixed.
 
 ## An Agent's Gateway or Harness Pod stays unready
 

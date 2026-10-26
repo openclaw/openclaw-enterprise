@@ -7,7 +7,7 @@ platform itself, start with [Contribute](../contributing/README.md).
 
 ## Get started
 
-Read [Concepts](concepts.md) for Namespaces, Agents, revisions, and Secrets. Then choose a setup:
+Read [Concepts](concepts.md) for Namespaces, Agents, versions, and Secrets. Then choose a setup:
 
 - [Local Setup](quickstart.md): run the platform on your machine and [deploy your first Agent](first-agent.md).
 - [Kubernetes Setup](kubernetes-setup.md): install the control plane on an existing cluster, then [deploy and verify an Agent on it](deploy/production-agents.md).
@@ -16,7 +16,7 @@ Read [Concepts](concepts.md) for Namespaces, Agents, revisions, and Secrets. The
 
 - Use the [console](../reference/console.md) to manage Agents, Configuration,
   and workspace files.
-- Read about [deployments and revisions](../reference/agents/deployment.md)
+- Read about [deployments and versions](../reference/agents/deployment.md)
   or [Agent plugins](../reference/agent-plugins.md).
 - Use the [OCC CLI](cli.md) or [HTTP API](../reference/api.md) for automation.
 

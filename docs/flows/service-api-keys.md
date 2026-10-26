@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: 2026-10-10
-last_updated_session: authoring-run/b1416b0a-a6de-4fea-8edb-8ba8239a7003
+updated: 2026-10-17
+last_updated_session: authoring-run/d3c892f5-7e68-41ed-bef2-6b8e0f1e1968
 ---
 
 # Service API Keys Flow
@@ -28,7 +28,10 @@ optional Namespace at issuance, but it does not snapshot or grant permissions.
 
 - `occ service-key create` validates an explicitly supplied `--expires-in-days`
   as 1–365 before opening the output file or requesting issuance. Omission keeps
-  the API’s 30-day default. The existing owner is
+  the API’s 30-day default. It exclusively creates the output and sets mode
+  `0600` before issuance, so a restrictive umask cannot leave the saved key
+  unreadable. A permission-setting failure removes the empty file without
+  requesting a key. The existing owner is
   [`serviceKeyCommand`](../../internal/occcli/iam.go).
 
 - `POST /api/auth/service-keys`: a human session or Installation-scoped service
@@ -231,6 +234,8 @@ These commands describe the proof hooks, not a new runtime execution record.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-17 17:30: Trace explicit owner access on the CLI key output before issuance, including restrictive umask and permission failure. (authoring-run/d3c892f5-7e68-41ed-bef2-6b8e0f1e1968 - 4c15e69650b440b8b4bbd995bb61669f69d1d049)
 
 - 2026-10-10 03:27: Trace explicit CLI lifetime validation before key-file creation and issuance in the accompanying change. (authoring-run/b1416b0a-a6de-4fea-8edb-8ba8239a7003 - f92cf60b2ae4740a93bdd41e94e8f1c7fc92218f)
 

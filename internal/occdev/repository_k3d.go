@@ -15,10 +15,12 @@ import (
 	"math"
 	"math/big"
 	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,16 +34,34 @@ const developmentRepositoryImage = "openclaw-enterprise-repository-credentials:k
 var developmentBackendID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
 type developmentRepositoryInputs struct {
-	registry      map[string]any
-	backendID     string
-	upstreamCIDRs []string
-	appKey        []byte
+	registry       map[string]any
+	backendID      string
+	upstreamCIDRs  []string
+	appKey         []byte
+	preparedOrigin string
+	preparedPort   int
+	issuerCA       []byte
 }
 
 // loadDevelopmentRepositoryInputs admits only explicitly scoped operator input.
 // The sole placeholder is replaced with the Namespace OCC actually bootstraps.
 func (r *runner) loadDevelopmentRepositoryInputs(sandboxDriver string) (*developmentRepositoryInputs, error) {
 	directory := r.env["OCC_DEVELOPMENT_REPOSITORY_INPUT_DIRECTORY"]
+	origin := r.env["OCC_DEVELOPMENT_PREPARED_GIT_PROVIDER_ORIGIN"]
+	var port int
+	if origin != "" {
+		host := r.env["OCC_DEVELOPMENT_PREPARED_GIT_HOST_IP"]
+		u, err := url.Parse(origin)
+		ip, ipErr := netip.ParseAddr(host)
+		if directory == "" || sandboxDriver != "none" || r.env["OCC_DEVELOPMENT_PROTECTED_EGRESS"] == "1" ||
+			err != nil || ipErr != nil || !ip.IsPrivate() || !ip.Is4() || u.Hostname() != host || origin != "https://"+u.Host {
+			return nil, fmt.Errorf("prepared Git qualification requires the Compute-owned profile without a Sandbox Driver and the exact private fixture HTTPS origin")
+		}
+		port, err = strconv.Atoi(u.Port())
+		if err != nil || port < 1024 || port > 65535 {
+			return nil, fmt.Errorf("prepared Git fixture requires an explicit unprivileged HTTPS port")
+		}
+	}
 	if directory == "" {
 		if r.env["OCC_DEVELOPMENT_REPOSITORY_IMAGE"] != "" {
 			return nil, fmt.Errorf("OCC_DEVELOPMENT_REPOSITORY_IMAGE requires OCC_DEVELOPMENT_REPOSITORY_INPUT_DIRECTORY")
@@ -132,13 +152,24 @@ func (r *runner) loadDevelopmentRepositoryInputs(sandboxDriver string) (*develop
 		if !ok || len(profiles) == 0 {
 			return nil, fmt.Errorf("repository profiles must be explicitly approved")
 		}
-		seenProfiles := map[string]bool{}
-		for _, profile := range profiles {
-			name, ok := profile.(string)
-			if !ok || (name != "git-read" && name != "git-write" && name != "git-full") || seenProfiles[name] {
-				return nil, fmt.Errorf("repository profiles must be supported and unique")
-			}
-			seenProfiles[name] = true
+		// The worker and broker prepare only one exact writable branch per grant and
+		// refuse any other policy at startup, after the cluster effects.
+		refs, _ := policy["pushRefAllowlist"].([]any)
+		var ref string
+		if len(refs) == 1 {
+			ref, _ = refs[0].(string)
+		}
+		base, _ := policy["pullRequestBase"].(string)
+		_, hasBase := policy["pullRequestBase"]
+		transportOK := (policy["transport"] == "git-only" && !hasBase) ||
+			(policy["transport"] == "git-and-draft-pr" && base != "" && ref != "refs/heads/"+base)
+		if !transportOK || !reflect.DeepEqual(profiles, []any{"git-write"}) || !strings.HasPrefix(ref, "refs/heads/") ||
+			len(ref) <= len("refs/heads/") || strings.Contains(ref, "*") {
+			return nil, fmt.Errorf("prepared repository access requires profiles [\"git-write\"], exactly one exact pushRefAllowlist branch, and transport git-only or git-and-draft-pr with a different pullRequestBase")
+		}
+		if origin != "" && (!strings.HasPrefix(ref, "refs/heads/review/") || len(ref) <= len("refs/heads/review/") ||
+			(policy["transport"] == "git-and-draft-pr" && base != "main")) {
+			return nil, fmt.Errorf("prepared Git qualification requires explicit Git or draft PR transport, git-write and one review ref")
 		}
 	}
 	cidrData, err := read("upstream-cidrs.json", false)
@@ -174,7 +205,18 @@ func (r *runner) loadDevelopmentRepositoryInputs(sandboxDriver string) (*develop
 	if parseErr != nil || !ok || (rsaKey.N.BitLen() < 2048 || rsaKey.N.BitLen() > 8192) {
 		return nil, fmt.Errorf("repository App key must be an RSA private key of 2048 to 8192 bits")
 	}
-	return &developmentRepositoryInputs{registry: registry, backendID: backendID, upstreamCIDRs: cidrs, appKey: key}, nil
+	inputs := &developmentRepositoryInputs{registry: registry, backendID: backendID, upstreamCIDRs: cidrs, appKey: key}
+	if origin != "" {
+		if !reflect.DeepEqual(cidrs, []string{r.env["OCC_DEVELOPMENT_PREPARED_GIT_HOST_IP"] + "/32"}) {
+			return nil, fmt.Errorf("prepared Git fixture must select exactly its private HTTPS address")
+		}
+		ca, err := read("issuer-ca.crt", false)
+		if err != nil {
+			return nil, err
+		}
+		inputs.preparedOrigin, inputs.preparedPort, inputs.issuerCA = origin, port, ca
+	}
+	return inputs, nil
 }
 
 func (r *runner) validateDevelopmentRepositoryImage(ctx context.Context) error {
@@ -212,53 +254,18 @@ func (r *runner) importDevelopmentRepositoryService(ctx context.Context, state *
 }
 
 // Generate a private local CA and a server leaf for the chart's exact broker
-// hostname. The CA key remains in the private development state directory.
+// hostname.
 func writeDevelopmentRepositoryTLS(directory, hostname string) error {
 	return writeDevelopmentTLS(directory, "repository", "OCC development repository CA", []string{hostname})
 }
 
+// writeDevelopmentTLS writes a CA certificate and one server leaf with its key.
+// The CA key never reaches disk: it signs the leaf in memory and is dropped, so
+// a CA that developers trust in their browser cannot sign anything else later.
 func writeDevelopmentTLS(directory, prefix, subject string, hostnames []string) error {
-	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	files, _, err := generateDevelopmentTLS(prefix, subject, hostnames)
 	if err != nil {
 		return err
-	}
-	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return err
-	}
-	serial := func() (*big.Int, error) { return rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128)) }
-	caSerial, err := serial()
-	if err != nil {
-		return err
-	}
-	leafSerial, err := serial()
-	if err != nil {
-		return err
-	}
-	now := time.Now()
-	ca := &x509.Certificate{SerialNumber: caSerial, Subject: pkix.Name{CommonName: subject}, NotBefore: now.Add(-5 * time.Minute), NotAfter: now.AddDate(1, 0, 0), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature}
-	caDER, err := x509.CreateCertificate(rand.Reader, ca, ca, &caKey.PublicKey, caKey)
-	if err != nil {
-		return err
-	}
-	leaf := &x509.Certificate{SerialNumber: leafSerial, DNSNames: hostnames, NotBefore: now.Add(-5 * time.Minute), NotAfter: now.AddDate(0, 3, 0), BasicConstraintsValid: true, KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
-	leafDER, err := x509.CreateCertificate(rand.Reader, leaf, ca, &leafKey.PublicKey, caKey)
-	if err != nil {
-		return err
-	}
-	caPrivate, err := x509.MarshalPKCS8PrivateKey(caKey)
-	if err != nil {
-		return err
-	}
-	leafPrivate, err := x509.MarshalPKCS8PrivateKey(leafKey)
-	if err != nil {
-		return err
-	}
-	files := map[string][]byte{
-		prefix + "-ca.crt":  pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER}),
-		prefix + "-ca.key":  pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: caPrivate}),
-		prefix + "-tls.crt": pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leafDER}),
-		prefix + "-tls.key": pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: leafPrivate}),
 	}
 	for name, data := range files {
 		if err := exclusiveWrite(filepath.Join(directory, name), data, 0600); err != nil {
@@ -268,9 +275,81 @@ func writeDevelopmentTLS(directory, prefix, subject string, hostnames []string) 
 	return nil
 }
 
+// developmentTLSPermittedDomains names the DNS subtrees the CA may vouch for:
+// the leaf's names, with a leading wildcard label removed.
+func developmentTLSPermittedDomains(hostnames []string) []string {
+	domains := make([]string, 0, len(hostnames))
+	for _, hostname := range hostnames {
+		domains = append(domains, strings.TrimPrefix(hostname, "*."))
+	}
+	return domains
+}
+
+// generateDevelopmentTLS returns the PEM files to write and, for tests only, the
+// CA key. The CA is name-constrained to the leaf's DNS names and lives no
+// longer than the leaf.
+func generateDevelopmentTLS(prefix, subject string, hostnames []string) (map[string][]byte, *ecdsa.PrivateKey, error) {
+	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, nil, err
+	}
+	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, nil, err
+	}
+	serial := func() (*big.Int, error) { return rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128)) }
+	caSerial, err := serial()
+	if err != nil {
+		return nil, nil, err
+	}
+	leafSerial, err := serial()
+	if err != nil {
+		return nil, nil, err
+	}
+	now := time.Now()
+	notBefore, notAfter := now.Add(-5*time.Minute), now.AddDate(0, 3, 0)
+	ca := &x509.Certificate{
+		SerialNumber:                caSerial,
+		Subject:                     pkix.Name{CommonName: subject},
+		NotBefore:                   notBefore,
+		NotAfter:                    notAfter,
+		IsCA:                        true,
+		BasicConstraintsValid:       true,
+		MaxPathLenZero:              true,
+		KeyUsage:                    x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
+		PermittedDNSDomainsCritical: true,
+		PermittedDNSDomains:         developmentTLSPermittedDomains(hostnames),
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, ca, ca, &caKey.PublicKey, caKey)
+	if err != nil {
+		return nil, nil, err
+	}
+	leaf := &x509.Certificate{SerialNumber: leafSerial, DNSNames: hostnames, NotBefore: notBefore, NotAfter: notAfter, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
+	leafDER, err := x509.CreateCertificate(rand.Reader, leaf, ca, &leafKey.PublicKey, caKey)
+	if err != nil {
+		return nil, nil, err
+	}
+	leafPrivate, err := x509.MarshalPKCS8PrivateKey(leafKey)
+	if err != nil {
+		return nil, nil, err
+	}
+	return map[string][]byte{
+		prefix + "-ca.crt":  pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER}),
+		prefix + "-tls.crt": pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leafDER}),
+		prefix + "-tls.key": pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: leafPrivate}),
+	}, caKey, nil
+}
+
 func replaceDevelopmentFile(path string, data []byte) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("development file must be regular: %s", path)
+	}
 	temporary := path + ".next"
-	if err := exclusiveWrite(temporary, data, 0600); err != nil {
+	if err := exclusiveWrite(temporary, data, info.Mode().Perm()); err != nil {
 		return err
 	}
 	if err := os.Rename(temporary, path); err != nil {
@@ -292,10 +371,15 @@ func (r *runner) enableDevelopmentRepository(ctx context.Context, state *develop
 	if err := writeDevelopmentRepositoryTLS(state.directory, hostname); err != nil {
 		return err
 	}
+	const preparedCA = "/etc/openclaw/prepared-repository-ca/ca.crt"
+	backend := map[string]any{"kind": "github-prepared-git-registry", "backendId": inputs.backendID}
+	if inputs.preparedOrigin != "" {
+		backend["gitOrigin"], backend["apiOrigin"], backend["gitCaFile"] = inputs.preparedOrigin, inputs.preparedOrigin, preparedCA
+	}
 	config, err := json.Marshal(map[string]any{
 		"gateway":       map[string]any{"listen": "0.0.0.0:8443", "controlSocket": "/run/openclaw/repository-control/private/control.sock"},
-		"sessionPolicy": map[string]any{"maximumDurationSeconds": inputs.registry["maximumDurationSeconds"], "defaultProfile": "git-write", "allowedProfiles": []string{"git-read", "git-write", "git-full"}},
-		"backend":       map[string]any{"kind": "github-app-registry", "backendId": inputs.backendID},
+		"sessionPolicy": map[string]any{"maximumDurationSeconds": inputs.registry["maximumDurationSeconds"], "defaultProfile": "git-write", "allowedProfiles": []string{"git-write"}},
+		"backend":       backend,
 	})
 	if err != nil {
 		return err
@@ -316,6 +400,22 @@ func (r *runner) enableDevelopmentRepository(ctx context.Context, state *develop
 		{"generic", "occ-repository-ca", "--from-file=ca.crt=" + filepath.Join(state.directory, "repository-ca.crt")},
 		{"tls", "occ-repository-tls", "--cert=" + filepath.Join(state.directory, "repository-tls.crt"), "--key=" + filepath.Join(state.directory, "repository-tls.key")},
 	}
+	// The worker's custody key seals the installation tokens it prepares.
+	custody := make([]byte, 32)
+	if _, err := rand.Read(custody); err != nil {
+		return err
+	}
+	custodyPath := filepath.Join(state.directory, "repository-custody.key")
+	if err := exclusiveWrite(custodyPath, custody, 0600); err != nil {
+		return err
+	}
+	secrets = append(secrets, []string{"generic", "occ-repository-custody", "--from-file=custody.key=" + custodyPath})
+	if inputs.preparedOrigin != "" {
+		ca := map[string]any{"apiVersion": "v1", "kind": "ConfigMap", "metadata": kubernetesMetadata("occ-repository-provider-ca", namespace, labels), "immutable": true, "data": map[string]string{"ca.crt": string(inputs.issuerCA)}}
+		if err := r.writeAndApply(ctx, state, "repository-provider-ca", ca); err != nil {
+			return err
+		}
+	}
 	for _, args := range secrets {
 		if err := r.run(ctx, "kubectl", append([]string{"-n", namespace, "create", "secret"}, args...)...); err != nil {
 			return err
@@ -334,8 +434,23 @@ func (r *runner) enableDevelopmentRepository(ctx context.Context, state *develop
 	if !ok {
 		return fmt.Errorf("development Installation has no Drivers")
 	}
-	drivers["repo"] = map[string]any{"id": "repository-credentials", "configuration": map[string]any{"controlSocket": "/run/openclaw/repository-control/private/control.sock", "sessionDurationSeconds": inputs.registry["maximumDurationSeconds"], "publicCaPath": "/etc/openclaw/repository-ca/ca.crt"}}
-	installation["backend"] = []any{map[string]any{"id": inputs.backendID, "type": "github", "configuration": map[string]any{"registryPath": "/etc/openclaw/repository-registry/registry.json"}, "drivers": map[string]string{"repo": "repository-credentials"}}}
+	// Native Git with worker-prepared GitHub custody; startup refuses the retired drivers.repo.
+	prepared := map[string]any{
+		"privateKeyPath": "/etc/openclaw/prepared-repository/private-key.pem",
+		"custodyKeyPath": "/etc/openclaw/prepared-repository/custody.key",
+	}
+	if inputs.preparedOrigin != "" {
+		prepared["issuerCaPath"], prepared["apiOrigin"] = preparedCA, inputs.preparedOrigin
+	}
+	installation["repository"] = map[string]any{
+		"id":             "repository-credentials",
+		"configuration":  map[string]any{"sessionDurationSeconds": inputs.registry["maximumDurationSeconds"]},
+		"nativeSender":   map[string]any{"controlSocket": "/run/openclaw/repository-control/private/control.sock", "publicCaPath": "/etc/openclaw/repository-ca/ca.crt"},
+		"preparedGitHub": prepared,
+	}
+	// Keep the installed Compute and model backend selection unchanged.
+	backends, _ := installation["backend"].([]any)
+	installation["backend"] = append(backends, map[string]any{"id": inputs.backendID, "type": "github", "configuration": map[string]any{"registryPath": "/etc/openclaw/repository-registry/registry.json"}, "drivers": map[string]string{"repo": "repository-credentials"}})
 	computeDriver, ok := drivers["compute"].(map[string]any)
 	if !ok {
 		return fmt.Errorf("development Installation has no Compute Driver")
@@ -369,7 +484,12 @@ func (r *runner) enableDevelopmentRepository(ctx context.Context, state *develop
 	if err := json.Unmarshal(valuesData, &values); err != nil {
 		return err
 	}
-	values["repositoryCredentials"] = map[string]any{"enabled": true, "image": image, "serviceName": "git", "backendId": inputs.backendID, "registryConfigMapName": "occ-repository-registry-v1", "serviceConfigSecretName": "occ-repository-service", "appKeySecretName": "occ-repository-app", "tlsSecretName": "occ-repository-tls", "publicCaSecretName": "occ-repository-ca", "upstreamCidrs": inputs.upstreamCIDRs}
+	repositoryValues := map[string]any{"enabled": true, "authority": "prepared-git", "preparedCustodySecretName": "occ-repository-custody", "image": image, "serviceName": "git", "backendId": inputs.backendID, "registryConfigMapName": "occ-repository-registry-v1", "serviceConfigSecretName": "occ-repository-service", "appKeySecretName": "occ-repository-app", "tlsSecretName": "occ-repository-tls", "publicCaSecretName": "occ-repository-ca", "upstreamCidrs": inputs.upstreamCIDRs}
+	if inputs.preparedOrigin != "" {
+		repositoryValues["upstreamPort"] = inputs.preparedPort
+		repositoryValues["preparedProviderCaConfigMapName"] = "occ-repository-provider-ca"
+	}
+	values["repositoryCredentials"] = repositoryValues
 	valuesData, err = json.Marshal(values)
 	if err != nil {
 		return err
@@ -377,7 +497,7 @@ func (r *runner) enableDevelopmentRepository(ctx context.Context, state *develop
 	if err := replaceDevelopmentFile(valuesPath, valuesData); err != nil {
 		return err
 	}
-	if err := r.run(ctx, "helm", "upgrade", "openclaw-enterprise", "deploy/helm/openclaw-enterprise", "--namespace", namespace, "--kubeconfig", filepath.Join(state.directory, "kubeconfig"), "--kube-context", "k3d-"+state.Cluster, "-f", valuesPath, "--wait", "--timeout", timeout.String()); err != nil {
+	if err := r.helmUpgrade(ctx, state, valuesPath, timeout); err != nil {
 		return err
 	}
 	if err := r.run(ctx, "kubectl", "-n", namespace, "rollout", "status", "deployment/openclaw-enterprise-worker", "--timeout", timeout.String()); err != nil {

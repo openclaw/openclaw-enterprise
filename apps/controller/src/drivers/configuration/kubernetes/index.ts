@@ -1,4 +1,9 @@
 import {
+  ConfigurationValidationError as SharedConfigurationValidationError,
+  type ErrorDetail,
+} from "@openclaw-enterprise/contracts";
+import { requireConfiguration } from "@openclaw-enterprise/contracts";
+import {
   asRecord,
   isNonEmptyString,
   numericErrorStatus,
@@ -10,12 +15,20 @@ import type {
   Configuration,
   ConfigurationDriver,
   ConfigurationReference,
+  ConfigurationValidationOptions,
   JSONSchema,
   OpenClawConfigurationDocument,
 } from "@openclaw-enterprise/contracts";
 import { ConfigurationValidationError, validateModelCredentialReferences } from "../model-auth.ts";
-import { resolveKubernetesControlNamespace } from "../../compute/kubernetes/index.ts";
-import { DependencyUnavailableError, ResourceConflictError } from "@openclaw-enterprise/occ";
+import {
+  type PreprovisionedKubernetesNamespace,
+  resolveKubernetesControlNamespace,
+} from "../../compute/kubernetes/index.ts";
+import {
+  ConfigurationSizeError,
+  DependencyUnavailableError,
+  ResourceConflictError,
+} from "@openclaw-enterprise/occ";
 import { createKubernetesClientConfiguration } from "../../kubernetes/client.ts";
 import { kubernetesRequest } from "../../kubernetes/request.ts";
 import {
@@ -29,6 +42,7 @@ export interface KubernetesConfigurationDriverOptions {
 }
 
 interface KubernetesConfigurationDriverSelection {
+  readonly preprovisionedNamespace?: PreprovisionedKubernetesNamespace | undefined;
   readonly id?: string;
   readonly implementation?: string;
 }
@@ -69,6 +83,49 @@ function validateReference(reference: ConfigurationReference): void {
   requiredString(value.namespaceId, "Configuration Namespace ID");
 }
 
+// A stored ConfigMap is held to the credential slots refused before it could have been
+// saved (validateModelCredentialReferences' `stored`), so a document an older release saved
+// under a later rule still reads and can be replaced; writes and deployment check them all.
+function checkConfiguration(configuration: Configuration, stored: boolean): void {
+  const resource = asRecord(configuration);
+  if (resource === undefined) {
+    throw new ConfigurationValidationError("Configuration is required.");
+  }
+  validateReference(configuration);
+  if (resource.kind !== "agent") {
+    throw new ConfigurationValidationError("Configuration kind must identify an Agent.");
+  }
+  if (!Number.isSafeInteger(resource.generation) || Number(resource.generation) < 1) {
+    throw new ConfigurationValidationError(
+      "Configuration generation must be a positive safe integer.",
+    );
+  }
+  const createdAt = requiredString(resource.createdAt, "Configuration creation time");
+  if (Number.isNaN(Date.parse(createdAt))) {
+    throw new ConfigurationValidationError("Configuration creation time must be valid.");
+  }
+  checkValues(configuration.values, stored);
+}
+
+function checkValues(
+  document: OpenClawConfigurationDocument,
+  stored: boolean,
+  options?: ConfigurationValidationOptions,
+): void {
+  const values = asRecord(document);
+  if (values === undefined) {
+    throw new ConfigurationValidationError("Configuration values must be a JSON object.");
+  }
+  validateModelCredentialReferences(document, { ...options, stored });
+  checkSize(values);
+}
+
+function checkSize(values: Readonly<Record<string, unknown>>): void {
+  if (Buffer.byteLength(JSON.stringify(values), "utf8") >= MAX_CONFIGMAP_BYTES) {
+    throw new ConfigurationSizeError(MAX_CONFIGMAP_BYTES);
+  }
+}
+
 export function kubernetesConfigurationName(configurationId: string): string {
   const id = requiredString(configurationId, "Configuration ID");
   if (!id.startsWith("cfg_")) {
@@ -88,25 +145,33 @@ export function kubernetesConfigurationName(configurationId: string): string {
 export class KubernetesConfigurationDriver implements ConfigurationDriver {
   static readonly configurationSchema: JSONSchema = createKubernetesAuthenticationOptionsSchema();
 
-  static validateConfiguration(configuration: unknown): void {
-    const value = asRecord(configuration);
-    if (value === undefined) {
-      throw new ConfigurationValidationError("Kubernetes configuration options are required.");
-    }
-    if ("clients" in value || Object.keys(value).some((key) => key !== "authentication")) {
-      throw new ConfigurationValidationError(
-        "Injected clients and unknown Kubernetes configuration options are not supported.",
+  static validateConfiguration(
+    configuration: Readonly<KubernetesConfigurationDriverOptions>,
+  ): readonly ErrorDetail[] {
+    try {
+      validateKubernetesAuthentication(
+        configuration.authentication,
+        (message) => new ConfigurationValidationError(message),
       );
+
+      return [];
+    } catch (error) {
+      return error instanceof SharedConfigurationValidationError
+        ? error.error.details
+        : [
+            {
+              path: "",
+              code: "INVALID_VALUE",
+              message: "Configuration violates the Driver's constraints.",
+            },
+          ];
     }
-    validateKubernetesAuthentication(
-      value.authentication,
-      (message) => new ConfigurationValidationError(message),
-    );
   }
 
   readonly id: string;
   readonly capability = "configuration" as const;
   readonly implementation: string;
+  private readonly preprovisionedNamespace: PreprovisionedKubernetesNamespace | undefined;
   private readonly options: KubernetesConfigurationDriverOptions;
   private client: Promise<CoreV1Api> | undefined;
 
@@ -114,7 +179,7 @@ export class KubernetesConfigurationDriver implements ConfigurationDriver {
     options: KubernetesConfigurationDriverOptions,
     selection: KubernetesConfigurationDriverSelection = {},
   ) {
-    KubernetesConfigurationDriver.validateConfiguration(options);
+    options = requireConfiguration(KubernetesConfigurationDriver, options);
     this.id = requiredString(selection.id ?? "config-kubernetes", "Configuration Driver ID");
     this.implementation = selection.implementation ?? IMPLEMENTATION;
     if (this.implementation !== IMPLEMENTATION) {
@@ -122,40 +187,26 @@ export class KubernetesConfigurationDriver implements ConfigurationDriver {
         "Unsupported Kubernetes configuration implementation.",
       );
     }
+    this.preprovisionedNamespace = selection.preprovisionedNamespace;
     this.options = Object.freeze({ authentication: Object.freeze({ ...options.authentication }) });
   }
 
   async validate(configuration: Configuration): Promise<void> {
-    const resource = asRecord(configuration);
-    if (resource === undefined) {
-      throw new ConfigurationValidationError("Configuration is required.");
-    }
-    validateReference(configuration);
-    if (resource.kind !== "agent") {
-      throw new ConfigurationValidationError("Configuration kind must identify an Agent.");
-    }
-    if (!Number.isSafeInteger(resource.generation) || Number(resource.generation) < 1) {
-      throw new ConfigurationValidationError(
-        "Configuration generation must be a positive safe integer.",
-      );
-    }
-    const createdAt = requiredString(resource.createdAt, "Configuration creation time");
-    if (Number.isNaN(Date.parse(createdAt))) {
-      throw new ConfigurationValidationError("Configuration creation time must be valid.");
-    }
-    await this.validateValues(configuration.values);
+    checkConfiguration(configuration, false);
   }
 
-  async validateValues(document: OpenClawConfigurationDocument): Promise<void> {
+  async validateValues(
+    document: OpenClawConfigurationDocument,
+    options?: ConfigurationValidationOptions,
+  ): Promise<void> {
+    checkValues(document, false, options);
+  }
+
+  async validateSize(document: OpenClawConfigurationDocument): Promise<void> {
+    // Values that are not an object are left to validate, which refuses them.
     const values = asRecord(document);
-    if (values === undefined) {
-      throw new ConfigurationValidationError("Configuration values must be a JSON object.");
-    }
-    validateModelCredentialReferences(document);
-    if (Buffer.byteLength(JSON.stringify(values), "utf8") >= MAX_CONFIGMAP_BYTES) {
-      throw new ConfigurationValidationError(
-        "Configuration exceeds the Kubernetes ConfigMap size limit.",
-      );
+    if (values !== undefined) {
+      checkSize(values);
     }
   }
 
@@ -424,7 +475,7 @@ export class KubernetesConfigurationDriver implements ConfigurationDriver {
       );
     }
     try {
-      await this.validate(configuration);
+      checkConfiguration(configuration, true);
     } catch {
       throw new ConfigurationOwnershipError(
         "The stored ConfigMap violates Configuration security boundaries.",
@@ -435,7 +486,9 @@ export class KubernetesConfigurationDriver implements ConfigurationDriver {
 
   private async controlNamespace(client: CoreV1Api, namespaceId: string): Promise<string> {
     const { name } = await this.request(
-      () => resolveKubernetesControlNamespace(client, namespaceId),
+      () =>
+        this.preprovisionedNamespace?.read(client, namespaceId) ??
+        resolveKubernetesControlNamespace(client, namespaceId),
       "namespace verification",
     );
     return name;

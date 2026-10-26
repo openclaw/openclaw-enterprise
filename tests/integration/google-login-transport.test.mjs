@@ -11,6 +11,7 @@ import {
   createIdTokenSigner,
   createLoginFixture,
   expectDenied,
+  expectProviderUnavailable,
   loginOrigin as origin,
   loginSecret as secret,
   redirectProviderFetch,
@@ -326,7 +327,7 @@ test(
           response.end("fixture-sensitive-error");
         };
         const before = requests.length;
-        await expectDenied(await login.callback());
+        await expectProviderUnavailable(await login.callback());
         assert.equal(requests.slice(before).includes("/redirect-target"), false);
         assert.deepEqual(login.subjects, []);
         assertNoSecrets(login);
@@ -362,7 +363,7 @@ test(
         response.write('{"keys":');
       };
       const started = performance.now();
-      await expectDenied(await login.callback());
+      await expectProviderUnavailable(await login.callback());
       const elapsed = performance.now() - started;
       // Separate per-request timers would take about 3.5 seconds here.
       assert.ok(

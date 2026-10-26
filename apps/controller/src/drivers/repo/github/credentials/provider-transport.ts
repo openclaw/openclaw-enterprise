@@ -1,7 +1,15 @@
 import type { AttemptContext, Clock } from "../../credentials/backend-contracts.ts";
-import type { GitHubTokenProfile } from "./types.ts";
 import { sendProviderRequest } from "./provider-transport/request.ts";
-import { prepareProviderScope } from "./provider-transport/request-options.ts";
+import {
+  prepareProviderScope,
+  type ProviderIssuanceScope,
+} from "./provider-transport/request-options.ts";
+
+/** The caller owns admission and dispatch; this transport does not require a repository identity. */
+export type ProviderAttempt = Pick<
+  AttemptContext,
+  "signal" | "deadlineMonoMs" | "assertAdmitted" | "observeDispatch"
+>;
 
 export interface ProviderResponse {
   readonly status: number;
@@ -10,14 +18,14 @@ export interface ProviderResponse {
 export interface ProviderTransport {
   issue(
     authorization: string,
-    attempt: AttemptContext,
+    attempt: ProviderAttempt,
     onDispatch: () => void,
     assertMaterialCurrent: () => void,
     observeResponse: (response: ProviderResponse) => void,
   ): Promise<ProviderResponse>;
   revoke(
     authorization: string,
-    attempt: AttemptContext,
+    attempt: ProviderAttempt,
     onDispatch: () => void,
   ): Promise<ProviderResponse>;
 }
@@ -27,7 +35,7 @@ export function createProviderTransport(
   origin: string,
   ca: Uint8Array | undefined,
   clock: Clock,
-  scope: Readonly<{ installationId: string; repositoryId: string; profile: GitHubTokenProfile }>,
+  scope: ProviderIssuanceScope,
 ): ProviderTransport {
   const prepared = prepareProviderScope(origin, scope);
   const trustedCa = ca === undefined ? undefined : Buffer.from(ca);

@@ -1,7 +1,17 @@
+{{- if not .Values.preprovisionedNamespace }}
+{{- $repositoryGit := include "openclaw.repositoryCredentials.gitEnabled" . -}}
+{{- $jobName := printf "%s-initialization" .Release.Name | trunc 63 | trimSuffix "-" -}}
+{{- /* On install, preserve evidence from an earlier attempt before Helm runs any hooks.
+      This is a point-in-time lookup, not a lock or proof the installation is new. */ -}}
+{{- if .Release.IsInstall -}}
+{{- if lookup "batch/v1" "Job" .Release.Namespace $jobName -}}
+{{- fail (printf "initialization Job %s/%s already exists; preserve it and reconcile the original installation attempt before another install. Its presence does not establish whether migration or bootstrap completed." .Release.Namespace $jobName) -}}
+{{- end -}}
+{{- end -}}
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: {{ printf "%s-initialization" .Release.Name | trunc 63 | trimSuffix "-" | quote }}
+  name: {{ $jobName | quote }}
   labels:
     {{- include "openclaw.labels" (dict "root" . "component" "initialization") | nindent 4 }}
   annotations:
@@ -26,6 +36,44 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       volumes:
+        {{- if .Release.IsUpgrade }}
+        # The installation-check container reads what API startup reads from these.
+        - name: installation-startup
+          secret:
+            secretName: {{ .Values.installation.secretName | quote }}
+            items:
+              - key: {{ .Values.installation.key | quote }}
+                path: installation.yaml
+        {{- if .Values.api.consoleTheme.configMapName }}
+        - name: console-theme
+          configMap:
+            name: {{ .Values.api.consoleTheme.configMapName | quote }}
+        {{- end }}
+        {{- if $repositoryGit }}
+        - name: repository-registry
+          configMap:
+            name: {{ .Values.repositoryCredentials.registryConfigMapName | quote }}
+            items:
+              - key: {{ .Values.repositoryCredentials.registryKey | quote }}
+                path: registry.json
+        {{- end }}
+        {{- if .Values.repositoryCredentials.enabled }}
+        - name: repository-public-ca
+          secret:
+            secretName: {{ .Values.repositoryCredentials.publicCaSecretName | quote }}
+            items:
+              - key: {{ .Values.repositoryCredentials.publicCaKey | quote }}
+                path: ca.crt
+        {{- end }}
+        {{- if and .Values.preparedGitHub.custodySecretName .Values.preparedGitHub.issuerCaConfigMapName }}
+        # Loading the Installation reads preparedGitHub.issuerCaPath. Public CA only, never custody.
+        - name: prepared-github-issuer-ca
+          configMap:
+            name: {{ .Values.preparedGitHub.issuerCaConfigMapName | quote }}
+            items:
+              - {key: ca.crt, path: ca.crt}
+        {{- end }}
+        {{- end }}
         - name: bootstrap-password-output
           persistentVolumeClaim:
             claimName: {{ .Values.bootstrap.password.claimName | quote }}
@@ -38,9 +86,62 @@ spec:
                 path: {{ .Values.database.caKey | quote }}
         {{- end }}
       initContainers:
+        {{- if .Release.IsUpgrade }}
+        # Refuses an Installation the API would refuse at startup, before migration and
+        # before Helm replaces the API Pod, so a bad change leaves the old Pods serving.
+        - name: installation-check
+          image: {{ .Values.images.controller | quote }}
+          command: ["node"]
+          args:
+            - --input-type=module
+            - -e
+            - {{ required "chart is missing files/check-installation.mjs" (.Files.Get "files/check-installation.mjs") | quote }}
+          securityContext:
+            {{- include "openclaw.containerSecurity" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: OCC_CONFIG_PATH
+              value: /etc/openclaw/installation/installation.yaml
+            {{- include "openclaw.listenerEnv" . | trim | nindent 12 }}
+            {{- if .Values.api.consoleTheme.configMapName }}
+            - name: OCC_CONSOLE_THEME_DIR
+              value: /etc/openclaw/console-theme
+            {{- end }}
+          volumeMounts:
+            - name: installation-startup
+              mountPath: /etc/openclaw/installation
+              readOnly: true
+            {{- if .Values.api.consoleTheme.configMapName }}
+            - name: console-theme
+              mountPath: /etc/openclaw/console-theme
+              readOnly: true
+            {{- end }}
+            {{- if $repositoryGit }}
+            - name: repository-registry
+              mountPath: /etc/openclaw/repository-registry
+              readOnly: true
+            {{- end }}
+            {{- if .Values.repositoryCredentials.enabled }}
+            - name: repository-public-ca
+              mountPath: /etc/openclaw/repository-ca
+              readOnly: true
+            {{- end }}
+            {{- if and .Values.preparedGitHub.custodySecretName .Values.preparedGitHub.issuerCaConfigMapName }}
+            - name: prepared-github-issuer-ca
+              mountPath: /etc/openclaw/prepared-github-issuer
+              readOnly: true
+            {{- end }}
+        {{- end }}
         - name: migration
           image: {{ .Values.images.controller | quote }}
-          args: [scripts/migrate-production.mjs]
+          args:
+            - scripts/migrate-production.mjs
+            {{- if .Release.IsInstall }}
+            - --expect-empty
+            {{- end }}
           securityContext:
             {{- include "openclaw.containerSecurity" . | nindent 12 }}
           resources:
@@ -86,3 +187,4 @@ spec:
               mountPath: {{ .Values.database.caMountPath | quote }}
               readOnly: true
             {{- end }}
+{{- end }}

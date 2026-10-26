@@ -4,26 +4,16 @@ import {
   assertProviderAttached,
   assertSessionUser,
   authRowCounts,
-  composeProductionSignIn,
   consoleOrigin as origin,
   githubSignIn,
   githubUpgradeSettings,
-  onboardPasswordAccounts,
   passwordSignIn,
-  postgresSignInState,
+  readAccount,
   signedInHeaders,
-  startFakeGitHub,
 } from "../helpers/production-sign-in.mjs";
-import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { requiresPostgres } from "../helpers/postgres-database.mjs";
+import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
 
-const adminEmail = "allowlist-recovery@example.test";
-const password = "allowlist-member-password";
-const authSecret = "allowlist-auth-test-secret-at-least-32-bytes";
-const secrets = {
-  "occ-auth/secret": authSecret,
-  "occ-github-login/client-id": "allowlist-client-id",
-  "occ-github-login/client-secret": "allowlist-client-secret",
-};
 const memberSubject = 7_100_001;
 const strangerSubject = 7_100_002;
 const acme = "/user/memberships/orgs/acme";
@@ -37,32 +27,32 @@ test(
   requiresPostgres,
   async (t) => {
     let app;
-    const { pool, state } = postgresSignInState(t, () => [app]);
-    const github = await startFakeGitHub(t);
+    const { pool, state, github, onboard, composeApp } = await preparePostgresSignInInstallation(
+      t,
+      () => [app],
+      {
+        email: "allowlist-recovery@example.test",
+        password: "allowlist-member-password",
+        secrets: {
+          "occ-auth/secret": "allowlist-auth-test-secret-at-least-32-bytes",
+          "occ-github-login/client-id": "allowlist-client-id",
+          "occ-github-login/client-secret": "allowlist-client-secret",
+        },
+      },
+    );
     let memberships = {};
     // Compare with the fixed paths; never select a handler by the request's own key.
     github.membership = (path, subject) =>
       Object.entries(memberships).find(([listed]) => listed === path)?.[1](subject) ?? 404;
 
-    const { admin, accounts } = await onboardPasswordAccounts(t, {
-      databaseUrl,
-      state,
-      pool,
-      email: adminEmail,
-      authSecret,
-      secrets,
-      password,
+    const { admin, accounts } = await onboard({
       accounts: { member: { email: "allowlist-member@example.test" } },
     });
     const { member } = accounts;
-    app = await composeProductionSignIn(t, {
-      databaseUrl,
-      settings: {
-        ...githubUpgradeSettings(admin.id),
-        OCC_AUTH_GITHUB_ALLOWED_ORGS: "Acme",
-        OCC_AUTH_GITHUB_ALLOWED_TEAMS: "other/platform",
-      },
-      secrets,
+    app = await composeApp({
+      ...githubUpgradeSettings(admin.id),
+      OCC_AUTH_GITHUB_ALLOWED_ORGS: "Acme",
+      OCC_AUTH_GITHUB_ALLOWED_TEAMS: "other/platform",
     });
     const adminHeaders = await signedInHeaders(app, origin, admin);
     await assertProviderAttached(app, adminHeaders, member.id, "github", String(memberSubject));
@@ -77,8 +67,8 @@ test(
         .map(({ reasonCode, details }) => [reasonCode, details]);
     async function signIn(subject) {
       const before = github.paths.length;
-      const { callback } = await githubSignIn(app, origin, subject);
-      return { callback, paths: github.paths.slice(before) };
+      const { callback, attemptId } = await githubSignIn(app, origin, subject);
+      return { callback, attemptId, paths: github.paths.slice(before) };
     }
     async function expectRefused(subject, reason, auditCode, paths) {
       const sessions = await sessionCount();
@@ -93,14 +83,31 @@ test(
       assert.equal(await sessionCount(), sessions, "no session is issued");
       assert.deepEqual(refused.paths, ["/login/oauth/access_token", "/user", ...paths]);
       assert.deepEqual((await loginDenials()).slice(denials), [
-        [auditCode, { provider: "github", subject: String(subject) }],
+        [
+          auditCode,
+          {
+            provider: "github",
+            subject: String(subject),
+            login: `fixture-${subject}`,
+            attemptId: refused.attemptId,
+          },
+        ],
       ]);
     }
 
     await t.test("an active organization member signs in", async () => {
       memberships = { [acme]: () => "active" };
-      const { callback, paths } = await signIn(memberSubject);
+      const { callback, paths, attemptId } = await signIn(memberSubject);
       assert.equal(callback.headers.location, "/console/", callback.body);
+      const events = await state.transact((unit) => unit.audit.list());
+      const event = events.find(
+        (entry) =>
+          entry.action === "authentication.login" && entry.details?.attemptId === attemptId,
+      );
+      assert.equal(event?.outcome, "success");
+      assert.equal(event.details.provider, "github");
+      assert.equal(event.details.subject, String(memberSubject));
+      assert.equal(event.details.login, `fixture-${memberSubject}`);
       assert.deepEqual(paths, ["/login/oauth/access_token", "/user", acme]);
       await assertSessionUser(app, callback, member.id);
     });
@@ -134,9 +141,55 @@ test(
         await expectRefused(strangerSubject, "membership", "MEMBERSHIP_REQUIRED", [acme, other]);
         // A listed member without an OCE account still gets the ordinary rejection.
         memberships = { [acme]: () => "active" };
-        const { callback } = await signIn(strangerSubject);
+        const { callback, attemptId } = await signIn(strangerSubject);
         assert.equal(callback.headers.location, "/console/?authError=github");
-        assert.equal((await loginDenials()).at(-1)[0], "EXTERNAL_IDENTITY_REJECTED");
+        assert.deepEqual((await loginDenials()).at(-1), [
+          "EXTERNAL_IDENTITY_REJECTED",
+          {
+            provider: "github",
+            subject: String(strangerSubject),
+            login: `fixture-${strangerSubject}`,
+            attemptId,
+          },
+        ]);
+      },
+    );
+
+    await t.test(
+      "a disabled attached account retains its verified identity in the denial",
+      async () => {
+        memberships = { [acme]: () => "active" };
+        const account = await readAccount(app, adminHeaders, member.id);
+        const disable = await app.inject({
+          method: "POST",
+          url: `/api/auth/accounts/${member.id}/disable`,
+          headers: adminHeaders,
+          payload: { expectedVersion: account.version },
+        });
+        assert.equal(disable.statusCode, 200, disable.body);
+        const { callback, attemptId } = await signIn(memberSubject);
+        assert.equal(
+          callback.headers.location,
+          "/console/?authError=github&authReason=account-disabled",
+        );
+        assert.deepEqual((await loginDenials()).at(-1), [
+          "ACCOUNT_DISABLED",
+          {
+            provider: "github",
+            userId: member.id,
+            subject: String(memberSubject),
+            login: `fixture-${memberSubject}`,
+            attemptId,
+          },
+        ]);
+        const disabled = await readAccount(app, adminHeaders, member.id);
+        const enable = await app.inject({
+          method: "POST",
+          url: `/api/auth/accounts/${member.id}/enable`,
+          headers: adminHeaders,
+          payload: { expectedVersion: disabled.version },
+        });
+        assert.equal(enable.statusCode, 200, enable.body);
       },
     );
 

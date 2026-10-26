@@ -294,12 +294,12 @@ test("collection reads filter every exact Namespace, Agent, and AgentRevision", 
   );
   const revisionsA = await controller.listRevisions("principal-exact-a", namespaceA.id, agentA.id);
   assert.deepEqual(
-    revisionsA.map(({ id }) => id),
+    revisionsA.revisions.map(({ id }) => id),
     [revisionA.id],
   );
-  assert.equal(Object.isFrozen(revisionsA), true);
+  assert.equal(Object.isFrozen(revisionsA.revisions), true);
   assert.deepEqual(
-    (await controller.listRevisions("principal-scoped-b", namespaceB.id, agentB.id)).map(
+    (await controller.listRevisions("principal-scoped-b", namespaceB.id, agentB.id)).revisions.map(
       ({ id }) => id,
     ),
     [revisionB.id],

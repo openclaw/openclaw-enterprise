@@ -27,7 +27,7 @@ their own scope. Never run `npm run precommit`.
 | Docker runtime                           | `pnpm docker:test` with explicit selectors, images, and credentials from [Docker testing](../../../docs/testing/docker.md).                                      |
 | Kubernetes                               | Select the exact fixture or runtime file from [Kubernetes testing](../../../docs/testing/kubernetes.md), with its disposable cluster and database prerequisites. |
 | Console UI                               | `pnpm test:console-browser` with the prepared browser described in [browser testing](../../../docs/testing/local.md#console-browser-checks).                     |
-| Types, package boundaries, generated API | `pnpm typecheck` (also the current build command); `pnpm openapi:check` for API changes.                                                                         |
+| Types, package boundaries, generated API | `pnpm typecheck` (builds packages and checks test types); `pnpm openapi:check` for API changes.                                                                  |
 | Documentation or skills                  | `pnpm docs:check`, relevant links, and `git diff --check`; no runtime tests solely for prose changes.                                                            |
 | CI or test selection                     | `node scripts/ci/run-tests.mjs audit`; inspect [CI ownership](../../../docs/testing/ci.md), and use `actionlint` for workflow edits when available.              |
 
