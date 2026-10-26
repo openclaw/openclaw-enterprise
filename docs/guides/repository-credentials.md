@@ -66,6 +66,11 @@ with a finite grant keeps its original deadline.
    Git and continues supervising the same execution if its independent permissions still allow it.
    Stopping the Agent ends that execution. Neither action recalls a request already authorized.
 
+A refusal answers `409 RESOURCE_CONFLICT` and names the step: review the scope again, keep one
+binding, remove the approval before you change the binding, or ask an Installation administrator
+to allow standing approval. Deploy refuses an approval that no longer matches policy until you
+remove and approve it again.
+
 The worker must recognize the same execution and account for its previous session and credential.
 If it returns after a known provider expiry, it waits out the clock allowance and records
 `expired` separately from confirmed revocation. An uncertain issuance, installation or retirement
@@ -79,11 +84,11 @@ Use **Dedicated** for Slack on the same Agent; follow the
 [same-Agent Console sequence](../reference/console/repository-access.md#use-repositories-and-slack-on-the-same-agent)
 for channels, credentials and deployment. Repository profiles and model
 authentication are separate. If repository discovery fails, **Create Agent**
-stays blocked until discovery succeeds. The exception is
-`503 REPOSITORY_OPTIONS_UNAVAILABLE` with no repositories selected: you can save
+stays blocked until discovery succeeds. The exception is an Installation without
+repository access or `503 REPOSITORY_OPTIONS_UNAVAILABLE`, with no repositories selected: you can save
 an ordinary draft, but cannot start guided provisioning. Other errors still
-block creation. Creation and deployment recheck Namespace repository policy;
-see [repository discovery](../reference/console/repository-access.md#discover-and-select-repositories).
+block creation. Creation and deployment recheck Namespace repository policy: deploy refuses
+saved selections it no longer approves with `409 RESOURCE_CONFLICT`. See [repository discovery](../reference/console/repository-access.md#discover-and-select-repositories).
 
 For the API sequence, complete [Namespace and dedicated Codex preparation](deploy/production-agents.md#configure-the-agent-runtime)
 to prepare the Configuration and Namespace-owned model Secret `HARNESS_SECRET_ID`.

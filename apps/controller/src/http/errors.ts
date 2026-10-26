@@ -6,6 +6,7 @@ import {
   AgentDeletingError,
   AgentPrincipalAuthorizationError,
   AuthorizationDeniedError,
+  CallerStateDeniedError,
   DeletionRetryOwnedError,
   ChannelDirectoryError,
   ChannelCredentialError,
@@ -15,6 +16,7 @@ import {
   CredentialGatewayNotConfiguredError,
   CredentialSourceConfigError,
   CredentialSourceDriverError,
+  CredentialSourceRegistrationConfigError,
   CredentialTokenUnsettledError,
   CredentialWithdrawalInProgressError,
   DependencyUnavailableError,
@@ -34,7 +36,9 @@ import {
   PostgresCommitOutcomeUnknownError,
   ResourceConflictError,
   ResourceStateConflictError,
+  RetryLaterError,
   ProtectedExecutionNetworkPolicyError,
+  RepositoryBindingSelectionError,
   RepositoryGitProfileUnsupportedError,
   RepositoryGitSenderUnqualifiedError,
   RuntimeCredentialsForbiddenByClusterError,
@@ -51,6 +55,12 @@ import {
   ConfigurationValidationError,
 } from "../drivers/configuration/kubernetes/index.ts";
 import { loggedErrorText, resemblesCredential } from "../logging.ts";
+import {
+  agentPrincipalDenialMessage,
+  callerDenialMessage,
+  GENERIC_DENIAL,
+  type DeniedRequest,
+} from "./caller-denial.ts";
 import {
   collapseScalarUnions,
   jsonPointer,
@@ -642,7 +652,11 @@ function discoveryFailure<Reason extends DiscoveryFailureReason>(
   );
 }
 
-export function requestFailure(error: unknown): RequestFailure {
+/**
+ * Maps an error to its client answer. `denied` describes the request for a caller's denial;
+ * without it the denial names no resource ID.
+ */
+export function requestFailure(error: unknown, denied?: DeniedRequest): RequestFailure {
   if (error instanceof RequestFailure) {
     return error;
   }
@@ -716,10 +730,18 @@ export function requestFailure(error: unknown): RequestFailure {
   if (error instanceof IAMRoleInUseError) {
     return failure(409, "RESOURCE_CONFLICT", error.message);
   }
-  if (error instanceof CredentialSourceConfigError) {
-    return failure(400, "INVALID_REQUEST", error.message, [
-      { path: `/config/${error.field}`, code: "INVALID_VALUE" },
-    ]);
+  if (
+    error instanceof CredentialSourceConfigError ||
+    error instanceof CredentialSourceRegistrationConfigError
+  ) {
+    // OCC's catalog check names a submitted field, which can be any key: cap the message and
+    // escape the detail path. A registration-time refusal names a catalog field the same way.
+    return failure(
+      400,
+      "INVALID_REQUEST",
+      capped(error.message),
+      pointerDetail(`/${error.group}`, error.field),
+    );
   }
   if (error instanceof CredentialGatewayNotConfiguredError) {
     return failure(409, "CREDENTIAL_GATEWAY_NOT_CONFIGURED", error.message);
@@ -745,6 +767,10 @@ export function requestFailure(error: unknown): RequestFailure {
   if (error instanceof AgentCredentialSourceBindingError) {
     // Either field can break the rule (an update may drop the source from the list), so
     // the message names it and no detail points at one field.
+    return failure(400, "INVALID_REQUEST", error.message);
+  }
+  if (error instanceof RepositoryBindingSelectionError) {
+    // Either repositoryBindings or repositoryAccess can carry the selections, so no detail.
     return failure(400, "INVALID_REQUEST", error.message);
   }
   if (error instanceof SecretBindingValidationError) {
@@ -820,6 +846,11 @@ export function requestFailure(error: unknown): RequestFailure {
     // A fixed message naming the fix; raised only after the source's grant and lookup.
     return failure(503, "DEPENDENCY_UNAVAILABLE", error.message);
   }
+  if (error instanceof RetryLaterError) {
+    // A fixed message naming the wait or the restart; raised only after the caller's grant and
+    // lookup (finding 2536).
+    return failure(503, "DEPENDENCY_UNAVAILABLE", error.message);
+  }
   if (isDependencyUnavailable(error)) {
     return failure(503, "DEPENDENCY_UNAVAILABLE", "A required platform dependency is unavailable.");
   }
@@ -858,11 +889,29 @@ export function requestFailure(error: unknown): RequestFailure {
     return failure(403, "FORBIDDEN", error.message);
   }
   if (error instanceof AgentPrincipalAuthorizationError) {
-    // Only the Agent's own principal is named; caller denials stay generic below.
+    // The Agent's own principal lacks the grant; the caller's denial is below. The text names a
+    // stored resource only when the caller sent or may read it (finding 2592).
+    return failure(403, "FORBIDDEN", capped(agentPrincipalDenialMessage(error, denied?.requested)));
+  }
+  if (error instanceof CallerStateDeniedError) {
+    // Fixed text about the caller's own account, session or job, not about a grant.
     return failure(403, "FORBIDDEN", error.message);
   }
   if (isAuthorizationDenied(error)) {
-    return failure(403, "FORBIDDEN", "The exact platform operation was not authorized.");
+    // The caller's own denial names the grant it checked, never the IAM decision's reason, so a
+    // Restriction and a missing grant read the same (finding 2534). Only a check of the caller's
+    // own grant is named: a decision for another principal, such as an Agent's service principal
+    // checked without naming it, stays generic, since its grant would read as the caller's own
+    // (finding 2586).
+    const own =
+      error.checkedPrincipalId !== undefined && error.checkedPrincipalId === denied?.actorId;
+    return failure(
+      403,
+      "FORBIDDEN",
+      error.authorization === undefined || !own
+        ? GENERIC_DENIAL
+        : capped(callerDenialMessage(error.authorization, denied?.requested)),
+    );
   }
   if (error instanceof Error) {
     const candidate = error as FastifyError;
@@ -883,7 +932,7 @@ export function requestFailure(error: unknown): RequestFailure {
         return failure(401, "UNAUTHENTICATED", "The caller did not provide valid credentials.");
       }
       if (status === 403) {
-        return failure(403, "FORBIDDEN", "The exact platform operation was not authorized.");
+        return failure(403, "FORBIDDEN", GENERIC_DENIAL);
       }
       return failure(
         503,

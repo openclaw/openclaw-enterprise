@@ -416,8 +416,8 @@ test("a failed model probe keeps its closed-vocabulary cause, never other cause 
       ),
       probe("openclaw.model_probe", { kind: "WRAPPER_ERROR" }),
       // The upfront 401 reports which header names it saw and its body's shape and
-      // closed-set error code and type; the Codex probe has none of these fields,
-      // and provider text never passes.
+      // closed-set error code and type, and a failed probe directory removal its
+      // error code; the Codex probe has none of these fields, and provider text never passes.
       probe("openclaw.model_probe", undefined, {
         providerStatus: 401,
         providerCode: "missing_api_key",
@@ -425,11 +425,13 @@ test("a failed model probe keeps its closed-vocabulary cause, never other cause 
         bodyShape: "json-error-code",
         providerErrorCode: "no_organization",
         providerErrorType: "invalid_request_error",
+        cleanupError: "ENOTEMPTY",
         providerMessage: "Missing bearer or basic authentication in header",
         error: { code: "no_organization", message: "sk-live-abc" },
         body: '{"error":{"message":"sk-live-abc"}}',
       }),
       probe("codex.model_probe", undefined, {
+        cleanupError: "ENOTEMPTY",
         responseHeaderMarker: "provider-like",
         bodyShape: "json-error-code",
         providerErrorCode: "no_organization",
@@ -476,6 +478,7 @@ test("a failed model probe keeps its closed-vocabulary cause, never other cause 
       bodyShape: "json-error-code",
       providerErrorCode: "no_organization",
       providerErrorType: "invalid_request_error",
+      cleanupError: "ENOTEMPTY",
     }),
     fields("codex.model_probe"),
     fields("openclaw.model_probe"),

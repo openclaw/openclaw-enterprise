@@ -312,10 +312,9 @@ shutdown, or permanent failure latch exists. Warnings describe deployment comple
 
 ## Debugging and Verification
 
-The OpenClaw model probe's CPU-based deadline cannot exceed 600 seconds. It samples one cumulative CPU-wait counter: PSI
-when initially available, otherwise throttled time. Missing, nonfinite or reset
-samples leave wait unavailable, without establishing starvation or changing the
-deadline.
+The OpenClaw model probe's CPU-based deadline cannot exceed 600 seconds. CPU wait is the larger PSI or throttled
+delta; throttled time is capped by throttled periods. Missing, nonfinite or reset samples give no delta and cannot
+establish starvation.
 
 - Compare `Agent.plugins` with the selected version snapshot and deployment status.
   A successful Agent write alone is not runtime installation evidence.

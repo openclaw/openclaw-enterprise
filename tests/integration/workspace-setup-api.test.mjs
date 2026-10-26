@@ -6,7 +6,11 @@ import { WORKSPACE_DEFAULTS_ID } from "../../packages/contracts/src/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
+import { assertApiError } from "../helpers/api-error.mjs";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { CODEX_PLACEMENT_REFUSAL, EMBEDDED_API_KEY_REQUIRED } from "../helpers/refusal-text.mjs";
 
 async function setup(t, options = {}) {
   const audit = new InMemoryAuditSink();
@@ -256,6 +260,29 @@ test("Agent save and deployment refuse initial workspace files the Configuration
   assert.equal(deployed.body.error.message, workspace);
   assert.deepEqual((await f.request("GET", `${agentPath}/revisions`)).data, []);
   assert.equal((await f.staged(created.data.id)).completed, false);
+
+  // Finding 2296: every deployment delivers a completed setup, so an update naming another
+  // execution mode checks it against the same Configuration. The second managed workspace
+  // reads for this dedicated Agent but not once it is embedded.
+  const dedicatedValues = createHarnessConfiguration("openclaw", "gpt-4.1");
+  dedicatedValues.agents.defaults.workspace = "/home/node/workspace";
+  const dedicatedOnly = await f.createConfiguration(f.namespace.id, dedicatedValues);
+  const dedicated = await f.create("Completed setup", {
+    configurationId: dedicatedOnly.id,
+    executionMode: "dedicated",
+    initialWorkspaceFiles: files,
+    harnessAuth: { method: "api_key", source: key.ref },
+  });
+  assert.equal(dedicated.status, 201, JSON.stringify(dedicated.body));
+  const setupId = (await f.staged(dedicated.data.id)).id;
+  await f.state.transact((unit) =>
+    unit.workspaceSetups.complete(f.namespace.id, dedicated.data.id, setupId),
+  );
+  const embedded = await f.request("PATCH", `${f.path}/${dedicated.data.id}`, {
+    body: { configurationId: dedicatedOnly.id, executionMode: "embedded" },
+  });
+  assert.equal(embedded.status, 400, JSON.stringify(embedded.body));
+  assert.equal(embedded.body.error.message, workspace);
 });
 
 test("Agent save accepts initial workspace files for a main roster entry in any letter case", async (t) => {
@@ -482,10 +509,13 @@ test("Agent create refuses dedicated OpenClaw on OpenShell settings its workspac
     const f = await setup(t, openShellSandbox(t, kubernetes, gateway));
     const installation = await f.request("GET", "/installation");
     assert.equal(installation.status, 200, JSON.stringify(installation.body));
-    // Create Agent offers only the modes admission accepts.
+    // Create Agent offers only the modes admission accepts, and shows the refusal that names the
+    // setting (finding 2373).
     assert.deepEqual(
-      installation.data.capabilities.openclaw.executionModes,
-      message === undefined ? ["dedicated"] : [],
+      installation.data.capabilities.openclaw,
+      message === undefined
+        ? { executionModes: ["dedicated"] }
+        : { executionModes: [], settingRefusals: { dedicated: message } },
     );
     const openclaw = await storeConfiguration(f, "openclaw", "openai/gpt-4.1");
     const refused = await f.create("OpenShell openclaw", {
@@ -496,8 +526,7 @@ test("Agent create refuses dedicated OpenClaw on OpenShell settings its workspac
       assert.equal(refused.status, 201, JSON.stringify(refused.body));
       continue;
     }
-    assert.equal(refused.status, 400, JSON.stringify(refused.body));
-    assert.equal(refused.body.error.code, "INVALID_REQUEST");
+    assertApiError(refused, 400, "INVALID_REQUEST");
     assert.equal(refused.body.error.message, message);
     assert.equal(
       (await f.request("GET", f.path)).data.some(({ name }) => name === "OpenShell openclaw"),
@@ -510,5 +539,156 @@ test("Agent create refuses dedicated OpenClaw on OpenShell settings its workspac
       executionMode: "dedicated",
     });
     assert.equal(created.status, 201, JSON.stringify(created.body));
+  }
+});
+
+// Kubernetes Compute with runtime storage but no gateway routing cannot place a dedicated Harness,
+// and deployment refused it after Agent save answered 201. Save now refuses it with the deployment
+// message wherever it checks Harness authentication: a Configuration that selects a model and a
+// Secret or runtime binding (finding 2376). Create Agent's preflight refuses it too when it names
+// the planned binding, before the console saves a Secret or Configuration (finding 2391), and so
+// does Agent provisioning, which Kubernetes Compute offers for every dedicated Agent (finding 2395).
+test("Agent save refuses a dedicated Harness the Kubernetes Compute settings cannot place", async (t) => {
+  // The fixture's unrouted Driver has no node enrollment either (composition always supplies it).
+  const message = CODEX_PLACEMENT_REFUSAL;
+  for (const routed of [false, true]) {
+    const f = await setup(t, {
+      channelRuntime: true,
+      routed,
+      agentProvisioning: true,
+      configurationDriver: createTestConfigurationDriver({ exact: true }),
+    });
+    const secret = await f.createSecret(f.namespace.id, `model-key-${routed}`, "test-api-key");
+    const harnessAuth = { method: "api_key", source: secret.ref };
+    const codex = await storeConfiguration(f, "codex", "codex/gpt-5.1");
+    const openclaw = await storeConfiguration(f, "openclaw", "openai/gpt-4.1");
+    const validate = (fields) =>
+      f.request("POST", `${f.path}/validate`, {
+        body: {
+          configuration: { kind: "agent", values: codex.data.values },
+          executionMode: "dedicated",
+          ...fields,
+        },
+      });
+    // The preflight checks the binding Agent create will name: the method of a Secret the console
+    // saves next, or an existing Secret. Without one it checks no Harness authentication, as
+    // before.
+    for (const [fields, refused] of [
+      [{ harnessAuth: { method: "api_key" } }, !routed],
+      [{ harnessAuth: { method: "codex_pat" } }, !routed],
+      [{ harnessAuth }, !routed],
+      [{}, false],
+      [{ harnessAuth: null }, false],
+    ]) {
+      const response = await validate(fields);
+      if (!refused) {
+        assert.equal(response.status, 204, JSON.stringify([fields, response.body]));
+        continue;
+      }
+      assertApiError(response, 400, "INVALID_REQUEST", JSON.stringify(fields));
+      assert.equal(response.body.error.message, message);
+    }
+    // Provisioning admits the whole plan in one request. Its Compute plan check answered a fixed
+    // 409 that names no setting; it now answers save's 400 first and queues nothing. (This
+    // fixture's IAM Driver cannot admit a plan, so only the refusal is checked here.)
+    if (!routed) {
+      const requestId = `req_${crypto.randomUUID()}`;
+      const provisioned = await f.request("POST", `${f.path}/provision`, {
+        body: {
+          requestId,
+          name: "Provisioned Codex",
+          executionMode: "dedicated",
+          configuration: { kind: "agent", values: codex.data.values },
+          harnessAuth,
+        },
+      });
+      assertApiError(provisioned, 400, "INVALID_REQUEST");
+      assert.equal(provisioned.body.error.message, message);
+      // The administrator the fixture signs in as.
+      const actorId = f.policy.identities[0].id;
+      const job = await f.state.read((view) =>
+        view.provisioning.findByRequest(f.namespace.id, actorId, requestId),
+      );
+      assert.equal(job, undefined);
+      // The placement check answers only setting refusals. Any other Driver refusal, such as a
+      // Dedicated OpenClaw plan on a provider other than OpenAI, keeps admission's 409 rather
+      // than escaping as a server error.
+      const gemini = await storeConfiguration(f, "openclaw", "google/gemini-2.5-pro");
+      const otherProvider = await f.request("POST", `${f.path}/provision`, {
+        body: {
+          requestId: `req_${crypto.randomUUID()}`,
+          name: "Provisioned OpenClaw",
+          executionMode: "dedicated",
+          configuration: { kind: "agent", values: gemini.data.values },
+          harnessAuth,
+        },
+      });
+      assertApiError(otherProvider, 409, "RESOURCE_CONFLICT");
+    }
+    const dedicated = await f.create("Codex", {
+      configurationId: codex.data.id,
+      executionMode: "dedicated",
+      harnessAuth,
+    });
+    const embedded = await f.create("Embedded", { configurationId: openclaw.data.id, harnessAuth });
+    assert.equal(embedded.status, 201, JSON.stringify(embedded.body));
+    const update = await f.request("PATCH", `${f.path}/${embedded.data.id}`, {
+      body: { configurationId: codex.data.id, executionMode: "dedicated" },
+    });
+    for (const [response, saved] of [
+      [dedicated, 201],
+      [update, 200],
+    ]) {
+      if (routed) {
+        assert.equal(response.status, saved, JSON.stringify(response.body));
+        continue;
+      }
+      assertApiError(response, 400, "INVALID_REQUEST");
+      assert.equal(response.body.error.message, message);
+    }
+    if (routed) {
+      continue;
+    }
+    // A draft Configuration that selects no model has nothing to check Harness authentication
+    // against, so save accepts it; deployment refuses it.
+    const draft = await f.create("Draft", { executionMode: "dedicated", harnessAuth });
+    assert.equal(draft.status, 201, JSON.stringify(draft.body));
+    const stored = (await f.request("GET", f.path)).data;
+    assert.deepEqual(stored.map(({ name, executionMode }) => [name, executionMode]).sort(), [
+      ["Draft", "dedicated"],
+      ["Embedded", "embedded"],
+    ]);
+  }
+});
+
+// Create Agent's preflight builds the planned binding's snapshot without reading a Secret, so it
+// must still refuse what Agent save refuses. A Secret in another Namespace is refused before any
+// lookup, with one message whether or not that Secret exists, so the preflight reveals nothing
+// about another Namespace. A method the Agent's topology cannot use is refused by name, the
+// operator-managed runtime included.
+test("Create Agent's preflight refuses a planned Harness authentication that Agent save refuses", async (t) => {
+  const f = await setup(t, { channelRuntime: true, routed: true });
+  const openclaw = await storeConfiguration(f, "openclaw", "openai/gpt-4.1");
+  const other = await f.createNamespace("Other workspace", { ready: true });
+  const foreign = await f.createSecret(other.id, "foreign-model-key", "test-api-key");
+  const missing = { ...foreign.ref, id: `sec_${crypto.randomUUID()}` };
+  const crossNamespace = "Secret references cannot cross Namespaces.";
+  const embeddedMethod = EMBEDDED_API_KEY_REQUIRED;
+  for (const [harnessAuth, message] of [
+    [{ method: "api_key" }, undefined],
+    [{ method: "codex_pat" }, embeddedMethod],
+    [{ method: "runtime" }, embeddedMethod],
+    [{ method: "api_key", source: foreign.ref }, crossNamespace],
+    [{ method: "api_key", source: missing }, crossNamespace],
+  ]) {
+    const response = await f.request("POST", `${f.path}/validate`, {
+      body: { configuration: { kind: "agent", values: openclaw.data.values }, harnessAuth },
+    });
+    if (message === undefined) {
+      assert.equal(response.status, 204, JSON.stringify([harnessAuth, response.body]));
+      continue;
+    }
+    assertApiError(response, 400, "INVALID_REQUEST", JSON.stringify(harnessAuth));
+    assert.equal(response.body.error.message, message);
   }
 });

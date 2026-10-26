@@ -113,6 +113,7 @@ export function bindPlatformUnitOfWork(
       "listAgentsForBrowsing",
       "findAgent",
       "listAgents",
+      "hasAgentNamed",
       "listAgentReferences",
       "createAgent",
       "lockAgent",

@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
-updated: "2026-10-24"
-last_updated_session: authoring-run/1303a689-0f82-440b-a43f-1b2869851779
+updated: "2026-10-25"
+last_updated_session: authoring-run/14e1a79b-96d6-4e9a-ab22-44a783a1ad50
 ---
 
 # Protected credential request flow
@@ -21,12 +21,10 @@ the Token Service issues, renews and retires material.
 
 ## Entry Points
 
-- Trigger: an installed supervisor opens `HttpInstallationExchange.Exchange` over
-  authenticated TLS to resolve, authorize and protect one request
+- Trigger: the supervisor opens `HttpInstallationExchange.Exchange` over authenticated TLS for one request
   (`apps/controller/src/drivers/egress-proxy/openshell-authority.ts:createOpenShellEgressAuthority`).
-- Assumptions: source admission and Agent deployment produced an exact plan; a current
-  verified loaded-enforcement receipt permits installation; the running Agent's service
-  principal holds exact source `operate` permission.
+- Assumptions: an admitted revision plan, a current verified loaded-enforcement receipt,
+  and source `operate` permission for the running Agent's service principal.
 
 ## Flow
 
@@ -53,9 +51,9 @@ Qualify deployed supervisors and networking separately.
 `apps/controller/src/composition/driver-packages.ts:createExternalProtectedDriver` and
 the bundled workspace registration select the same PAT verifier.
 `openShellEgressConfiguration` checks the provider's five routes for both Drivers.
-Each method and path requires the packaged Codex executable or an ancestor
-matching that executable. Each caller opens its own authorized response channel.
-Altered routes, missing registration and repository bindings refuse installation.
+Each caller or its ancestor must match the packaged Codex executable. Each opens its
+own authorized response channel. The workspace-only profile refuses altered routes,
+missing registration and repository bindings.
 
 `packages/occ/src/index.ts:admitStaticEgressSource` authorizes Secret UID/version access.
 `apps/controller/src/drivers/egress-proxy/codex-workspace-identity.ts:verifySource`
@@ -84,16 +82,16 @@ ambiguous ownership blocks restoration and dispatch.
 
 ### 1. Admit source and install the revision plan
 
-Source/Secret authorization precedes admission; existing sources require opt-in.
-Version 3 binds Sandbox and Proxy to one registered Driver by ID, implementation,
-configuration digest, execution, source generation, grant and routes. Empty routes
-deny all. The API checks registration, workers compare durable references, and
-Sandbox enforcement needs separate evidence.
+Authorize the source and Secret before admission; existing sources require opt-in.
+V3 binds Sandbox and Proxy by Driver ID, implementation, configuration digest, execution,
+source generation, grant and routes. Empty routes deny all. The API checks registration;
+workers compare stored references. Sandbox enforcement requires separate evidence.
 
 `packages/occ/src/index.ts:admitProxyPlan` rejects credential-free metadata grants
-that differ from the source; property order does not change equivalent grant digests.
-Mixed online Git/source routes require confirmed online authorization and authenticated
-reduction v2 (v8); v5/v7 remain unchanged.
+that differ from the source; key order does not affect the digest. Mixed online Git/source
+routes require confirmed online authorization and reduction v2 (v8). [Joint admission](joint-model-git-admission.md)
+instead requires reduction v3, one workspace model source, one GitHub installation grant
+and both authenticated middleware registrations. V5/v7 remain unchanged.
 `apps/controller/src/drivers/compute/protected-execution-driver.ts` rechecks capabilities
 before configuration and the installed recipient before release. Model exchange retains
 its authenticated peer key; online Git uses pre-request authorization without an
@@ -106,11 +104,11 @@ protected capability IDs for stored release/custody settlement. Compute and work
 recheck admission before launch. PostgreSQL rejects unknown decisions and mixed v2/v3
 fields. Older workers refuse v3: upgrade writers first and qualify release/deny-all.
 
-Missing Git delivery profiles fail in `admitProxyPlan` with 409
-`REPOSITORY_GIT_PROFILE_UNSUPPORTED`. Bundled `git-write` fails with 409
-`REPOSITORY_GIT_SENDER_UNQUALIFIED` in
-`apps/controller/src/drivers/egress-proxy/openshell.ts:assertRepositoryGitProfileAvailable`;
-preparation repeats both checks.
+Deploy returns 409 for unmapped Git profiles (`REPOSITORY_GIT_PROFILE_UNSUPPORTED`), bundled
+`git-write` (`REPOSITORY_GIT_SENDER_UNQUALIFIED`), fixed Installation limits
+(`CredentialProxyAdmissionError`), or unadmitted sources except the Agent’s ready Gateway
+Harness source beside Git. Preparation repeats both Git checks. Git-only Proxies refuse
+Proxy-owned sources and Agents without Git (409).
 
 Compute wires Proxy to Sandbox provisioning. Protected sources require admission and exact source keys; protected workspace-token and API-key logins use nonsecret markers, not Gateway attachments.
 Gateway sources require exact attachments. Egress compares complete prepared policies
@@ -121,11 +119,10 @@ and exact name-only exception. Missing evidence, widening, changed fences or leg
 observations refuse. Gateway comparison includes unknown fields. Local fingerprints
 cover both hashes and full policies, without supplier-hash or attestation status.
 
-Only protected Harness requirements get immutable `OPENCLAW_EGRESS_ENROLLMENT_REVISION_ID`
-from Compute. Before opening its authenticated listener on the existing service port,
-the helper requires it to equal the enrollment execution revision.
-Compute withholds private status revision, port, container name and Pod UID;
-providers receive a transport verifier, never the raw token.
+Compute sets immutable `OPENCLAW_EGRESS_ENROLLMENT_REVISION_ID` only for protected Harnesses.
+The helper matches it to the enrollment revision before listening on the existing service port.
+Compute withholds private status revision, port, container name and Pod UID; providers
+receive a verifier instead of the token.
 
 Harness awaits enrollment before probing. After installation commit, Compute requeries
 evidence and asks the selected Sandbox to check the exact Sandbox/service and
@@ -305,6 +302,8 @@ None.
 
 ## Changelog
 
+- 2026-10-25 03:08: Distinguish Git-only refusal from joint model and Git admission. (authoring-run/14e1a79b-96d6-4e9a-ab22-44a783a1ad50 - 66b50c98b72bd23eeba9e007e8c3d2cdaec81446)
+
 - 2026-10-24 19:46: Trace the accompanying bundled workspace registration and per-request custody. (authoring-run/1303a689-0f82-440b-a43f-1b2869851779 - 96dfb6a485b6632a1feeffc2bd53f10c74152cd1)
 
 - 2026-10-24 12:54: Document exact target matching for large registered delivery policies. (authoring-run/ded21924-0d2a-4f83-9299-1926d35ceb01 - 692c5e6e8afeebf831a1c9feb1917f0f2aafc3b9)
@@ -317,9 +316,11 @@ None.
 
 - 2026-10-23 19:40: Record the workspace PAT policy and remaining qualification gates in the accompanying change. (authoring-run/46d0701b-da16-43b1-8c7e-2510a4dd1475 - c250d521a59cb7d1e8be85bf02a112062e5ab259)
 
+- 2026-10-24: Name Git-only Proxy refusals. (fix-2360)
+
 - 2026-10-22 23:30: Refuse unqualified OpenShell Git senders early. (fix-2199 - b4a8157be)
 
-- 2026-10-22 05:35: Pin peer identity and original authentication expiry throughout the exchange in the accompanying correction. (authoring-run/009b70d4-eb48-4ea6-97f0-25b0395d1e1a - d87db85f74052e9ff819920acd820880e7a6a8af)
+- 2026-10-22 05:35: Pin peer identity and original authentication expiry throughout the exchange. (authoring-run/009b70d4-eb48-4ea6-97f0-25b0395d1e1a - d87db85f74052e9ff819920acd820880e7a6a8af)
 
 - 2026-10-22 05:21: Preserve the metadata grant digest for equivalent Driver output. (authoring-run/aabacbf5-998a-479d-8903-9f891cd69066 - 1435acf226b887a2cd85b7515b302914605beaef)
 
@@ -331,7 +332,7 @@ None.
 
 - 2026-10-22 01:51: Describe final withdrawal and delivery custody in the accompanying schema consolidation. (authoring-run/c692ffd7-9ade-4cb3-80b7-cd02340e0537 - fe6b0002a5bf41e6e418df9848337b285ce53199)
 
-- 2026-10-21 23:40: Describe versioned policy reduction, durable operation recovery and the reference-peer proof boundary in the accompanying change. (authoring-run/3e4e8e77-728c-435a-90e9-fe6c9758551c - d8a5a9c77963836fbe54f1dc28f2f8a0c01c5622)
+- 2026-10-21 23:40: Describe versioned policy reduction, durable operation recovery and the reference-peer proof boundary. (authoring-run/3e4e8e77-728c-435a-90e9-fe6c9758551c - d8a5a9c77963836fbe54f1dc28f2f8a0c01c5622)
 
 - 2026-10-21 22:39: Explain conditional recovery of rejected prepared material and its classification limit in the accompanying change. (authoring-run/8ffbb140-b3c1-48de-ac47-8e2450bae002 - df297cd59e8de130e9eb0599e67f47fa6d85079e)
 
@@ -339,15 +340,15 @@ None.
 
 - 2026-10-16 02:06: Protect independent assistant items and bounded seeded runs, including citation and plan-mode projections. (authoring-run/68ecede6-d2bc-4d49-ae2c-c04150ccb307 - 3ed0e1cbd553b753e3f7d97b720cb7a43b6b5109)
 
-- 2026-10-16 02:04: Bind prepared currentness proof to the active platform transaction in the accompanying implementation. (authoring-run/61a459b9-beed-4357-a96a-8483ab7cc2b9 - 3ed0e1cbd553b753e3f7d97b720cb7a43b6b5109)
+- 2026-10-16 02:04: Bind prepared currentness proof to the active platform transaction. (authoring-run/61a459b9-beed-4357-a96a-8483ab7cc2b9 - 3ed0e1cbd553b753e3f7d97b720cb7a43b6b5109)
 
 - 2026-10-16 01:00: Protect incremental Responses SDK text snapshots and reject ambiguous appended indexes. (authoring-run/92d1c2e7-e68d-4684-b8d1-8bfa0ed99a09 - ed532ec5496e87da37c086cf71949f12a17250c9)
 
 - 2026-10-16 00:27: Bound openings before proof and keep canceled operations charged until pending work settles. (authoring-run/3c418cc2-68fe-4c9a-a34e-9ecb83372b88 - 8df404d0635fa00e8d452cd0b846be3c68d3c4b0)
 
-- 2026-10-15 20:14: Pin request ciphertext access to selected material and its expiry in the accompanying implementation. (authoring-run/a87e5b92-3e56-47e2-8112-82aa89ca28c4 - ab675985805a9d4a855f441a3ba91e836d42a532)
+- 2026-10-15 20:14: Pin request ciphertext access to selected material and its expiry. (authoring-run/a87e5b92-3e56-47e2-8112-82aa89ca28c4 - ab675985805a9d4a855f441a3ba91e836d42a532)
 
-- 2026-10-15 19:23: Unify the read lifetime and exchange owner; detach one request snapshot before verification in the accompanying implementation. (authoring-run/b34da698-7e69-4c1d-a28c-238ed9c7d1d4 - adddcf2c0ce2429fb8fc7b9e503b01a74affdec8)
+- 2026-10-15 19:23: Unify the read lifetime and exchange owner; detach one request snapshot before verification. (authoring-run/b34da698-7e69-4c1d-a28c-238ed9c7d1d4 - adddcf2c0ce2429fb8fc7b9e503b01a74affdec8)
 
 - 2026-10-15 04:08: Add acknowledged exact dispatch and the pending trusted acceptance integration gate. (authoring-run/77dbaecc-5f2b-4d7c-bd72-178b481d4feb - 0647e70303cd583ed64286f0ae11c1fa1896ac6a)
 - 2026-10-15 04:09: Bind capture and response to a possession-authenticated exchange; refuse legacy peers and record the remaining supplier gate. (authoring-run/4ac4c430-12aa-4529-a02a-e1f26041eab4 - 0647e70303cd583ed64286f0ae11c1fa1896ac6a)

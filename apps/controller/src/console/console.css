@@ -2055,7 +2055,8 @@ select:not([multiple])[size="1"] {
   text-align: left;
   border-color: var(--line);
 }
-.version-item small {
+.version-item small,
+.revision-create small {
   color: var(--muted);
   font-size: var(--text-sm);
 }
@@ -2182,6 +2183,35 @@ select:not([multiple])[size="1"] {
   padding: var(--space-6);
   margin: var(--space-5) 0;
 }
+/* A tab card's first block starts at the card's padding. The Credentials fieldset and the
+   repository picker carry the top margin (and the fieldset its rule) that separate them from
+   fields above on Create Agent, which left an empty band at the top of the card (finding 2386). */
+.agent-card > .harness-auth-fields:first-child,
+.agent-card > .repository-selection:first-child {
+  margin-top: 0;
+}
+.agent-card > .harness-auth-fields:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+/* On an Agent's Repositories tab the tab card is the card: the picker keeps its own border and
+   background only on Create Agent, where it is a block among other fields (finding 2402). */
+.agent-card:not(.agent-form) > .repository-selection {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+}
+/* An empty status line in a tab card or the picker adds no band; it stays a live region. */
+.agent-card > .hint:empty,
+.repository-selection > .hint:empty {
+  margin: 0;
+}
+/* With no repository choices to list (repository access not set up), the empty list adds no
+   band above the access limits (finding 2402). */
+.repository-options:has(> .repository-discovery > #repository-results:only-child:empty) {
+  margin-top: 0;
+}
 .agent-form {
   max-width: 960px;
 }
@@ -2219,7 +2249,8 @@ select:not([multiple])[size="1"] {
 .repository-discovery input[type="search"],
 .plugin-control select,
 .plugin-json textarea,
-.revision-selector select {
+.revision-selector select,
+.slack-approver-field select {
   width: 100%;
   min-height: var(--control-h);
   border: 1px solid var(--color-border-strong);
@@ -2229,6 +2260,14 @@ select:not([multiple])[size="1"] {
 .field input[type="checkbox"],
 .field input[type="radio"] {
   width: auto;
+}
+/* A fixed value (the inline Create Secret dialog's Binding key) reads as text, not as a field
+   the reader could edit (finding 2370). */
+.form-field input[readonly] {
+  border-color: transparent;
+  background: transparent;
+  padding-inline: 0;
+  font-family: var(--font-mono);
 }
 .field input[type="checkbox"],
 .field input[type="radio"],
@@ -2271,6 +2310,15 @@ select:not([multiple])[size="1"] {
 }
 .secret-typeahead-create {
   font-weight: var(--weight-medium);
+}
+/* Secret create denied by the permission answer: listed with the reason, not chosen. */
+.secret-typeahead-listbox [role="option"][aria-disabled="true"] {
+  color: var(--muted);
+  cursor: not-allowed;
+}
+.secret-typeahead-create[aria-disabled="true"] small {
+  display: block;
+  font-weight: var(--weight-regular);
 }
 .secret-typeahead-empty {
   color: var(--muted);
@@ -3004,6 +3052,13 @@ select:not([multiple])[size="1"] {
 .revision-selector {
   padding: var(--space-5) var(--space-6);
 }
+/* On a phone the Versions card pads like the cards above it (finding 2423). */
+@media (max-width: 520px) {
+  .revision-selector,
+  .agent-version-layout > .revision-selector {
+    padding: var(--space-4);
+  }
+}
 .revision-selector > p {
   margin-bottom: var(--space-2);
   font-size: var(--text-md);
@@ -3035,9 +3090,6 @@ select:not([multiple])[size="1"] {
   opacity: 0.6;
 }
 
-.channel-secrets {
-  max-width: 960px;
-}
 .credential-status-list {
   display: grid;
   grid-template-columns: 130px minmax(0, 1fr);
@@ -3138,11 +3190,13 @@ select:not([multiple])[size="1"] {
 .slack-approver-field label,
 .slack-directory-field > label {
   display: grid;
-  gap: var(--space-1);
-  font-weight: var(--weight-semibold);
+  gap: var(--space-2);
+  font-weight: var(--weight-medium);
 }
+/* The select sits inside its label: it takes the shared control style and the body weight, not
+   the label's (finding 2401). */
 .slack-approver-field select {
-  width: 100%;
+  font-weight: var(--weight-regular);
 }
 .slack-approver-field .hint,
 .slack-directory-field .hint,
@@ -3624,9 +3678,9 @@ select:not([multiple])[size="1"] {
 }
 
 /* Progressive disclosure keeps the launch form focused on everyday choices. */
+/* The start cards keep the card's own padding, which narrows on a phone (finding 2404). */
 .launch-intro {
   margin: var(--space-5) 0;
-  padding: var(--space-6);
 }
 /* A card heading sits a step under the page title on the type scale (finding 2097). */
 .launch-intro h2 {
@@ -3701,6 +3755,8 @@ select:not([multiple])[size="1"] {
   font-size: var(--text-xl);
   font-weight: var(--weight-semibold);
   padding-right: var(--space-3);
+  /* The heading's gap above the first field label (finding 2402). */
+  margin-bottom: var(--space-3);
 }
 .harness-auth-fields > .form-field {
   margin: 0 0 var(--space-4);
@@ -3715,8 +3771,25 @@ select:not([multiple])[size="1"] {
 .launch-intro,
 .launch-preset,
 #create-agent-form ~ .create-channels,
+#create-agent-form ~ p[role="alert"],
+#create-agent-form ~ p[role="status"],
 #create-agent-form ~ .form-actions {
   max-width: 960px;
+}
+/* A Preset fills a form taller than the window, so Create Agent stays in view at its foot
+   instead of two screens down (finding 2098). */
+#create-agent-form ~ .form-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  padding-block: var(--space-3);
+  border-top: 1px solid var(--color-border);
+  background: var(--color-canvas);
+}
+/* Keyboard focus scrolls a control into view above that row, not under it. Two rows of buttons
+   fit on a phone. */
+html:has(#create-agent-form) {
+  scroll-padding-bottom: calc(2 * var(--control-h) + 2 * var(--space-3) + var(--space-4));
 }
 .repository-customize .repository-option {
   margin-top: var(--space-4);

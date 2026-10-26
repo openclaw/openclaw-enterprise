@@ -6,6 +6,8 @@ import { getCACertificates, setDefaultCACertificates } from "node:tls";
 import test from "node:test";
 
 import { deriveNativeAdminHost } from "../../apps/controller/src/gateway/native-admin.ts";
+import { assertApiError } from "../helpers/api-error.mjs";
+import { GENERIC_DENIAL, NATIVE_ADMIN_DENIED } from "../helpers/refusal-text.mjs";
 import { createControllerAuth } from "../helpers/password-hasher.mjs";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
@@ -338,8 +340,7 @@ test("native admin status requires exact Agent administer and reports lifecycle 
 
   const limitedSession = await createReadOperateSession(context, "native-admin-reader");
   const denied = await nativeStatus(context, { session: limitedSession });
-  assert.equal(denied.status, 403);
-  assert.equal(denied.body.error.code, "FORBIDDEN");
+  assertApiError(denied, 403, "FORBIDDEN");
 
   const missingStatus = await context.fixture.request(
     "GET",
@@ -379,8 +380,7 @@ test("native admin status requires exact Agent administer and reports lifecycle 
   assert.equal(fullyStopped.status, 200);
   assert.deepEqual(fullyStopped.data, { status: "stopped" });
   const stillDenied = await nativeStatus(context, { session: limitedSession });
-  assert.equal(stillDenied.status, 403);
-  assert.equal(stillDenied.body.error.code, "FORBIDDEN");
+  assertApiError(stillDenied, 403, "FORBIDDEN");
   const serviceKey = await issueServiceKeyForNativeAgent(context);
   const serviceDenied = await injectJson(
     context.fixture,
@@ -461,8 +461,7 @@ test("native admin disabled status still requires exact Agent administer", async
 
   const limitedSession = await createReadOperateSession(context, "native-admin-disabled-reader");
   const denied = await nativeStatus(context, { session: limitedSession });
-  assert.equal(denied.status, 403);
-  assert.equal(denied.body.error.code, "FORBIDDEN");
+  assertApiError(denied, 403, "FORBIDDEN");
 
   const missingStatus = await context.fixture.request(
     "GET",
@@ -936,12 +935,27 @@ test("native admin proxy strips browser credentials and preserves the Agent gate
     headers: nativeHeaders,
   });
   assert.equal(iamDenied.statusCode, 403, iamDenied.body);
+  // A Restriction reads the same as a missing grant.
+  assert.equal(iamDenied.json().error.message, NATIVE_ADMIN_DENIED);
   assert.equal(iamDenied.headers["set-cookie"], undefined);
   assert.equal(
     context.upstream.requests.length,
     7,
     "authorization-denied proxy requests must not reach native gateway",
   );
+
+  // A signed-in person with no platform identity had no grant checked: the refusal names none
+  // (finding 2589), and it is decided before the host, so it tells nothing about the Agent.
+  const identities = context.fixture.policy.identities;
+  const principal = adminPrincipal(context.fixture);
+  identities.splice(identities.indexOf(principal), 1);
+  const unprovisioned = await injectJson(context.fixture, "GET", "/settings/profile", {
+    headers: nativeHeaders,
+  });
+  assert.equal(unprovisioned.statusCode, 403, unprovisioned.body);
+  assert.deepEqual(unprovisioned.json().error, { code: "FORBIDDEN", message: GENERIC_DENIAL });
+  identities.push(principal);
+  assert.equal(context.upstream.requests.length, 7);
 });
 test("native admin proxy resolves a host only to the live Agent it names", async (t) => {
   const state = new InMemoryPlatformState();
@@ -975,6 +989,8 @@ test("native admin proxy resolves a host only to the live Agent it names", async
   ]) {
     const denied = await proxied(namespaceId, agentId);
     assert.equal(denied.statusCode, 403, `${label}: ${denied.body}`);
+    // The same text as a caller denied on a live Agent, so a host reveals no Agent.
+    assert.deepEqual(denied.json().error, { code: "FORBIDDEN", message: NATIVE_ADMIN_DENIED });
   }
   // Another Namespace's Agent resolves to itself alone; it has no active revision to serve.
   const otherHost = await proxied(other.id, otherAgent.id);
@@ -1321,5 +1337,6 @@ test("a browser Back to a denied Agent gateway stays 403 and links to the consol
   });
   assert.equal(api.statusCode, 403);
   assert.match(api.headers["content-type"], /^application\/json/);
-  assert.equal(api.json().error.code, "FORBIDDEN");
+  // The JSON refusal names the grant but not the Agent, which the host named, not the caller.
+  assert.deepEqual(api.json().error, { code: "FORBIDDEN", message: NATIVE_ADMIN_DENIED });
 });

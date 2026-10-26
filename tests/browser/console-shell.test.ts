@@ -5,7 +5,13 @@ import type { BrowserContextOptions, Locator, Page } from "playwright";
 
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
-import { fileBrowser, login, newPage, settledView } from "./console-agents-browser-helpers.mjs";
+import {
+  fileBrowser,
+  holdRequests,
+  login,
+  newPage,
+  settledView,
+} from "./console-agents-browser-helpers.mjs";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
@@ -525,4 +531,44 @@ test("Namespaces read as a table whose rows open each Namespace's Agents", async
     (await page.evaluate(() => globalThis.document.documentElement.scrollWidth)) <= 390,
     "nothing scrolls sideways",
   );
+});
+
+// Each render of a page load replaces the shell, sidebar included: the held page, "Loading…" and
+// the page. A sidebar link pressed before such a render and released after it still opens, and
+// only once (finding 2505).
+test("a sidebar link pressed while a Namespace switch renders opens once", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Pressed", { ready: true });
+  const other = await fixture.createNamespace("Pressed other", { ready: true });
+  const { page } = await newPage(t, fixture, { browser, context: desktop });
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  await page.locator(settledView).waitFor();
+  // The other Namespace's Agent list waits, so its load is still rendering during the press.
+  const agents = await holdRequests(t, page, `**/namespaces/${other.id}/agents*`, { once: true });
+  await page.getByLabel("Namespace", { exact: true }).selectOption(other.id);
+  await agents.requested;
+  const position = () => page.evaluate(() => globalThis.history.state.consolePosition);
+  const switched = await position();
+  const link = page
+    .getByRole("navigation", { name: "Main navigation" })
+    .getByRole("link", { name: "Namespaces", exact: true });
+  const box = await visibleBox(link);
+  await link.evaluate((node: HTMLElement) => {
+    node.dataset.pressed = "";
+  });
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  agents.release();
+  // The load's next render puts a new link under the held press.
+  await waitFor(
+    "a render to replace the pressed link",
+    async () =>
+      (await link.evaluate((node: HTMLElement) => !("pressed" in node.dataset))) || undefined,
+  );
+  await page.mouse.up();
+  await page.waitForURL(`**/console/namespaces?namespace=${other.id}`);
+  await page.locator(settledView).getByRole("list", { name: "Namespaces" }).waitFor();
+  // One history entry: the click navigated once.
+  assert.equal(await position(), switched + 1);
 });

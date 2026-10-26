@@ -14,6 +14,7 @@ import {
   OpenShellSandboxDriver,
 } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { RuntimeLogsForbiddenByClusterError } from "../../packages/occ/src/index.ts";
+import { assertApiError } from "../helpers/api-error.mjs";
 import { cpuTimeMs, cpuTimeMsAsync } from "../helpers/cpu-time.mjs";
 import {
   createRuntimeLogComputeDriver,
@@ -608,11 +609,9 @@ test("sandbox reads reject mixed Sandbox IDs, Pods and previous instances, and m
   assert.equal(mixed.body.data, undefined, "a refused chunk returns no records");
 
   const pod = await read("source=sandbox&pod=gateway-x-0");
-  assert.equal(pod.status, 400, pod.text);
-  assert.equal(pod.body.error.code, "RUNTIME_LOGS_POD_INVALID");
+  assertApiError(pod, 400, "RUNTIME_LOGS_POD_INVALID");
   const previous = await read("source=sandbox&previous=true");
-  assert.equal(previous.status, 400, previous.text);
-  assert.equal(previous.body.error.code, "RUNTIME_LOGS_POD_INVALID");
+  assertApiError(previous, 400, "RUNTIME_LOGS_POD_INVALID");
 
   gateway.state.error = Object.assign(new Error("permission denied: missing sandbox:read"), {
     code: 7,
@@ -1100,8 +1099,7 @@ test("without a log-reading Sandbox Driver the sandbox source is absent", async 
   );
   assert.equal("harness" in runtime.data, false, "an embedded Agent has no Harness Sandbox");
   const logs = await fixture.request("GET", target.logsPath("source=sandbox"));
-  assert.equal(logs.status, 400, logs.text);
-  assert.equal(logs.body.error.code, "RUNTIME_LOGS_SOURCE_UNAVAILABLE");
+  assertApiError(logs, 400, "RUNTIME_LOGS_SOURCE_UNAVAILABLE");
   await fixture.activate(target);
   const harness = await fixture.request(
     "GET",

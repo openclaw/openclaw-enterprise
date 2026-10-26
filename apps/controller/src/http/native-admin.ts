@@ -48,6 +48,7 @@ import {
   isDependencyUnavailable,
   requestFailure,
 } from "./errors.ts";
+import { GENERIC_DENIAL, NATIVE_ADMIN_DENIAL } from "./caller-denial.ts";
 import { RequestRateLimiter } from "./request-rate-limiter.ts";
 import type { RequestContext } from "./types.ts";
 
@@ -90,6 +91,9 @@ interface NativeAdminProxyDenial {
   readonly revisionId?: string;
   readonly host?: string;
   readonly actualAuthorizationDenied?: true;
+  // The signed-in person has no platform identity, so no grant was checked: the JSON refusal
+  // stays generic. It is decided before the host, so it tells nothing about the Agent.
+  readonly unprovisioned?: true;
   readonly evidence?: AuthorizationEvidence;
   readonly authorization?: NonNullable<AuthorizationDeniedError["authorization"]>;
 }
@@ -755,11 +759,11 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
   }) {
     const controller = getController();
     if (!controller) {
-      throw failure(403, "FORBIDDEN", "The exact platform operation was not authorized.");
+      throw failure(403, "FORBIDDEN", GENERIC_DENIAL);
     }
     const availability = await resolveNativeAdminAvailability(input);
     if (availability.status === "disabled") {
-      throw failure(403, "FORBIDDEN", "The exact platform operation was not authorized.");
+      throw failure(403, "FORBIDDEN", GENERIC_DENIAL);
     }
     if (
       availability.status === "unsupported" &&
@@ -778,7 +782,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       throw failure(409, "RESOURCE_CONFLICT", "The active AgentRevision changed.");
     }
     if (input.expectedHost !== undefined && availability.target.host !== input.expectedHost) {
-      throw failure(403, "FORBIDDEN", "The exact platform operation was not authorized.");
+      throw failure(403, "FORBIDDEN", GENERIC_DENIAL);
     }
     return availability;
   }
@@ -975,7 +979,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
     const actorSubject = admitted.externalIdentity.subject;
     const currentActor = await resolveNativeAdminActor({ actorIssuer, actorSubject });
     if (currentActor === undefined) {
-      return nativeAdminProxyDenial("authorization_denied");
+      return nativeAdminProxyDenial("authorization_denied", { unprovisioned: true });
     }
     const agent = await resolveNativeAdminAgentHost(hostname);
     if (agent === undefined) {
@@ -1037,10 +1041,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       return false;
     }
     if (isNativeAdminReservedPrefix(request.url) || !isNativeAdminAgentHost(hostname)) {
-      canonicalFailure(
-        reply,
-        failure(403, "FORBIDDEN", "The exact platform operation was not authorized."),
-      );
+      canonicalFailure(reply, failure(403, "FORBIDDEN", GENERIC_DENIAL));
       return true;
     }
     const admission = await boundedNativeAdminAdmission(
@@ -1097,11 +1098,20 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
           );
         return true;
       }
+      // A denial names the grant but not the Agent: the Agent was resolved from the host, not
+      // named by the caller, and an unknown host is denied with the same text. A person with no
+      // platform identity had no grant checked and gets the generic text (finding 2589).
       canonicalFailure(
         reply,
         admission === undefined
           ? dependencyUnavailable()
-          : failure(403, "FORBIDDEN", "The exact platform operation was not authorized."),
+          : failure(
+              403,
+              "FORBIDDEN",
+              admission.reason === "authorization_denied" && admission.unprovisioned !== true
+                ? NATIVE_ADMIN_DENIAL
+                : GENERIC_DENIAL,
+            ),
       );
       return true;
     }

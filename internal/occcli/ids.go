@@ -3,6 +3,9 @@ package occcli
 import (
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"regexp"
 	"strings"
 
 	"github.com/openclaw/openclaw-enterprise/internal/occclient"
@@ -35,15 +38,26 @@ func optionalID(arg idArg) idArg {
 	return arg
 }
 
-// check accepts a value with the ID prefix. The refusal names the lookup command;
-// for a Namespace-scoped resource it carries the selected Namespace when that is
-// a Namespace ID, so a stale OCC_NAMESPACE cannot redirect the lookup.
+// uuidV4 is the suffix shape the OCC API accepts after every typed ID prefix
+// (the path parameter patterns in the OpenAPI contract): a lowercase version 4 UUID.
+var uuidV4 = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+
+// check accepts a value with the ID prefix followed by the UUID shape the API
+// accepts, so a value such as "agt_../../namespaces" is never sent: a gateway
+// can normalize it into another path and answer with a redirect (finding D744).
+// A value without the prefix is plainly a name; the refusal names the lookup
+// command, and for a Namespace-scoped resource it carries the selected
+// Namespace when that is a Namespace ID, so a stale OCC_NAMESPACE cannot
+// redirect the lookup.
 func (arg idArg) check(value, namespace string) error {
-	if strings.HasPrefix(value, arg.prefix) {
+	if suffix, ok := strings.CutPrefix(value, arg.prefix); ok && uuidV4.MatchString(suffix) {
 		return nil
 	}
+	if strings.HasPrefix(strings.ToLower(value), arg.prefix) {
+		return fmt.Errorf("%q is not a valid %s ID: expected %s followed by a UUID", value, arg.kind, arg.prefix)
+	}
 	lookup := arg.lookup
-	if arg.prefix != namespaceIDArg.prefix && strings.HasPrefix(namespace, namespaceIDArg.prefix) {
+	if arg.prefix != namespaceIDArg.prefix && namespaceIDArg.check(namespace, "") == nil {
 		lookup = "occ --namespace " + namespace + strings.TrimPrefix(lookup, "occ")
 	}
 	return fmt.Errorf(
@@ -53,6 +67,23 @@ func (arg idArg) check(value, namespace string) error {
 		arg.prefix,
 		lookup,
 	)
+}
+
+// opaqueIDArgs accepts one server-issued ID that has no fixed shape in the API
+// contract (ServicePrincipal, Role, AccessBinding and service-key IDs). OCC
+// never issues one containing "/" or made only of dots, and such a value would
+// not reach the API as one path segment, so it is refused locally.
+func opaqueIDArgs(kind string) cobra.PositionalArgs {
+	return func(command *cobra.Command, values []string) error {
+		if err := cobra.ExactArgs(1)(command, values); err != nil {
+			return err
+		}
+		value := values[0]
+		if strings.Contains(value, "/") || strings.Trim(value, ".") == "" {
+			return fmt.Errorf("%q is not a valid %s ID: IDs never contain \"/\" or consist only of dots", value, kind)
+		}
+		return nil
+	}
 }
 
 // idArgs accepts exactly the listed IDs, with optional IDs allowed only at the end.
@@ -118,8 +149,10 @@ func latestReadableRevision(client *occclient.Client, namespace, agentID string)
 // not read, so deploy advice goes only to a caller whose permission answer
 // allows Agent deploy, and everyone else learns which grant lists revisions
 // (finding 522). alternative names another way in, such as passing an ID.
+// The grant comes first: a caller who just deployed may simply lack revision
+// read (finding D743).
 func noReadableRevisionsError(client *occclient.Client, namespace, agentID, subject, alternative string) error {
-	grant := "listing revisions needs revision read (ask an administrator to grant it)"
+	grant := "listing revisions needs AgentRevision read (ask an Installation administrator to grant it)"
 	if alternative != "" {
 		grant += ", or " + alternative
 	}
@@ -127,9 +160,26 @@ func noReadableRevisionsError(client *occclient.Client, namespace, agentID, subj
 	resource, _ := permissions.(map[string]any)
 	if deploy, _ := resource["deploy"].(bool); err == nil && deploy {
 		return fmt.Errorf(
-			"%s; if it was never deployed, run \"occ --namespace %s agent deploy %s\" first; otherwise %s",
-			subject, namespace, agentID, grant,
+			"%s; %s; if it was never deployed, run \"occ --namespace %s agent deploy %s\" first",
+			subject, grant, namespace, agentID,
 		)
 	}
 	return fmt.Errorf("%s; %s", subject, grant)
+}
+
+// unreadableRevisionNotice tells a deployer who may not read the revision
+// their deploy just created that deployment-status and logs cannot show its
+// outcome (finding D743). It reads only that revision, whose ID OCC has just
+// returned to this caller, so the answer reveals only the caller's own access.
+func unreadableRevisionNotice(client *occclient.Client, notices io.Writer, namespace, agentID string, revision any) {
+	resource, _ := revision.(map[string]any)
+	revisionID, _ := resource["id"].(string)
+	if revisionIDArg.check(revisionID, "") != nil {
+		return
+	}
+	_, err := client.GetAgentDeployment(namespace, agentID, revisionID)
+	var apiErr *occclient.APIError
+	if errors.As(err, &apiErr) && apiErr.Status == http.StatusForbidden {
+		noticef(notices, "notice: you cannot read new revision %s, so deployment-status and logs cannot show its outcome. Ask an Installation administrator for AgentRevision read on it.", revisionID)
+	}
 }

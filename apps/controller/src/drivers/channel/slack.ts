@@ -3,7 +3,13 @@ import type {
   ChannelDirectoryResult,
   ChannelDriver,
 } from "@openclaw-enterprise/contracts";
-import { ChannelCredentialError, ChannelDirectoryError } from "@openclaw-enterprise/occ";
+import {
+  ChannelCredentialError,
+  ChannelDirectoryError,
+  ResourceStateConflictError,
+  slackAccountTargets,
+  wholeEnvironmentReferenceName,
+} from "@openclaw-enterprise/occ";
 import { asRecord, readCappedBody } from "@openclaw-enterprise/utils";
 import { isIP } from "node:net";
 import { fetch as undiciFetch, ProxyAgent, type Response as UndiciResponse } from "undici";
@@ -20,10 +26,48 @@ const MANAGED_SERVICE_PROXY_ENDPOINT =
 
 type SlackRecord = Record<string, unknown>;
 
-function configuredValue(value: unknown): boolean {
-  return typeof value === "string"
-    ? value.trim().length > 0
-    : value !== undefined && value !== null;
+/**
+ * Finding 2521: the production API's egress is default-deny unless sign-in settings open it. With
+ * no Slack proxy configured, a token check that gets no answer from Slack usually means the
+ * Installation has no Slack route, but an open route can also time out (finding 2531). The fixed
+ * text names the setting and keeps the retry for that case. It is raised only after the binding
+ * and token-prefix checks, and it names no token. The error contract caps messages at 256
+ * characters.
+ */
+export class SlackRouteNotConfiguredError extends ResourceStateConflictError {
+  constructor() {
+    super(
+      "OCC could not reach Slack, and the API has no Slack proxy. If the API has another approved route to Slack, try again. Otherwise ask the Installation operator to set Helm slackProxy.enabled or api.channelDirectoryProxyUrl; see the Slack integration guide.",
+    );
+    this.name = "SlackRouteNotConfiguredError";
+  }
+}
+
+/** A request that got no HTTP answer: no connection, no DNS answer, or the time budget ran out. */
+class SlackUnansweredError extends ChannelDirectoryError {
+  constructor() {
+    super("unavailable");
+  }
+}
+
+// Fetch failure causes that mean Slack never answered (finding 2532). A redirect that
+// `redirect: "error"` refuses, a TLS failure or an invalid header value is a different failure.
+const UNANSWERED_CAUSES = new Set([
+  "ECONNREFUSED",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "ETIMEDOUT",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "UND_ERR_CONNECT_TIMEOUT",
+]);
+
+function neverAnswered(error: unknown): boolean {
+  const failure = asRecord(error);
+  return (
+    failure?.name === "TimeoutError" ||
+    UNANSWERED_CAUSES.has(String(asRecord(failure?.cause)?.code))
+  );
 }
 
 function boundedString(value: unknown, maxLength = 200): string | undefined {
@@ -76,13 +120,21 @@ export class SlackChannelDriver implements ChannelDriver {
   readonly implementation = "occ/slack-channel";
   private readonly request: typeof fetch;
   private readonly proxy?: ProxyAgent;
+  // Production sets expectProxy unless Helm reports open HTTPS egress: its default-deny API
+  // egress reaches Slack through a configured proxy. Without one, an unanswered check names that
+  // setting; a route an operator approved instead still works.
+  private readonly proxyMissing: boolean;
 
   constructor(
     request: typeof fetch = globalThis.fetch,
     proxyUrl?: string,
-    options: { readonly managedProxyHosts?: readonly string[] } = {},
+    options: {
+      readonly managedProxyHosts?: readonly string[];
+      readonly expectProxy?: boolean;
+    } = {},
   ) {
     this.request = request;
+    this.proxyMissing = options.expectProxy === true && proxyUrl === undefined;
     if (proxyUrl !== undefined) {
       const endpoint = PROXY_ENDPOINT.exec(proxyUrl);
       const managedEndpoint = MANAGED_SERVICE_PROXY_ENDPOINT.exec(proxyUrl);
@@ -120,22 +172,15 @@ export class SlackChannelDriver implements ChannelDriver {
       return;
     }
     const signal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
-    const accounts = asRecord(slack.accounts);
-    const named = accounts === undefined ? [] : Object.entries(accounts);
     // OpenClaw still starts an implicit "default" account from the top-level bot and app
     // tokens when named accounts exist, unless one of them is named "default".
-    const implicitDefault =
-      named.length === 0 ||
-      (!Object.hasOwn(accounts ?? {}, "default") &&
-        configuredValue(slack.botToken) &&
-        (slack.mode === "http" || configuredValue(slack.appToken)));
-    const targets = [
-      ...(implicitDefault ? [{ config: slack, path: "/channels/slack" }] : []),
-      ...named.map(([id, value]) => ({
-        config: { ...slack, ...asRecord(value) },
-        path: `/channels/slack/accounts/${id.replaceAll("~", "~0").replaceAll("/", "~1")}`,
-      })),
-    ];
+    const targets = slackAccountTargets(slack).map(({ account, config }) => ({
+      config,
+      path:
+        account === undefined
+          ? "/channels/slack"
+          : `/channels/slack/accounts/${account.replaceAll("~", "~0").replaceAll("/", "~1")}`,
+    }));
     for (const { config, path } of targets) {
       if (config.enabled === false) {
         continue;
@@ -145,7 +190,12 @@ export class SlackChannelDriver implements ChannelDriver {
           continue;
         }
         const field = `${path}/${role}`;
-        const ref = asRecord(config[role]);
+        // OpenClaw reads a token that is exactly one `${NAME}` as the env SecretRef to NAME, and
+        // Configuration save accepts that form (finding 2511). Any other string stays refused.
+        const token = config[role];
+        const whole = typeof token === "string" ? wholeEnvironmentReferenceName(token) : undefined;
+        const ref: Record<string, unknown> | undefined =
+          whole === undefined ? asRecord(token) : { source: "env", id: whole };
         if (
           ref?.source !== "env" ||
           (ref.provider !== undefined && ref.provider !== "default") ||
@@ -154,6 +204,7 @@ export class SlackChannelDriver implements ChannelDriver {
         ) {
           throw new ChannelCredentialError("binding_required", field);
         }
+        let unanswered = false;
         await withSecret(ref.id, field, async (value) => {
           if (!(role === "appToken" ? /^xapp-/ : /^xoxb-/).test(value)) {
             throw new ChannelCredentialError("role_mismatch", field);
@@ -179,6 +230,11 @@ export class SlackChannelDriver implements ChannelDriver {
             if (error instanceof ChannelCredentialError) {
               throw error;
             }
+            if (error instanceof SlackUnansweredError && this.proxyMissing) {
+              // Refused below: OCC wraps any other error from this callback as unavailable.
+              unanswered = true;
+              return;
+            }
             throw new ChannelCredentialError(
               error instanceof ChannelDirectoryError &&
                 ["credentials_rejected", "missing_scope"].includes(error.reason)
@@ -188,6 +244,9 @@ export class SlackChannelDriver implements ChannelDriver {
             );
           }
         });
+        if (unanswered) {
+          throw new SlackRouteNotConfiguredError();
+        }
       }
     }
   }
@@ -219,8 +278,10 @@ export class SlackChannelDriver implements ChannelDriver {
         this.proxy === undefined
           ? await this.request(url, options)
           : await undiciFetch(url, { ...options, dispatcher: this.proxy });
-    } catch {
-      throw new ChannelDirectoryError("unavailable");
+    } catch (error) {
+      throw neverAnswered(error)
+        ? new SlackUnansweredError()
+        : new ChannelDirectoryError("unavailable");
     }
     if (!response.ok) {
       await response.body?.cancel().catch(() => {});

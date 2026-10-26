@@ -28,6 +28,7 @@
     "tests/integration/runtime-credentials-api.test.mjs",
     "tests/integration/secret-api.test.mjs",
     "tests/integration/console-api.test.mjs",
+    "tests/integration/caller-denial-api.test.ts",
     "tests/conformance/kubernetes-preflight.test.mjs",
     "tests/conformance/kubernetes-client.test.mjs",
     "tests/conformance/kubernetes-api-read.test.mjs",
@@ -119,7 +120,9 @@
     "tests/integration/credential-policy-recovery.test.ts",
     "tests/conformance/kubernetes-prepared-repository.test.mjs",
     "tests/integration/egress-installation-exchange.test.mjs",
-    "tests/integration/egress-prepared-github-metadata.test.mjs"
+    "tests/integration/egress-prepared-github-metadata.test.mjs",
+    "tests/integration/protected-source-refusals.test.mjs",
+    "tests/integration/refusal-answers.test.mjs"
   ],
   "files": [
     {
@@ -343,6 +346,9 @@
     },
     {
       "path": "tests/integration/console-api.test.mjs"
+    },
+    {
+      "path": "tests/integration/caller-denial-api.test.ts"
     },
     {
       "path": "tests/integration/console-build-metadata.test.mjs"
@@ -587,6 +593,12 @@
     },
     {
       "path": "tests/integration/egress-prepared-github-metadata.test.mjs"
+    },
+    {
+      "path": "tests/integration/protected-source-refusals.test.mjs"
+    },
+    {
+      "path": "tests/integration/refusal-answers.test.mjs"
     }
   ]
 }

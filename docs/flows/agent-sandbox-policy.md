@@ -1,6 +1,6 @@
 ---
 created: 2026-10-15
-updated: 2026-10-24
+updated: 2026-10-25
 last_updated_session: authoring-run/b7994562-b460-4667-9017-4c62c3f56eb0
 ---
 
@@ -175,7 +175,15 @@ destinations, preserving an Agent's Policy denials link after sign-in.
 The console reads the policy owner even when discovery returns no descriptor. This
 read establishes an unsupported capability or a permission refusal before log and
 suggestion reads continue under their own permissions. It cannot leave those reads
-waiting for a policy request that never starts.
+waiting for a policy request that never starts. When the caller's permission answer
+reports `sandboxPolicyRead` as `false`, the console skips the policy and suggestion
+reads and says so; an unknown answer keeps the reads. A tab opened after the answer
+settled rereads it first, so a later grant applies. A version snapshot without
+`sandboxDriverId` runs without a Sandbox, so the tab skips its log and suggestion reads
+and says no denials are recorded. A `RUNTIME_LOGS_SOURCE_UNAVAILABLE` answer shows the same.
+Then, and on the draft, which reads no log, the denial count, refresh, follow and filter
+controls and the empty denial rows are hidden. When the permission answer refuses
+the policy read, only the network policy card states it; the suggestions card is hidden.
 
 ## Debugging and Verification
 
@@ -197,6 +205,10 @@ waiting for a policy request that never starts.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-10-25: Hide the empty denial rows and state a refused policy read once. (finding 2522)
+- 2026-10-25: Hide the denial window's controls on the draft. (finding 2509)
+- 2026-10-25: Skip the policy and suggestion reads that the permission answer refuses. (finding 2454)
 
 - 2026-10-24 18:15: Preserve complete Unicode string drafts for owner validation and add a simulated policy Review/Save walkthrough. (authoring-run/b7994562-b460-4667-9017-4c62c3f56eb0 - 6857956afcfee0b88563ea882c95034b5780cbec)
 

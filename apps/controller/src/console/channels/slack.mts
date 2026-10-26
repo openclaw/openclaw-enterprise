@@ -3,6 +3,11 @@ import { element } from "../dom.mjs";
 import { SLACK_SECRET_BINDINGS } from "../agents/credentials.mjs";
 import { createSlackDirectoryField, isSlackConfigTarget } from "../agents/slack-directory.mjs";
 import {
+  environmentReferenceNames,
+  secretInputShorthandName,
+  unsubstitutedReference,
+} from "../environment-references.mjs";
+import {
   createSecretReferenceField,
   sameNamespaceSecretHref,
   secretBinding,
@@ -29,6 +34,33 @@ const STANDARD_REFS = {
     appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
     botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
   },
+};
+
+// A token this editor can read back and save unchanged: the standard env SecretRef, or the whole
+// `${NAME}` reference to the same binding, which the Configuration save recommends (finding 2495).
+const standardToken = (value: unknown, ref: { readonly id: string }) =>
+  value === undefined || refsEqual(value, ref) || value === `\${${ref.id}}`;
+
+// The card names a token it cannot edit as Configuration save names it, and never shows it
+// (findings 2523, 2530). A string is a reference only in a form the runtime reads as one, or with
+// a `${` it keeps as written. An object with a source is a SecretRef; any other object is the
+// object save refuses. Every other value holds the credential inline.
+const INLINE_TOKEN = "holds a credential value inline, where a reference is required";
+const REFERENCE_TOKEN = "uses a credential reference this editor does not write";
+const tokenForm = (value: unknown) => {
+  if (typeof value === "string") {
+    return secretInputShorthandName(value) !== undefined ||
+      environmentReferenceNames(value).length > 0 ||
+      unsubstitutedReference(value) !== undefined
+      ? REFERENCE_TOKEN
+      : INLINE_TOKEN;
+  }
+  if (isRecord(value)) {
+    return typeof value.source === "string"
+      ? REFERENCE_TOKEN
+      : "holds an object the Slack Channel Driver cannot read";
+  }
+  return INLINE_TOKEN;
 };
 
 const DM_POLICIES = ["pairing", "allowlist", "open", "disabled"];
@@ -87,17 +119,17 @@ function supportSlack(values: ChannelValues): ChannelSupport<SlackConfig> {
       config,
     };
   }
-  if (config.appToken !== undefined && !refsEqual(config.appToken, STANDARD_REFS.slack.appToken)) {
+  if (!standardToken(config.appToken, STANDARD_REFS.slack.appToken)) {
     return {
       supported: false,
-      reason: "Slack app token uses a non-standard credential reference.",
+      reason: `Slack app token ${tokenForm(config.appToken)}. To edit Slack here, set appToken to \${SLACK_APP_TOKEN} in the Configuration JSON.`,
       config,
     };
   }
-  if (config.botToken !== undefined && !refsEqual(config.botToken, STANDARD_REFS.slack.botToken)) {
+  if (!standardToken(config.botToken, STANDARD_REFS.slack.botToken)) {
     return {
       supported: false,
-      reason: "Slack bot token uses a non-standard credential reference.",
+      reason: `Slack bot token ${tokenForm(config.botToken)}. To edit Slack here, set botToken to \${SLACK_BOT_TOKEN} in the Configuration JSON.`,
       config,
     };
   }
@@ -196,8 +228,9 @@ function updatedSlack(values: ChannelValues, body: HTMLFormElement) {
     ...current,
     enabled: body.querySelector<HTMLInputElement>("#slack-enabled")!.checked,
     mode: "socket",
-    appToken: STANDARD_REFS.slack.appToken,
-    botToken: STANDARD_REFS.slack.botToken,
+    // A standard token keeps the form it was saved in.
+    appToken: current.appToken ?? STANDARD_REFS.slack.appToken,
+    botToken: current.botToken ?? STANDARD_REFS.slack.botToken,
     channels,
   };
   if (!isRecord(existingConfig)) {
@@ -310,17 +343,43 @@ function credentialReferenceField(
     fieldClassName: "channel-field channel-reference",
     selectClassName: "channel-select",
   });
-  return picker.field;
+  return picker;
+}
+
+// A hint that offers Secret create, worded choose-only when the token fields disable their create
+// action: the Namespace permission answer denies Secret create (finding 2483), or the Secret
+// operate answer denies a readable Secret, so a new one could not be chosen (finding 2500). An
+// unknown answer keeps the create wording, as the fields keep their create action.
+function secretHint(context: ChannelDrawerContext, withCreate: string, chooseOnly: string) {
+  const hint = element("p", { className: "hint" }, withCreate);
+  const chooseOnlyWhen = (denied: boolean) => {
+    if (denied) {
+      hint.textContent = chooseOnly;
+    }
+  };
+  void context.secretsCreateAllowed?.().then(
+    (allowed) => chooseOnlyWhen(allowed === false),
+    () => {},
+  );
+  void context.secretsOperateDenied?.().then(
+    (denied) => chooseOnlyWhen(Boolean(denied?.size)),
+    () => {},
+  );
+  return hint;
 }
 
 function credentialNavigation(context: ChannelDrawerContext) {
-  return element(
-    "p",
-    { className: "hint" },
-    context.creating
-      ? "Choose existing Slack token Secrets or create them here before creating the Agent."
-      : "Choose existing Slack token Secrets or create them here. Secret menu changes are saved with these channel settings.",
-  );
+  return context.creating
+    ? secretHint(
+        context,
+        "Choose existing Slack token Secrets or create them here before creating the Agent.",
+        "Choose existing Slack token Secrets before creating the Agent.",
+      )
+    : secretHint(
+        context,
+        "Choose existing Slack token Secrets or create them here. Secret menu changes are saved with these channel settings.",
+        "Choose existing Slack token Secrets. Secret menu changes are saved with these channel settings.",
+      );
 }
 
 function appendFields(body: HTMLFormElement, config: SlackConfig, context: ChannelDrawerContext) {
@@ -407,22 +466,37 @@ function appendFields(body: HTMLFormElement, config: SlackConfig, context: Chann
     updateDmControls();
   });
   updateDmControls();
+  const tokenPickers = [...SLACK_SECRET_BINDINGS].reverse().map((binding) =>
+    credentialReferenceField(binding, context, (key) => {
+      // A chosen Secret fires no field event; the editor rechecks whether Save has a change.
+      body.dispatchEvent(new Event("change"));
+      if (key === "SLACK_BOT_TOKEN") {
+        for (const picker of [channelPicker, allowedUsersPicker, dmUsersPicker]) {
+          picker.refreshNames();
+        }
+      }
+    }),
+  );
+  // Configuration save refuses an enabled channel whose token references have no Secret
+  // binding (finding 2319), so a drawer that saves names the missing token under its picker
+  // first. Create Agent's drawer only stages settings, which may take several visits; its
+  // preflight refuses an unbound token before anything is saved.
+  const enabled = body.querySelector<HTMLInputElement>("#slack-enabled");
+  const requireTokens = () => {
+    for (const picker of tokenPickers) {
+      picker.setRequired(!context.creating && enabled?.checked !== false);
+    }
+  };
+  enabled?.addEventListener("change", requireTokens);
+  requireTokens();
   body.append(
     element("h2", {}, "Slack credentials"),
-    element(
-      "p",
-      { className: "hint" },
-      "First, select or create a Slack bot token Secret to search channels and people by name. Then choose an app token for Socket Mode and configure access below. Both tokens are required before deployment.",
+    secretHint(
+      context,
+      "First, select or create a Slack bot token Secret to search channels and people by name. Then choose an app token for Socket Mode and configure access below. An enabled Slack channel saves only with both tokens.",
+      "First, select a Slack bot token Secret to search channels and people by name. Then choose an app token for Socket Mode and configure access below. An enabled Slack channel saves only with both tokens.",
     ),
-    ...[...SLACK_SECRET_BINDINGS].reverse().map((binding) =>
-      credentialReferenceField(binding, context, (key) => {
-        if (key === "SLACK_BOT_TOKEN") {
-          for (const picker of [channelPicker, allowedUsersPicker, dmUsersPicker]) {
-            picker.refreshNames();
-          }
-        }
-      }),
-    ),
+    ...tokenPickers.map((picker) => picker.field),
     credentialNavigation(context),
     element("h2", {}, "Channel access"),
     element(

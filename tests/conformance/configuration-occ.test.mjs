@@ -1868,6 +1868,9 @@ test("Harness admission rejects conflicting selections, mode mismatches, and una
         configurationGeneration: embedded.configurationGeneration,
         harness: embedded.harness,
         createdAt: embedded.createdAt,
+        // The deployment the listing names: the one admitted above, still queued.
+        deploymentStatus: "queued",
+        deploymentErrorCode: null,
       },
     ],
   );
@@ -2016,7 +2019,8 @@ test("The Installation lists exactly the OpenClaw execution modes Agent save and
       modes: [],
     })),
     { name: "full", sandbox: conformanceSandbox("full", facets), modes: ["dedicated"] },
-    // Admission's Sandbox view can refuse OpenClaw on Driver settings alone (finding 2347).
+    // Admission's Sandbox view can refuse OpenClaw on Driver settings alone (finding 2347). The
+    // capability carries that refusal, so a reader learns which setting to change (finding 2373).
     {
       name: "full but its Agent view refuses OpenClaw",
       sandbox: {
@@ -2029,6 +2033,7 @@ test("The Installation lists exactly the OpenClaw execution modes Agent save and
         },
       },
       modes: [],
+      settingRefusals: { dedicated: "This Sandbox Driver refuses OpenClaw." },
     },
     {
       name: "full but unavailable",
@@ -2058,6 +2063,7 @@ test("The Installation lists exactly the OpenClaw execution modes Agent save and
       capabilities.openclaw,
       {
         executionModes: shape.modes,
+        ...(shape.settingRefusals ? { settingRefusals: shape.settingRefusals } : {}),
         ...(shape.unavailable ? { sandboxDriverUnavailable: true } : {}),
       },
       shape.name,
@@ -2090,6 +2096,11 @@ test("The Installation lists exactly the OpenClaw execution modes Agent save and
           continue;
         }
         admitted = false;
+        // A setting refusal is the message admission itself returns.
+        const settingRefusal = shape.settingRefusals?.[executionMode];
+        if (settingRefusal !== undefined) {
+          assert.equal(error.message, settingRefusal, label);
+        }
       }
       assert.equal(admitted, shape.modes.includes(executionMode), label);
     }

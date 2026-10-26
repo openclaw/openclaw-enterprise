@@ -14,6 +14,11 @@ import { encodeRepositoryCredentialSessionFiles } from "../../apps/controller/sr
 import { openShellRepositoryAccess } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { runOpenClawRuntimeHelper } from "../helpers/plugin-runtime.mjs";
+import {
+  BROKER_PROXY_DISABLED,
+  BROKER_HOST_DENIED,
+  BROKER_PROXY_DOMAINS,
+} from "../helpers/refusal-text.mjs";
 
 const deadlineWallMs = Date.now() + 86400000;
 function repositoryClient(gatewayOrigin = "https://git.credentials.svc.cluster.local") {
@@ -1403,10 +1408,9 @@ test("Dedicated Codex repository policy preserves compatible domain decisions", 
 test("Dedicated Codex repository policy preserves an explicitly disabled network proxy", async () => {
   const f = await fixture("dedicated");
   f.revision.configuration.plugins.entries.codex.config.appServer.networkProxy = { enabled: false };
-  await assert.rejects(
-    f.driver.prepareRevision(f.revision, f.context([runtimeBinding()])),
-    /explicitly disabled Codex network proxy/,
-  );
+  await assert.rejects(f.driver.prepareRevision(f.revision, f.context([runtimeBinding()])), {
+    message: BROKER_PROXY_DISABLED,
+  });
   assert.deepEqual(
     runtimeWrites(f.calls),
     [],
@@ -1416,14 +1420,29 @@ test("Dedicated Codex repository policy preserves an explicitly disabled network
 
 test("Dedicated Codex repository policy preserves explicit broker host denies", async () => {
   const f = await fixture("dedicated");
+  // The Helm default broker host is git.<Namespace>.svc.<cluster domain>; a 63-character
+  // Namespace name, the Kubernetes maximum, gives the longest realistic host.
+  const host = `git.${"n".repeat(63)}.svc.cluster.local`;
   f.revision.configuration.plugins.entries.codex.config.appServer.networkProxy ??= {};
   f.revision.configuration.plugins.entries.codex.config.appServer.networkProxy.domains = {
-    " Git.Credentials.SVC.Cluster.Local ": "deny",
-    "git.credentials.svc.cluster.local": "allow",
+    [` ${host.toUpperCase()} `]: "deny",
+    [host]: "allow",
   };
   await assert.rejects(
-    f.driver.prepareRevision(f.revision, f.context([runtimeBinding()])),
-    /broker host is explicitly denied/,
+    f.driver.prepareRevision(
+      f.revision,
+      f.context([runtimeBinding(undefined, undefined, `https://${host}`)]),
+    ),
+    (error) => {
+      assert.equal(error.message, BROKER_HOST_DENIED);
+      // Only preparation catches this deny, and the worker drops the whole
+      // worker.compute-prepare-failed line when the message is over 256 characters
+      // (apps/controller/src/worker.ts MAX_COMPUTE_FAILURE_MESSAGE_LENGTH): the text must fit.
+      const diagnostic = f.driver.describePrepareRevisionFailure(error);
+      assert.equal(diagnostic.message, BROKER_HOST_DENIED);
+      assert.ok(diagnostic.message.length <= 256, `${diagnostic.message.length} characters`);
+      return true;
+    },
   );
   assert.deepEqual(
     runtimeWrites(f.calls),
@@ -1454,12 +1473,12 @@ test("Dedicated Codex repository policy rejects malformed domain policy containe
     [
       "domains array",
       { enabled: true, mode: "limited", domains: ["github.com"] },
-      /network policy domains must be an object/,
+      { message: BROKER_PROXY_DOMAINS },
     ],
     [
       "domains scalar",
       { enabled: true, mode: "limited", domains: "github.com" },
-      /network policy domains must be an object/,
+      { message: BROKER_PROXY_DOMAINS },
     ],
   ]) {
     await t.test(name, async () => {

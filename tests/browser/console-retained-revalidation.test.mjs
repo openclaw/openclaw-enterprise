@@ -3,6 +3,7 @@ import { createServer } from "node:http";
 import test from "node:test";
 
 import { FIRST_ACTIVITY_WAIT_MS } from "../../apps/controller/src/console/agents/detail.mts";
+import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { listen } from "../helpers/listen.mjs";
 import {
@@ -1757,14 +1758,7 @@ test("A chat link that cannot be resolved says so on the Agents list, once", asy
   // A lookup that fails for another reason (here 503) asks to try again instead.
   const key = "d".repeat(32);
   await page.route(`**/native-admin/return/${key}`, (route) =>
-    route.fulfill({
-      status: 503,
-      contentType: "application/json",
-      body: JSON.stringify({
-        error: { code: "DEPENDENCY_UNAVAILABLE", message: "Unavailable." },
-        meta: { requestId: "req_test_chat_link" },
-      }),
-    }),
+    route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Unavailable.")),
   );
   await openChatLink(page, key);
   await page.getByText("This Agent chat link could not be opened. Try the link again.").waitFor();

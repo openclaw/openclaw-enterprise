@@ -107,6 +107,8 @@ export function createCodexStartup(
     random = 0,
     // How much later than asked a login retry wait wakes (a throttled or stopped process).
     lateWakeMs = 0,
+    // Extra wrapper environment, such as the CA settings the workspace node supervisor passes.
+    environment = {},
   },
 ) {
   const selectedPlaceholder = workspacePat ? "oce-protected-egress" : providerPlaceholder;
@@ -141,6 +143,7 @@ export function createCodexStartup(
   }
 
   let appServerStarts = 0;
+  const appServerSpawns = [];
   let nativeCalls = 0;
   let clock = 0;
   const absent = (environment, names) => {
@@ -228,6 +231,7 @@ export function createCodexStartup(
           ? { APP_TOKEN_SHA: tokenDigest }
           : { APP_SERVER_TOKEN: transportToken }),
         APP_SERVER_PORT: "4500",
+        ...environment,
       },
       on() {},
       exit() {
@@ -387,6 +391,7 @@ export function createCodexStartup(
               assert.ok(args.includes("cli_auth_credentials_store=file"));
             }
             appServerStarts++;
+            appServerSpawns.push({ args: Array.from(args), env: options.env });
             return { on() {}, kill() {} };
           },
         };
@@ -402,6 +407,7 @@ export function createCodexStartup(
     get appServerStarts() {
       return appServerStarts;
     },
+    appServerSpawns,
     start() {
       vm.runInNewContext(CURRENT_AGENT_RUNTIME_ENTRYPOINT, sandbox);
     },

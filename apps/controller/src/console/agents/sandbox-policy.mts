@@ -16,16 +16,46 @@ import {
 } from "../configuration-fields.mjs";
 import { button, element } from "../dom.mjs";
 import type { NamespacePageContext } from "../namespaces.mjs";
+import {
+  askForGrant,
+  LOG_TEXT_GRANT,
+  notIncluded,
+  POLICY_EDITING_SETTING_REFUSED,
+  SANDBOX_POLICY_READ_DENIED,
+} from "./access-reasons.mjs";
 import { namespacePath, rejectionMessage } from "./list.mjs";
 import { recordRow, visibleText } from "./logs-view.mjs";
 
 type Policy = SandboxPolicyViewWire["policy"];
+
+const POLICY_READ_DENIED = SANDBOX_POLICY_READ_DENIED;
+// What each refused request checks: Sandbox log text needs Agent read_logs (or administer) plus
+// Agent read, which admit every version of the Agent; the policy and suggestions need
+// SandboxPolicy read; validation, preview and save need Agent manage_policy and SandboxPolicy
+// update.
+const LOG_GRANT = `${LOG_TEXT_GRANT} on it`;
+const POLICY_READ_GRANT = "SandboxPolicy read on it";
+const POLICY_CHANGE_GRANT = "Agent manage_policy and SandboxPolicy update on it";
+// A draft of an Agent with no current version: never deployed, stopped, or first deployment
+// still running. The copy fits each, and a reader who cannot deploy is not told to.
+const NO_CURRENT_VERSION_DENIALS =
+  "Policy denials come from deployed versions. This Agent has no current version.";
+const NO_CURRENT_VERSION_SUGGESTIONS =
+  "Suggestions come from deployed versions. This Agent has no current version.";
+// A version that runs without a Sandbox has no Sandbox log, so there are no denials to read: the
+// read would answer 400 "no such runtime log source" (finding 2484).
+const NO_SANDBOX_DENIALS =
+  "This Agent version runs without a Sandbox, so no policy denials are recorded for it.";
+const NO_SANDBOX_SUGGESTIONS =
+  "Suggestions come from policy denials. This Agent version runs without a Sandbox, so it has none.";
 type LogLine = Extract<RuntimeLogRecord, { type: "line" }>;
 
-function errorText(cause: unknown, subject: string) {
+// A 403 names what the refused request does, the grant it checks and who gives it (findings 2539,
+// D753).
+function errorText(cause: unknown, task: string, grant: string) {
   const { status, serverMessage } = requestFailure(cause);
   if (status === 403) {
-    return `You do not have permission to ${subject}.`;
+    return notIncluded(task, grant);
   }
   if (status === 409 && serverMessage) {
     return serverMessage;
@@ -39,6 +69,27 @@ function grantText(grant: SandboxNetworkGrant) {
     .join(", ");
   return `${visibleText(grant.binary)} → ${visibleText(grant.host)}:${ports}`;
 }
+
+// What a failed live application's reason code (`worker/sandbox-policy.ts`) means and what to do
+// next; the page showed the bare code (finding 2537). The worker repeats its checks on every pass,
+// also after it sent the policy and the Sandbox reported it pending, so a failure does not mean the
+// Sandbox runs none of it (finding 2570). Refresh policy reads only the stored record.
+const NOT_SENT_AGAIN =
+  "The controller does not send this policy again, and it did not confirm whether the Sandbox runs it.";
+const APPLICATION_FAILURES: Readonly<Record<string, string>> = {
+  SANDBOX_POLICY_REVISION_CHANGED: `The Agent’s current version changed, or the Agent stopped, before the policy was confirmed. ${NOT_SENT_AGAIN} Apply the saved policy to the current version again.`,
+  AUTHORIZATION_DENIED: `The account that applied the policy no longer has Agent manage_policy and SandboxPolicy update. ${NOT_SENT_AGAIN} ${askForGrant("that access")} Then apply again.`,
+  SANDBOX_POLICY_CEILING_CHANGED: `The Installation delegation ceiling changed and no longer covers every saved rule. ${NOT_SENT_AGAIN} Remove the rules outside the ceiling, save, then apply again.`,
+  SANDBOX_POLICY_UNSUPPORTED: `The Sandbox Driver running this version cannot apply Agent network policy, or refused these rules. ${NOT_SENT_AGAIN} Check the rules with Review changes; if they pass, deploy a new version to put the saved policy into effect.`,
+  SANDBOX_POLICY_PROTECTED_EXECUTION: `This version runs under protected execution, whose egress policy an Agent network policy cannot replace. ${NOT_SENT_AGAIN} Remove the saved rules so that they do not block the next deploy.`,
+  SANDBOX_POLICY_VALIDATION_FAILED: `The Sandbox Driver’s settings refused the saved rules. ${NOT_SENT_AGAIN} Review changes shows each problem: correct the rules, save, then apply again.`,
+  SANDBOX_POLICY_PLACEMENT_UNAVAILABLE:
+    "The Installation’s Compute Driver changed since this version was deployed, so the controller cannot reach its Sandbox to apply or check the policy. Deploy a new version to put the saved policy into effect.",
+  SANDBOX_POLICY_PROVIDER_FAILED:
+    "The Sandbox reported that applying the policy failed. Refresh policy, then apply again; if it fails again, ask an operator to check the Sandbox gateway.",
+};
+const APPLICATION_UNCONFIRMED =
+  "Application was not confirmed. The provider may have accepted part of the request; refresh and retry explicitly. No redeployment was started.";
 
 // Review the rules returned by validation, including any normalization. The controller owns admission.
 function readableRules(value: unknown): value is SandboxNetworkGrant[] {
@@ -124,10 +175,17 @@ export function renderAgentSandboxPolicy(
     agent,
     revisionId,
     descriptor,
+    policyReadAllowed,
+    sandboxLogSource,
   }: {
     agent: Pick<Agent, "id" | "namespaceId" | "activeRevisionId" | "desiredRuntimeState">;
     revisionId: string;
     descriptor?: DriverConfigurationDescriptor;
+    // The caller's advisory sandbox policy read answer; undefined when it is unknown.
+    policyReadAllowed?: Promise<boolean | undefined>;
+    // Whether the viewed version has a Sandbox log source, from its snapshot; undefined when it
+    // is unknown, which reads the log and lets its answer decide.
+    sandboxLogSource?: Promise<boolean | undefined>;
   },
 ) {
   const path = `${namespacePath(agent.namespaceId)}/agents/${encodeURIComponent(agent.id)}`;
@@ -147,6 +205,12 @@ export function renderAgentSandboxPolicy(
     "Denials in the loaded window: —",
   );
   const follow = element("input", { type: "checkbox", "aria-label": "Follow policy denials" });
+  const logActions = element(
+    "div",
+    { className: "form-actions" },
+    button("Refresh denials", () => void readLogs(true)),
+    element("label", {}, follow, "Follow"),
+  );
   const feedback = element("p", { role: "status", tabindex: "-1" });
   const suggestionStatus = element("p", { role: "status" }, "Loading policy suggestions…");
   const filter = element("input", {
@@ -154,6 +218,12 @@ export function renderAgentSandboxPolicy(
     placeholder: "Filter loaded denials",
     "aria-label": "Filter loaded denials",
   });
+  const filterField = element(
+    "label",
+    { className: "form-field" },
+    "Filter the loaded window",
+    filter,
+  );
   let view: SandboxPolicyViewWire | undefined;
   let validationDetails: Readonly<ReturnType<typeof requestErrorDetails>> = [];
   let draftGeneration = 0;
@@ -172,6 +242,35 @@ export function renderAgentSandboxPolicy(
   let suggestionsReading = false;
   // A permission refusal is not retried from here: the same request gets the same answer.
   let suggestionsDenied = false;
+  // Set once the viewed version is known to have no Sandbox log source.
+  let noSandboxLog = false;
+  async function sandboxLogMissing() {
+    if (
+      !noSandboxLog &&
+      (await Promise.resolve(sandboxLogSource).catch(() => undefined)) === false
+    ) {
+      noSandboxLog = true;
+    }
+    return noSandboxLog;
+  }
+  // Without a Sandbox log, the denial window and its controls can show nothing, so only the reason
+  // stays (finding 2497).
+  function showNoSandboxDenials() {
+    follow.checked = false;
+    clearTimeout(logTimer);
+    clearTimeout(suggestionTimer);
+    records = [];
+    logsLoaded = false;
+    logStatus.textContent = NO_SANDBOX_DENIALS;
+    logRows.replaceChildren();
+    // The empty rows block keeps its margins and a grid gap: hide it too (finding 2522).
+    for (const node of [count, logActions, filterField, logRows]) {
+      node.hidden = true;
+    }
+  }
+  // Set when the caller's permission answer denies sandbox policy read: the policy and its
+  // suggestions are not read, so a reader meets no 403 and no refusal block (finding 2454).
+  let policyReadDenied = false;
   // The first policy read says whether the Sandbox Driver supports per-Agent network policy.
   // Without it there is no Sandbox log source and no suggestions, so the tab says so once instead
   // of reading both, showing their refusals and offering an editor (finding 2060). A refused or
@@ -273,6 +372,12 @@ export function renderAgentSandboxPolicy(
     if (!(await policySupported()) || reading) {
       return;
     }
+    if (await sandboxLogMissing()) {
+      if (current()) {
+        showNoSandboxDenials();
+      }
+      return;
+    }
     clearTimeout(logTimer);
     reading = true;
     if (restart) {
@@ -302,8 +407,14 @@ export function renderAgentSandboxPolicy(
       if (!current()) {
         return;
       }
+      if (requestFailure(error).code === "RUNTIME_LOGS_SOURCE_UNAVAILABLE") {
+        // The snapshot could not say; the answer does, and it is the same for every read.
+        noSandboxLog = true;
+        showNoSandboxDenials();
+        return;
+      }
       follow.checked = false;
-      logStatus.textContent = errorText(error, "read this Agent’s Sandbox logs");
+      logStatus.textContent = errorText(error, "reading this Agent’s Sandbox logs", LOG_GRANT);
       if (records.length === 0) {
         count.textContent = "Denials in the loaded window: unavailable";
         logRows.replaceChildren();
@@ -358,7 +469,11 @@ export function renderAgentSandboxPolicy(
           editable() ? button("Review suggestion", () => prefill(entry.grant)) : null,
         ),
       ),
-      ...(suggestionsDenied ? [] : [button("Refresh suggestions", () => void loadSuggestions())]),
+      // A refusal gets the same answer again, and a version without a Sandbox has none to read,
+      // nor does the draft (finding 2509).
+      ...(suggestionsDenied || noSandboxLog || revisionId === "draft"
+        ? []
+        : [button("Refresh suggestions", () => void loadSuggestions())]),
     );
   }
 
@@ -366,12 +481,34 @@ export function renderAgentSandboxPolicy(
     if (!current() || suggestionsReading) {
       return;
     }
+    // The permission answer decides the first policy read. A reader it denies is not sent to
+    // the current version for suggestions, which refuses them too.
+    await firstPolicyRead;
+    if (!current() || suggestionsReading) {
+      return;
+    }
+    if (policyReadDenied) {
+      // The network policy card says this reader cannot read the policy or its suggestions, so
+      // the suggestions card would only repeat that sentence (finding 2522).
+      suggestionsDenied = true;
+      suggestions.hidden = true;
+      return;
+    }
     if (revisionId === "draft") {
-      suggestionStatus.textContent = "Deploy an Agent to collect provider suggestions.";
+      suggestionStatus.textContent = agent.activeRevisionId
+        ? "Suggestions come from deployed versions. Open the current version to see them."
+        : NO_CURRENT_VERSION_SUGGESTIONS;
       renderSuggestions();
       return;
     }
     if (!(await policySupported()) || suggestionsReading) {
+      return;
+    }
+    if (await sandboxLogMissing()) {
+      if (current()) {
+        suggestionStatus.textContent = NO_SANDBOX_SUGGESTIONS;
+        renderSuggestions();
+      }
       return;
     }
     clearTimeout(suggestionTimer);
@@ -392,7 +529,11 @@ export function renderAgentSandboxPolicy(
       }
       recommendations = [];
       suggestionsDenied = requestFailure(error).status === 403;
-      suggestionStatus.textContent = errorText(error, "read policy suggestions");
+      suggestionStatus.textContent = errorText(
+        error,
+        "reading policy suggestions",
+        POLICY_READ_GRANT,
+      );
     }
     suggestionsReading = false;
     renderSuggestions();
@@ -408,7 +549,8 @@ export function renderAgentSandboxPolicy(
   async function mutate(
     operation: () => Promise<void>,
     requiresEditAuthority = true,
-    failureMessage = (error: unknown) => errorText(error, "change this Agent’s policy"),
+    failureMessage = (error: unknown) =>
+      errorText(error, "changing this Agent’s policy", POLICY_CHANGE_GRANT),
   ) {
     if (mutation || unknownOutcome) {
       return;
@@ -458,6 +600,13 @@ export function renderAgentSandboxPolicy(
   }
 
   function renderPolicy() {
+    if (policyReadDenied) {
+      policyPanel.replaceChildren(
+        element("h2", {}, "Agent network policy"),
+        element("p", { className: "muted" }, POLICY_READ_DENIED),
+      );
+      return;
+    }
     policyPanel.replaceChildren(
       element("h2", {}, "Agent network policy"),
       feedback,
@@ -540,13 +689,20 @@ export function renderAgentSandboxPolicy(
       button(
         editingEnabled ? "Disable policy editing" : "Enable policy editing",
         () =>
-          void mutate(async () => {
-            await context.request(`${policyPath}/editing`, {
-              method: "PATCH",
-              body: { enabled: !editingEnabled },
-            });
-            await loadPolicy();
-          }, false),
+          void mutate(
+            async () => {
+              await context.request(`${policyPath}/editing`, {
+                method: "PATCH",
+                body: { enabled: !editingEnabled },
+              });
+              await loadPolicy();
+            },
+            false,
+            (error) =>
+              requestFailure(error).status === 403
+                ? POLICY_EDITING_SETTING_REFUSED
+                : errorText(error, "changing the editing setting", POLICY_CHANGE_GRANT),
+          ),
         { disabled: mutation },
       ),
       element(
@@ -574,11 +730,15 @@ export function renderAgentSandboxPolicy(
         ),
       );
       if (application.state === "failed") {
+        // The code stays on the status line, so the reader can match it to the audit log.
+        const reason = application.reason;
         policyPanel.append(
           element(
             "p",
             { className: "notice" },
-            "Application was not confirmed. The provider may have accepted part of the request; refresh and retry explicitly. No redeployment was started.",
+            reason && Object.hasOwn(APPLICATION_FAILURES, reason)
+              ? APPLICATION_FAILURES[reason]
+              : APPLICATION_UNCONFIRMED,
           ),
         );
       }
@@ -712,7 +872,7 @@ export function renderAgentSandboxPolicy(
           return;
         }
         validationDetails = requestErrorDetails(error);
-        feedback.textContent = `${errorText(error, "validate this Agent’s policy")} Your draft is retained. Reload policy to review a conflict.`;
+        feedback.textContent = `${errorText(error, "validating this Agent’s policy", POLICY_CHANGE_GRANT)} Your draft is retained. Reload policy to review a conflict.`;
         feedback.className = "error";
         feedback.setAttribute("role", "alert");
         renderPolicy();
@@ -772,7 +932,7 @@ export function renderAgentSandboxPolicy(
             if (error === unconfirmedSave) {
               return unconfirmedSave.message;
             }
-            const reason = errorText(error, "change this Agent’s policy");
+            const reason = errorText(error, "changing this Agent’s policy", POLICY_CHANGE_GRANT);
             return savedVersion === undefined
               ? reason
               : `Policy v${savedVersion} was saved, but application to the current revision was not confirmed. ${reason}`;
@@ -931,7 +1091,11 @@ export function renderAgentSandboxPolicy(
       readFailed = true;
       policyPanel.replaceChildren(
         element("h2", {}, "Agent network policy"),
-        element("p", { role: "alert" }, errorText(error, "read this Agent’s policy")),
+        element(
+          "p",
+          { role: "alert" },
+          errorText(error, "reading this Agent’s policy", POLICY_READ_GRANT),
+        ),
         ...(requestFailure(error).status === 403
           ? []
           : [button("Retry policy read", () => void loadPolicy())]),
@@ -955,22 +1119,35 @@ export function renderAgentSandboxPolicy(
   section.append(
     element("h2", {}, "Policy denials"),
     count,
-    element(
-      "div",
-      { className: "form-actions" },
-      button("Refresh denials", () => void readLogs(true)),
-      element("label", {}, follow, "Follow"),
-    ),
+    logActions,
     logStatus,
-    element("label", { className: "form-field" }, "Filter the loaded window", filter),
+    filterField,
     logRows,
     suggestions,
     policyPanel,
   );
   renderPolicy();
-  const firstPolicyRead = loadPolicy();
+  // A caller whose permission answer denies sandbox policy read is not sent the policy read; an
+  // unknown answer still reads it.
+  const firstPolicyRead = Promise.resolve(policyReadAllowed).then((allowed) => {
+    if (allowed !== false) {
+      return loadPolicy();
+    }
+    if (current()) {
+      policyReadDenied = true;
+      renderPolicy();
+    }
+  });
   if (revisionId === "draft") {
-    logStatus.textContent = "Deploy an Agent to load Sandbox policy decisions.";
+    // The draft has no deployment of its own; a deployed Agent's denials are on its versions.
+    logStatus.textContent = agent.activeRevisionId
+      ? "Policy denials come from deployed versions. Open the current version to see them."
+      : NO_CURRENT_VERSION_DENIALS;
+    // It reads no Sandbox log, so the window's count, controls and rows could only show nothing,
+    // as on a version without a Sandbox (findings 2509, 2522).
+    for (const node of [count, logActions, filterField, logRows]) {
+      node.hidden = true;
+    }
   } else {
     void readLogs(true);
   }

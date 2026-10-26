@@ -24,8 +24,16 @@ export async function createConsoleRepositoryLaunchFixture(
     requests: { cpu: "100m", memory: "64Mi" },
     limits: { cpu: "250m", memory: "128Mi" },
   };
+  // Dedicated Agents need gateway routing, node enrollment and a Gateway node selector, or
+  // deployment admission refuses them.
   const compute = new KubernetesComputeDriver(
     {
+      gatewayRouting: {
+        hostname: "agents.example.test",
+        gatewayName: "gateways",
+        gatewayNamespace: "controller",
+        envoyNamespace: "envoy",
+      },
       authentication: { mode: "inCluster" },
       images: { gateway: "gateway:local", agent: "agent:local", requireImmutableDigest: false },
       resources: {
@@ -37,7 +45,6 @@ export async function createConsoleRepositoryLaunchFixture(
         dns: { namespace: "kube-system", podLabels: { app: "dns" } },
         gatewayPort: 8080,
         gatewayTrustedProxyCidrs: ["127.0.0.1/32"],
-        gatewayClients: [{ namespace: "controller", podLabels: { app: "controller" } }],
         repositoryCredentials: {
           namespace: "controller",
           podLabels: { app: "credentials" },
@@ -48,10 +55,11 @@ export async function createConsoleRepositoryLaunchFixture(
       runtime: {
         transportSecretPrefix: "transport",
         gatewayStorageClassName: "local-path",
+        gatewayNodeSelector: { "oce-role": "control" },
         channels: { proxyUrl: "http://10.42.0.15:3128" },
       },
     },
-    { id: "console-launch-compute" },
+    { id: "console-launch-compute", nodeEnrollment: {} },
   );
   // This draft/deploy fixture has no PostgreSQL provisioning queue.
   compute.agentProvisioning = undefined;

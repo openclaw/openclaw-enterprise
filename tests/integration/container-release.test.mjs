@@ -929,9 +929,9 @@ test("the runtime release smoke runs every Image Runtime Startup file", () => {
   const notInSmoke = {
     // Drives the image helpers against a stand-in docker binary; it needs no image.
     "tests/integration/runtime-image-failure-output.test.mjs": null,
-    // Image Model Probes files: the release smoke has never run them. The outcomes moved
-    // into Image Runtime Startup 2 and stay out of the smoke.
-    "tests/integration/runtime-image-model-probe.test.mjs": "images-model-probes",
+    // Model probe files: the release smoke has never run them. The contention case runs
+    // in Image Runtime Startup 3 and the outcomes in Image Runtime Startup 2.
+    "tests/integration/runtime-image-model-probe.test.mjs": "images-runtime-startup-3",
     "tests/integration/runtime-image-model-probe-outcomes.test.mjs": "images-runtime-startup-2",
   };
   for (const [path, lane] of Object.entries(notInSmoke)) {

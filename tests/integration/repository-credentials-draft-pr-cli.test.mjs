@@ -6,7 +6,8 @@ import { createServer as createHttpsServer } from "node:https";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.mjs";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
 
 // `oce-github pr-create` in OpenShell mode: each failure class prints its own line, so an
@@ -22,6 +23,25 @@ const helper = fileURLToPath(
 const marker = "openshell:resolve:env:s" + "a".repeat(64) + "_GITHUB_TOKEN";
 const unconfirmed =
   "Draft not confirmed. Check the pull requests at the repository; do not submit another create.";
+
+// Runs the helper with only PATH and `env`; `secret` (its credential) must never be printed.
+function runHelper(args, env, secret) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, args, {
+      env: { PATH: process.env.PATH, ...env },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => (stdout += chunk));
+    child.stderr.on("data", (chunk) => (stderr += chunk));
+    child.on("error", reject);
+    child.on("close", (code) => {
+      assert.ok(!(stdout + stderr).includes(secret), "the credential is never printed");
+      resolve({ code, stdout, stderr, lines: stderr.trim().split("\n") });
+    });
+  });
+}
 
 async function githubLeaf(tls) {
   const openssl = (...args) => {
@@ -95,40 +115,26 @@ test(
     closed.close();
     await once(closed, "close");
 
-    const run = (args, { port = server.address().port, env = {} } = {}) =>
-      new Promise((resolve, reject) => {
-        const redirect = `import tls from "node:tls";
+    const run = (args, { port = server.address().port, env = {} } = {}) => {
+      const redirect = `import tls from "node:tls";
 const connect = tls.connect;
 tls.connect = (options, ...rest) => connect({ ...options, host: "127.0.0.1", port: ${port} }, ...rest);`;
-        const child = spawn(
-          process.execPath,
-          ["--import", "data:text/javascript," + encodeURIComponent(redirect), helper, ...args],
-          {
-            env: {
-              PATH: process.env.PATH,
-              HOME: tls.directory,
-              TMPDIR: tls.directory,
-              NODE_EXTRA_CA_CERTS: tls.rootCertificatePath,
-              GITHUB_TOKEN: marker,
-              OCE_OPENSHELL_GIT_REPOSITORY: "example/project",
-              OCE_OPENSHELL_GIT_PUSH_REF: "refs/heads/review/task",
-              OCE_OPENSHELL_GIT_BASE: "main",
-              OCE_OPENSHELL_GIT_API_ORIGIN: "https://api.github.com",
-              ...env,
-            },
-            stdio: ["ignore", "pipe", "pipe"],
-          },
-        );
-        let stdout = "";
-        let stderr = "";
-        child.stdout.on("data", (chunk) => (stdout += chunk));
-        child.stderr.on("data", (chunk) => (stderr += chunk));
-        child.on("error", reject);
-        child.on("close", (code) => {
-          assert.ok(!(stdout + stderr).includes(marker), "the credential marker is never printed");
-          resolve({ code, stdout, stderr, lines: stderr.trim().split("\n") });
-        });
-      });
+      return runHelper(
+        ["--import", "data:text/javascript," + encodeURIComponent(redirect), helper, ...args],
+        {
+          HOME: tls.directory,
+          TMPDIR: tls.directory,
+          NODE_EXTRA_CA_CERTS: tls.rootCertificatePath,
+          GITHUB_TOKEN: marker,
+          OCE_OPENSHELL_GIT_REPOSITORY: "example/project",
+          OCE_OPENSHELL_GIT_PUSH_REF: "refs/heads/review/task",
+          OCE_OPENSHELL_GIT_BASE: "main",
+          OCE_OPENSHELL_GIT_API_ORIGIN: "https://api.github.com",
+          ...env,
+        },
+        marker,
+      );
+    };
     const create = (extra = [], options) =>
       run(
         [
@@ -387,6 +393,164 @@ tls.connect = (options, ...rest) => connect({ ...options, host: "127.0.0.1", por
       const other = await create();
       assert.equal(other.code, 1, `another repository in ${label}`);
       assert.deepEqual(other.lines.slice(1), [unconfirmed], `another repository in ${label}`);
+    }
+  },
+);
+
+// Native broker mode (finding 2410): a code the broker answers before any send to GitHub
+// says "Draft not created"; an uncertain exchange, an unknown outcome receipt or a code
+// the helper does not know may follow a create, so it says "Draft not confirmed".
+test(
+  "oce-github pr-create tells native broker refusals from unknown outcomes",
+  { timeout: 60_000 },
+  async (t) => {
+    const tls = await harnessTlsFixture(t);
+    const operationId = "6f1c2a4e-8b3d-4c5e-9f70-1a2b3c4d5e6f";
+    const bearer = "b".repeat(43);
+    let reply;
+    const received = [];
+    // Stands in for the repository broker: answers each create with `reply`.
+    const server = createHttpsServer({ cert: tls.cert, key: tls.key }, async (req, res) => {
+      received.push({
+        operationId: req.headers["x-oce-operation-id"],
+        bearer: req.headers.authorization === "Bearer " + bearer,
+      });
+      for await (const _ of req) {
+        // Drain the request body.
+      }
+      res.writeHead(reply.status, { "content-type": "application/json" });
+      res.end(JSON.stringify(reply.body));
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    t.after(() => server.close());
+    const origin = "https://localhost:" + server.address().port;
+    const { root } = await createNativeClientMaterial(
+      t,
+      [
+        {
+          repositoryRef: "source",
+          opened: {
+            bearer,
+            session: { sessionId: "draft-session", deadlineWallMs: Date.now() + 600_000 },
+            client: {
+              gatewayOrigin: origin,
+              gitRemote: origin + "/example/project.git",
+              gitUsername: "gateway-session",
+              apiHost: "localhost",
+              canonicalApiHost: "localhost",
+              repository: "example/project",
+            },
+          },
+        },
+      ],
+      { ca: Buffer.from(tls.caBundle) },
+    );
+    // The broker shell's entry: the helper reads this manifest root instead of the Pod's.
+    const entry =
+      "import {createDraftPull,draftPullFailureMessage} from " +
+      JSON.stringify(pathToFileURL(helper).href) +
+      "; await createDraftPull(process.argv.slice(2),process.argv[1]).catch((e)=>" +
+      "{const f=draftPullFailureMessage(e);process.stderr.write(f.message+'\\n');process.exitCode=f.exitCode;});";
+    const create = () =>
+      runHelper(
+        [
+          "--input-type=module",
+          "-e",
+          entry,
+          root,
+          "pr-create",
+          "--operation-id",
+          operationId,
+          "--draft",
+          "--head",
+          "review/task",
+          "--base",
+          "main",
+          "--title",
+          "Review",
+        ],
+        { HOME: tls.directory, TMPDIR: tls.directory },
+        bearer,
+      );
+    const attempt = "draft pull operation " + operationId;
+    const receipt = {
+      operationId,
+      state: "open",
+      draft: true,
+      number: 3,
+      url: "https://github.com/example/project/pull/3",
+      head: { ref: "review/task" },
+      base: { ref: "main" },
+    };
+    reply = { status: 201, body: receipt };
+    const created = await create();
+    assert.equal(created.code, 0, created.stderr);
+    assert.deepEqual(JSON.parse(created.stdout), receipt);
+    assert.deepEqual(received, [{ operationId, bearer: true }]);
+
+    const refused = (code, advice) =>
+      `Draft not created: the repository broker refused it (${code}); GitHub did not receive it.${advice ? ` ${advice}` : ""}`;
+    for (const [label, response, expected] of [
+      [
+        "not-submitted receipt",
+        { status: 409, body: { operationId, error: "not-submitted" } },
+        [
+          "Draft not created: the repository broker recorded this operation as not sent (not-submitted); GitHub did not receive it.",
+        ],
+      ],
+      [
+        "outcome_unknown receipt",
+        { status: 409, body: { operationId, error: "outcome_unknown" } },
+        ["draft pull outcome_unknown", unconfirmed],
+      ],
+      [
+        "uncertain exchange",
+        { status: 502, body: { error: { code: "exchange-uncertain" } } },
+        [unconfirmed],
+      ],
+      [
+        "unknown broker code",
+        { status: 403, body: { error: { code: "new-code" } } },
+        [unconfirmed],
+      ],
+      [
+        "receipt for another operation",
+        { status: 201, body: { ...receipt, operationId: "x" } },
+        [unconfirmed],
+      ],
+      [
+        "closed session",
+        { status: 401, body: { error: { code: "session-unavailable" } } },
+        [
+          refused(
+            "session-unavailable",
+            "The repository session for this Agent version is not open; if a retry is refused too, ask an operator to check the repository binding.",
+          ),
+        ],
+      ],
+      [
+        "exchange capacity",
+        { status: 503, body: { error: { code: "exchange-capacity" } } },
+        [
+          refused(
+            "exchange-capacity",
+            "Too many repository requests are running, for this Agent or across the broker; retry after a short wait.",
+          ),
+        ],
+      ],
+      [
+        "route denial",
+        { status: 403, body: { error: { code: "route-denied" } } },
+        [refused("route-denied")],
+      ],
+    ]) {
+      reply = response;
+      const before = received.length;
+      const result = await create();
+      assert.equal(result.code, 1, label);
+      assert.deepEqual(result.lines, [attempt, ...expected], label);
+      assert.equal(received.length, before + 1, `${label}: exactly one request`);
     }
   },
 );

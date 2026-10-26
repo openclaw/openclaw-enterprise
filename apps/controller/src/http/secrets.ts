@@ -42,13 +42,24 @@ export const secretHandlers = {
     const secrets = await controller.listSecrets(context.actorId, namespaceId);
     reply.send({ data: secrets.map(clientSecret), meta: { requestId: request.id } });
   },
-  async getSecret({ controller, context, request, reply, params, namespaceId }) {
+  async getSecret({ controller, context, request, reply, params, namespaceId, callerMay }) {
     const secret = await controller.readSecret(
       context.actorId,
       namespaceId,
       params.secretId as string,
     );
-    reply.send({ data: clientSecretDetail(secret), meta: { requestId: request.id } });
+    // The targets match operationTarget() for updateSecret and deleteSecret, so the console can
+    // disable Replace value and Delete Secret with their reason instead of a refusal after the
+    // caller acts (finding D761). Advisory only: no allow or deny decision changes.
+    const target = { kind: "secret", id: secret.id, namespaceId } as const;
+    const [update, remove] = await Promise.all([
+      callerMay("update", target),
+      callerMay("delete", target),
+    ]);
+    reply.send({
+      data: { ...clientSecretDetail(secret), callerPermissions: { update, delete: remove } },
+      meta: { requestId: request.id },
+    });
   },
   async updateSecret({
     controller,

@@ -31,10 +31,13 @@ import type {
   SandboxDriver,
 } from "@openclaw-enterprise/contracts";
 import {
+  CredentialProxyAdmissionError,
+  CredentialProxyRepositoryOnlyError,
   DependencyUnavailableError,
   isReducedCredentialPlan,
   RepositoryGitProfileUnsupportedError,
   RepositoryGitSenderUnqualifiedError,
+  RetryLaterError,
 } from "@openclaw-enterprise/occ";
 import { asRecord, immutableCopy, sha256Hex } from "@openclaw-enterprise/utils";
 import { type OpenShellGateway, openShellWorkspaceName } from "../../backends/openshell.ts";
@@ -50,6 +53,25 @@ import {
 import { codexWorkspaceRoutes, codexWorkspaceProviderRef } from "./codex-workspace-provider.ts";
 import { verifiedCodexWorkspaceProvider } from "./codex-workspace-identity.ts";
 import { openAiStaticProvider } from "./openai-provider.ts";
+
+/** Whether `registration` is a registered supervisor middleware advertising no execution capability. */
+function registeredWithoutExecution(extensions: unknown, registration: string): boolean {
+  return (
+    Array.isArray(extensions) &&
+    extensions.some((value) => {
+      const item = asRecord(value);
+      return (
+        item?.configured_name === registration &&
+        (item.kind === "EXTENSION_KIND_SUPERVISOR_MIDDLEWARE" || item.kind === 4) &&
+        item.protocol_major === 1 &&
+        ![item.required_capabilities, item.supported_capabilities].some(
+          (list) =>
+            Array.isArray(list) && list.some((entry) => capabilities.includes(entry as string)),
+        )
+      );
+    })
+  );
+}
 
 export interface OpenShellProxyOptions {
   readonly middlewareName: string;
@@ -816,9 +838,20 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
             );
           })
         ) {
-          throw new DependencyUnavailableError(
-            "The selected OpenShell counterpart has no negotiated protected egress authority.",
-          );
+          // Finding 2360: repository.openShell makes the request-phase Git service the only
+          // registration. Registered with no execution capability at all, it is a configuration
+          // that never serves a non-Git profile, not an outage or a partial negotiation.
+          if (
+            !git &&
+            registration === options.repositoryMiddlewareName &&
+            registration !== undefined &&
+            registeredWithoutExecution(extensions, registration)
+          ) {
+            throw new CredentialProxyRepositoryOnlyError();
+          }
+          // A gateway state an operator fixes (registration, protocol or capability version),
+          // which can also be a gateway still rolling out: a 503 that names it (finding 2536).
+          throw new RetryLaterError("proxyRegistration");
         }
         // Advertise the explicitly selected assurance. The held launcher, actual policy and
         // recipient must still be verified before any usable Git credential is selected.
@@ -832,9 +865,8 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
         }
         if (git) {
           if (this.options.observedHookPreviewWorkspace && profile === "github_installation") {
-            throw new DependencyUnavailableError(
-              "The observed-hook preview requires the qualified stock 0.1.5 gateway.",
-            );
+            // The gateway's version is live state an operator fixes (finding 2536).
+            throw new RetryLaterError("previewGatewayVersion");
           }
           return { profile, authorization: "online-request" as const };
         }
@@ -857,9 +889,10 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       profile === "github_installation" &&
       !(this.options.observedHookPreviewWorkspace && this.previewEnforcement)
     ) {
-      throw new DependencyUnavailableError(
-        "This OpenShell Driver is not qualified for GitHub installation access.",
-      );
+      // An Installation setting no retry changes: a 409 like the git-write refusal above
+      // (finding 2536). Protected Git always composes the preview enforcement, so only the
+      // Proxy's observedHookPreviewWorkspace opt-in is missing.
+      throw new CredentialProxyAdmissionError("installationPreview");
     }
   }
 

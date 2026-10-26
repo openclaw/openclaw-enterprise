@@ -94,12 +94,16 @@ export async function resources(kind, namespace) {
   return JSON.parse(await kubectlRead("get", kind, "--namespace", namespace, "-o", "json")).items;
 }
 
+function notFound(error) {
+  return /NotFound|not found/i.test(error.stderr ?? error.message);
+}
+
 export async function missing(kind, name, namespace) {
   try {
     await resource(kind, name, namespace);
     return false;
   } catch (error) {
-    if (/NotFound|not found/i.test(error.stderr ?? error.message)) {
+    if (notFound(error)) {
       return true;
     }
     throw error;
@@ -108,6 +112,29 @@ export async function missing(kind, name, namespace) {
 
 export function waitFor(description, operation, timeoutMs = 120_000) {
   return waitForResult(description, operation, { timeoutMs, intervalMs: 500 });
+}
+
+// Asserts a PersistentVolumeClaim's delete was already issued, then waits for the claim to go.
+// A deleted claim stays Terminating until Kubernetes' PVC-protection controller has seen every
+// Pod using it removed, which can trail the Pods' own removal (finding 2409).
+export async function waitForDeletedClaim(name, namespace) {
+  await waitFor(`PersistentVolumeClaim ${name} to be removed`, async () => {
+    let claim;
+    try {
+      claim = await resource("persistentvolumeclaim", name, namespace);
+    } catch (error) {
+      if (notFound(error)) {
+        return true;
+      }
+      throw error;
+    }
+    assert.notEqual(
+      claim.metadata?.deletionTimestamp,
+      undefined,
+      `PersistentVolumeClaim ${name} was not deleted`,
+    );
+    return undefined;
+  });
 }
 
 // Test cleanup deletes its randomly named namespaces without waiting: no later step reads

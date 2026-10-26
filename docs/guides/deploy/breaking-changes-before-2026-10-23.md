@@ -1,7 +1,11 @@
 # Breaking-change notices before 2026-10-23
 
 These [breaking-change notices](breaking-changes.md) are dated 2026-10-16 to
-2026-10-22; newer ones are on that page, and older ones are in the
+2026-10-22; newer ones are on that page, in the
+[later notices from 2026-10-24](breaking-changes-later-2026-10-24.md), in the
+[earlier notices from 2026-10-24](breaking-changes-earlier-2026-10-24.md) and in the
+[notices before 2026-10-24](breaking-changes-before-2026-10-24.md), and older
+ones are in the
 [notices before 2026-10-15](breaking-changes-before-2026-10-15.md). They still
 apply when you upgrade from a source commit older than their date. Entries are
 newest first. Steps marked _untested_ have not been run against a real
@@ -28,19 +32,27 @@ The migrator also refuses a database from an earlier Credential Proxy preview.
 **Who is affected.** Installations that used the native repository broker
 (Installation `drivers.repo`, Helm `repositoryCredentials.enabled`).
 `drivers.conduit`, `broker-trial` and the preview database refusal affect only
-Credential Proxy preview builds.
+Credential Proxy preview builds. A preview install that gave Agents Git through
+the OpenShell request-phase route loses that Git access on this release.
 
 **How to tell.** Helm render fails for `broker-trial` and the broker settings
 above. The upgrade check prints the startup refusals, for example
 `drivers.repo native admission is retired. ...`, but the `startup-error` and
 `worker.startup-error` logs show only `STARTUP_FAILED` or
-`WORKER_STARTUP_FAILED`. The migrator (`db:migrate --check`) names a preview
-history as unsupported.
+`WORKER_STARTUP_FAILED`. The production migrator check
+(`db:migrate:production --check`, or `scripts/migrate-production.mjs --check`
+in the controller image) names a preview history as unsupported. With the
+bundled OpenShell Driver, deploying an Agent with a `git-write` binding answers
+`409 REPOSITORY_GIT_SENDER_UNQUALIFIED`, and startup refuses
+`repository.nativeSender` while a Sandbox Driver is selected.
 
 **Steps.** Before upgrading, drain accepted repository work on the original
 release, which alone can settle it, then follow the
 [Credential Proxy upgrade](credential-proxy-upgrade.md). Do not replay uncertain
-work.
+work. To keep Agent Git, install a qualified sender, or drop the OpenShell
+Sandbox Driver and use
+[native prepared Git](../../reference/repository-credentials/prepared-native-git.md);
+see [protected repository access with OpenShell](../../reference/repository-credentials/protected-openshell-git.md).
 
 ## 2026-10-16: stored model provider settings are checked at deploy
 

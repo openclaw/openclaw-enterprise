@@ -8,6 +8,7 @@ import {
   createRuntimeLogCursorCodec,
   RuntimeLogsForbiddenByClusterError,
 } from "../../packages/occ/src/index.ts";
+import { assertApiError } from "../helpers/api-error.mjs";
 import { authenticatedHeaders, cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
@@ -22,6 +23,7 @@ import {
   tenantANamespaceId,
   tenantRequest as request,
 } from "../helpers/tenant-reader-app.mjs";
+import { RESOURCE_NOT_FOUND } from "../helpers/refusal-text.mjs";
 
 const installationId = "ins_3033697e-6397-4cc6-9b04-8ec17af78cf1";
 const missingRevisionId = "rev_3dd29693-ce8b-4b4c-97c4-14b4c68c6e9c";
@@ -1114,18 +1116,8 @@ test("router failures answer the error envelope without echoing the path", async
       `${contract}: a path parameter is too long.`,
     ],
     // Role IDs may hold 200 characters, so a long one reaches the route.
-    [
-      `${roles}/${"r".repeat(200)}`,
-      404,
-      "NOT_FOUND",
-      "The requested platform resource was not found.",
-    ],
-    [
-      `${roles}/${"%F0%9F%98%80".repeat(200)}`,
-      404,
-      "NOT_FOUND",
-      "The requested platform resource was not found.",
-    ],
+    [`${roles}/${"r".repeat(200)}`, 404, "NOT_FOUND", RESOURCE_NOT_FOUND],
+    [`${roles}/${"%F0%9F%98%80".repeat(200)}`, 404, "NOT_FOUND", RESOURCE_NOT_FOUND],
   ]) {
     const { response, payload } = await request(fixture.app, pathname);
     assert.equal(response.status, status, pathname.slice(0, 80));
@@ -1463,8 +1455,7 @@ test("runtime status and log reads enforce their permission tiers before any Dri
 
   for (const path of [target.runtimePath, target.logsPath()]) {
     const denied = await fixture.request("GET", path, { session: reader.session });
-    assert.equal(denied.status, 403, path);
-    assert.equal(denied.body.error.code, "FORBIDDEN");
+    assertApiError(denied, 403, "FORBIDDEN", path);
     assert.equal(fixture.auditSink.events.at(-1).kind, "authorization_denial");
   }
   // Operate is the status audience: it sees Pods and Events but never log text.
@@ -1760,8 +1751,7 @@ test("runtime log cursors bind one principal and view and are re-authorized on e
       target.logsPath(`source=gateway&cursor=${encodeURIComponent(forged)}`),
       { session },
     );
-    assert.equal(rejected.status, 400, label);
-    assert.equal(rejected.body.error.code, "RUNTIME_LOGS_CURSOR_INVALID", label);
+    assertApiError(rejected, 400, "RUNTIME_LOGS_CURSOR_INVALID", label);
   }
   assert.equal(driverReads(fixture).length, readsBefore);
 
@@ -1773,8 +1763,7 @@ test("runtime log cursors bind one principal and view and are re-authorized on e
       session: viewer.session,
     },
   );
-  assert.equal(unknownPod.status, 400);
-  assert.equal(unknownPod.body.error.code, "RUNTIME_LOGS_POD_INVALID");
+  assertApiError(unknownPod, 400, "RUNTIME_LOGS_POD_INVALID");
   const unsupported = await fixture.request("GET", target.logsPath("source=gateway&follow=true"), {
     session: viewer.session,
   });
@@ -1790,8 +1779,7 @@ test("runtime log cursors bind one principal and view and are re-authorized on e
     const outOfRange = await fixture.request("GET", target.logsPath(`source=gateway&${query}`), {
       session: viewer.session,
     });
-    assert.equal(outOfRange.status, 400, query);
-    assert.equal(outOfRange.body.error.code, "INVALID_REQUEST", query);
+    assertApiError(outOfRange, 400, "INVALID_REQUEST", query);
     assert.deepEqual(
       outOfRange.body.error.details,
       [{ path: `/${query.split("=")[0]}`, code: "INVALID_FORMAT" }],
@@ -2505,8 +2493,7 @@ test("runtime log downloads use the log tier and are audited once per download",
     target.logsPath(`source=gateway&download=true&cursor=${encodeURIComponent(page.data.cursor)}`),
     { session: administrator.session },
   );
-  assert.equal(withCursor.status, 400);
-  assert.equal(withCursor.body.error.code, "INVALID_REQUEST");
+  assertApiError(withCursor, 400, "INVALID_REQUEST");
   assert.match(withCursor.body.error.message, /\/cursor cannot be combined with \/download/);
   assert.deepEqual(withCursor.body.error.details, [{ path: "/cursor", code: "INVALID_VALUE" }]);
   assert.equal(driverReads(fixture).length, readsBefore);

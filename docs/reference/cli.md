@@ -117,6 +117,8 @@ explicit zero is refused before output-file creation or API issuance.
 
 Commands take IDs, not names. The CLI rejects a value without the expected
 prefix, such as `ns_` or `agt_`, and names the list command that shows the ID.
+It also rejects a prefixed value that is not the prefix plus a UUID, such as
+`agt_../x`, before sending anything.
 
 The `installation get`, `installation deployment-inventory`, and `namespace
 list` commands require an Installation-scoped service key. With a
@@ -139,7 +141,7 @@ a candidate with Pods is read unless exact active metadata proves it older.
 Unreadable or invalid active metadata does not exclude that Pod candidate.
 A candidate with only provider Harness status (`running`, `starting`, or `lost`)
 needs to be proven newer; `unknown` alone is not runtime evidence. Otherwise
-both read the selected version, else the latest version. They print the revision ID they
+both read the selected version, else the latest version you can `read`. They print the revision ID they
 read to stderr; a reader without Agent `operate` cannot probe runtime status, so the
 notice names the other readable version to pass. Notices call any other version newer or
 older only when the selected version's metadata proves it. `runtime` accepts `-o table|json|yaml`
@@ -192,44 +194,23 @@ without the HTTP envelope. Deleting a Configuration prints
 
 Failures go to stderr and the CLI exits nonzero. For HTTP errors, the CLI prints
 the status and, when present, the API error code and message, and the
-`Retry-After` delay, rounded up to seconds. The client accepts delay-seconds
-and HTTP-date ([HTTP semantics](https://www.rfc-editor.org/rfc/rfc9110.html#section-10.2.3))
-within its existing positive, one-hour bound. Accepted date delays round up to
-whole seconds for retry notices and waits; expired or invalid dates retain
-the normal follow interval. It does not print
+`Retry-After` delay. Delay-seconds and HTTP-date values
+([HTTP semantics](https://www.rfc-editor.org/rfc/rfc9110.html#section-10.2.3))
+up to one hour are accepted and rounded up to whole seconds for notices and
+waits; an expired or invalid date keeps the normal follow interval. It does not print
 the server's request ID. To capture that ID for a failed request, use the
 [HTTP API directly](../guides/http-api.md#troubleshoot).
 
-OCC's generic `403` adds a `hint:` line naming the grants the command needs, or
-the Namespace of a Namespace-scoped key used elsewhere. It never depends on the
-IDs passed: OCC refuses a missing ID the same way.
+OCC's `403` names the grant you lack. A generic `403` from an older OCC gets a
+`hint:` line naming the grants the command needs, and a Namespace-scoped key
+used elsewhere gets one naming its Namespace. A create's hint says only an
+Installation administrator can create that resource. OCC refuses a missing ID the same
+way as one you cannot read.
 
 ## Local development
 
-Run these from a repository checkout. They use local development configuration,
-not the remote connection or output options above. Kubernetes is the supported
-local setup for deploying an Agent; follow [Local Setup](../guides/quickstart.md).
-
-| Command                                         | What it does                                                                                                                                                                   |
-| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `occ dev up`                                    | Starts the profile selected by `OCC_DEVELOPMENT_COMPUTE_DRIVER`: `docker` (default) or `kubernetes`. Docker is a control-plane preview and cannot deploy Agents.               |
-| `occ dev up --key-output PATH`                  | Writes the bootstrap service-key file to an absent absolute path in a private directory.                                                                                       |
-| `occ dev up --sandbox-network-policy-file FILE` | Adds binary and endpoint rules for Kubernetes Compute with OpenShell; see [startup network policy](../guides/deploy/local-sandbox-network-policy.md).                          |
-| `occ dev down`                                  | Stops the selected profile. Docker keeps Compose volumes by default. Kubernetes removes its owned k3d cluster; the Compose control-plane profile also removes Compose volumes. |
-| `occ dev down --volumes`                        | Also removes Docker Compose volumes; Kubernetes cleanup already removes its volumes.                                                                                           |
-
-In the Go Kubernetes helpers, a failed exclusive write removes its newly created
-output, including a partial key file. Existing targets stay unchanged. If removal
-also fails, the returned error includes both failures.
-
-Compose global options, when needed, must follow `--`. Keep the cleanup command
-printed by startup so it selects the same profile and state directory.
-The explicitly selected Kubernetes-only profile rejects Compose options. Use
-`scripts/dev-up` and `scripts/dev-down` as the common entry points for every
-profile; the Compute and Sandbox Driver settings select the implementation.
-When `scripts/dev-up` fails on the Docker profile, `occ dev up` exits with the
-script's status (`2` for a usage or configuration error) and prints nothing
-beyond the script's own message.
+[Local development commands](cli/local-development.md) covers `occ dev up` and
+`occ dev down`.
 
 [Agent policy commands](../guides/topics/agent-sandbox-policy.md#cli) default to
 `--facet networking`. Editing admission is temporary pending Guardrails.

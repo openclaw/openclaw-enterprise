@@ -23,6 +23,9 @@ const runtimeLogsPage = {
 };
 const refuseLogRead = { suffix: "/runtime/logs", status: 403, code: "FORBIDDEN" };
 const form = [click("Start with default Preset")];
+// The OpenShell Sandbox Driver's refusal of Dedicated OpenClaw on its settings alone.
+const openShellUserNamespacesRefusal =
+  "Dedicated OpenClaw needs kubernetes.userNamespaces: false in the OpenShell Sandbox Driver configuration. Select Codex, or ask an operator to set it.";
 const oauthForm = [...form, { selector: "#agent-auth-method", value: "credential_source" }];
 const startOAuthLogin = [...oauthForm, click("Sign in with OAuth")];
 const reservedConfigurationWrite = {
@@ -508,6 +511,17 @@ export const scenarios = {
     ],
     description: "Required-value errors remain beside their field; no request is sent.",
   },
+  secretsCreateNotPermitted: {
+    group: "Pages/Secrets",
+    name: "Create not permitted",
+    path: "/console/secrets",
+    secretCreateNotPermitted: true,
+    description:
+      "The caller's access does not include Secret creation. Create Secret is disabled and the note under the toolbar names the reason.",
+    steps: [
+      "Check that Create Secret is disabled and that a screen reader names the note as its description.",
+    ],
+  },
   secretsCreateDenied: {
     group: "Pages/Secrets",
     name: "Create denied",
@@ -520,7 +534,7 @@ export const scenarios = {
       { selector: 'dialog button[type="submit"]', click: true },
     ],
     description:
-      "The API refuses creation. The form clears the value, disables editing, and focuses Close.",
+      "The permission answer allowed creation, but the API refuses it (for example, a grant removed after the page loaded). The form clears the value, disables editing, and focuses Close.",
   },
   secretsUnknownSave: {
     group: "Pages/Secrets",
@@ -551,6 +565,31 @@ export const scenarios = {
     actions: [click("Demo model API key (simulated)")],
     description:
       "Agent links and other consumer IDs are grouped by resource. The blue notice explains restricted visibility; the amber warning identifies an incomplete list. Simulated UI proof.",
+  },
+  secretsReadOnly: {
+    group: "Pages/Secrets",
+    name: "Read only for this caller",
+    path: "/console/secrets",
+    secretCallerPermissions: { update: false, delete: false },
+    secretConsumers: {
+      agents: ["agt_00000000-0000-4000-8000-000000000001"],
+      configurations: [],
+      credentialSources: [],
+      provisioningRequests: [],
+      unreadable: 0,
+      truncated: false,
+    },
+    actions: [click("Demo model API key (simulated)")],
+    description:
+      "The Secret read says this caller may neither replace nor delete the Secret. Both buttons are disabled before any typing, and each names its reason. Consumers name the Agent, with its ID beside it. Simulated UI proof.",
+    gap: "The answer is advisory. The controller still authorizes each write.",
+  },
+  secretsLinkUnlisted: {
+    group: "Pages/Secrets",
+    name: "Link to an unlisted Secret",
+    path: "/console/secrets?secret=sec_not_listed",
+    description:
+      "A link to a Secret the readable list leaves out opens no dialog. A note says it may not exist or the caller may not read it, and who grants read. Nothing reads the Secret.",
   },
   secretsReplace: {
     group: "Pages/Secrets",
@@ -591,6 +630,8 @@ export const scenarios = {
         method: "DELETE",
         status: 409,
         code: "RESOURCE_CONFLICT",
+        message:
+          "The Secret is still referenced by Agent agt_00000000-0000-4000-8000-000000000001. Remove those references first.",
       },
     ],
     actions: [
@@ -1087,6 +1128,25 @@ export const scenarios = {
     emptyAgents: true,
     description: "A ready Namespace with no Agents offers creation.",
   },
+  agentsEmptyMember: {
+    group: "Pages/Agents",
+    name: "Empty for a member",
+    emptyAgents: true,
+    readOnlyPermissionSummary: true,
+    description:
+      "A member without Agent create sees no Agents. The heading says none are shared with them, not that the Namespace has none, and nothing invites creating.",
+  },
+  agentsCreateBlockedByRestriction: {
+    group: "Pages/Agents",
+    name: "Create blocked by a Restriction",
+    agentCreateRestricted: true,
+    description:
+      "An Installation administrator in a Namespace whose deny Restriction blocks Agent create. Create Agent is disabled, and the note names the Restriction and who can lift it, not an administrator to ask.",
+    steps: [
+      "Check that Create Agent is disabled and that a screen reader names the note as its description.",
+    ],
+    gap: "The permission answer is advisory. The controller still authorizes each create.",
+  },
   agentsUnreadableConfiguration: {
     group: "Pages/Agents",
     name: "Unreadable saved configuration",
@@ -1176,7 +1236,7 @@ export const scenarios = {
     description:
       "The permission summary says this caller can neither stop nor delete these Agents. Each row disables its icons and says why before any confirmation.",
     steps: [
-      "Find No access to stop or delete under each row's icons. The icons do not open a confirmation.",
+      "Find Needs operate and delete under each row's icons. Hover it for the whole reason, which names an Installation administrator as who grants them. The icons do not open a confirmation.",
       "Open an Agent: its detail page explains the same restrictions.",
     ],
     gap: "The summary is advisory. The controller still authorizes each write.",
@@ -1211,6 +1271,23 @@ export const scenarios = {
     name: "Namespace unavailable",
     path: "/console/agents?namespace=ns_missing",
     description: "A stale Namespace link asks the reader to switch scope.",
+  },
+  namespaceMissingNoneReadable: {
+    group: "Pages/Agents",
+    name: "Namespace unavailable, none readable",
+    emptyNamespaces: true,
+    path: "/console/agents?namespace=ns_missing",
+    description:
+      "A stale Namespace link for a reader with no readable Namespace points at the header's Refresh, with no Switch Namespace button.",
+  },
+  namespaceMissingAgentBookmark: {
+    group: "Pages/Agents",
+    name: "Namespace unavailable, Agent bookmark",
+    emptyNamespaces: true,
+    path: "/console/agents/agt_bookmarked?namespace=ns_missing",
+    description:
+      "An Agent bookmark in a Namespace the reader can no longer read shows the Agents header and the panel, without the Agent's ID, copy button or back link.",
+    gap: "Simulated UI proof only; this preview does not revoke a grant.",
   },
   agentsCreateRestricted: {
     group: "Pages/Agents",
@@ -1269,7 +1346,8 @@ export const scenarios = {
     group: "Pages/Agents",
     name: "Access denied",
     rules: [{ path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents", status: 403 }],
-    description: "Collection authorization denial with a request ID and Retry.",
+    description:
+      "Collection authorization denial with a request ID. Retry would repeat the refusal, so the panel offers none; the header's Refresh checks access again.",
   },
   agentsError: {
     group: "Pages/Agents",
@@ -1372,7 +1450,7 @@ export const scenarios = {
     path: "/console/namespaces",
     emptyNamespaces: true,
     description:
-      "No accessible Namespaces. Create Namespace remains available; the API decides whether creation is permitted.",
+      "No readable Namespaces. Create Namespace remains available; the API decides whether creation is permitted.",
   },
   namespacesEmptyMember: {
     group: "Pages/Namespaces",
@@ -1661,6 +1739,49 @@ export const scenarios = {
       "Change the model, then replace the dummy credential. Confirm the selected model remains. Confirm all three edited appServer settings remain in Configuration JSON.",
       "Choose Reset template and confirm to restore the standard runtime settings for the selected model.",
     ],
+  },
+  createSecretCreateNotPermitted: {
+    group: "Pages/Create Agent",
+    name: "Secret creation not permitted",
+    path: create,
+    actions: form,
+    secretCreateNotPermitted: true,
+    description:
+      "The Namespace permission answer denies Secret creation. The API key Secret field still lists Create new Secret..., disabled with the reason, and its hint says to choose an existing Secret.",
+    steps: [
+      "Type a name no Secret has in API key Secret. Create new Secret... is listed with the access note under it and opens nothing.",
+      "Open Configure Slack. Its hints say to choose existing Slack token Secrets, with no offer to create them.",
+    ],
+    gap: "The permission answer is simulated; the API still authorizes Secret creation.",
+  },
+  createSecretOperateDenied: {
+    group: "Pages/Create Agent",
+    name: "Secret operate not permitted",
+    path: create,
+    actions: [
+      ...form,
+      { selector: "#agent-name", value: "Slack launch demo" },
+      click("Configure Slack"),
+      { selector: "#slack-dm-policy", value: "disabled" },
+    ],
+    secretOperateDenied: ["sec_demo_slack_backup_token"],
+    description:
+      "The Namespace Secret answer lists the Slack backup token as readable but not operable for this member. Each Create Agent Secret field lists it disabled with the reason and never stages it, since Agent create would refuse it. Secret operate is then granted per Secret, so a new Secret would have none: each field lists Create new Secret... disabled with the reason, and the drawer hints offer only existing Secrets.",
+    steps: [
+      "Type backup in Slack bot token. Slack backup token (simulated) is listed with the access note under it; choosing it stages nothing.",
+      "Type a name no Secret has in Slack bot token. Create new Secret... is listed with the access note under it and opens nothing; the drawer hints say to choose existing Slack token Secrets.",
+      "Close the drawer and type backup in API key Secret: the same option is listed the same way.",
+    ],
+    gap: "The Secret answer is simulated; the API still authorizes Agent create and the Secrets it binds.",
+  },
+  createRepositoryNotConfigured: {
+    group: "Pages/Create Agent",
+    name: "Repository access not set up",
+    path: create,
+    actions: form,
+    repositoryNotConfigured: true,
+    description:
+      "An Installation without repository access: the intro offers a model and Slack, not repository access, and the Repository access card links its setup.",
   },
   createInvalidConfiguration: {
     group: "Pages/Create Agent",
@@ -2736,6 +2857,7 @@ export const scenarios = {
       "This simulated Installation cannot admit dedicated OpenClaw: it has no Sandbox Driver that can provision it, or its runtime lacks native worker support. OpenClaw defaults to Embedded execution, which works only when no Sandbox Driver is selected; Dedicated is disabled with an explanation.",
     steps: [
       "Confirm Dedicated is unavailable for OpenClaw and the explanation names the missing Sandbox Driver or runtime support.",
+      "Read the Harness hint: it names Codex for Dedicated execution without repeating the reason under Runtime details.",
       "Select Codex and confirm Dedicated remains available.",
     ],
   },
@@ -2755,6 +2877,44 @@ export const scenarios = {
     steps: [
       "Look for “Execution mode unavailable” in Runtime details. Both modes and Create Agent are disabled; there is no “saved as drafts” message.",
       "Select Codex and confirm the alert clears and Dedicated remains available.",
+    ],
+  },
+  createOpenclawSettingRefusal: {
+    group: "Pages/Create Agent",
+    name: "OpenClaw refused by Sandbox Driver settings",
+    path: create,
+    nativeWorkerSupport: false,
+    openclawExecutionModes: [],
+    openclawSettingRefusal: openShellUserNamespacesRefusal,
+    actions: [
+      ...form,
+      { selector: "#agent-harness", value: "openclaw" },
+      { selector: ".launch-runtime summary", click: true },
+    ],
+    description:
+      "This simulated Sandbox Driver refuses Embedded OpenClaw, and its settings refuse Dedicated OpenClaw. The alert quotes the refusal, which names the setting and suggests Codex, because Codex can still be selected.",
+    steps: [
+      "Confirm the alert names kubernetes.userNamespaces and ends with “Select Codex, or ask an operator to set it.”",
+      "Select Codex and confirm the alert clears.",
+    ],
+  },
+  createOpenclawSettingRefusalAnthropic: {
+    group: "Pages/Create Agent",
+    name: "OpenClaw refused by Sandbox Driver settings, Anthropic",
+    path: create,
+    nativeWorkerSupport: false,
+    openclawExecutionModes: [],
+    openclawSettingRefusal: openShellUserNamespacesRefusal,
+    actions: [
+      ...form,
+      { selector: "#agent-harness", value: "openclaw" },
+      { selector: "#model-provider", value: "anthropic" },
+      { selector: ".launch-runtime summary", click: true },
+    ],
+    description:
+      "As above, with Anthropic, which hides Codex. The alert keeps the setting requirement but drops “Select Codex”, and names the switch to OpenAI instead.",
+    steps: [
+      "Confirm the alert names kubernetes.userNamespaces, does not say “Select Codex”, and ends with “Choose OpenAI with the Codex harness, or ask an operator to change that setting.”",
     ],
   },
   createOpenclawSandboxDriverOutage: {
@@ -3115,6 +3275,9 @@ export const scenarios = {
         path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents",
         method: "POST",
         status: 409,
+        code: "RESOURCE_CONFLICT",
+        message:
+          "The selected Compute Driver cannot deliver repository credentials to this Harness topology.",
         once: true,
       },
     ],
@@ -3254,6 +3417,21 @@ export const scenarios = {
       "Create Agent saves a same-Namespace Secret before provisioning.",
     ],
     gap: "All credentials and API responses in this preview are simulated.",
+  },
+  createPasswordPresetOperateSome: {
+    group: "Pages/Create Agent",
+    name: "Standard Codex, Secret operate on some Secrets",
+    path: create,
+    standardCodexPreset: true,
+    secretOperateDenied: ["sec_demo_slack_backup_token"],
+    actions: [{ selector: "#agent-preset", value: "pre_00000000-0000-4000-8000-000000000001" }],
+    description:
+      "The Namespace Secret answer lists the Slack backup token as readable but not operable, so this member's Secret operate is granted per Secret and a new Secret would have none. Secret source lists Create new Secret disabled with the reason and starts on Use existing Secret, which lists the backup token disabled too.",
+    steps: [
+      "Open Secret source for Model Secret: Create new Secret is disabled, and the hint under the existing Secret list gives the reason.",
+      "Choose another Secret and select Use Preset: the form opens with that Secret bound.",
+    ],
+    gap: "The Secret answer is simulated; the API still authorizes Agent create and the Secrets it binds.",
   },
   createPasswordPresetMissingModel: {
     group: "Pages/Create Agent",
@@ -3397,7 +3575,7 @@ export const scenarios = {
     description:
       "The session already knows this member does not administer the Installation, so after the Agent saves the form sends no IAM read for its credential grant. It names the administrator step at once and offers Open saved Agent, with no Retry credential access.",
     steps: [
-      "Read the alert: giving the Agent access to its Secrets needs Installation administration access.",
+      "Read the alert: giving the Agent access to its Secrets needs Installation administration, so it asks an Installation administrator to open the saved Agent and grant it.",
       "The saved-resources line identifies the Configuration and Agent, offers Open saved Agent, and does not promise a retry.",
       "The request log shows no /iam/ request. Only Cancel and Start over remain beside the saved-resources line.",
     ],
@@ -3747,6 +3925,31 @@ export const scenarios = {
       "Select Create Agent again to check the same entries and continue creating the draft.",
     ],
   },
+  createNameTaken: {
+    group: "Pages/Create Agent",
+    name: "Agent name taken",
+    path: create,
+    unsupportedProvisioning: true,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/validate",
+        method: "POST",
+        status: 409,
+        code: "RESOURCE_CONFLICT",
+        message:
+          "An Agent with this name already exists in this Namespace. Choose a different name.",
+        once: true,
+      },
+    ],
+    actions: [...readyForm, { ...click("Create Agent"), focus: true }],
+    description:
+      "Another Agent in this Namespace has the name. The configuration check refuses it before anything is saved: the refusal line keeps the API's sentence, the Agent name field shows a short error under it and takes focus.",
+    steps: [
+      "Confirm focus is in Agent name, the field reads Another Agent in this Namespace has this name. under it, and no Secret or Configuration saved line shows.",
+      "Type another name: the field error clears. Select Create Agent again; the Agent is created.",
+    ],
+    gap: "The refusal is simulated; tests/integration/occ-api.test.mjs and tests/browser/console-agents-2.test.ts cover the API's preflight.",
+  },
   createPluginPreflightRefusal: {
     group: "Pages/Create Agent",
     name: "Plugin refusal before anything is saved",
@@ -3835,6 +4038,21 @@ export const scenarios = {
     description:
       "An Agent without a version can edit saved settings and deploy its first immutable version.",
   },
+  failedFirstVersion: {
+    group: "Pages/Agent detail",
+    name: "Failed first version",
+    path: revision,
+    deployed: true,
+    firstDeploymentFailed: true,
+    description:
+      "The only version's deployment failed, so no version serves. Live serving says Not running, the version is labelled Failed rather than Historical, and no diagnostics are offered for a runtime that never started.",
+    steps: [
+      "Read Live serving in the summary: Not running.",
+      "Read the notice above the Configuration snapshot: Failed version.",
+      "Find Create new version once, in the page header. The Versions list names the draft as New version, Editable Configuration.",
+    ],
+    gap: "Simulated UI proof only; this preview does not run a deployment.",
+  },
   newVersion: {
     group: "Pages/Agent detail",
     name: "Create new version",
@@ -3865,6 +4083,20 @@ export const scenarios = {
       "Choose Cancel: the editor closes and Edit Configuration takes focus.",
     ],
   },
+  currentConfigurationReader: {
+    group: "Pages/Agent detail",
+    name: "Current Configuration, viewer can only read",
+    path: `${revision}&tab=configuration`,
+    deployed: true,
+    readOnlyPermissionSummary: true,
+    description:
+      "The permission answer denies Configuration update, so a version's Configuration tab offers Open version draft instead of Edit current Configuration. The draft it opens shows the saved JSON with no editor. The API still decides.",
+    steps: [
+      "Find Open version draft below the Configuration snapshot, and no Edit current Configuration.",
+      "Choose Open version draft: the draft opens read-only, with no Edit Configuration button.",
+    ],
+    gap: "The permission answer is simulated; the API still authorizes every save.",
+  },
   agentHeaderActions: {
     group: "Pages/Agent detail",
     name: "Header actions",
@@ -3880,6 +4112,21 @@ export const scenarios = {
       "Choose Create new version to open the draft Configuration without deploying. In the next story, try the Agents back link and Namespace selector while a save is in progress.",
     ],
     nextStory: "authSaveHoldsNavigation",
+  },
+  earlierFailedVersion: {
+    group: "Pages/Agent detail",
+    name: "Earlier failed version",
+    path: draft,
+    deployed: true,
+    revisionHistory: 3,
+    earlierFailedVersion: 2,
+    description:
+      "v2's deployment failed and v3 now serves. The Versions list marks v2 from the list's own outcome, so the mark shows on load, before v2 is opened.",
+    steps: [
+      'Check that v3 reads "Current" and v2 shows a red "Failed" badge without opening it; v1 has no badge. A screen reader announces "View version v2, deployment failed".',
+      "Reload the page: v2 keeps its Failed badge.",
+    ],
+    gap: "The deployment records are simulated; the API reports each listed version's outcome the same way.",
   },
   longVersionHistory: {
     group: "Pages/Agent detail",
@@ -4194,11 +4441,56 @@ export const scenarios = {
     deployed: true,
     auth: "codex_pat",
     agentPlugins: JSON.parse(pluginSelections),
+    agentPluginApprovers: [{ channel: "slack", id: "team:TDEMO123:user:UDEMO123" }],
     pluginCapabilities,
     pluginDiscovery,
     readOnlyPermissionSummary: true,
     description:
-      "The permission answer denies Agent update, so Save plugin selections and the plugin fields are disabled, the saved selections stay in view, and the note names the grant to ask for. The API still decides.",
+      "The permission answer denies Agent update, so the saved selections show as a read-only summary with no editor, Save or Discard, and the note names the grant to ask for. The page does not read the plugin policy capabilities, which need Agent update, so the saved default plugin approvers show as text. The API still decides.",
+    steps: [
+      "Under Default plugin approvers, read that the next deployment uses these Agent default approvers and find slack: team:TDEMO123:user:UDEMO123. No approver field is offered.",
+    ],
+    gap: "The permission answer is simulated; the API still authorizes every save.",
+  },
+  draftReader: {
+    group: "Pages/Agent detail",
+    name: "Version draft, viewer can only read",
+    path: `${draft}&tab=configuration`,
+    deployed: true,
+    readOnlyPermissionSummary: true,
+    description:
+      "The permission answer denies Agent and Configuration update and deploy. The draft says it is read-only with this access, the Configuration tab shows the saved JSON with no editor, and the draft card has no editor's checklist. The API still decides.",
+    steps: [
+      "Read the notice: Version draft · read-only with your access.",
+      "Find no Edit Configuration button; View native Configuration opens the saved JSON.",
+      "The draft card reads Version draft, with Deploy disabled and its reason, and no Prepare this version steps.",
+    ],
+    gap: "The permission answer is simulated; the API still authorizes every save.",
+  },
+  draftSourcesOperateDenied: {
+    group: "Pages/Agent detail",
+    name: "Version draft, editor cannot operate a bound Secret",
+    path: `${draft}&tab=configuration`,
+    deployed: true,
+    agentPermissionSummary: {
+      update: true,
+      deploy: false,
+      operate: false,
+      delete: false,
+      administer: false,
+      configurationUpdate: true,
+      configurationRead: true,
+      configurationSecretsOperate: false,
+      configurationSecretsOperateDeniedBindings: [],
+      agentSourcesOperate: false,
+      sandboxPolicyRead: false,
+    },
+    description:
+      "The permission answer allows Agent and Configuration update but not operate on a Secret the Configuration binds, which every save checks. Each editor is disabled, so the draft reads as read-only with this access, as for a viewer.",
+    steps: [
+      "Read the notice: Version draft · read-only with your access.",
+      "The Versions entry reads Version draft with Read-only Configuration, and the draft card has no Prepare this version steps.",
+    ],
     gap: "The permission answer is simulated; the API still authorizes every save.",
   },
   pluginsToolRefusal: {
@@ -4533,15 +4825,25 @@ export const scenarios = {
       repositories: [{ repositoryRef: "application" }],
     },
     repositoryBindings: [{ repositoryRef: "application", profile: "git-full" }],
-    rules: [
-      {
-        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/repository-options",
-        status: 503,
-        code: "REPOSITORY_OPTIONS_UNAVAILABLE",
-      },
-    ],
+    // Without repository settings, discovery answers 200 with no options and meta.notConfigured.
+    repositoryOptions: [],
+    repositoryNotConfigured: true,
     description:
-      "The Installation has no Repo Driver: the tab names the setup step, links the runbook, offers no Retry, and keeps Save repository access disabled.",
+      "The Installation has no Repo Driver: for an Installation administrator the tab links the setup guide and offers no Retry. Save repository access stays hidden while the stale binding remains.",
+    steps: [
+      "Remove application. Save repository access appears, and the status says to save to continue without repository access.",
+    ],
+    gap: "Simulated UI proof only; this preview does not configure a Repo Driver.",
+  },
+  repositoryEditorNotConfiguredMember: {
+    group: "Pages/Agent detail",
+    name: "Repository access without a Repo Driver, for a member",
+    path: `${draft}&tab=repositories`,
+    repositoryOptions: [],
+    repositoryNotConfigured: true,
+    observabilityDenied: true,
+    description:
+      "A member who may edit the Agent is told to ask an Installation administrator to set up repository access, with no setup guide link.",
     gap: "Simulated UI proof only; this preview does not configure a Repo Driver.",
   },
   repositoryEditorLoading: {
@@ -4574,7 +4876,7 @@ export const scenarios = {
     repositoryBindings: [{ repositoryRef: "application", profile: "git-full" }],
     readOnlyPermissionSummary: true,
     description:
-      "The permission answer denies Agent update, so Save repository access and the repository fields are disabled (Cancel stays), and the note names the grant to ask for.",
+      "The permission answer denies Agent update, so the saved repository access shows as a read-only summary with no editor, and the note names the grant to ask for. The page does not read the repository choices, which need Agent update.",
     gap: "The permission answer is simulated; the API still authorizes every save.",
   },
   repositoryEditorSaveRefused: {
@@ -5153,7 +5455,7 @@ export const scenarios = {
     description:
       "The same failed model check for a viewer whose permission answer denies Agent update and deploy. Recovery offers Open v7 Logs only.",
     steps: [
-      "Check that the recovery has one link, Open v7 Logs, and the header says Open version draft.",
+      "Check that the recovery has one link, Open v7 Logs, and the header says Open version draft. The Versions list names the draft Version draft, Configuration draft.",
       "Open v7 Logs is the block's filled primary button; at 390 wide it spans the block.",
     ],
     gap: "The permission answer is simulated; the API still authorizes every page a link opens.",
@@ -5165,13 +5467,53 @@ export const scenarios = {
     deployed: true,
     candidateDeploymentStatus: "failed",
     candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "format" },
-    agentPermissionSummary: { update: false, deploy: true, operate: false, delete: false },
+    agentPermissionSummary: {
+      update: false,
+      deploy: true,
+      operate: false,
+      delete: false,
+      administer: false,
+      configurationUpdate: false,
+      configurationRead: true,
+      configurationSecretsOperate: false,
+      configurationSecretsOperateDeniedBindings: [],
+      agentSourcesOperate: false,
+      sandboxPolicyRead: false,
+    },
     description:
-      "Recovery offers Open version draft when the viewer may deploy but cannot update the Agent. Configuration access is separate.",
+      "Recovery offers Open version draft when the viewer may deploy but cannot edit the Configuration, so the draft is theirs to read and deploy.",
     steps: [
       "Select Open version draft and confirm the Configuration tab opens in view, focused, without deploying.",
     ],
     gap: "The failure and permissions are simulated; this story does not verify API authorization or deployment.",
+  },
+  deploymentModelProbeFailedConfigurationEditor: {
+    group: "Pages/Agent detail",
+    name: "New version failed, viewer may edit only the Configuration",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "format" },
+    agentPermissionSummary: {
+      update: true,
+      deploy: false,
+      operate: false,
+      delete: false,
+      administer: false,
+      configurationUpdate: true,
+      configurationRead: true,
+      configurationSecretsOperate: true,
+      configurationSecretsOperateDeniedBindings: [],
+      agentSourcesOperate: false,
+      sandboxPolicyRead: false,
+    },
+    description:
+      "The viewer may save the Configuration but not the Agent: an Agent update would also need operate on its Harness authentication Secret. Recovery follows the Configuration's own answer and offers Open Configuration.",
+    steps: [
+      "Check that the recovery shows Open v7 Logs and Open Configuration, with no Deploy again.",
+      "Select Open Configuration and confirm the draft's Configuration tab opens in view with Edit Configuration available.",
+    ],
+    gap: "The failure and permissions are simulated; the API still authorizes every save.",
   },
   deploymentFailedDeployAgain: {
     group: "Pages/Agent detail",
@@ -5186,6 +5528,45 @@ export const scenarios = {
       "At 1440 and 390 wide, read the message and see Deploy again without scrolling.",
       "Deploy again is the one filled button and Open v7 Logs an edged secondary button. At 390 wide they stack, each the block's full width. The message's first sentence ends with DEPENDENCY_UNAVAILABLE in code.",
       "Select Deploy again: the draft opens with its Deploy new version in view and focused, without deploying.",
+    ],
+    gap: "The failure is simulated; this story does not verify a live deployment.",
+  },
+  // Finding 2537: these codes read "Deployment reconciliation failed." and got the generic logs
+  // advice. Messages copy deploymentErrorMessage in packages/occ/src/state/controller-work.ts.
+  deploymentFailedAdmissionUnavailable: {
+    group: "Pages/Agent detail",
+    name: "New version failed, protected admission changed",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    candidateFailure: {
+      code: "EXECUTION_ADMISSION_UNAVAILABLE",
+      message:
+        "This version was admitted for protected execution that the Installation can no longer provide, for example after its Credential Proxy changed. Deploy again; if the deploy is refused, ask an Installation administrator to check the Credential Proxy.",
+    },
+    description:
+      "v7 failed because the Installation's protected execution changed after admission. OCC's step table says deploying again can help, so the recovery offers Deploy again first and adds no logs advice.",
+    steps: [
+      "At 1440 and 390 wide, read the message ending with the administrator step, with no 'check the failed version's logs' sentence after it.",
+      "Deploy again is the one filled button and Open v7 Logs an edged secondary button.",
+    ],
+    gap: "The failure is simulated; this story does not verify a live deployment.",
+  },
+  deploymentFailedStoredInconsistent: {
+    group: "Pages/Agent detail",
+    name: "New version failed, stored records inconsistent",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    candidateFailure: {
+      code: "INVALID_REVISION_OWNER",
+      message:
+        "The stored records for this version are inconsistent with its Agent or Namespace, so the controller did not start it and it has no runtime logs. Ask an Installation administrator to check the controller worker log for this deployment.",
+    },
+    description:
+      "v7 failed before any runtime started because its stored records disagree with its Agent. The recovery sends the reader to an administrator and offers no Deploy again.",
+    steps: [
+      "At 1440 and 390 wide, confirm the message names the administrator step with no logs advice after it, and that the only action is Open v7 Logs.",
     ],
     gap: "The failure is simulated; this story does not verify a live deployment.",
   },
@@ -5218,7 +5599,19 @@ export const scenarios = {
     deployed: true,
     candidateDeploymentStatus: "failed",
     candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "format" },
-    agentPermissionSummary: { update: false, deploy: true, operate: false, delete: false },
+    agentPermissionSummary: {
+      update: false,
+      deploy: true,
+      operate: false,
+      delete: false,
+      administer: false,
+      configurationUpdate: false,
+      configurationRead: false,
+      configurationSecretsOperate: false,
+      configurationSecretsOperateDeniedBindings: [],
+      agentSourcesOperate: false,
+      sandboxPolicyRead: false,
+    },
     rules: [
       {
         path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
@@ -5228,7 +5621,7 @@ export const scenarios = {
       },
     ],
     description:
-      "The startup model check failure for a viewer who may deploy but can neither update the Agent nor read its Configuration. The draft Open version draft opens would have no Deploy new version, so recovery reads the Configuration first and, on the denial, offers Open v7 Logs only.",
+      "The startup model check failure for a viewer who may deploy but can neither edit nor read the Configuration. The draft Open version draft opens would have no Deploy new version, so recovery reads the Configuration first and, on the denial, offers Open v7 Logs only.",
     steps: [
       "At 1440 and 390 wide, confirm the recovery shows one link, Open v7 Logs, and never shows Open version draft.",
     ],
@@ -5343,6 +5736,17 @@ export const scenarios = {
     ],
     description:
       "Diagnostics that answer within 250 ms replace the panel's result directly, without painting the waiting line or moving focus.",
+  },
+  diagnosticsNoSlack: {
+    group: "Pages/Agent detail",
+    name: "Current observations for a version without Slack",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "succeeded",
+    diagnosticsState: "noSlack",
+    actions: [click("Run diagnostics for this version")],
+    description:
+      "The gateway reports a version with no Slack channel as a failed configuration check with code NOT_CONFIGURED. The rows read not set up and not checked, and the note says there is nothing to check.",
   },
   diagnosticsReader: {
     group: "Pages/Agent detail",
@@ -5599,6 +6003,23 @@ export const scenarios = {
       "Wait for both the status access message and the log rows. Open Namespaces, then use browser Back; the Console asks for status once more and shows the Pod.",
     ],
   },
+  runtimeLogTextDenied: {
+    group: "Pages/Agent detail",
+    name: "Runtime status and log text refused",
+    path: `${candidateVersion}&tab=logs`,
+    deployed: true,
+    candidateDeploymentStatus: "succeeded",
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/deployments/rev_00000000-0000-4000-8000-000000000007/runtime",
+        status: 403,
+        code: "FORBIDDEN",
+      },
+      refuseLogRead,
+    ],
+    description:
+      "A reader with neither Agent operate nor Agent read_logs. The status line names the grants runtime status and log text need, in the API's words, and that an Installation administrator gives them.",
+  },
   runtimeLogsReaderDownload: {
     group: "Pages/Agent detail",
     name: "Runtime logs downloaded by a log reader",
@@ -5728,6 +6149,27 @@ export const scenarios = {
     description:
       "A rejected deployment reports failure and re-enables the action. Focus returns to Deploy new version, described by the failure.",
   },
+  tabLinkUnavailable: {
+    group: "Pages/Agent detail",
+    name: "Link to an unavailable tab",
+    path: `${draft}&tab=bogus`,
+    description:
+      "A link names a tab this Agent page does not have. The page shows Configuration with a note above it that names the tab and says Configuration is shown instead.",
+    steps: ["Read the note above the panel, then choose Plugins: the note goes away."],
+    gap: "The link is simulated; a reader without Installation administration gets the same note for the Access tab.",
+  },
+  deploySecretOperateDenied: {
+    group: "Pages/Agent detail",
+    name: "Deployment needs Secret operate",
+    path: draft,
+    secretOperateDenied: ["sec_demo_model"],
+    description:
+      "The Agent's Secret answer lists the draft's model Secret as readable but not operable for this caller. Deploying needs Secret operate on every Secret the draft binds, so Deploy new version is disabled and the note beside it names the Secret and who grants it.",
+    steps: [
+      "Read the note beside Deploy new version: it names Demo model API key (simulated) and asks an Installation administrator to grant Secret operate.",
+    ],
+    gap: "The Secret answer is simulated; the API still authorizes the deployment and every Secret it binds.",
+  },
   deployInProgress: {
     group: "Pages/Agent detail",
     name: "Deployment in progress",
@@ -5850,12 +6292,12 @@ export const scenarios = {
         status: 403,
         code: "FORBIDDEN",
         message:
-          "The Agent service principal service-agent-agt_00000000-0000-4000-8000-000000000001 is not authorized to operate secret sec_00000000-0000-4000-8000-000000000001. Grant that principal operate on the secret, then deploy again.",
+          "Agent agt_00000000-0000-4000-8000-000000000001 cannot use Secret sec_00000000-0000-4000-8000-000000000001: the Agent itself needs Secret operate on it. Ask an Installation administrator to give the Agent access, then deploy again.",
       },
     ],
     actions: [click("Deploy new version")],
     description:
-      "A denial for the Agent's own service principal names the principal and the grant to add. A caller's own denial keeps the console's guidance.",
+      "A denial for the Agent's own service principal names the grant the Agent lacks and who gives it. The Secret is named only to a caller who may read it. A caller's own denial keeps the console's guidance.",
   },
   revisionDeployDenied: {
     group: "Pages/Agent detail",
@@ -5963,6 +6405,28 @@ export const scenarios = {
     path: `${draft}&tab=channels`,
     slack: true,
     description: "Enabled Socket Mode with standard unresolved credential references.",
+  },
+  slackDisableReplaceDenied: {
+    group: "Components/Channels",
+    name: "Slack Disable, editor must replace the bot token Secret",
+    path: `${draft}&tab=channels`,
+    slack: true,
+    agentPermissionSummary: {
+      update: true,
+      deploy: true,
+      operate: true,
+      delete: true,
+      administer: true,
+      configurationUpdate: true,
+      configurationRead: true,
+      configurationSecretsOperate: false,
+      configurationSecretsOperateDeniedBindings: ["SLACK_BOT_TOKEN"],
+      agentSourcesOperate: false,
+      sandboxPolicyRead: true,
+    },
+    description:
+      "The permission answer lists the bot token binding as the only one whose Secret the editor cannot operate. Disable saves no bindings, so it would keep that Secret bound: Disable Slack is shown disabled with a note to choose another Secret in Edit Slack first. Edit Slack stays available.",
+    gap: "The permission answer is simulated, so a rebind here does not enable Disable; the browser test covers that step.",
   },
   slackThreadedDefault: {
     group: "Components/Channels",
@@ -6196,6 +6660,20 @@ export const scenarios = {
     ],
     description:
       "A selected channel needs allowed channel user IDs or the everyone checkbox before the Configuration can be saved.",
+  },
+  slackTokensMissing: {
+    group: "Components/Channels",
+    name: "Slack token Secrets missing",
+    path: `${draft}&tab=channels`,
+    actions: [
+      click("Configure Slack"),
+      { selector: "#slack-dm-policy", value: "disabled" },
+      { selector: "#slack-channel-ids-search", value: "CDEMO123", key: "Enter" },
+      { selector: "#slack-channel-access", value: "everyone" },
+      click("Save configuration"),
+    ],
+    description:
+      "An enabled Slack channel saves only with both token Secrets: each missing one is named under its picker, and nothing is sent.",
   },
   slackSecretMenu: {
     group: "Components/Channels",
@@ -6542,7 +7020,7 @@ export const scenarios = {
     description:
       "A member saves a Slack token from the editor. The session already knows this member does not administer the Installation, so it sends no IAM request for the Agent's grant. The warning says this session did not verify the Agent's access and names the Installation administrator step.",
     steps: [
-      "The editor closes. The warning above Channels says access was not verified; Prepare says to resolve the saved Secret access grant. The request log shows no /iam/ request.",
+      "The editor closes. The warning above Channels says access was not verified; Deploy new version stays available, since the API checks the Agent's access when it deploys. The request log shows no /iam/ request.",
       "Open Credentials: the app token reads Bound · Agent access not confirmed. There is no Retry Secret access; Reload draft clears the warning.",
     ],
     gap: "The member browser test uses a member account and the real Installation permission check.",
@@ -6571,6 +7049,18 @@ export const scenarios = {
     description:
       "The saved harness authentication source can be reviewed or changed before deployment.",
   },
+  credentialsSecretCreateNotPermitted: {
+    group: "Components/Credentials",
+    name: "Model authentication, Secret creation not permitted",
+    path: `${draft}&tab=credentials`,
+    secretCreateNotPermitted: true,
+    description:
+      "The Namespace permission answer denies Secret creation. The Secret field still lists Create new Secret..., disabled with the reason, and its hint says to choose an existing Secret.",
+    steps: [
+      "Type a name no Secret has in the Secret field. Create new Secret... is listed with the access note under it and opens nothing.",
+    ],
+    gap: "The permission answer is simulated; the API still authorizes Secret creation.",
+  },
   credentialsUpdateDenied: {
     group: "Components/Credentials",
     name: "Model authentication, viewer cannot update the Agent",
@@ -6578,6 +7068,49 @@ export const scenarios = {
     readOnlyPermissionSummary: true,
     description:
       "The permission answer denies Agent update, so Save authentication source and its fields are disabled, and the note names the grant to ask for.",
+    gap: "The permission answer is simulated; the API still authorizes every save.",
+  },
+  credentialsSourcesOperateDenied: {
+    group: "Components/Credentials",
+    name: "Model authentication, editor cannot operate a bound source",
+    path: `${draft}&tab=credentials`,
+    agentPermissionSummary: {
+      update: true,
+      deploy: true,
+      operate: true,
+      delete: true,
+      administer: true,
+      configurationUpdate: true,
+      configurationRead: true,
+      configurationSecretsOperate: true,
+      configurationSecretsOperateDeniedBindings: [],
+      agentSourcesOperate: false,
+      sandboxPolicyRead: false,
+    },
+    description:
+      "The permission answer allows Agent update but not operate on every Secret and credential source the Agent and its Configuration bind, which each Agent update checks. Save authentication source and its fields are disabled, and the note names the missing grant. Plugins and repository access saves show the same note.",
+    gap: "The permission answer is simulated; the API still authorizes every save.",
+  },
+  credentialsServiceAccountReadDenied: {
+    group: "Components/Credentials",
+    name: "Model authentication, editor may lack read on the ChatGPT service account",
+    path: `${draft}&tab=credentials`,
+    auth: "service",
+    agentPermissionSummary: {
+      update: true,
+      deploy: true,
+      operate: true,
+      delete: true,
+      administer: true,
+      configurationUpdate: true,
+      configurationRead: true,
+      configurationSecretsOperate: true,
+      configurationSecretsOperateDeniedBindings: [],
+      agentSourcesOperate: false,
+      sandboxPolicyRead: false,
+    },
+    description:
+      "The Agent uses a ChatGPT service account for Harness authentication, which each Agent update reads. The permission answer says a source grant is missing but not which one, so the note names operate on the bound Secrets and credential sources and read on the service account.",
     gap: "The permission answer is simulated; the API still authorizes every save.",
   },
   credentialsSlack: {
@@ -6588,6 +7121,80 @@ export const scenarios = {
     slackBindings: false,
     description:
       "Both Slack token bindings are empty and required before a Slack-enabled draft can deploy.",
+  },
+  credentialsSlackReader: {
+    group: "Components/Credentials",
+    name: "Slack tokens, viewer can only read",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    slackBindings: false,
+    readOnlyPermissionSummary: true,
+    description:
+      "The permission answer denies Configuration update, so the Slack token pickers are disabled, Save channel Secrets is not offered, and a note says why.",
+    gap: "The permission answer is simulated; the API still authorizes every save.",
+  },
+  credentialsSlackSecretsOperateDenied: {
+    group: "Components/Credentials",
+    name: "Slack tokens, editor cannot operate the bound Secrets",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    agentPermissionSummary: {
+      update: true,
+      deploy: true,
+      operate: true,
+      delete: true,
+      administer: true,
+      configurationUpdate: true,
+      configurationRead: true,
+      configurationSecretsOperate: false,
+      configurationSecretsOperateDeniedBindings: [],
+      agentSourcesOperate: false,
+      sandboxPolicyRead: false,
+    },
+    description:
+      "The permission answer allows Configuration update but not Secret operate on every Secret the Configuration binds, which each Configuration save needs. The Slack token pickers are disabled, Save channel Secrets is not offered, and a note names the missing grant. Each Agent update checks the same Secrets, so Save authentication source is disabled too.",
+    gap: "The permission answer is simulated; the API still authorizes every save.",
+  },
+  credentialsSlackReplaceDenied: {
+    group: "Components/Credentials",
+    name: "Slack tokens, editor must replace the bot token Secret",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    agentPermissionSummary: {
+      update: true,
+      deploy: true,
+      operate: true,
+      delete: true,
+      administer: true,
+      configurationUpdate: true,
+      configurationRead: true,
+      configurationSecretsOperate: false,
+      configurationSecretsOperateDeniedBindings: ["SLACK_BOT_TOKEN"],
+      agentSourcesOperate: false,
+      sandboxPolicyRead: true,
+    },
+    description:
+      "The permission answer lists the bot token binding as the only one whose Secret the editor cannot operate. A save is checked on the Secrets it submits, so the Slack token pickers stay editable and a note says to choose another Secret for the bot token. A save that keeps it is refused before any request.",
+    steps: [
+      "Choose the Slack backup token for the app token and select Save channel Secrets. The panel says the save keeps Slack bot token and sends nothing.",
+      "Choose the Slack backup token for the bot token too, then Save channel Secrets. The save goes through; do not deploy.",
+    ],
+    gap: "The permission answer is simulated; the API still authorizes every save and the Secrets it binds.",
+  },
+  credentialsSlackOperateDenied: {
+    group: "Components/Credentials",
+    name: "Slack tokens, editor cannot operate one readable Secret",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    secretOperateDenied: ["sec_demo_slack_backup_token"],
+    description:
+      "The Secret answer lists the Slack backup token as readable but not operable for this editor. Each Secret field lists it disabled with the reason and never stages it, since a save that binds it would be refused. Secret operate is then granted per Secret, so each field lists Create new Secret... disabled with the reason too.",
+    steps: [
+      "Type backup in Slack bot token. Slack backup token (simulated) is listed with the access note under it; choosing it stages nothing and Save channel Secrets stays disabled.",
+      "Type backup in API key Secret: the same option is listed the same way.",
+      "Type a name no Secret has in API key Secret. Create new Secret... is listed with the access note under it and opens nothing.",
+    ],
+    gap: "The Secret answer is simulated; the API still authorizes every save and the Secrets it binds.",
   },
   credentialsSlackStored: {
     group: "Components/Credentials",
@@ -6909,7 +7516,7 @@ export const scenarios = {
   },
   authSecretGrantMemberUnverified: {
     group: "Components/Credentials",
-    name: "Member authentication saved, access not verified",
+    name: "Member authentication saved, access checked at deploy",
     path: `${draft}&tab=credentials`,
     observabilityDenied: true,
     extraSecrets: [{ id: "sec_demo_replacement", name: "Replacement model token" }],
@@ -6919,10 +7526,11 @@ export const scenarios = {
       click("Save authentication source"),
     ],
     description:
-      "A member saves a new model Secret. The session already knows this member does not administer the Installation, so the form sends no IAM request for the Agent's grant. The warning says this session did not verify the Agent's access, names the Installation administrator and the step that grants it, and offers no Retry credential access.",
+      "A member saves a new model Secret. The session already knows this member does not administer the Installation, so the form sends no IAM request for the Agent's grant. The card settles to one saved status: deploying checks that the Agent can use the selected Secret, and an Installation administrator gives the Agent Secret operate on it if it cannot. It offers no Retry credential access.",
     steps: [
-      "Read the warning: this session did not verify access, and an Installation administrator opens this Agent's Credentials and selects Save authentication source.",
-      "Only Reload authentication source remains. Deploy new version stays blocked. The request log shows the Agent PATCH and no /iam/ request.",
+      "Read the status: the source saved, the deploy checks the Agent's access, and an Installation administrator gives it.",
+      "The method select, the Secret picker and Save authentication source stay enabled. Pick another Secret: the staged hint replaces the saved status.",
+      "Deploy new version stays available, since the API checks the Agent's access when it deploys. The request log shows the Agent PATCH and no /iam/ request.",
     ],
     gap: "The member browser test uses a member account and the real Installation permission check.",
   },
@@ -7468,11 +8076,14 @@ export const scenarios = {
         path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001",
         method: "DELETE",
         status: 403,
+        code: "FORBIDDEN",
+        message:
+          "Not authorized: this needs Agent delete on Agent agt_00000000-0000-4000-8000-000000000001. Ask an Installation administrator to grant it.",
       },
     ],
     actions: [click("Delete Agent"), click("Permanently delete Agent")],
     description:
-      "Permission advice is unavailable. The attempted deletion is denied and the Console explains the missing access.",
+      "Permission advice is unavailable. The attempted deletion is denied; the Console shows the API's sentence naming the missing grant and who grants it.",
   },
   deletionConflict: {
     group: "Components/Deletion",
@@ -7483,10 +8094,13 @@ export const scenarios = {
         path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001",
         method: "DELETE",
         status: 409,
+        code: "RESOURCE_CONFLICT",
+        message: "The Agent lifecycle changed during deletion.",
       },
     ],
     actions: [click("Delete Agent"), click("Permanently delete Agent")],
-    description: "Refresh status before retrying deletion after a conflict.",
+    description:
+      "The API's conflict reason shows with the step that recovers: refresh deletion status before retrying.",
   },
   deletionUnknown: {
     group: "Components/Deletion",
@@ -7881,6 +8495,27 @@ export const scenarios = {
     description:
       "An absent selected version does not establish candidate cleanup. Explicit repeated Stop remains available; history is readable.",
   },
+  stopFirstDeploymentFailed: {
+    group: "Components/Stop Agent",
+    name: "Failed first deployment",
+    path: draft,
+    deployed: true,
+    firstDeploymentFailed: true,
+    description:
+      "A failed first deployment leaves the Agent requested to run with no selected version, so the danger zone has no Stop row, as the Agents list has no Stop icon.",
+    gap: "Simulated UI proof only; this preview does not run a deployment.",
+  },
+  stopFirstDeploymentQueued: {
+    group: "Components/Stop Agent",
+    name: "First deployment queued",
+    path: draft,
+    deployed: true,
+    firstDeploymentQueued: true,
+    actions: [click("Stop Agent")],
+    description:
+      "A queued first deployment has no selected version yet. Stop stays, and its row and confirmation say it cancels the deployment in progress instead of interrupting a gateway.",
+    gap: "Simulated UI proof only; this preview does not run a deployment.",
+  },
   stopNeverDeployed: {
     group: "Components/Stop Agent",
     name: "Never deployed",
@@ -7991,6 +8626,11 @@ for (const [id, state, name] of [
   ["policyDenialsGap", "gap", "Policy denial window has a buffer gap"],
   ["policyDenialsMissingMetadata", "missingMetadata", "Policy denial with unknown metadata"],
   ["policyDenialsFailed", "failed", "Policy application unconfirmed"],
+  [
+    "policyApplicationCeilingChanged",
+    "failedCeiling",
+    "Policy application refused by a changed ceiling",
+  ],
   ["policyDenialsApplyRejected", "applyRejected", "Policy saved but live application rejected"],
   ["policyIncompletePreview", "incompletePreview", "Policy preview omits the validated rules"],
   ["policyUnconfirmedSave", "unconfirmedSave", "Policy save returns different rules than reviewed"],

@@ -14,6 +14,8 @@ import {
   waitForIdleFetches,
 } from "./console-agents-browser-helpers.mjs";
 import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
+import { apiErrorResponse } from "../helpers/api-error.mjs";
+import { GENERIC_DENIAL } from "../helpers/refusal-text.mjs";
 
 // One Chromium for the file; each test still gets its own context.
 const browser = fileBrowser();
@@ -306,13 +308,7 @@ for (const outcome of ["fills", "is refused"]) {
       `**/namespaces/${namespace.id}/agents/${target.id}/deployments/${target.revisionId}`,
       {
         fulfill: refused
-          ? {
-              status: 403,
-              json: {
-                error: { code: "PERMISSION_DENIED", message: "Access denied." },
-                meta: { requestId: "req_test_list_return" },
-              },
-            }
+          ? apiErrorResponse(403, "FORBIDDEN", "Access denied.")
           : deploymentRecord(namespace, "succeeded"),
       },
     );
@@ -412,11 +408,7 @@ for (const visit of ["a first visit", "a return"]) {
       // A row whose read failed has no link to keep: its reread on return is delayed too.
       await page.route(
         `**/namespaces/${namespace.id}/agents/${agents[2].id}/deployments/*`,
-        (route) =>
-          route.fulfill({
-            status: 500,
-            json: { error: { code: "INTERNAL", message: "Unavailable." } },
-          }),
+        (route) => route.fulfill(apiErrorResponse(500, "INTERNAL_ERROR", "Unavailable.")),
         { times: 1 },
       );
     }
@@ -1305,13 +1297,7 @@ test("Agents list names the current version by number in the page's outcome word
   let deniedReads = 0;
   await denied.route(`**/agents/${newer.id}/revisions/${activeId}`, (route) => {
     deniedReads += 1;
-    return route.fulfill({
-      status: 403,
-      json: {
-        error: { code: "FORBIDDEN", message: "The exact platform operation was not authorized." },
-        meta: {},
-      },
-    });
+    return route.fulfill(apiErrorResponse(403, "FORBIDDEN", GENERIC_DENIAL));
   });
   await denied.route(deploymentsRead(namespace), (route) =>
     route.fulfill(deploymentRecord(namespace, "succeeded")),
