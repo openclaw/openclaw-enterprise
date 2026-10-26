@@ -777,6 +777,12 @@ test("the Agent Secret answer names the readable Secrets a binding save would be
   const agentEditor = await member("secret-answer-agent-editor", reads, readable);
   agentEditor.grant("agent", "update", "agent", agent.id);
   assert.deepEqual(await agentEditor.answer(), [app.id, bot.id, ...spareIds].sort());
+  // Agent deploy without either update: deploying a draft authorizes Secret operate on every
+  // Secret it binds, so the answer is reported (the iam.md operator, finding 2546).
+  const deployer = await member("secret-answer-deployer", reads, readable);
+  assert.deepEqual(await deployer.answer(), []);
+  deployer.grant("deploy", "deploy", "agent", agent.id);
+  assert.deepEqual(await deployer.answer(), [app.id, bot.id, ...spareIds].sort());
   // Both updates without Configuration read: no save can bind a Secret, so it is not reported.
   const unreadConfiguration = await member(
     "secret-answer-no-configuration-read",
