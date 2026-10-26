@@ -88,7 +88,8 @@ async function constructionAndRefusal() {
     body: {
       error: {
         code: "DEPENDENCY_UNAVAILABLE",
-        message: "The caller did not provide valid authentication credentials.",
+        message:
+          "Sign-in is temporarily unavailable. Try again shortly. If it continues, ask an operator to check the API logs.",
       },
       meta: { requestId: "auth-binding-request" },
     },
