@@ -48,6 +48,7 @@ import {
   CONFIGURATION_UPDATE_DENIED,
   credentialCheckedAtDeploy,
   deployAcceptedVersionUnreadable,
+  deployUnlistedSecretsReason,
   modelCredentialRejectedReadOnly,
   NEW_VERSIONS_READ,
   requestedVersionUnavailable,
@@ -118,6 +119,7 @@ import {
   sameNamespaceSecretHref,
   secretMetadata,
   secretSourceForBinding,
+  unlistedSecretCount,
 } from "./secret-picker.mjs";
 
 type DetailContext = ConsolePageContext & { namespaceId: string; agentId: string };
@@ -282,11 +284,25 @@ function deployFailureText(cause: unknown, submitted: boolean) {
     : "Deployment conflicts with the saved Agent state. Refresh this Agent to check for changed Configuration or missing connection credentials. If credentials are missing after an earlier version, ask an operator to restore them.";
 }
 
-// Deployment authorizes Secret operate on every Secret the draft binds (finding 2546).
-function deploySecretsOperateReason(names: readonly string[]) {
+// The bound Secrets a deployment would be refused on: readable ones by name, and how many the
+// caller may not read, which are never named.
+interface DeploySecretsDenied {
+  names: readonly string[];
+  unlisted: number;
+}
+// Deployment authorizes Secret operate on every Secret the draft binds (finding 2546), including
+// one the caller may not read (finding D756). Empty when nothing is known to be refused.
+function deploySecretsOperateReason({ names, unlisted }: DeploySecretsDenied) {
   const listed =
     names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
-  return `Deploying needs Secret operate on ${listed}, which your access does not include. ${askAdministratorTo("grant it")}`;
+  return [
+    names.length
+      ? `Deploying needs Secret operate on ${listed}, which your access does not include. ${askAdministratorTo("grant it")}`
+      : "",
+    unlisted ? deployUnlistedSecretsReason(unlisted) : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
 }
 
 // The credential an Agent's harness authentication grant covers: its credential source or its
@@ -2685,9 +2701,24 @@ export async function renderAgentDetail(
       ? `${namespacePath(namespaceId)}/configurations/${encodeURIComponent(agent.configurationId)}`
       : `${path}/revisions/${encodeURIComponent(selected)}`;
 
+  // A version this tab's Deploy created that the newest page of versions leaves out is one the
+  // caller may not read: the list returns only readable versions, newest first, and it is newer
+  // than each listed one. Its read would only be refused and audited (finding D758).
+  async function deployedVersionUnlisted() {
+    const deployed = deployedVersions.get(failedVersionKey(path, selected));
+    if (deployed === undefined) {
+      return false;
+    }
+    const [listed] = await Promise.allSettled([revisionsPromise]);
+    return (
+      listed.status === "fulfilled" &&
+      listed.value.revisions.every(({ id, revision }) => id !== selected && revision < deployed)
+    );
+  }
+
   async function readSnapshot() {
     // A denied read is audited, so reuse this tab's settled denial instead of asking per view.
-    if (context.deniedReads?.has(snapshotPath)) {
+    if (context.deniedReads?.has(snapshotPath) || (await deployedVersionUnlisted())) {
       throw Object.assign(new Error("Access denied."), {
         status: 403,
         code: "FORBIDDEN",
@@ -2900,11 +2931,14 @@ export async function renderAgentDetail(
     }
     // Deployment needs Secret operate on each Secret the draft binds: its Configuration's Secret
     // bindings and a Secret authentication source. The Secret operate answer names the bound ones
-    // this caller may not operate, so Deploy says so before a click the API would refuse. An
-    // unknown or unreported answer names none and leaves Deploy to the API (finding 2546).
-    let deploySecretsDenied: readonly string[] = [];
+    // this caller may read but not operate, so Deploy says so before a click the API would
+    // refuse. An unknown or unreported answer names none and leaves Deploy to the API (finding
+    // 2546). A bound Secret the readable Secret list leaves out is one the caller may not read,
+    // which that answer never covers: Deploy says so too, without its name (finding D756). An
+    // Installation administrator's list is not used, so it never counts one.
+    let deploySecretsDenied: DeploySecretsDenied = { names: [], unlisted: 0 };
     let deploySecretsRead = 0;
-    async function boundSecretsDenied({ fresh = false } = {}) {
+    async function boundSecretsDenied({ fresh = false } = {}): Promise<DeploySecretsDenied> {
       const bound = new Map<string, unknown>();
       for (const binding of Object.values(snapshot.secretBindings ?? {})) {
         const source = secretSourceForBinding(binding);
@@ -2917,9 +2951,22 @@ export async function renderAgentDetail(
         bound.set(harness.id, harness);
       }
       if (bound.size === 0) {
-        return [];
+        return { names: [], unlisted: 0 };
       }
-      const denied = await secretsOperateDenied({ fresh });
+      const [denied, unlisted] = await Promise.all([
+        secretsOperateDenied({ fresh }),
+        unlistedSecretCount(
+          {
+            namespaceId,
+            namespace: context.namespace,
+            installationAdmin: context.installationAdmin,
+            request,
+          },
+          [...bound]
+            .filter(([, source]) => sameNamespaceSecretHref(source, namespaceId))
+            .map(([id]) => id),
+        ),
+      ]);
       // The answer lists only Secrets this caller may read, so each one's name reads too.
       const names = await Promise.all(
         [...bound]
@@ -2933,17 +2980,20 @@ export async function renderAgentDetail(
             }
           }),
       );
-      return names.sort((left, right) => left.localeCompare(right));
+      return {
+        names: names.sort((left, right) => left.localeCompare(right)),
+        unlisted: unlisted ?? 0,
+      };
     }
     function readDeploySecretsDenied(options?: { fresh?: boolean }) {
       const read = ++deploySecretsRead;
       return boundSecretsDenied(options).then(
-        (names) => {
+        (denied) => {
           if (read === deploySecretsRead && context.isCurrent()) {
-            deploySecretsDenied = names;
+            deploySecretsDenied = denied;
             updateDeployControls();
           }
-          return names;
+          return denied;
         },
         () => deploySecretsDenied,
       );
@@ -2972,7 +3022,7 @@ export async function renderAgentDetail(
       return (
         deployPending ||
         callerPermissions?.deploy === false ||
-        deploySecretsDenied.length > 0 ||
+        Boolean(deploySecretsOperateReason(deploySecretsDenied)) ||
         authenticationSaveState !== "idle" ||
         Boolean(deployReloadMessage) ||
         authenticationPending ||
@@ -3014,7 +3064,7 @@ export async function renderAgentDetail(
       if (!deployPending) {
         if (callerPermissions?.deploy === false) {
           deployStatus.textContent = "Your access does not include deploying this Agent.";
-        } else if (deploySecretsDenied.length) {
+        } else if (deploySecretsOperateReason(deploySecretsDenied)) {
           const reason = deploySecretsOperateReason(deploySecretsDenied);
           // A refused deployment's alert already says it.
           deployStatus.textContent = deployFeedback.textContent === reason ? "" : reason;
@@ -3301,13 +3351,13 @@ export async function renderAgentDetail(
               failure.serverMessage === GENERIC_DENIAL ||
               namedDenial(error) !== undefined)
               ? await readDeploySecretsDenied({ fresh: true })
-              : [];
+              : null;
           if (!context.isCurrent()) {
             return;
           }
-          deployFeedback.textContent = deniedSecrets.length
-            ? deploySecretsOperateReason(deniedSecrets)
-            : deployFailureText(error, submitted);
+          deployFeedback.textContent =
+            (deniedSecrets && deploySecretsOperateReason(deniedSecrets)) ||
+            deployFailureText(error, submitted);
           if (
             !submitted ||
             deployRefusedBeforeAdmission(error) ||

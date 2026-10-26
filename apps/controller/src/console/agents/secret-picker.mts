@@ -114,6 +114,13 @@ export function secretMetadataPath(namespaceId: string, secretId: string) {
   return `${namespacePath(namespaceId)}/secrets/${encodeURIComponent(secretId)}`;
 }
 
+// The console's Secrets page with one Secret's metadata and consumers open. A link to the API
+// path opened raw JSON, or a raw 403 body that was audited as a denial (finding D757).
+export function secretPageHref(namespaceId: string, secretId: string) {
+  const query = new URLSearchParams({ namespace: namespaceId, secret: secretId });
+  return `/console/secrets?${query}`;
+}
+
 // Carry only the public identity, even if a response unexpectedly contains a value.
 export function secretMetadata(
   value: unknown,
@@ -192,6 +199,27 @@ function readableSecretIds(context: SecretContext, request: SecretRequest) {
   });
   return read;
 }
+/**
+ * How many of `ids` the readable Secret list leaves out: bound Secrets the caller may not read,
+ * whose names stay hidden (finding D756). A view's list can predate a Secret created or granted
+ * since, so one that leaves an ID out is read again before it counts. Null when the list is not
+ * used or unknown, as above.
+ */
+export async function unlistedSecretCount(context: SecretContext, ids: Iterable<string>) {
+  const { request } = context;
+  if (typeof request !== "function") {
+    return null;
+  }
+  const bound = [...new Set(ids)];
+  const unlisted = (readable: ReadonlySet<string> | null) =>
+    readable && bound.filter((id) => !readable.has(id)).length;
+  const known = unlisted(await readableSecretIds(context, request));
+  if (!known) {
+    return known;
+  }
+  readableSecretLists.delete(request);
+  return unlisted(await readableSecretIds(context, request));
+}
 function readSecretMetadata(
   context: SecretContext,
   request: SecretRequest,
@@ -233,11 +261,11 @@ function forgetSecretMetadata(context: SecretContext, secretId: string) {
   }
 }
 
-function secretMetadataLink(href: string, name: string) {
+function secretMetadataLink(namespaceId: string, secretId: string, name: string) {
   return element(
     "a",
     {
-      href,
+      href: secretPageHref(namespaceId, secretId),
       target: "_blank",
       rel: "noopener",
       title: "View Secret metadata (opens in new tab)",
@@ -268,7 +296,7 @@ export function renderSecretReference(context: SecretContext, source?: SecretRef
   if (known === undefined) {
     node.textContent = `${bound} · Loading metadata…`;
   } else {
-    node.replaceChildren(secretMetadataLink(href, known));
+    node.replaceChildren(secretMetadataLink(source.namespaceId, source.id, known));
   }
   readSecretMetadata(context, context.request, href, source.id)
     .then((value) => {
@@ -288,7 +316,7 @@ export function renderSecretReference(context: SecretContext, source?: SecretRef
         resolvedSecretNames.set(key, name);
       }
       if (name !== known) {
-        node.replaceChildren(secretMetadataLink(href, name));
+        node.replaceChildren(secretMetadataLink(source.namespaceId, source.id, name));
       }
     })
     .catch((cause: unknown) => {
@@ -469,15 +497,30 @@ export function createSecretReferenceField({
     return source && source.namespaceId === context.namespaceId ? source.id : null;
   }
 
+  // Only a Secret the caller's list includes gets the link: the Secrets page shows nothing for
+  // one they may not read (finding D757).
   function updateMetadataLink() {
-    const href = sameNamespaceSecretHref(getCurrentSource(), context.namespaceId);
-    if (href === null) {
+    const selectedSecretId = currentSecretId();
+    if (
+      !context.namespaceId ||
+      selectedSecretId === null ||
+      !secrets.some((secret) => secret.id === selectedSecretId)
+    ) {
       metadataLink.hidden = true;
       metadataLink.removeAttribute("href");
       return;
     }
     metadataLink.hidden = false;
-    metadataLink.href = href;
+    metadataLink.href = secretPageHref(context.namespaceId, selectedSecretId);
+  }
+  // A bound Secret the loaded list leaves out: the caller may not read it, or it was deleted.
+  // The field says so as Secret summaries do, instead of "Secret metadata is bound" (finding
+  // D757).
+  function unlistedBinding() {
+    const selectedSecretId = currentSecretId();
+    return selectedSecretId !== null && !secrets.some((secret) => secret.id === selectedSecretId)
+      ? `${SECRET_UNLISTED} ${askForGrant("Secret read on it")}`
+      : null;
   }
 
   function currentSecretLabel() {
@@ -665,13 +708,18 @@ export function createSecretReferenceField({
   }
 
   function listedStatus() {
+    const unlisted = unlistedBinding();
     // A disabled field offers no choice: it says what is bound, not how to choose or create a
     // Secret (finding 2438).
     if (manuallyDisabled) {
       return currentSecretId() === null
         ? "No Secret is bound."
-        : "Secret metadata is bound. Values are never shown.";
+        : (unlisted ?? "Secret metadata is bound. Values are never shown.");
     }
+    return unlisted ? `${unlisted} ${choiceStatus()}` : choiceStatus();
+  }
+
+  function choiceStatus() {
     // The list holds only the Secrets this account may read. Someone the session knows is not
     // an Installation administrator may not see Secrets that exist (finding 2111).
     if (createDenied) {

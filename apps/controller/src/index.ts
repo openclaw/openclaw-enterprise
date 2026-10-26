@@ -1592,11 +1592,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   }
 
   // Report the primary IAM decision without auditing a mutation the caller never attempted.
-  async function callerMay(
-    actorId: string,
-    action: PermissionAction,
-    resource: ResourceRef,
-  ): Promise<boolean> {
+  async function callerDecision(actorId: string, action: PermissionAction, resource: ResourceRef) {
     const selected = selectedIAMDriver();
     let decision;
     try {
@@ -1613,7 +1609,15 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     ) {
       throw dependencyUnavailable();
     }
-    return decision.allowed;
+    return { allowed: decision.allowed, restricted: decision.evidence.restrictionIds.length > 0 };
+  }
+
+  async function callerMay(
+    actorId: string,
+    action: PermissionAction,
+    resource: ResourceRef,
+  ): Promise<boolean> {
+    return (await callerDecision(actorId, action, resource)).allowed;
   }
 
   async function denial(
@@ -2486,6 +2490,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         configurationUpdate,
         configurationRead,
         sandboxPolicyRead,
+        readLogsDecision,
       ] = await Promise.all([
         ...(["update", "deploy", "operate", "delete", "administer"] as const).map((action) =>
           callerMay(context.actorId, action, target),
@@ -2493,7 +2498,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         callerMay(context.actorId, "update", configuration),
         callerMay(context.actorId, "read", configuration),
         callerMay(context.actorId, "read", sandboxPolicy),
+        callerDecision(context.actorId, "read_logs", target),
       ]);
+      // Log text authorizes Agent read_logs or, without a Restriction on read_logs, Agent
+      // administer in its place, as the runtime log read decides it. The console skips that
+      // audited read for a caller without either (finding D758).
+      const readLogs = readLogsDecision.allowed || (!readLogsDecision.restricted && administer);
       // One IAM call per distinct grant, shared by the answers below. A Secret bound to several
       // names is one decision.
       const decisions = new Map<string, Promise<boolean>>();
@@ -2568,6 +2578,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           configurationSecretsOperateDeniedBindings,
           agentSourcesOperate,
           sandboxPolicyRead,
+          readLogs,
         },
         meta: { requestId: request.id },
       });

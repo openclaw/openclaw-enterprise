@@ -2295,7 +2295,13 @@ async function loadPage({
         renderRows,
       );
     } else if (current.feature === "secrets") {
-      renderSecrets({ ...agentContext, items, sorted, permissions: firstPermissions });
+      renderSecrets({
+        ...agentContext,
+        items,
+        sorted,
+        permissions: firstPermissions,
+        openSecretId: current.url.searchParams.get("secret"),
+      });
     } else {
       if (current.feature === "backends" && backendsDenied) {
         backendsDenied = false;

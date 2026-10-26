@@ -158,6 +158,8 @@ export function renderSecrets(
     sorted(items: readonly SecretSummary[]): SecretSummary[];
     pageUrl: ReturnType<typeof createNavigation>["pageUrl"];
     permissions?: Static<typeof NamespaceCallerPermissionsResponse>["data"] | null;
+    // A listed Secret to open, from the `secret` parameter an Agent page's link sets.
+    openSecretId?: string | null;
   },
 ) {
   const path = `/namespaces/${encodeURIComponent(context.namespaceId)}/secrets`;
@@ -788,4 +790,10 @@ export function renderSecrets(
   }
 
   renderList();
+  // An Agent page links a bound Secret here, with its metadata and consumers open (finding D757).
+  // A Secret the list leaves out opens nothing: the caller may not read it.
+  const linked = items.find((item) => item.id === context.openSecretId);
+  if (linked) {
+    void openDetail(linked);
+  }
 }

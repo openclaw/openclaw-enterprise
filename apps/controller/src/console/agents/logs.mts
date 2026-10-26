@@ -41,7 +41,9 @@ interface AgentLogsOptions {
   agent: { id: string };
   revisionId: string;
   shown?: Promise<void>;
-  permissions?(options?: { fresh: boolean }): Promise<{ operate: boolean } | null>;
+  permissions?(options?: {
+    fresh: boolean;
+  }): Promise<{ operate: boolean; readLogs?: boolean } | null>;
   onLogsDenied?(): void;
   // A read was refused after the same read succeeded: the caller's access changed.
   onAccessChanged?(): void;
@@ -61,8 +63,8 @@ const FIRST_VIEW_WAIT_MS = 2_000;
 // A 403 is audited; remember it for this sign-in instead of re-asking every poll or every
 // time the Logs tab reopens. A status denial also keeps whether the caller's permission answer
 // allowed operate when it was last shown (null until an answer is compared): once a later
-// answer allows operate where it did not, the view asks once more. The answer has no read_logs
-// bit, so a log text denial lasts until the console Refresh or sign-out.
+// answer allows operate where it did not, the view asks once more. A log text denial lasts until
+// the console Refresh or sign-out; a view whose answer denies read_logs is not sent the read.
 const deniedLogViews = new Set<string>();
 const deniedStatusViews = new Map<string, boolean | null>();
 // Denials that came after this page session read the same output: the caller's access changed,
@@ -963,6 +965,13 @@ export function renderAgentLogs(
     }
     let retryAfter = FOLLOW_POLL_MS;
     try {
+      // A caller whose permission answer denies log text is not sent its read, which the API
+      // refuses and audits on each Logs visit (finding D758): the view shows that refusal. Once
+      // a read was allowed, a later refusal is the API's own, which says access changed. An
+      // unknown answer still reads.
+      if (!logsAllowed && (await permissions())?.readLogs === false) {
+        throw Object.assign(new Error("Access denied."), { status: 403, code: "FORBIDDEN" });
+      }
       const page = (await read(`${base}/logs?${query}`)) as AgentRuntimeLogPageWire;
       if (!current() || restartPending || logsDenied) {
         restoreShownStatus();

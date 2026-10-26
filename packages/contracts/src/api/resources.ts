@@ -750,6 +750,10 @@ export const AgentCallerPermissionsResponse = Type.Object(
           description:
             "Whether the selected IAM Driver allows read now on the Agent's sandbox policy, which reading its network policy and policy suggestions needs. Advisory only: other required permissions, Sandbox Driver support, or a later authorization decision can still prevent the read.",
         }),
+        readLogs: Type.Boolean({
+          description:
+            "Whether the selected IAM Driver allows reading the Agent's runtime log text now: Agent `read_logs`, or Agent `administer` when no Restriction denies `read_logs`. Advisory only: other required permissions, Compute Driver support, or a later authorization decision can still prevent the read.",
+        }),
       },
       { additionalProperties: false },
     ),
