@@ -630,6 +630,10 @@ export const WITHDRAWAL_NO_ACTIVE_VERSION =
   "The Agent has no active version, so it has no credential withdrawals. Deploy the Agent first.";
 export const WITHDRAWAL_NOT_FOUND =
   "The Agent's active version has no withdrawal for this credential source: either the version does not use it, or no withdrawal was requested for it.";
+// Every per-Agent network policy answer on an Installation that selects no Sandbox Driver: the
+// policy view, validate, save, apply and turning editing on (D774).
+export const NO_SANDBOX_DRIVER_NETWORK_POLICY =
+  "This Installation selects no Sandbox Driver, so Agents run without a Sandbox: there are no policy denials, suggestions or Agent network rules.";
 // A policy denial that names only OpenShell's policy DNS placeholder address, with no record
 // of the host it stood for in the loaded log: the row proposes no rule (D771).
 export const PLACEHOLDER_DESTINATION =

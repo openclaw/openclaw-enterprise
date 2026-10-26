@@ -1,7 +1,7 @@
 ---
 created: 2026-09-02
-updated: 2026-10-23
-last_updated_session: authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d
+updated: 2026-10-26
+last_updated_session: wf-land-1707
 ---
 
 # Common Operational Logging Flow
@@ -238,8 +238,11 @@ Compute Driver refused a provisioning plan for a reason the caller cannot fix) k
 of an API `503 DEPENDENCY_UNAVAILABLE`, whose response keeps generic text) keeps only
 `request.id`; its route, error class, message and causes stay in the API's local log.
 `native_admin.websocket_audit_failed`
-keeps the Namespace, Agent and Agent revision IDs, and `native_admin.websocket_denial_audit_failed`
-carries none. `native_admin.compute_owner_mismatch` (native admin refused because the selected version belongs to another Compute Driver) keeps the same three IDs; the Driver IDs and
+keeps the Namespace, Agent and Agent revision IDs. `native_admin.http_denial_audit_failed`
+and `native_admin.websocket_denial_audit_failed` carry no request, user, error or payload
+fields. `native_admin.pending_work_unresolved` keeps only its nonnegative safe-integer
+count as `occ.native_admin.pending`; invalid counts are omitted.
+`native_admin.compute_owner_mismatch` (native admin refused because the selected version belongs to another Compute Driver) keeps the Namespace, Agent and Agent revision IDs; the Driver IDs and
 implementations stay local. `authentication.activation-warning`, `authentication.password-sign-in-warning`
 and `authentication.recovery-seed-warning` keep at most `occ.code`; account IDs and
 messages stay local.
@@ -313,6 +316,8 @@ for panels, correlation, and authorization limits.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-26 22:00: Export `native_admin.http_denial_audit_failed` and `native_admin.pending_work_unresolved` (bounded count only); both denial-audit failure events drop caller context. (wf-land-1707 - #1707)
 
 - 2026-10-23 21:00: Log `worker.repository-delivery-pending` when delivery starts failing, then at most once a minute, not on every one-second retry. (fix-2251)
 

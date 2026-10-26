@@ -1005,6 +1005,60 @@ test("an unchanged runtime status poll leaves the status strip and pickers untou
   await rewrites.dispose();
 });
 
+test("a failed status refresh keeps the Pod cards dated with their last observation", async (t) => {
+  const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
+  computeDriver.state.lines = [line(1, "steady output")];
+  computeDriver.state.observedAt = "2026-09-30T12:00:00.000Z";
+  const { page } = await newPage(t, fixture);
+  await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
+  await trackSettledFetches(page);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revisionId, "logs"));
+  await page.getByRole("log", { name: "Runtime log output" }).getByText("steady output").waitFor();
+  await waitForIdleFetches(page);
+  const cards = page.locator(".runtime-pod");
+  const observation = page.locator(".agent-logs [aria-live='off']");
+  const status = page.locator(".agent-logs > p > [role='status']");
+  const initial = (await observation.textContent()) ?? "";
+  assert.match(initial, /^Observed /);
+  const cardCount = await cards.count();
+  assert.ok(cardCount > 0);
+  const statusPath = `/deployments/${revisionId}/runtime`;
+  async function poll() {
+    const response = page.waitForResponse((res) =>
+      new URL(res.url()).pathname.endsWith(statusPath),
+    );
+    await page.clock.runFor(10_000);
+    const result = await response;
+    await waitForIdleFetches(page);
+    return result.status();
+  }
+
+  // A Driver failure keeps the cards, but they must not read as current health: the status
+  // line names when they were observed, and the Driver's own error text never reaches it.
+  computeDriver.state.describeError = new Error("private cluster connection details");
+  assert.equal(await poll(), 503);
+  assert.equal(await cards.count(), cardCount);
+  assert.equal(await observation.textContent(), "");
+  const stale = (await status.textContent()) ?? "";
+  assert.ok(
+    stale.startsWith(
+      `Showing runtime status last observed ${initial.slice("Observed ".length)}. Current runtime status is unavailable. Checking again shortly.`,
+    ),
+    stale,
+  );
+  assert.doesNotMatch(stale, /private cluster/);
+
+  // The next poll still runs, and a fresh observation replaces the dated message.
+  computeDriver.state.describeError = undefined;
+  computeDriver.state.observedAt = "2026-09-30T12:02:00.000Z";
+  assert.equal(await poll(), 200);
+  const recovered = (await observation.textContent()) ?? "";
+  assert.match(recovered, /^Observed /);
+  assert.notEqual(recovered, initial);
+  assert.equal(await status.textContent(), "");
+  assert.equal(await cards.count(), cardCount);
+});
+
 test("a status poll that changes the log source starts its tail; retaining the source spends no read", async (t) => {
   const logs = await logsFixture(t);
   const state = logs.computeDriver.state;
@@ -1556,7 +1610,10 @@ test("rate limits keep Follow and status automatic, but not a download made whil
   // Status has its own ten-second poll. Neither automatic read repeats the download.
   await page.clock.runFor(6_000);
   await waitForIdleFetches(page);
-  assert.equal(await page.getByRole("status").filter({ hasText: waiting }).textContent(), waiting);
+  // The Pod cards stay, so the strip dates them with their last observation.
+  const strip = (await page.locator(".agent-logs > p > [role='status']").textContent()) ?? "";
+  assert.match(strip, /^Showing runtime status last observed /u);
+  assert.ok(strip.endsWith(`. ${waiting}`), strip);
   assert.equal(counts.status, 1);
   await page.clock.runFor(10_000);
   await waitForIdleFetches(page);

@@ -59,6 +59,7 @@ import {
   notIncluded,
   POLICY_EDITING_SETTING_REFUSED,
   GRANT_EXCEEDS_CEILING,
+  NO_SANDBOX_DRIVER_NETWORK_POLICY,
 } from "../helpers/refusal-text.mjs";
 
 test("Agent policy ceiling rejection is announced in view and preserves unsaved additions", async (t) => {
@@ -138,7 +139,7 @@ test("Agent policy ceiling rejection is announced in view and preserves unsaved 
 
 // Without a Sandbox Driver that supports per-Agent network policy there is no Sandbox log source
 // and no suggestions. The tab read both, showed their refusals and a full editor (finding 2060).
-test("Policy denials says once that the Sandbox Driver lacks per-Agent network policy", async (t) => {
+test("Policy denials says once that the Installation selects no Sandbox Driver", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("No policy driver", { ready: true });
@@ -150,17 +151,41 @@ test("Policy denials says once that the Sandbox Driver lacks per-Agent network p
   );
   const { revision } = await fixture.seedActiveAgentRevision(namespace.id, created.id);
   const base = `/namespaces/${namespace.id}/agents/${created.id}/sandbox-policy/networking`;
-  // The real API answers the policy read with no capability.
-  assert.equal((await fixture.request("GET", base)).data.capability, null);
+  // The real API answers the policy read with no capability and its cause, and every policy
+  // change gives the same cause: turning editing on is refused up front (D774).
+  const view = (await fixture.request("GET", base)).data;
+  assert.deepEqual(
+    [view.capability, view.unavailableReason],
+    [null, NO_SANDBOX_DRIVER_NETWORK_POLICY],
+  );
+  const refusals = [
+    await fixture.request("PATCH", `${base}/editing`, { body: { enabled: true } }),
+    await fixture.request("POST", `${base}/validate`, {
+      body: { expectedVersion: 1, additions: [] },
+    }),
+    await fixture.request("PUT", base, { body: { expectedVersion: 1, additions: [] } }),
+    await fixture.request("POST", `${base}/apply`, {
+      body: { expectedVersion: 1, revisionId: revision.id },
+    }),
+  ];
+  for (const refused of refusals) {
+    assert.deepEqual(
+      [refused.status, refused.body.error?.message],
+      [409, NO_SANDBOX_DRIVER_NETWORK_POLICY],
+    );
+  }
+  assert.equal((await fixture.request("GET", base)).data.editingEnabled, false);
+  // Turning editing off stays allowed.
+  assert.equal(
+    (await fixture.request("PATCH", `${base}/editing`, { body: { enabled: false } })).status,
+    200,
+  );
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, detailUrl(fixture, namespace.id, created.id, revision.id, "policy"));
   const tab = page.locator(".sandbox-policy");
-  await tab
-    .getByRole("status")
-    .filter({ hasText: "This Sandbox Driver does not support per-Agent network policy." })
-    .waitFor();
-  assert.equal(await page.getByText("does not support per-Agent network policy").count(), 1);
+  await tab.getByRole("status").filter({ hasText: NO_SANDBOX_DRIVER_NETWORK_POLICY }).waitFor();
+  assert.equal(await page.getByText(NO_SANDBOX_DRIVER_NETWORK_POLICY).count(), 1);
   // No editor entry point: the editing switch, Manage or View rules, and the window's refreshes.
   // Add rule and Refresh policy live in the rule dialog, which the tab no longer contains.
   assert.equal(await tab.getByRole("switch", { name: "Policy editing" }).count(), 0);
@@ -178,13 +203,10 @@ test("Policy denials says once that the Sandbox Driver lacks per-Agent network p
   );
   // The draft tab reads neither, but says the same instead of offering the editor.
   await page.goto(detailUrl(fixture, namespace.id, created.id, "draft", "policy").href);
-  await tab
-    .getByRole("status")
-    .filter({ hasText: "This Sandbox Driver does not support per-Agent network policy." })
-    .waitFor();
+  await tab.getByRole("status").filter({ hasText: NO_SANDBOX_DRIVER_NETWORK_POLICY }).waitFor();
   assert.equal(await tab.getByRole("switch", { name: "Policy editing" }).count(), 0);
   assert.equal(await tab.getByRole("button", { name: /^(Manage|View) rules$/ }).count(), 0);
-  assert.equal(await page.getByText("does not support per-Agent network policy").count(), 1);
+  assert.equal(await page.getByText(NO_SANDBOX_DRIVER_NETWORK_POLICY).count(), 1);
 });
 
 // A version a Sandbox Driver provisioned names it in its snapshot, so the Policy denials tab reads
@@ -206,14 +228,15 @@ test("Policy denials reads the Sandbox log of a version a Sandbox Driver provisi
     "the Sandbox log is read",
   );
   assert.equal(await page.getByText(/runs without a Sandbox/).count(), 0);
-  // Its denial window keeps its controls (finding 2497 hides them only without a Sandbox).
+  // Its denial window keeps its controls (finding 2497 hides them only without a Sandbox). They
+  // render after the log read, so wait for each instead of sampling once.
   const tab = page.locator(".sandbox-policy");
   for (const control of [
     tab.getByRole("button", { name: "Refresh denials" }),
     tab.getByRole("checkbox", { name: "Follow policy denials" }),
     tab.getByRole("searchbox", { name: "Filter loaded denials" }),
   ]) {
-    assert.equal(await control.isVisible(), true);
+    await control.waitFor({ state: "visible" });
   }
 });
 
@@ -803,7 +826,8 @@ test("overlapping policy refreshes retain the newest read and continue pending p
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revision.id, "policy"));
   await page.getByRole("button", { name: "Manage rules", exact: true }).click();
-  await page.getByText("Saved rules awaiting application", { exact: false }).waitFor();
+  // The fresh deploy runs the saved v1: nothing awaits application (D773).
+  await page.getByText("No unsaved changes", { exact: true }).waitFor();
   const url = `${fixture.origin}${base}`;
   const first = await holdRequests(t, page, url, { once: true, method: "GET", afterServer: true });
   await page.getByRole("button", { name: "Refresh policy", exact: true }).click();
