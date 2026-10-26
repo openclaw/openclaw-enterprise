@@ -46,7 +46,11 @@ import { waitFor } from "../helpers/wait-for.mjs";
 import { withNamespaceLockHeld } from "../helpers/postgres-namespace-lock.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 import { expireWorkLease, makeWorkDue } from "../helpers/postgres-worker-revision-support.mjs";
-import { AGENT_NAME_CONFLICT, DEPENDENCY_UNAVAILABLE } from "../helpers/refusal-text.mjs";
+import {
+  AGENT_NAME_CONFLICT,
+  BROKER_PROXY_DISABLED,
+  DEPENDENCY_UNAVAILABLE,
+} from "../helpers/refusal-text.mjs";
 
 const adminEmail = "postgres-agent-provisioning-v2@example.test";
 const adminPassword = "postgres-agent-provisioning-password";
@@ -1194,6 +1198,134 @@ test(
     const retried = await fixture.request("POST", `${admitted.data.provisioning.url}/retry`);
     assertApiError(retried, 409, "RESOURCE_CONFLICT");
     assert.equal(retried.body.error.message, message);
+  },
+);
+
+// Finding 2350: a Codex network proxy setting that blocks the repository credential broker is
+// refused at the provisioning request, and the worker and retry repeat the check for the stored
+// record. A Sandbox Driver with its own repository path carries the broker traffic instead, so
+// the request is accepted while one is selected; when the Installation then drops that Sandbox
+// Driver, the stored record would send it through the blocking proxy and is refused.
+test(
+  "a stored provisioning record whose Codex proxy blocks the repository broker is refused after its Sandbox repository path goes away",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    const initial = await createFixture(context);
+    const namespace = await initial.bootstrapNamespace();
+    const repoDriver = new GitHubRepositoryPolicy(
+      {
+        id: "provisioning-repositories",
+        client: new UnixRepositoryCredentialControlClient({
+          controlSocket: "/unused/provisioning/control.sock",
+        }),
+        drivers: { repo: "provisioning-repo" },
+      },
+      {
+        version: 1,
+        backendId: "provisioning-repositories",
+        providerInstanceId: "provisioning-github",
+        appId: "123",
+        githubInstallationId: "456",
+        maximumDurationSeconds: 3600,
+        repositories: [
+          {
+            repositoryRef: "project",
+            repositoryId: "789",
+            repository: "example/project",
+            namespaces: [{ namespaceId: namespace.id, profiles: ["git-read"] }],
+          },
+        ],
+      },
+      { sessionDurationSeconds: 600 },
+    );
+    // This case ends before the worker reaches the Sandbox: only that it has a repository path
+    // matters, so every Sandbox operation fails the test.
+    const sandboxDriver = {
+      id: "sandbox-repository-path",
+      capability: "sandbox",
+      implementation: "test-provisioning",
+      facets: ["networking", "filesystem", "process"],
+      repositoryAccess: Object.fromEntries(
+        [
+          "verifyExecution",
+          "retireExpired",
+          "routeReadiness",
+          "materialSettledAt",
+          "isRouteBlockedError",
+        ].map((name) => [name, () => assert.fail("this case ends before repository delivery")]),
+      ),
+      async provisionHarness() {
+        assert.fail("this case ends before provisioning effects");
+      },
+      async cleanup() {},
+    };
+    const withSandbox = createTestKubernetesComputeDriver("provisioning-sandbox-repositories", {
+      repositoryCredentials: true,
+      sandboxDriver,
+    });
+    const withoutSandbox = createTestKubernetesComputeDriver("provisioning-proxy-repositories", {
+      repositoryCredentials: true,
+    });
+    const computeDriver = initial.computeDriver;
+    computeDriver.validateRepositoryCredentials =
+      withSandbox.validateRepositoryCredentials.bind(withSandbox);
+    const fixture = await createFixture(context, {
+      computeDriver,
+      configurationDriver: initial.configurationDriver,
+      secretDriver: initial.secretDriver,
+      repoDriver,
+      sandboxDriver,
+    });
+    const secrets = await createProvisioningSecrets(fixture, namespace.id);
+    const { agents, models } = createHarnessConfiguration("codex", "gpt-6-astra");
+    const body = {
+      ...provisioningBody(namespace.id, secrets, {
+        repositoryAccess: {
+          defaultProfile: "git-read",
+          repositories: [{ repositoryRef: "project" }],
+        },
+      }),
+      configuration: {
+        kind: "agent",
+        values: {
+          agents,
+          models,
+          plugins: {
+            entries: {
+              codex: { enabled: true, config: { appServer: { networkProxy: { enabled: false } } } },
+            },
+          },
+        },
+      },
+      pluginApprovers: [],
+    };
+    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+      body,
+    });
+    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+
+    // The Installation now has no Sandbox Driver: the Codex network proxy carries the broker
+    // traffic, and the stored setting blocks it.
+    computeDriver.validateRepositoryCredentials =
+      withoutSandbox.validateRepositoryCredentials.bind(withoutSandbox);
+    const switched = await createFixture(context, {
+      computeDriver,
+      configurationDriver: initial.configurationDriver,
+      secretDriver: initial.secretDriver,
+      repoDriver,
+    });
+    await switched.startWorker();
+    const failed = await waitFor("the worker to refuse the Codex network proxy", async () => {
+      const row = await provisioningRow(switched.pool, namespace.id, body.requestId);
+      return row.progress.error === undefined ? undefined : row;
+    });
+    await switched.stopWorker();
+    assert.equal(failed.status, "failed");
+    assert.equal(failed.agent_id, null, "the refusal comes before the work creates its Agent");
+    // Retry names the setting, as Agent save and the request do.
+    const retried = await switched.request("POST", `${admitted.data.provisioning.url}/retry`);
+    assertApiError(retried, 400, "INVALID_REQUEST");
+    assert.equal(retried.body.error.message, BROKER_PROXY_DISABLED);
   },
 );
 
