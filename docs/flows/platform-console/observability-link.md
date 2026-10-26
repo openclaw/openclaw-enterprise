@@ -24,7 +24,9 @@ The caller needs a valid console session and Installation `administer` permissio
 graph TD
   A["Read trusted startup YAML"] --> B["Validate external URL"]
   B --> C["Compose controller API"]
-  D["Resolve browser session"] --> E["GET /observability"]
+  D["Resolve browser session"] --> K["Read a Namespace permission answer"]
+  K -->|Agent create refused| H
+  K -->|otherwise| E["GET /observability"]
   E --> F["Selected IAM Driver checks Installation administer"]
   F -->|allowed| G["Return URL or null"]
   F -->|denied| H["Hide link"]
@@ -54,16 +56,17 @@ not persisted as an Installation resource or used as an OTLP export target.
 
 ### 2. Resolve the browser link
 
-`loadPage` reads `GET /observability` (through `apps/controller/src/console/console.mjs:probeInstallationAccess`) with the Namespace collection after the session check. The read outlives the view: a navigation while it is in flight joins it instead of aborting it and asking again. `apps/controller/src/index.ts:perform` calls `requireInstallationAdmin`, which authorizes the exact Installation through the selected IAM Driver and records denial evidence. An allowed response contains the startup URL or `null`. Denial or an unavailable optional read leaves the link hidden. A session `401` clears private console state.
+After the session check and the Namespace collection, `loadPage` asks `apps/controller/src/console/console.mjs:installationAccess`. It first reads `GET /namespaces/{namespaceId}/permissions` for the selected Namespace, or the first readable one. Agent create is held only by the administrator Role and Namespace-wide grants, so a caller it refuses is not an Installation administrator: the console hides the link and sends no probe, because the API audits each denied probe. This answer is not settled: the next page load asks again. An administrator whose Restriction denies Agent create in one Namespace is probed from a Namespace that allows it. With no readable Namespace, or no permission answer, the console reads `GET /observability` (through `probeInstallationAccess`). The read outlives the view: a navigation while it is in flight joins it instead of aborting it and asking again. `apps/controller/src/index.ts:perform` calls `requireInstallationAdmin`, which authorizes the exact Installation through the selected IAM Driver and records denial evidence. An allowed response contains the startup URL or `null`. Denial or an unavailable optional read leaves the link hidden. A session `401` clears private console state.
 
-The console settles the read once per session owner: an allowed response or a `403` is reused across navigation and, through tab `sessionStorage` keyed by the noncredential session binding, across reloads in the same tab, so a Namespace-only user produces one audited denial per session and tab rather than one per page. Transient failures retry on the next page load. Logout and an owner change clear the result. Revoking or granting administration takes effect in the console at the next sign-in or in a new tab; the API check still applies to every request. The settled answer also tells Agent detail whether to mount the Installation-admin sharing panel.
+The console settles the probe once per session owner: an allowed response or a `403` is reused across navigation and, through tab `sessionStorage` keyed by the noncredential session binding, across reloads in the same tab. A user who may create Agents in a Namespace but is not an administrator produces one audited denial per session and tab; a user refused Agent create produces none. Transient failures retry on the next page load. Logout and an owner change clear the result. Revoking or granting administration takes effect in the console at the next sign-in or in a new tab; the API check still applies to every request. The settled answer also tells Agent detail whether to mount the Installation-admin sharing panel.
 
 `apps/controller/src/console/shell.mts:renderShell` adds **Observability** with an external-link icon only for a returned URL. It opens a separate tab with `noopener noreferrer`; the browser does not send the OCC session to the destination. The external service authenticates the user independently.
 
 ## Debugging and Verification
 
 - `node --test tests/integration/console-api.test.mjs` verifies the real API route, Installation IAM denial, and absent URL.
-- The focused `tests/browser/console.test.mjs` case verifies administrator visibility, Namespace-only hiding, one probe per session across navigation and reload, and safe new-tab attributes in Chrome.
+- The focused `tests/browser/console.test.mjs` case verifies administrator visibility, Namespace-only hiding with no probe, one probe per session across navigation and reload, and safe new-tab attributes in Chrome.
+- `tests/browser/console-agent-state.test.mjs` verifies that a reader's page loads audit no observability or IAM denial, and that an administrator still reads both.
 - These tests do not verify access at the external observability service.
 
 ## Related docs
