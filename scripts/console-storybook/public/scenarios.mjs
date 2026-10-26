@@ -7287,6 +7287,35 @@ export const scenarios = {
       "Select Retry Secret access. Both tokens read Bound and Deploy new version is available; do not deploy.",
     ],
   },
+  credentialsSlackLeftoverGrantMissing: {
+    group: "Components/Credentials",
+    name: "Slack key left bound without an Agent grant",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    slackMode: "http",
+    slackTokens: { botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" } },
+    slackBindings: ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"],
+    slackGrantMissing: "SLACK_APP_TOKEN",
+    description:
+      "HTTP mode reads no app token, but SLACK_APP_TOKEN is still bound from Socket Mode and its Secret has no Agent grant. Deploy checks every bound Secret, so the tab lists the key as read by no Slack setting, marks it, blocks Deploy, and offers Retry Secret access.",
+    steps: [
+      "SLACK_APP_TOKEN reads Bound · not read by the Slack settings · Agent access not confirmed; the warning says deploying would be refused.",
+      "Select Retry Secret access. The row reads Bound · not read by the Slack settings and Deploy new version is available; do not deploy.",
+    ],
+  },
+  credentialsSlackSigningSecretMissing: {
+    group: "Components/Credentials",
+    name: "Slack signing secret without a binding",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    slackTokens: {
+      appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+      botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+      signingSecret: "${SLACK_SIGNING_SECRET}",
+    },
+    description:
+      "Both token pickers are bound, but the signing secret reads SLACK_SIGNING_SECRET, which has no binding. Save and deployment refuse that, so the tab lists the key as Missing below the pickers and Deploy waits until it is bound through the Configuration API.",
+  },
   credentialsSavePending: {
     group: "Components/Credentials",
     name: "Channel Secret save pending",
