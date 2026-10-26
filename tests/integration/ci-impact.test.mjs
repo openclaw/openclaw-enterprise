@@ -1337,7 +1337,10 @@ test("Suite Audit and Static Checks runs the audit and every check the lanes ski
     "require the suite audit before static checks",
   );
   for (const step of checks) {
-    assert.equal(step.if, undefined, step.name);
+    // Only pushes to main swap the plain formatting check for the cached one (next test).
+    const condition =
+      step.run === "pnpm format:check" ? "steps.prettier-cache.outcome != 'success'" : undefined;
+    assert.equal(step.if, condition, step.name);
     assert.equal(step["continue-on-error"], undefined, step.name);
   }
   assert.ok(workflow.jobs["ci-required"].needs.includes("static-checks"));
