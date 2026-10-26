@@ -284,7 +284,7 @@ function deployFailureText(cause: unknown, submitted: boolean) {
 }
 
 // The bound Secrets a deployment would be refused on: readable ones by name, and how many the
-// caller may not read, which are never named.
+// caller may neither read nor operate, which are never named.
 interface DeploySecretsDenied {
   names: readonly string[];
   unreadable: number;
