@@ -80,18 +80,47 @@ export const requestedVersionUnavailable = (version: string) =>
 export const deployAcceptedVersionUnreadable = (version: string) =>
   `Deployment accepted. You cannot read version ${version}, so its progress and outcome are not shown here; ${ASK_INSTALLATION_ADMINISTRATOR} for AgentRevision read on it.`;
 
-// A rejected model credential is fixed in the Agent's Credentials, which needs Agent update. A
-// Secret-backed credential can also be replaced in place, which needs Secret update on that
-// Secret. The permission answer covers only Agent update, so a caller known to lack it is told
-// which grant does what, and who grants it, rather than to fix it (finding D750).
-const credentialFixGrants = (secretBacked: boolean, then: string) =>
-  secretBacked
-    ? `Replacing its Secret's value needs Secret update on that Secret; choosing another credential needs Agent update on this Agent, which your access does not include. If your access does not include Secret update either, ${ASK_INSTALLATION_ADMINISTRATOR} for one of them. Then ${then}.`
-    : `${notIncluded("changing it", "Agent update on this Agent")} Then ${then}.`;
-export const modelCredentialRejectedAsk = (secretBacked: boolean) =>
-  `The model provider rejected this version's credential (HTTP 401 or 403). ${credentialFixGrants(secretBacked, "deploy a new version")}`;
-export const modelCredentialRejectedReadOnly = (secretBacked: boolean) =>
-  `The last deployment's model credential was rejected. ${credentialFixGrants(secretBacked, "deploy again")}`;
+// A rejected model credential is fixed in the Agent's Credentials, which needs Agent update and
+// the grants each Agent update also checks. A Secret-backed credential can also be replaced in
+// place, which needs Secret update on that Secret. A caller whose permission answer denies the
+// Agent update is told which grant it lacks, which grants do what, and who grants them, rather
+// than to fix it (finding D750). Deploying the fix needs Agent deploy, and Secret operate on a
+// Secret-backed credential: the console cannot tell a caller who cannot read that Secret whether
+// she holds it, so it says what deploying needs unless the answer denies Agent deploy (D752).
+export type CredentialChoiceGap = "update" | "configurationRead" | "sources" | "serviceAccount";
+const CREDENTIAL_CHOICE_NEEDS: Record<CredentialChoiceGap, string> = {
+  update: "Agent update on this Agent, which your access does not include",
+  configurationRead:
+    "Configuration read on this Agent's Configuration, which your access does not include",
+  sources:
+    "operate on each Secret and credential source this Agent and its Configuration bind, which your access does not include",
+  serviceAccount:
+    "operate on each Secret and credential source this Agent and its Configuration bind, and read on the ServiceAccount it uses for Harness authentication; your access does not include all of them",
+};
+export interface CredentialFixAccess {
+  secretBacked: boolean;
+  gap: CredentialChoiceGap;
+  // The answer's Agent deploy, or undefined when there is no answer.
+  deploy: boolean | undefined;
+}
+const credentialFixGrants = ({ secretBacked, gap, deploy }: CredentialFixAccess, then: string) => {
+  const choose = `another credential needs ${CREDENTIAL_CHOICE_NEEDS[gap]}.`;
+  const fix = secretBacked
+    ? `Replacing its Secret's value needs Secret update on that Secret; choosing ${choose}`
+    : `Choosing ${choose}`;
+  const operate = secretBacked ? " and Secret operate on that Secret" : "";
+  const deploying =
+    deploy === false
+      ? "Deploying needs Agent deploy on this Agent, which your access does not include."
+      : deploy === true
+        ? `Then ${then}${secretBacked ? ", which also needs Secret operate on that Secret" : ""}.`
+        : `Then ${then}, which needs Agent deploy on this Agent${operate}.`;
+  return `${fix} ${deploying} ${ASK} for whichever of these grants your access does not include.`;
+};
+export const modelCredentialRejectedAsk = (access: CredentialFixAccess) =>
+  `The model provider rejected this version's credential (HTTP 401 or 403). ${credentialFixGrants(access, "deploy a new version")}`;
+export const modelCredentialRejectedReadOnly = (access: CredentialFixAccess) =>
+  `The last deployment's model credential was rejected. ${credentialFixGrants(access, "deploy again")}`;
 // The Agent no longer binds the credential the failed version was deployed with, so the recorded
 // failure asks for nothing more, of any reader: the next deployment uses the new one (D752).
 export const MODEL_CREDENTIAL_REJECTED_REPLACED =

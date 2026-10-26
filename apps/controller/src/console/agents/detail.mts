@@ -117,8 +117,8 @@ import {
 } from "./deployment-evidence.mjs";
 import {
   createDeploymentRecovery,
+  credentialFixAccess,
   credentialRejectedAsk,
-  secretBackedCredential,
 } from "./deployment-recovery.mjs";
 import {
   sameNamespaceSecretHref,
@@ -3103,10 +3103,14 @@ export async function renderAgentDetail(
           // blocking. It never reads "Ready to deploy.": deploying again does not fix it.
           // A reader who cannot change the draft is told which grants fix it (finding D750).
           const readOnly = draftReadOnly();
-          const rejected = readOnly
-            ? modelCredentialRejectedReadOnly(
-                secretBackedCredential("harnessAuth" in agent ? agent.harnessAuth : undefined),
-              )
+          const fixAccess =
+            readOnly &&
+            credentialFixAccess(
+              "harnessAuth" in agent ? agent.harnessAuth : undefined,
+              callerPermissions,
+            );
+          const rejected = fixAccess
+            ? modelCredentialRejectedReadOnly(fixAccess)
             : "The last deployment's model credential was rejected; update or replace it in Credentials before deploying again.";
           const status = !credentialRejected()
             ? gate
