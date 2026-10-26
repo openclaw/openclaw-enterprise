@@ -390,11 +390,24 @@ test("a policy batch outside the Installation ceiling retains its draft and does
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revision.id, "policy"));
   await page.getByText("2 in loaded window", { exact: true }).waitFor();
-  // A fresh policy has no confirmed provider version and was never saved for later.
+  // A fresh deploy carries policy v1 into its Sandbox, and no live change was requested: the
+  // card says so instead of "Application unconfirmed" (D773).
+  const view = (await fixture.request("GET", base)).data;
+  assert.deepEqual(
+    [view.defaultsRevisionId, view.deployedPolicyVersion, view.policy.application],
+    [revision.id, 1, undefined],
+  );
   await page
     .locator(".sandbox-policy-rule-status")
-    .getByText("Application unconfirmed", { exact: true })
+    .getByText("Deployed", { exact: true })
     .waitFor();
+  assert.equal(
+    await page
+      .locator(".sandbox-policy-versions")
+      .getByText("Deployed with policy v1; no live change requested.", { exact: true })
+      .count(),
+    1,
+  );
   assert.equal(await page.locator(".sandbox-application-feedback").count(), 0);
 
   await page.getByLabel("Select page", { exact: true }).check();

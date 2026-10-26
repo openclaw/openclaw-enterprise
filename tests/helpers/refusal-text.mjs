@@ -630,6 +630,10 @@ export const WITHDRAWAL_NO_ACTIVE_VERSION =
   "The Agent has no active version, so it has no credential withdrawals. Deploy the Agent first.";
 export const WITHDRAWAL_NOT_FOUND =
   "The Agent's active version has no withdrawal for this credential source: either the version does not use it, or no withdrawal was requested for it.";
+// Every per-Agent network policy answer on an Installation that selects no Sandbox Driver: the
+// policy view, validate, save, apply and turning editing on (D774).
+export const NO_SANDBOX_DRIVER_NETWORK_POLICY =
+  "This Installation selects no Sandbox Driver, so Agents run without a Sandbox: there are no policy denials, suggestions or Agent network rules.";
 export const POLICY_RECOMMENDATIONS_NO_SANDBOX =
   "This version runs without a Sandbox, so it records no network denials to recommend policy from. Policy recommendations need an Agent deployed with a Sandbox Driver such as OpenShell.";
 export const DEVICE_LOGIN_NOT_CONFIGURED =
