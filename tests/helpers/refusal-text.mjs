@@ -45,6 +45,12 @@ export const NAMESPACE_NAME_CONFLICT =
 // The sign-in endpoints' 503 (apps/controller/src/auth/index.ts); the console words its own.
 export const SIGN_IN_UNAVAILABLE =
   "Sign-in is temporarily unavailable. Try again shortly. If it continues, ask an operator to check the API logs.";
+// The sign-in endpoints' 429. The password limiter names its wait, the same number of seconds as
+// its Retry-After header, which counts down: two refusals a second apart differ in it. The external
+// sign-in budgets refill each minute and send no Retry-After.
+export const signInRateLimited = (seconds) =>
+  `Too many attempts. Wait ${seconds === 1 ? "1 second" : `${seconds} seconds`}, then try again.`;
+export const SIGN_IN_RATE_LIMITED_MINUTE = "Too many attempts. Wait a minute, then try again.";
 // Create Agent and the Agents list for a caller without Agent create, which Namespace Roles cannot
 // grant people (findings 2496, 2508).
 export const AGENT_CREATE_DENIED =
