@@ -77,12 +77,14 @@ import {
 } from "./console-deployment-activity-helpers.mjs";
 import {
   ADMINISTRATOR_ACCESS_DENIED,
+  AGENT_SAVE_DENIED,
   createDenied,
   DEPENDENCY_UNAVAILABLE,
   GENERIC_DENIAL,
   AGENT_CREATE_INSTALLATION_DENIED,
   CHANNELS_NEED_DEDICATED,
   REPOSITORY_ACCESS_NOT_CONFIGURED,
+  REPOSITORY_CHOICES_CREATE_DENIED,
 } from "../helpers/refusal-text.mjs";
 
 const defaultCodexPreset = JSON.parse(
@@ -488,7 +490,7 @@ test("Agent creation stores its API key separately, grants exact access, and sav
   );
   await page.getByRole("button", { name: "Save authentication source" }).click();
   assert.equal((await deniedBinding).status(), 403);
-  await page.getByText(/Access denied|not authorized|permission/i).waitFor();
+  await page.getByText(AGENT_SAVE_DENIED, { exact: true }).waitFor();
   assert.deepEqual(
     (await fixture.request("GET", `/namespaces/${namespace.id}/agents/${created.data.id}`)).data
       .harnessAuth,
@@ -511,7 +513,7 @@ test("Agent creation stores its API key separately, grants exact access, and sav
   await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
   await page.getByRole("button", { name: "Start with default Preset" }).click();
-  await page.getByText(/Repository choices are denied/).waitFor();
+  await page.getByText(REPOSITORY_CHOICES_CREATE_DENIED, { exact: true }).waitFor();
   await enterManualModel(page, "denied-agent-key", "gpt-5.1");
   await page.getByLabel("Agent name").fill("Denied Agent");
   await openAdvancedSettings(page);
@@ -770,9 +772,10 @@ test("Agent creation distinguishes unavailable repository choices from denied Ag
   );
   await login(deniedPage, deniedFixture, `/console/agents/new?namespace=${deniedNamespace.id}`);
   await deniedPage.getByRole("button", { name: "Start with default Preset" }).click();
-  await deniedPage.getByText(/Repository choices are denied/).waitFor();
+  const repositoryDenial = deniedPage.getByText(REPOSITORY_CHOICES_CREATE_DENIED, { exact: true });
+  await repositoryDenial.waitFor();
   // A refusal is a danger alert, not a quiet hint (finding 2006).
-  assert.deepEqual(await statusTone(deniedPage.getByText(/Repository choices are denied/)), {
+  assert.deepEqual(await statusTone(repositoryDenial), {
     className: "status",
     tone: "danger",
     role: "alert",

@@ -19,6 +19,14 @@ export const askAdministratorTo = (step: string) => `${ASK} to ${step}.`;
 export const notIncluded = (task: string, grant: string) =>
   `Your access does not include ${task}. ${askForGrant(grant)}`;
 
+/**
+ * A write the API refused, where it was tried: which action was refused, what the reader's access
+ * does not include, then the grant to ask for ("Save was refused: your access does not include
+ * ...").
+ */
+export const actionRefused = (action: string, task: string, grant: string) =>
+  `${action} was refused: ${notIncluded(task, grant).replace(/^Your/, "your")}`;
+
 // Create is checked on the parent (the Installation for a Namespace, otherwise the Namespace), and
 // Namespace IAM Roles cannot grant people create (docs/guides/topics/iam.md), so the reason names
 // who can create instead of a grant to ask for (findings 2496, 2508).
@@ -125,3 +133,53 @@ export const DIAGNOSTICS_DENIED = notIncluded(
   "running diagnostics for this Agent",
   "Agent operate on it",
 );
+
+// A save first rereads the Agent and its Configuration, which authorizes Agent read and
+// Configuration read; a refused read is not a refused update (finding 1540).
+export const SAVE_READ_REFUSED = actionRefused(
+  "Save",
+  "reading this Agent's saved settings, which each save reads first",
+  "Agent read and Configuration read on it",
+);
+// PATCH /configurations/{id} authorizes Configuration update, and Secret operate on each Secret
+// the save binds.
+export const CONFIGURATION_SAVE_REFUSED = actionRefused(
+  "Save",
+  "saving this Configuration",
+  "Configuration update on it, plus Secret operate on each Secret it binds",
+);
+// PATCH /agents/{id} authorizes Agent update, then Configuration read and the grants on each
+// Secret, credential source and ServiceAccount the Agent and its Configuration bind.
+export const AGENT_SAVE_REFUSED = actionRefused(
+  "Save",
+  "saving this Agent",
+  "Agent update and Configuration read on it, plus access to the Secrets, credential sources and Service Account it binds",
+);
+// PUT /agents/{id}/workspace/files/{name} authorizes Agent operate.
+export const WORKSPACE_SAVE_REFUSED = actionRefused(
+  "Save",
+  "saving this Agent's workspace files",
+  "Agent operate on it",
+);
+// POST /configurations authorizes Configuration create, which no Namespace Role grants, plus
+// Secret operate on each Secret it binds: only an Installation administrator can create it.
+export const CONFIGURATION_CREATE_REFUSED = `Create was refused: your access does not include creating this Agent's Configuration. That needs Configuration create in this Namespace, which only an Installation administrator holds, plus Secret operate on each Secret it binds. ${askAdministratorTo("create this Agent")}`;
+// The editing setting authorizes Installation administer and Agent administer, which no Namespace
+// Role grants, so the reason names who can change it instead of a grant.
+export const POLICY_EDITING_SETTING_REFUSED =
+  "Your access does not include changing the editing setting. Only an Installation administrator who also administers this Agent can change it.";
+// Repository choices for an Agent authorize Agent update (GET /agents/{id}/repository-options);
+// for a new Agent, Agent create in the Namespace (GET /agents/repository-options).
+export const REPOSITORY_CHOICES_AGENT_DENIED = notIncluded(
+  "loading repository choices for this Agent",
+  "Agent update on it",
+);
+// The Agent page checks Agent read, the versions list (Agent read) and the shown version
+// (AgentRevision read) or draft (Configuration read) before it shows the Agent again.
+export const AGENT_PAGE_READ_DENIED = notIncluded(
+  "reading this Agent, its versions or its Configuration",
+  "Agent read, AgentRevision read and Configuration read on them",
+);
+// A 403 that names no grant, such as an older API's generic denial. message() adds who grants
+// access; administratorMessage() does not.
+export const ACCESS_NOT_INCLUDED = "Your access does not include this action.";
