@@ -272,3 +272,107 @@ test("an Agent principal's deploy refusal names its bound Secret only to a calle
   ]);
   assert.equal(named, agentPrincipalDenied(`Agent ${agent.id}`, `Secret ${secretId}`));
 });
+
+// Finding 2614: saving a Configuration or credential source without new bindings checks Secret
+// operate on the bindings it already stores. The binding is part of that record, so the caller's
+// own denial names the bound Secret only when the caller may read both the Secret and the record.
+// With Secret read alone, the text would tell a caller that a record it cannot read binds that
+// Secret. The allow or deny decision is unchanged; only the text differs.
+test("a stored binding's denial names its Secret only to a caller who may read the record that binds it", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  // The Credential Gateway is a recording double: HTTP, IAM and OCC admission stay real.
+  const gateway = {
+    id: "caller-denial-gateway",
+    capability: "credential_gateway",
+    implementation: "test-recording-gateway",
+    validateSourceConfig() {},
+    async listSourceTypes() {
+      return [
+        {
+          type: "openai",
+          config: [],
+          secrets: [{ name: "api_key", required: true }],
+          rotation: "none",
+          harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
+        },
+      ];
+    },
+    async registerSource() {
+      return { state: "ready" };
+    },
+    async sourceStatus() {
+      return { state: "ready" };
+    },
+    ...Object.fromEntries(
+      [
+        "updateSource",
+        "rotateSource",
+        "removeSource",
+        "attachForRevision",
+        "attachmentStatus",
+        "withdraw",
+      ].map((name) => [
+        name,
+        async () => {
+          throw new Error(`${name} is not exercised: the save is refused first`);
+        },
+      ]),
+    ),
+  };
+  fixture.controller.registerDriver(gateway);
+  fixture.controller.selectDriver("credential_gateway", gateway.id);
+  const namespace = await fixture.createNamespace("Stored binding denials", { ready: true });
+  const secret = await fixture.createSecret(namespace.id, "Bound token", "synthetic-bound-token");
+  const configuration = await fixture.createConfiguration(
+    namespace.id,
+    {},
+    { secretBindings: { EXTERNAL_API_TOKEN: { source: secret.ref, delivery: { type: "env" } } } },
+  );
+  const sources = `/namespaces/${namespace.id}/credential-sources`;
+  const source = await fixture.request("POST", sources, {
+    body: { name: "bound-source", type: "openai", secrets: { api_key: secret.ref } },
+  });
+  assert.equal(source.status, 201, JSON.stringify(source.body));
+
+  // Each save sends no Secret ID: the denied Secret comes from the stored record.
+  const cases = [
+    {
+      label: "configuration",
+      path: `/namespaces/${namespace.id}/configurations/${configuration.id}`,
+      body: { values: {} },
+      kind: "configuration",
+    },
+    {
+      label: "credential-source",
+      path: `${sources}/${source.data.id}`,
+      body: {},
+      kind: "credential_source",
+    },
+  ] as const;
+  for (const { label, path, body, kind } of cases) {
+    const refusal = async (suffix: string, grants: Grants) => {
+      const session = await memberSession(fixture, `${label}-${suffix}`, namespace.id, [
+        ["read", "namespace"],
+        ["update", kind],
+        ["read", "secret"],
+        ...grants,
+      ]);
+      const response = await fixture.request("PATCH", path, { session, body });
+      assertApiError(response, 403, "FORBIDDEN", `${label} ${suffix}`);
+      return response.body.error.message as string;
+    };
+    // Secret read without read on the record: the caller cannot already see the binding.
+    assert.equal(
+      await refusal("secret-read", []),
+      callerDenied("Secret operate", "a Secret this request uses"),
+      label,
+    );
+    // Read on both: the caller can already see the Secret and that this record binds it.
+    assert.equal(
+      await refusal("secret-and-record-read", [["read", kind]]),
+      callerDenied("Secret operate", `Secret ${secret.id}`),
+      label,
+    );
+  }
+});

@@ -36,8 +36,9 @@ export const NATIVE_ADMIN_DENIAL = `${NAMED_DENIAL_PREFIX} opening this Agent's 
  * The text for the caller's own denial of `action` on `resource` (finding 2534). It names the
  * grant the request checked and who grants it. The disclosure rules:
  * - It names a resource ID only when `requested` accepts it: the request itself carried it, or the
- *   caller may already read it (finding 2594). It never names any other ID read from stored state,
- *   such as a Secret an Agent binds.
+ *   caller may already read it and the record the route's path names, such as the Agent or
+ *   Configuration that binds it (findings 2594, 2614). It never names any other ID read from stored
+ *   state.
  * - It never names a binding, Role, Restriction or another principal, and it reads the same
  *   whether a Restriction denied the request or no grant allowed it.
  * - It depends only on the request and the checked grant, never on whether the resource exists,

@@ -4354,16 +4354,17 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
   /**
    * Which IDs a caller's own denial may name: those the request carried and, for a resource read
-   * from stored state, such as a Secret the Agent binds, that resource when the caller may already
-   * read it (finding 2594) and, on an Agent's route, may read that Agent too: the binding is part
-   * of the Agent record. Only the caller's own denial of an action other than read or create
-   * asks; an IAM failure while asking only hides the ID.
+   * from stored state, such as a Secret an Agent or Configuration binds, that resource when the
+   * caller may already read it (finding 2594) and may read every record the route's path names,
+   * such as that Agent or Configuration: the binding is part of that record (finding 2614). Only the
+   * caller's own denial of an action other than read or create asks; an IAM failure while asking
+   * only hides the ID.
    */
   async function nameableIds(
     error: unknown,
     actorId: string | undefined,
     sent: (value: string) => boolean,
-    agent: ResourceRef | undefined,
+    owners: readonly ResourceRef[],
   ): Promise<(value: string) => boolean> {
     if (
       actorId === undefined ||
@@ -4384,18 +4385,34 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     ) {
       return sent;
     }
-    const readable =
-      (agent === undefined || (await callerMay(actorId, "read", agent).catch(() => false))) &&
-      (await callerMay(actorId, "read", resource).catch(() => false));
-    return readable ? (value) => value === resource.id || sent(value) : sent;
+    for (const reference of [...owners, resource]) {
+      if (!(await callerMay(actorId, "read", reference).catch(() => false))) {
+        return sent;
+      }
+    }
+    return (value) => value === resource.id || sent(value);
   }
 
-  /** The Agent an Agent route's path names, for `nameableIds`. */
-  function routeAgent(request: FastifyRequest): ResourceRef | undefined {
-    const params = request.params as { namespaceId?: unknown; agentId?: unknown } | undefined;
-    return typeof params?.namespaceId === "string" && typeof params.agentId === "string"
-      ? { kind: "agent", id: params.agentId, namespaceId: params.namespaceId }
-      : undefined;
+  /**
+   * The records a route's path names that bind other resources, for `nameableIds`: an Agent, a
+   * Configuration (its Secret bindings) or a credential source (its Secrets).
+   */
+  function routeOwners(request: FastifyRequest): ResourceRef[] {
+    const params = request.params as Record<string, unknown> | undefined;
+    const namespaceId = params?.namespaceId;
+    if (typeof namespaceId !== "string") {
+      return [];
+    }
+    return (
+      [
+        ["agentId", "agent"],
+        ["configurationId", "configuration"],
+        ["credentialSourceId", "credential_source"],
+      ] as const
+    ).flatMap(([param, kind]) => {
+      const id = params?.[param];
+      return typeof id === "string" ? [{ kind, id, namespaceId }] : [];
+    });
   }
 
   app.setErrorHandler(async (error, request, reply) => {
@@ -4403,7 +4420,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     // may already read that resource.
     const actorId = contexts.get(request)?.actorId;
     let mapped = requestFailure(error, {
-      requested: await nameableIds(error, actorId, requestedValues(request), routeAgent(request)),
+      requested: await nameableIds(error, actorId, requestedValues(request), routeOwners(request)),
       ...(actorId === undefined ? {} : { actorId }),
     });
     if (error instanceof RuntimeLogsError && error.retryAfterSeconds !== undefined) {
