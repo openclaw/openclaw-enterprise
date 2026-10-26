@@ -3051,6 +3051,7 @@ export async function renderAgentDetail(
       credentials?.section?.toggleAttribute("inert", authenticationSaveState !== "idle");
       const retainedConfiguration = retainedConfigurationState();
       if (managedMode.action && managedMode.control) {
+        managedMode.control.hidden = callerPermissions?.update !== true;
         managedMode.action.disabled =
           Boolean(managedMode.control.hidden) ||
           deployPending ||
@@ -3486,12 +3487,6 @@ export async function renderAgentDetail(
       );
       managedMode.action = action;
       managedMode.control = control;
-      void agentUpdateAllowed.then((allowed) => {
-        if (allowed === true && context.isCurrent()) {
-          control.hidden = false;
-          updateDeployControls();
-        }
-      });
     }
     updateDeployControls();
     void readDeploySecretsDenied();
