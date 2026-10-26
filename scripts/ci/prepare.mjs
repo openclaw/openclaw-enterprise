@@ -18,6 +18,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
+import { openclawBuildArguments, readOpenclawSource } from "../lib/openclaw-source.mjs";
 import { loadTestSuites } from "./test-suites.mjs";
 import { cleanupResourceIds, deleteOwnedK3dCluster } from "./cleanup.mjs";
 import { withStateLock } from "./state-lock.mjs";
@@ -1262,6 +1263,8 @@ async function buildRuntimeImages(
   }
   if (runtime) {
     const tag = `${tagBase}/runtime:local`;
+    const sourceArguments =
+      openclawSource === undefined ? openclawBuildArguments(await readOpenclawSource()) : [];
     builds.push({
       role: "runtime",
       tag,
@@ -1270,6 +1273,7 @@ async function buildRuntimeImages(
           ? [
               ...imageBuildArgs(state, "runtime", localStore),
               ...plainProgress,
+              ...sourceArguments,
               "--pull=false",
               "-f",
               runtimeDockerfile,

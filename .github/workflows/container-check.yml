@@ -66,6 +66,16 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: "24.16.0"
+      - name: Read the OpenClaw source pin
+        if: ${{ matrix.image == 'runtime' }}
+        id: openclaw-source
+        run: |
+          values="$(node scripts/lib/openclaw-source.mjs build-args)"
+          {
+            echo 'build-args<<EOF'
+            printf '%s\n' "$values"
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
       - name: Report native runner resources
         env:
           PLATFORM: linux/${{ matrix.arch }}
@@ -111,6 +121,7 @@ jobs:
           target: ${{ matrix.target }}
           platforms: linux/${{ matrix.arch }}
           build-args: |
+            ${{ steps.openclaw-source.outputs.build-args }}
             NODE_BASE_IMAGE=${{ env.NODE_BASE_IMAGE }}
             OCC_BUILD_REVISION=${{ env.SOURCE_SHA }}
             SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}

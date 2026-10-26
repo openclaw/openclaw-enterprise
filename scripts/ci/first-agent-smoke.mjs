@@ -42,6 +42,11 @@ import {
   writeModelProviderTrust,
 } from "../../tests/helpers/runtime-model-provider.mjs";
 import { ensureImage } from "./image-pull.mjs";
+import {
+  openclawBuildArguments,
+  openclawBuildValues,
+  readOpenclawSource,
+} from "../lib/openclaw-source.mjs";
 import { compareEvents, eventObservedTime } from "./kubernetes-event-time.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -605,6 +610,7 @@ export function smokeBakeDefinition({
   context,
   providerContext,
   nodeRuntimeBaseImage,
+  openclawSource,
   registryAddress,
   load,
   caches = cacheSources,
@@ -626,7 +632,11 @@ export function smokeBakeDefinition({
     "smoke-runtime-base": {
       context: root,
       dockerfile: "deploy/runtime/Dockerfile",
-      args: { OCC_BUILD_REVISION: revision, SOURCE_DATE_EPOCH: cacheEpoch },
+      args: {
+        ...openclawBuildValues(openclawSource),
+        OCC_BUILD_REVISION: revision,
+        SOURCE_DATE_EPOCH: cacheEpoch,
+      },
       "cache-from": caches("runtime"),
       pull: false,
     },
@@ -678,6 +688,7 @@ async function bakeAndPushImages({ revision, controllerTag, smokeRuntimeTag, con
     context,
     providerContext,
     nodeRuntimeBaseImage,
+    openclawSource: await readOpenclawSource(),
     registryAddress: `${address}:5000`,
     load,
   });
@@ -757,6 +768,7 @@ export function bakeReferences(metadata, { controllerTag, smokeRuntimeTag }) {
 // The engine's own builder: build, add the trust layer, then push.
 async function buildAndPushImages({ revision, controllerTag, smokeRuntimeTag, context }) {
   const runtimeTag = `${registry}/oce-smoke/runtime-base:${revision}`;
+  const sourceArguments = openclawBuildArguments(await readOpenclawSource());
   // Both builds read the hosted caches main's warm job (ci-image-cache.yml) writes.
   await step("controller and runtime image builds", () =>
     Promise.all([
@@ -789,6 +801,7 @@ async function buildAndPushImages({ revision, controllerTag, smokeRuntimeTag, co
           "--load",
           ...cacheArguments("runtime"),
           ...cacheBuildArguments,
+          ...sourceArguments,
           "--pull=false",
           "--file",
           "deploy/runtime/Dockerfile",

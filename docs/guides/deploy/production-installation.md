@@ -44,7 +44,8 @@ The base image follows the [runtime recipe](../../../deploy/runtime/README.md).
 Authenticate the builder with `docker login <registry-host>` and approved
 credentials; for private ECR, follow [ECR authentication](eks.md#authenticate-the-image-builder-to-ecr).
 
-Run this push in a fresh Bash shell; on failure, stop and retain the metadata.
+In a fresh Bash shell, [resolve the OpenClaw build arguments](../../../deploy/runtime/README.md#resolve-openclaw-build-arguments)
+before running this push. On failure, stop and retain the metadata.
 The standard runtime packages Slack and Codex; use it for both slots unless you
 have separately verified a gateway/Codex pair. Installing packages at gateway
 startup is unsupported.
@@ -66,6 +67,7 @@ if unset CONTROLLER_IMAGE RUNTIME_IMAGE OCC_IMAGE_METADATA &&
     --label "org.opencontainers.image.revision=$OCC_IMAGE_TAG" \
     -t "$OCC_IMAGE_REPOSITORY/controller:$OCC_IMAGE_TAG" . &&
   docker buildx build --push --platform "$OCC_IMAGE_PLATFORM" \
+    "${openclaw_build_args[@]}" \
     --metadata-file "$OCC_IMAGE_METADATA/runtime.json" \
     --build-arg NODE_BASE_IMAGE="$NODE_BASE_IMAGE" \
     --build-arg OCC_BUILD_REVISION="$OCC_IMAGE_TAG" \

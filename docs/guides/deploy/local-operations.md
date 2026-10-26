@@ -28,13 +28,15 @@ export KUBECONFIG_FILE="$OCC_EXAMPLE_DIRECTORY/kubeconfig"
 export CONTEXT="k3d-$CLUSTER"
 ```
 
-Build and import the images:
+In the same Bash shell, [resolve the OpenClaw build arguments](../../../deploy/runtime/README.md#resolve-openclaw-build-arguments),
+then build and import the images:
 
 ```bash
 docker build --target runtime \
   --build-arg NODE_BASE_IMAGE=docker.io/library/node:24-bookworm@sha256:3d27e5c11e5786e309ec3e03f93ae536eb36e6e5eb3714d5eb3300a36157add0 \
   -t "localhost/$CLUSTER/controller:local" .
 docker build -f deploy/runtime/Dockerfile \
+  "${openclaw_build_args[@]}" \
   -t "localhost/$CLUSTER/runtime:local" .
 k3d image import "localhost/$CLUSTER/controller:local" \
   "localhost/$CLUSTER/runtime:local" -c "$CLUSTER"

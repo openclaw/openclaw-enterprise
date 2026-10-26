@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
-updated: 2026-10-08
-last_updated_session: authoring-run/74dc7eaf-a67b-47ef-91bd-2ecd0463fb10
+updated: 2026-10-26
+last_updated_session: authoring-run/3032d748-8d18-4cef-a903-f9a72ed8cda9
 ---
 
 # Container publication flow
@@ -84,15 +84,21 @@ package-write permission.
 The build exports
 an OCI directory without registry publication or credentials.
 Before Buildx runs, the workflow derives `SOURCE_DATE_EPOCH` from the exact
-source commit. BuildKit rewrites image and filesystem timestamps to that epoch,
+OCE source commit. BuildKit rewrites image and filesystem timestamps to that epoch,
 so wall-clock time does not change the image manifests on a cold-cache rebuild.
 
-`deploy/runtime/Dockerfile:openclaw-source` verifies the pinned OpenClaw main source archive
-and applies three patches whose hashes it verifies and records in runtime provenance:
-the stock Codex 0.163.0-alpha.2 dependency pin, before extracting frozen installation
-inputs, and the temporary read-only-paths and `connect --ephemeral` expired-setup
-bridge patches. The bridge forwards the bound
-Agent's stock network settings without modifying Codex. Both installs use
+For the runtime build, `scripts/lib/openclaw-source.mjs:readOpenclawSource` reads
+`deploy/runtime/openclaw-source.json` from the checked-out OCE source. The workflow
+passes its OpenClaw commit, archive checksum, and fixed upstream build timestamp
+as build arguments. The Dockerfile checks those arguments against the manifest
+before downloading source; missing, malformed, or conflicting inputs fail.
+Both the manifest and arguments participate in the build cache. Cache scopes
+remain per image and architecture, and the cache workflow watches the manifest's
+directory. Repository-credential service targets do not use OpenClaw source.
+
+`deploy/runtime/Dockerfile:openclaw-source` verifies the OpenClaw source archive
+and applies the checksum-verified patches described in the
+[runtime recipe](../../deploy/runtime/README.md). Both installs use
 frozen lockfiles and upstream's selected-plugin manifests, retaining required
 bundled plugins plus Codex and Slack. The standalone Codex command links to the
 plugin's installation. Build tools remain in full Bookworm stages; final images
@@ -109,7 +115,8 @@ See the [runtime defaults](../../deploy/runtime/README.md) for scope.
 and documentation media, while retaining runtime templates, skills, and help.
 It follows importer-relative runtime dependencies to remove unreachable pnpm
 store entries without collapsing distinct package versions. It writes initial
-provenance containing source, patch, lockfile, and inventory hashes. The runtime
+provenance containing the manifest's source commit and archive checksum, plus
+patch, lockfile, and inventory hashes. The runtime
 copies the assembled directory directly; there is no gzip archive or second
 Codex installation. After final-stage permission normalization, the inventory
 helper rewrites `contents.json` from `/app/node_modules/openclaw` and updates
@@ -117,6 +124,9 @@ helper rewrites `contents.json` from `/app/node_modules/openclaw` and updates
 therefore describes the final runtime tree. Upstream
 import-closure and native-addon checks remain. See the
 [runtime recipe](../../deploy/runtime/README.md).
+The final image checks that `org.openclaw.image.revision` matches this upstream
+commit. The separate `org.opencontainers.image.revision` label and release
+receipt's `sourceSha` continue to identify OCE.
 
 ### 2. Verify and assemble both platform variants
 
@@ -208,6 +218,8 @@ owns package-write access and coordination.
 
 ## Debugging and Verification
 
+- For rejected OpenClaw source arguments, [resolve them from the checked-out manifest](../../deploy/runtime/README.md#resolve-openclaw-build-arguments)
+  and rerun the build. Do not bypass the archive checksum or substitute an environment default.
 - Run `node --test tests/integration/container-{release,resume,promote}.test.mjs`
   for platform/archive validation and release gate coverage. The archive case uses
   real OCI blobs and tar; recovery uses transport fixtures.
@@ -235,6 +247,8 @@ owns package-write access and coordination.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-10-26 10:23: Resolve runtime source identity from one manifest, verify build arguments against it, and retain separate OpenClaw and OCE provenance. (authoring-run/3032d748-8d18-4cef-a903-f9a72ed8cda9 - 37d28e211ed5831dc201433d36bb23eadd834f6b)
 
 - 2026-10-10 03:00: Pin stock Codex 0.163.0-alpha.2; alpha.1 sent metadata the backend rejects. (fix-992-pin)
 

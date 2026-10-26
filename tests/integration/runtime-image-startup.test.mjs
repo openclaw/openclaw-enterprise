@@ -3,6 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { chmod, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
+import { readOpenclawSource } from "../../scripts/lib/openclaw-source.mjs";
 import {
   cpuScaledImageTimeoutMs,
   imageSmokeTimeoutMultiplier,
@@ -1775,8 +1776,9 @@ assert.equal(execFileSync("codex", ["--version"], {encoding: "utf8"}).trim(), "c
 assert.equal(execFileSync(process.execPath, [bundledCommand, "--version"], {encoding: "utf8"}).trim(), "codex-cli 0.163.0-alpha.2");
 const provenance = JSON.parse(readFileSync("/opt/oce/runtime/provenance.json", "utf8"));
 assert.equal(provenance.source, "https://github.com/openclaw/openclaw");
-assert.equal(provenance.commit, "f8386bc7df0a6c9eda7a28ae81943c5c06a414ff");
-assert.equal(provenance.sourceArchiveSha256, "ec38a23888430a6aae72fdacda05efbd36f0ddad86562c00017ba3a51df0a61d");
+const expectedSource = JSON.parse(process.argv[2]);
+assert.equal(provenance.commit, expectedSource.commit);
+assert.equal(provenance.sourceArchiveSha256, expectedSource.sourceArchiveSha256);
 assert.equal(provenance.openclawBridgePatchSha256, "1d8b670e7029872262375a21da7222768c2fe2390ff7a159ed1616ee9c9de1ca");
 assert.equal(provenance.openclawConnectPatchSha256, "906fd14d2d36b98c4308d4db65f30092f27b84a69e5509cf04de2041f6e975d2");
 assert.equal(provenance.codexDependencyPinPatchSha256, "7bb0ae29bf3259b245d7675b2c6a3abe521c8139095f75ce0c532188162de5e9");
@@ -1968,6 +1970,7 @@ const deadline = setTimeout(() => {
       "-e",
       script,
       JSON.stringify(defaultPluginPolicy),
+      JSON.stringify(await readOpenclawSource()),
     ]);
     assert.match(stdout, /shared-codex-0.163.0-alpha.2-ready/);
   },
