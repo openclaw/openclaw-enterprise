@@ -770,11 +770,13 @@ export async function renderAgentDetail(
   const allowedReads = new Set<string>([path]);
   // Whether refusing this read means the caller's access changed: the same read succeeded on this
   // page, or it needs only Agent read, which the page's own Agent read used. A read whose grant
-  // the page never had (a Namespace's Secrets for an Agent reader, say) changes nothing.
+  // the page never had (a Namespace's Secrets for an Agent reader, say) changes nothing. Runtime
+  // status and log reads are left to Logs, which weighs a refusal against the permission answer.
   const readHadGrant = (readPath: string) =>
-    allowedReads.has(readPath) ||
-    readPath.startsWith(`${path}/workspace/files/`) ||
-    readPath === `${path}/driver-configurations`;
+    !readPath.startsWith(`${path}/deployments/`) &&
+    (allowedReads.has(readPath) ||
+      readPath.startsWith(`${path}/workspace/files/`) ||
+      readPath === `${path}/driver-configurations`);
   let deployInFlight = false;
   // The draft holds below are declared before a deleting Agent's early return: ← Agents and the
   // reload check read them on that page too (finding 2125).
