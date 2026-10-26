@@ -65,6 +65,9 @@ export const SAVED_REPOSITORY_SELECTION_NOT_APPROVED =
 // Protected deploy admission (packages/occ/src/errors.ts CredentialProxyAdmissionError).
 export const CREDENTIAL_PROXY_INSTALLATION_ACCESS =
   "Installation-wide repository access (profile github-installation) needs a Credential Proxy, and this Installation selects none. Choose another repository profile, or ask an Installation administrator to select drivers.credential_proxy.";
+// Deploy of several protected sources on a Credential Proxy without policy reduction (409).
+export const CREDENTIAL_PROXY_ONE_SOURCE =
+  "The selected Credential Proxy cannot verify a reduced policy, so a protected revision can use only one credential source. Remove the others, or ask an Installation administrator to select a Proxy release with policy reduction.";
 // Update and rotation of a prepared or credential-free source (409 RESOURCE_CONFLICT).
 export const PROTECTED_SOURCE_UPDATE_REFUSED =
   "This credential source holds a prepared or credential-free protected grant, which cannot change in place. Create a new source with the new values, bind it in place of this one, then delete this one.";
