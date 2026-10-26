@@ -1,0 +1,43 @@
+{{- if and .Values.repositoryCredentials.enabled (eq .Values.repositoryCredentials.authority "prepared-git") }}
+{{- $name := "openclaw-enterprise-prepared-repository-ingress" }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: openclaw-enterprise
+      app.kubernetes.io/instance: {{ .Release.Name | quote }}
+      app.kubernetes.io/component: worker
+  policyTypes: [Ingress]
+  # Compute admits only the exact dedicated Harness revisions with prepared repository material.
+  ingress: []
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}
+rules:
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies]
+    resourceNames: [{{ $name | quote }}]
+    verbs: [get, update]
+  - apiGroups: [""]
+    resources: [services]
+    resourceNames: [{{ include "openclaw.repositoryCredentials.serviceName" . | quote }}]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: openclaw-enterprise-worker
+    namespace: {{ .Release.Namespace | quote }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}
+{{- end }}

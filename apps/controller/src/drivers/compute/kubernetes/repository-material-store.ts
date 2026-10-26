@@ -38,13 +38,50 @@ const fields = {
   revisionId: ["openclaw.dev/revision", "openclaw.dev/revision-id"],
 } as const;
 
+export type RepositoryMaterialErrorCode =
+  | "REPOSITORY_MATERIAL_OWNERSHIP_INVALID"
+  | "REPOSITORY_MATERIAL_EXPIRED"
+  | "REPOSITORY_MATERIAL_CREATE_UNCONFIRMED"
+  | `REPOSITORY_MATERIAL_${"READ" | "CREATE" | "LIST" | "DELETE"}_${"FAILED" | "FORBIDDEN"}`;
+
+/**
+ * A repository material store failure. Its stable code is what callers log (for example the
+ * worker's REPOSITORY_CLEANUP_STALLED cause); a Kubernetes response, which may carry a Secret
+ * body, never reaches the message.
+ */
+export class RepositoryMaterialError extends Error {
+  readonly code: RepositoryMaterialErrorCode;
+
+  constructor(code: RepositoryMaterialErrorCode, message: string) {
+    super(message);
+    this.name = "RepositoryMaterialError";
+    this.code = code;
+  }
+}
+
 function invalid(): never {
-  throw new Error("Repository credential Kubernetes material ownership is invalid.");
+  throw new RepositoryMaterialError(
+    "REPOSITORY_MATERIAL_OWNERSHIP_INVALID",
+    "Repository credential Kubernetes material ownership is invalid.",
+  );
+}
+
+/** A Kubernetes request failure, named by operation and whether RBAC refused it. */
+function requestFailure(
+  error: unknown,
+  operation: "READ" | "CREATE" | "LIST" | "DELETE",
+  message: string,
+): RepositoryMaterialError {
+  const outcome = numericErrorStatus(error) === 403 ? "FORBIDDEN" : "FAILED";
+  return new RepositoryMaterialError(`REPOSITORY_MATERIAL_${operation}_${outcome}`, message);
 }
 
 function requireCurrentMaterial(spec: RepositoryMaterialSpec): void {
   if (!repositoryMaterialCurrent(spec)) {
-    throw new Error("Repository credential material has expired.");
+    throw new RepositoryMaterialError(
+      "REPOSITORY_MATERIAL_EXPIRED",
+      "Repository credential material has expired.",
+    );
   }
 }
 
@@ -169,8 +206,8 @@ export class RepositoryMaterialStore {
       if (numericErrorStatus(error) === 404) {
         return undefined;
       }
-      // eslint-disable-next-line preserve-caught-error -- Kubernetes API errors may carry Secret bodies.
-      throw new Error("Repository credential material could not be read.");
+      // No cause: Kubernetes API errors may carry Secret bodies.
+      throw requestFailure(error, "READ", "Repository credential material could not be read.");
     }
   }
 
@@ -247,14 +284,21 @@ export class RepositoryMaterialStore {
         );
       } catch (error) {
         if (numericErrorStatus(error) !== 409) {
-          // eslint-disable-next-line preserve-caught-error -- Kubernetes API errors may carry Secret bodies.
-          throw new Error("Repository credential material could not be created.");
+          // No cause: Kubernetes API errors may carry Secret bodies.
+          throw requestFailure(
+            error,
+            "CREATE",
+            "Repository credential material could not be created.",
+          );
         }
         observed = await this.read(binding.secretName);
       }
       requireCurrentMaterial(spec);
       if (observed === undefined) {
-        throw new Error("Repository credential material creation could not be confirmed.");
+        throw new RepositoryMaterialError(
+          "REPOSITORY_MATERIAL_CREATE_UNCONFIRMED",
+          "Repository credential material creation could not be confirmed.",
+        );
       }
       try {
         this.verify(observed, owner, binding);
@@ -280,8 +324,13 @@ export class RepositoryMaterialStore {
           labelSelector: selector(owner),
         }),
       );
-    } catch {
-      throw new Error("Repository credential material cleanup could not list owned objects.");
+    } catch (error) {
+      // No cause: Kubernetes API errors may carry Secret bodies.
+      throw requestFailure(
+        error,
+        "LIST",
+        "Repository credential material cleanup could not list owned objects.",
+      );
     }
     const candidates = completeKubernetesList(listed);
     // Validate every object before deleting one; a partial or foreign response fails closed.
@@ -310,8 +359,12 @@ export class RepositoryMaterialStore {
         );
       } catch (error) {
         if (numericErrorStatus(error) !== 404) {
-          // eslint-disable-next-line preserve-caught-error -- Kubernetes API errors may carry Secret bodies.
-          throw new Error("Repository credential material could not be removed.");
+          // No cause: Kubernetes API errors may carry Secret bodies.
+          throw requestFailure(
+            error,
+            "DELETE",
+            "Repository credential material could not be removed.",
+          );
         }
       }
       const remaining = await this.read(metadata.name);

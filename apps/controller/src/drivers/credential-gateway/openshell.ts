@@ -1,3 +1,5 @@
+import { ConfigurationValidationError, type ErrorDetail } from "@openclaw-enterprise/contracts";
+import { requireConfiguration } from "@openclaw-enterprise/contracts";
 import type {
   Backend,
   CredentialAttachmentStatus,
@@ -14,8 +16,10 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import {
   CredentialSourceConfigError,
+  CredentialSourceRegistrationConfigError,
   CredentialSourceRevisionError,
   ScopeViolationError,
+  StoredCredentialSourceConfigError,
 } from "@openclaw-enterprise/occ";
 import {
   asRecord,
@@ -326,11 +330,12 @@ function validateOAuth2Config(
 /**
  * Re-checks a stored source's protected `host` before its profile is written, first as at save.
  * A source stored before the host rules (finding 1360) fails here until it is replaced
- * (finding 1363).
+ * (finding 1363). Registration checks the request first (`registerSource`), so only a stored
+ * source reaches this: a 409 that names the replacement (finding 2536).
  */
-function checkStoredHost(type: string, config: Readonly<Record<string, string>>): void {
+function checkStoredHost(config: Readonly<Record<string, string>>): void {
   if (!exactDnsName(config.host ?? "")) {
-    throw new ScopeViolationError(`The ${type} host must be an exact DNS name.`);
+    throw new StoredCredentialSourceConfigError("host");
   }
 }
 
@@ -383,16 +388,14 @@ function oauth2SourceType(
     credentials: (config) => Object.freeze({ access_token: config.env_var ?? "" }),
     // The token endpoint lives only in the profile: OpenShell refuses it as refresh material.
     profile: (sourceId, config, options, gateway) => {
-      checkStoredHost(type, config);
+      checkStoredHost(config);
       // A source stored before the token_url host rules fails here until it is replaced.
-      if (!tokenUrlHostAllowed(config.token_url ?? "")) {
-        throw new ScopeViolationError(tokenUrlHostMessage(type));
-      }
-      if (!tokenUrlHostOutsideGateway(config.token_url ?? "", gateway)) {
-        throw new ScopeViolationError(tokenUrlGatewayMessage(type));
-      }
-      if (!tokenUrlPortAllowed(config.token_url ?? "")) {
-        throw new ScopeViolationError(tokenUrlPortMessage(type));
+      if (
+        !tokenUrlHostAllowed(config.token_url ?? "") ||
+        !tokenUrlHostOutsideGateway(config.token_url ?? "", gateway) ||
+        !tokenUrlPortAllowed(config.token_url ?? "")
+      ) {
+        throw new StoredCredentialSourceConfigError("token_url");
       }
       return bearerProfile(sourceId, config, options, `OAuth2 ${type} (OpenClaw Enterprise)`, {
         name: "access_token",
@@ -607,7 +610,7 @@ const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
     validate: (config) => validateEndpointConfig("bearer-token", config),
     credentials: (config) => Object.freeze({ token: config.env_var ?? "" }),
     profile: (sourceId, config, options) => {
-      checkStoredHost("bearer-token", config);
+      checkStoredHost(config);
       return bearerProfile(sourceId, config, options, "Bearer token (OpenClaw Enterprise)", {
         name: "token",
       });
@@ -792,10 +795,11 @@ function normalizedSourceBaseUrl(config: Readonly<Record<string, string>>): stri
   return baseUrl !== undefined && exactDnsName(new URL(baseUrl).hostname) ? baseUrl : undefined;
 }
 
+/** Only a stored source fails here: registration checks the request first (finding 2536). */
 function sourceBaseUrl(config: Readonly<Record<string, string>>): string {
   const baseUrl = normalizedSourceBaseUrl(config);
   if (baseUrl === undefined) {
-    throw new ScopeViolationError(SOURCE_ENDPOINT_REQUIREMENTS);
+    throw new StoredCredentialSourceConfigError(OPENAI_BASE_URL_CONFIG);
   }
   return baseUrl;
 }
@@ -808,12 +812,28 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     additionalProperties: false,
     properties: {
       binaries: { type: "array", items: { type: "string" }, minItems: 1 },
-      toolBinaries: { type: "array", items: { type: "string" }, minItems: 1 },
+      toolBinaries: { type: "array", items: { type: "string", pattern: "^/" }, minItems: 1 },
     },
   });
 
-  static validateConfiguration(configuration: unknown): void {
-    validateOptions(configuration as OpenShellCredentialGatewayOptions);
+  static validateConfiguration(
+    configuration: Readonly<OpenShellCredentialGatewayOptions>,
+  ): readonly ErrorDetail[] {
+    try {
+      validateOptions(configuration as OpenShellCredentialGatewayOptions);
+
+      return [];
+    } catch (error) {
+      return error instanceof ConfigurationValidationError
+        ? error.error.details
+        : [
+            {
+              path: "",
+              code: "INVALID_VALUE",
+              message: "Configuration violates the Driver's constraints.",
+            },
+          ];
+    }
   }
 
   readonly id: string;
@@ -828,7 +848,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     options: OpenShellCredentialGatewayOptions,
     selection: OpenShellCredentialGatewaySelection,
   ) {
-    validateOptions(options);
+    options = requireConfiguration(OpenShellCredentialGatewayDriver, options);
     this.id = selection.id ?? "credential-gateway-openshell";
     this.implementation = selection.implementation ?? "openshell";
     if (this.implementation !== "openshell") {
@@ -873,9 +893,18 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     input: CredentialSourceInput,
   ): Promise<CredentialSourceStatus> {
     const type = sourceType(input.type, this.options, this.refresh);
-    // Without the gateway placement: ensureProfile below checks it and throws ScopeViolationError,
-    // which OCC passes through; a CredentialSourceConfigError here would surface as a 503.
-    type.validate(input.config);
+    // validateSourceConfig sees no tenant Namespace, so a gateway in each tenant namespace is
+    // known only here. Refuse the request's own value before any gateway write, by field, as
+    // validateSourceConfig does (400); OCC passes this ScopeViolationError through, while a
+    // CredentialSourceConfigError would surface as a 503 (finding 2536).
+    try {
+      type.validate(input.config, this.placement(context));
+    } catch (error) {
+      if (error instanceof CredentialSourceConfigError) {
+        throw new CredentialSourceRegistrationConfigError(error.field, error.message);
+      }
+      throw error;
+    }
     const workspace = openShellWorkspaceName(context.namespace);
     const client = this.client(context);
     const credentials = providerCredentials(type, input);
@@ -1056,14 +1085,23 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
             "OpenShell OpenAI-compatible credential sources require a dedicated Harness.",
           );
         }
-        if (
-          context.revision.harness.id === "openclaw" &&
-          sourceBaseUrl(source.config) !== OPENAI_DEFAULT_BASE_URL
-        ) {
-          // TODO(dedicated-native-custom-endpoints): validate source-bound model endpoints when supported.
-          throw new ScopeViolationError(
-            "Dedicated native OpenClaw credential sources require the default OpenAI endpoint.",
-          );
+        if (context.revision.harness.id === "openclaw") {
+          const providers = asRecord(asRecord(context.revision.configuration?.models)?.providers);
+          const provider = asRecord(providers?.openai);
+          const catalog = provider?.models;
+          const endpoint = sourceBaseUrl(source.config);
+          if (
+            !Array.isArray(catalog) ||
+            catalog.length === 0 ||
+            catalog.some((model) => {
+              const written = asRecord(model)?.baseUrl ?? provider?.baseUrl;
+              return typeof written !== "string" || normalizeOpenAiBaseUrl(written) !== endpoint;
+            })
+          ) {
+            throw new ScopeViolationError(
+              "Dedicated native OpenClaw model endpoints must match the bound credential source endpoint.",
+            );
+          }
         }
       }
       // Two sources cannot place their placeholders in the same Sandbox variable.

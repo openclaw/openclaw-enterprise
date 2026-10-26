@@ -1,6 +1,6 @@
 # Platform console
 
-Open `/console/` on your OCC address to manage Agents and supported Slack settings,
+Open `/console/` on your OCC address to manage Agents, Namespace Secrets, and supported Slack settings,
 workspace files, and credentials. Authorized operators can also open an Agent's
 [native admin UI](#open-the-native-admin-ui). The console has no rollback, live
 runtime health, or browser chat through OCE.
@@ -13,7 +13,11 @@ runtime checks belong to the [deployment guide](../guides/deploy.md).
 
 Enter your provisioned account email and password, then select **Sign in**. Public
 signup, single sign-on, and self-service password recovery are unavailable; ask
-your administrator for an account or password reset. For your own
+your administrator for an account or password reset. A wrong email or password
+always gets the same message. Other sign-in failures say what to do: wait the
+time shown after too many attempts, try again shortly when sign-in is unavailable,
+or open the console from its configured address when the API refuses the
+browser origin. For your own
 Installation, see the
 [quickstart](../guides/quickstart.md#open-the-platform-console) or
 [deployment guide](../guides/deploy.md#open-the-platform-console).
@@ -22,6 +26,12 @@ The console uses [session cookies](authentication.md); it never stores tokens or
 accepts service keys. Expiry clears private content and drafts. Sign in again to
 return to the validated page after access checks.
 See [sign-in destinations](authentication/external-sign-in.md#console-sign-in-destinations).
+
+## Customize deployment branding
+
+Operators can replace the displayed product name, logo, browser icons, and semantic
+colors with a mounted [theme bundle](console/theming.md). See
+[Apply a console theme](../guides/deploy/console-theme.md) for deployment steps.
 
 ## Identify the control-plane build
 
@@ -32,13 +42,14 @@ HTML.
 
 ## Browse and select a Namespace
 
-The sidebar opens **Agents** or **Namespaces**; **Refresh** repeats the read.
+The sidebar opens **Agents**, **Secrets**, or **Namespaces**; **Refresh** repeats the read.
 Configure models during creation. [Experimental Backends](backends.md) stay
 hidden. Namespace rows open their Agents.
 
 | Page          | Scope and permission                                                                                                 |
 | ------------- | -------------------------------------------------------------------------------------------------------------------- |
 | Agents        | Selected Namespace; Namespace `read`, then exact Agent `read` filtering.                                             |
+| Secrets       | Selected Namespace; Namespace `read`, then exact Secret `read` filtering.                                            |
 | Namespaces    | Installation-wide collection filtered by exact Namespace `read`.                                                     |
 | Observability | External [`observability.url`](configuration.md#installation-startup-configuration) link; Installation `administer`. |
 
@@ -46,6 +57,10 @@ hidden. Namespace rows open their Agents.
 
 The Console uses light appearance and OCC-served fonts. Navigation focuses the
 destination heading; **Open navigation** opens the mobile drawer.
+
+Click an Agent name or an open area of its row to open its details. Version links
+and Stop or Delete buttons keep their separate actions. Keyboard users can Tab to
+the Agent name and press Enter.
 
 Opening an Agent shows its details page immediately. While it loads, **Back to
 Agents** returns to your place. A slow return to a retained page says **Still
@@ -80,6 +95,19 @@ retries unavailable metadata and updates the snapshot.
 [Debug sidebar fields](console/debug-fields.md) defines every field, Docker and
 Kubernetes differences, inspection scope, and unavailable states.
 
+## Manage Namespace Secrets
+
+The **Secrets** page lists metadata, creates Secrets, replaces values, inspects
+consumers, and deletes unreferenced Secrets through the existing Secret API.
+Creation needs collection `secret:create`; replacement and deletion need exact
+`secret:update` and `secret:delete`. Read access does not grant mutation or use.
+The API authorizes each operation; a refusal disables the submitted action.
+Names are fixed, values remain unreadable, and entered material is never saved
+in browser storage. Consumer counts retain read-permission and truncation limits.
+
+Follow [Manage Secrets in the console](../guides/console/secrets.md) for procedures,
+replacement delivery, deletion effects, and uncertain-write recovery.
+
 ## Agent creation and deployment
 
 Dedicated provisioning waits for first activation; failure links the original
@@ -103,43 +131,62 @@ versions, and the Slack channel editor are described in
 
 ## Stop and resume an Agent
 
-Open the Agent, select **Stop Agent**, review its effect, and
+Select **Stop Agent** or the Agent's list-row Stop icon, review its effect, and
 confirm. Stop requires exact Agent `operate`. It requests shutdown while
 retaining version history, credentials, gateway state, and workspace files.
 
-An accepted request means shutdown was queued. **Refresh stop status** rereads
-the Agent's desired state and selected version without probing the runtime.
-Refresh before retrying an uncertain result. Denials remain visible; the console
-never repeats a stop automatically. After Stop, **Request Stop again** confirms
-a new stop intent, even without a selected version, but not when you can read no version, as before a first deploy. That does not prove cleanup
-finished.
+An accepted request means shutdown was queued; the list row shows **Stop
+requested**. **Refresh stop status** rereads the Agent's desired state and
+selected version without probing the runtime. After Stop, **Request Stop
+again** confirms a new stop intent, even without a selected version, but not
+when you can read no version, as before a first deploy (the list then shows no
+Stop icon). That does not prove cleanup finished.
 
-To resume, open **Create new version** and select **Deploy new version**, which
-creates a new version. See [Stop and resume](agents/deployment.md#stop-and-resume) for the
-worker lifecycle and preservation guarantees.
+To resume, open **Create new version** and select **Deploy new version**. See
+[Stop and resume](agents/deployment.md#stop-and-resume) for worker lifecycle and
+preservation.
 
 ## Delete an Agent
 
-Select **Delete Agent**, then **Permanently delete Agent**. Exact Agent `delete`
-is required; `read` or `operate` is not enough. Deletion removes the Agent, its
-versions, and its workspace data. Namespace Configurations and Secrets remain;
-see [Agent deletion](agents.md#deletion).
+Select **Delete Agent** or the Agent's list-row Delete icon, then **Permanently
+delete Agent**. Exact Agent `delete` is required; `read` or `operate` is
+insufficient. Deletion removes the Agent, its versions, and its workspace data.
+Namespace Configurations and Secrets remain; see
+[Agent deletion](agents.md#deletion).
 
 **Refresh deletion status** follows asynchronous cleanup. When the API confirms
-the Agent is gone, the console returns to that Namespace. A deleting Agent keeps
-**Request deletion again** behind confirmation. Failed cleanup can be replenished;
-queued or running cleanup is unchanged. An uncertain repeat stays disabled until
-a status read confirms deletion. The API keeps retry ownership and exact-Agent
-permission. A denial stays visible, and a refused repeat keeps the retry-ownership explanation.
-Refresh before retrying an unconfirmed outcome. The console never resends a
-delete automatically.
+the Agent is gone, the console returns to that Namespace; meanwhile its row shows
+**Deleting**. A deleting Agent keeps **Request deletion again** behind
+confirmation. Failed cleanup can be replenished; queued or running cleanup is
+unchanged. A refused repeat explains the API's retry ownership.
+
+Missing access disables a row icon with a reason. Denials remain visible; the
+console never resends either write. After an uncertain result, the action stays
+blocked until a status read succeeds or, in the list, until **Refresh**.
 
 ## Failures and logout
 
 An authorized empty list differs from a failed read. Access denials, unavailable
 dependencies, missing resources, and network failures clear affected rows and
-offer recovery. Backend error text is not rendered; include any displayed request
-ID when reporting an API failure. A current protected `401` clears private
+offer recovery. A denied Namespace list or draft Configuration read, and a control
+disabled for lack of access, names the grant the API checks, such as Agent operate
+to stop an Agent or AgentRevision read on each new version. A refused save says so and
+lists the grants the save checks, such as "Save was refused: your access does not include
+saving this Configuration." Other denials of your own permission, such as a recheck of an open
+Agent or a Slack lookup, show the API's sentence naming the missing grant; denials send you to
+an Installation administrator, who grants access. A version link the page cannot list says the
+version does not exist or your access does not include it, because a reader granted read per
+version cannot tell the two apart.
+A rejected model credential tells a person without Agent update which grants fix it: Agent
+update to choose another credential, or, for a Secret-backed credential, Secret update on that
+Secret to replace its value. It also says who gives them.
+A refusal the API explains, such as an invalid field, a name already in use or a
+lifecycle change, shows the API's sentence; a rate limit says how long to wait.
+The console also shows named dependency refusals, recorded deployment and policy
+outcomes, and field errors, with each setting as a dotted path. A generic answer,
+such as an unnamed outage, gets the console's own sentence: what failed, and who to
+ask if it continues. Include the displayed **Request ID** when you report an API
+failure. A current protected `401` clears private
 content and closes open channel editors and harness authentication controls.
 Interrupted response bodies and request deadlines keep the interrupted-read
 recovery path. View cancellation does not show a new failure, and a failed
@@ -210,7 +257,7 @@ domain; native chat or other Agent-host activity does not extend that session.
 
 Supported pages are `/console/login`, `/console/agents`,
 `/console/agents/new`, `/console/agents/:agentId`, `/console/backends`,
-`/console/namespaces`, and `/console/settings`. `/console/` resolves the session
+`/console/namespaces`, `/console/secrets`, and `/console/settings`. `/console/` resolves the session
 and opens Agents. Unknown console paths show a generic not-found page.
 See the [request flow](../flows/platform-console.md) and
 [local testing](../testing/local.md) for implementation and verification.

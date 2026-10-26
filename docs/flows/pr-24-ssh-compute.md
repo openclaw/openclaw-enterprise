@@ -98,7 +98,10 @@ already submitted can still complete. Once stdout exceeds 64 Ki UTF-16 code
 units, the executor stops retaining subsequent chunks and reports
 `SSH helper output exceeded its limit.` The crossing chunk can exceed the
 threshold. The local client still receives SIGTERM, then SIGKILL after one
-second if needed; the operation settles on its close event.
+second if needed; the operation settles on its close event. One second after
+the client exits, the executor closes its output pipes, so a descendant that
+inherited them, such as a `ProxyCommand`, cannot hold the operation open for
+more than about a second after the client exits.
 
 Host mutations take `<root>/.compute-lock` through a child holding kernel flock,
 with a 30-second acquisition timeout. The shared root defines the inventory and

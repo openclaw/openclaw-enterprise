@@ -1,10 +1,10 @@
-import { randomUUID } from "node:crypto";
 import { createServer } from "node:net";
 import { chmod, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { ensureImage } from "./image-pull.mjs";
+import { ownedName } from "./resource-names.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const defaultCollectorContainerPort = 4318;
@@ -12,29 +12,6 @@ const ciOtelBackendResourceKind = "ci-otel-backend";
 const collectorServiceAccount = "openclaw-enterprise-collector";
 const collectorConfigSecret = "occ-otel-collector-config";
 const collectorEnvSecret = "occ-otel-collector-exporter";
-
-function randomSuffix(bytes = 6) {
-  return randomUUID()
-    .replaceAll("-", "")
-    .slice(0, bytes * 2);
-}
-
-function slug(value, separator = "-") {
-  return String(value)
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, separator)
-    .replace(new RegExp(`${separator}+`, "g"), separator)
-    .replace(new RegExp(`^${separator}|${separator}$`, "g"), "");
-}
-
-function ownedName(prefix, label, { maxLength = 63 } = {}) {
-  const suffix = randomSuffix();
-  const normalizedPrefix = slug(prefix);
-  const normalizedLabel = slug(label) || "backend";
-  const fixedLength = normalizedPrefix.length + suffix.length + 2;
-  const labelLength = Math.max(1, maxLength - fixedLength);
-  return [normalizedPrefix, normalizedLabel.slice(0, labelLength), suffix].join("-");
-}
 
 function assertImmutableImageReference(image, name) {
   if (!/^\S+@sha256:[a-f0-9]{64}$/i.test(image ?? "")) {
@@ -534,7 +511,7 @@ async function prepareLogging({
   const image = env.OCC_TEST_LOGGING_COLLECTOR_IMAGE ?? (await readDefaultCollectorImage(root));
   assertImmutableImageReference(image, "OCC_TEST_LOGGING_COLLECTOR_IMAGE");
 
-  const containerName = ownedName("openclaw-ci-otel", laneName, { maxLength: 63 });
+  const containerName = ownedName("openclaw-ci-otel", laneName, { fallbackLabel: "backend" });
   assertOwnedContainerName(containerName);
   const namespace = ownedCluster ? containerName : undefined;
   const baseDirectory = resolve(

@@ -52,6 +52,32 @@ Provide these cluster services before installing OCC:
 | Container registry        | Push access for the image builder and pull access from every eligible node, including tenant workloads.            |
 | Operator access           | An approved HTTPS origin and access path matching `auth.baseUrl`; the chart does not create public TLS or Ingress. |
 
+An Envoy Gateway ingress for the console origin answers a path with an encoded
+slash (`%2F`) itself: by default it redirects with `307` to the decoded path, so
+the API never sees the request. The API refuses such an ID with `400` and names
+the parameter. To give callers that answer, attach a ClientTrafficPolicy to the
+ingress Gateway, or to its OCE listener with `sectionName`:
+
+```yaml
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: ClientTrafficPolicy
+metadata:
+  name: occ-keep-escaped-slashes
+  namespace: <ingress-gateway-namespace>
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: <ingress-gateway>
+  path:
+    escapedSlashesAction: KeepUnchanged
+```
+
+Envoy still resolves `.` and `..` segments and merges slashes. Envoy and the
+API router both keep `%2F` inside one path segment, so a route match cannot
+differ between them. If a ClientTrafficPolicy already targets that Gateway or
+listener, add `path` to it.
+
 Follow the [storage contract](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage)
 when choosing disks. A NetworkPolicy object alone is not proof of enforcement:
 verify allowed and denied traffic with your CNI before placing tenant workloads.

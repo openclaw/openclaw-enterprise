@@ -5,6 +5,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { openclawBuildArguments, readOpenclawSource } from "../../scripts/lib/openclaw-source.mjs";
 import { availablePort } from "./available-port.mjs";
 import {
   configureModelProviderDNS,
@@ -252,6 +253,7 @@ export function createDevUpModelProvider({
     const controllerTag = `${registry}/${prefix}/controller:${revision}`;
     const baseTag = `${registry}/${prefix}/runtime-base:${revision}`;
     const runtimeTag = `${registry}/${prefix}/runtime:${revision}`;
+    const sourceArguments = openclawBuildArguments(await readOpenclawSource());
     // Same recipes and revision inputs as FirstAgentSmoke. Tags are private to
     // this invocation; the launcher receives only the resulting digest pair.
     for (const tag of [controllerTag, baseTag, runtimeTag]) {
@@ -296,6 +298,7 @@ export function createDevUpModelProvider({
           "build",
           "--load",
           ...cache("runtime"),
+          ...sourceArguments,
           "--pull=false",
           "--file",
           "deploy/runtime/Dockerfile",

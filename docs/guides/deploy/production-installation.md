@@ -44,9 +44,10 @@ The base image follows the [runtime recipe](../../../deploy/runtime/README.md).
 Authenticate the builder with `docker login <registry-host>` and approved
 credentials; for private ECR, follow [ECR authentication](eks.md#authenticate-the-image-builder-to-ecr).
 
-Run this push in a fresh Bash shell; on failure, stop and retain the metadata.
-The standard runtime packages Slack and Codex; use it for both slots unless you
-have separately verified a gateway/Codex pair. Installing packages at gateway
+In a fresh Bash shell, [resolve the OpenClaw build arguments](../../../deploy/runtime/README.md#resolve-openclaw-build-arguments).
+Stop on failure; retain metadata.
+Use the standard Slack/Codex runtime for both slots unless you separately verified
+another gateway/Codex pair. Installing packages at gateway
 startup is unsupported.
 
 ```bash
@@ -66,6 +67,7 @@ if unset CONTROLLER_IMAGE RUNTIME_IMAGE OCC_IMAGE_METADATA &&
     --label "org.opencontainers.image.revision=$OCC_IMAGE_TAG" \
     -t "$OCC_IMAGE_REPOSITORY/controller:$OCC_IMAGE_TAG" . &&
   docker buildx build --push --platform "$OCC_IMAGE_PLATFORM" \
+    "${openclaw_build_args[@]}" \
     --metadata-file "$OCC_IMAGE_METADATA/runtime.json" \
     --build-arg NODE_BASE_IMAGE="$NODE_BASE_IMAGE" \
     --build-arg OCC_BUILD_REVISION="$OCC_IMAGE_TAG" \
@@ -84,8 +86,8 @@ fi
 ```
 
 Before installation, [check each digest](../../testing/docker.md#check-published-images)
-on native hosts for every target architecture, without skips. Configure pull credentials only when the selected registry requires
-them.
+on native hosts for every target architecture, without skips. Configure pull
+credentials only when the selected registry requires them.
 
 ## Configure the Installation
 
@@ -201,11 +203,11 @@ before running the checks:
   password claim. Keep `bootstrap.password.mountPath` absolute; the bootstrap Job
   refuses relative paths. Keep native admin enabled for the password profile, and gateway
   routing enabled with the reviewed GatewayClass and Secret names. Helm refuses an
-  `auth.baseUrl` that is not an `https` origin (`http` only for `localhost` or
-  `127.0.0.1`), has a path other than `/`, a query, fragment or user info (even
-  bare `?` or `#`), an IPv4 host other than four decimal octets without leading
-  zeros, Unicode spaces or invisible characters (outer ASCII spaces are ignored)
-  or compatibility forms the API's URL parser refuses, such as full-width `？`.
+  `auth.baseUrl` that breaks the
+  [`OCC_AUTH_BASE_URL` rules](../../reference/settings/production.md#required-production-controller-environment)
+  (`http` only for `localhost` or `127.0.0.1`), even a bare `?` or `#`, Unicode
+  spaces or invisible characters (outer ASCII spaces are ignored), or forms the
+  API's URL parser refuses, such as full-width `？`.
   IDNA-invalid joiners (U+200C, U+200D) pass Helm but fail the bootstrap Job. With
   native admin, it must be `https` and its host inside
   `agentNativeAdmin.sharedCookieDomain`.
@@ -368,10 +370,10 @@ federation and database grants for separate application and migrator
 identities, confining migrator privileges to migration. Use
 `node scripts/migrate-production.mjs` for this authentication mode.
 
-The chart configures none of these deployment-owned inputs. Its migration and
-bootstrap containers share an initialization Pod and service account, so
-changing database URL Secrets alone neither configures their distinct identity
-inputs nor enables Azure mode.
+The chart configures none of these inputs. Its migration and bootstrap
+containers share an initialization Pod and service account, so changing the
+database URL Secrets alone neither configures their distinct identity inputs nor
+enables Azure mode.
 
 ### Optional operational log export
 

@@ -22,6 +22,8 @@ import {
 import { NativeCodexPluginCatalogReader } from "../../apps/controller/src/drivers/plugin/stdio-catalog-reader.ts";
 import { requestFailure } from "../../apps/controller/src/http/errors.ts";
 import { NotImplementedError } from "../../packages/occ/src/index.ts";
+import { waitFor, waitUntil } from "../helpers/wait-for.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const OCC_DIFFS_DIGEST =
   "sha512-5VTDNEo7D3iOgRoL5C31JPTbA/EXQEFRuxOvLy67IMFmOajwroGsUMWeuKkmqzFbPNQxvn7GACDSr/5Vmpx3/g==";
@@ -67,6 +69,19 @@ function occSelection(overrides = {}) {
     },
   };
 }
+
+// A catalog plugin with two tools, for deny lists that block it only together.
+const pairCatalog = Object.freeze([
+  Object.freeze({
+    id: "occ-plugin:pair",
+    name: "Pair",
+    tools: Object.freeze([
+      Object.freeze({ id: "pair_read", name: "pair_read", ownerId: "pair" }),
+      Object.freeze({ id: "pair_write", name: "pair_write", ownerId: "pair" }),
+    ]),
+  }),
+]);
+const pair = Object.freeze({ "occ-plugin:pair": Object.freeze({ enabled: true }) });
 
 function codexSelection(pluginId = linearPluginId, overrides = {}) {
   return {
@@ -473,10 +488,24 @@ test("OpenClaw Plugin Driver refuses a selection a roster entry's tools.deny blo
     { "occ-plugin:diffs": { enabled: false } },
     { agents: { entries: { main: { tools: { deny: ["*"] } } } } },
   );
+  // A selection may name the plugin by its native ID alone, and the refusal names it so.
+  assert.throws(
+    () =>
+      driver.validateAgentConfiguration(
+        { diffs: { enabled: true } },
+        { agents: { entries: { main: { tools: { deny: ["*"] } } } } },
+      ),
+    {
+      message:
+        "Configuration setting agents.entries.main.tools.deny blocks every tool of plugin diffs; remove the matching deny entry or deselect the plugin.",
+    },
+  );
   // Only deny lists are checked: an entry allowlist that leaves the plugin out still leaves
-  // other tools callable, so turns run.
+  // other tools callable, so turns run. Only * is a wildcard: "." and other regular
+  // expression characters match themselves.
   for (const configuration of [
     { agents: { entries: { main: { tools: { deny: ["exec", "diffs-*", 7] } } } } },
+    { agents: { entries: { main: { tools: { deny: ["d.ffs*", "di(f)fs*", "dif+s*"] } } } } },
     { agents: { entries: { main: { tools: { allow: ["exec"] } } } } },
     { agents: { defaults: { tools: { deny: ["*"] } } } },
     { agents: { entries: { main: {} } } },
@@ -549,38 +578,36 @@ test("OpenClaw Plugin Driver refuses a selection a roster entry's tools.deny blo
   });
   // A plugin with several tools is refused when the two lists together block all of them,
   // and the refusal names both.
-  const catalog = [
-    {
-      id: "occ-plugin:pair",
-      name: "Pair",
-      tools: [
-        { id: "pair_read", name: "pair_read", ownerId: "pair" },
-        { id: "pair_write", name: "pair_write", ownerId: "pair" },
-      ],
-    },
-  ];
-  const pair = { "occ-plugin:pair": { enabled: true } };
   const split = (entryDeny) => ({
     tools: { deny: ["pair_read"] },
     agents: { entries: { main: { tools: { deny: entryDeny } } } },
   });
-  assert.deepEqual(deniedOpenClawSelection(catalog, pair, split(["pair_write"])), {
+  assert.deepEqual(deniedOpenClawSelection(pairCatalog, pair, split(["pair_write"])), {
     pluginId: "occ-plugin:pair",
     kind: "deny",
     lists: [{}, { entry: "main" }],
   });
-  assert.deepEqual(deniedOpenClawSelection(catalog, pair, split(["pair"])), {
+  assert.deepEqual(deniedOpenClawSelection(pairCatalog, pair, split(["pair"])), {
     pluginId: "occ-plugin:pair",
     kind: "deny",
     lists: [{ entry: "main" }],
   });
-  assert.equal(deniedOpenClawSelection(catalog, pair, split(["pair_read"])), undefined);
+  assert.equal(deniedOpenClawSelection(pairCatalog, pair, split(["pair_read"])), undefined);
+  // A plugin without tools has none to hide, so it is never refused (the check skips it).
+  assert.equal(
+    deniedOpenClawSelection(
+      [{ id: "occ-plugin:empty", name: "Empty", tools: [] }],
+      { "occ-plugin:empty": { enabled: true } },
+      { tools: { deny: ["*"] } },
+    ),
+    undefined,
+  );
   // With several entries only a deny-all entry is refused, never a union of lists.
   const several = split(["pair_write"]);
   several.agents = { ownership: "explicit", entries: { ...several.agents.entries, ops: {} } };
-  assert.equal(deniedOpenClawSelection(catalog, pair, several), undefined);
+  assert.equal(deniedOpenClawSelection(pairCatalog, pair, several), undefined);
   assert.equal(
-    openClawToolDenialMessage(deniedOpenClawSelection(catalog, pair, split(["pair_write"]))),
+    openClawToolDenialMessage(deniedOpenClawSelection(pairCatalog, pair, split(["pair_write"]))),
     "Configuration settings tools.deny and agents.entries.main.tools.deny block every tool of plugin occ-plugin:pair; remove the matching deny entries or deselect the plugin.",
   );
 });
@@ -638,6 +665,16 @@ test("OpenClaw Plugin Driver refuses a selection the primary model's tools.byPro
     ),
     { message: refusal("setting tools.byProvider.openai.deny") },
   );
+  // Keys that normalize alike ("openai/" normalizes to the provider key openai): the one
+  // written in normalized form applies, wherever it stands.
+  for (const byProvider of [
+    { "openai/": { deny: ["exec"] }, openai: { deny: ["*"] } },
+    { openai: { deny: ["*"] }, "openai/": { deny: ["exec"] } },
+  ]) {
+    assert.throws(check(model("openai/gpt-5.1", { tools: { byProvider } })), {
+      message: refusal("setting tools.byProvider.openai.deny"),
+    });
+  }
   // A sole entry's byProvider list counts like its tools.deny, and an entry without its own
   // model runs the defaults' primary.
   const entry = (tools, entryModel) => ({
@@ -671,17 +708,6 @@ test("OpenClaw Plugin Driver refuses a selection the primary model's tools.byPro
     { message: refusal("setting tools.byProvider.openai.deny") },
   );
   // Lists that only together block every tool of a plugin are all named.
-  const catalog = [
-    {
-      id: "occ-plugin:pair",
-      name: "Pair",
-      tools: [
-        { id: "pair_read", name: "pair_read", ownerId: "pair" },
-        { id: "pair_write", name: "pair_write", ownerId: "pair" },
-      ],
-    },
-  ];
-  const pair = { "occ-plugin:pair": { enabled: true } };
   const together = {
     tools: { deny: ["pair_read"], byProvider: { openai: { deny: ["exec"] } } },
     agents: {
@@ -689,19 +715,19 @@ test("OpenClaw Plugin Driver refuses a selection the primary model's tools.byPro
       entries: { main: { tools: { byProvider: { OpenAI: { deny: ["pair_write"] } } } } },
     },
   };
-  assert.deepEqual(deniedOpenClawSelection(catalog, pair, together), {
+  assert.deepEqual(deniedOpenClawSelection(pairCatalog, pair, together), {
     pluginId: "occ-plugin:pair",
     kind: "deny",
     lists: [{}, { entry: "main", provider: "OpenAI" }],
   });
   assert.equal(
-    openClawToolDenialMessage(deniedOpenClawSelection(catalog, pair, together)),
+    openClawToolDenialMessage(deniedOpenClawSelection(pairCatalog, pair, together)),
     "Configuration settings tools.deny and agents.entries.main.tools.byProvider.OpenAI.deny block every tool of plugin occ-plugin:pair; remove the matching deny entries or deselect the plugin.",
   );
   // When the top-level lists already block every tool together, an entry list is not named.
   together.tools.byProvider.openai.deny = ["pair_write"];
   together.agents.entries.main.tools.byProvider.OpenAI.deny = ["pair_read"];
-  assert.deepEqual(deniedOpenClawSelection(catalog, pair, together).lists, [
+  assert.deepEqual(deniedOpenClawSelection(pairCatalog, pair, together).lists, [
     {},
     { provider: "openai" },
   ]);
@@ -728,6 +754,15 @@ test("OpenClaw Plugin Driver refuses a selection the primary model's tools.byPro
     hidden,
     /^Configuration setting agents\.entries\["k+…"\]\.tools\.alsoAllow overrides/,
   );
+  // A message of exactly 256 characters is kept whole; one more cuts the key.
+  const denyMessage = (entry) =>
+    openClawToolDenialMessage({ pluginId: "occ-plugin:diffs", kind: "deny", lists: [{ entry }] });
+  const exact = "k".repeat(257 - Array.from(denyMessage("k")).length);
+  assert.equal(denyMessage(exact), refusal(`setting agents.entries.${exact}.tools.deny`));
+  assert.equal(Array.from(denyMessage(exact)).length, 256);
+  const over = denyMessage(`${exact}k`);
+  assert.ok(Array.from(over).length <= 256, over);
+  assert.match(over, /agents\.entries\["k+…"\]\.tools\.deny/);
   // With several long keys nothing fits even cut to …, so the end is cut instead.
   const crowded = openClawToolDenialMessage({
     pluginId: "occ-plugin:diffs",
@@ -786,17 +821,6 @@ test("OpenClaw Plugin Driver refuses a sole entry's tools.alsoAllow that drops t
   );
   // One survivor check: the plugin tools the entry's list names must outlive every deny list
   // that applies. Each setting alone leaves a tool here; together they leave none.
-  const catalog = [
-    {
-      id: "occ-plugin:pair",
-      name: "Pair",
-      tools: [
-        { id: "pair_read", name: "pair_read", ownerId: "pair" },
-        { id: "pair_write", name: "pair_write", ownerId: "pair" },
-      ],
-    },
-  ];
-  const pair = { "occ-plugin:pair": { enabled: true } };
   const restricted = (deny) => ({
     tools: { profile: "coding", byProvider: { openai: { deny } } },
     agents: {
@@ -804,18 +828,32 @@ test("OpenClaw Plugin Driver refuses a sole entry's tools.alsoAllow that drops t
       entries: { main: { tools: { alsoAllow: ["pair_read"] } } },
     },
   });
-  assert.deepEqual(deniedOpenClawSelection(catalog, pair, restricted(["pair_read"])), {
+  assert.deepEqual(deniedOpenClawSelection(pairCatalog, pair, restricted(["pair_read"])), {
     pluginId: "occ-plugin:pair",
     kind: "alsoAllow",
     entry: "main",
     lists: [{ provider: "openai" }],
   });
   assert.equal(
-    openClawToolDenialMessage(deniedOpenClawSelection(catalog, pair, restricted(["pair_read"]))),
+    openClawToolDenialMessage(
+      deniedOpenClawSelection(pairCatalog, pair, restricted(["pair_read"])),
+    ),
     "Configuration settings agents.entries.main.tools.alsoAllow and tools.byProvider.openai.deny together hide every tool of plugin occ-plugin:pair; name its tools in alsoAllow, remove the deny entries, or deselect the plugin.",
   );
-  assert.equal(deniedOpenClawSelection(catalog, pair, restricted(["pair_write"])), undefined);
-  assert.equal(deniedOpenClawSelection(catalog, pair, restricted([])), undefined);
+  // The sole entry's own deny lists apply too.
+  const ownDeny = (deny) => ({
+    tools: { profile: "coding" },
+    agents: { entries: { main: { tools: { alsoAllow: ["pair_read"], deny } } } },
+  });
+  assert.deepEqual(deniedOpenClawSelection(pairCatalog, pair, ownDeny(["pair_read"])), {
+    pluginId: "occ-plugin:pair",
+    kind: "alsoAllow",
+    entry: "main",
+    lists: [{ entry: "main" }],
+  });
+  assert.equal(deniedOpenClawSelection(pairCatalog, pair, ownDeny(["pair_write"])), undefined);
+  assert.equal(deniedOpenClawSelection(pairCatalog, pair, restricted(["pair_write"])), undefined);
+  assert.equal(deniedOpenClawSelection(pairCatalog, pair, restricted([])), undefined);
 });
 
 test("Hardcoded OpenAI catalog returns curated details without provider requests", async (t) => {
@@ -894,8 +932,7 @@ test("Codex curated catalog discovery projects arbitrary marketplace entries", (
 });
 
 test("native Codex catalog reader accepts initialized logged-in accounts and opaque remote IDs", async (context) => {
-  const directory = await mkdtemp(join(tmpdir(), "occ-codex-plugin-reader-"));
-  context.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(context, "occ-codex-plugin-reader-");
   const executable = join(directory, "codex-fixture.mjs");
   await writeFile(
     executable,
@@ -952,8 +989,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
 });
 
 test("native Codex catalog reader rejects, without crashing, when Codex closes its input early", async (context) => {
-  const directory = await mkdtemp(join(tmpdir(), "occ-codex-plugin-reader-"));
-  context.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(context, "occ-codex-plugin-reader-");
   const executable = join(directory, "codex-fixture.mjs");
   // Answers initialize after closing stdin, so the reader's next write hits a closed pipe.
   await writeFile(
@@ -986,8 +1022,7 @@ setTimeout(() => {}, 2_000);
 });
 
 test("native Codex catalog reader does not echo the Codex app-server error message", async (context) => {
-  const directory = await mkdtemp(join(tmpdir(), "occ-codex-plugin-reader-"));
-  context.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(context, "occ-codex-plugin-reader-");
   const executable = join(directory, "codex-fixture.mjs");
   const leaked = join(directory, "home", "operator", ".codex", "auth.json");
   await writeFile(
@@ -1065,33 +1100,35 @@ setInterval(() => {}, 1_000);
   const controller = new AbortController();
   const listed = reader.listCatalog(controller.signal);
   listed.catch(() => {});
-  const started = Date.now() + 30_000;
-  while (pid === undefined && Date.now() < started) {
-    try {
-      pid = Number(await readFile(pidFile, "utf8"));
-    } catch {
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-  }
+  pid = await waitFor(
+    "the Codex fixture to start",
+    () =>
+      readFile(pidFile, "utf8").then(
+        (text) => Number(text) || undefined,
+        () => undefined,
+      ),
+    30_000,
+  );
   assert.ok(pid > 0, "the Codex fixture did not start");
   controller.abort();
   await assert.rejects(listed, /aborted/);
-  const deadline = Date.now() + 5_000;
-  let alive = true;
-  while (alive && Date.now() < deadline) {
-    try {
-      process.kill(pid, 0);
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    } catch {
-      alive = false;
-    }
-  }
-  assert.equal(alive, false, "the aborted Codex app-server must not outlive the request");
+  // The aborted Codex app-server must not outlive the request.
+  await waitUntil(
+    "the aborted Codex app-server to exit",
+    () => {
+      try {
+        process.kill(pid, 0);
+        return false;
+      } catch {
+        return true;
+      }
+    },
+    { timeoutMs: 5_000, intervalMs: 50 },
+  );
 });
 
 test("Codex native catalog rejects a non-object response without escaping discovery", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "oce-codex-catalog-shape-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "oce-codex-catalog-shape-");
   const executable = join(directory, "codex-fixture.mjs");
   // The configured peer writes valid JSON with an invalid JSON-RPC envelope.
   // Exercise the public Driver and real OS pipes, not a substituted reader.
@@ -1115,8 +1152,7 @@ process.stdin.once("data", () => process.stdout.write("null\\n"));
 });
 
 test("Codex native catalog rejects a malformed plugin/list result as discovery failure", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "oce-codex-catalog-result-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "oce-codex-catalog-result-");
   const executable = join(directory, "codex-fixture.mjs");
   const resultFile = join(directory, "plugin-list-result.json");
   // Valid envelopes from a logged-in account; only the plugin/list result varies.

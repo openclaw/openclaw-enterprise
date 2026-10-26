@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import { mkdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import { delimiter, join } from "node:path";
 import test from "node:test";
@@ -15,6 +14,7 @@ import {
   prepareLifecycleCommands,
   publicControllerOverride,
   readJsonLines,
+  runCommand,
   runDevDown,
   runDevUp,
   serviceKey,
@@ -32,7 +32,7 @@ test("dev-up builds the default runtime only when real Compose leaves runtime im
   const keyOutput = join(keyDirectory, "service-key.json");
   const options = composeOptions(fixture);
 
-  const result = runDevUp(["--key-output", keyOutput, "--", ...options], fixture.env);
+  const result = await runDevUp(["--key-output", keyOutput, "--", ...options], fixture.env);
 
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /OpenClaw Enterprise development stack is ready/);
@@ -55,13 +55,24 @@ test("dev-up builds the default runtime only when real Compose leaves runtime im
   assert.ok(
     dockerLogs.some((entry) => entry.args.join(" ") === `image inspect ${defaultRuntimeImage}`),
   );
-  assert.ok(
-    dockerLogs.some(
-      (entry) =>
-        entry.args.join(" ") ===
-        `build -f deploy/runtime/Dockerfile --tag ${defaultRuntimeImage} .`,
-    ),
+  const source = JSON.parse(
+    await readFile(new URL("../../deploy/runtime/openclaw-source.json", import.meta.url), "utf8"),
   );
+  const runtimeBuild = dockerLogs.find((entry) => entry.args[0] === "build");
+  assert.deepEqual(runtimeBuild?.args, [
+    "build",
+    "-f",
+    "deploy/runtime/Dockerfile",
+    "--build-arg",
+    `OPENCLAW_COMMIT=${source.commit}`,
+    "--build-arg",
+    `OPENCLAW_SOURCE_SHA256=${source.sourceArchiveSha256}`,
+    "--build-arg",
+    `OPENCLAW_BUILD_TIMESTAMP=${source.buildTimestamp}`,
+    "--tag",
+    defaultRuntimeImage,
+    ".",
+  ]);
   assert.ok(
     dockerLogs.some(
       (entry) =>
@@ -107,11 +118,29 @@ test("dev-up starts Docker without Compose options on Bash 3.2", async (t) => {
   const fixture = await createFixture(t);
   const keyOutput = join(fixture.directory, "docker-no-options-service-key.json");
 
-  const result = runDevUp(["--key-output", keyOutput], fixture.env);
+  const result = await runDevUp(["--key-output", keyOutput], fixture.env);
 
   assert.equal(result.status, 0, result.stderr ?? result.error?.message ?? "dev-up did not exit");
   assert.match(result.stdout, /OpenClaw Enterprise development stack is ready/);
   assert.match(result.stdout, /Container engine: Docker/);
+});
+
+test("dev-up refuses an invalid source identity before building or starting Compose", async (t) => {
+  const fixture = await createFixture(t);
+  const sourcePath = join(fixture.fixtureRepository, "deploy/runtime/openclaw-source.json");
+  const source = JSON.parse(await readFile(sourcePath, "utf8"));
+  // A malformed timestamp must not reach Docker or start a stack with an unbuildable image.
+  source.buildTimestamp = "2026-02-30T00:00:00Z";
+  await writeFile(sourcePath, JSON.stringify(source));
+
+  const result = await runDevUp([], fixture.env);
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /cannot read a valid deploy\/runtime\/openclaw-source.json/);
+  const dockerLogs = await readJsonLines(fixture.dockerLog);
+  assert.ok(dockerLogs.every((entry) => entry.args[0] !== "build"));
+  const composeCommands = composeInvocations(dockerLogs);
+  assert.ok(composeCommands.every((entry) => !entry.args.includes("up")));
 });
 
 test("dev-up preserves a selected custom runtime image and skips the quickstart build", async (t) => {
@@ -119,7 +148,9 @@ test("dev-up preserves a selected custom runtime image and skips the quickstart 
   const keyOutput = join(fixture.directory, "custom-service-key.json");
   const env = { ...fixture.env, OPENCLAW_DEV_PORT: "4137" };
   const override = await customRuntimeOverride(fixture);
-  const result = runDevUp(
+  // A prebuilt selection does not consume this checkout's runtime source identity.
+  await writeFile(join(fixture.fixtureRepository, "deploy/runtime/openclaw-source.json"), "{}");
+  const result = await runDevUp(
     ["--key-output", keyOutput, "--", ...composeOptions(fixture, override)],
     env,
   );
@@ -150,7 +181,7 @@ test("dev-up applies per-image overrides on top of the shared runtime image", as
   const keyOutput = join(fixture.directory, "mixed-runtime-service-key.json");
   const override = await perImageOverride(fixture);
 
-  const result = runDevUp(
+  const result = await runDevUp(
     ["--key-output", keyOutput, "--", ...composeOptions(fixture, override)],
     fixture.env,
   );
@@ -174,7 +205,7 @@ test("dev-up rejects a public controller port rendered by real Compose", async (
   const keyOutput = join(fixture.directory, "public-controller-key.json");
   const override = await publicControllerOverride(fixture);
 
-  const result = runDevUp(
+  const result = await runDevUp(
     ["--key-output", keyOutput, "--", ...composeOptions(fixture, override)],
     fixture.env,
   );
@@ -196,7 +227,7 @@ test("dev-up refuses an existing key destination before invoking Compose", async
   const keyOutput = join(fixture.directory, "existing-service-key.json");
   await writeFile(keyOutput, "keep-existing\n", { mode: 0o600 });
 
-  const result = runDevUp(
+  const result = await runDevUp(
     ["--key-output", keyOutput, "--", ...composeOptions(fixture)],
     fixture.env,
   );
@@ -211,7 +242,7 @@ test("dev-up fails closed when bootstrap exits unsuccessfully", async (t) => {
   const fixture = await createFixture(t, { scenario: "bootstrap-failed" });
   const keyOutput = join(fixture.directory, "bootstrap-failure-key.json");
 
-  const result = runDevUp(
+  const result = await runDevUp(
     ["--key-output", keyOutput, "--", ...composeOptions(fixture)],
     fixture.env,
   );
@@ -232,7 +263,7 @@ test("dev-up fails closed when the worker exits before readiness", async (t) => 
   const fixture = await createFixture(t, { scenario: "worker-exited" });
   const keyOutput = join(fixture.directory, "readiness-failure-key.json");
 
-  const result = runDevUp(
+  const result = await runDevUp(
     ["--key-output", keyOutput, "--", ...composeOptions(fixture)],
     fixture.env,
   );
@@ -252,7 +283,7 @@ test("dev-up preserves a copied key when the authenticated installation check is
   const fixture = await createFixture(t, { scenario: "api-unauthorized" });
   const keyOutput = join(fixture.directory, "unauthorized-key.json");
 
-  const result = runDevUp(
+  const result = await runDevUp(
     ["--key-output", keyOutput, "--", ...composeOptions(fixture)],
     fixture.env,
   );
@@ -267,7 +298,7 @@ test("dev-up rejects an authenticated installation response for a different Inst
   const fixture = await createFixture(t, { scenario: "api-mismatch" });
   const keyOutput = join(fixture.directory, "mismatch-key.json");
 
-  const result = runDevUp(
+  const result = await runDevUp(
     ["--key-output", keyOutput, "--", ...composeOptions(fixture)],
     fixture.env,
   );
@@ -284,7 +315,7 @@ test("dev-up selects Podman when no docker command exists and completes the supp
   const fixture = await createFixture(t, { engine: "podman" });
   const keyOutput = join(fixture.directory, "podman-service-key.json");
 
-  const result = runDevUp(
+  const result = await runDevUp(
     ["--key-output", keyOutput, "--", ...composeOptions(fixture)],
     fixture.env,
   );
@@ -348,7 +379,7 @@ test("dev-up trusts only the rootful macOS Podman machine gateway", async (t) =>
   const fixture = await createFixture(t, { engine: "podman", macosPodmanMachine: "rootful" });
   const keyOutput = join(fixture.directory, "podman-macos-service-key.json");
 
-  const result = runDevUp(
+  const result = await runDevUp(
     ["--key-output", keyOutput, "--", ...composeOptions(fixture)],
     fixture.env,
   );
@@ -376,7 +407,7 @@ test("dev-up honors an effective rootless macOS Podman connection", async (t) =>
   });
   const keyOutput = join(fixture.directory, "podman-macos-rootless-service-key.json");
 
-  const result = runDevUp(
+  const result = await runDevUp(
     ["--key-output", keyOutput, "--", ...composeOptions(fixture)],
     fixture.env,
   );
@@ -406,7 +437,7 @@ test("dev-up rejects a macOS Podman host override that does not identify a machi
     containerHost: "unix:///tmp/opaque-podman.sock",
   });
 
-  const result = runDevUp(
+  const result = await runDevUp(
     ["--key-output", join(fixture.directory, "unused-service-key.json")],
     fixture.env,
   );
@@ -427,14 +458,14 @@ test("dev-up starts Podman without Compose options on Bash 3.2", async (t) => {
   const fixture = await createFixture(t, { engine: "podman" });
   const keyOutput = join(fixture.directory, "podman-no-options-service-key.json");
 
-  const result = runDevUp(["--key-output", keyOutput], fixture.env);
+  const result = await runDevUp(["--key-output", keyOutput], fixture.env);
 
   assert.equal(result.status, 0, result.stderr ?? result.error?.message ?? "dev-up did not exit");
   assert.match(result.stdout, /OpenClaw Enterprise development stack is ready/);
   assert.match(result.stdout, /Container engine: Podman/);
 });
 
-test("dev-up preserves Compose files selected through COMPOSE_FILE for Podman", async (t) => {
+test("dev-up honors Podman Compose file selection from the environment and explicit flags", async (t) => {
   // A security override selected through the environment must participate in validation.
   const fixture = await createFixture(t, { engine: "podman" });
   const keyOutput = join(fixture.directory, "podman-compose-file-service-key.json");
@@ -444,7 +475,7 @@ test("dev-up preserves Compose files selected through COMPOSE_FILE for Podman", 
     COMPOSE_FILE: ["compose.yaml", override].join(delimiter),
   };
 
-  const result = runDevUp(
+  const result = await runDevUp(
     ["--key-output", keyOutput, "--", "--project-name", "oce-dev-up-compose-file-test"],
     env,
   );
@@ -459,6 +490,42 @@ test("dev-up preserves Compose files selected through COMPOSE_FILE for Podman", 
     invocations.some((entry) => entry.args.includes("up")),
     false,
   );
+
+  // Explicit file flags must override COMPOSE_FILE, including argparse's attached
+  // short form. Real Compose must load the selected file before startup proceeds.
+  for (const form of ["split", "attached", "long equals"]) {
+    await t.test(form, async (t) => {
+      const explicit = await createFixture(t, { engine: "podman" });
+      const sourceDirectory = join(explicit.directory, "source with spaces");
+      await symlink(explicit.env.DEV_UP_REPOSITORY, sourceDirectory);
+      const selectedFile = join(sourceDirectory, "compose.yaml");
+      const missingFile = join(explicit.directory, "missing-compose.yaml");
+      const fileArgs =
+        form === "split"
+          ? ["-f", selectedFile]
+          : [form === "attached" ? `-f${selectedFile}` : `--file=${selectedFile}`];
+      const result = await runDevUp(
+        [
+          "--key-output",
+          join(explicit.directory, "explicit-service-key.json"),
+          "--",
+          "--env-file",
+          explicit.emptyEnv,
+          "--project-name",
+          "oce-dev-up-explicit-files",
+          ...fileArgs,
+        ],
+        { ...explicit.env, COMPOSE_FILE: missingFile },
+      );
+
+      assert.equal(result.status, 0, result.stderr ?? result.error?.message);
+      assert.match(result.stdout, /OpenClaw Enterprise development stack is ready/);
+      assert.match(result.stdout, /API URL: http:\/\/127\.0\.0\.1:3000/);
+      const calls = composeInvocations(await readJsonLines(explicit.podmanLog));
+      assert.ok(calls.some((entry) => entry.args.includes("config")));
+      assert.ok(calls.every((entry) => !entry.args.includes(missingFile)));
+    });
+  }
 });
 
 test("dev-up accepts Docker when its server omits the platform name", async (t) => {
@@ -467,7 +534,7 @@ test("dev-up accepts Docker when its server omits the platform name", async (t) 
   const fixture = await createFixture(t, { dockerPlatformName: "" });
   const keyOutput = join(fixture.directory, "docker-no-platform-service-key.json");
 
-  const result = runDevUp(
+  const result = await runDevUp(
     ["--key-output", keyOutput, "--", ...composeOptions(fixture)],
     fixture.env,
   );
@@ -483,7 +550,7 @@ test("dev-up recognizes a docker command backed by Podman and uses the Podman pa
   const fixture = await createFixture(t, { engine: "podman", dockerAlias: true });
   const keyOutput = join(fixture.directory, "podman-alias-service-key.json");
 
-  const result = runDevUp(
+  const result = await runDevUp(
     ["--key-output", keyOutput, "--", ...composeOptions(fixture)],
     fixture.env,
   );
@@ -505,7 +572,7 @@ test("dev-up recognizes a JSON-capable Docker CLI connected to Podman", async (t
   });
   const keyOutput = join(fixture.directory, "podman-json-alias-service-key.json");
 
-  const result = runDevUp(
+  const result = await runDevUp(
     ["--key-output", keyOutput, "--", ...composeOptions(fixture)],
     fixture.env,
   );
@@ -523,7 +590,7 @@ test("Compose dev-up refuses explicit Docker when its CLI is connected to Podman
     podmanJsonConfig: true,
   });
   const keyOutput = join(fixture.directory, "podman-explicit-compose-service-key.json");
-  const result = runDevUp(["--key-output", keyOutput, "--", ...composeOptions(fixture)], {
+  const result = await runDevUp(["--key-output", keyOutput, "--", ...composeOptions(fixture)], {
     ...fixture.env,
     OCC_DEVELOPMENT_CONTAINER_ENGINE: "docker",
   });
@@ -557,9 +624,8 @@ test("Kubernetes dev-up refuses explicit Docker when its CLI is connected to Pod
   await symlink(process.execPath, join(fixture.directory, "bin", "node"));
   const stateDirectory = join(fixture.directory, "kubernetes-state");
   const keyOutput = join(fixture.directory, "podman-explicit-docker-service-key.json");
-  const result = spawnSync(fixture.cli, ["dev", "up", "--key-output", keyOutput], {
+  const result = await runCommand(fixture.cli, ["dev", "up", "--key-output", keyOutput], {
     cwd: fixture.fixtureRepository,
-    encoding: "utf8",
     env: {
       ...fixture.env,
       OCC_DEVELOPMENT_COMPUTE_DRIVER: "kubernetes",
@@ -589,7 +655,7 @@ test("dev-up rejects the Docker Fluentd logging override when Podman is selected
   const options = composeOptions(fixture);
   options.splice(4, 0, "-f", "compose.logging.yaml");
 
-  const result = runDevUp(["--key-output", keyOutput, "--", ...options], fixture.env);
+  const result = await runDevUp(["--key-output", keyOutput, "--", ...options], fixture.env);
 
   assert.notEqual(result.status, 0);
   assert.match(
@@ -610,7 +676,7 @@ test("dev-up rejects a public controller port rendered by Podman Compose", async
   const keyOutput = join(fixture.directory, "podman-public-controller-key.json");
   const override = await publicControllerOverride(fixture);
 
-  const result = runDevUp(
+  const result = await runDevUp(
     ["--key-output", keyOutput, "--", ...composeOptions(fixture, override)],
     fixture.env,
   );
@@ -631,7 +697,7 @@ test("dev-up honors an explicitly selected Docker Engine", async (t) => {
   const fixture = await createFixture(t);
   const keyOutput = join(fixture.directory, "selected-docker-service-key.json");
 
-  const result = runDevUp(["--key-output", keyOutput], {
+  const result = await runDevUp(["--key-output", keyOutput], {
     ...fixture.env,
     OCC_DEVELOPMENT_CONTAINER_ENGINE: "docker",
   });
@@ -644,7 +710,7 @@ test("dev-up rejects an unsupported development selector before startup", async 
   const fixture = await createFixture(t);
   const keyOutput = join(fixture.directory, "invalid-selector-service-key.json");
 
-  const result = runDevUp(["--key-output", keyOutput], {
+  const result = await runDevUp(["--key-output", keyOutput], {
     ...fixture.env,
     OCC_DEVELOPMENT_CONTAINER_ENGINE: "containerd",
   });
@@ -660,7 +726,7 @@ test("dev-up rejects an unsupported development selector before startup", async 
 
 test("dev-up routes Kubernetes Compute through the unified entry point", async (t) => {
   const fixture = await createFixture(t);
-  const result = runDevUp(["--help"], {
+  const result = await runDevUp(["--help"], {
     ...fixture.env,
     OCC_DEVELOPMENT_COMPUTE_DRIVER: "kubernetes",
   });
@@ -678,14 +744,14 @@ test("development entry points default to the Compose profile", async (t) => {
 
   // Both entry points must start the same Compose profile when no selector is set.
   const options = composeOptions(fixture);
-  const script = runDevUp(
+  const script = await runDevUp(
     ["--key-output", join(fixture.directory, "script-key.json"), "--", ...options],
     env,
   );
-  const cli = spawnSync(
+  const cli = await runCommand(
     fixture.cli,
     ["dev", "up", "--key-output", join(fixture.directory, "cli-key.json"), "--", ...options],
-    { cwd: fixture.fixtureRepository, encoding: "utf8", env },
+    { cwd: fixture.fixtureRepository, env },
   );
   for (const result of [script, cli]) {
     assert.equal(result.status, 0, result.stderr);
@@ -707,10 +773,9 @@ test("explicit Kubernetes-only profile rejects Compose options before mutation",
 
   // Compose options cannot redirect the explicitly selected Kubernetes-only profile.
   for (const result of [
-    runDevUp(["--", "--env-file", fixture.emptyEnv], env),
-    spawnSync(fixture.cli, ["dev", "up", "--", "--env-file", fixture.emptyEnv], {
+    await runDevUp(["--", "--env-file", fixture.emptyEnv], env),
+    await runCommand(fixture.cli, ["dev", "up", "--", "--env-file", fixture.emptyEnv], {
       cwd: fixture.fixtureRepository,
-      encoding: "utf8",
       env,
     }),
   ]) {
@@ -729,7 +794,7 @@ test("development cleanup defaults to the Compose profile", async (t) => {
   delete fixture.env.OCC_DEVELOPMENT_SANDBOX_DRIVER;
 
   // Cleanup without selectors must target Compose, not a Kubernetes state directory.
-  const result = runDevDown(fixture.env);
+  const result = await runDevDown(fixture.env);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Stopped Docker-compatible development stack/);
   const commands = await readJsonLines(fixture.env.SAFETY_LOG);
@@ -747,7 +812,7 @@ test("development cleanup rejects a Kubernetes control plane without Kubernetes 
   fixture.env.OCC_DEVELOPMENT_CONTROL_PLANE = "kubernetes";
 
   // A mismatched selector must not stop an unrelated default Compose stack.
-  const result = runDevDown(fixture.env);
+  const result = await runDevDown(fixture.env);
   assert.notEqual(result.status, 0);
   assert.match(
     result.stderr,
@@ -774,7 +839,7 @@ for (const driver of ["docker", "kubernetes"]) {
         driver === "kubernetes"
           ? ["--env-file", fixture.emptyEnv, "-f", override]
           : composeOptions(fixture, override);
-      const result = runDevUp(["--", ...options], {
+      const result = await runDevUp(["--", ...options], {
         ...fixture.env,
         OCC_DEVELOPMENT_COMPUTE_DRIVER: driver,
         OCC_DEVELOPMENT_CONTROL_PLANE: "compose",
@@ -822,7 +887,7 @@ for (const driver of ["docker", "kubernetes"]) {
           driver === "kubernetes"
             ? ["--env-file", fixture.emptyEnv, "--project-directory", ".", "-f", override]
             : composeOptions(fixture, override);
-        const result = runDevUp(
+        const result = await runDevUp(
           ["--key-output", join(fixture.directory, "key.json"), "--", ...options],
           {
             ...fixture.env,

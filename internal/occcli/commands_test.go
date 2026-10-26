@@ -79,16 +79,23 @@ func runOCC(t *testing.T, responses map[string]string, args ...string) (string, 
 func runOCCWithNotices(t *testing.T, responses map[string]string, args ...string) (string, string, []string, error) {
 	t.Helper()
 	fake := &fakeOCC{responses: responses}
-	server := httptest.NewServer(fake)
+	out, errOut, err := runOCCAgainst(t, fake, args...)
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	return out, errOut, append([]string(nil), fake.requested...), err
+}
+
+// runOCCAgainst runs occ against handler and returns stdout, stderr, and the error.
+func runOCCAgainst(t *testing.T, handler http.Handler, args ...string) (string, string, error) {
+	t.Helper()
+	server := httptest.NewServer(handler)
 	defer server.Close()
 	keyFile := writeKeyFile(t, `{"data":{"key":"test-key"}}`)
 	var out, errOut bytes.Buffer
 	command := New(&out, &errOut)
 	command.SetArgs(append([]string{"--url", server.URL, "--service-key-file", keyFile}, args...))
 	err := command.Execute()
-	fake.mu.Lock()
-	defer fake.mu.Unlock()
-	return out.String(), errOut.String(), append([]string(nil), fake.requested...), err
+	return out.String(), errOut.String(), err
 }
 
 func TestNamespaceTableLabelsTheAdoptedNamespaceColumn(t *testing.T) {
@@ -116,26 +123,85 @@ func TestAgentTableLabelsLifecycleSeparatelyFromDeploymentHealth(t *testing.T) {
 	}
 }
 
+// OCC does not restart a lost Harness Sandbox (finding 2152), so the Agent's lifecycle alone
+// reads active while nothing serves it. `agent get` follows the table with the Sandbox's
+// observed state and the next step; a status OCC cannot read is unknown, never lost.
+func TestAgentGetShowsTheObservedHarnessSandbox(t *testing.T) {
+	agentPath := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID
+	agent := `{"id":"` + testAgentID + `","name":"a","status":"active","desiredRuntimeState":"running","activeRevisionId":"` + testRevision1ID + `"}`
+	observed := func(harness string) string {
+		return `{"status":"observed","revisionId":"` + testRevision1ID + `","harness":` + harness + `}`
+	}
+	for _, test := range []struct {
+		name, status, want string
+	}{
+		{"lost", observed(`{"state":"lost","code":"SANDBOX_STOPPED"}`), "Harness Sandbox: lost (SANDBOX_STOPPED). OCC will not restart it; deploy the Agent again to replace it."},
+		{"healthy", observed(`{"state":"running"}`), "Harness Sandbox: running"},
+		{"observation failed", observed(`{"state":"unknown","code":"UNAVAILABLE"}`), "Harness Sandbox: unknown (UNAVAILABLE)"},
+		{"read failed", `raw:503 {"error":{"code":"DEPENDENCY_UNAVAILABLE","message":"unavailable"}}`, "Harness Sandbox: unknown (the status could not be read)."},
+		// The logs hint names the observed revision, so a later deployment cannot redirect it.
+		{"restarting", observed(`{"state":"starting","code":"HARNESS_RESTARTING","exitCode":1,"restarts":2}`), "Harness Sandbox: starting (HARNESS_RESTARTING, last exit code 1, restart 2). The Harness process exited and OpenShell is restarting it; if this persists, read its Sandbox logs (occ --namespace " + testNamespaceID + " agent logs " + testAgentID + " --source sandbox --revision " + testRevision1ID + ")."},
+		// A revision ID OCC would not issue is not echoed into the logs hint.
+		{"odd revision", `{"status":"observed","revisionId":"rev_00000000-0000-4000-8000-000000000001 --source gateway","harness":{"state":"starting","code":"HARNESS_RESTARTING","exitCode":1,"restarts":2}}`, "Harness Sandbox: starting (HARNESS_RESTARTING, last exit code 1, restart 2). The Harness process exited and OpenShell is restarting it; if this persists, read its Sandbox logs (occ --namespace " + testNamespaceID + " agent logs " + testAgentID + " --source sandbox)."},
+		// A stopped Agent, an embedded Harness or a Driver without a Sandbox record adds nothing.
+		{"unobserved", `{"status":"unobserved"}`, ""},
+	} {
+		responses := map[string]string{"GET " + agentPath: agent, "GET " + agentPath + "/harness-status": test.status}
+		out, requested, err := runOCC(t, responses, "--namespace", testNamespaceID, "agent", "get", testAgentID)
+		if err != nil {
+			t.Fatalf("%s: %v", test.name, err)
+		}
+		table, line, _ := strings.Cut(out, "\n\n")
+		if !strings.Contains(table, testAgentID) || strings.TrimSuffix(line, "\n") != test.want {
+			t.Errorf("%s: agent get printed:\n%s", test.name, out)
+		}
+		if !slices.Equal(requested, []string{"GET " + agentPath, "GET " + agentPath + "/harness-status"}) {
+			t.Errorf("%s: requests = %q", test.name, requested)
+		}
+		if test.name == "healthy" && strings.Contains(out, "deploy") {
+			t.Errorf("a healthy Harness Sandbox must carry no warning:\n%s", out)
+		}
+	}
+	// Structured output is the Agent resource alone, and a stopped Agent has no Sandbox to
+	// read, so neither reads the status.
+	for _, test := range []struct {
+		name, agent string
+		args        []string
+	}{
+		{"json", agent, []string{"-o", "json"}},
+		{"stopped", strings.Replace(agent, `"running"`, `"stopped"`, 1), nil},
+		{"deleting", strings.Replace(agent, `"active"`, `"deleting"`, 1), nil},
+		{"no active revision", strings.Replace(agent, testRevision1ID, "", 1), nil},
+	} {
+		args := append(append([]string{"--namespace", testNamespaceID}, test.args...), "agent", "get", testAgentID)
+		out, requested, err := runOCC(t, map[string]string{"GET " + agentPath: test.agent}, args...)
+		if err != nil || strings.Contains(out, "Harness") || len(requested) != 1 {
+			t.Fatalf("%s: err = %v, requests = %q:\n%s", test.name, err, requested, out)
+		}
+	}
+}
+
 func TestResourceCommandsRejectNamesWithAHintBeforeCallingOCC(t *testing.T) {
+	inNamespace := "occ --namespace " + testNamespaceID
 	cases := []struct {
 		args []string
-		hint string
+		want string
 	}{
-		{[]string{"--namespace", testNamespaceID, "agent", "get", "dogfood-agent"}, "occ --namespace " + testNamespaceID + " agent list"},
-		{[]string{"--namespace", "default", "agent", "list"}, "occ namespace list"},
-		{[]string{"namespace", "get", "default"}, "occ namespace list"},
-		{[]string{"--namespace", testNamespaceID, "secret", "get", "model-key"}, "occ --namespace " + testNamespaceID + " secret list"},
-		{[]string{"--namespace", testNamespaceID, "preset", "delete", "default-codex"}, "occ --namespace " + testNamespaceID + " preset list"},
-		{[]string{"--namespace", testNamespaceID, "agent", "deployment-status", testAgentID, "1"}, "occ --namespace " + testNamespaceID + " agent revisions"},
-		{[]string{"--namespace", testNamespaceID, "credential-source", "update", "openai"}, "occ --namespace " + testNamespaceID + " credential-source list"},
-		{[]string{"--namespace", testNamespaceID, "service-account", "delete", "--force", "ci-bot"}, "occ --namespace " + testNamespaceID + " service-account list"},
-		{[]string{"--namespace", testNamespaceID, "agent", "credential-withdrawal", "request", "dogfood-agent", "cs_1"}, "occ --namespace " + testNamespaceID + " agent list"},
-		{[]string{"--namespace", testNamespaceID, "agent", "credential-withdrawal", "get", testAgentID, "openai"}, "occ --namespace " + testNamespaceID + " credential-source list"},
+		{[]string{"--namespace", testNamespaceID, "agent", "get", "dogfood-agent"}, nameNotIDRefusal("dogfood-agent", "Agent", "agt_", inNamespace+" agent list")},
+		{[]string{"--namespace", "default", "agent", "list"}, "OCC_NAMESPACE or --namespace: " + nameNotIDRefusal("default", "Namespace", "ns_", "occ namespace list")},
+		{[]string{"namespace", "get", "default"}, nameNotIDRefusal("default", "Namespace", "ns_", "occ namespace list")},
+		{[]string{"--namespace", testNamespaceID, "secret", "get", "model-key"}, nameNotIDRefusal("model-key", "Secret", "sec_", inNamespace+" secret list")},
+		{[]string{"--namespace", testNamespaceID, "preset", "delete", "default-codex"}, nameNotIDRefusal("default-codex", "Preset", "pre_", inNamespace+" preset list")},
+		{[]string{"--namespace", testNamespaceID, "agent", "deployment-status", testAgentID, "1"}, nameNotIDRefusal("1", "deployment", "rev_", inNamespace+" agent revisions AGENT_ID")},
+		{[]string{"--namespace", testNamespaceID, "credential-source", "update", "openai"}, nameNotIDRefusal("openai", "credential source", "cs_", inNamespace+" credential-source list")},
+		{[]string{"--namespace", testNamespaceID, "service-account", "delete", "--force", "ci-bot"}, nameNotIDRefusal("ci-bot", "ServiceAccount", "sa_", inNamespace+" service-account list")},
+		{[]string{"--namespace", testNamespaceID, "agent", "credential-withdrawal", "request", "dogfood-agent", "cs_00000000-0000-4000-8000-000000000001"}, nameNotIDRefusal("dogfood-agent", "Agent", "agt_", inNamespace+" agent list")},
+		{[]string{"--namespace", testNamespaceID, "agent", "credential-withdrawal", "get", testAgentID, "openai"}, nameNotIDRefusal("openai", "credential source", "cs_", inNamespace+" credential-source list")},
 	}
 	for _, testCase := range cases {
 		_, requested, err := runOCC(t, map[string]string{}, testCase.args...)
-		if err == nil || !strings.Contains(err.Error(), testCase.hint) {
-			t.Errorf("%v: expected an error pointing at %q, got %v", testCase.args, testCase.hint, err)
+		if err == nil || err.Error() != testCase.want {
+			t.Errorf("%v: error = %v, want %q", testCase.args, err, testCase.want)
 		}
 		if len(requested) != 0 {
 			t.Errorf("%v: expected no request, got %v", testCase.args, requested)
@@ -146,40 +212,20 @@ func TestResourceCommandsRejectNamesWithAHintBeforeCallingOCC(t *testing.T) {
 func TestIDHintsKeepTheSelectedNamespace(t *testing.T) {
 	// A stale environment scope must not replace the explicitly selected Namespace in the hint.
 	t.Setenv("OCC_NAMESPACE", "ns_55555555-5555-4555-8555-555555555555")
+	inNamespace := "occ --namespace " + testNamespaceID
 	cases := []struct {
 		args []string
 		want string
 	}{
-		{
-			[]string{"--namespace", testNamespaceID, "agent", "get", "dogfood-agent"},
-			`"dogfood-agent" is not a valid Agent ID: OCC accepts IDs that start with "agt_", not names; run "occ --namespace ` + testNamespaceID + ` agent list" to find the ID`,
-		},
-		{
-			[]string{"--namespace", testNamespaceID, "agent", "deployment-status", testAgentID, "1"},
-			`"1" is not a valid deployment ID: OCC accepts IDs that start with "rev_", not names; run "occ --namespace ` + testNamespaceID + ` agent revisions AGENT_ID" to find the ID`,
-		},
-		{
-			[]string{"--namespace", testNamespaceID, "agent", "logs", testAgentID, "--source", "gateway", "--revision", "1"},
-			`"1" is not a valid deployment ID: OCC accepts IDs that start with "rev_", not names; run "occ --namespace ` + testNamespaceID + ` agent revisions AGENT_ID" to find the ID`,
-		},
-		{
-			[]string{"--namespace", testNamespaceID, "configuration", "get", "base"},
-			`"base" is not a valid Configuration ID: OCC accepts IDs that start with "cfg_", not names; run "occ --namespace ` + testNamespaceID + ` agent get AGENT_ID" to find the ID`,
-		},
-		{
-			[]string{"--namespace", testNamespaceID, "secret", "get", "model-key"},
-			`"model-key" is not a valid Secret ID: OCC accepts IDs that start with "sec_", not names; run "occ --namespace ` + testNamespaceID + ` secret list" to find the ID`,
-		},
+		{[]string{"--namespace", testNamespaceID, "agent", "get", "dogfood-agent"}, nameNotIDRefusal("dogfood-agent", "Agent", "agt_", inNamespace+" agent list")},
+		{[]string{"--namespace", testNamespaceID, "agent", "deployment-status", testAgentID, "1"}, nameNotIDRefusal("1", "deployment", "rev_", inNamespace+" agent revisions AGENT_ID")},
+		{[]string{"--namespace", testNamespaceID, "agent", "logs", testAgentID, "--source", "gateway", "--revision", "1"}, nameNotIDRefusal("1", "deployment", "rev_", inNamespace+" agent revisions AGENT_ID")},
+		{[]string{"--namespace", testNamespaceID, "configuration", "get", "base"}, nameNotIDRefusal("base", "Configuration", "cfg_", inNamespace+" agent get AGENT_ID")},
+		{[]string{"--namespace", testNamespaceID, "secret", "get", "model-key"}, nameNotIDRefusal("model-key", "Secret", "sec_", inNamespace+" secret list")},
 		// Namespaces are not Namespace-scoped, and a selection that is not a
 		// Namespace ID is left out rather than repeated into the hint.
-		{
-			[]string{"--namespace", testNamespaceID, "namespace", "get", "default"},
-			`"default" is not a valid Namespace ID: OCC accepts IDs that start with "ns_", not names; run "occ namespace list" to find the ID`,
-		},
-		{
-			[]string{"--namespace", "default", "agent", "get", "dogfood-agent"},
-			`"dogfood-agent" is not a valid Agent ID: OCC accepts IDs that start with "agt_", not names; run "occ agent list" to find the ID`,
-		},
+		{[]string{"--namespace", testNamespaceID, "namespace", "get", "default"}, nameNotIDRefusal("default", "Namespace", "ns_", "occ namespace list")},
+		{[]string{"--namespace", "default", "agent", "get", "dogfood-agent"}, nameNotIDRefusal("dogfood-agent", "Agent", "agt_", "occ agent list")},
 	}
 	for _, testCase := range cases {
 		_, requested, err := runOCC(t, map[string]string{}, testCase.args...)
@@ -195,12 +241,70 @@ func TestIDHintsKeepTheSelectedNamespace(t *testing.T) {
 func TestIDHintsNameTheEnvironmentNamespaceWhenNoFlagIsPassed(t *testing.T) {
 	t.Setenv("OCC_NAMESPACE", testNamespaceID)
 	_, requested, err := runOCC(t, map[string]string{}, "agent", "get", "dogfood-agent")
-	want := `"dogfood-agent" is not a valid Agent ID: OCC accepts IDs that start with "agt_", not names; run "occ --namespace ` + testNamespaceID + ` agent list" to find the ID`
-	if err == nil || err.Error() != want {
+	if want := nameNotIDRefusal("dogfood-agent", "Agent", "agt_", "occ --namespace "+testNamespaceID+" agent list"); err == nil || err.Error() != want {
 		t.Errorf("error = %v, want %q", err, want)
 	}
 	if len(requested) != 0 {
 		t.Errorf("expected no request, got %v", requested)
+	}
+}
+
+// Finding D744: a value with the right prefix but not the API's ID shape is
+// refused before any request; "agt_../../namespaces" used to reach a gateway that
+// normalized it into another path and answered 307, which occ blamed on OCC_URL.
+func TestMalformedIDsAreRefusedBeforeAnyRequest(t *testing.T) {
+	cases := []struct {
+		args []string
+		want string
+	}{
+		{[]string{"agent", "get", "agt_../../namespaces"}, malformedIDRefusal("agt_../../namespaces", "Agent", "agt_")},
+		{[]string{"agent", "get", "agt_.."}, malformedIDRefusal("agt_..", "Agent", "agt_")},
+		{[]string{"agent", "get", testAgentID + "/"}, malformedIDRefusal(testAgentID+"/", "Agent", "agt_")},
+		{[]string{"agent", "get", "agt_%2e%2e%2fnamespaces"}, malformedIDRefusal("agt_%2e%2e%2fnamespaces", "Agent", "agt_")},
+		{[]string{"agent", "get", "AGT_22222222-2222-4222-8222-222222222222"}, malformedIDRefusal("AGT_22222222-2222-4222-8222-222222222222", "Agent", "agt_")},
+		{[]string{"agent", "get", "agt_"}, malformedIDRefusal("agt_", "Agent", "agt_")},
+		{[]string{"agent", "get", "agt_22222222-2222-4222-8222-22222222222Z"}, malformedIDRefusal("agt_22222222-2222-4222-8222-22222222222Z", "Agent", "agt_")},
+		{[]string{"secret", "get", "sec_x\x00"}, malformedIDRefusal("sec_x\x00", "Secret", "sec_")},
+		{[]string{"agent", "deployment-status", testAgentID, "rev_../1"}, malformedIDRefusal("rev_../1", "deployment", "rev_")},
+		{[]string{"agent", "logs", testAgentID, "--source", "gateway", "--revision", "rev_1/"}, malformedIDRefusal("rev_1/", "deployment", "rev_")},
+		{[]string{"iam", "role", "get", "../roles"}, opaqueIDRefusal("../roles", "Role")},
+		{[]string{"iam", "access-binding", "delete", ".."}, opaqueIDRefusal("..", "AccessBinding")},
+		{[]string{"iam", "service-principal", "get", "a/b"}, opaqueIDRefusal("a/b", "ServicePrincipal")},
+	}
+	for _, testCase := range cases {
+		_, requested, err := runOCC(t, map[string]string{}, append([]string{"--namespace", testNamespaceID}, testCase.args...)...)
+		if err == nil || err.Error() != testCase.want {
+			t.Errorf("%v: error = %v, want %q", testCase.args, err, testCase.want)
+		}
+		if len(requested) != 0 {
+			t.Errorf("%v: expected no request, got %v", testCase.args, requested)
+		}
+	}
+	// A malformed selected Namespace is refused the same way, and never echoed into a lookup hint.
+	_, requested, err := runOCC(t, map[string]string{}, "--namespace", "ns_../..", "agent", "list")
+	if want := "OCC_NAMESPACE or --namespace: " + malformedIDRefusal("ns_../..", "Namespace", "ns_"); err == nil || err.Error() != want {
+		t.Errorf("error = %v, want %q", err, want)
+	}
+	if len(requested) != 0 {
+		t.Errorf("expected no request, got %v", requested)
+	}
+}
+
+func TestWellFormedIDsAreStillSent(t *testing.T) {
+	agentPath := "GET /namespaces/" + testNamespaceID + "/agents/" + testAgentID
+	out, requested, err := runOCC(t, map[string]string{
+		agentPath: `{"id":"` + testAgentID + `","name":"a","status":"active","desiredRuntimeState":"running"}`,
+	}, "--namespace", testNamespaceID, "agent", "get", testAgentID)
+	if err != nil || !strings.Contains(out, testAgentID) || !slices.Equal(requested, []string{agentPath}) {
+		t.Fatalf("agent get: err=%v requested=%v out=%s", err, requested, out)
+	}
+	// An opaque ID may hold dots, as long as it is not only dots.
+	rolePath := "GET /namespaces/" + testNamespaceID + "/iam/roles/role_custom.v2"
+	_, requested, err = runOCC(t, map[string]string{
+		rolePath: `{"id":"role_custom.v2","namespaceId":"` + testNamespaceID + `","permissions":[{"action":"read","resourceKind":"agent"}]}`,
+	}, "--namespace", testNamespaceID, "iam", "role", "get", "role_custom.v2")
+	if err != nil || !slices.Equal(requested, []string{rolePath}) {
+		t.Fatalf("role get: err=%v requested=%v", err, requested)
 	}
 }
 
@@ -698,11 +802,23 @@ func TestDeploymentStatusTableShowsErrorAsCodeAndMessage(t *testing.T) {
 func TestDeploymentStatusWithoutRevisionsExplainsHowToDeploy(t *testing.T) {
 	// A stale environment scope must not replace the explicitly selected Namespace in the hint.
 	t.Setenv("OCC_NAMESPACE", "ns_55555555-5555-4555-8555-555555555555")
+	agentPath := "GET /namespaces/" + testNamespaceID + "/agents/" + testAgentID
 	_, _, err := runOCC(t, map[string]string{
-		"GET /namespaces/" + testNamespaceID + "/agents/" + testAgentID + "/revisions": `[]`,
+		agentPath + "/revisions":   `[]`,
+		agentPath + "/permissions": `{"update":true,"deploy":true,"operate":true,"delete":true}`,
 	}, "--namespace", testNamespaceID, "agent", "deployment-status", testAgentID)
 	if err == nil || !strings.Contains(err.Error(), `run "occ --namespace `+testNamespaceID+` agent deploy `+testAgentID+`" first`) {
 		t.Fatalf("expected a deploy hint, got %v", err)
+	}
+	// The list is filtered by revision read, so a caller who cannot deploy hears
+	// which grant lists revisions instead (finding 522).
+	_, _, err = runOCC(t, map[string]string{
+		agentPath + "/revisions":   `[]`,
+		agentPath + "/permissions": `{"update":false,"deploy":false,"operate":false,"delete":false}`,
+	}, "--namespace", testNamespaceID, "agent", "deployment-status", testAgentID)
+	want := "agent " + testAgentID + " has no revision you can read; " + revisionReadAdvice
+	if err == nil || err.Error() != want {
+		t.Fatalf("reader error = %v, want %q", err, want)
 	}
 }
 
@@ -710,12 +826,12 @@ func TestDeploymentStatusWithoutRevisionsExplainsHowToDeploy(t *testing.T) {
 // diffable from run to run, including nested objects in table cells.
 func TestJSONOutputAndTableCellsKeepAStableKeyOrder(t *testing.T) {
 	responses := map[string]string{
-		"GET /namespaces/" + testNamespaceID + "/agents/" + testAgentID: `{"status":"active","name":"a","id":"` + testAgentID + `","executionMode":"embedded","desiredRuntimeState":"running","createdAt":"2026-09-30T00:00:00.000Z","configurationId":"cfg_1","activeRevisionId":"rev_1","servicePrincipalId":"sp_1"}`,
+		"GET /namespaces/" + testNamespaceID + "/agents/" + testAgentID: `{"status":"active","name":"a","id":"` + testAgentID + `","executionMode":"embedded","desiredRuntimeState":"running","createdAt":"2026-09-30T00:00:00.000Z","configurationId":"cfg_00000000-0000-4000-8000-000000000001","activeRevisionId":"rev_00000000-0000-4000-8000-000000000001","servicePrincipalId":"sp_1"}`,
 		"GET /namespaces/" + testNamespaceID + "/iam/roles/role_1":      `{"id":"role_1","permissions":[{"resourceKind":"agent","action":"read"}]}`,
 	}
 	want := `{
-  "activeRevisionId": "rev_1",
-  "configurationId": "cfg_1",
+  "activeRevisionId": "rev_00000000-0000-4000-8000-000000000001",
+  "configurationId": "cfg_00000000-0000-4000-8000-000000000001",
   "createdAt": "2026-09-30T00:00:00.000Z",
   "desiredRuntimeState": "running",
   "executionMode": "embedded",
@@ -1014,13 +1130,8 @@ func TestAgentRevisionsPagesWithCursor(t *testing.T) {
 	if !strings.Contains(notices, "agent revisions "+testAgentID+" --limit 1 --cursor v1.2") {
 		t.Fatalf("expected a next-page hint that keeps --limit: %q", notices)
 	}
-	_, continuation, found := strings.Cut(notices, `older revisions may exist; run "`)
-	if !found {
-		t.Fatalf("missing next-page command: %q", notices)
-	}
-	continuation, _, _ = strings.Cut(continuation, `"`)
 	responses["GET "+agentPath+"/revisions"] = `raw:200 {"data":[{"id":"` + testRevision1ID + `","revision":1,"createdAt":"2026-09-30T00:00:00.000Z"}],"meta":{"requestId":"req_test","nextCursor":null}}`
-	nextOut, nextRequested, err := runOCC(t, responses, strings.Fields(continuation)[1:]...)
+	nextOut, nextRequested, err := runOCC(t, responses, nextPageCommand(t, notices)...)
 	if err != nil {
 		t.Fatalf("advertised next-page command failed: %v", err)
 	}
@@ -1032,6 +1143,85 @@ func TestAgentRevisionsPagesWithCursor(t *testing.T) {
 			t.Fatalf("--limit %s must be refused locally", limit)
 		}
 	}
+}
+
+// Without --limit, the next-page hint must not add one: "--limit 0" is refused
+// locally, so the advertised command would fail.
+func TestAgentRevisionsNextPageHintOmitsAnUnsetLimit(t *testing.T) {
+	responses := agentRevisionResponses()
+	agentPath := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID
+	responses["GET "+agentPath+"/revisions"] = `raw:200 {"data":[{"id":"` + testRevision2ID + `","revision":2,"createdAt":"2026-09-30T01:00:00.000Z"}],"meta":{"requestId":"req_test","nextCursor":"v1.2"}}`
+	_, notices, requested, err := runOCCWithNotices(t, responses, "--namespace", testNamespaceID, "agent", "revisions", testAgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The request leaves the page size to OCC too: OCC refuses limit=0.
+	if !slices.Contains(requested, "GET "+agentPath+"/revisions") {
+		t.Fatalf("an unset --limit must send no limit (OCC refuses limit=0): %v", requested)
+	}
+	if next := nextPageCommand(t, notices); slices.Contains(next, "--limit") {
+		t.Fatalf("next-page command adds a --limit the caller did not pass: %q", next)
+	}
+}
+
+// A revision list without data is a malformed answer, not an Agent without revisions.
+func TestAgentRevisionsRefusesAPageWithoutData(t *testing.T) {
+	responses := agentRevisionResponses()
+	agentPath := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID
+	responses["GET "+agentPath+"/revisions"] = `raw:200 {"meta":{"requestId":"req_test"}}`
+	_, _, err := runOCC(t, responses, "--namespace", testNamespaceID, "agent", "revisions", testAgentID)
+	if err == nil || err.Error() != "OCC returned an invalid response (HTTP 200)" {
+		t.Fatalf("error = %v, want the invalid response refusal", err)
+	}
+}
+
+// The default revision lookup stops when OCC hands back the cursor it was sent, as
+// older servers can, instead of asking for the same empty page forever.
+func TestDefaultRevisionLookupStopsAtARepeatedCursor(t *testing.T) {
+	responses := agentRevisionResponses()
+	agentPath := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID
+	responses["GET "+agentPath+"/revisions"] = `raw:200 {"data":[],"meta":{"requestId":"req_test","nextCursor":"v1.2"}}`
+	fake := &fakeOCC{responses: responses}
+	var lists []string
+	handler := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == agentPath+"/revisions" {
+			lists = append(lists, request.URL.RawQuery)
+			if len(lists) > 3 {
+				// Bound a looping client so a regression fails instead of hanging.
+				writer.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+		}
+		fake.ServeHTTP(writer, request)
+	})
+	_, _, err := runOCCAgainst(t, handler, "--namespace", testNamespaceID, "agent", "deployment-status", testAgentID)
+	if err == nil || !strings.HasPrefix(err.Error(), "agent "+testAgentID+" has no revision you can read") {
+		t.Fatalf("error = %v, want the no readable revision refusal", err)
+	}
+	if want := []string{"limit=100", "cursor=v1.2&limit=100"}; !slices.Equal(lists, want) {
+		t.Fatalf("revision list queries = %q, want %q", lists, want)
+	}
+}
+
+// OCC answers a delete with a bodyless 204; any other success is malformed.
+func TestDeleteRefusesASuccessOtherThanNoContent(t *testing.T) {
+	path := "/namespaces/" + testNamespaceID + "/configurations/cfg_00000000-0000-4000-8000-000000000001"
+	_, _, err := runOCC(t, map[string]string{"DELETE " + path: "raw:200 "}, "--namespace", testNamespaceID, "configuration", "delete", "cfg_00000000-0000-4000-8000-000000000001")
+	if err == nil || err.Error() != "OCC returned an invalid empty response (HTTP 200)" {
+		t.Fatalf("error = %v, want the invalid empty response refusal", err)
+	}
+}
+
+// nextPageCommand returns the arguments of the "occ ..." command that an
+// agent revisions notice advertises for the next page, without "occ".
+func nextPageCommand(t *testing.T, notices string) []string {
+	t.Helper()
+	_, continuation, found := strings.Cut(notices, `older revisions may exist; run "`)
+	if !found {
+		t.Fatalf("missing next-page command: %q", notices)
+	}
+	continuation, _, _ = strings.Cut(continuation, `"`)
+	return strings.Fields(continuation)[1:]
 }
 
 // Subject IDs are opaque and can match across identities and groups. Tables

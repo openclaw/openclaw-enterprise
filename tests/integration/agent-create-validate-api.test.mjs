@@ -7,6 +7,7 @@ import { WORKSPACE_DEFAULTS_ID } from "../../packages/contracts/src/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { grantRole } from "../helpers/iam-grants.mjs";
 import { assertWriteAuthorizationDenial } from "../helpers/partial-write-authorization.mjs";
+import { createDenied } from "../helpers/refusal-text.mjs";
 
 // The real controller over HTTP: OCC, Native IAM, the bundled OpenClaw Plugin Driver and the
 // fixture's test Kubernetes Compute Driver, whose workspace rule Agent create applies.
@@ -119,14 +120,18 @@ test("Agent create preflight accepts what Agent create accepts", async (t) => {
     });
     assert.equal(created.status, 201, `${index}: ${JSON.stringify(created.body)}`);
   }
-  // A body outside the create contract is refused as one.
-  const extra = await f.validate({ configuration: { kind: "agent", values: {} }, name: "x" });
+  // A body outside the create contract is refused as one. The name is part of it (finding 2420).
+  const extra = await f.validate({ configuration: { kind: "agent", values: {} }, unknown: "x" });
   assert.equal(extra.status, 400, JSON.stringify(extra.body));
 });
 
 test("Agent create preflight refuses a caller without Agent create as Agent create does", async (t) => {
   const f = await setup(t);
   const configuration = await f.createConfiguration(f.namespace.id, {});
+  // An Agent already holds the name both requests use. The 403 must still come first: a caller
+  // without Agent create never learns that the name is taken (finding 2420).
+  const taken = await f.create({}, {});
+  assert.equal(taken.status, 201, JSON.stringify(taken.body));
   // Configuration create and read, but no Agent create: the console form saves nothing for them.
   const member = await f.createAccountWithPolicy("preflight-member", (principal) => {
     grantRole(f.policy, principal.id, {
@@ -141,12 +146,12 @@ test("Agent create preflight refuses a caller without Agent create as Agent crea
     [
       "openclaw.agents.validate",
       `${f.agents}/validate`,
-      { configuration: { kind: "agent", values: denyAll }, plugins },
+      { configuration: { kind: "agent", values: denyAll }, plugins, name: taken.data.name },
     ],
     [
       "openclaw.agents.create",
       f.agents,
-      { name: "preflight-agent", configurationId: configuration.id, plugins },
+      { name: taken.data.name, configurationId: configuration.id, plugins },
     ],
   ]) {
     const auditStart = f.audit.events.length;
@@ -155,7 +160,7 @@ test("Agent create preflight refuses a caller without Agent create as Agent crea
     // The same refusal as Agent create: the deny-all pair is never evaluated for this caller.
     assert.deepEqual(refused.body.error, {
       code: "FORBIDDEN",
-      message: "The exact platform operation was not authorized.",
+      message: createDenied("Agent", f.namespace.id),
     });
     assertWriteAuthorizationDenial(
       f.audit.events.slice(auditStart),

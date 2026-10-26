@@ -1,7 +1,7 @@
 import { cookieHeaderFromSetCookie } from "../../packages/utils/src/index.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { createControllerAuth } from "../../apps/controller/src/auth/index.ts";
+import { createControllerAuth } from "./password-hasher.mjs";
 
 export { cookieHeaderFromSetCookie };
 

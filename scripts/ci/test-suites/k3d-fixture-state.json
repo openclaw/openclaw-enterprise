@@ -17,7 +17,8 @@
   "parallelFiles": [
     "tests/integration/postgres-platform-state-kubernetes.test.mjs",
     "tests/integration/production-network-access.test.mjs",
-    "tests/integration/kubernetes-compute-provisioning-real.test.mjs"
+    "tests/integration/kubernetes-compute-provisioning-real.test.mjs",
+    "tests/integration/production-install-retained-job-k3d.test.mjs"
   ],
   "files": [
     {
@@ -38,6 +39,12 @@
       "expectedTests": [
         "real Kubernetes Drivers safely use and preserve an externally managed tenant namespace",
         "provisioning API retains the first deployment outcome with real Kubernetes fixture storage"
+      ]
+    },
+    {
+      "path": "tests/integration/production-install-retained-job-k3d.test.mjs",
+      "expectedTests": [
+        "Helm install preserves the initialization Job when release history is absent"
       ]
     }
   ]

@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test, { after } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import { TransientDependencyError } from "../../packages/occ/src/index.ts";
+import {
+  PersistedStateInvalidError,
+  PostgresPlatformState,
+  TransientDependencyError,
+} from "../../packages/occ/src/index.ts";
 import {
   ComputeStopYieldedError,
   computeStopShouldYield,
@@ -9,7 +13,12 @@ import {
 import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
-import { completedPasses } from "../helpers/postgres-worker-revision-support.mjs";
+import {
+  completedPasses,
+  expireWorkLease,
+  waitForWorkPass,
+  waitForWorkStateDue,
+} from "../helpers/postgres-worker-revision-support.mjs";
 import {
   assertWorkEnds,
   denyDeploy,
@@ -25,19 +34,24 @@ import {
 // yielding stop competes with due work, survives failures before the stop past the deadline,
 // deploys or keeps its refusal when the refusal lifts, finishes the stop when superseded, and keeps
 // waiting across lost claims and graceful restarts. The stop's own status and backoff, and its
-// yields to other Work, are in the -refused-stop sibling; the lane runs the revision files at
+// yields to other Work, are in the -refused-stop sibling, so waits here on the stop's retries
+// make each retry due instead of waiting out that backoff. The lane runs the revision files at
 // once. These files name the -replacement, -refused-stop and -refused-wait siblings only by
 // suffix: CI Impact sends a test-only change to full CI when another file names that test.
 
 const { setup, cleanup, revisionTest } = createWorkerRevisionFixtures(import.meta.url);
 after(cleanup);
+// For assertWorkEnds: make the work's queued retries due while waiting for it to end.
+const due = { due: true };
 
 // Finding 1034: a refusal decided inside Compute's preparation (here an unsupported Sandbox) was
 // reached again by re-running the whole pass, so every wait on its stop swept the predecessors
 // and re-prepared the refused candidate (on Kubernetes its route, Service, credentials and Gateway
 // Deployment). The stored refusal now retries only its stop. A refusal decided before Compute
-// (revoked) never prepared it again.
-for (const refuse of ["revoked", "unsupported"]) {
+// (revoked) never prepared it again. Finding 2199: a revision admitted with an unqualified Git
+// sender (unqualified) fails at once, not at the convergence deadline; finding 2204: so does a
+// Git plan with no delivery profile (undeliverable).
+for (const refuse of ["revoked", "unsupported", "unqualified", "undeliverable"]) {
   revisionTest(
     `a ${refuse} candidate's stored refusal retries only its stop`,
     async (fixture) => {
@@ -47,12 +61,12 @@ for (const refuse of ["revoked", "unsupported"]) {
         `refused-only-stop-${refuse}`,
         { refuse, stopRevision: stop.stopRevision },
       );
-      await assertWorkEnds(fixture, replacement, "failed_permanent", refusals[refuse]);
+      await assertWorkEnds(fixture, replacement, "failed_permanent", refusals[refuse], due);
       assert.equal(stop.failed.length, 3);
       assert.equal(driver.count(replacement), 1, "the refused candidate was stopped");
       assert.deepEqual([...driver.running], []);
-      // The first pass started the runtime; an unsupported one was refused by the second.
-      assert.equal(driver.preparations(replacement), refuse === "unsupported" ? 2 : 1);
+      // The first pass started the runtime; any other refusal was decided by the second.
+      assert.equal(driver.preparations(replacement), refuse === "revoked" ? 1 : 2);
       assert.equal(driver.count(first), 1, "the waits did not sweep the predecessor again");
     },
     { timeout: 60_000 },
@@ -155,13 +169,21 @@ for (const mode of ["transient", "generic"]) {
       );
       failIAM = true;
       const before = stop.failed.length;
-      await waitFor(
+      await waitForWorkPass(
         "two failed passes, each retrying the stop",
+        fixture,
+        replacement,
         async () => (iamFailures >= 2 && stop.failed.length >= before + 2 ? true : undefined),
         45_000,
       );
       stop.succeed();
-      await assertWorkEnds(fixture, replacement, "failed_permanent", "SANDBOX_HARNESS_UNSUPPORTED");
+      await assertWorkEnds(
+        fixture,
+        replacement,
+        "failed_permanent",
+        "SANDBOX_HARNESS_UNSUPPORTED",
+        due,
+      );
       assert.equal(driver.count(replacement), 1, "the refused candidate was stopped");
       assert.deepEqual([...driver.running], []);
       assert.equal(driver.preparations(replacement), 2);
@@ -175,6 +197,137 @@ for (const mode of ["transient", "generic"]) {
       );
     },
   );
+}
+
+// Finding 1801: a row the pass cannot decode fails its first reads with an error that lease
+// recovery treated as an outage. An unreadable Agent (here its saved plugins) also failed the
+// stored refusal's reread, which left the claim to lease recovery; an unreadable AgentRevision
+// let the reread restore the wait, whose stop failed reading it. Either way recovery kept the
+// wait and refunded its attempt, so the pass failed again every lease, forever. Like an invalid
+// scope, an unreadable row cannot recover by itself: it stays an ordinary retry that the attempt
+// limit ends. The last attempt's own result cannot lock an unreadable Agent either, so its lease
+// expires; the injected revision failure (below) leaves that result readable. Transient failures
+// keep the wait (above, and finding 1041 in -replacement).
+for (const [row, code] of [
+  ["Agent", "LEASE_EXPIRED"],
+  ["AgentRevision", "DEPENDENCY_UNAVAILABLE"],
+]) {
+  test(
+    `a refused candidate's wait over an unreadable ${row} ends at the attempt limit`,
+    { ...requiresPostgres, timeout: 90_000 },
+    async (context) => {
+      const fixture = await setup(context, { maxAttempts: 2, leaseDurationMs: 5_000 });
+      const events = [];
+      const stop = failingStop();
+      const { owner, replacement } = await startRefusedCandidate(
+        fixture,
+        `refused-unreadable-${row.toLowerCase()}`,
+        {
+          refuse: "unsupported",
+          emit: (event) => events.push(event),
+          stopRevision: stop.stopRevision,
+        },
+      );
+      await waitForRefusedStopWaits(events, replacement, 1);
+      const restore =
+        row === "Agent" ? await unreadableAgent(fixture, owner) : unreadableRevision(replacement);
+      try {
+        await assertWorkEnds(fixture, replacement, "failed_permanent", code);
+        assert.ok(
+          !events.some(
+            ({ event, code, workId }) =>
+              event === "worker.error" &&
+              code === "WORKER_UNAVAILABLE" &&
+              workId === replacement.idempotencyKey,
+          ),
+          "no failed reread left the claim to lease recovery",
+        );
+      } finally {
+        restore();
+      }
+    },
+  );
+}
+
+// The stop reads only the candidate's Namespace, Agent and revision, so an unreadable active
+// revision fails the pass's first reads but keeps the wait: on an exclusive Compute an ordinary
+// retry would end the work with the candidate running and its refusal lost (finding 1041).
+test(
+  "a refused candidate's wait over an unreadable active revision still stops the candidate",
+  { ...requiresPostgres, timeout: 90_000 },
+  async (context) => {
+    const fixture = await setup(context, { maxAttempts: 2, leaseDurationMs: 5_000 });
+    const events = [];
+    const stop = failingStop();
+    const { first, replacement, driver } = await startRefusedCandidate(
+      fixture,
+      "refused-unreadable-active",
+      {
+        refuse: "unsupported",
+        emit: (event) => events.push(event),
+        stopRevision: stop.stopRevision,
+      },
+    );
+    await waitForRefusedStopWaits(events, replacement, 1);
+    const restore = unreadableRevision(first);
+    try {
+      const before = stop.failed.length;
+      await waitForWorkPass(
+        "two more failed refused stops",
+        fixture,
+        replacement,
+        async () => (stop.failed.length >= before + 2 ? true : undefined),
+        30_000,
+      );
+      stop.succeed();
+      await assertWorkEnds(
+        fixture,
+        replacement,
+        "failed_permanent",
+        "SANDBOX_HARNESS_UNSUPPORTED",
+        due,
+      );
+      assert.ok(!driver.running.has(replacement.id), "the refused candidate was stopped");
+    } finally {
+      restore();
+    }
+  },
+);
+
+/** Makes the Agent's row unreadable: the column only checks for an object, the reader each entry. */
+async function unreadableAgent(fixture, owner) {
+  await fixture.observerPool.query(
+    `UPDATE occ.agents SET plugins = '{"entries": "unreadable"}'::jsonb WHERE id = $1`,
+    [owner.id],
+  );
+  return () => {};
+}
+
+/**
+ * Admitted revisions are immutable, so the reader's refusal (an older admission a newer controller
+ * no longer decodes) is injected at every `findRevision` of `revision`. Returns its undo.
+ */
+function unreadableRevision(revision) {
+  const read = PostgresPlatformState.prototype.read;
+  PostgresPlatformState.prototype.read = function (work) {
+    return read.call(this, (view) =>
+      work({
+        ...view,
+        revisions: {
+          ...view.revisions,
+          async findRevision(namespaceId, agentId, revisionId) {
+            if (revisionId === revision.id) {
+              throw new PersistedStateInvalidError("Persisted AgentRevision summary is invalid.");
+            }
+            return view.revisions.findRevision(namespaceId, agentId, revisionId);
+          },
+        },
+      }),
+    );
+  };
+  return () => {
+    PostgresPlatformState.prototype.read = read;
+  };
 }
 
 // Finding 1033 keeps one exception: authorization and backend refusals are decided again before
@@ -207,7 +360,13 @@ for (const refuse of ["revoked", "unsupported"]) {
         },
       });
       const { owner, replacement, driver } = scenario;
-      await stop.waitForFailures(2, 30_000);
+      await waitForWorkPass(
+        "two failed refused stops",
+        fixture,
+        replacement,
+        async () => (stop.failed.length >= 2 ? true : undefined),
+        30_000,
+      );
       lifted = true;
       // Only the unsupported candidate's stop succeeds. A revoked candidate's never does, so a
       // pass denied just before the grant cannot publish its refusal.
@@ -215,7 +374,7 @@ for (const refuse of ["revoked", "unsupported"]) {
         stop.succeed();
       }
       if (refuse === "revoked") {
-        await fixture.work(replacement, "succeeded", 30_000);
+        await waitForWorkStateDue(fixture, replacement, "succeeded");
         const active = await fixture.activePointer(owner);
         assert.equal(active.rows[0].active_revision_id, replacement.id);
         assert.ok(driver.running.has(replacement.id), "the deployment kept its candidate");
@@ -225,6 +384,7 @@ for (const refuse of ["revoked", "unsupported"]) {
           replacement,
           "failed_permanent",
           "SANDBOX_HARNESS_UNSUPPORTED",
+          due,
         );
         assert.equal(driver.count(replacement), 1, "the refused candidate was stopped");
         assert.equal(driver.preparations(replacement), 2);
@@ -268,10 +428,14 @@ test(
           ({ event, workId }) =>
             event === "worker.completed" && workId === replacement.idempotencyKey,
         );
-    await waitFor("two candidate passes after the newer admission, or its end", async () =>
-      passes().length >= 2 || passes().some(({ outcome }) => outcome !== "pending")
-        ? true
-        : undefined,
+    await waitForWorkPass(
+      "two candidate passes after the newer admission, or its end",
+      fixture,
+      replacement,
+      async () =>
+        passes().length >= 2 || passes().some(({ outcome }) => outcome !== "pending")
+          ? true
+          : undefined,
     );
     assert.deepEqual(
       passes().map(({ outcome, code, refusal }) => [outcome, code, refusal]),
@@ -283,10 +447,11 @@ test(
     );
     assert.ok(driver.running.has(replacement.id), "the stop has not succeeded yet");
     stop.succeed();
-    await assertWorkEnds(fixture, replacement, "succeeded", "REVISION_SUPERSEDED");
+    await assertWorkEnds(fixture, replacement, "succeeded", "REVISION_SUPERSEDED", due);
     assert.ok(!driver.running.has(replacement.id), "the refused candidate was stopped");
-    // Its sweep retried on the queue's growing backoff while the stop failed.
-    await fixture.work(newer, "succeeded", 75_000);
+    // Its sweep retried on the queue's growing backoff while the stop failed. Each failed sweep
+    // spent an attempt, so its retry is made due only now that the stop succeeds.
+    await waitForWorkStateDue(fixture, newer, "succeeded");
   },
 );
 
@@ -396,14 +561,12 @@ async function refusedStopRestarts(context, shape, restart) {
   const candidate = await fixture.revision(owner, shape === "exclusive" ? 2 : 1);
   candidateId = candidate.id;
   const expireLease = () =>
-    fixture.observerPool.query(
-      `UPDATE occ.controller_work SET lease_expires_at = clock_timestamp() - interval '1 second'
-       WHERE idempotency_key = $1 AND state = 'claimed'`,
-      [candidate.idempotencyKey],
-    );
+    expireWorkLease(fixture.observerPool, { key: candidate.idempotencyKey, state: "claimed" });
   for (let count = 1; count <= restarts; count += 1) {
-    const ended = await waitFor(
+    const ended = await waitForWorkPass(
       `refused stop ${count + failedStops} to block, or the work to end`,
+      fixture,
+      candidate,
       async () => {
         if (release !== undefined) {
           return { blocked: true };
@@ -450,7 +613,7 @@ async function refusedStopRestarts(context, shape, restart) {
     }
     await fixture.start(compute, { emit: (event) => events.push(event) });
   }
-  await assertWorkEnds(fixture, candidate, "failed_permanent", "AUTHORIZATION_DENIED");
+  await assertWorkEnds(fixture, candidate, "failed_permanent", "AUTHORIZATION_DENIED", due);
   assert.equal(
     stopCalls,
     failedStops + restarts + 1,

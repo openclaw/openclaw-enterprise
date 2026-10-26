@@ -23,7 +23,7 @@ test(
     const keyOutput = join(fixture.directory, "timeout-key.json");
     const startedAt = Date.now();
 
-    const result = runDevUp(
+    const result = await runDevUp(
       ["--key-output", keyOutput, "--", ...composeOptions(fixture)],
       fixture.env,
     );

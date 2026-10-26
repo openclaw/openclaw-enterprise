@@ -3,21 +3,23 @@ import { randomUUID } from "node:crypto";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import { GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
+import { cpuScaledImageTimeoutMs } from "../helpers/image-smoke-timeout.mjs";
 import {
   createAdmittedRuntimeImageConfiguration,
   execute,
   image,
   runDocker,
+  waitForContainerReady,
 } from "../helpers/runtime-image-startup.mjs";
 
 const envoyImage = process.env.OCC_TEST_WORKSPACE_ENVOY_IMAGE;
 const selected = image !== undefined || envoyImage !== undefined;
+// The limit grows with the readiness wait below on runners with fewer CPUs.
 const options = selected
-  ? { timeout: 180_000 }
+  ? { timeout: cpuScaledImageTimeoutMs(180_000) }
   : { skip: "Set OCC_TEST_RUNTIME_IMAGE and OCC_TEST_WORKSPACE_ENVOY_IMAGE to prepared images." };
 
 function envoyConfiguration() {
@@ -115,21 +117,6 @@ function envoyConfiguration() {
       ],
     },
   };
-}
-
-async function ready(container) {
-  try {
-    await runDocker([
-      "exec",
-      container,
-      "node",
-      "-e",
-      `fetch("http://127.0.0.1:18800/readyz").then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1));`,
-    ]);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 test(
@@ -298,14 +285,16 @@ test(
       ]);
       containers.add(native);
       try {
-        let available = false;
-        for (let attempt = 0; attempt < 60 && !available; attempt++) {
-          available = await ready(native);
-          if (!available) {
-            await delay(250);
-          }
-        }
-        assert.equal(available, true, "Actual native Gateway never became ready.");
+        // One docker exec polls /readyz (see waitForContainerReady): a Node start per
+        // attempt competes for CPUs with the lane's other files, which start runtimes
+        // at the same time (finding 2460). The 75 s base keeps the former limit of
+        // 60 attempts of about 1.25 s each, and grows on runners with fewer CPUs.
+        await waitForContainerReady(native, {
+          label: "Actual native Gateway",
+          request:
+            '() => fetch("http://127.0.0.1:18800/readyz",{signal:AbortSignal.timeout(5000)}).then(r=>r.status)',
+          timeoutMs: cpuScaledImageTimeoutMs(75_000),
+        });
         await mkdir(join(directory, "client-home"), { recursive: true });
         // A fresh Node process loads only this test CA before the production WSS client starts.
         const child = execute(

@@ -105,6 +105,7 @@ OCC_TEST_PRODUCTION_IMAGE="$CONTROLLER_IMAGE" OCC_TEST_RUNTIME_IMAGE="$RUNTIME_I
     tests/integration/runtime-image-gateway-workspace.test.mjs \
     tests/integration/runtime-image-startup-probe.test.mjs \
     tests/integration/runtime-image-startup-termination.test.mjs \
+    tests/integration/runtime-image-gateway-unclean-restart.test.mjs \
     tests/integration/runtime-image-gateway-peer.test.mjs \
     tests/integration/runtime-image-native-worker.test.mjs \
     tests/integration/runtime-image-state-migration.test.mjs \
@@ -174,7 +175,9 @@ reviewed `OCC_TEST_CODEX_SECCOMP_PROFILE`. If running inside a container against
 a host Docker daemon, mount the repository and fixture temporary directory at
 the same absolute host paths and set `TMPDIR` to that shared directory.
 `OCC_DOCKER_BIN` selects an alternate executable. For emulated startup, set
-`OCC_TEST_IMAGE_TIMEOUT_MULTIPLIER` to an integer from 1 to 10.
+`OCC_TEST_IMAGE_TIMEOUT_MULTIPLIER` to an integer from 1 to 10. Some startup
+waits are sized for 8 CPUs and grow on runners with fewer CPUs, because CI runs
+image test files side by side.
 
 ## Repository runtime volume test environment
 

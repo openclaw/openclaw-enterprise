@@ -25,6 +25,11 @@ export interface SshCommandExecutor {
   execute(command: SshCommand): Promise<SshCommandResult>;
 }
 
+// How long the executor keeps reading ssh's stdio after the ssh process exits. A
+// descendant that inherited the pipes (an operator ProxyCommand inherits stderr) can hold
+// them open indefinitely, and the child's "close" event waits for every pipe to close.
+const STDIO_DRAIN_AFTER_EXIT_MS = 1_000;
+
 export class SystemSshCommandExecutor implements SshCommandExecutor {
   async execute(command: SshCommand): Promise<SshCommandResult> {
     const owner = command.signal ?? currentComputeAbortSignal();
@@ -63,6 +68,7 @@ export class SystemSshCommandExecutor implements SshCommandExecutor {
       let stdout = "";
       let stderr = "";
       let termination: ReturnType<typeof setTimeout> | undefined;
+      let drain: ReturnType<typeof setTimeout> | undefined;
       let failed: Error | undefined;
       const terminate = () => {
         child.kill("SIGTERM");
@@ -98,9 +104,20 @@ export class SystemSshCommandExecutor implements SshCommandExecutor {
       child.stdin.on("error", () => {
         failed ??= new Error("SSH helper input could not be delivered.");
       });
+      child.once("exit", () => {
+        // Output ssh wrote before exiting is already in the pipes. After a short drain, stop
+        // waiting for descendants so "close" fires: a timed-out operation then settles within
+        // timeoutMs plus the SIGKILL grace and this drain.
+        drain = setTimeout(() => {
+          child.stdout.destroy();
+          child.stderr.destroy();
+        }, STDIO_DRAIN_AFTER_EXIT_MS);
+        drain.unref();
+      });
       child.once("close", (code) => {
         signal.removeEventListener("abort", abort);
         clearTimeout(termination);
+        clearTimeout(drain);
         if (failed !== undefined) {
           reject(failed);
         } else {

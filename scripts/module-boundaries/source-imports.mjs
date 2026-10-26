@@ -13,7 +13,7 @@ import { freezeRecord, slash, sourceExtension } from "./workspace.mjs";
 
 function normalizedSpecifier(root, value) {
   try {
-    if (value.startsWith("file:")) {
+    if (/^file:/i.test(value)) {
       return `file:${slash(relative(root, fileURLToPath(value)))}`;
     }
     if (isAbsolute(value)) {
@@ -343,7 +343,7 @@ export function collectSourceImports(snapshot) {
           const target = analysis.value(node.arguments[0]);
           if (
             target.value &&
-            (target.value.startsWith("file:") || isAbsolute(target.value)) &&
+            (/^file:/i.test(target.value) || isAbsolute(target.value)) &&
             target.value !== file.absolutePath &&
             target.value !== pathToFileURL(file.absolutePath).href
           ) {
@@ -354,7 +354,7 @@ export function collectSourceImports(snapshot) {
         const target = analysis.value(node);
         try {
           if (
-            target.value?.startsWith("file:") &&
+            /^file:/i.test(target.value) &&
             sourceExtension.test(new URL(target.value).pathname)
           ) {
             record(node, "path");

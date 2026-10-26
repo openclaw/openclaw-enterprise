@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
+
+import { nativeFirstAgentProofDiagnostic } from "../../scripts/ci/reporter.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const proofPrefix = "OCE_NATIVE_FIRST_AGENT_PROOF ";
@@ -16,6 +19,8 @@ const deploymentProgressCodes = new Set([
   "REVISION_IMAGE_PULL_FAILED",
   "WORKSPACE_NODE_PENDING",
   "WORKSPACE_NODE_BINDING_PENDING",
+  "REPOSITORY_GIT_MATERIAL_PENDING",
+  "WORKSPACE_NODE_RECONNECT_PENDING",
   "WORKSPACE_SETUP_RETRYING",
   "HARNESS_CREDENTIAL_BOOTSTRAP_PENDING",
   "LEASE_EXPIRED",
@@ -101,10 +106,21 @@ const markerOrAbsent = (value, known) =>
 const failureCategory = (code) => (runtimeFailureCodes.has(code) ? code : "unrecognized");
 const progressCode = (code) => (deploymentProgressCodes.has(code) ? code : "unknown");
 
-// The latest model check in the exact revision's agent log page, as fixed values only.
-function observedModelProbe(logs, revisionId) {
-  if (logs?.revisionId !== revisionId || logs.source !== "agent" || !Array.isArray(logs.records)) {
-    return "unavailable";
+// The deployment failure each held model-check code becomes (worker.ts HELD_RUNTIME_FAILURE_CODES).
+const probeCodeForFailure = new Map([
+  ["RUNTIME_AUTHENTICATION_FAILED", "AUTHENTICATION_FAILED"],
+  ["RUNTIME_MODEL_PROBE_FAILED", "MODEL_PROBE_FAILED"],
+]);
+
+// The latest failed model check (else the latest check) in the exact revision's agent log
+// page, as fixed values only.
+async function observeModelProbe(observation, logs, revision, failureCode, readProbePod, signal) {
+  if (
+    logs?.revisionId !== revision.revisionId ||
+    logs.source !== "agent" ||
+    !Array.isArray(logs.records)
+  ) {
+    return;
   }
   const probes = logs.records.filter(
     (record) =>
@@ -112,8 +128,11 @@ function observedModelProbe(logs, revisionId) {
       record.kind === "wrapper" &&
       record.message === "openclaw.model_probe",
   );
-  const fields = probes.at(-1)?.fields ?? {};
-  return {
+  // A later READY must not hide the failure the deployment is holding.
+  const failed = probes.filter((record) => record.fields?.code !== "READY");
+  const probe = failed.at(-1) ?? probes.at(-1);
+  const fields = probe?.fields ?? {};
+  observation.modelProbe = {
     probes: probes.length,
     code: absentOr(fields.code, (code) => (modelProbeCodes.has(code) ? code : "other")),
     providerStatus: absentOr(fields.providerStatus, (status) =>
@@ -127,15 +146,58 @@ function observedModelProbe(logs, revisionId) {
     providerErrorCode: markerOrAbsent(fields.providerErrorCode, providerErrorCodes),
     providerErrorType: markerOrAbsent(fields.providerErrorType, providerErrorTypes),
   };
+  if (!readProbePod) {
+    return;
+  }
+
+  // The log reader reports stream_replaced if the Pod or container changed during its read.
+  // Compare that stream to one later Pod status; never infer the image from the requested tag.
+  // Attach an image only to the page's one failed check, and only when it names the
+  // deployment's failure; a success-only or ambiguous page reads no Pod.
+  observation.probePodImage = "unavailable";
+  const stream = probe?.stream;
+  if (
+    failed.length !== 1 ||
+    probe.fields?.code !== probeCodeForFailure.get(failureCode) ||
+    logs.records.some(
+      (record) => record?.stream !== undefined && !isDeepStrictEqual(record.stream, logs.stream),
+    ) ||
+    stream?.source !== "agent" ||
+    stream.container !== "agent" ||
+    !stream.pod ||
+    !isDeepStrictEqual(stream, logs.stream) ||
+    !uuidV4.test(stream.podUid) ||
+    !Number.isSafeInteger(stream.restartCount) ||
+    stream.restartCount < 0 ||
+    logs.records.some((record) => record?.type === "gap" && record.reason === "stream_replaced")
+  ) {
+    return;
+  }
+  // The caller's existing diagnostic catch preserves the probe if this read fails.
+  const row = (await readProbePod(revision, signal)).trim();
+  const [pod, podUid, restartCount, imageId, extra] = row.split(/\s+/);
+  if (
+    pod !== stream.pod ||
+    podUid !== stream.podUid ||
+    restartCount !== String(stream.restartCount) ||
+    extra !== undefined
+  ) {
+    return;
+  }
+  const digest = /^(?:[^\s@]+@|[a-z-]+:\/\/)?(sha256:[0-9a-f]{64})$/.exec(imageId)?.[1];
+  if (digest) {
+    observation.probePodImage = { digest, podUid };
+  }
 }
 
 // Codes from the provisioning record, its exact deployment and, for a held model-check
-// failure, that check's log event. Every value comes from a fixed vocabulary.
+// failure, that check's log event and the image observed for its exact container instance.
 async function observeNativeFailure({
   request,
   namespaceId,
   provisioningPath,
   provisioned,
+  readProbePod,
   signal,
 }) {
   const observation = {
@@ -158,7 +220,14 @@ async function observeNativeFailure({
       revisionId: provisioned.revisionId,
       deploymentPath,
     };
-    await observeDeployment(observation, deployment, revision, request, diagnosticSignal);
+    await observeDeployment(
+      observation,
+      deployment,
+      revision,
+      request,
+      diagnosticSignal,
+      readProbePod,
+    );
   } catch {
     // Diagnostic failures cannot replace the terminal failure or reveal peer errors.
   }
@@ -167,7 +236,7 @@ async function observeNativeFailure({
 
 // The exact revision's status and codes and, for a held model-check failure, that check's
 // log event. Sets `deployment` (and `modelProbe`) on the observation as it learns them.
-async function observeDeployment(observation, deployment, revision, request, signal) {
+async function observeDeployment(observation, deployment, revision, request, signal, readProbePod) {
   if (
     deployment?.namespaceId !== revision.namespaceId ||
     deployment.agentId !== revision.agentId ||
@@ -189,16 +258,26 @@ async function observeDeployment(observation, deployment, revision, request, sig
       undefined,
       signal,
     );
-    observation.modelProbe = observedModelProbe(logs, revision.revisionId);
+    await observeModelProbe(observation, logs, revision, code, readProbePod, signal);
   }
+}
+
+// CI keeps only the start of this message. Lead with the probe; its 401 response
+// does not tell us whether credentials were attached when the request was made.
+function failNativeWork(expectation, code, { modelProbe, probePodImage, ...work }) {
+  const observation = {
+    modelProbe,
+    credentialAttachment: modelProbe?.providerStatus === 401 ? "not observed" : undefined,
+    probePodImage,
+    ...work,
+  };
+  assert.fail(`${expectation}: ${failureCategory(code)} ${JSON.stringify(observation)}`);
 }
 
 export async function assertNativeWorkNotFailed(response, expectation, diagnostics = {}) {
   if (response.status === "failed") {
     const observation = await observeNativeFailure(diagnostics);
-    assert.fail(
-      `${expectation}: ${failureCategory(response.error?.code)} ${JSON.stringify(observation)}`,
-    );
+    failNativeWork(expectation, response.error?.code, observation);
   }
 }
 
@@ -231,9 +310,7 @@ async function assertNativeRedeployNotFailed(
   } catch {
     // Diagnostic failures cannot replace the terminal failure or reveal peer errors.
   }
-  assert.fail(
-    `${expectation}: ${failureCategory(deployment.error?.code)} ${JSON.stringify(observation)}`,
-  );
+  failNativeWork(expectation, deployment.error?.code, observation);
 }
 
 // Polls the replacement revision until it is active. A failed redeploy fails the test with
@@ -546,14 +623,24 @@ async function nativeWorkerProof({
         worktreeSource: "empty",
       });
       assert.equal(created.key, key);
-      session = { key, sessionId: created.sessionId };
+      stage = "create-session-id-missing";
+      const { sessionId } = created;
+      assert.ok(typeof sessionId === "string" && sessionId.trim().length > 0);
+      session = { key, sessionId };
       stage = "required-placement";
       while (!signal.aborted) {
-        const described = await call("sessions.describe", { key, agentId: "main" });
-        if (described.session?.placement?.state === "active") {
+        const described = await call("sessions.describe", { key, agentId: "main" }).catch(() => {
+          stage = "required-placement-describe-rejected";
+          assert.fail();
+        });
+        const state = described.session?.placement?.state;
+        if (state === "active") {
           break;
         }
-        assert.ok(!["failed", "reclaimed", "local"].includes(described.session?.placement?.state));
+        if (["failed", "reclaimed", "local"].includes(state)) {
+          stage = `required-placement-terminal-${state}`;
+          assert.fail();
+        }
         await delay(500, undefined, { signal });
       }
       signal.throwIfAborted();
@@ -787,11 +874,20 @@ export async function assertNativeWorkerProofInController(
       }
     });
   });
-  assert.equal(
-    result.code,
-    0,
-    `Native first-Agent proof failed during ${result.proof?.stage ?? "controller startup"}; raw output withheld`,
-  );
+  if (result.code !== 0) {
+    // Only the proof's explicit failure record and exit 1 identify its stage.
+    // A controller exit without that evidence leaves the stage unknown.
+    const diagnostic =
+      result.code === 1 && result.proof?.verified === false
+        ? nativeFirstAgentProofDiagnostic(result.proof.stage)
+        : undefined;
+    const at = diagnostic
+      ? `during ${diagnostic.failureStage}`
+      : "without a recognized failure stage";
+    throw Object.assign(new Error(`Native first-Agent proof failed ${at}; raw output withheld`), {
+      openclawCiDiagnostic: diagnostic,
+    });
+  }
   assert.equal(result.proof?.verified, true);
   assert.ok(result.proof.profileId && result.proof.providerId && result.proof.environmentId);
   assert.ok(typeof result.proof.hostname === "string" && result.proof.hostname.length > 0);

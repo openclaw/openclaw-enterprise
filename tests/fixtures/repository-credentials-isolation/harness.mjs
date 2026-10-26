@@ -42,13 +42,8 @@ async function pushFeatureBranch(client) {
   return head;
 }
 
-export async function qualifyIsolation(t, { serviceImage, clientImage, authority = "github-app" }) {
-  // "github-token" runs the development authority: one static token in the service's
-  // input mount, never issued, so every Agent surface must stay free of it.
-  if (authority !== "github-app" && authority !== "github-token") {
-    throw new Error("unknown isolation authority");
-  }
-  const staticToken = authority === "github-token";
+export async function qualifyIsolation(t, { serviceImage, clientImage }) {
+  // Exercise the explicit development profile without an App signing capability.
   const work = forwardWork(t.signal);
   const run = work.command;
   const docker = (args, options) => run("docker", args, options);
@@ -196,8 +191,6 @@ export async function qualifyIsolation(t, { serviceImage, clientImage, authority
     }
     await start(names.provider, [
       ...listener,
-      "--env",
-      `ISOLATION_AUTHORITY=${authority}`,
       "--network",
       network,
       "--network-alias",
@@ -228,7 +221,7 @@ export async function qualifyIsolation(t, { serviceImage, clientImage, authority
     }
     await eventually(async () => (await report())?.ready);
     // The development authority caps sessions at eight hours and buffered pushes at 64 MiB.
-    const sessionSeconds = staticToken ? 28800 : 86400;
+    const sessionSeconds = 28800;
     const configuration = {
       gateway: {
         publicOrigin: gateway,
@@ -238,34 +231,21 @@ export async function qualifyIsolation(t, { serviceImage, clientImage, authority
         tlsKeyFile: "/run/repository-credentials/tls.key",
       },
       sessionPolicy: {
-        maximumDurationSeconds: staticToken ? sessionSeconds : 172800,
+        maximumDurationSeconds: sessionSeconds,
         defaultProfile: "git-write",
         allowedProfiles: ["git-read", "git-write", "git-full"],
       },
-      limits: staticToken
-        ? { shutdownGraceMs: 5000, gitPushInputBytes: 67108864 }
-        : { shutdownGraceMs: 5000 },
-      backend: staticToken
-        ? {
-            kind: "github-token",
-            providerInstanceId: "github-isolation-fixture",
-            configVersion: "1",
-            repositoryId: "73",
-            repository,
-            tokenFile: "/run/repository-credentials/token",
-            developmentOnly: true,
-            pushRefAllowlist: ["refs/heads/isolation-feature"],
-          }
-        : {
-            kind: "github-app",
-            providerInstanceId: "github-isolation-fixture",
-            configVersion: "1",
-            appId: "12345",
-            installationId: "41",
-            repositoryId: "73",
-            repository,
-            privateKeyFile: "/run/repository-credentials/app.pem",
-          },
+      limits: { shutdownGraceMs: 5000, gitPushInputBytes: 67108864 },
+      backend: {
+        kind: "github-token",
+        providerInstanceId: "github-isolation-fixture",
+        configVersion: "1",
+        repositoryId: "73",
+        repository,
+        tokenFile: "/run/repository-credentials/token",
+        developmentOnly: true,
+        pushRefAllowlist: ["refs/heads/isolation-feature"],
+      },
     };
     work.check();
     await writeFile(join(inputs, "config.json"), JSON.stringify(configuration), { mode: 0o600 });
@@ -282,14 +262,34 @@ export async function qualifyIsolation(t, { serviceImage, clientImage, authority
       serviceId,
       "--config",
       "/run/repository-credentials/config.json",
-      ...(staticToken ? ["--development-authority"] : []),
+      "--development-authority",
     ]);
     await waitForPath(join(control, "control.sock"));
 
+    async function containerState(name, since) {
+      // Docker state only: never the container's output or arguments, which can carry credentials.
+      const offset = (time) =>
+        time && !time.startsWith("0001-") ? `+${Date.parse(time) - since} ms` : "never";
+      try {
+        const inspected = await runCommand("docker", [
+          "inspect",
+          "--type",
+          "container",
+          "--format",
+          "{{json .State}}",
+          name,
+        ]);
+        const state = JSON.parse(inspected.stdout);
+        return `container ${state.Status}, started ${offset(state.StartedAt)}, finished ${offset(state.FinishedAt)}, exit ${state.ExitCode}, oom ${state.OOMKilled}`;
+      } catch {
+        return "container state unavailable";
+      }
+    }
     async function operator(operation, args) {
       // Only the trusted operator mounts the parent holding all sessions.
       work.check();
       created.add(names.operator);
+      const called = Date.now();
       const result = await docker([
         "run",
         "--name",
@@ -308,7 +308,15 @@ export async function qualifyIsolation(t, { serviceImage, clientImage, authority
         "--socket",
         "/run/repository-control/control.sock",
         ...args,
-      ]);
+      ]).catch(async (error) => {
+        // Finding 2655: one CI run timed out here after 30 s; the step normally takes under 2 s. Name the step
+        // and the container's Docker state, so the next failure shows whether the container
+        // never started, kept running or exited while `docker run` stayed attached.
+        throw new Error(
+          `operator ${operation} ${error.message} after ${Date.now() - called} ms; ${await containerState(names.operator, called)}`,
+          { cause: error },
+        );
+      });
       clientOutputs.push(result.stdout, result.stderr);
       await docker(["rm", names.operator]);
       created.delete(names.operator);
@@ -381,7 +389,7 @@ export async function qualifyIsolation(t, { serviceImage, clientImage, authority
       "/app/dist/repository-credentials.js",
       "--config",
       "/run/repository-credentials/config.json",
-      ...(staticToken ? ["--development-authority"] : []),
+      "--development-authority",
     ]);
     assert.equal(containers.service.path, "node");
     await docker([
@@ -414,7 +422,7 @@ export async function qualifyIsolation(t, { serviceImage, clientImage, authority
         "no ambient provider token environment",
       );
       const secrets = JSON.parse(await readFile(join(state, "secrets.json"), "utf8"));
-      if (staticToken) {
+      {
         // Positive control on the host only: the compared patterns include the token
         // the service actually read, so an empty result is not a vacuous pass.
         const token = (await readFile(join(inputs, "token"), "utf8")).trim();
@@ -506,24 +514,13 @@ export async function qualifyIsolation(t, { serviceImage, clientImage, authority
       );
     });
     assert.deepEqual(beforeClose.errors, []);
-    if (staticToken) {
+    {
       // Nothing was issued: every upstream use carried the one static token.
       assert.equal(beforeClose.issues.length, 0);
       assert.deepEqual(
         beforeClose.tokens.map((token) => token.static),
         [true],
       );
-    } else {
-      assert.equal(beforeClose.issues.length, 1);
-      assert.deepEqual(beforeClose.issues[0].repositoryIds.map(String), ["73"]);
-      assert.deepEqual(beforeClose.issues[0].permissions, {
-        metadata: "read",
-        contents: "write",
-        pull_requests: "write",
-        issues: "write",
-        checks: "read",
-        statuses: "read",
-      });
     }
     assert.ok(beforeClose.gitTrace.some((entry) => entry.gitProtocol === "version=2"));
     assert.ok(beforeClose.gitTrace.some((entry) => entry.path.endsWith("/git-receive-pack")));
@@ -565,17 +562,17 @@ export async function qualifyIsolation(t, { serviceImage, clientImage, authority
     assert.equal(summary.pendingCredentials, 0);
     assert.equal(summary.pendingAuxiliary, 0);
     assert.equal(summary.disposedSessions, 2);
-    // An issued token is revoked at close; the owner's static token never is.
+    // The owner's static token is never revoked.
     const finalReport = await eventually(async () => {
       const value = await report();
       return (
         value?.tokens.length === 1 &&
-        value.tokens.every((token) => token.revoked !== staticToken) &&
+        value.tokens.every((token) => token.revoked === false) &&
         value
       );
     });
     assert.deepEqual(finalReport.errors, []);
-    if (staticToken) {
+    {
       assert.equal(
         finalReport.apiTrace.some(
           (entry) => entry.method === "DELETE" && entry.target === "/installation/token",

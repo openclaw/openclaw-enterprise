@@ -17,6 +17,7 @@ import {
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { OpenShellServiceTransportError } from "../../apps/controller/src/drivers/sandbox/openshell-service-transport.ts";
 import { DependencyUnavailableError } from "../../packages/occ/src/errors.ts";
+import { availablePort, refusingPort } from "../helpers/available-port.mjs";
 
 // A provider-owned Codex Harness (OpenShell) receives only the transport token's
 // verifier and no Compute status port. When it holds a startup failure it serves
@@ -293,9 +294,7 @@ async function close(server) {
 const serviceUrl = "http://tenant--sandbox.openshell.localhost:8080/";
 
 test("the OpenShell client reads a held failure from the real Harness wrapper through the service host", async (t) => {
-  const probeServer = createServer();
-  const freePort = await listen(probeServer);
-  await close(probeServer);
+  const freePort = await availablePort();
   const { servers } = runCodexEntrypoint({
     env: providerEnv,
     probe: failedProbe("stream error: model unavailable"),
@@ -501,6 +500,8 @@ test("the OpenShell client reaches a bearer-passthrough service through the gate
 test("a refused OpenShell WebSocket handshake releases an unfinished HTTP response", async () => {
   let socket;
   let closed = false;
+  let markClosed;
+  const closing = new Promise((resolve) => (markClosed = resolve));
   const gateway = createServer();
   gateway.on("upgrade", (_request, peer) => {
     socket = peer;
@@ -508,6 +509,7 @@ test("a refused OpenShell WebSocket handshake releases an unfinished HTTP respon
     peer.once("end", () => peer.end());
     peer.once("close", () => {
       closed = true;
+      markClosed();
     });
     // Headers already prove refusal; the peer never finishes its advertised body.
     peer.write(
@@ -524,8 +526,11 @@ test("a refused OpenShell WebSocket handshake releases an unfinished HTTP respon
       await client.serviceWebSocketHandshake(serviceUrl, TOKEN, AbortSignal.timeout(5_000)),
       false,
     );
-    // Disposal must happen even though send() clears the completed request's timer.
-    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    // Disposal must happen even though send() clears the completed request's timer: the socket
+    // closes within 1.5 s (the wait ends as soon as it does).
+    let timer;
+    await Promise.race([closing, new Promise((resolve) => (timer = setTimeout(resolve, 1_500)))]);
+    clearTimeout(timer);
     assert.equal(closed, true, "a completed refusal must not retain its HTTP socket");
   } finally {
     // Complete the base implementation's held response without manufacturing a reset.
@@ -534,10 +539,11 @@ test("a refused OpenShell WebSocket handshake releases an unfinished HTTP respon
   }
 });
 
-test("an unreachable OpenShell gateway listener is a dependency failure, not a starting Harness", async () => {
-  const server = createServer();
-  const port = await listen(server);
-  await close(server);
+test("an unreachable OpenShell gateway listener is a dependency failure, not a starting Harness", async (t) => {
+  // A released port can be taken by a parallel test's listener; this one keeps refusing.
+  const refusing = await refusingPort();
+  t.after(() => refusing.release());
+  const { port } = refusing;
   const client = new GrpcOpenShellGatewayClient({ endpoint: `http://127.0.0.1:${port}` });
   for (const observe of [
     () =>
@@ -877,9 +883,7 @@ test("runtime wrapper status servers answer 400 to a request target that is not 
   );
 
   await t.test("a raw request target over HTTP leaves the held wrapper serving", async (t) => {
-    const probeServer = createServer();
-    const freePort = await listen(probeServer);
-    await close(probeServer);
+    const freePort = await availablePort();
     const { servers } = runCodexEntrypoint({
       env: providerEnv,
       probe: failedProbe("stream error: model unavailable"),

@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import test from "node:test";
-import pg from "pg";
 import { ChatGPTServiceAccountDriver } from "../../apps/controller/src/drivers/service-account/chatgpt.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import {
@@ -23,6 +22,8 @@ import {
   serviceAccountDriverId,
   workspaceId,
 } from "../helpers/postgres-backend-state.mjs";
+import { testPool } from "../helpers/postgres-database.mjs";
+import { waitForLockHolder } from "../helpers/postgres-lock-waits.mjs";
 
 /**
  * Finding 1397: an issuance whose token Secret was stored but whose transaction never committed
@@ -239,8 +240,7 @@ test(
     const { pool } = fixture;
     // A second API process over its own pool: the later issuance must not share this request's
     // transaction context.
-    const otherPool = new pg.Pool({ connectionString: databaseUrl, max: 4 });
-    context.after(() => otherPool.end());
+    const otherPool = testPool(context, { connectionString: databaseUrl, max: 4 });
     const other = apiController(fixture, new PostgresPlatformState(otherPool), issuing);
 
     const find = issuing.storage.findServiceAccountCredential;
@@ -261,19 +261,12 @@ test(
           [account.id],
         );
         waiting.catch(() => {});
-        let holder;
-        const deadline = Date.now() + 15_000;
-        for (;;) {
-          const [{ blockers }] = (
-            await pool.query("SELECT pg_blocking_pids($1) AS blockers", [probePid])
-          ).rows;
-          if (blockers.length > 0) {
-            holder = blockers[0];
-            break;
-          }
-          assert.ok(Date.now() < deadline, "the probe never waited for the account lock");
-          await new Promise((resolve) => setTimeout(resolve, 50));
-        }
+        const holder = await waitForLockHolder(
+          pool,
+          probePid,
+          "the probe to wait for the account lock",
+          { timeoutMs: 15_000, intervalMs: 50 },
+        );
         await pool.query("SELECT pg_terminate_backend($1)", [holder]);
         await waiting;
         await probe.query("ROLLBACK");

@@ -1,9 +1,14 @@
-# Use a credential source on the local OpenShell profile
+# Use a static credential source on the local OpenShell profile
+
+This is the static Credential Gateway setup, which remains available to existing
+Gateway owners. It does not qualify protected Credential Proxy access or transfer
+source ownership. For protected setup and upgrade decisions, start with
+[Credential Proxy setup](../credential-proxy.md).
 
 Use this procedure to register an OpenAI-compatible API key with the OpenShell Credential
 Gateway and bind it to a dedicated Codex Agent on the
 [local OpenShell profile](local-kubernetes-development.md#start-the-openshell-fail-closed-profile).
-OpenShell keeps its own copy of the key and substitutes it only on requests to
+Without Credential Proxy selected, OpenShell keeps its own copy of the key and substitutes it only on requests to
 the source endpoint; the Harness receives only a placeholder. By default the
 endpoint is `https://api.openai.com/v1`. The
 [credential source reference](../../reference/credential-sources.md) defines the
@@ -44,6 +49,12 @@ model ID yourself.
 
 ## Register the key
 
+If arriving from Credential Proxy setup, use only the `openai` example below,
+obtain whole-execution consent before creation, then
+[return to live-source setup](../credential-proxy.md#register-authorize-and-deploy-an-openai-static-inference-source).
+Fresh creation with Proxy selected is already live and Gateway-owned; the
+copied-key rotation and cleanup later on this page do not describe that path.
+
 Store the key as a Namespace Secret. Build the request file with owner-only
 permissions, delete it after use, and never put the key on the command line:
 
@@ -79,13 +90,14 @@ SOURCE_ID="$(./bin/occ credential-source create --file credential-source.json -o
 ```
 
 Expected result: `STATE` and `GATEWAY STATUS` both show `ready`. The response
-never contains the key. Changing the Secret afterward does not change the
-gateway's copy.
+never contains the key. Without Proxy selected, changing the Secret afterward
+does not change the Gateway copy. With Proxy selected, inspect the live-source
+fields in JSON; the column label does not imply a copy was deposited.
 
 ## Create the Agent and grant the source
 
 Write a dedicated Codex Configuration. Replace each `<model>` with the native
-model ID, such as `gpt-5.6-luna`:
+model ID, that your provider account can use:
 
 ```bash
 cat > configuration.json <<'JSON'

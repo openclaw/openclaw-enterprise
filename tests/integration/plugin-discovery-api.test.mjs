@@ -3,6 +3,12 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
+import { assertApiError } from "../helpers/api-error.mjs";
+import {
+  callerDenied,
+  GENERIC_DENIAL,
+  EMBEDDED_API_KEY_REQUIRED,
+} from "../helpers/refusal-text.mjs";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { codexRuntimeArtifact } from "../../apps/controller/src/drivers/plugin/runtime-translator.ts";
@@ -214,8 +220,7 @@ test("Plugin discovery requires exact Namespace Agent-create permission before D
     ["/details", { accessToken, pluginId: remoteId }],
   ]) {
     const denied = await fixture.request("POST", `${fixture.path}${suffix}`, { session, body });
-    assert.equal(denied.status, 403);
-    assert.equal(denied.body.error.code, "FORBIDDEN");
+    assertApiError(denied, 403, "FORBIDDEN");
   }
   assert.deepEqual(fixture.calls, []);
   const denial = fixture.auditSink.events.at(-1);
@@ -426,14 +431,14 @@ test("Saved Agent plugin discovery requires exact Agent and Secret grants before
   );
   assert.ok(agentSecretBinding);
 
-  async function expectDenied(action, principalId, resource) {
+  async function expectDenied(action, principalId, resource, message) {
     for (const [suffix, body] of [
       ["", {}],
       ["/details", { pluginId: remoteId }],
     ]) {
       const result = await fixture.request("POST", `${path}${suffix}`, { session, body });
-      assert.equal(result.status, 403, JSON.stringify(result.body));
-      assert.equal(result.body.error.code, "FORBIDDEN");
+      assertApiError(result, 403, "FORBIDDEN");
+      assert.equal(result.body.error.message, message);
       const denial = fixture.auditSink.events.at(-1);
       assert.equal(denial.kind, "authorization_denial");
       assert.deepEqual(denial.authorization, { principalId, action, resource });
@@ -443,24 +448,35 @@ test("Saved Agent plugin discovery requires exact Agent and Secret grants before
   }
 
   // Each permission is checked independently before the stored PAT can reach the Plugin Driver.
-  await expectDenied("read", actor.principal.id, {
-    kind: "agent",
-    id: agent.id,
-    namespaceId: fixture.namespace.id,
-  });
+  // The caller's own denials name the grant (finding 2534): the Agent by the ID the path sent, the
+  // stored Secret by no ID.
+  const agentRef = { kind: "agent", id: agent.id, namespaceId: fixture.namespace.id };
+  await expectDenied(
+    "read",
+    actor.principal.id,
+    agentRef,
+    callerDenied("Agent read", `Agent ${agent.id}`),
+  );
   agentRole.permissions = [{ action: "read", resourceKind: "agent" }];
-  await expectDenied("update", actor.principal.id, {
-    kind: "agent",
-    id: agent.id,
-    namespaceId: fixture.namespace.id,
-  });
+  await expectDenied(
+    "update",
+    actor.principal.id,
+    agentRef,
+    callerDenied("Agent update", `Agent ${agent.id}`),
+  );
   agentRole.permissions.push({ action: "update", resourceKind: "agent" });
   fixture.policy.bindings.splice(fixture.policy.bindings.indexOf(actorSecretBinding), 1);
-  await expectDenied("operate", actor.principal.id, secret.ref);
+  await expectDenied(
+    "operate",
+    actor.principal.id,
+    secret.ref,
+    callerDenied("Secret operate", "a Secret this request uses"),
+  );
   fixture.policy.bindings.push(actorSecretBinding);
   fixture.policy.bindings.splice(fixture.policy.bindings.indexOf(agentSecretBinding), 1);
-  // The request audit attributes the failed subordinate grant to the authenticated actor.
-  await expectDenied("operate", actor.principal.id, secret.ref);
+  // The request audit attributes the failed subordinate grant to the authenticated actor. The
+  // Agent's own principal was denied, not the caller, so the text names no grant.
+  await expectDenied("operate", actor.principal.id, secret.ref, GENERIC_DENIAL);
   fixture.policy.bindings.push(agentSecretBinding);
 
   const allowed = await fixture.request("POST", path, { session, body: {} });
@@ -543,8 +559,7 @@ test("Saved Agent source discovery denies missing grants and rechecks revocation
   ];
   const expectDenied = async (suffix, body) => {
     const denied = await fixture.request("POST", `${path}${suffix}`, { session, body });
-    assert.equal(denied.status, 403, JSON.stringify(denied.body));
-    assert.equal(denied.body.error.code, "FORBIDDEN");
+    assertApiError(denied, 403, "FORBIDDEN");
     assert.equal(fixture.calls.length, 1, "denied source use must not invoke discovery");
   };
   for (const binding of sourceBindings) {
@@ -597,8 +612,7 @@ test("Saved Agent plugin discovery rechecks Secret authority after the backend r
     });
 
   const denied = await fixture.request("POST", path, { body: {} });
-  assert.equal(denied.status, 403, JSON.stringify(denied.body));
-  assert.equal(denied.body.error.code, "FORBIDDEN");
+  assertApiError(denied, 403, "FORBIDDEN");
   assert.equal(secretReads, 1);
   assert.deepEqual(fixture.calls, []);
   assert.equal(
@@ -706,8 +720,7 @@ test("Saved Agent plugin discovery rechecks the caller's Secret authority after 
     });
 
   const denied = await fixture.request("POST", path, { session, body: {} });
-  assert.equal(denied.status, 403, JSON.stringify(denied.body));
-  assert.equal(denied.body.error.code, "FORBIDDEN");
+  assertApiError(denied, 403, "FORBIDDEN");
   assert.equal(secretReads, 1);
   assert.deepEqual(fixture.calls, []);
   assert.deepEqual(fixture.auditSink.events.at(-1).authorization, {
@@ -729,8 +742,7 @@ test("Saved Agent plugin discovery denies unauthorized callers before reporting 
     ["/details", { pluginId: remoteId }],
   ]) {
     const denied = await fixture.request("POST", `${path}${suffix}`, { session, body });
-    assert.equal(denied.status, 403, JSON.stringify(denied.body));
-    assert.equal(denied.body.error.code, "FORBIDDEN");
+    assertApiError(denied, 403, "FORBIDDEN");
   }
   assert.deepEqual(fixture.calls, []);
   assert.equal(secretReads(), 0);
@@ -755,10 +767,7 @@ test("Saved Agent plugin discovery rejects unsupported Harness authentication or
     },
   });
   assert.equal(embedded.status, 400, JSON.stringify(embedded.body));
-  assert.equal(
-    embedded.body.error.message,
-    "Agent setting harnessAuth.method must be api_key for embedded OpenClaw on Kubernetes Compute: change harnessAuth or executionMode.",
-  );
+  assert.equal(embedded.body.error.message, EMBEDDED_API_KEY_REQUIRED);
   // Stored discovery reads only a Secret-backed PAT today, so a dedicated Codex Agent whose
   // PAT comes from a managed ServiceAccount is refused like the other unsupported sources.
   const account = await fixture.state.transact((unit) =>
@@ -884,11 +893,9 @@ test("Saved Agent uses a credential-free curated catalog for an API-key Codex Ag
     session,
     body: { pluginId: linear.remoteId },
   });
-  assert.equal(deleting.status, 409, JSON.stringify(deleting.body));
-  assert.equal(deleting.body.error.code, "AGENT_DELETING");
+  assertApiError(deleting, 409, "AGENT_DELETING");
   const capabilitiesDeleting = await fixture.request("GET", `${path}/capabilities`, { session });
-  assert.equal(capabilitiesDeleting.status, 409, JSON.stringify(capabilitiesDeleting.body));
-  assert.equal(capabilitiesDeleting.body.error.code, "AGENT_DELETING");
+  assertApiError(capabilitiesDeleting, 409, "AGENT_DELETING");
   assert.equal(secretReads(), 0);
 });
 
@@ -1034,8 +1041,7 @@ test("Selected Secret discovery rechecks Secret authority after the backend read
       body: { secretRef: secret.ref, ...extra },
     });
     // The first request reads the value and is then refused; the second is refused before it.
-    assert.equal(denied.status, 403, JSON.stringify(denied.body));
-    assert.equal(denied.body.error.code, "FORBIDDEN");
+    assertApiError(denied, 403, "FORBIDDEN");
   }
   assert.equal(secretReads, 1);
   assert.deepEqual(fixture.calls, []);
@@ -1521,8 +1527,7 @@ test("Hosted discovery requires a credential, and curated discovery still requir
     ["/details", { pluginId: remoteId }],
   ]) {
     const missing = await fixture.request("POST", `${fixture.path}${suffix}`, { body });
-    assert.equal(missing.status, 400);
-    assert.equal(missing.body.error.code, "PLUGIN_DISCOVERY_CREDENTIALS_REJECTED");
+    assertApiError(missing, 400, "PLUGIN_DISCOVERY_CREDENTIALS_REJECTED");
   }
   assert.deepEqual(fixture.calls, []);
 

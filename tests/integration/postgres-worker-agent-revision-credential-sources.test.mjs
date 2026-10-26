@@ -11,12 +11,32 @@ import {
 } from "../../packages/occ/src/index.ts";
 import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
+import { occLogLine } from "../helpers/occ-log-line.ts";
 import { withNamespaceLockHeld } from "../helpers/postgres-namespace-lock.mjs";
 import {
   CREDENTIAL_GATEWAY_FIXTURE_ID,
   createWorkerRevisionFixtures,
 } from "../helpers/postgres-worker-revision-fixture.mjs";
-import { completion, removeAccessBindings } from "../helpers/postgres-worker-revision-support.mjs";
+import {
+  advanceCleanupRetries,
+  completion,
+  deferWork,
+  makeWorkDue,
+  removeAccessBindings,
+  repositoryAttempts,
+  repositoryBoundary,
+  withUnavailableIAM,
+} from "../helpers/postgres-worker-revision-support.mjs";
+import { gitCommandBodies, gitExpiryGateway } from "../helpers/openshell-online-git-journey.mjs";
+import { openShellOnlineGitWire } from "../helpers/openshell-online-git-wire.mjs";
+import { invoke, token } from "../helpers/openshell-online-wire.mjs";
+import { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
+import { PostgresOpenShellGitRouteStore } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts";
+import {
+  createGitHubRepositoryDeliveryResolver,
+  resolveGitHubRepositoryBinding,
+  validateGitHubRepositoryRegistry,
+} from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 
 // Credential sources on revision work: withdrawals (retries, replays, denials and maintenance
 // re-queues), and listed sources that lose their grant or readiness after admission. Deployment,
@@ -223,11 +243,10 @@ function assertRetryDelay(series, expectedMs) {
 
 // Lets a scheduled retry run now instead of waiting out its delay. The worker still claims it.
 async function runScheduledRetryNow(fixture, series) {
-  const updated = await fixture.observerPool.query(
-    `UPDATE occ.controller_work SET available_at = clock_timestamp()
-     WHERE idempotency_key = $1 AND state = 'queued'`,
-    [series.idempotencyKey],
-  );
+  const updated = await makeWorkDue(fixture.observerPool, {
+    key: series.idempotencyKey,
+    state: "queued",
+  });
   assert.equal(updated.rowCount, 1);
 }
 
@@ -874,11 +893,14 @@ test(
     const revoked = await withdrawal.read(fixture.actor.id);
     assert.equal(revoked.state, "revoked");
     assert.equal(revoked.lastReason, "CREDENTIALS_WITHDRAWN");
-    const completed = events.filter(
-      ({ event, code }) => event === "worker.completed" && code === "SANDBOX_GATEWAY_UNAUTHORIZED",
-    );
+    const completed = events
+      .filter(
+        ({ event, code }) =>
+          event === "worker.completed" && code === "SANDBOX_GATEWAY_UNAUTHORIZED",
+      )
+      .map(occLogLine);
     assert.deepEqual(
-      completed.map(({ outcome, hint }) => [outcome, hint]),
+      completed.map(({ outcome, hintCode }) => [outcome, hintCode]),
       [["retry", undefined]],
     );
 
@@ -908,14 +930,17 @@ test(
     const recovery = await queuedWithdrawal(fixture, other.candidate);
     assert.equal(recovery.idempotencyKey, `${persistent.idempotencyKey}:recovery:1`);
     assertRetryDelay(recovery, 30_000);
-    const terminal = events.filter(
-      ({ event, code, hint }) =>
-        event === "worker.completed" &&
-        code === "SANDBOX_GATEWAY_UNAUTHORIZED" &&
-        hint !== undefined,
-    );
+    // The lines the worker log keeps (finding 2245).
+    const terminal = events
+      .map(occLogLine)
+      .filter(
+        ({ event, code, hintCode }) =>
+          event === "worker.completed" &&
+          code === "SANDBOX_GATEWAY_UNAUTHORIZED" &&
+          hintCode !== undefined,
+      );
     assert.equal(terminal.length, 1);
-    assert.match(terminal[0].hint, /restore that identity's Workspace role/);
+    assert.equal(terminal[0].hintCode, "sandbox-gateway-identity");
     // The Driver's retry, the queue's permanent failure (with the recovery series queued).
     assert.deepEqual(
       [terminal[0].attempt, terminal[0].result, terminal[0].outcome],
@@ -1359,11 +1384,7 @@ revisionTest(
 // Admits `number` for `owner` with its deployment held back, as one that has not run yet.
 async function admitHeldRevision(fixture, owner, number) {
   const revision = await fixture.revision(owner, number);
-  await fixture.observerPool.query(
-    `UPDATE occ.controller_work SET available_at = clock_timestamp() + interval '1 day'
-     WHERE idempotency_key = $1`,
-    [revision.idempotencyKey],
-  );
+  await deferWork(fixture.observerPool, revision.idempotencyKey, "1 day");
   return revision;
 }
 
@@ -1630,6 +1651,140 @@ for (const harness of [false, true]) {
   );
 }
 
+revisionTest(
+  "a candidate's withdrawal refused until it is active settles when its deployment activates it, without a replay",
+  async (fixture) => {
+    const owners = [];
+    for (const label of ["activates", "other-refusal", "outstanding", "active-retirement"]) {
+      owners.push(await agentWithHarnessAndToolSources(fixture, `withdraw-activation-${label}`, 1));
+    }
+    const firsts = [];
+    for (const owner of owners) {
+      firsts.push(await fixture.revision(owner, 1));
+    }
+    // Revisions whose withdrawal Compute refuses for another cause, whichever is active.
+    const refusals = new Map();
+    const withdrawn = [];
+    const compute = {
+      ...fixture.compute,
+      maintenanceIntervalMs: 3_600_000,
+      // Like reduceCredentialPolicy, reduce only the Agent's active revision (finding 2235).
+      async withdrawCredentialSource(revision, source) {
+        withdrawn.push(revision.id);
+        const agent = await fixture.state.read((view) =>
+          view.agents.findAgent(revision.namespaceId, revision.agentId),
+        );
+        const code =
+          refusals.get(revision.id) ??
+          (agent?.activeRevisionId === revision.id
+            ? undefined
+            : "CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT");
+        if (code !== undefined) {
+          throw new CredentialWithdrawalRefusedError(code, "Compute refused the withdrawal.");
+        }
+        return { sourceId: source.id, state: "revoked" };
+      },
+    };
+    const options = { convergenceTimeoutMs: 50, transformDrivers: withCredentialGateway };
+    await fixture.start(compute, options);
+    for (const first of firsts) {
+      await fixture.work(first, "succeeded");
+    }
+    await fixture.stop();
+
+    // The first three Agents have a later candidate still deploying when the withdrawal is
+    // requested. The last one has none; its active revision refuses retirement itself.
+    const seconds = [];
+    for (const owner of owners.slice(0, 3)) {
+      seconds.push(await admitHeldRevision(fixture, owner, 2));
+    }
+    refusals.set(seconds[1].id, "CREDENTIAL_WITHDRAWAL_OWNERSHIP_CONFLICT");
+    refusals.set(firsts[3].id, "CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT");
+    // Another operator requests the first Agent's withdrawal; its attempts run as that operator.
+    const requester = `withdraw-activation-requester-${randomUUID()}`;
+    await fixture.copyActorGrants(requester);
+    const withdrawals = [];
+    for (const [index, owner] of owners.entries()) {
+      const sourceId = toolSources(owner)[0].sourceId;
+      withdrawals.push(
+        await requestWithdrawal(
+          fixture,
+          owner,
+          sourceId,
+          index === 0 ? requester : fixture.actor.id,
+        ),
+      );
+    }
+    await fixture.start(compute, options);
+    for (const [index, second] of seconds.entries()) {
+      await fixture.work((await withdrawalAttempts(fixture, second))[0], "failed_permanent");
+      await fixture.work((await withdrawalAttempts(fixture, firsts[index]))[0], "succeeded");
+    }
+    await fixture.work((await withdrawalAttempts(fixture, firsts[3]))[0], "failed_permanent");
+    await fixture.stop();
+    const refused = await withdrawals[0].read(fixture.actor.id);
+    assert.equal(refused.revisionId, seconds[0].id);
+    assert.equal(refused.state, "pending");
+    assert.equal(refused.lastReason, "CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT");
+    assert.equal(refused.withdrawalInProgress, false, "the refusal awaits a replay or activation");
+
+    // The third Agent's operator replays while its candidate still deploys. That attempt would
+    // fail the same way; hold it, so it is still queued when the candidate activates.
+    await withdrawals[2].replay(fixture.actor.id);
+    const replay = (await withdrawalAttempts(fixture, seconds[2]))[1];
+    assert.equal(replay.state, "queued");
+    const hold = (work, at) =>
+      fixture.observerPool.query(
+        `UPDATE occ.controller_work SET available_at = ${at} WHERE idempotency_key = $1`,
+        [work.idempotencyKey],
+      );
+    await hold(replay, "clock_timestamp() + interval '1 day'");
+    for (const second of seconds) {
+      await hold(second, "clock_timestamp()");
+    }
+    await fixture.start(compute, options);
+    for (const second of seconds) {
+      await fixture.work(second, "succeeded", 30_000);
+    }
+
+    // Activation queues one attempt for the refused withdrawal, as its requester, and that
+    // attempt reduces the now-active revision. Nobody replayed it.
+    const activated = await withdrawalAttempts(fixture, seconds[0]);
+    assert.equal(activated.length, 2, "activation queues exactly one attempt");
+    const activation = activated[1];
+    assert.equal(
+      activation?.idempotencyKey,
+      `agent_revision:${seconds[0].id}:reconcile:credentials_withdrawn:activation`,
+    );
+    assert.equal(activation.actorId, requester);
+    await fixture.work(activation, "succeeded");
+    const settled = await withdrawals[0].read(fixture.actor.id);
+    assert.equal(settled.revisionId, seconds[0].id);
+    assert.equal(settled.state, "revoked");
+    assert.equal(withdrawn.filter((id) => id === seconds[0].id).length, 2);
+
+    // Activation queues nothing for a refusal it does not change, nor beside an attempt that
+    // is still queued; that attempt then settles the withdrawal.
+    assert.equal((await withdrawalAttempts(fixture, seconds[1])).length, 1);
+    const other = await withdrawals[1].read(fixture.actor.id);
+    assert.equal(other.state, "pending");
+    assert.equal(other.lastReason, "CREDENTIAL_WITHDRAWAL_OWNERSHIP_CONFLICT");
+    assert.equal((await withdrawalAttempts(fixture, seconds[2])).length, 2);
+    await hold(replay, "clock_timestamp()");
+    await fixture.work(replay, "succeeded");
+    assert.equal((await withdrawals[2].read(fixture.actor.id)).state, "revoked");
+
+    // An active revision's own retirement refusal still waits for a replay: its maintenance
+    // passes, which complete the activated revision too, queue no attempt.
+    await runMaintenancePass(fixture, firsts[3]);
+    await fixture.stop();
+    assert.equal((await withdrawalAttempts(fixture, firsts[3])).length, 1);
+    const retirement = await withdrawals[3].read(fixture.actor.id);
+    assert.equal(retirement.state, "pending");
+    assert.equal(retirement.withdrawalInProgress, false);
+  },
+);
+
 for (const successor of [false, true]) {
   test(
     `maintenance stops re-queuing ${successor ? "an admitted successor's Harness" : "a tool"} source withdrawal denied to its requester until an authorized replay`,
@@ -1654,28 +1809,8 @@ for (const successor of [false, true]) {
       };
       const options = {
         convergenceTimeoutMs: 50,
-        transformDrivers: (drivers) => {
-          const withGateway = withCredentialGateway(drivers);
-          const createIAMDriver = withGateway.createIAMDriver;
-          return {
-            ...withGateway,
-            createIAMDriver(state) {
-              const iam = createIAMDriver(state);
-              return {
-                id: iam.id,
-                implementation: iam.implementation,
-                capability: iam.capability,
-                lookupIdentity: iam.lookupIdentity.bind(iam),
-                async authorize(request) {
-                  if (iamUnavailable) {
-                    throw new Error("IAM is temporarily unavailable");
-                  }
-                  return iam.authorize(request);
-                },
-              };
-            },
-          };
-        },
+        transformDrivers: (drivers) =>
+          withUnavailableIAM(() => iamUnavailable)(withCredentialGateway(drivers)),
       };
       const first = await fixture.revision(owner, 1);
       await fixture.start(compute, options);
@@ -2085,16 +2220,27 @@ revisionTest(
   async (fixture) => {
     const partial = await agentWithHarnessAndToolSources(fixture, "withdraw-partial", 2);
     const moved = await agentWithHarnessAndToolSources(fixture, "withdraw-moved", 1);
+    const retirement = await agentWithHarnessAndToolSources(fixture, "withdraw-retirement", 2);
     const partialRevision = await fixture.revision(partial, 1);
     const movedRevision = await fixture.revision(moved, 1);
+    const retirementRevision = await fixture.revision(retirement, 1);
     const [first, second] = toolSources(partial).map(({ sourceId }) => sourceId);
     const [movedSource] = toolSources(moved).map(({ sourceId }) => sourceId);
+    const [refusedSource, reducibleSource] = toolSources(retirement).map(
+      ({ sourceId }) => sourceId,
+    );
     const withdrawn = [];
     let failSecond = true;
     const compute = {
       ...fixture.compute,
       async withdrawCredentialSource(revision, source) {
         withdrawn.push([revision.id, source.id]);
+        if (source.id === refusedSource) {
+          throw new CredentialWithdrawalRefusedError(
+            "CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT",
+            "The selected Credential Proxy cannot verify a reduced policy.",
+          );
+        }
         if (source.id === second && failSecond) {
           failSecond = false;
           throw new Error("Sandbox unreachable");
@@ -2107,6 +2253,7 @@ revisionTest(
     await fixture.start(compute, options);
     await fixture.work(partialRevision, "succeeded");
     await fixture.work(movedRevision, "succeeded");
+    await fixture.work(retirementRevision, "succeeded");
     await fixture.stop();
 
     const withdraw = async (owner, revision, credentialSourceIds) => {
@@ -2159,6 +2306,23 @@ revisionTest(
     const pending = await read(moved, movedSource);
     assert.equal(pending.state, "pending");
     assert.equal(pending.lastReason, "COMPUTE_DRIVER_MISMATCH");
+
+    // A per-source retirement refusal must not suppress a later, independently reducible source.
+    const retirementWork = await withdraw(retirement, retirementRevision, [
+      refusedSource,
+      reducibleSource,
+    ]);
+    await fixture.start(compute, options);
+    await fixture.work(retirementWork, "failed_permanent", 30_000);
+    await fixture.stop();
+    assert.deepEqual(withdrawn.slice(3), [
+      [retirementRevision.id, refusedSource],
+      [retirementRevision.id, reducibleSource],
+    ]);
+    const refused = await read(retirement, refusedSource);
+    assert.equal(refused.state, "pending");
+    assert.equal(refused.lastReason, "CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT");
+    assert.equal((await read(retirement, reducibleSource)).state, "revoked");
   },
 );
 
@@ -2310,12 +2474,7 @@ test(
     );
     await removeAccessBindings(fixture, requester);
     const [held] = await withdrawalAttempts(fixture, active);
-    const holdUntil = (interval) =>
-      fixture.observerPool.query(
-        `UPDATE occ.controller_work SET available_at = clock_timestamp() + $2::interval
-         WHERE idempotency_key = $1`,
-        [held.idempotencyKey, interval],
-      );
+    const holdUntil = (interval) => deferWork(fixture.observerPool, held.idempotencyKey, interval);
     await holdUntil("1 day");
     await fixture.controller.withdrawAgentCredentialSource(
       fixture.actor.id,
@@ -2773,3 +2932,359 @@ revisionTest(
     }
   },
 );
+
+// Keep a real admitted Git session and its attachment through the deadline. This joins the
+// actual worker, PostgreSQL, Git supplier and gateway client. The gateway, workload, issuer and
+// middleware caller are fixtures: the model READY below is not a model turn or a Kubernetes run.
+test(
+  "attached Git expires under ordinary maintenance; a moving Sandbox version and lost detach reply preserve the Agent",
+  { ...requiresPostgres, timeout: 60_000 },
+  attachedGitExpires({ newHost: "inference.example.test" }),
+);
+test(
+  "attached Git expires; a retained model profile that now covers GitHub retires the revision",
+  { ...requiresPostgres, timeout: 60_000 },
+  attachedGitExpires({ newHost: "uploads.github.com" }),
+);
+
+test(
+  "attached Git expires; an overlapping platform profile behind a benign workspace namesake retires the revision",
+  { ...requiresPostgres, timeout: 60_000 },
+  attachedGitExpires({ newHost: "uploads.github.com", platformProfile: true }),
+);
+test(
+  "attached Git expires; a safe platform profile preserves the Agent until ordinary maintenance loses permission to read it",
+  { ...requiresPostgres, timeout: 60_000 },
+  attachedGitExpires({ newHost: "service-2.example.test", platformProfile: true }),
+);
+
+function attachedGitExpires({ newHost, platformProfile = false }) {
+  return async (t) => {
+    const backendId = "github-primary";
+    const repository = repositoryBoundary({ backendId });
+    const f = await setup(t, { repoDriver: repository.driver });
+    const routes = new PostgresOpenShellGitRouteStore(f.observerPool);
+    const namespaceId = f.namespace.id;
+    const pushRef = "refs/heads/review/task";
+    const project = "example/application";
+    const registry = validateGitHubRepositoryRegistry(
+      {
+        version: 1,
+        backendId,
+        providerInstanceId: "github-com-primary",
+        appId: "12345",
+        githubInstallationId: "67890",
+        maximumDurationSeconds: 86400,
+        repositories: [
+          {
+            repositoryRef: "application",
+            repositoryId: "34567",
+            repository: project,
+            namespaces: [
+              {
+                namespaceId,
+                profiles: ["git-write"],
+                pushRefAllowlist: [pushRef],
+                transport: "git-only",
+              },
+            ],
+          },
+        ],
+      },
+      backendId,
+    );
+    const binding = resolveGitHubRepositoryBinding(registry, {
+      namespaceId,
+      repositoryRef: "application",
+      profile: "git-write",
+    });
+    // Repository and Compute must resolve the same registry grant throughout this test.
+    repository.driver.resolve = (input) => ({
+      bindings: input.bindings.map((item) =>
+        resolveGitHubRepositoryBinding(registry, { namespaceId: input.namespaceId, ...item }),
+      ),
+      sessionDurationSeconds: 60,
+    });
+    const registrationName = "oce-prepared-git";
+    const sandboxId = "fixture-original";
+    const workspace = "git-expiry";
+    const sandbox = "git-agent";
+    const events = [];
+    const approved = [];
+    const stopped = [];
+    let sessionId;
+    let identity;
+    let runtime;
+    let senderRuntime;
+    const bodies = await gitCommandBodies(t, pushRef);
+    const { client: middleware, keys } = await openShellOnlineGitWire(t, {
+      registrationName,
+      budgetMs: 3000,
+      async lookupBinding(id, signal) {
+        let refused;
+        const found = await senderRuntime.lookup(id, signal, (reason) => {
+          refused = reason;
+        });
+        return found ?? (refused && { refused });
+      },
+      async approve(request) {
+        assert.equal(request.sessionId, sessionId);
+        approved.push(request.operation);
+        return true;
+      },
+    });
+    // Allocate the Agent and independent model grant before starting the short Git clock.
+    const agent = await f.agent("attached-git-expires", {
+      auth: "credential_source",
+      executionMode: "dedicated",
+    });
+    const model = agent.harnessAuth.sourceId;
+    const continuity = { model, workload: async () => "original-workload-and-supervisor" };
+    const deadlineWallMs = Date.now() + 6_000;
+    const revision = await f.revision(agent, 1, {
+      sandboxDriverId: "sandbox-worker-fixture",
+      repositoryCredentials: { ...repository.snapshot, deadlineWallMs, bindings: [binding] },
+    });
+    const { client, world } = await gitExpiryGateway(t, {
+      model,
+      workspace,
+      sandbox,
+      revisionId: revision.id,
+      platformProfile,
+      deadline: deadlineWallMs,
+    });
+    const material = {
+      ...binding.grant,
+      value: "synthetic-installation-token",
+      expiresAt: new Date(deadlineWallMs + 600_000).toISOString(),
+      repository: project,
+      pushRef,
+      preparationAttemptId: randomUUID(),
+      materialVersion: randomUUID(),
+      apiOrigin: "https://api.github.com",
+    };
+    function releaseRuntime() {
+      const git = new OpenShellGitRuntime(
+        { registrationName, authority: {} },
+        createGitHubRepositoryDeliveryResolver(registry),
+      );
+      // The authority has a real TLS socket; only custody and the external installation are doubles.
+      git.routes = routes;
+      git.owner = { readOpenShellMaterial: async () => ({ ...material, sessionId }) };
+      git.emit = (e) => events.push(e);
+      return git;
+    }
+    senderRuntime = runtime = releaseRuntime();
+    const compute = {
+      ...f.compute,
+      validateRepositoryCredentials(harness, selected) {
+        assert.equal(harness.id, "codex");
+        assert.equal(harness.mode, "dedicated");
+        assert.equal(selected, "sandbox-worker-fixture");
+      },
+      async prepareRevision(r, context) {
+        assert.equal(r.harnessAuth.sourceId, model);
+        assert.equal(
+          world.id,
+          undefined,
+          "the worker must not prepare or replace the running revision after expiry",
+        );
+        const [open] = await repositoryAttempts(f, r);
+        assert.equal(open.phase, "open");
+        sessionId = open.sessionId;
+        const signal = AbortSignal.timeout(4000);
+        const git = await runtime.prepare(
+          r,
+          client,
+          workspace,
+          sandbox,
+          signal,
+          world.retainedProviders,
+        );
+        world.id = sandboxId;
+        identity = git.middlewares[registrationName].config;
+        await runtime.bind(r.id, (box) => assert.equal(box.id, sandboxId), continuity);
+        const entry = await runtime.entries.get(r.id);
+        await runtime.reconcile(entry);
+        return f.compute.prepareRevision(r, context);
+      },
+      retireExpiredRepositoryAccess: (r, signal) =>
+        runtime.retireExpiredRepositoryAccess(r, client, workspace, sandbox, continuity, signal),
+      stopRevision(r) {
+        stopped.push(r.id);
+        return f.compute.stopRevision(r);
+      },
+    };
+    const start = () =>
+      f.start(compute, { emit: (e) => events.push(e), transformDrivers: withCredentialGateway });
+    let originRequests = 0;
+    let originBytes = 0;
+    async function fetchFromPrivateOrigin() {
+      const result = await invoke(
+        middleware,
+        "EvaluateHttpRequest",
+        {
+          phase: 1,
+          middleware_name: registrationName,
+          config: identity,
+          context: { request_id: randomUUID(), sandbox_id: sandboxId, workspace },
+          target: {
+            scheme: "https",
+            host: "github.com",
+            port: 443,
+            method: "POST",
+            path: "/" + project + ".git/git-upload-pack",
+          },
+          headers: [{ name: "content-type", value: "application/x-git-upload-pack-request" }],
+          body: bodies.fetch,
+        },
+        token(keys, "supervisor", sandboxId),
+      );
+      if (result.decision !== 1) {
+        return result;
+      }
+      originRequests++;
+      originBytes += bodies.fetch.length;
+      assert.ok(
+        bodies.uploadPack(bodies.fetch).includes(Buffer.from("PACK")),
+        "Git returned the requested pack",
+      );
+      return result;
+    }
+    await start();
+    await f.work(revision, "succeeded").catch(async (cause) => {
+      const {
+        rows: [work],
+      } = await f.workResult(revision);
+      throw Error("Git-enabled revision did not activate: " + work?.reason_code, { cause });
+    });
+    assert.deepEqual(await fetchFromPrivateOrigin(), { decision: 1 });
+    assert.deepEqual(approved, ["upload-pack"]);
+    const remaining = deadlineWallMs - Date.now();
+    assert.ok(remaining > 0, "use Git before its legitimately admitted deadline");
+    // Await the real grant deadline; move only queue due times. Neither the binding nor its
+    // live session is removed by the test, and no expiry or cleanup work is inserted by it.
+    await delay(remaining + 10);
+    const nextExpiry = async (code) => {
+      const event = await completion(
+        events,
+        code,
+        (e) =>
+          e.event === "worker.completed" &&
+          e.revisionId === revision.id &&
+          e.workId?.includes(":repository_cleanup:"),
+      );
+      assert.equal(event.code, code);
+      if (code !== "REPOSITORY_RUNTIME_RETIREMENT_QUEUED") {
+        assert.equal((await f.currentAgent(agent)).activeRevisionId, revision.id);
+        assert.deepEqual(stopped, []);
+      }
+      events.length = 0;
+    };
+    assert.equal((await f.advanceMaintenance(revision)).rowCount, 1);
+    await nextExpiry("REPOSITORY_CLEANUP_PENDING");
+    assert.equal(world.version, 14);
+    assert.deepEqual(world.detaches, [], "no detach at the stale resource version");
+    const refused = await fetchFromPrivateOrigin();
+    assert.deepEqual(refused, { decision: 2, reason_code: "access_withdrawn" });
+    assert.deepEqual(
+      [originRequests, originBytes, approved, world.writes],
+      [1, bodies.fetch.length, ["upload-pack"], 1],
+    );
+    const attempts = await repositoryAttempts(f, revision);
+    assert.deepEqual(
+      attempts.map((a) => [a.phase, a.sessionId]),
+      [["disposed", sessionId]],
+    );
+    await advanceCleanupRetries(f, revision);
+    await nextExpiry("REPOSITORY_CLEANUP_PENDING");
+    assert.equal(
+      world.detaches.length,
+      1,
+      "one conditional detach committed, but its reply was lost",
+    );
+    await f.stop();
+    world.addRetainedEndpoint(newHost);
+    runtime = releaseRuntime(); // empty in-process route, same PostgreSQL and gateway
+    await advanceCleanupRetries(f, revision);
+    await start();
+    if (newHost === "uploads.github.com") {
+      await nextExpiry("REPOSITORY_RUNTIME_RETIREMENT_QUEUED");
+      if (platformProfile) {
+        assert.deepEqual(
+          world.profileReads,
+          ["platform"],
+          "read the effective profile, not its workspace namesake",
+        );
+      }
+      await waitFor("retained GitHub endpoint retires the exact revision", async () =>
+        (await f.currentAgent(agent)).activeRevisionId === undefined ? true : undefined,
+      );
+      assert.deepEqual(stopped, [revision.id]);
+      assert.deepEqual(await fetchFromPrivateOrigin(), refused);
+      assert.deepEqual(
+        [originRequests, originBytes, approved],
+        [1, bodies.fetch.length, ["upload-pack"]],
+      );
+      assert.deepEqual([world.detaches.length, world.writes], [1, 1], "no replay or replacement");
+      return;
+    }
+    await nextExpiry("REPOSITORY_ACCESS_WITHDRAWN");
+    assert.deepEqual(
+      world.reports.slice(-2).map(([, state, receipt]) => [state, receipt]),
+      [
+        ["REVOKED", "OBSERVE"],
+        ["READY", "OBSERVE"],
+      ],
+    );
+    const {
+      rows: [next],
+    } = await f.advanceMaintenance(revision);
+    const maintenance = { ...revision, idempotencyKey: next.idempotency_key };
+    await f.work(maintenance, "succeeded");
+    assert.equal(
+      (await f.workResult(maintenance)).rows[0].reason_code,
+      "REPOSITORY_ACCESS_WITHDRAWN",
+    );
+    assert.equal((await f.currentAgent(agent)).activeRevisionId, revision.id);
+    assert.deepEqual(stopped, []);
+    // The original sender remains fenced, and the cold worker cannot supply a replacement.
+    assert.deepEqual(await fetchFromPrivateOrigin(), refused);
+    senderRuntime = runtime;
+    assert.equal((await fetchFromPrivateOrigin()).decision, 2);
+    assert.equal(originBytes, bodies.fetch.length, "neither late fetch reached the Git origin");
+    assert.deepEqual(approved, ["upload-pack"]);
+    assert.equal(repository.calls.filter((c) => c.operation === "open").length, 1);
+    assert.deepEqual(
+      [world.detaches.length, world.writes],
+      [1, 1],
+      "no replay or replacement Git material",
+    );
+    // Losing the evidence for safe retention on the next ordinary maintenance retires this revision.
+    if (platformProfile) {
+      assert.deepEqual(
+        world.profileReads,
+        ["platform", "platform"],
+        "rechecked after confirming withdrawal",
+      );
+      world.profileReads.length = 0;
+      world.denyPlatformProfile = true;
+    } else {
+      world.modelFailed = true;
+    }
+    await f.advanceMaintenance(revision);
+    await waitFor("loss of verified provider access retires the revision", async () =>
+      (await f.currentAgent(agent)).activeRevisionId === undefined ? true : undefined,
+    );
+    assert.deepEqual(stopped, [revision.id]);
+    if (platformProfile) {
+      assert.deepEqual(
+        world.profileReads,
+        ["platform"],
+        "permission denied; never try the workspace namesake",
+      );
+      assert.equal((await fetchFromPrivateOrigin()).decision, 2);
+      assert.deepEqual([originRequests, world.detaches.length, world.writes], [1, 1, 1]);
+    }
+  };
+}
