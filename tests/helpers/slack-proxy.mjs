@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import net from "node:net";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { availablePort } from "./available-port.mjs";
+import { temporaryDirectory } from "./temporary-directory.mjs";
 
 /**
  * Starts the bundled Slack proxy (apps/controller/src/slack-proxy.mjs) as a child process and
@@ -69,8 +69,7 @@ async function spawnSlackProxy(t, preload, port) {
 }
 
 async function writeDnsFixture(t, upstreamPort, upstreamHosts) {
-  const directory = await mkdtemp(join(tmpdir(), "openclaw-slack-proxy-test-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "openclaw-slack-proxy-test-");
   const path = join(directory, "dns-fixture.mjs");
   await writeFile(
     path,

@@ -22,6 +22,17 @@ import { createTestConfigurationDriver } from "../helpers/configuration-driver.m
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { grantRole } from "../helpers/iam-grants.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import {
+  CREDENTIAL_SOURCE_DRIVER_CHANGED,
+  credentialSourceFieldRequired,
+  credentialSourceFieldUnknown,
+  registrationFenceRetry,
+  RESOURCE_NOT_FOUND,
+  WITHDRAWAL_NO_ACTIVE_VERSION,
+  WITHDRAWAL_NOT_FOUND,
+  WITHDRAWAL_SOURCE_NOT_USED,
+} from "../helpers/refusal-text.mjs";
+import { assertSameAnswer, refusedAnswer } from "../helpers/refusal-answers.mjs";
 
 const administrator = "principal-source-administrator";
 const deployer = "principal-source-deployer";
@@ -1025,22 +1036,52 @@ test("registration validates the catalog and hands the gateway values OCC never 
   const secret = await modelSecret();
 
   // Unknown types, missing required inputs, and unknown fields fail before any gateway effect.
-  for (const [input, expected] of [
-    [{ type: "unknown" }, CredentialSourceTypeNotOfferedError],
-    [{ type: "openai" }, /secrets field api_key is required/],
+  await assert.rejects(
+    controller.createCredentialSource(administrator, {
+      namespaceId: namespace.id,
+      name: "invalid",
+      type: "unknown",
+    }),
+    CredentialSourceTypeNotOfferedError,
+  );
+  // A catalog field refusal is a request error that names the field and its fix, not the
+  // generic 404 (finding 2536). The detail points at the submitted member.
+  for (const [input, message, path] of [
+    [
+      { type: "openai" },
+      credentialSourceFieldRequired("openai", "secrets.api_key"),
+      "/secrets/api_key",
+    ],
     [
       { type: "openai", secrets: { api_key: secret.ref, extra: secret.ref } },
-      /extra is not supported/,
+      credentialSourceFieldUnknown("openai", "secrets.extra", "secrets", "api_key"),
+      "/secrets/extra",
     ],
-    [{ type: "registry" }, /config field host is required/],
+    [
+      { type: "openai", config: { region: "x" }, secrets: { api_key: secret.ref } },
+      credentialSourceFieldUnknown("openai", "config.region", "config", "none"),
+      "/config/region",
+    ],
+    [
+      { type: "registry" },
+      credentialSourceFieldRequired("registry", "config.host"),
+      "/config/host",
+    ],
   ]) {
-    await assert.rejects(
-      controller.createCredentialSource(administrator, {
+    const rejection = await controller
+      .createCredentialSource(administrator, {
         namespaceId: namespace.id,
         name: "invalid",
         ...input,
-      }),
-      expected,
+      })
+      .then(
+        () => assert.fail(`${message}: expected a rejection`),
+        (error) => error,
+      );
+    const { status, code, message: sent, details } = requestFailure(rejection);
+    assert.deepEqual(
+      { status, code, message: sent, details },
+      { status: 400, code: "INVALID_REQUEST", message, details: [{ path, code: "INVALID_VALUE" }] },
     );
   }
   assert.equal(gateway.calls.length, 0);
@@ -1140,7 +1181,7 @@ test("a cross-Namespace Secret is an invalid request; a Secret the Namespace lac
         {
           status: 404,
           code: "NOT_FOUND",
-          message: "The requested platform resource was not found.",
+          message: RESOURCE_NOT_FOUND,
         },
       ],
     ]) {
@@ -1363,10 +1404,20 @@ test("a timed-out registration keeps its record until a late gateway create is r
   gateway.completeLateCreates();
   assert.equal(gateway.stored.has(orphan.id), true);
 
-  // Within the fence, DELETE removes the copy but keeps the record for a later retry.
+  // Within the fence, DELETE removes the copy but keeps the record for a later retry. The 503
+  // names the wait instead of the generic text (finding 2536).
+  const fenced = (seconds) => (error) => {
+    assert.ok(error instanceof DependencyUnavailableError);
+    const { status, code, message } = requestFailure(error);
+    assert.deepEqual(
+      { status, code, message },
+      { status: 503, code: "DEPENDENCY_UNAVAILABLE", message: registrationFenceRetry(seconds) },
+    );
+    return true;
+  };
   await assert.rejects(
     controller.deleteCredentialSource(administrator, namespace.id, orphan.id),
-    DependencyUnavailableError,
+    fenced(70),
   );
   assert.equal(gateway.stored.has(orphan.id), false);
   assert.equal(
@@ -1377,7 +1428,7 @@ test("a timed-out registration keeps its record until a late gateway create is r
   advanceClock(69_999);
   await assert.rejects(
     controller.deleteCredentialSource(administrator, namespace.id, orphan.id),
-    /may still be completing/,
+    fenced(1),
   );
   advanceClock(1);
   await controller.deleteCredentialSource(administrator, namespace.id, orphan.id);
@@ -1606,13 +1657,19 @@ test("an update re-sends current or replacement Secret values and keeps config i
   await controller.deleteSecret(administrator, namespace.id, original.id);
 
   // Replacements must keep the catalog's exact fields.
-  await assert.rejects(
-    controller.updateCredentialSource(administrator, {
-      namespaceId: namespace.id,
-      credentialSourceId: source.id,
-      secrets: { api_key: replacement.ref, extra: replacement.ref },
-    }),
-    /extra is not supported/,
+  assert.deepEqual(
+    await refusedAnswer(() =>
+      controller.updateCredentialSource(administrator, {
+        namespaceId: namespace.id,
+        credentialSourceId: source.id,
+        secrets: { api_key: replacement.ref, extra: replacement.ref },
+      }),
+    ),
+    {
+      status: 400,
+      code: "INVALID_REQUEST",
+      message: credentialSourceFieldUnknown("openai", "secrets.extra", "secrets", "api_key"),
+    },
   );
 });
 
@@ -1776,6 +1833,11 @@ test("withdrawal is recorded for the active revision and queued once, and the re
     controller.withdrawAgentCredentialSource(administrator, request),
     ResourceConflictError,
   );
+  // Its read says why there is nothing to read rather than a bare 404 (finding D762).
+  assert.deepEqual(
+    await refusedAnswer(() => controller.readAgentCredentialWithdrawal(administrator, request)),
+    { status: 404, code: "NOT_FOUND", message: WITHDRAWAL_NO_ACTIVE_VERSION },
+  );
   const revision = await controller.deployAgent(
     administrator,
     { namespaceId: namespace.id, agentId: agent.id },
@@ -1815,20 +1877,31 @@ test("withdrawal is recorded for the active revision and queued once, and the re
   );
   assert.equal(withdrawalWork().length, 1);
 
-  // Only a source the active revision was admitted with can be withdrawn.
+  // Only a source the active revision was admitted with can be withdrawn. The check reads the
+  // revision's bindings, never the source, so another source and a missing ID answer alike: a
+  // 409 that names no source (finding 2536).
   const other = await controller.createCredentialSource(administrator, {
     namespaceId: namespace.id,
     name: "other",
     type: "openai",
     secrets: { api_key: secret.ref },
   });
-  await assert.rejects(
-    controller.withdrawAgentCredentialSource(administrator, {
-      ...request,
-      credentialSourceId: other.id,
-    }),
-    ScopeViolationError,
-  );
+  for (const credentialSourceId of [other.id, `cs_${crypto.randomUUID()}`]) {
+    assert.deepEqual(
+      await refusedAnswer(() =>
+        controller.withdrawAgentCredentialSource(administrator, { ...request, credentialSourceId }),
+      ),
+      { status: 409, code: "RESOURCE_CONFLICT", message: WITHDRAWAL_SOURCE_NOT_USED },
+    );
+    // The read of a withdrawal the active version lacks names that, the same for both IDs
+    // (finding D762).
+    assert.deepEqual(
+      await refusedAnswer(() =>
+        controller.readAgentCredentialWithdrawal(administrator, { ...request, credentialSourceId }),
+      ),
+      { status: 404, code: "NOT_FOUND", message: WITHDRAWAL_NOT_FOUND },
+    );
+  }
   // A withdrawn source stays referenced by the active revision until a redeploy replaces it,
   // and that reference, not the queued withdrawal, is what the refusal names.
   await assert.rejects(
@@ -2249,6 +2322,7 @@ test("binding without a Credential Gateway is a 409 after operate, whether or no
       type: "registry",
       config: { host: "registry.example.com" },
       secrets: {},
+      ownerCapability: "credential_gateway",
       driverId: "credential-gateway-test",
       state: "ready",
       createdAt: "2026-09-27T12:00:00.000Z",
@@ -3243,7 +3317,7 @@ test("a source type the gateway stops offering is a 409 naming the fix, after th
         code: "RESOURCE_CONFLICT",
         // Fixed text that names the Installation setting and where it is documented.
         message:
-          "The selected Credential Gateway does not offer this credential source type. An administrator must enable it, for example toolBinaries for OpenShell bearer-token; see https://docs-enterprise.openclaw.org/reference/drivers/openshell-credential-gateway/",
+          "The Credential Gateway does not offer this credential source type. An Installation administrator must enable it, for example toolBinaries for OpenShell bearer-token; see https://docs-enterprise.openclaw.org/reference/drivers/openshell-credential-gateway/",
       },
     );
     return true;
@@ -3312,6 +3386,7 @@ test("after a Credential Gateway change, every path refuses an old source with o
       type: "registry",
       config: { host: "registry-stuck.example.com" },
       secrets: {},
+      ownerCapability: "credential_gateway",
       driverId: gateway.id,
       state: "deleting",
       createdAt: "2026-09-27T12:00:00.000Z",
@@ -3339,7 +3414,7 @@ test("after a Credential Gateway change, every path refuses an old source with o
       {
         status: 503,
         code: "DEPENDENCY_UNAVAILABLE",
-        message: new CredentialSourceDriverError().message,
+        message: CREDENTIAL_SOURCE_DRIVER_CHANGED,
       },
     );
     assert.doesNotMatch(message, /cs_|credential-gateway-/);
@@ -3419,6 +3494,7 @@ test("update and delete without a Credential Gateway are a 409 after the grant, 
       type: "registry",
       config: { host: "registry.example.com" },
       secrets: {},
+      ownerCapability: "credential_gateway",
       driverId: "credential-gateway-test",
       state: "ready",
       createdAt: "2026-09-27T12:00:00.000Z",
@@ -3450,4 +3526,49 @@ test("update and delete without a Credential Gateway are a 409 after the grant, 
   }
   const [after] = await controller.listCredentialSources(administrator, namespace.id);
   assert.equal(after.state, "ready");
+});
+
+test("named source refusals follow the source grant: a missing and an unreadable ID answer alike", async () => {
+  // Finding 2536 names the catalog field in a 400, a protected source's update or rotation in a
+  // 409 and the deletion fence's wait in a 503. Each reads the stored source, so it must wait for
+  // the caller's grant: a caller without it gets the same denial for a source that exists and for
+  // one that does not, with each request's own ID hidden.
+  const { controller, makeReady, modelSecret, namespace } = await fixture();
+  await makeReady();
+  const secret = await modelSecret();
+  const source = await controller.createCredentialSource(administrator, {
+    namespaceId: namespace.id,
+    name: "existing-openai",
+    type: "openai",
+    secrets: { api_key: secret.ref },
+  });
+  const missingSource = "cs_00000000-0000-4000-8000-00000000aaaa";
+  const missingNamespace = "ns_00000000-0000-4000-8000-00000000aaaa";
+  const secrets = { api_key: secret.ref, extra: secret.ref };
+  // The zero-grant caller's own denial names the ID its request sent.
+  const answer = (call) => (id) =>
+    refusedAnswer(call(id), { requested: (value) => value === id, actorId: zeroGrant });
+  const update = (id) => () =>
+    controller.updateCredentialSource(zeroGrant, {
+      namespaceId: namespace.id,
+      credentialSourceId: id,
+      secrets,
+    });
+  const rotate = (id) => () =>
+    controller.rotateCredentialSource(zeroGrant, {
+      namespaceId: namespace.id,
+      credentialSourceId: id,
+    });
+  const remove = (id) => () => controller.deleteCredentialSource(zeroGrant, namespace.id, id);
+  for (const [label, call] of Object.entries({ update, rotate, remove })) {
+    await assertSameAnswer(answer(call), [source.id, missingSource], { label });
+  }
+  const create = (namespaceId) => () =>
+    controller.createCredentialSource(zeroGrant, {
+      namespaceId,
+      name: "refused-openai",
+      type: "openai",
+      secrets,
+    });
+  await assertSameAnswer(answer(create), [namespace.id, missingNamespace], { label: "create" });
 });

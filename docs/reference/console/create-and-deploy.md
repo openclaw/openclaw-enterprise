@@ -23,7 +23,9 @@ Experimental Dedicated OpenClaw requires [native worker support](../harness-exec
 and full-facet Sandbox provisioning. The pinned runtime enables it. Compute
 initializes private workspace files before Sandbox handoff; the Harness verifies
 their completion marker. [Sandbox limits](../../flows/openshell-sandbox-provisioning.md#3-validate-and-serialize-the-sandbox)
-block direct Secret-backed model and environment projection.
+block direct Secret-backed model and environment projection. An Installation that
+lists only Embedded OpenClaw selects no Sandbox Driver, so Create Agent names that
+as the reason Dedicated OpenClaw is disabled.
 
 1. Sign in, select the intended Namespace, open **Agents**, and select
    **Create Agent**.
@@ -73,9 +75,10 @@ block direct Secret-backed model and environment projection.
    repositories, and workspace files for supported Dedicated provisioning.
    Provisioning waits for deployment activation or failure, naming the deployment's current wait
    when you can read the deployment.
-   Success opens Agent details. Failure links to the same Agent and version;
-   correct its cause and deploy again through **Deployment activity**. If the
-   first deployment was stopped, no repair is needed before deploying again.
+   Success opens Agent details. If a newer deployment takes over, Create stays open
+   and offers no retry or link. The job identifies only the deployment that ended.
+   For a failed deployment, open the linked Agent and version and follow its recovery
+   guidance. After a Stop, deploy again when ready.
    Ordinary creation saves Configuration first and opens a draft on **Create new version**,
    without a workload. After deployment, use the
    [workspace editor](../console.md#edit-workspace-files). Pending inputs have no
@@ -106,7 +109,9 @@ or outbound access on failure, then retry. Editing follows installation capabili
 and the [policy contract](../agent-plugins.md); browsing proves no runtime permission.
 
 Credentials are masked Namespace Secrets, excluded from Configuration JSON, Agent
-responses, and browser storage. With a selected Credential Gateway, supported
+responses, and browser storage. Binding a Secret needs Secret `operate` on it, so each Secret
+menu lists a readable Secret without it disabled, with the reason. A new Secret has no `operate`
+grant, so where a readable Secret is denied, a Preset's **Create new Secret** is disabled too. With a selected Credential Gateway, supported
 Dedicated creation registers the selected Secret as a model
 [Credential Source](../credential-sources.md), then provisions with that source.
 The Harness receives only a placeholder. The caller also needs source `create`, `read`, and `operate`.
@@ -118,7 +123,9 @@ Presets fix the provider, including JSON edits; saved service account tokens als
 OpenClaw Presets retain their configured Harness independently of execution mode.
 Without model runtime policy, Presets keep the default Harness.
 Mode changes preserve provider transport settings.
-Operator-managed credentials fix OpenClaw across provider changes. Start with
+Operator-managed credentials fix OpenClaw across provider changes. Where the Compute Driver
+does not supply them (Kubernetes Compute), the form refuses the Preset when it opens and names
+what an administrator changes. Start with
 `default-codex` to change these choices, or edit authentication later in **Credentials**.
 
 Provider changes reset Harness, credential, and model; authentication changes
@@ -153,16 +160,27 @@ Successful draft saves retain IDs and freeze inputs, including authentication.
 Correct names or permissions, then retry failed resources.
 If model/Slack Secret grants fail after Agent creation,
 select **Retry credential access** or ask an administrator to check its grants.
+The same action is safe if the Console saved the Agent but could not confirm its service
+principal. It checks the saved Agent before granting access, without creating another Agent.
 A member without Installation administration gets no retry: open the saved Agent and
 ask an Installation administrator to grant it. If your permissions could not be checked,
 select **Retry permission check**.
-Uncertain responses block another attempt: check displayed IDs and the Agents list;
-give the request ID to your operator if the outcome remains unknown.
+If the configuration check times out, your entries stay in the form. Select
+**Create Agent** again to repeat the check and continue.
+If a create response is missing or identifies a different resource, the write may still
+have succeeded. Check the displayed IDs and the Agents list before starting again.
+For an uncertain Credential Source, select **Check credential registration** to look up
+that registration without creating another. Give your operator the request ID if the outcome is unclear.
+
+If the Console cannot confirm a ChatGPT OAuth sign-in started, it blocks another
+start in that form. Without the session reference it cannot poll or cancel the
+attempt. Follow [interrupted sign-in recovery](../../guides/deploy/credential-lifecycle.md#recover-an-interrupted-codex-sign-in).
 
 After a lost admission response, **Retry provisioning request** resubmits the same
 request ID and saved Secret references. Retry acknowledged jobs through their URL;
 if refused after an unknown outcome, **Create Agent** resends
-the same request. A refused retry of a failed job shows the API's reason when it names
+the same request. If the result changes or omits a previously observed first deployment
+version, the Console keeps the outcome unknown and offers Retry. A refused retry of a failed job shows the API's reason when it names
 one, such as a deleted Secret; **Create Agent** then submits a new request. Saved
 Secrets are reused, never deleted automatically. After a lost Secret save, check
 existing Namespace Secrets before starting again.
@@ -171,9 +189,9 @@ existing Namespace Secrets before starting again.
 `registering`/`deleting`, requiring source `delete`. Retry removal after the gateway's
 registration safety window if needed. See the [provisioning flow](../../flows/agent-provisioning.md) for the API sequence.
 
-A failed or stopped first deployment, or a Stop before it
-(`PROVISIONING_CANCELLED`), keeps the Agent and its name; provisioning cannot
-retry. Open that Agent and deploy. If it failed for another reason, correct that cause first.
+A failed or stopped first deployment keeps the Agent and its name. Follow the failed
+version's recovery guidance. After a Stop, including a Stop before deployment
+(`PROVISIONING_CANCELLED`), open the Agent and deploy when ready.
 
 If Agent creation is rejected after Configuration saves, correct the ordinary
 zero-binding Agent's editable fields and retry. The retry reuses Configuration

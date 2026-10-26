@@ -9,8 +9,13 @@ import type {
   SandboxNetworkGrant,
   SandboxPolicy,
 } from "@openclaw-enterprise/contracts";
-import { sandboxNetworkGrantsWithinCeiling } from "@openclaw-enterprise/contracts";
 import {
+  requireConfiguration,
+  sandboxNetworkGrantsWithinCeiling,
+  validateSandboxNetworkGrants,
+} from "@openclaw-enterprise/contracts";
+import {
+  SandboxNetworkPolicyConflictError,
   WorkClaimLostError,
   type ClaimedWork,
   type PlatformUnitOfWork,
@@ -19,6 +24,7 @@ import {
 } from "@openclaw-enterprise/occ";
 
 interface PolicyWorkOptions {
+  readonly configurations: import("@openclaw-enterprise/occ").DriverConfigurationRegistry;
   readonly state: PostgresPlatformState;
   readonly queueOptions: PostgresWorkQueueOptions;
   readonly driver: SandboxDriver | undefined;
@@ -179,6 +185,34 @@ export async function reconcileSandboxPolicy(
       await fail("SANDBOX_POLICY_UNSUPPORTED");
       return "permanent";
     }
+    // A protected execution runs under its exact protected egress policy; applying an
+    // Agent policy to that Sandbox would replace it. OCC refuses the application first
+    // (finding 2053); this names the same rule for work queued before that refusal.
+    if (revision.executionAdmission.mode === "protected") {
+      await fail("SANDBOX_POLICY_PROTECTED_EXECUTION");
+      return "permanent";
+    }
+    try {
+      const { contribution } = options.configurations.resolve(
+        "sandbox",
+        driver.id,
+        "agent",
+        "sandbox-network-policy",
+      );
+      validateSandboxNetworkGrants(policy.application.snapshot.additions);
+      requireConfiguration(contribution, { additions: policy.application.snapshot.additions });
+      if (driver.admitNetworkPolicy === undefined) {
+        throw new Error();
+      }
+      driver.admitNetworkPolicy(
+        policy.application.snapshot.additions,
+        policy.version,
+        policy.application.snapshot.defaults,
+      );
+    } catch {
+      await fail("SANDBOX_POLICY_VALIDATION_FAILED");
+      return "permanent";
+    }
     if (
       options.compute.resolveSandboxNamespace === undefined ||
       revision.compute.id !== options.compute.id ||
@@ -223,6 +257,11 @@ export async function reconcileSandboxPolicy(
     } catch (error) {
       if (options.signal.aborted || error instanceof WorkClaimLostError) {
         throw error;
+      }
+      // The Driver refused the policy before applying it (finding 2144); a retry cannot help.
+      if (error instanceof SandboxNetworkPolicyConflictError) {
+        await fail("SANDBOX_POLICY_UNSUPPORTED");
+        return "permanent";
       }
       if (claim.attemptCount >= options.maxAttempts || claim.ageMs >= options.deadlineMs) {
         await fail("SANDBOX_POLICY_UNCONFIRMED");

@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   github,
@@ -62,6 +62,7 @@ async function validate(env, publishing = false) {
 }
 
 async function packageCli(directory) {
+  directory = resolve(directory);
   const version = await releaseVersion();
   if (process.env.SOURCE_SHA) {
     assert.match(process.env.SOURCE_SHA, sourcePattern);

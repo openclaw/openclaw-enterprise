@@ -1,4 +1,6 @@
-ARG OPENCLAW_COMMIT=f8386bc7df0a6c9eda7a28ae81943c5c06a414ff
+ARG OPENCLAW_COMMIT
+ARG OPENCLAW_SOURCE_SHA256
+ARG OPENCLAW_BUILD_TIMESTAMP
 ARG NODE_BASE_IMAGE=docker.io/library/node:24-bookworm@sha256:3d27e5c11e5786e309ec3e03f93ae536eb36e6e5eb3714d5eb3300a36157add0
 ARG NODE_RUNTIME_BASE_IMAGE=docker.io/library/node:24-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20
 
@@ -56,7 +58,7 @@ RUN set -eu; \
     cp -R .build/repository-credentials/client/dist "$client/dist"; \
     chmod 0755 .build/runtime-client/opt .build/runtime-client/opt/oce; \
     chmod -R a+rX "$client"; \
-    chmod 0555 "$client/bin/gh"; \
+    chmod 0555 "$client/bin/gh" "$client/bin/oce-github"; \
     test -f "$client/dist/drivers/repo/github/credentials/client/router.js"; \
     test -f "$client/dist/drivers/repo/github/credentials/client/native-git.js"; \
     test -x "$client/dist/drivers/repo/github/credentials/client/hooks/pre-push"; \
@@ -86,18 +88,25 @@ FROM node-build-base AS openclaw-source
 
 # Keep the source identity separate from its unreleased package version.
 ARG OPENCLAW_COMMIT
+ARG OPENCLAW_SOURCE_SHA256
+ARG OPENCLAW_BUILD_TIMESTAMP
 ENV GIT_COMMIT=${OPENCLAW_COMMIT}
-ENV OPENCLAW_BUILD_TIMESTAMP=2026-10-08T19:24:05Z
+ENV OPENCLAW_BUILD_TIMESTAMP=${OPENCLAW_BUILD_TIMESTAMP}
 ENV OPENCLAW_PREFER_PNPM=1
 WORKDIR /source
+COPY deploy/runtime/openclaw-source.json /tmp/openclaw-source.json
+COPY scripts/lib/openclaw-source.mjs /tmp/lib/openclaw-source.mjs
 RUN --mount=type=secret,id=build-ca,required=false \
     set -eu; \
+    node /tmp/lib/openclaw-source.mjs verify /tmp/openclaw-source.json; \
     if [ -f /run/secrets/build-ca ]; then export CURL_CA_BUNDLE=/run/secrets/build-ca; fi; \
     curl --fail --location --silent --show-error \
       "https://codeload.github.com/openclaw/openclaw/tar.gz/${GIT_COMMIT}" -o /tmp/openclaw-source.tar.gz; \
-    echo 'ec38a23888430a6aae72fdacda05efbd36f0ddad86562c00017ba3a51df0a61d  /tmp/openclaw-source.tar.gz' | sha256sum --check --strict; \
+    printf '%s  /tmp/openclaw-source.tar.gz\n' "$OPENCLAW_SOURCE_SHA256" | sha256sum --check --strict; \
     tar -xzf /tmp/openclaw-source.tar.gz --strip-components=1; \
     rm /tmp/openclaw-source.tar.gz
+# Record every patch applied here in appliedPatches in scripts/build-runtime-assets.mjs,
+# which writes provenance; runtime-assets.test.mjs compares the two.
 # TODO: Remove this bridge patch when OpenClaw supports networkProxy.readOnlyPaths.
 COPY deploy/runtime/openclaw-codex-read-only-paths.patch /tmp/openclaw-codex-read-only-paths.patch
 RUN echo '1d8b670e7029872262375a21da7222768c2fe2390ff7a159ed1616ee9c9de1ca  /tmp/openclaw-codex-read-only-paths.patch' | sha256sum --check --strict \
@@ -147,8 +156,9 @@ RUN --mount=type=secret,id=build-ca,required=false \
 
 FROM node-build-base AS openclaw-dependency-inputs
 ARG OPENCLAW_COMMIT
+ARG OPENCLAW_BUILD_TIMESTAMP
 ENV GIT_COMMIT=${OPENCLAW_COMMIT}
-ENV OPENCLAW_BUILD_TIMESTAMP=2026-10-08T19:24:05Z
+ENV OPENCLAW_BUILD_TIMESTAMP=${OPENCLAW_BUILD_TIMESTAMP}
 ENV OPENCLAW_PREFER_PNPM=1
 WORKDIR /source
 COPY --from=openclaw-source /inputs/ ./
@@ -175,10 +185,23 @@ COPY --from=openclaw-source /source/ ./
 # Exercise the original caller through the public RPC before and after the
 # placement acknowledgment, including revocation, against this exact bridge.
 COPY deploy/runtime/openclaw-required-worker-authority-regression.patch /tmp/openclaw-required-worker-authority-regression.patch
-RUN echo 'e9408d8fe1c97411db97896ea635498170e40079730ea6e463bb82b45f667573  /tmp/openclaw-required-worker-authority-regression.patch' | sha256sum --check --strict \
+RUN echo '1998cdd2321a68f97afb96470dcfb989a1460484c831b113b3af22dcabbf6189  /tmp/openclaw-required-worker-authority-regression.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-required-worker-authority-regression.patch
 RUN --network=none OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
     node --import ./scripts/tsx.mjs scripts/test-projects.mts src/gateway/server.required-placement-scopes.test.ts
+# Remove this bridge when the pinned Control UI offers a browser navigation after access refusal.
+COPY deploy/runtime/openclaw-control-ui-browser-reconnect.patch /tmp/openclaw-control-ui-browser-reconnect.patch
+RUN echo '964c500f981f343d8c131a213aad65ea47e2de4a9a5d11dbb57c3f30bead7065  /tmp/openclaw-control-ui-browser-reconnect.patch' | sha256sum --check --strict \
+    && git apply /tmp/openclaw-control-ui-browser-reconnect.patch
+# Type-check the two UI test graphs touched by the bridge. The upstream runner
+# generates its database types and compiler cache under .artifacts.
+RUN --network=none --mount=type=tmpfs,target=/source/.artifacts \
+    node scripts/run-tsgo-core-test-shards.mjs --ci-graphs-json '["core-test-ui-chat","core-test-ui-app"]'
+# Select only the Node projects that own these files: the browser project starts a
+# Vite server on localhost, which Buildah's network-less RUN cannot resolve.
+RUN --network=none cd ui && node ../scripts/run-node-package-bin.mts vitest run --config vitest.config.ts \
+    --project unit --project unit-node \
+    src/api/gateway-reachability.node.test.ts src/app/gateway-store.observers.test.ts
 # Follow the pinned upstream Docker assembly; plugin-local dependencies remain
 # separate when a plugin and core require different versions.
 RUN OPENCLAW_INTERNAL_DOCKER_BUILD_PLUGIN_IDS=codex,slack \
@@ -241,9 +264,11 @@ for (const plugin of ["codex", "slack"]) {
 }
 NODE
 COPY scripts/build-runtime-assets.mjs /tmp/build-runtime-assets.mjs
+COPY scripts/lib/openclaw-source.mjs /tmp/lib/openclaw-source.mjs
+COPY --from=openclaw-source /tmp/openclaw-source.json /tmp/openclaw-source.json
 RUN --mount=type=bind,from=openclaw-source,source=/source/scripts,target=/verification/scripts \
     --mount=type=bind,from=openclaw-build,source=/source/node_modules,target=/verification/node_modules \
-    node /tmp/build-runtime-assets.mjs package /source /out \
+    node /tmp/build-runtime-assets.mjs package /source /out /tmp/openclaw-source.json \
     && node /verification/scripts/check-package-dist-imports.mjs /source
 
 FROM node-runtime-base AS runtime
@@ -291,6 +316,7 @@ RUN mkdir -p node_modules/.bin \
     && ln -s ../openclaw/node_modules/@openai/codex/bin/codex.js node_modules/.bin/codex
 
 COPY scripts/build-runtime-assets.mjs /tmp/build-runtime-assets.mjs
+COPY scripts/lib/openclaw-source.mjs /tmp/lib/openclaw-source.mjs
 
 RUN mkdir -p node_modules/openclaw/dist/extensions ./plugin-skills /etc/openclaw /home/node/.codex/generated_images \
   && chown node:node /home/node/.codex /home/node/.codex/generated_images \
@@ -317,7 +343,7 @@ RUN mkdir -p node_modules/openclaw/dist/extensions ./plugin-skills /etc/openclaw
   && test -f /app/dist/extensions/codex/openclaw.plugin.json \
   && test -f /app/dist/extensions/slack/openclaw.plugin.json \
   && node /tmp/build-runtime-assets.mjs inventory /app/node_modules/openclaw /opt/oce/runtime \
-  && rm /tmp/build-runtime-assets.mjs
+  && rm /tmp/build-runtime-assets.mjs /tmp/lib/openclaw-source.mjs
 
 RUN /usr/bin/git config --system --add include.path /run/oce/repository-credentials/gitconfig
 

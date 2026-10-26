@@ -123,6 +123,9 @@ For runtime proof, see the [production TUI flow](../flows/production-tui.md).
 
 ## Customization
 
+[Apply a console theme](deploy/console-theme.md) to customize the product name,
+logo, browser icons, and colors through mounted files with the upstream image.
+
 Use Helm values, Kubernetes manifests, Installation startup YAML, and Collector
 Secrets for production. Use
 [`deploy/runtime`](../../deploy/runtime/README.md) for runtime image recipe and

@@ -2,12 +2,11 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { renameSync } from "node:fs";
-import { mkdtemp, open, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { open, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { createControllerAuth } from "../../apps/controller/src/auth/index.ts";
+import { createControllerAuth } from "../helpers/password-hasher.mjs";
 import { resolveApprovedHarness as resolveApprovedDevelopmentHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
@@ -18,6 +17,12 @@ import { createTestConfigurationDriver } from "../helpers/configuration-driver.m
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { bindRole, grantRole } from "../helpers/iam-grants.mjs";
+import {
+  AUTHORIZATION_HEADER_REFUSED,
+  CREDENTIAL_REQUIRED,
+  serviceKeyOutsideNamespace,
+} from "../helpers/refusal-text.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const run = promisify(execFile);
 const occCli = join(process.cwd(), "bin", "occ");
@@ -260,8 +265,7 @@ test("service API keys authenticate scoped automation without replacing sessions
   );
 
   await t.test("occ CLI exercises Configuration CRUD and Agent stop/delete", async (t) => {
-    const directory = await mkdtemp(join(tmpdir(), "openclaw-occ-cli-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
+    const directory = await temporaryDirectory(t, "openclaw-occ-cli-");
     const keyFile = join(directory, "service-key.json");
     const adminKeyFile = join(directory, "admin-service-key.json");
     const bodyFile = join(directory, "configuration.json");
@@ -675,8 +679,11 @@ test("service API keys authenticate scoped automation without replacing sessions
       { env: adminEnv },
     );
     assert.deepEqual(JSON.parse(revokedRotated.stdout), { id: rotatedDetails.id, revoked: true });
+    // A revoked key's 401 names the key file and who issues a new key, not OCC's cookie and
+    // header advice (finding D745).
     await assert.rejects(run(occCli, ["iam", "service-principal", "list"], { env: rotatedEnv }), {
-      stderr: /HTTP 401/,
+      stderr:
+        /^Error: OCC rejected the service key in \S+rotated-admin-key\.json: it is invalid, expired or revoked\. Ask an Installation administrator for a new key\.\n$/,
     });
     // A secret Role bound to the Namespace could never grant anything there: the CLI shows
     // the API's refusal naming the Permissions instead of reporting a created binding.
@@ -812,7 +819,15 @@ test("service API keys authenticate scoped automation without replacing sessions
         assert.equal(error.stdout, "");
         assert.match(error.stderr, /FORBIDDEN/);
         assert.match(error.stderr, /HTTP 403/);
-        assert.ok(error.stderr.includes(`is scoped to Namespace ${namespaceId};`));
+        // The hint names the Namespace of the key this request sent, not the rotated one, and
+        // asks for an Installation-scoped key rather than a --namespace (finding D740), without
+        // repeating OCC's own sentence (finding D770).
+        assert.ok(
+          error.stderr.includes(
+            `"occ installation get" needs an Installation-scoped key; no --namespace value helps. Read this key's Namespace with "occ namespace get ${namespaceId}".`,
+          ),
+        );
+        assert.equal(error.stderr.split("works only in").length, 2);
         return true;
       },
     );
@@ -826,15 +841,20 @@ test("service API keys authenticate scoped automation without replacing sessions
     async () => {
       for (const key of ["", "forged-key", `${issued.data.key}tampered`]) {
         const invalidHeaders = { "x-api-key": key, cookie: session.cookie };
-        assert.equal((await request("GET", path, { headers: invalidHeaders })).status, 401);
+        const refused = await request("GET", path, { headers: invalidHeaders });
+        assert.equal(refused.status, 401);
+        // Only a request that sent an Authorization header gets header advice (finding D762).
+        assert.equal(refused.error.message, CREDENTIAL_REQUIRED);
         await assertServiceKeyManagementDenied(invalidHeaders, issued, 401);
       }
-      assert.equal((await request("GET", path, { headers: {} })).status, 401);
-      assert.equal(
-        (await request("GET", path, { headers: { authorization: `Bearer ${issued.data.key}` } }))
-          .status,
-        401,
-      );
+      const anonymous = await request("GET", path, { headers: {} });
+      assert.equal(anonymous.status, 401);
+      assert.equal(anonymous.error.message, CREDENTIAL_REQUIRED);
+      const bearer = await request("GET", path, {
+        headers: { authorization: `Bearer ${issued.data.key}` },
+      });
+      assert.equal(bearer.status, 401);
+      assert.equal(bearer.error.message, AUTHORIZATION_HEADER_REFUSED);
     },
   );
 
@@ -845,7 +865,8 @@ test("service API keys authenticate scoped automation without replacing sessions
       const eventsBefore = auditSink.events.length;
       const denied = await request("GET", other, { headers });
       assert.equal(denied.status, 403);
-      assert.equal(denied.error.message, "The admitted Namespace does not match.");
+      // Names the key's own Namespace, never the requested one (finding D763).
+      assert.equal(denied.error.message, serviceKeyOutsideNamespace(namespaceId));
       assert.equal(auditSink.events.length, eventsBefore + 1);
       const audit = auditSink.events.at(-1);
       assert.equal(audit.kind, "authorization_denial");

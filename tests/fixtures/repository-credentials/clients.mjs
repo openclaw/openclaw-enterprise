@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { constants } from "node:fs";
+import { access, cp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { appRoot, appExtension, appModule, credentialClientPath } from "./runtime.mjs";
 import { cleanEnvironment, run, temporaryDirectory } from "./process.mjs";
 
@@ -55,8 +56,14 @@ export async function createNativeClientMaterial(t, entries, { ca, root } = {}) 
   };
   await writeFile(join(root, "manifest.json"), JSON.stringify(manifest), { mode: 0o600 });
   const helper = join(appRoot, `drivers/repo/github/credentials/client/git-helper.${appExtension}`);
+  const requiresHooks = bindings.some(({ client }) => client.pushRefAllowlist !== undefined);
   let hooks;
-  if (bindings.some(({ client }) => client.pushRefAllowlist !== undefined)) {
+  if (requiresHooks && appExtension === "js") {
+    // Packaged qualification must execute the delivered hooks, without source mounts
+    // or replacement wrappers hiding a missing/non-executable installed hook.
+    hooks = join(dirname(helper), "hooks");
+    await access(join(hooks, "pre-push"), constants.X_OK);
+  } else if (requiresHooks) {
     // Executable test wrappers belong to a separate image stand-in, never to
     // the private material generation. They run the actual client dispatcher.
     hooks = await temporaryDirectory(t, "repository-native-hooks-");
@@ -99,6 +106,7 @@ export async function runPinnedClients(t, fixture, { signal = t.signal } = {}) {
   ]);
   const env = cleanEnvironment({
     HOME: directory,
+    XDG_CONFIG_HOME: join(directory, ".config"),
     GIT_CONFIG_SYSTEM: join(material.root, "gitconfig"),
   });
   delete env.GIT_CONFIG_NOSYSTEM;

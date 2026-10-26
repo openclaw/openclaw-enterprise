@@ -1236,6 +1236,7 @@ test(
         configuration: {},
         harness: { id: "test-harness", version: "1.0.0", mode: "embedded" },
         compute: { id: "test-compute", implementation: "test" },
+        executionAdmission: { version: 2, mode: "unprotected" },
         harnessAuth: { method: "runtime" },
         servicePrincipalId: agent.servicePrincipalId,
         createdAt: new Date().toISOString(),

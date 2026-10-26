@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
-import { setTimeout as delay } from "node:timers/promises";
 import { createHumanLogin } from "../../apps/controller/src/auth/github.ts";
 import { createOccLogger, emitOccLogEvent } from "../../apps/controller/src/logging.ts";
 import { idTokenSigner, rsaSigningKey } from "./id-token.mjs";
+import { jsonChunkDestination } from "./json-lines.mjs";
+import { listen } from "./listen.mjs";
+import { waitUntil } from "./wait-for.mjs";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
-const { APIError, betterAuth } = await import(require.resolve("better-auth"));
+const { betterAuth } = await import(require.resolve("better-auth"));
 const { memoryAdapter } = await import(require.resolve("better-auth/adapters/memory"));
 
 export const loginOrigin = "https://console.example.test";
@@ -36,7 +38,7 @@ export function createLoginFixture({
   const logger = createOccLogger({
     component: "occ-api",
     level: "info",
-    destination: { write: (chunk) => operationalLines.push(JSON.parse(chunk)) },
+    destination: jsonChunkDestination(operationalLines),
   });
   const state = {
     // State's clock is deliberately ahead of the controller's: cookie lifetimes must
@@ -92,26 +94,28 @@ export function createLoginFixture({
     plugins: [login.plugin],
     rateLimit: { enabled: false },
     logger: { level: "debug", log: (...values) => authLogs.push(values) },
-    onAPIError: {
-      onError(error) {
-        if (error instanceof APIError) {
-          throw error;
-        }
-        errors.push(error);
-        throw APIError.fromStatus("SERVICE_UNAVAILABLE", {
-          message: "Authentication dependency unavailable.",
-        });
-      },
-    },
+    // As in the controller's human-login profile: an error Better Auth cannot classify
+    // leaves its router unlogged instead of becoming a console-logged 500.
+    onAPIError: { throw: true },
   });
   // The controller wrapper sets x-occ-client-ip from the socket peer or a trusted ingress.
-  const call = (path, init, ip = "10.0.0.1") =>
-    auth.handler(
-      new Request(`${loginOrigin}/api/auth${path}`, {
-        ...init,
-        headers: { ...init?.headers, "x-occ-client-ip": ip },
-      }),
-    );
+  // It also owns a thrown dependency error and answers it as an outage; that mapping is
+  // proved through the real controller (postgres-github-outage, postgres-github-cookie-commit).
+  // This boundary records the error and rethrows it, as the handler does, so tests prove the
+  // endpoint passed it on unchanged without asserting an answer of the fixture's own.
+  const call = async (path, init, ip = "10.0.0.1") => {
+    try {
+      return await auth.handler(
+        new Request(`${loginOrigin}/api/auth${path}`, {
+          ...init,
+          headers: { ...init?.headers, "x-occ-client-ip": ip },
+        }),
+      );
+    } catch (error) {
+      errors.push(error);
+      throw error;
+    }
+  };
   return {
     auth,
     db,
@@ -188,11 +192,7 @@ export function cookiePairs(response) {
 }
 
 export async function until(predicate) {
-  const deadline = performance.now() + 2_000;
-  while (!predicate()) {
-    assert.ok(performance.now() < deadline, "Expected transport observation before deadline");
-    await delay(10);
-  }
+  await waitUntil("the transport observation", predicate, { timeoutMs: 2_000, intervalMs: 10 });
 }
 
 // Sends only the provider's fixed URLs to `target`. Real fetch, cancellation, stream
@@ -227,12 +227,7 @@ export async function startProviderServer(t, handle) {
   // overdue server timer destroys it, and fails as a provider outage. Only the client
   // closes idle connections here.
   server.keepAliveTimeout = 0;
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(async () => {
-    server.closeAllConnections();
-    await new Promise((resolve) => server.close(resolve));
-  });
-  return { requests, port: server.address().port };
+  return { requests, port: await listen(t, server) };
 }
 
 // One subtest per [endpoint, step] and framing. The endpoint answers past the provider

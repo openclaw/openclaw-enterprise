@@ -44,6 +44,18 @@ command; use this page as its migration inventory.
       but the new worker can restart existing Agent Pods once and interrupt
       repository-bound versions. A runtime
       release creates new versions from current Agent and Configuration drafts.
+      To classify a source diff, compare its paths with what
+      `deploy/runtime/Dockerfile` copies into its final `runtime` stage, directly
+      or through a stage that stage copies from (`COPY --from=`);
+      `grep -nE '^(FROM|COPY)' deploy/runtime/Dockerfile` lists them. A change to
+      one of those paths, or to the OpenClaw commit or Codex version the
+      Dockerfile pins, needs the new runtime image. For example, the repository
+      credential client in
+      `apps/controller/src/drivers/repo/github/credentials/client/` is built into
+      the runtime image. Other controller source ships only in the controller
+      image. This includes the Agent Pod specs that the controller renders, such
+      as `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts`:
+      existing Agents get that change when the controller renders their Pods again.
 - [ ] Check controller/runtime compatibility. Upgrade the controller first when
       it supports the deployed runtime. Use a release-specific sequence when the
       versions cannot run together.

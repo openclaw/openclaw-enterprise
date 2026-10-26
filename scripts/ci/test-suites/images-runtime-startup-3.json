@@ -3,13 +3,20 @@
   "prepare": {
     "requiresPreparedStateForFile": true
   },
-  "fileConcurrency": 3,
+  "fileConcurrency": 4,
   "parallelFiles": [
+    "tests/integration/runtime-image-model-probe.test.mjs",
     "tests/integration/runtime-image-native-worker.test.mjs",
     "tests/integration/runtime-image-state-migration.test.mjs",
     "tests/integration/runtime-image-native-listener.test.mjs"
   ],
   "files": [
+    {
+      "path": "tests/integration/runtime-image-model-probe.test.mjs",
+      "expectedTests": [
+        "runtime image embedded Gateway settles its model probe under CPU contention"
+      ]
+    },
     {
       "path": "tests/integration/runtime-image-native-worker.test.mjs",
       "expectedTests": [

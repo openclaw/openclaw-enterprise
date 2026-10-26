@@ -9,7 +9,7 @@ import { ConfigurationHarnessError, GatewayPasswordValueError } from "./errors.t
 /**
  * The Codex session approval policy setting. The pinned OpenClaw Gateway (openclaw/openclaw
  * `extensions/codex/openclaw.plugin.json` and `src/app-server/config-parsing.ts` at the
- * `OPENCLAW_COMMIT` in `deploy/runtime/Dockerfile`) accepts never, on-request and on-failure
+ * commit in `deploy/runtime/openclaw-source.json`) accepts never, on-request and on-failure
  * (run as on-request), and refuses untrusted as retired. Update these rules when that pin
  * changes.
  */

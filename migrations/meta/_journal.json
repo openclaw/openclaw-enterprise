@@ -414,6 +414,34 @@
       "when": 1787000000059,
       "tag": "0059_administrator_sandbox_policy_grants",
       "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1787000000060,
+      "tag": "0060_credential_proxy_admission",
+      "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1787000000061,
+      "tag": "0061_repository_credential_authority",
+      "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1787000000062,
+      "tag": "0062_credential_delivery_custody",
+      "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "7",
+      "when": 1787000000063,
+      "tag": "0063_prepared_attempt_settlement",
+      "breakpoints": true
     }
   ]
 }

@@ -23,7 +23,8 @@ Driver owns the password; the Console shows only its reference.
 
 **Edit Configuration** edits native JSON. **Save Configuration** requires an object;
 **Cancel** discards edits. **Edit current Configuration** opens the current draft's editor,
-not a historical copy. Saving preserves Secret bindings and saved versions;
+not a historical copy. Without Configuration `update`, or Secret `operate` on a Secret the
+Configuration binds, it reads **Open version draft** and opens the draft read-only. Saving preserves Secret bindings and saved versions;
 **Deploy new version** applies saved values, including for Agents sharing this
 Configuration on their next deployment.
 
@@ -63,6 +64,20 @@ selections on the next deployment. The selected Plugin Driver validates policy
 at save and deployment; installation and app access are checked later during
 startup. A rejected save leaves the running version unchanged. For policy
 limits and errors, see [Agent plugins](../../reference/agent-plugins.md).
+Without Agent `update`, the selections and default plugin approvers show as a read-only summary
+with no editor, and a note names the grant to ask for. Every Agent save also needs `operate` on each Secret and credential
+source that the Agent and its Configuration bind, and `read` on a ChatGPT service account it uses
+for authentication; without them, the selections show as that summary too, and a note says so.
+
+If you see **Plugin selections changed**, the Console stopped before saving.
+If you see **Outcome unknown**, your changes may already be saved. Note any edits
+you want to keep, then select **Reload plugin selections**. Reload reads the Agent
+without repeating the save. A failed reload cannot resolve an unknown save outcome.
+
+When you see **Plugin selections reloaded**, the saved selections and approvers
+have replaced your draft. If they match what you intended, continue to **Deploy
+new version**. Otherwise, edit the reloaded settings and save only the changes
+you still need.
 
 When viewing a saved version, the **Plugins** tab shows that version's
 saved selection. Return to **Create new version** to make another edit.
@@ -92,7 +107,8 @@ until appropriate loaded, changed state is available.
 
 Each file allows up to 16 KiB of valid UTF-8 text. Concurrent saves use the last
 writer's contents. Reading requires Agent `read`, saving requires `operate`, and
-access needs a selected version with a reachable gateway. An uncertain save
+access needs a selected version with a reachable gateway. Without `operate`, the
+files are read-only and a note above them names the grant. An uncertain save
 requires Reload to confirm contents or file absence before another save. A confirmed
 missing file opens an empty editor; read failures leave Save disabled. See
 [Workspace Files](../topics/workspace-files.md).

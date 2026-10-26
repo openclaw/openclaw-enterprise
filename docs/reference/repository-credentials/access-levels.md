@@ -3,20 +3,22 @@
 Choose the least access the Agent needs. Each binding selects one level for one
 repository; Namespace policy determines which levels are available.
 
-| Console choice          | Configuration value | Contents | Pull requests | Issues | Intended work                                          |
-| ----------------------- | ------------------- | -------- | ------------- | ------ | ------------------------------------------------------ |
-| Read-only               | `git-read`          | Read     | Read          | Read   | Clone/fetch code; inspect issues, PRs and checks       |
-| Contributor, issues off | `git-write`         | Write    | Write         | Read   | Read-only work, plus pushes and PR creation/discussion |
-| Contributor             | `git-full`          | Write    | Write         | Write  | Pushes, PR work, and ordinary issue management         |
+| Console choice          | Configuration value | Meaning                                                                       |
+| ----------------------- | ------------------- | ----------------------------------------------------------------------------- |
+| Read-only               | `git-read`          | Requests read access where the selected delivery supports it.                 |
+| Contributor, issues off | `git-write`         | Requests write access subject to the selected repository policy and delivery. |
+| Contributor             | `git-full`          | Requests broader access where the selected delivery supports it.              |
 
-Every level also requests `metadata: read`, `checks: read` and `statuses: read`.
-These columns and shared permissions form the complete token permission map;
-OCE requests one numeric repository ID and rejects a different returned grant.
-App permissions must be approved on the installation before use.
-With the [development token authority](development-token.md), these maps decide
-only which REST write routes the gateway forwards; the token keeps its own
-GitHub permissions, and GraphQL is refused unless explicitly enabled, and then
-read-only.
+These labels express requested access, not a token permission map or a guarantee that any
+particular command is available. The [prepared native profile](prepared-native-git.md) accepts
+`git-write` for one repository and one exact writable ref. Its Git-only transport permits Git
+operations; `git-and-draft-pr` also permits one draft PR for the approved head and base. The
+worker requests only the provider permissions needed for that selected transport.
+
+The separately selected [development token authority](development-token.md) retains the token's
+own GitHub permissions. Its profile controls forwarded REST write routes, and its configured
+allowlist bounds Git pushes. GraphQL is denied unless explicitly enabled for an eligible token;
+when enabled it remains read-only and is unavailable to `git-read`.
 
 The Console starts with Contributor as the Agent default. Added repositories
 inherit it until customized by expanding their card. Turning off issue management
@@ -26,11 +28,8 @@ Agent create, provision, and update requests can use `repositoryAccess`:
 
 ```json
 {
-  "defaultProfile": "git-full",
-  "repositories": [
-    { "repositoryRef": "application" },
-    { "repositoryRef": "documentation", "profile": "git-read" }
-  ]
+  "defaultProfile": "git-write",
+  "repositories": [{ "repositoryRef": "application" }]
 }
 ```
 
@@ -48,61 +47,20 @@ bindings clears inheritance intent. Profiles remain subject to Namespace policy.
 
 ## API and branch boundaries
 
-Read-only admits selected REST reads and GraphQL with a read-only installation
-token. It refuses Git push and REST writes. `git-write` adds supported PR writes;
-`git-full` adds ordinary issue writes. GitHub shares some PR/issue comment
-endpoints, so comment authorization also depends on the provider's token check.
+GitHub App `contents: write` permission is repository-wide. The prepared native sender enforces
+the exact approved ref before sending the push; GitHub repository rules still apply. The
+[push-ref guardrail](push-ref-guardrail.md) explains what the client hook and sender each enforce.
+A push can trigger repository CI, so review that CI's own secret and execution policy.
 
-All three levels admit GraphQL. GitHub enforces the token's repository and
-permission grant; OCE does not inspect mutations or node IDs. It refuses only
-request bodies that name `tempCloneToken`, the provider clone credential.
-GraphQL can also return independently public information. Every GraphQL POST
-retains possible-write accounting, including Read-only requests, and uncertain
-mutations are never automatically replayed.
-
-**Contributor access, with or without issues, can permit merges.**
-Contents write plus GraphQL can permit merges and ref changes subject to
-GitHub's repository rules. Use enforced rulesets or branch protection for
-protected destinations, without granting the App a bypass. The optional
-[push-ref allowlist](push-ref-guardrail.md) catches ordinary native Git mistakes;
-it does not constrain API/GraphQL writes or provide a security boundary.
-
-No level requests administration, workflow editing, Actions control, secrets,
-packages or projects permissions. Granting extra permissions to the installed
-App does not add them to these tokens. Pushed code may still trigger existing
-repository CI; review that CI's own secret and execution policy separately.
-SSH, LFS, forks and arbitrary GitHub CLI compatibility remain outside this
-workflow.
+A Git-only session does not admit REST or GraphQL. Draft transport admits only its bounded draft
+operation. Neither profile supports arbitrary GitHub CLI commands, merges, forks, SSH or LFS.
+A lost response does not authorize repeating a push or draft creation.
 
 ## Supported commands
 
-| Command                                           | Supported selection and options                                |
-| ------------------------------------------------- | -------------------------------------------------------------- |
-| `gh repo view`                                    | Optional `OWNER/REPO`; JSON output options                     |
-| `gh issue list`, `gh pr list`                     | `--state`, `--limit`; JSON output options                      |
-| `gh issue view NUMBER`, `gh pr view NUMBER`       | `--comments`; JSON output options                              |
-| `gh pr checks NUMBER`                             | `--required`; JSON output options                              |
-| `gh pr diff NUMBER`                               | `--patch`, `--name-only`, `--color`                            |
-| `gh pr create`                                    | Explicit `--head`, optional `--base`, title/body and `--draft` |
-| `gh issue create`                                 | Title and body                                                 |
-| `gh pr comment NUMBER`, `gh issue comment NUMBER` | Body text or body file                                         |
+Use ordinary `git clone`, `git fetch` and `git push` to the approved ref. With a draft grant, use
+`oce-github pr-create --draft` with the approved head and base. The explicit development-token
+profile can also use `gh api` for permitted REST routes; it does not establish production GitHub
+App behavior.
 
-Except `repo view`, these commands accept `--repo`/`-R` for the selected repository. JSON output options are
-`--json`, `--jq`/`-q` and `--template`/`-t`; title/body options are
-`--title`/`-t`, `--body`/`-b` and `--body-file`/`-F`.
-Supported short forms include state `-s`, limit `-L`, comments `-c`, head `-H`,
-base `-B` and draft `-d`. Pass option values as separate arguments, not `--flag=value`.
-Issue/PR selectors must be numbers, not URLs or branch names. Browser, editor,
-watch, search, extension and implicit fork workflows are not supported.
-
-Use the bundled GitHub CLI with the selected binding. Relative `gh api` requests
-remain available for admitted REST routes and GraphQL. Native PR creation
-requires an explicit `--head`; OCE does not implicitly push or create a fork.
-The launcher validates command arguments and repository selection before
-starting the CLI. A permitted command still requires the selected level's
-GitHub permissions.
-
-For token permissions, see GitHub's
-[installation authentication](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-as-a-github-app-installation)
-and [permission reference](https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps).
 For Agent setup, use the [team runbook](../../guides/repository-credentials/team-runbook.md).

@@ -32,12 +32,12 @@ If the deployment was accepted, use the returned version ID to check its
 GET /namespaces/:namespaceId/agents/:agentId/deployments/:revisionId
 ```
 
-| Status      | Next check                                                                                                                   |
-| ----------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `queued`    | If it stays queued, ask the operator whether a worker is available.                                                          |
-| `running`   | A worker holds the work. If it stays running, ask the operator to check workload startup, storage, and required credentials. |
-| `failed`    | Give the returned error code and version ID to the operator. Correct the reported cause before requesting a new deployment.  |
-| `succeeded` | The requested work completed; this does not establish live model availability. Verify a model response separately.           |
+| Status      | Next check                                                                                                                     |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `queued`    | If it stays queued, ask the operator whether a worker is available.                                                            |
+| `running`   | A worker started the work. If it stays running, ask the operator to check workload startup, storage, and required credentials. |
+| `failed`    | Follow the next step in `error.message`. If it names an administrator or operator, give them the error code and version ID.    |
+| `succeeded` | The requested work completed; this does not establish live model availability. Verify a model response separately.             |
 
 For Kubernetes workload problems, operators can use the
 [Compute failure checks](../../reference/drivers/kubernetes-compute.md#failure-conditions).
@@ -103,10 +103,12 @@ signal as 128 plus its number, such as 137 for a killed process. Read the [Sandb
 logs](agent-logs.md#sandbox-source) for the cause. A version deployed by an older
 controller keeps the old behavior until the Agent is deployed again.
 
-OCE does not replace a Sandbox whose Pod was deleted or evicted. The Agent stays
-`active` while every chat fails, `occ agent runtime` starts with
-`Harness Sandbox: lost (CODE)` (`SANDBOX_FAILED` here, or `HARNESS_EXITED` for an
-older version whose Harness exited), and the version's diagnostics lead with a
+OCE does not replace a Sandbox whose Pod was deleted or evicted, or that a node
+restart stopped. The Agent stays `active` while every chat fails. `occ agent get`
+and `occ agent runtime` show `Harness Sandbox: lost (CODE)` (`SANDBOX_FAILED`
+here, `SANDBOX_STOPPED` after a node restart, or `HARNESS_EXITED` for an older
+version whose Harness exited), the Console's **Live serving** shows
+**Sandbox lost**, and the version's diagnostics lead with a
 failed `agent` `sandbox` check carrying the same code. Deploy the Agent again
 (`occ agent deploy AGENT_ID`): the new version gets a new Sandbox and the old one
 is removed. `unknown (UNAVAILABLE)` means OCC could not read the Sandbox record.

@@ -17,20 +17,20 @@ SSH, or installed Compute combinations. See [Driver selection](selection.md).
 ### Driver interface
 
 The [shared interface](../../../packages/contracts/src/index.ts) exposes the
-required `facets` and `cleanup` members, an optional `harnessHome`, and optional lifecycle and policy methods.
+required `facets` and `cleanup` members, an optional `harnessHome`, and optional lifecycle, policy and transport methods.
 
-| Member                                           | Contract                                                                                                                                                                                                                                                                                                                                                                                          |
-| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `facets`                                         | Declare at least one distinct facet. Unknown, duplicate, or empty declarations are rejected.                                                                                                                                                                                                                                                                                                      |
-| `harnessHome`                                    | Optional normalized absolute HOME of the Harness user inside the Sandbox. Compute renders Harness-local paths, such as the native hook credential directory, under it. Defaults to `/home/node`.                                                                                                                                                                                                  |
-| `configureAgent(configuration, harness)`         | Optional synchronous transform. OCC passes the read-only native configuration and resolved Harness descriptor, then validates and freezes the returned configuration. The transform cannot change the selected Harness runtime. If absent, the original configuration is used.                                                                                                                    |
-| `validateWorkspaceSetup(harness, configuration)` | Optional synchronous admission check for initial workspace files. Its presence declares private initialization support. Compute delegates validation of the projected configuration; without it, Compute refuses initial files with a Sandbox. Compute retains its runtime-storage and identity checks.                                                                                           |
-| `ensureNamespace(context)`                       | Optional backend preparation after Compute has prepared baseline Namespace isolation. If absent, Compute continues without a Sandbox setup call.                                                                                                                                                                                                                                                  |
-| `provisionHarness(context)`                      | Optional creation of the dedicated Harness; returns a stable Sandbox resource reference. If absent, Compute creates the ordinary Harness workload.                                                                                                                                                                                                                                                |
-| `cleanup(context)`                               | Required for Agent revision stop, retirement, and Namespace cleanup. Agent revision cleanup receives the immutable Agent revision; Namespace cleanup omits it.                                                                                                                                                                                                                                    |
-| `harnessResource(context)`                       | Optional. Returns the Sandbox reference `provisionHarness` creates for an Agent revision, without side effects. Compute needs it to [withdraw a credential source](credential-gateway.md#optional-additions) from a running Agent revision.                                                                                                                                                       |
-| `workspaceNodePeerLabels(context)`               | Optional. Exact Pod labels of the provider Pods that open the Agent revision's workspace-node connection, or `undefined` before its Sandbox exists. Compute admits only these Pods to that Agent's Gateway port, plus those of the serving Agent revision while a successor prepares, so the labels must select that Sandbox alone. OpenShell returns the supervisor's `openshell.ai/sandbox-id`. |
-| `readSandboxLogs(context, request)`              | Optional read of the Agent revision's Sandbox log: at most `lines` raw lines at or after `sinceTime`, plus how many lines the source examined. It must use a read-only interface and derive the Sandbox from the Agent revision. OCC classifies and redacts every line. See [Agent logs](../../guides/topics/agent-logs.md#sandbox-source).                                                       |
+| Member                                           | Contract                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `facets`                                         | Declare at least one distinct facet. Unknown, duplicate, or empty declarations are rejected.                                                                                                                                                                                                                                                                                                                        |
+| `harnessHome`                                    | Optional normalized absolute HOME of the Harness user inside the Sandbox. Compute renders Harness-local paths, such as the native hook credential directory, under it. Defaults to `/home/node`.                                                                                                                                                                                                                    |
+| `configureAgent(configuration, harness)`         | Optional synchronous transform. OCC passes the read-only native configuration and resolved Harness descriptor, then validates and freezes the returned configuration. The transform cannot change the selected Harness runtime. If absent, the original configuration is used. Installation reads call it with an empty configuration; a `ConfigurationHarnessError` moves that mode to `openclaw.settingRefusals`. |
+| `validateWorkspaceSetup(harness, configuration)` | Optional synchronous admission check for initial workspace files. Its presence declares private initialization support. Compute delegates validation of the projected configuration; without it, Compute refuses initial files with a Sandbox. Compute retains its runtime-storage and identity checks.                                                                                                             |
+| `ensureNamespace(context)`                       | Optional backend preparation after Compute has prepared baseline Namespace isolation. If absent, Compute continues without a Sandbox setup call.                                                                                                                                                                                                                                                                    |
+| `provisionHarness(context)`                      | Optional creation of the dedicated Harness; returns a stable Sandbox resource reference. If absent, Compute creates the ordinary Harness workload.                                                                                                                                                                                                                                                                  |
+| `cleanup(context)`                               | Required for Agent revision stop, retirement, and Namespace cleanup. Agent revision cleanup receives the immutable Agent revision; Namespace cleanup omits it.                                                                                                                                                                                                                                                      |
+| `harnessResource(context)`                       | Optional. Returns the Sandbox reference `provisionHarness` creates for an Agent revision, without side effects. Compute needs it to [withdraw a credential source](credential-gateway.md#optional-additions) from a running Agent revision.                                                                                                                                                                         |
+| `workspaceNodePeerLabels(context)`               | Optional. Exact Pod labels of the provider Pods that open the Agent revision's workspace-node connection, or `undefined` before its Sandbox exists. Compute admits only these Pods to that Agent's Gateway port, plus those of the serving Agent revision while a successor prepares, so the labels must select that Sandbox alone. OpenShell returns the supervisor's `openshell.ai/sandbox-id`.                   |
+| `readSandboxLogs(context, request)`              | Optional read of the Agent revision's Sandbox log: at most `lines` raw lines at or after `sinceTime`, plus how many lines the source examined. It must use a read-only interface and derive the Sandbox from the Agent revision. OCC classifies and redacts every line. See [Agent logs](../../guides/topics/agent-logs.md#sandbox-source).                                                                         |
 
 Two optional methods serve a provider-owned Harness transport.
 `harnessEndpoint(context)` returns the transport for the provisioned Harness, and
@@ -55,6 +55,22 @@ Agent revision already serving at startup or one that failed permanently. An end
 sandbox boundary. Kubernetes Compute projects that selection to the Gateway;
 without it, the Codex bridge retains its configured sandbox behavior.
 
+The endpoint may supply `tls.caBundle`: public PEM CA certificates for a WSS
+origin. It accepts no private keys, client credentials or source paths. Omission
+keeps system trust. Kubernetes Compute mounts this trust read-only into only the
+exact dedicated Agent Gateway, combining any execution-cluster root into one
+`NODE_EXTRA_CA_CERTS` bundle. Certificate and hostname verification remain enabled.
+The separate immutable revision ConfigMap precedes Gateway rollout and is removed
+after revision workloads terminate; changing its certificates requires a new revision.
+
+`enrollHarness(context, installation)` is required when a revision has a protected
+egress plan. Compute calls it after committing the verified installation and
+checking current evidence again. The Driver authenticates the exact Harness
+transport and binds a fresh startup challenge to that execution and plan before
+releasing its first model probe. A starting transport can remain pending for the
+next reconcile. Enrollment conveys neither credential material nor permission to
+send; see [protected static inference](../credential-sources/protected-inference.md).
+
 `observeHarness(context)` reads the provider's own lifecycle record of a dedicated
 Agent revision's Harness Sandbox, without contacting the Harness. It answers `running`,
 `starting`, `unknown`, or `lost` with a code: `SANDBOX_MISSING`, `SANDBOX_DELETING`,
@@ -70,6 +86,17 @@ the gateway restarts it, the observation is `starting` with code
 restart). A first start is plain `starting`. Diagnostics report a restarting
 Harness as a failed `sandbox` check. Only Sandboxes created before that policy
 existed report `HARNESS_EXITED`.
+
+### Harness Sandbox status
+
+`GET /namespaces/:namespaceId/agents/:agentId/harness-status` requires Agent
+`read`. For a running Agent whose selected version has a dedicated Harness
+Sandbox, OCC calls `observeHarness` on each request and answers `observed` with
+that `revisionId` and its `harness` state. Otherwise it answers `unobserved`.
+`lost` means that the Sandbox does not serve the version, for example after a
+node restart stopped it. OCC does not restart it: deploy a new version. A record
+that OCC cannot read is `unknown`, never `lost`. `occ agent get` and the
+Console's **Live serving** show this status; Agent lists do not.
 
 ### Containment facets
 
@@ -114,11 +141,19 @@ retirement must find the provider resource even if that Pod is already gone.
 
 ## Optional network policy operations
 
-`networkPolicy` declares `wildcards`, `portRanges`, and `live` support.
-`admitNetworkPolicy(additions, version, defaults?)` validates every requested
+`networkPolicy` declares `wildcards`, `portRanges`, and `live` support. An
+implementation advertising it must declare the configuration contribution
+`{ scope: "agent", key: "sandbox-network-policy" }` for `{ additions }`, using the
+[shared definition contract](selection.md#configuration-definitions-and-discovery).
+OCC resolves it through the registry before admission. Expected provider refusals
+throw the shared `ConfigurationValidationError` with safe `error.details`.
+`admitNetworkPolicy(additions, version, defaults?, scope?)` validates every requested
 constraint and returns a detached snapshot of Driver identity, version, defaults,
 and additions. The snapshot is consumed by provisioning; changed startup defaults
-cannot reinterpret an admitted revision.
+cannot reinterpret an admitted revision. `scope.repositoryCredentials` marks an
+Agent with repository bindings: a Driver that routes repository hosts only through
+its own path refuses a rule that reaches them with a
+`SandboxNetworkPolicyConflictError` naming the rule.
 
 `observeNetworkPolicy(context, snapshot)` returns the provider resource version,
 policy version, load state, and whether the complete candidate matches.
@@ -202,7 +237,11 @@ too, so a Sandbox the identity may no longer see (the provider hides it as
 missing) is never recorded gone. A missing role fails at once; an identity the
 provider could not authenticate (`transient`: a token file or signing key between
 refreshes) retries within the attempt budget first. The worker logs the failed
-stop, deletion or withdrawal with the same guidance the deployment status shows.
+stop, deletion or withdrawal with `hintCode: sandbox-gateway-identity`, which names
+the guidance the deployment status shows: check the controller gateway identity's
+token file and the gateway's signing-key refresh, or restore its Workspace role (or
+recreate the Workspace with a deploy; a Workspace removed outside the controller
+presents the same way), then deploy, stop, delete or withdraw again.
 A delete that finds nothing where the read just did is `SANDBOX_DELETION_UNCONFIRMED`:
 the sweep logs it `worker.harness-exposure-withdrawal-unconfirmed` and retries.
 
@@ -218,8 +257,6 @@ as the `reason`. OpenShell throws it for gRPC `PERMISSION_DENIED` and
 
 - Supported facets are `networking`, `filesystem`, and `process`; there is no
   `exec` facet, per-tool Sandbox creation, or Sandbox-owned command authorization.
-- Sandbox selection currently requires bundled Kubernetes Compute and dedicated
-  Harness execution. An installed Sandbox package does not broaden that support.
 - The shared interface does not offer a separate readiness or activation method;
   Compute owns both and retains its baseline isolation rules.
 
@@ -231,6 +268,7 @@ as the `reason`. OpenShell throws it for gRPC `PERMISSION_DENIED` and
 | Deployment rejects the Harness                       | Confirm dedicated execution and that the provider can preserve the approved identity, token, mounts, login mode, and Secret references. |
 | Cleanup keeps retrying after the Pod disappears      | Check the stable Sandbox resource reference and provider bootstrap resources. Pod absence alone does not prove cleanup completed.       |
 | Containment is unavailable or ownership is ambiguous | Restore the provider or correct ownership. Never activate a workload without the required containment.                                  |
+| A gateway request fails                              | Worker diagnostics carry only the method, gRPC status and a fixed validation category, never supplier text or request values.           |
 
 ## Implementations
 
