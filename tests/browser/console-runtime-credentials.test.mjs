@@ -636,7 +636,7 @@ test("swapped standard Slack token keys get the list, not role-labelled pickers"
 // the Slack settings read. An Installation administrator's console reads that grant for each: a
 // missing one marks its row, holds Deploy and offers Retry Secret access, which grants exactly that
 // Secret without saving bindings.
-async function ungrantedBoundSecret(t, { name, slackValues, bindings, ungranted, rows, badges }) {
+async function agentWithoutGrant(t, { name, slackValues, bindings, ungranted }) {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace(`${name} grant`, { ready: true });
@@ -666,6 +666,16 @@ async function ungrantedBoundSecret(t, { name, slackValues, bindings, ungranted,
   assert.ok(grant, `createAgent grants the Secret bound to ${ungranted}`);
   const removed = await fixture.request("DELETE", `${policyPath}/access-bindings/${grant.id}`);
   assert.ok([200, 204].includes(removed.status), `binding removal answered ${removed.status}`);
+  return { fixture, namespace, agent, secrets };
+}
+
+async function ungrantedBoundSecret(t, { name, slackValues, bindings, ungranted, rows, badges }) {
+  const { fixture, namespace, agent, secrets } = await agentWithoutGrant(t, {
+    name,
+    slackValues,
+    bindings,
+    ungranted,
+  });
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
@@ -807,6 +817,71 @@ test("an HTTP-mode Slack account keeps the bot token picker alone", async (t) =>
     SLACK_BOT_TOKEN: envBinding(replacement),
   });
   await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
+});
+
+// Deploy must not run ahead of the console's grant read: while the Namespace's IAM policy is still
+// being read it may yet show a bound Secret the Agent cannot use, which the worker refuses at
+// deploy. Deploy waits for that read, holds once it shows the missing grant, and sends no deploy
+// request; Retry Secret access then repairs the grant and Deploy becomes available (#3686 review).
+test("Deploy waits for the Agent's Secret grant read and sends no deploy it would refuse", async (t) => {
+  const { fixture, namespace, agent } = await agentWithoutGrant(t, {
+    name: "Held read",
+    slackValues: {},
+    bindings: ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"],
+    ungranted: "SLACK_APP_TOKEN",
+  });
+  const { page } = await newPage(t, fixture);
+  // Hold the policy reads until the test has checked Deploy while they are in flight.
+  let releaseReads;
+  const readsReleased = new Promise((resolve) => {
+    releaseReads = resolve;
+  });
+  let heldReads = 0;
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/iam/access-bindings`,
+    async (route, request) => {
+      if (request.method() === "GET") {
+        heldReads += 1;
+        await readsReleased;
+      }
+      await route.fallback();
+    },
+  );
+  let deployRequests = 0;
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
+    async (route) => {
+      deployRequests += 1;
+      await route.fallback();
+    },
+  );
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  const deploy = page.getByRole("button", { name: "Deploy new version" });
+  // Once the deploy status has settled with the read still held, Deploy must be disabled.
+  await page.waitForFunction(
+    () =>
+      (
+        document.querySelector("section.agent-draft-actions p.muted[role=status]")?.textContent ??
+        ""
+      ).trim() !== "",
+  );
+  assert.ok(heldReads > 0, "the grant read is in flight");
+  assert.equal(await deploy.isDisabled(), true);
+  await page.getByText("Checking this Agent's Secret access before deploying.").waitFor();
+  releaseReads();
+  await page.getByText("Resolve the saved Secret access grant before deploying.").waitFor();
+  assert.equal(await deploy.isDisabled(), true);
+  assert.equal(deployRequests, 0);
+  // Positive control: Retry Secret access grants the Secret, and Deploy becomes available.
+  await page.getByRole("tab", { name: "Credentials", exact: true }).click();
+  await page.getByRole("button", { name: "Retry Secret access" }).click();
+  await page
+    .getByText(
+      "This Agent can use its saved Slack Secrets. Deploy the new version to deliver them.",
+    )
+    .waitFor();
+  await waitForEnabled(deploy);
+  assert.equal(deployRequests, 0);
 });
 
 // Save and deployment admission refuse a signing secret, user token or relay token reference

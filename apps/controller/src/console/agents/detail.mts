@@ -2706,6 +2706,8 @@ export async function renderAgentDetail(
     // missing grant then blocks Deploy until Credentials grants it. The read runs once per draft;
     // a failed or undecided read changes nothing (findings 1920, 2260).
     let harnessGrantMissing = false;
+    // Deploy waits while that read is in flight (#3686 review).
+    let harnessGrantChecking = false;
     let harnessGrantRead: Promise<boolean> | null = null;
     function readHarnessGrant() {
       const credential = harnessCredential(agent.harnessAuth, context.namespaceId);
@@ -2716,17 +2718,21 @@ export async function renderAgentDetail(
       ) {
         return Promise.resolve(false);
       }
-      return credentialOperateGrants(context, agent, credential.kind, [credential.id]).then(
-        (grants) => {
-          if (grants.get(credential.id) !== false || !context.isCurrent()) {
-            return false;
+      harnessGrantChecking = true;
+      updateDeployControls();
+      return credentialOperateGrants(context, agent, credential.kind, [credential.id])
+        .then(
+          (grants) => grants.get(credential.id) === false && context.isCurrent(),
+          () => false,
+        )
+        .then((missing) => {
+          harnessGrantChecking = false;
+          harnessGrantMissing ||= missing;
+          if (context.isCurrent()) {
+            updateDeployControls();
           }
-          harnessGrantMissing = true;
-          updateDeployControls();
-          return true;
-        },
-        () => false,
-      );
+          return missing;
+        });
     }
     function editedSubject() {
       if (selectedTab === "repositories") {
@@ -2756,6 +2762,7 @@ export async function renderAgentDetail(
         Boolean(deployReloadMessage) ||
         authenticationPending ||
         harnessGrantMissing ||
+        harnessGrantChecking ||
         authenticationUnsaved ||
         retainedConfiguration.dirty ||
         retainedConfiguration.reloadRequired ||
@@ -2787,7 +2794,7 @@ export async function renderAgentDetail(
           (Boolean(agent.harnessAuth) &&
             !authenticationPending &&
             !harnessGrantMissing &&
-            (credentials?.canDeploy() ?? false));
+            (credentials?.canDeploy() || credentials?.checkingGrants()) === true);
         setupCredentials.disabled = deployPending || Boolean(draftEditorNavigationBlock);
       }
       if (!deployPending) {
@@ -2800,6 +2807,8 @@ export async function renderAgentDetail(
         } else if (authenticationSaveState === "uncertain") {
           deployStatus.textContent =
             "Authentication may have been saved. Reload this draft before deploying.";
+        } else if (harnessGrantChecking) {
+          deployStatus.textContent = "Checking this Agent's credential access before deploying.";
         } else if (authenticationPending || harnessGrantMissing) {
           deployStatus.textContent =
             "Confirm authentication and Secret access in Credentials before deploying.";
@@ -2953,7 +2962,9 @@ export async function renderAgentDetail(
                 ? "Saving…"
                 : authenticationSaveState === "uncertain"
                   ? "Reload this draft"
-                  : "Finish in Credentials",
+                  : credentials?.checkingGrants()
+                    ? "Checking Secret access…"
+                    : "Finish in Credentials",
       );
       setStep(checklistSteps[2], false, "Creates an immutable version from the saved draft");
     }
@@ -3030,6 +3041,18 @@ export async function renderAgentDetail(
           ) {
             deployFeedback.textContent =
               "Channel Secret bindings changed. Refresh this Agent before deploying.";
+            return;
+          }
+          // A grant read that landed during these rereads can show a bound Secret the Agent may
+          // not use, which the worker would refuse: ask the Credentials panel again (#3686 review).
+          if (!runtimeAuth && credentials?.canDeploy() !== true) {
+            deployFeedback.textContent =
+              credentials?.deployGateMessage() ?? "Credential readiness could not be confirmed.";
+            return;
+          }
+          if (harnessGrantMissing || harnessGrantChecking) {
+            deployFeedback.textContent =
+              "Confirm authentication and Secret access in Credentials before deploying.";
             return;
           }
           submitted = true;

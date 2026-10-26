@@ -379,6 +379,8 @@ interface ChannelState {
   unsavedSecrets: boolean;
   carried: CarriedChannelSecrets | null;
   carriedNote: string;
+  // An administrator's console is reading the Agent's grants on the bound Secrets.
+  checkingGrants: boolean;
 }
 
 // The update stores the submitted values unchanged. Its response must confirm the new
@@ -691,6 +693,7 @@ export function createChannelSecretsPanel({
     unsavedSecrets: false,
     carried: null,
     carriedNote: "",
+    checkingGrants: false,
   };
   applyCarriedSecrets(state, carried);
   const section = element("section", { className: "agent-card channel-secrets" });
@@ -779,10 +782,12 @@ export function createChannelSecretsPanel({
   }
 
   // Channel credentials are saved and complete: the next-step card's credentials step (UX spec
-  // 3.7). Deploy also needs the version history.
+  // 3.7). Deploy also needs the version history. A grant read still in flight may yet show a
+  // bound Secret the Agent cannot use, so Deploy waits for it (#3686 review).
   function credentialsReady() {
     return (
       !state.saving &&
+      !state.checkingGrants &&
       !state.outcomeUnknown &&
       !state.reloadRequired &&
       !state.saveGrantWarning &&
@@ -807,6 +812,9 @@ export function createChannelSecretsPanel({
     }
     if (!revisionsLoaded) {
       return "Version history is required before deploying this new version.";
+    }
+    if (state.checkingGrants) {
+      return "Checking this Agent's Secret access before deploying.";
     }
     if (state.saveGrantWarning) {
       return "Resolve the saved Secret access grant before deploying.";
@@ -1254,6 +1262,20 @@ export function createChannelSecretsPanel({
       return;
     }
     const started = saveCount;
+    state.checkingGrants = true;
+    try {
+      await applyBoundSecretGrants(bound, started);
+    } finally {
+      state.checkingGrants = false;
+      // Deploy waited for this read, whatever its outcome.
+      if (context.isCurrent() && isCurrent()) {
+        shown.updateControls?.();
+        onChange();
+      }
+    }
+  }
+
+  async function applyBoundSecretGrants(bound: SecretReference[], started: number) {
     let grants;
     try {
       grants = await credentialOperateGrants(
@@ -1298,8 +1320,6 @@ export function createChannelSecretsPanel({
       setStatusTone(shown.error, saveErrorTone());
       shown.error.textContent = saveErrorText();
     }
-    shown.updateControls?.();
-    onChange();
   }
 
   updateGrantWarning();
@@ -1318,6 +1338,7 @@ export function createChannelSecretsPanel({
     credentialsReady,
     deployGateMessage,
     isSaving: () => state.saving,
+    checkingGrants: () => state.checkingGrants,
     // The permission answer changed what this caller may edit: update the form in place.
     applyAccess() {
       shown.updateControls?.();
