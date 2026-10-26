@@ -2585,10 +2585,34 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       // it (finding 2546). Only a caller who may make such a save or deployment gets an answer,
       // so it reports nothing that request would not, and only on the Secrets the caller may
       // list.
-      const operateDenied =
-        namespaceRead && configurationRead && (configurationUpdate || update || deploy)
+      const mayBind = configurationUpdate || update;
+      const listed =
+        namespaceRead && configurationRead && (mayBind || deploy)
           ? await controller.listSecretsOperateDenied(context.actorId, namespaceId)
           : [];
+      // A deployment checks only the Secrets the draft binds now: its Configuration's Secret
+      // bindings and a Secret Harness authentication source. A caller who may deploy but bind
+      // nothing learns only those, which the Agent and Configuration reads already name
+      // (finding 2565).
+      let operateDenied = listed;
+      if (!mayBind && listed.length > 0) {
+        const bound = new Set(
+          Object.values(
+            await controller.getConfigurationSecretBindingSources(
+              context.actorId,
+              namespaceId,
+              agent.configurationId,
+            ),
+          )
+            .filter((source) => source.kind === "secret")
+            .map((source) => source.id),
+        );
+        // Unreadable saved settings hide the Agent's sources, so the answer leaves them out.
+        if (!("configurationReadError" in agent) && isSecretHarnessAuth(agent.harnessAuth)) {
+          bound.add(agent.harnessAuth.source.id);
+        }
+        operateDenied = listed.filter((id) => bound.has(id));
+      }
       reply.send({ data: { operateDenied }, meta: { requestId: request.id } });
       return;
     }

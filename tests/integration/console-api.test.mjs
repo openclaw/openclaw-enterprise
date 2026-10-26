@@ -778,11 +778,21 @@ test("the Agent Secret answer names the readable Secrets a binding save would be
   agentEditor.grant("agent", "update", "agent", agent.id);
   assert.deepEqual(await agentEditor.answer(), [app.id, bot.id, ...spareIds].sort());
   // Agent deploy without either update: deploying a draft authorizes Secret operate on every
-  // Secret it binds, so the answer is reported (the iam.md operator, finding 2546).
-  const deployer = await member("secret-answer-deployer", reads, readable);
+  // Secret it binds, so the answer is reported (the iam.md operator, finding 2546). Such a caller
+  // can bind nothing, so it covers only the Secrets the draft binds now: the Configuration's
+  // bindings (the editor rebound them to app and the first spare) and the fixture's Harness
+  // authentication Secret, readable here. The other readable Secrets stay unreported, since no
+  // deployment checks them (finding 2565).
+  const harnessSecret = agent.harnessAuth.source;
+  const deniedBeforeDeployer = denials().length;
+  const deployer = await member("secret-answer-deployer", reads, [...readable, harnessSecret]);
   assert.deepEqual(await deployer.answer(), []);
   deployer.grant("deploy", "deploy", "agent", agent.id);
-  assert.deepEqual(await deployer.answer(), [app.id, bot.id, ...spareIds].sort());
+  assert.deepEqual(await deployer.answer(), [app.id, spares[0].id, harnessSecret.id].sort());
+  deployer.grant("operate-harness", "operate", "secret", harnessSecret.id);
+  assert.deepEqual(await deployer.answer(), [app.id, spares[0].id].sort());
+  // The narrowed answer still makes no refused, audited read.
+  assert.equal(denials().length, deniedBeforeDeployer);
   // Both updates without Configuration read: no save can bind a Secret, so it is not reported.
   const unreadConfiguration = await member(
     "secret-answer-no-configuration-read",
