@@ -249,7 +249,12 @@ principal and authentication binding still match; rereading bindings recovers lo
 responses. An uncertain PATCH requires **Reload authentication source** before saving
 or granting. Pending access survives navigation and blocks deployment until confirmed
 or reloaded, as does an administrator's Credentials tab once Namespace IAM shows no
-grant. Admission remains authoritative; confirmed access does not prove provider readiness.
+grant. A member's unverified grant blocks nothing. Admission remains authoritative;
+confirmed access does not prove provider readiness.
+
+Deployment also authorizes the caller's Secret `operate` on each bound Secret. When the
+Agent's `permissions/secrets` answer lists one, Deploy is disabled with a note naming it; a
+generic deploy `403` rereads the answer and names them in its alert.
 
 **Operator-managed credentials** saves `{ "method": "runtime" }` without a source,
 requiring readable version history and an unchanged draft. API authorization and
@@ -266,7 +271,7 @@ earlier version require operator investigation. Model/channel Secrets stay separ
 
 On explicit submission, the panel rereads and refuses as channel saves do above, PATCHes every
 binding with `expectedGeneration`, then calls `ensureCredentialOperateBinding` for changed and
-pending Secrets. A post-PATCH grant failure leaves bindings saved and blocks
+pending Secrets. A refused or unconfirmed post-PATCH grant leaves bindings saved and blocks
 deployment in the current view; later saves retry still-referenced pending grants.
 Only a confirmed grant or confirmed removal of its reference clears the pending Secret.
 
