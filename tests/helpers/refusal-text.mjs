@@ -513,6 +513,17 @@ export const BOUND_SECRET_UNLISTED = `A Secret is bound. Its name is unavailable
 export const BOUND_SECRET_READ_REFUSED = `A Secret is bound. Its name is hidden because your access does not include reading it. ${askForGrant("Secret read on it")}`;
 // Finding D761. A link to a Secret the readable list leaves out: missing and unreadable alike.
 export const SECRET_LINK_UNLISTED = `This Secret is not in your readable list: it may not exist, or your access does not include reading it. ${askForGrant("Secret read on it")}`;
+// A disabled Secret field's hint for a bound Secret the caller may read (finding 2646: a check
+// that it is absent must use this text, not a pasted fragment).
+export const BOUND_SECRET_METADATA = "Secret metadata is bound. Values are never shown.";
+// A version record with no recorded startup failure (agents/deployment-evidence.mts).
+export const NO_PERSISTED_STARTUP_FAILURE = "No persisted startup failure.";
+// Diagnostics hints (agents/deployment-diagnostics.mts): the runtime did not answer, and the
+// version's recorded failure to resolve first.
+export const DIAGNOSTICS_RUNTIME_UNAVAILABLE =
+  "UNAVAILABLE means the runtime did not answer, so these checks could not run. The gateway is usually stopped, still starting, or failed to start.";
+export const diagnosticsRecordedFailure = (code) =>
+  `This version's recorded deployment failed with ${code}; resolve that first. These checks do not test model credentials, so they cannot confirm or clear that failure.`;
 // Finding D760. A link to the Access tab, or its refused policy read, for a reader who does not
 // administer the Installation.
 export const ACCESS_TAB_UNAVAILABLE =

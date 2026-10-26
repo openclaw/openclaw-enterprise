@@ -52,6 +52,8 @@ type SecretContext = Partial<AgentAccessContext> & {
 // A bound Secret the caller's readable Secret list leaves out (finding 2619).
 export const SECRET_UNLISTED =
   "A Secret is bound. Its name is unavailable: your access does not include reading it, or it was deleted.";
+// A disabled field's hint for a bound Secret the caller may read.
+const BOUND_SECRET_METADATA = "Secret metadata is bound. Values are never shown.";
 
 // Shown on a listed Secret the caller may read but not operate: a save that binds it would be
 // refused (finding 2453).
@@ -714,7 +716,7 @@ export function createSecretReferenceField({
     if (manuallyDisabled) {
       return currentSecretId() === null
         ? "No Secret is bound."
-        : (unlisted ?? "Secret metadata is bound. Values are never shown.");
+        : (unlisted ?? BOUND_SECRET_METADATA);
     }
     return unlisted ? `${unlisted} ${choiceStatus()}` : choiceStatus();
   }
@@ -1027,10 +1029,7 @@ export function createSecretReferenceField({
 
   if (!context.namespaceId || typeof context.request !== "function") {
     setSecretOptions();
-    status.textContent =
-      currentSecretId() === null
-        ? "No Secret is bound."
-        : "Secret metadata is bound. Values are never shown.";
+    status.textContent = currentSecretId() === null ? "No Secret is bound." : BOUND_SECRET_METADATA;
     manuallyDisabled = true;
     updateValidity();
   } else {

@@ -12,6 +12,8 @@ interface LoginIntent {
   namespaceId: string | null;
   revision: string | null;
   tab: string | null;
+  /** A Secrets page link's Secret, opened once the page shows (finding 2645). */
+  secret?: string | null;
 }
 
 interface NavigationOptions {
@@ -67,6 +69,7 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: Nav
   const namespaceId = new RegExp(`^ns_${resourceSuffix}$`);
 
   const revisionId = new RegExp(`^rev_${resourceSuffix}$`);
+  const secretId = new RegExp(`^sec_${resourceSuffix}$`);
   const agentTabs = new Set([
     "configuration",
     "plugins",
@@ -100,7 +103,12 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: Nav
           typeof intent.revision === "string" &&
           (intent.revision === "draft" || revisionId.test(intent.revision)))) &&
       (intent.tab === null ||
-        (detail && typeof intent.tab === "string" && agentTabs.has(intent.tab)))
+        (detail && typeof intent.tab === "string" && agentTabs.has(intent.tab))) &&
+      (intent.secret === undefined ||
+        intent.secret === null ||
+        (intent.feature === "secrets" &&
+          typeof intent.secret === "string" &&
+          secretId.test(intent.secret)))
     );
   }
 
@@ -112,12 +120,16 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: Nav
     if (url.origin !== location.origin) {
       return null;
     }
+    const feature = url.pathname.slice("/console/".length);
+    // Only a well-formed Secret ID on the Secrets page goes through sign-in; anything else drops.
+    const secret = url.searchParams.get("secret");
     const intent = {
       kind: "console",
-      feature: url.pathname.slice("/console/".length),
+      feature,
       namespaceId: url.searchParams.get("namespace"),
       revision: url.searchParams.get("revision"),
       tab: url.searchParams.get("tab"),
+      secret: feature === "secrets" && secret !== null && secretId.test(secret) ? secret : null,
     };
     return validIntent(intent) ? intent : null;
   }
@@ -135,6 +147,9 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: Nav
     }
     if (intent.tab !== null) {
       query.set("tab", intent.tab);
+    }
+    if (typeof intent.secret === "string") {
+      query.set("secret", intent.secret);
     }
     return `/console/${intent.feature}${query.size ? `?${query}` : ""}`;
   }
