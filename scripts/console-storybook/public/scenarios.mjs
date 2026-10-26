@@ -589,7 +589,7 @@ export const scenarios = {
     name: "Link to an unlisted Secret",
     path: "/console/secrets?secret=sec_not_listed",
     description:
-      "A link to a Secret the readable list leaves out opens no dialog. A note says it may not exist or the caller may not read it, and who grants read. Nothing reads the Secret.",
+      "A link to a Secret the readable list leaves out opens no dialog. For a member, a note says it may not exist or the caller may not read it, and who grants read. This simulated caller administers the Installation, so the note says only that no such Secret is in the readable list. Nothing reads the Secret.",
   },
   secretsReplace: {
     group: "Pages/Secrets",
@@ -1347,7 +1347,7 @@ export const scenarios = {
     name: "Access denied",
     rules: [{ path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents", status: 403 }],
     description:
-      "Collection authorization denial with a request ID. Retry would repeat the refusal, so the panel offers none; the header's Refresh checks access again.",
+      "Collection authorization denial. Its request ID is behind a Request details disclosure, not in the reason. Retry would repeat the refusal, so the panel offers none; the header's Refresh checks access again.",
   },
   agentsError: {
     group: "Pages/Agents",
@@ -2462,7 +2462,7 @@ export const scenarios = {
     provisionedDeploymentAttempt: {
       code: "NAMESPACE_POD_QUOTA_EXCEEDED",
       message:
-        "The Namespace's Pod quota is full. Stop or delete an Agent, or ask an administrator to raise the quota.",
+        "The Namespace's Pod quota is full. Stop or delete an Agent, or ask an Installation administrator to raise the quota.",
     },
     description:
       "The first deployment read explains the full Pod quota. A stalled read and a temporary outage preserve that detail; a later not-found response clears it while provisioning continues.",
@@ -2480,7 +2480,7 @@ export const scenarios = {
     provisionedDeploymentAttempt: {
       code: "REVISION_IMAGE_PULL_FAILED",
       message:
-        "Kubernetes cannot pull a container image for this Agent and keeps retrying. Ask an administrator to check the runtime image reference and that the cluster's nodes can pull from its registry.",
+        "Kubernetes cannot pull a container image for this Agent and keeps retrying. Ask an Installation administrator to check the runtime image reference and that the cluster's nodes can pull from its registry.",
     },
     provisioningNamesDeploymentWait: true,
     description:
@@ -7732,7 +7732,8 @@ export const scenarios = {
     group: "Components/Workspace",
     name: "No deployed revision",
     path: `${draft}&tab=workspace`,
-    description: "Workspace editing requires a deployed Agent and reachable gateway.",
+    description:
+      "Workspace editing requires a deployed Agent and reachable gateway; the note says to deploy the Agent.",
   },
   workspaceDenied: {
     group: "Components/Workspace",

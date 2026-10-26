@@ -26350,6 +26350,12 @@
             },
             "description": "Default Response"
           },
+          "409": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Conflict. The Agent has no running version: deploy it, or wait until its deployment finishes."
+          },
           "500": {
             "content": {
               "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }

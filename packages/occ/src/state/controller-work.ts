@@ -75,13 +75,13 @@ export function deploymentProgressForWork(
       // Fixed copy: never the image reference or the registry's response.
       code = attempt.code;
       message =
-        "Kubernetes cannot pull a container image for this Agent and keeps retrying. Ask an administrator to check the runtime image reference and that the cluster's nodes can pull from its registry.";
+        "Kubernetes cannot pull a container image for this Agent and keeps retrying. Ask an Installation administrator to check the runtime image reference and that the cluster's nodes can pull from its registry.";
       break;
     case "NAMESPACE_POD_QUOTA_EXCEEDED":
       // Fixed copy: never the quota's numbers or name (finding 1617).
       code = attempt.code;
       message =
-        "The Namespace's Pod quota is full. Stop or delete an Agent, or ask an administrator to raise the quota.";
+        "The Namespace's Pod quota is full. Stop or delete an Agent, or ask an Installation administrator to raise the quota.";
       break;
     case "WORKSPACE_NODE_PENDING":
       code = attempt.code;

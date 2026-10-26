@@ -141,23 +141,26 @@ func (app *application) refusalHint(command *cobra.Command, path string, err err
 	}
 	switch {
 	case strings.HasPrefix(apiErr.Message, admittedNamespacePrefix):
+		// OCC's message already says which Namespace the key works in and to ask an
+		// Installation administrator, so the hint adds only what to change here
+		// (finding D770).
 		namespace := apiErr.ServiceKeyNamespace
 		if installationCommands[path] {
 			// No --namespace helps here: the command reaches no Namespace (finding D740).
 			if !keyNamespacePattern.MatchString(namespace) {
-				return fmt.Sprintf("hint: \"occ %s\" needs an Installation-scoped key. This service key works only in one Namespace, so ask an Installation administrator to run it for you.", path)
+				return fmt.Sprintf("hint: \"occ %s\" needs an Installation-scoped key; no --namespace value helps.", path)
 			}
 			return fmt.Sprintf(
-				"hint: \"occ %s\" needs an Installation-scoped key. This service key works only in Namespace %s (read it with \"occ namespace get %s\"), so ask an Installation administrator to run it for you.",
-				path, namespace, namespace,
+				"hint: \"occ %s\" needs an Installation-scoped key; no --namespace value helps. Read this key's Namespace with \"occ namespace get %s\".",
+				path, namespace,
 			)
 		}
 		if !keyNamespacePattern.MatchString(namespace) {
-			return "hint: this service key is scoped to one Namespace; it cannot reach another Namespace or Installation-level commands such as \"occ namespace list\". Pass that Namespace's ID with --namespace (or OCC_NAMESPACE), read it with \"occ namespace get ID\", or use an Installation-scoped key."
+			return "hint: pass this key's Namespace ID with --namespace (or OCC_NAMESPACE) and read it with \"occ namespace get ID\"; other Namespaces and Installation-level commands such as \"occ namespace list\" need an Installation-scoped key."
 		}
 		return fmt.Sprintf(
-			"hint: this service key is scoped to Namespace %s; it cannot reach another Namespace or Installation-level commands such as \"occ namespace list\". Pass --namespace %s (or set OCC_NAMESPACE), read it with \"occ namespace get %s\", or use an Installation-scoped key.",
-			namespace, namespace, namespace,
+			"hint: pass --namespace %s (or set OCC_NAMESPACE) and read it with \"occ namespace get %s\"; other Namespaces and Installation-level commands such as \"occ namespace list\" need an Installation-scoped key.",
+			namespace, namespace,
 		)
 	case apiErr.Message == genericRefusal:
 	default:

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 
+import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -10,6 +11,7 @@ import {
   agentPrincipalDenied,
   callerDenied,
   createDenied,
+  createRestricted,
   currentHarnessAuthDenied,
   INSTALLATION_ADMINISTER_DENIED,
   NAMESPACE_CREATE_DENIED,
@@ -439,4 +441,67 @@ test("an Agent update's denial on the current Harness authentication says every 
       );
     }
   }
+});
+
+// A deny Restriction overrides every grant, administration included, and administration cannot
+// lift it. An Installation administrator it refuses is told so, as the console says (finding
+// D769): her own Namespace permission answer already shows administration without Agent create,
+// which only a Restriction causes. A member refused the same create keeps the plain text, which
+// never tells a Restriction from a missing grant.
+test("a create a Restriction denies names it only to an Installation administrator", async (t) => {
+  const auditSink = new InMemoryAuditSink();
+  const fixture = await createConsoleAppFixture(t, { auditSink });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Restricted creation", { ready: true });
+  const configuration = await fixture.createConfiguration(
+    namespace.id,
+    createHarnessConfiguration("openclaw", "gpt-4.1"),
+  );
+  const secret = await fixture.createSecret(
+    namespace.id,
+    "restricted-model-key",
+    `synthetic-restricted-${randomUUID()}`,
+  );
+  const member = await memberSession(fixture, "restricted-member", namespace.id, [
+    ["read", "namespace"],
+  ]);
+  fixture.policy.restrictions.push({
+    id: "deny-agent-create",
+    namespaceId: namespace.id,
+    resourceKind: "agent",
+    action: "create",
+    effect: "deny",
+  });
+  const path = `/namespaces/${namespace.id}/agents`;
+  const body = {
+    name: "Refused Agent",
+    configurationId: configuration.id,
+    harnessAuth: { method: "api_key", source: secret.ref },
+  };
+  const firstEvent = auditSink.events.length;
+
+  const administrator = await fixture.request("POST", path, { body });
+  assertApiError(administrator, 403, "FORBIDDEN", "administrator");
+  assert.equal(administrator.body.error.message, createRestricted("Agent", namespace.id));
+  const refused = await fixture.request("POST", path, { session: member, body });
+  assertApiError(refused, 403, "FORBIDDEN", "member");
+  assert.equal(refused.body.error.message, createDenied("Agent", namespace.id));
+  // Checking administration is not audited: each refused create records its one denial.
+  assert.deepEqual(
+    auditSink.events
+      .slice(firstEvent)
+      .map((event) => [
+        event.kind,
+        event.authorization?.action,
+        event.authorization?.resource.kind,
+      ]),
+    [
+      ["authorization_denial", "create", "agent"],
+      ["authorization_denial", "create", "agent"],
+    ],
+  );
+
+  // Without the Restriction the administrator creates the Agent: the text followed the rule.
+  fixture.policy.restrictions.pop();
+  assert.equal((await fixture.request("POST", path, { body })).status, 201);
 });

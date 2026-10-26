@@ -167,7 +167,9 @@ without endpoint support cannot serve workspace files.
 session or scoped service API key. Native Agent credentials cannot invoke this
 administration surface. `GET` needs Agent `read`; `PUT` needs Agent `operate`
 and, for session callers, passes the browser CSRF boundary. OCC resolves the
-selected AgentRevision before Compute endpoint resolution.
+selected AgentRevision before Compute endpoint resolution. After that grant, an
+Agent with no running version (stopped, never deployed, or still activating)
+gets `409 RESOURCE_CONFLICT` naming the Agent and the next step.
 
 Names, the `PUT` body, and content and body limits follow the
 [live file contract](../reference/agents.md#live-file-access). The deadline and
@@ -362,6 +364,8 @@ replays it. Cleanup closes the native client.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-26: An Agent with no running version answers `409` instead of `503`. (fix-dogfood-r51)
 
 - 2026-10-14: Merge current contracts with native provisioning and retained-workspace preparation. (Codex/01a13654-be66-7741-b54f-f8ae80f2d496)
 
