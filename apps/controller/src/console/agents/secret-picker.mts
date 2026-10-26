@@ -140,6 +140,41 @@ export function clearResolvedSecretNames() {
 const secretNameKey = (context: SecretContext, secretId: string) =>
   context.operatorId ? JSON.stringify([context.operatorId, context.namespaceId, secretId]) : null;
 
+// Secret metadata reads per view, by path. A channel card re-renders its bindings many times per
+// Configuration JSON edit and per submit, and each render asked again: about 386 reads per edit
+// with two bound Secrets (finding 2601). The Console makes a request function per mounted view
+// (and the Agent page one per tab), so keying by it scopes the answers to that view: a new view
+// reads again. A failed read is dropped, so the next render asks again.
+type SecretRequest = NonNullable<SecretContext["request"]>;
+const secretMetadataReads = new WeakMap<SecretRequest, Map<string, Promise<unknown>>>();
+function readSecretMetadata(request: SecretRequest, href: string) {
+  let reads = secretMetadataReads.get(request);
+  if (!reads) {
+    reads = new Map();
+    secretMetadataReads.set(request, reads);
+  }
+  const known = reads.get(href);
+  if (known) {
+    return known;
+  }
+  const read = request(href);
+  reads.set(href, read);
+  read.catch(() => {
+    if (reads.get(href) === read) {
+      reads.delete(href);
+    }
+  });
+  return read;
+}
+/** Drops the view's answer for a Secret a field just bound, so its summary reads it fresh. */
+function forgetSecretMetadata(context: SecretContext, secretId: string) {
+  if (typeof context.request === "function" && context.namespaceId) {
+    secretMetadataReads
+      .get(context.request)
+      ?.delete(secretMetadataPath(context.namespaceId, secretId));
+  }
+}
+
 function secretMetadataLink(href: string, name: string) {
   return element(
     "a",
@@ -177,8 +212,7 @@ export function renderSecretReference(context: SecretContext, source?: SecretRef
   } else {
     node.replaceChildren(secretMetadataLink(href, known));
   }
-  context
-    .request(href)
+  readSecretMetadata(context.request, href)
     .then((value) => {
       if (context.isCurrent && !context.isCurrent()) {
         return;
@@ -620,6 +654,7 @@ export function createSecretReferenceField({
         listedHint = false;
         return;
       }
+      forgetSecretMetadata(context, secret.id);
       await onSecretSelected(secret);
       if (!isCurrent()) {
         return;

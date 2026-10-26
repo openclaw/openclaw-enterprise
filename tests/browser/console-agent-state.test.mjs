@@ -34,7 +34,9 @@ import {
   AGENT_STOP_DENIED,
   askForGrant,
   MALFORMED_REQUEST,
+  RESOURCE_CONFLICT,
   stopRefused,
+  NEW_VERSIONS_READ,
 } from "../helpers/refusal-text.mjs";
 
 function deploymentBody(
@@ -825,7 +827,9 @@ test("Agent detail says when the current or requested version cannot be read", a
   await page
     .locator(".agent-status-line")
     .getByText(
-      /Each new version needs its own AgentRevision read: ask an Installation administrator to grant it after each deployment\. If this Agent is set up for a channel such as Slack, you can message it there when that channel allows you\.$/,
+      new RegExp(
+        `${RegExp.escape(NEW_VERSIONS_READ)} If this Agent is set up for a channel such as Slack, you can message it there when that channel allows you\\.$`,
+      ),
     )
     .waitFor();
   await page.getByRole("heading", { name: "You cannot read this version" }).waitFor();
@@ -1663,7 +1667,7 @@ test("Agents list row Stop and Delete show the API's 400 and 409 reasons", async
     [
       "delete",
       409,
-      "The requested platform resource already exists.",
+      RESOURCE_CONFLICT,
       "Refused Row changed while the request was sent. Select Refresh before trying again.",
     ],
     ["delete", 400, "The request does not match the operation contract.", MALFORMED_REQUEST],

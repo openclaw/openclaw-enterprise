@@ -64,11 +64,13 @@ import {
   DEPENDENCY_UNAVAILABLE,
   GENERIC_DENIAL,
   MALFORMED_REQUEST,
+  RESOURCE_CONFLICT,
   RESOURCE_NOT_FOUND,
   SANDBOX_POLICY_READ_DENIED,
   WORKSPACE_FILES_UNAVAILABLE,
   askForGrant,
   notIncluded,
+  deleteRefused,
 } from "../helpers/refusal-text.mjs";
 
 // The Console Browser lane runs the two Agent detail test files in parallel.
@@ -486,25 +488,17 @@ test("Repeat deletion preserves bounded retry ownership feedback and ordinary de
   };
   await confirm();
   await page.getByRole("alert").getByText(ownership, { exact: true }).waitFor();
-  await expectNoText(page, "Ask an Installation administrator for Agent delete on it", () =>
-    waitForIdleFetches(page),
-  );
+  await expectNoText(page, askForGrant("Agent delete on it"), () => waitForIdleFetches(page));
   assert.equal(writes, 1);
   await page.clock.fastForward(DELETION_POLL_MS * 2);
   await page.getByRole("alert").getByText(ownership, { exact: true }).waitFor();
   assert.equal(writes, 1);
   serverMessage = GENERIC_DENIAL;
   await confirm();
-  await page
-    .getByRole("alert")
-    .getByText("You do not have permission to delete this Agent", { exact: false })
-    .waitFor();
+  await page.getByRole("alert").getByText(deleteRefused("this Agent"), { exact: false }).waitFor();
   assert.equal(writes, 2);
   await page.clock.fastForward(DELETION_POLL_MS * 2);
-  await page
-    .getByRole("alert")
-    .getByText("You do not have permission to delete this Agent", { exact: false })
-    .waitFor();
+  await page.getByRole("alert").getByText(deleteRefused("this Agent"), { exact: false }).waitFor();
   await page.getByRole("button", { name: "Refresh deletion status", exact: true }).click();
   await page.getByRole("alert").waitFor({ state: "hidden" });
   assert.equal(writes, 2);
@@ -526,7 +520,7 @@ test("Agent page Stop shows the API's 400 and 409 reasons", async (t) => {
     [
       "generic conflict",
       409,
-      "The requested platform resource already exists.",
+      RESOURCE_CONFLICT,
       "This Agent lifecycle changed while stopping. Refresh stop status before trying again.",
     ],
   ]) {
@@ -2699,8 +2693,7 @@ test("an Agent reader meets no refused read on Repositories, Policy denials or L
       "The version draft selects no repositories. The Agent runs without repository access.",
     )
     .waitFor();
-  await settle();
-  await expectNoText(page, /Repository choices are denied/);
+  await expectNoText(page, /Repository choices are denied/, settle);
   assert.equal(await page.getByRole("button", { name: "Retry repository choices" }).count(), 0);
   assert.equal(await page.getByRole("button", { name: "Save repository access" }).count(), 0);
 
@@ -2713,10 +2706,10 @@ test("an Agent reader meets no refused read on Repositories, Policy denials or L
     .waitFor();
   const noPolicyAccess = page.getByText(SANDBOX_POLICY_READ_DENIED);
   await noPolicyAccess.first().waitFor();
-  await settle();
   await expectNoText(
     page,
     /Deploy an Agent to load Sandbox policy decisions|permission to read|Suggestions come from|No Driver configurations/,
+    settle,
   );
   // The sentence names the suggestions too, so it is said once, on the network policy card: no
   // suggestions card repeats it (finding 2522).
@@ -2740,10 +2733,10 @@ test("an Agent reader meets no refused read on Repositories, Policy denials or L
       { exact: true },
     )
     .waitFor();
-  await settle();
   await expectNoText(
     page,
     /permission to read|no such runtime log source|window: unavailable|Denials in the loaded window/,
+    settle,
   );
   await sayOnce();
   // With no denial log, the window's controls could only show nothing; only the reason stays

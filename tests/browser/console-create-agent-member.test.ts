@@ -35,6 +35,7 @@ import {
   NEW_SECRET_OPERATE_DENIED,
   NEW_SECRET_OPERATE_REMEDY,
   SECRET_OPERATE_DENIED,
+  AGENT_CREATE_INSTALLATION_DENIED,
 } from "../helpers/refusal-text.mjs";
 
 // Create Agent for a Namespace member (UX plan A2, spec 3.11; findings 1901, 493). The real
@@ -51,8 +52,7 @@ const MEMBER_CREDENTIAL_ACCESS =
   "An Installation administrator then gives the new Agent access to its Secrets.";
 const MEMBER_GRANT_REFUSED =
   "The Agent was created as a draft. Giving it access to its saved model and channel Secrets needs Installation administration. Ask an Installation administrator to open the saved Agent and grant it.";
-const INSTALLATION_REFUSAL =
-  "Creating an Agent needs Installation access that your account does not have. Ask an Installation administrator to create this Agent.";
+const INSTALLATION_REFUSAL = AGENT_CREATE_INSTALLATION_DENIED;
 
 // Every console API answer, as "METHOD path status".
 function apiResponses(page: Page, origin: string) {

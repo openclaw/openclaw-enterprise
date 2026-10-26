@@ -4,6 +4,7 @@ import { registerHooks } from "node:module";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
+import { SIGN_IN_UNAVAILABLE } from "../helpers/refusal-text.mjs";
 
 const controllerURL = new URL("../../apps/controller/src/auth/index.ts", import.meta.url);
 
@@ -88,8 +89,7 @@ async function constructionAndRefusal() {
     body: {
       error: {
         code: "DEPENDENCY_UNAVAILABLE",
-        message:
-          "Sign-in is temporarily unavailable. Try again shortly. If it continues, ask an operator to check the API logs.",
+        message: SIGN_IN_UNAVAILABLE,
       },
       meta: { requestId: "auth-binding-request" },
     },

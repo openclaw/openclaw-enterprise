@@ -4,7 +4,11 @@ import test, { type TestContext } from "node:test";
 import type { Locator, Page } from "playwright";
 
 import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
-import { SECRET_CREATE_DENIED, SECRET_NAME_CONFLICT } from "../helpers/refusal-text.mjs";
+import {
+  RESOURCE_CONFLICT,
+  SECRET_CREATE_DENIED,
+  SECRET_NAME_CONFLICT,
+} from "../helpers/refusal-text.mjs";
 import { createConsoleAppFixture as createBaseConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   apiRequests,
@@ -654,7 +658,7 @@ for (const viewport of consoleViewports) {
       "Secret creation conflicted. A Secret with this name may already exist in this Namespace. Check the name and Namespace state before trying again.";
     for (const response of [
       proxyErrorResponse(409),
-      apiErrorResponse(409, "RESOURCE_CONFLICT", "The requested platform resource already exists."),
+      apiErrorResponse(409, "RESOURCE_CONFLICT", RESOURCE_CONFLICT),
     ]) {
       refusal = response;
       await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();

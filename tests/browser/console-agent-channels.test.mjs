@@ -1119,8 +1119,9 @@ describe("Agent channels", { concurrency: 3 }, () => {
       assert.equal(await page.getByRole("button", { name: "Retry Secret access" }).count(), 0);
       // The save finished and nothing this member can do confirms the grant, so Deploy is not
       // held: the API checks the Agent's access when it deploys (finding 2547).
-      await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
-      await expectNoText(page, "Resolve the saved Secret access grant before deploying.");
+      await expectNoText(page, "Resolve the saved Secret access grant before deploying.", () =>
+        waitForEnabled(page.getByRole("button", { name: "Deploy new version" })),
+      );
       const configuration = await fixture.request(
         "GET",
         `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,

@@ -9,6 +9,7 @@ import {
   knownDeviceFromCookieHeader,
   verifyKnownDevice,
 } from "../../apps/controller/src/auth/known-device.ts";
+import { SIGN_IN_UNAVAILABLE } from "../helpers/refusal-text.mjs";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
 const { memoryAdapter } = await import(require.resolve("better-auth/adapters/memory"));
@@ -21,8 +22,7 @@ const password = "audited-account-password";
 const secret = "password-sign-in-audit-secret-at-least-32-bytes";
 
 const REFUSED = "The caller did not provide valid authentication credentials.";
-const UNAVAILABLE =
-  "Sign-in is temporarily unavailable. Try again shortly. If it continues, ask an operator to check the API logs.";
+const UNAVAILABLE = SIGN_IN_UNAVAILABLE;
 
 // An outage and a rate limit each say what happened; neither reads as a wrong password.
 function assertUnavailable(response) {

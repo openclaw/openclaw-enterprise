@@ -48,6 +48,7 @@ import {
   repositoryAttempts,
   repositoryBoundary,
 } from "../helpers/postgres-worker-revision-support.mjs";
+import { POD_QUOTA_FULL, IMAGE_PULL_FAILING } from "../helpers/refusal-text.mjs";
 
 // Deployment, dispatch, convergence and the persisted lifecycle. Credential-source withdrawals and
 // listed sources that lose their grant or readiness are in the -credential-sources sibling; the
@@ -1442,8 +1443,7 @@ revisionTest(
     // Finding 1617: a full Namespace Pod quota is named, without its numbers.
     assert.deepEqual(await progress(overQuota, overQuotaRevision), {
       code: "NAMESPACE_POD_QUOTA_EXCEEDED",
-      message:
-        "The Namespace's Pod quota is full. Stop or delete an Agent, or ask an administrator to raise the quota.",
+      message: POD_QUOTA_FULL,
     });
     // Finding 1677: Kubernetes is restarting a failed workspace setup that may still pass.
     assert.deepEqual(await progress(setupRetrying, setupRetryingRevision), {
@@ -1454,8 +1454,7 @@ revisionTest(
     // Finding 1762: the kubelet cannot pull an image; fixed copy, never the image reference.
     assert.deepEqual(await progress(imagePull, imagePullRevision), {
       code: "REVISION_IMAGE_PULL_FAILED",
-      message:
-        "Kubernetes cannot pull a container image for this Agent and keeps retrying. Ask an administrator to check the runtime image reference and that the cluster's nodes can pull from its registry.",
+      message: IMAGE_PULL_FAILING,
     });
     const firstDelay = async (revision) => {
       const recorded = delays.get(revision.idempotencyKey);

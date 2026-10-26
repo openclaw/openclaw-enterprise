@@ -35,11 +35,11 @@ import {
   AGENT_SOURCES_DENIED,
   AGENT_STOP_DENIED,
   AGENT_UPDATE_DENIED,
-  askForGrant,
   CONFIGURATION_SAVE_DENIED,
   DIAGNOSTICS_DENIED,
   stopRefused,
   WORKSPACE_SAVE_DENIED,
+  permissionRefused,
 } from "../helpers/refusal-text.mjs";
 
 // Every test opens its own context in one Chromium per file.
@@ -56,8 +56,10 @@ const AGENT_SOURCES_SERVICE_ACCOUNT_DENIED =
   "Saving these settings needs operate on each Secret and credential source this Agent and its Configuration bind, and read on the ServiceAccount it uses for Harness authentication. Your access does not include all of them. Ask an Installation administrator for that access.";
 const AGENT_CONFIGURATION_READ_DENIED =
   "Saving these settings needs read access to this Agent's Configuration, which your access does not include. Ask an Installation administrator for Configuration read on it.";
-const READ_REFUSAL =
-  "You do not have permission to read this Agent's saved settings. Ask an Installation administrator for Agent read and Configuration read on it.";
+const READ_REFUSAL = permissionRefused(
+  "read this Agent's saved settings",
+  "Agent read and Configuration read on it",
+);
 
 // A member who can read the Namespace's Agents and Configurations but change nothing.
 const READER = "save-refusal-reader";
@@ -601,11 +603,7 @@ test("a refused workspace file save names Agent operate", async (t) => {
   await page.getByText("AGENTS.md loaded.", { exact: true }).waitFor();
   await editor.fill("after");
   await page.getByRole("button", { name: "Save AGENTS.md", exact: true }).click();
-  await page
-    .getByText(
-      `You do not have permission to save this file. ${askForGrant("Agent operate on it")}`,
-    )
-    .waitFor();
+  await page.getByText(permissionRefused("save this file", "Agent operate on it")).waitFor();
   assert.equal(await editor.inputValue(), "after");
 });
 

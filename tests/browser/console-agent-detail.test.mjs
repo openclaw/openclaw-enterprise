@@ -88,6 +88,7 @@ import {
   credentialCheckedAtDeploy,
   namespaceListDenied,
   secretOperateRefused,
+  stopRefused,
 } from "../helpers/refusal-text.mjs";
 
 test("Agent detail separates the current version, viewed version, and latest deployment", async (t) => {
@@ -2543,9 +2544,6 @@ const HARNESS_GRANT_MISSING =
 // A member's save sends no grant: the deploy checks the Agent's access (finding D748).
 const HARNESS_SAVED_FOR_MEMBER = `Authentication source saved. ${credentialCheckedAtDeploy("Secret")}`;
 
-// Matches a fixed sentence inside a pattern that also matches a random request ID.
-const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
 test("Agent credentials report partial harness Secret grant failure", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -2628,7 +2626,7 @@ test("Agent credentials report partial harness Secret grant failure", async (t) 
   await page
     .getByText(
       new RegExp(
-        `^${escapeRegExp(`Authentication source saved, but this Agent could not be read before retrying its credential access. ${callerDenied("Agent read", `Agent ${agent.id}`)}`)} Request ID: req_[0-9a-f-]{36} Select Retry credential access once the Agent can be read\\.$`,
+        `^${RegExp.escape(`Authentication source saved, but this Agent could not be read before retrying its credential access. ${callerDenied("Agent read", `Agent ${agent.id}`)}`)} Request ID: req_[0-9a-f-]{36} Select Retry credential access once the Agent can be read\\.$`,
       ),
     )
     .waitFor();
@@ -2725,8 +2723,15 @@ test("Agent credentials settle a member's harness Secret save and say who grants
     await waitForEnabled(page.locator("#harness-auth-method"));
     await waitForEnabled(page.getByLabel("API key Secret", { exact: true }));
     const deploy = page.getByRole("button", { name: "Deploy new version" });
-    await waitForEnabled(deploy);
-    await expectNoText(page, "Confirm authentication and Secret access in Credentials");
+    await expectNoText(page, "Confirm authentication and Secret access in Credentials", () =>
+      waitForEnabled(deploy),
+    );
+    // The rebuilt tab still offers no Retry, still holds nothing and stays editable.
+    await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+    await page.getByRole("tab", { name: "Credentials", exact: true }).click();
+    await waitForEnabled(save);
+    assert.equal(await page.getByRole("button", { name: "Retry credential access" }).count(), 0);
+    assert.equal(await deploy.isDisabled(), false);
     // Another selection is staged, and the card says only that, not "saved" beside it.
     await selectSecret(page, "API key Secret", otherSecret);
     await page.getByText("Secret binding staged. Save changes to apply it.").waitFor();
@@ -3600,7 +3605,7 @@ test("Agent stop denial keeps the Agent running with permission feedback", async
     .click();
   assert.equal((await denied).status(), 403);
 
-  await page.getByText("You do not have permission to stop this Agent").waitFor();
+  await page.getByText(stopRefused("this Agent")).waitFor();
   assert.equal(agentStopRequests(requests, namespace.id, agent.id).length, 1);
   await waitForEnabled(page.getByRole("button", { name: "Stop Agent" }));
   const current = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
@@ -4700,40 +4705,6 @@ test("a channel Secrets save may replace a bound Secret the member cannot operat
   assert.equal((await drawerSaving).status(), 200);
 });
 
-// The Channels drawer saves the same bindings. While the administrator's bot token Secret stays
-// bound, its save is refused before any request; replacing it saves (finding 2444).
-test("the Channels drawer save must replace a bound Secret the member cannot operate", async (t) => {
-  const { fixture, namespace, agent, member, app, own, configurationPath } =
-    await replaceSecretFixture(t, "Replaced drawer editor");
-  const { page } = await newPage(t, fixture);
-  const requests = apiRequests(page, fixture.origin);
-  await login(
-    page,
-    fixture,
-    detailUrl(fixture, namespace.id, agent.id, "draft", "channels"),
-    member.credentials,
-  );
-  await page.getByRole("button", { name: "Edit Slack" }).click();
-  const dialog = page.getByRole("dialog", { name: "Edit Slack" });
-  await dialog.getByText(REPLACE_BOT_TOKEN, { exact: false }).waitFor();
-  // A channel setting alone keeps the administrator's Secret bound: refused up front.
-  await dialog.getByLabel("Require a mention").setChecked(false);
-  requests.length = 0;
-  await dialog.getByRole("button", { name: "Save configuration" }).click();
-  await dialog.getByText(KEEPS_BOT_TOKEN, { exact: true }).waitFor();
-  assert.deepEqual(nonAuthWriteRequests(requests), []);
-  // With the member's own Secret for the bot token the same save goes through.
-  await selectSecret(dialog, "Slack bot token", own);
-  const saving = page.waitForResponse(
-    (r) => r.request().method() === "PATCH" && r.url().endsWith(configurationPath),
-  );
-  await dialog.getByRole("button", { name: "Save configuration" }).click();
-  assert.equal((await saving).status(), 200);
-  const saved = await fixture.request("GET", configurationPath);
-  assert.equal(saved.data.secretBindings.SLACK_BOT_TOKEN.source.id, own.id);
-  assert.equal(saved.data.secretBindings.SLACK_APP_TOKEN.source.id, app.id);
-});
-
 // Binding a Secret needs Secret operate on it. A Configuration editor with operate on only the
 // two bound Slack Secrets was offered a third readable Secret, saw it staged, and met a 403 that
 // asked for the Configuration update they had (finding 2453, D710). Each Secret field now lists
@@ -5286,12 +5257,12 @@ test("a Plugins tab shown before the reread answers becomes editable when it lan
 
 // Disable Slack saves no bindings, so it keeps the administrator's bot token Secret bound and the
 // API would refuse it. The card offers it disabled, naming the binding to rebind first; after Edit
-// Slack rebinds it, Disable saves (finding 2471).
-test("Disable Slack waits until the replace persona rebinds the denied Secret", async (t) => {
-  const { fixture, namespace, agent, member, own, configurationPath } = await replaceSecretFixture(
-    t,
-    "Replaced disable editor",
-  );
+// Slack rebinds it, Disable saves (finding 2471). The Channels drawer saves the same bindings:
+// while the administrator's bot token Secret stays bound, its save is refused before any request;
+// replacing it saves (finding 2444).
+test("the Channels drawer and Disable Slack wait until the replace persona rebinds the denied Secret", async (t) => {
+  const { fixture, namespace, agent, member, app, own, configurationPath } =
+    await replaceSecretFixture(t, "Replaced disable editor");
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(
@@ -5307,12 +5278,23 @@ test("Disable Slack waits until the replace persona rebinds the denied Secret", 
 
   await page.getByRole("button", { name: "Edit Slack" }).click();
   const dialog = page.getByRole("dialog", { name: "Edit Slack" });
+  await dialog.getByText(REPLACE_BOT_TOKEN, { exact: false }).waitFor();
+  // A channel setting alone keeps the administrator's Secret bound: refused up front.
+  await dialog.getByLabel("Require a mention").setChecked(false);
+  requests.length = 0;
+  await dialog.getByRole("button", { name: "Save configuration" }).click();
+  await dialog.getByText(KEEPS_BOT_TOKEN, { exact: true }).waitFor();
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+  // With the member's own Secret for the bot token the same save goes through.
   await selectSecret(dialog, "Slack bot token", own);
   const rebinding = page.waitForResponse(
     (r) => r.request().method() === "PATCH" && r.url().endsWith(configurationPath),
   );
   await dialog.getByRole("button", { name: "Save configuration" }).click();
   assert.equal((await rebinding).status(), 200);
+  const rebound = await fixture.request("GET", configurationPath);
+  assert.equal(rebound.data.secretBindings.SLACK_BOT_TOKEN.source.id, own.id);
+  assert.equal(rebound.data.secretBindings.SLACK_APP_TOKEN.source.id, app.id);
   await expectNoText(page, DISABLE_KEEPS_BOT_TOKEN, () => waitForEnabled(disable));
   const disabling = page.waitForResponse(
     (r) => r.request().method() === "PATCH" && r.url().endsWith(configurationPath),

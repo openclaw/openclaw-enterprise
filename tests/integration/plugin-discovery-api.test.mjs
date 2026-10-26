@@ -4,7 +4,11 @@ import test from "node:test";
 
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
-import { callerDenied, GENERIC_DENIAL } from "../helpers/refusal-text.mjs";
+import {
+  callerDenied,
+  GENERIC_DENIAL,
+  EMBEDDED_API_KEY_REQUIRED,
+} from "../helpers/refusal-text.mjs";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { codexRuntimeArtifact } from "../../apps/controller/src/drivers/plugin/runtime-translator.ts";
@@ -763,10 +767,7 @@ test("Saved Agent plugin discovery rejects unsupported Harness authentication or
     },
   });
   assert.equal(embedded.status, 400, JSON.stringify(embedded.body));
-  assert.equal(
-    embedded.body.error.message,
-    "Agent setting harnessAuth.method must be api_key for embedded OpenClaw on Kubernetes Compute: change harnessAuth or executionMode.",
-  );
+  assert.equal(embedded.body.error.message, EMBEDDED_API_KEY_REQUIRED);
   // Stored discovery reads only a Secret-backed PAT today, so a dedicated Codex Agent whose
   // PAT comes from a managed ServiceAccount is refused like the other unsupported sources.
   const account = await fixture.state.transact((unit) =>

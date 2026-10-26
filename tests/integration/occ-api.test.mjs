@@ -45,6 +45,8 @@ import {
   callerDenied,
   referenceFormRefusal,
   sentIdHidden,
+  unboundReferenceRefusal,
+  unsubstitutedReferenceRefusal,
 } from "../helpers/refusal-text.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
@@ -8355,8 +8357,8 @@ test("Agent provisioning and deploy name a refused channel token reference form 
         },
       ),
     });
-  const setting = (requirement) => `Configuration setting channels.slack.botToken ${requirement}.`;
   const form = (name) => referenceFormRefusal("channels.slack.botToken", name);
+  const unbound = unboundReferenceRefusal("channels.slack.botToken", "SLACK_SPARE_TOKEN");
   const forms = [
     ["xoxb-${SLACK_BOT_TOKEN}", form("otherText")],
     // Finding 2517: a token pasted as the value names the setting the same way.
@@ -8366,25 +8368,10 @@ test("Agent provisioning and deploy name a refused channel token reference form 
     ["${SLACK_BOT_TOKEN}${SLACK_APP_TOKEN}", form("otherText")],
     ["${SLACK_BOT_TOKEN:-}", form("fallback")],
     ["$SLACK_BOT_TOKEN", form("shorthand")],
-    [
-      "${slack_bot}",
-      setting(
-        "contains ${slack_bot}, which the runtime does not substitute: use an uppercase ${NAME} bound to a Secret in secretBindings, or escape literal text as $${NAME}",
-      ),
-    ],
-    [
-      "${SLACK_SPARE_TOKEN}",
-      setting(
-        "references SLACK_SPARE_TOKEN without a Configuration Secret binding: bind SLACK_SPARE_TOKEN in secretBindings to an environment-backed Secret, or remove the reference",
-      ),
-    ],
+    ["${slack_bot}", unsubstitutedReferenceRefusal("channels.slack.botToken", "${slack_bot}")],
+    ["${SLACK_SPARE_TOKEN}", unbound],
     // Finding 2520: the binding rule answers before the form rule, at save and at deploy.
-    [
-      "xoxb-${SLACK_SPARE_TOKEN}",
-      setting(
-        "references SLACK_SPARE_TOKEN without a Configuration Secret binding: bind SLACK_SPARE_TOKEN in secretBindings to an environment-backed Secret, or remove the reference",
-      ),
-    ],
+    ["xoxb-${SLACK_SPARE_TOKEN}", unbound],
   ];
   for (const [botToken, message] of forms) {
     const refused = await provision(botToken);
