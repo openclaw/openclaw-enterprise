@@ -319,6 +319,7 @@ for (const scenario of [
   "already-absent",
   "partial-network",
   "partial-volume",
+  "surviving-volume",
   "failed-volume-removal",
 ]) {
   test(`cleanup verifies owned cluster absence: ${scenario}`, async (t) => {
@@ -342,6 +343,7 @@ for (const scenario of [
                 "already-absent",
                 "partial-network",
                 "partial-volume",
+                "surviving-volume",
                 "failed-volume-removal",
               ].includes(scenario)
             ? "  printf '[]\\n'"
@@ -370,6 +372,11 @@ for (const scenario of [
             ? `if [ "$1" = "volume" ] && [ "$2" = "rm" ]; then touch ${JSON.stringify(removed)}; fi`
             : 'if [ "$1" = "volume" ] && [ "$2" = "rm" ]; then exit 7; fi'
           : "",
+        // The removal answers success, but the labelled list still names the volume afterwards;
+        // the name check does not, so only the list after the removal catches it.
+        scenario === "surviving-volume"
+          ? `if [ "$1" = "volume" ] && [ "$2" = "ls" ]; then case "$*" in *label=*) printf '%s\\n' ${JSON.stringify(`k3d-${clusterName}-images`)};; esac; fi`
+          : "",
         "",
       ].join("\n"),
       { log: dockerLog },
@@ -395,6 +402,16 @@ for (const scenario of [
         );
       }
       assert.doesNotMatch(await readFile(log, "utf8"), /cluster delete/);
+      if (scenario === "already-absent") {
+        // An empty labelled list is not asked again (finding 2591); the name check still runs.
+        assert.deepEqual(
+          (await commandCalls(dockerLog)).map((call) => call.match(/--filter (\S+)/)?.[1]),
+          ["containers", "networks", "volumes"].flatMap(() => [
+            `label=k3d.cluster=${clusterName}`,
+            `name=k3d-${clusterName}`,
+          ]),
+        );
+      }
       await assert.rejects(() => stat(statePath), { code: "ENOENT" });
     } else {
       assert.notEqual(result.status, 0);
@@ -404,9 +421,11 @@ for (const scenario of [
           ? /remains after deletion/
           : scenario === "partial-network"
             ? /Possible owned k3d networks remain/
-            : scenario === "failed-volume-removal"
-              ? /volume rm/
-              : /invalid cluster inventory/,
+            : scenario === "surviving-volume"
+              ? /Possible owned k3d volumes remain/
+              : scenario === "failed-volume-removal"
+                ? /volume rm/
+                : /invalid cluster inventory/,
       );
       assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), state);
       assert.equal((await stat(clusterDirectory)).isDirectory(), true);
