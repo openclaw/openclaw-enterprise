@@ -6,6 +6,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import type { Static } from "typebox";
 import {
+  askAdministratorTo,
   SECRET_CREATE_DENIED,
   SECRET_DELETE_DENIED,
   SECRET_READ_DENIED,
@@ -453,7 +454,7 @@ export function renderSecrets(
         statusBlock(
           "info",
           null,
-          `${consumers.unreadable} additional consumer(s) cannot be shown with your access. Ask an Installation administrator to inspect them.`,
+          `${consumers.unreadable} additional consumer(s) cannot be shown with your access. ${askAdministratorTo("inspect them")}`,
         ),
       );
     }

@@ -4,7 +4,7 @@ import test, { type TestContext } from "node:test";
 import type { Locator, Page } from "playwright";
 
 import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
-import { SECRET_NAME_CONFLICT } from "../helpers/refusal-text.mjs";
+import { SECRET_CREATE_DENIED, SECRET_NAME_CONFLICT } from "../helpers/refusal-text.mjs";
 import { createConsoleAppFixture as createBaseConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   apiRequests,
@@ -607,10 +607,7 @@ for (const viewport of consoleViewports) {
         apiErrorResponse(409, "NAMESPACE_NOT_READY", "refused"),
         "This Namespace is not ready, so it cannot store Secrets yet.",
       ],
-      [
-        apiErrorResponse(403, "FORBIDDEN", "refused"),
-        "Your access does not include creating Secrets in this Namespace. Only an Installation administrator can create Secrets: ask one to create it and to give you Secret read and operate on it.",
-      ],
+      [apiErrorResponse(403, "FORBIDDEN", "refused"), SECRET_CREATE_DENIED],
       [proxyErrorResponse(429), "Too many requests. Wait before trying again."],
     ] as const;
     // While the request runs, every control that could change or reveal the value is disabled.

@@ -43,6 +43,7 @@ import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.
 import { createPolicyConsole } from "./console-sandbox-policy-fixture.ts";
 import {
   AGENT_SAVE_DENIED,
+  askForGrant,
   CHANNEL_SECRETS_CONFIGURATION_CHANGED,
   CONFIGURATION_SAVE_DENIED,
   DEPENDENCY_UNAVAILABLE,
@@ -234,13 +235,12 @@ test("A refused policy read offers no Retry", async (t) => {
   await tab
     .getByRole("alert")
     .filter({
-      hasText:
-        "You do not have permission to read this Agent’s policy. Ask an Installation administrator for SandboxPolicy read on it.",
+      hasText: `You do not have permission to read this Agent’s policy. ${askForGrant("SandboxPolicy read on it")}`,
     })
     .waitFor();
   await tab
     .getByText(
-      "You do not have permission to read policy suggestions. Ask an Installation administrator for SandboxPolicy read on it.",
+      `You do not have permission to read policy suggestions. ${askForGrant("SandboxPolicy read on it")}`,
     )
     .waitFor();
   assert.equal(await tab.getByRole("button", { name: "Retry policy read" }).count(), 0);
@@ -1600,7 +1600,7 @@ test("Agent deployment shows the API's typed 403 and 409 refusals", async (t) =>
   // 2260).
   await page
     .getByText(
-      "Deployment denied. Check Agent deploy permission and access to selected Secrets. First deployment also needs Agent read and operate permissions to create connection credentials. Granting them needs Installation administration access: ask an Installation administrator to check these grants.",
+      "Deployment denied. Check Agent deploy permission and access to selected Secrets. First deployment also needs Agent read and operate permissions to create connection credentials. Ask an Installation administrator to check these grants.",
       { exact: true },
     )
     .waitFor();

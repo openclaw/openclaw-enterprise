@@ -17,13 +17,13 @@ import {
   keptResources,
 } from "./lifecycle-confirmation.mjs";
 import {
+  AGENT_CREATE_DENIED,
   AGENT_DELETE_DENIED,
   AGENT_STOP_DENIED,
   askForGrant,
   notIncluded,
 } from "./access-reasons.mjs";
 import {
-  AGENT_CREATE_DENIED,
   type AgentNavigation,
   NAMESPACE_MISSING,
   NAMESPACE_RECHECK_MS,
@@ -380,8 +380,15 @@ export function renderAgentList(context: AgentListContext) {
           return;
         }
         const neutral = neutralDeploymentOutcome(result.status);
-        if (!neutral && result.status.status === "failed" && !item.activeRevisionId) {
-          failedFirstDeployments.add(item.id);
+        // Each read decides again: a retained list rereads on resume, and a first deployment
+        // retried since then (queued or deploying) keeps Stop, as on Agent detail (finding 2580).
+        const failedFirst = !neutral && result.status.status === "failed" && !item.activeRevisionId;
+        if (failedFirst !== failedFirstDeployments.has(item.id)) {
+          if (failedFirst) {
+            failedFirstDeployments.add(item.id);
+          } else {
+            failedFirstDeployments.delete(item.id);
+          }
           updateRowActions(item.id);
         }
         const failure =
@@ -688,7 +695,7 @@ export function renderAgentList(context: AgentListContext) {
         "stopping or deleting this Agent",
         "Agent operate and Agent delete on it",
       );
-      grant = "Needs operate and delete";
+      grant = "Needs Agent operate and delete";
     } else if (!canStop) {
       restriction = AGENT_STOP_DENIED;
       grant = "Needs Agent operate";

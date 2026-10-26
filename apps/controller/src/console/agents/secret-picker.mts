@@ -15,7 +15,13 @@ import {
   statusBlock,
   validateFields,
 } from "../dom.mjs";
-import { askForGrant, SECRET_CREATE_DENIED, SECRET_OPERATE_NEEDED } from "./access-reasons.mjs";
+import {
+  ASK_INSTALLATION_ADMINISTRATOR,
+  askForGrant,
+  NO_SECRETS_CREATE_DENIED,
+  SECRET_CREATE_DENIED,
+  SECRET_OPERATE_NEEDED,
+} from "./access-reasons.mjs";
 import {
   describeFailure,
   explainedConflict,
@@ -34,9 +40,6 @@ type SecretContext = Partial<AgentAccessContext> & {
   secretsCreateAllowed?: (() => Promise<boolean | undefined>) | undefined;
 };
 
-// Shown for the inline Create Secret action when the permission answer denies Secret create, as
-// on the Secrets page (finding 2442).
-export { SECRET_CREATE_DENIED };
 // Shown on a listed Secret the caller may read but not operate: a save that binds it would be
 // refused (finding 2453).
 export const SECRET_OPERATE_DENIED = `Binding it needs Secret operate, which your access does not include. ${SECRET_OPERATE_NEEDED}`;
@@ -47,8 +50,7 @@ export const NEW_SECRET_OPERATE_DENIED =
   "Your access includes Secret operate on only some Secrets in this Namespace, so an Agent cannot use a new Secret you create here.";
 // What works instead. Namespace Roles grant Secret operate on one exact Secret, never across the
 // Namespace, so the remedy names that grant (finding 2507).
-export const NEW_SECRET_OPERATE_REMEDY =
-  "To use a new Secret, create it on the Secrets page, then ask an Installation administrator for Secret operate on it.";
+export const NEW_SECRET_OPERATE_REMEDY = `To use a new Secret, create it on the Secrets page, then ${ASK_INSTALLATION_ADMINISTRATOR} for Secret operate on it.`;
 
 // The API's Name length for Secrets, in code points: the Name rule namespaces.mts mirrors.
 export const SECRET_NAME_MAX_CHARACTERS = NAME_MAX_CHARACTERS;
@@ -579,7 +581,7 @@ export function createSecretReferenceField({
     if (createDenied) {
       return secrets.length
         ? `Choose an existing Secret. ${SECRET_CREATE_DENIED}`
-        : `No Secrets you can read in this Namespace. ${SECRET_CREATE_DENIED} Or ask one for Secret read and operate on an existing Secret.`;
+        : NO_SECRETS_CREATE_DENIED;
     }
     if (operateDenied.size) {
       return `Choose an existing Secret. ${NEW_SECRET_OPERATE_DENIED} ${NEW_SECRET_OPERATE_REMEDY}`;
@@ -587,7 +589,7 @@ export function createSecretReferenceField({
     return secrets.length
       ? "Choose an existing Secret or create a new one."
       : context.installationAdmin === false
-        ? "No Secrets you can read in this Namespace. Create a new Secret to bind this field, or ask an Installation administrator for Secret read and operate on an existing one."
+        ? `No Secrets you can read in this Namespace. Create a new Secret to bind this field, or ${ASK_INSTALLATION_ADMINISTRATOR} for Secret read and operate on an existing one.`
         : "No readable Secrets yet. Create a new Secret to bind this field.";
   }
 

@@ -5,12 +5,8 @@ import type {
 import { requestFailure } from "../api-client.mjs";
 import { button, element, focusSaveOutcome, patchChildren, statusBlock } from "../dom.mjs";
 import type { DeploymentContext } from "./deployment-evidence.mjs";
-import {
-  askInstallationAdministrator,
-  displayDate,
-  message,
-  neutralDeploymentOutcome,
-} from "./list.mjs";
+import { DIAGNOSTICS_DENIED, notIncluded } from "./access-reasons.mjs";
+import { displayDate, message, neutralDeploymentOutcome } from "./list.mjs";
 
 // The console's delay for loading text (console.css .delayed-status): a diagnostics answer within
 // it never shows the waiting line (finding 1714).
@@ -235,15 +231,7 @@ export function createVersionDiagnostics(
           ...(outcomeId ? { "aria-describedby": outcomeId } : {}),
         }),
       ),
-      ...(operateDenied
-        ? [
-            statusBlock(
-              "info",
-              null,
-              "Your access does not include running diagnostics for this Agent. Ask an Installation administrator for Agent operate on it.",
-            ),
-          ]
-        : []),
+      ...(operateDenied ? [statusBlock("info", null, DIAGNOSTICS_DENIED)] : []),
       element(
         "p",
         { className: "muted" },
@@ -260,7 +248,10 @@ export function createVersionDiagnostics(
               "danger",
               null,
               status === 403
-                ? `Diagnostics require Agent read and operate access plus read access to this version. Granting them ${askInstallationAdministrator("check those grants")}`
+                ? notIncluded(
+                    "running diagnostics for this version",
+                    "Agent read and operate on this Agent and AgentRevision read on this version",
+                  )
                 : status === 503
                   ? "Current-runtime diagnostics are unavailable. This Compute Driver may not support them, or the runtime may be unreachable. Check the runtime and try again."
                   : message(error),

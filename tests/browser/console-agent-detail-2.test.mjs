@@ -63,8 +63,10 @@ import {
   GENERIC_DENIAL,
   MALFORMED_REQUEST,
   RESOURCE_NOT_FOUND,
+  SANDBOX_POLICY_READ_DENIED,
   WORKSPACE_FILES_UNAVAILABLE,
-  accessDeniedNeeding,
+  askForGrant,
+  notIncluded,
 } from "../helpers/refusal-text.mjs";
 
 // The Console Browser lane runs the two Agent detail test files in parallel.
@@ -2486,7 +2488,7 @@ test("a read-only viewer is denied saved settings and native admin once per tab,
   await unavailable.waitFor();
   // The viewer holds Agent read but not Configuration read: the panel names that grant.
   const draftDenied = page.getByText(
-    accessDeniedNeeding("Reading this Agent's draft Configuration", "Configuration read"),
+    notIncluded("reading this Agent's draft Configuration", "Configuration read"),
     { exact: true },
   );
   await draftDenied.waitFor();
@@ -2641,9 +2643,7 @@ test("an Agent reader meets no refused read on Repositories, Policy denials or L
   await page
     .getByText("Policy denials come from deployed versions. Open the current version to see them.")
     .waitFor();
-  const noPolicyAccess = page.getByText(
-    "Your access does not include reading this Agent’s network policy or its suggestions. Ask an Installation administrator for SandboxPolicy read on it.",
-  );
+  const noPolicyAccess = page.getByText(SANDBOX_POLICY_READ_DENIED);
   await noPolicyAccess.first().waitFor();
   await settle();
   await expectNoText(
@@ -4110,7 +4110,7 @@ test("Secret summaries retain revision bindings and distinguish unreadable metad
   await page.getByRole("tab", { name: "Channels", exact: true }).click();
   await page.getByRole("link", { name: "Revision Slack app", exact: true }).waitFor();
   const hiddenSecret = page.getByText(
-    "A Secret is bound. Its name is hidden because your access does not include reading it. Ask an Installation administrator for Secret read on it.",
+    `A Secret is bound. Its name is hidden because your access does not include reading it. ${askForGrant("Secret read on it")}`,
     { exact: true },
   );
   await hiddenSecret.waitFor();

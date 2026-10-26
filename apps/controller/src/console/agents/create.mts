@@ -35,6 +35,7 @@ import {
 import { WORKSPACE_DEFAULTS, WORKSPACE_DEFAULTS_ID } from "../workspace-defaults.mjs";
 import { configuredHarnessId, harnessAuthDescription } from "./harness-auth.mjs";
 import { type DeviceLogin, createDeviceLogin } from "./device-login.mjs";
+import { AGENT_CREATE_DENIED, askAdministratorTo } from "./access-reasons.mjs";
 import { createRepositoryFields } from "./repositories.mjs";
 import { ensureCredentialOperateBinding, secretOperateAnswer } from "./credential-access.mjs";
 import {
@@ -52,7 +53,6 @@ import { createSlackApproverField } from "./slack-approvers.mjs";
 import { renderChannels } from "../channels.mjs";
 import {
   administratorMessage,
-  AGENT_CREATE_DENIED,
   type AgentNavigation,
   channelBindingRefusal,
   describeFailure,
@@ -711,18 +711,15 @@ export function renderCreateAgent(context: CreateAgentContext, restored?: unknow
 // A member's Agent reaches its Secrets through an Installation administrator's grant (UX plan A2).
 const MEMBER_CREDENTIAL_ACCESS =
   "An Installation administrator then gives the new Agent access to its Secrets.";
-const MEMBER_GRANT_REFUSED =
-  "The Agent was created as a draft. Giving it access to its saved model and channel Secrets needs Installation administration access: open the saved Agent and ask an Installation administrator to grant it.";
-const INSTALLATION_REFUSAL =
-  "Creating an Agent needs Installation access that your account does not have. Ask an Installation administrator to create this Agent.";
+const MEMBER_GRANT_REFUSED = `The Agent was created as a draft. Giving it access to its saved model and channel Secrets needs Installation administration. ${askAdministratorTo("open the saved Agent and grant it")}`;
+const INSTALLATION_REFUSAL = `Creating an Agent needs Installation access that your account does not have. ${askAdministratorTo("create this Agent")}`;
 // The Installation read was refused and the Namespace's permission answer is unknown (its read
 // failed), so whether this account may create Agents here is not known (finding 2110).
 const PERMISSIONS_UNREAD =
   "Your permissions in this Namespace could not be checked, and Installation-wide capabilities are not readable with your access. Retry the permission check before creating an Agent.";
 // A refused Configuration create names the grants it needs, as a refused save does
 // (SAVE_REFUSALS): one fixed text for every 403 (finding 2111).
-const CONFIGURATION_CREATE_REFUSAL =
-  "You do not have permission to create this Agent's Configuration. It needs Configuration create in this Namespace, which only an Installation administrator holds, plus Secret operate on each Secret it binds. Ask an Installation administrator.";
+const CONFIGURATION_CREATE_REFUSAL = `You do not have permission to create this Agent's Configuration. It needs Configuration create in this Namespace, which only an Installation administrator holds, plus Secret operate on each Secret it binds. ${askAdministratorTo("create this Agent")}`;
 // This form saves Secret bindings only from its Slack channel settings. A channel refusal that
 // asks for a binding gets where to add one, as on the Agent page (findings 2494, 2506).
 const CHANNEL_BINDING_FORM_REMEDY =

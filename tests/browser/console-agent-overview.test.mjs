@@ -465,6 +465,16 @@ test("the Agents list hides Stop when a failed first deployment left nothing run
   await row.getByText("v1 · Failed", { exact: true }).waitFor();
   await waitForEnabled(row.getByRole("button", { name: "Delete Failed list", exact: true }));
   assert.equal(await row.getByRole("button", { name: "Stop Failed list", exact: true }).count(), 0);
+
+  // Deploy again from the Agent page, then Back: the retained list rereads the row's deployment,
+  // and a retried first deployment that is queued keeps Stop, as on Agent detail (finding 2580).
+  await row.getByRole("link", { name: "Failed list", exact: true }).click();
+  await page.getByRole("region", { name: "Agent state at a glance" }).waitFor();
+  const retried = await fixture.deployAgent(namespace.id, agent.id);
+  assert.equal(retried.revision, 2);
+  await page.goBack();
+  await row.getByText(/^v2 · /).waitFor();
+  await waitForEnabled(row.getByRole("button", { name: "Stop Failed list", exact: true }));
 });
 
 // Only a failed first deployment leaves nothing to stop. While a first deployment is still queued

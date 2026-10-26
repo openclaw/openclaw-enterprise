@@ -8,6 +8,7 @@ import {
   renderAgentDetail,
 } from "./agents.mjs";
 import { clearRuntimeDenials, forgetRuntimeDenials } from "./agents/logs.mjs";
+import { ASK_INSTALLATION_ADMINISTRATOR, askForGrant } from "./agents/access-reasons.mjs";
 import { createApiClient } from "./api-client.mjs";
 import { createViewLifetime } from "./view-lifetime.mjs";
 import { createNavigation, pages } from "./navigation.mjs";
@@ -2310,11 +2311,11 @@ async function loadPage({
       shell.view,
       title,
       agentDenied
-        ? "You do not have access to this Agent or its settings, or it was deleted. Ask an Installation administrator for Agent read on it."
+        ? `You do not have access to this Agent or its settings, or it was deleted. ${askForGrant("Agent read on it")}`
         : installationDenied
-          ? "Your account does not have access to Backends. Backends apply to the whole Installation, so choosing another Namespace would not change this. Ask an Installation administrator for access."
+          ? `Your account does not have access to Backends. Backends apply to the whole Installation, so choosing another Namespace would not change this. ${askForGrant("access")}`
           : error.status === 403
-            ? "Your account does not have access to this page in this Namespace. Ask an Installation administrator for access, or choose another Namespace."
+            ? `Your account does not have access to this page in this Namespace. Choose another Namespace, or ${ASK_INSTALLATION_ADMINISTRATOR} for access.`
             : "The read could not be completed. Retry to check current access and saved state.",
       "Retry",
       () => void loadPage(),

@@ -26,6 +26,7 @@ import {
 } from "./console-agents-browser-helpers.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import { enterManualModel, openAdvancedSettings } from "./console-agents-test-support.mjs";
+import { SECRET_CREATE_DENIED } from "../helpers/refusal-text.mjs";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
@@ -357,10 +358,7 @@ test("Create Agent keeps the search Secret out of plugin approver lookups", asyn
   const createAction = page
     .locator('[id^="approver-directory-secret-option-"]')
     .filter({ hasText: "Create new Secret..." });
-  assert.equal(
-    await createAction.textContent(),
-    "Create new Secret... Your access does not include creating Secrets in this Namespace. Only an Installation administrator can create Secrets: ask one to create it and to give you Secret read and operate on it.",
-  );
+  assert.equal(await createAction.textContent(), `Create new Secret... ${SECRET_CREATE_DENIED}`);
   assert.equal(await createAction.getAttribute("aria-disabled"), "true");
   // The spare token is listed disabled with the reason, and a forced click chooses nothing, so
   // no search is made with it.

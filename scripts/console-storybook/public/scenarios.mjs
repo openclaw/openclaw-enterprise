@@ -1192,7 +1192,7 @@ export const scenarios = {
     description:
       "The permission summary says this caller can neither stop nor delete these Agents. Each row disables its icons and says why before any confirmation.",
     steps: [
-      "Under each row's icons, find that your access does not include stopping or deleting the Agent, and that an Installation administrator can grant Agent operate and Agent delete. The icons do not open a confirmation.",
+      "Find Needs Agent operate and delete under each row's icons. Hover it for the whole reason, which names an Installation administrator as who grants them. The icons do not open a confirmation.",
       "Open an Agent: its detail page explains the same restrictions.",
     ],
     gap: "The summary is advisory. The controller still authorizes each write.",
@@ -3530,7 +3530,7 @@ export const scenarios = {
     description:
       "The session already knows this member does not administer the Installation, so after the Agent saves the form sends no IAM read for its credential grant. It names the administrator step at once and offers Open saved Agent, with no Retry credential access.",
     steps: [
-      "Read the alert: giving the Agent access to its Secrets needs Installation administration access.",
+      "Read the alert: giving the Agent access to its Secrets needs Installation administration, so it asks an Installation administrator to open the saved Agent and grant it.",
       "The saved-resources line identifies the Configuration and Agent, offers Open saved Agent, and does not promise a retry.",
       "The request log shows no /iam/ request. Only Cancel and Start over remain beside the saved-resources line.",
     ],

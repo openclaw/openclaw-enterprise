@@ -28,6 +28,7 @@ import {
   waitForInputValue,
   writeRequests,
 } from "./console-agents-browser-helpers.mjs";
+import { SECRET_CREATE_DENIED } from "../helpers/refusal-text.mjs";
 
 // The Agent's grant of a saved Slack Secret was refused, or the IAM policy shows none (finding 1920).
 const GRANT_REFUSED =
@@ -1563,7 +1564,7 @@ describe("Agent channels", { concurrency: 3 }, () => {
     assert.equal(await drawer.getByText(/or create/).count(), 0);
     await drawer.getByLabel("Slack app token", { exact: true }).fill("Create a new Secret");
     const action = drawer.getByRole("option", {
-      name: "Create new Secret... Your access does not include creating Secrets in this Namespace. Only an Installation administrator can create Secrets: ask one to create it and to give you Secret read and operate on it.",
+      name: `Create new Secret... ${SECRET_CREATE_DENIED}`,
       exact: true,
     });
     await action.waitFor();

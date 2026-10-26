@@ -23,9 +23,10 @@ import { recordRow, visibleText } from "./logs-view.mjs";
 type Policy = SandboxPolicyViewWire["policy"];
 
 const POLICY_READ_DENIED = SANDBOX_POLICY_READ_DENIED;
-// What each refused request checks: Sandbox log text needs Agent read_logs (with Agent read and
-// read on the version); the policy and suggestions need SandboxPolicy read; validation, preview
-// and save need Agent manage_policy and SandboxPolicy update.
+// What each refused request checks: Sandbox log text needs Agent read_logs (or administer) plus
+// Agent read, which admit every version of the Agent; the policy and suggestions need
+// SandboxPolicy read; validation, preview and save need Agent manage_policy and SandboxPolicy
+// update.
 const LOG_GRANT = "Agent read_logs on it";
 const POLICY_READ_GRANT = "SandboxPolicy read on it";
 const POLICY_CHANGE_GRANT = "Agent manage_policy and SandboxPolicy update on it";
@@ -74,7 +75,7 @@ const NOT_SENT_AGAIN =
   "The controller does not send this policy again, and it did not confirm whether the Sandbox runs it.";
 const APPLICATION_FAILURES: Readonly<Record<string, string>> = {
   SANDBOX_POLICY_REVISION_CHANGED: `The Agent’s current version changed, or the Agent stopped, before the policy was confirmed. ${NOT_SENT_AGAIN} Apply the saved policy to the current version again.`,
-  AUTHORIZATION_DENIED: `The account that applied the policy no longer has Agent manage_policy and SandboxPolicy update. ${NOT_SENT_AGAIN} Ask an Installation administrator for that access, then apply again.`,
+  AUTHORIZATION_DENIED: `The account that applied the policy no longer has Agent manage_policy and SandboxPolicy update. ${NOT_SENT_AGAIN} ${askForGrant("that access")} Then apply again.`,
   SANDBOX_POLICY_CEILING_CHANGED: `The Installation delegation ceiling changed and no longer covers every saved rule. ${NOT_SENT_AGAIN} Remove the rules outside the ceiling, save, then apply again.`,
   SANDBOX_POLICY_UNSUPPORTED: `The Sandbox Driver running this version cannot apply Agent network policy, or refused these rules. ${NOT_SENT_AGAIN} Check the rules with Review changes; if they pass, deploy a new version to put the saved policy into effect.`,
   SANDBOX_POLICY_PROTECTED_EXECUTION: `This version runs under protected execution, whose egress policy an Agent network policy cannot replace. ${NOT_SENT_AGAIN} Remove the saved rules so that they do not block the next deploy.`,

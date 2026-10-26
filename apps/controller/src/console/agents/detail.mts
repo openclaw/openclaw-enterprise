@@ -39,6 +39,8 @@ import { renderNativeAdminAccess } from "./native-admin.mjs";
 import { createAgentDeletion } from "./deletion.mjs";
 import { createAgentStop } from "./stop.mjs";
 import {
+  ASK_INSTALLATION_ADMINISTRATOR,
+  askAdministratorTo,
   askForGrant,
   CONFIGURATION_UPDATE_DENIED,
   NEW_VERSIONS_READ,
@@ -72,7 +74,6 @@ import {
   neutralDeploymentOutcome,
   outcomeLabel,
   preAdmissionRefusal,
-  askInstallationAdministrator,
   type AccessNeed,
 } from "./list.mjs";
 import {
@@ -267,7 +268,7 @@ function deployFailureText(cause: unknown, submitted: boolean) {
     return error.serverMessage;
   }
   return error.status === 403
-    ? `Deployment denied. Check Agent deploy permission and access to selected Secrets. First deployment also needs Agent read and operate permissions to create connection credentials. Granting them ${askInstallationAdministrator("check these grants")}`
+    ? `Deployment denied. Check Agent deploy permission and access to selected Secrets. First deployment also needs Agent read and operate permissions to create connection credentials. ${askAdministratorTo("check these grants")}`
     : "Deployment conflicts with the saved Agent state. Refresh this Agent to check for changed Configuration or missing connection credentials. If credentials are missing after an earlier version, ask an operator to restore them.";
 }
 
@@ -275,7 +276,7 @@ function deployFailureText(cause: unknown, submitted: boolean) {
 function deploySecretsOperateReason(names: readonly string[]) {
   const listed =
     names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
-  return `Deploying needs Secret operate on ${listed}, which your access does not include. Ask an Installation administrator to grant it.`;
+  return `Deploying needs Secret operate on ${listed}, which your access does not include. ${askAdministratorTo("grant it")}`;
 }
 
 // The credential an Agent's harness authentication grant covers: its credential source or its
@@ -290,7 +291,7 @@ function harnessCredential(binding: HarnessAuthBinding | null | undefined, names
 
 // The draft is the Agent's Configuration: an Agent reader without Configuration read is refused it.
 const DRAFT_CONFIGURATION_NEED: AccessNeed = {
-  task: "Reading this Agent's draft Configuration",
+  task: "reading this Agent's draft Configuration",
   grant: "Configuration read",
 };
 
@@ -4035,7 +4036,7 @@ export async function renderAgentDetail(
               // Installation administrator, and a 401 still ends the session below.
               throw Object.assign(
                 new Error(
-                  "Configuration saved, but Secret access grants could not be confirmed. Reload the draft, inspect saved bindings in Agent Credentials, then ask an Installation administrator to grant this Agent access to the saved Secret.",
+                  `Configuration saved, but Secret access grants could not be confirmed. Reload the draft, inspect saved bindings in Agent Credentials, then ${ASK_INSTALLATION_ADMINISTRATOR} to grant this Agent access to the saved Secret.`,
                   { cause },
                 ),
                 {

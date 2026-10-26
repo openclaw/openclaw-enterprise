@@ -5,7 +5,7 @@ import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { grantRole } from "../helpers/iam-grants.mjs";
-import { NAMESPACE_NAME_CONFLICT } from "../helpers/refusal-text.mjs";
+import { NAMESPACE_CREATE_DENIED, NAMESPACE_NAME_CONFLICT } from "../helpers/refusal-text.mjs";
 import {
   apiRequests,
   expectWriteAsksBeforeUnload,
@@ -19,8 +19,7 @@ import {
 } from "./console-agents-browser-helpers.mjs";
 
 const browser = fileBrowser();
-const REFUSED =
-  "Your access does not include creating Namespaces in this Installation. Only an Installation administrator can create Namespaces: ask one to create a Namespace or to give you access to an existing one, then select Refresh.";
+const REFUSED = `${NAMESPACE_CREATE_DENIED} Then select Refresh.`;
 const isPrimary = (locator) =>
   locator.evaluate((node) => node.classList.contains("button--primary"));
 const creates = (requests) => pathRequests(requests, "POST", "/namespaces");
@@ -369,13 +368,7 @@ test("a member is not invited to create, and a real IAM denial disables Create N
   await dialog.getByLabel("Namespace name").fill("Forbidden team");
   await dialog.getByRole("button", { name: "Create Namespace", exact: true }).click();
   // Only an Installation administrator creates Namespaces, so no grant is promised (finding 2496).
-  await dialog
-    .getByRole("alert")
-    .filter({
-      hasText:
-        "You do not have permission to create Namespaces in this Installation. Only an Installation administrator can create them: ask one to create a Namespace or to give you access to an existing one.",
-    })
-    .waitFor();
+  await dialog.getByRole("alert").filter({ hasText: NAMESPACE_CREATE_DENIED }).waitFor();
   assert.equal(
     await dialog.getByRole("button", { name: "Create Namespace", exact: true }).isDisabled(),
     true,
@@ -405,10 +398,7 @@ test("a member is not invited to create, and a real IAM denial disables Create N
   await opener.click();
   await dialog.getByLabel("Namespace name").fill("Forbidden team");
   await dialog.getByRole("button", { name: "Create Namespace", exact: true }).click();
-  await dialog
-    .getByRole("alert")
-    .filter({ hasText: /do not have permission/ })
-    .waitFor();
+  await dialog.getByRole("alert").filter({ hasText: NAMESPACE_CREATE_DENIED }).waitFor();
   await page.keyboard.press("Escape");
   await dialog.waitFor({ state: "detached" });
   assert.equal(await opener.isDisabled(), true);
@@ -457,10 +447,7 @@ test("a Refresh after an administrator grants Namespace create offers creation a
   await login(page, fixture, "/console/namespaces", member.credentials);
   const opener = page.getByRole("button", { name: "Create Namespace", exact: true });
   const dialog = await submitCreate(page, "Granted team");
-  await dialog
-    .getByRole("alert")
-    .filter({ hasText: /do not have permission to create Namespaces/ })
-    .waitFor();
+  await dialog.getByRole("alert").filter({ hasText: NAMESPACE_CREATE_DENIED }).waitFor();
   await dialog.getByRole("button", { name: "Cancel" }).click();
   await page.getByRole("status").filter({ hasText: REFUSED }).waitFor();
   assert.equal(await opener.isDisabled(), true);
@@ -507,6 +494,11 @@ test("an unknown administrator answer keeps Create Namespace the primary action"
   await page.locator(settledView).locator(".namespace-toolbar").waitFor();
   const opener = page.getByRole("button", { name: "Create Namespace", exact: true });
   assert.equal(await isPrimary(opener), true);
+  // The caller may be a member, so the empty list still says who gives access (finding 2583).
+  assert.equal(
+    await page.locator(settledView).locator(".state-panel p").textContent(),
+    "Create a Namespace if your access allows it, or ask an Installation administrator to give you access to one.",
+  );
 });
 
 // A refused administrator loses the primary action on the next render too, and the refusal
@@ -529,10 +521,7 @@ test("a refused administrator's refusal stays with that account", async (t) => {
   const opener = page.getByRole("button", { name: "Create Namespace", exact: true });
   assert.equal(await isPrimary(opener), true);
   const dialog = await submitCreate(page, "Refused team");
-  await dialog
-    .getByRole("alert")
-    .filter({ hasText: /do not have permission/ })
-    .waitFor();
+  await dialog.getByRole("alert").filter({ hasText: NAMESPACE_CREATE_DENIED }).waitFor();
   await dialog.getByRole("button", { name: "Cancel" }).click();
   await page.getByRole("status").filter({ hasText: REFUSED }).waitFor();
   await page.getByRole("link", { name: "Agents", exact: true }).click();

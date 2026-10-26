@@ -2,11 +2,11 @@ import type { AgentRead } from "@openclaw-enterprise/contracts";
 import { type createApiClient, requestFailure, responseFields } from "../api-client.mjs";
 import { element, button, setFieldError, statusBlock, validateFields } from "../dom.mjs";
 import type { createDraftStore } from "../drafts.mjs";
+import { askForGrant, WORKSPACE_SAVE_DENIED } from "./access-reasons.mjs";
 
 const filenames = ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"];
 // Shown when the caller's permission answer denies Agent operate, which saving a file needs.
-const OPERATE_DENIED =
-  "Your access does not include operating this Agent. Ask an Installation administrator for Agent operate on it to save workspace files.";
+const OPERATE_DENIED = WORKSPACE_SAVE_DENIED;
 
 interface WorkspaceContext {
   request: ReturnType<typeof createApiClient>;
@@ -48,7 +48,7 @@ function fileError(error: FileFailure, writing: boolean) {
   if (error.status === 403) {
     // Saving a file is an Agent operate action (finding 1540).
     text = writing
-      ? "You do not have permission to save this file. Ask an Installation administrator for Agent operate on it."
+      ? `You do not have permission to save this file. ${askForGrant("Agent operate on it")}`
       : "Access denied. You do not have permission for this file operation.";
   }
   if (error.status === 404) {

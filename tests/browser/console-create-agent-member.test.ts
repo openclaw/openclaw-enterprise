@@ -31,6 +31,7 @@ import { waitForCreateFormReads } from "./console-agents-test-support.mjs";
 import {
   AGENT_CREATE_DENIED,
   GENERIC_DENIAL,
+  SECRET_CREATE_DENIED,
   NEW_SECRET_OPERATE_DENIED,
   NEW_SECRET_OPERATE_REMEDY,
   SECRET_OPERATE_DENIED,
@@ -49,7 +50,7 @@ const ACCESS_FROM_PRESET =
 const MEMBER_CREDENTIAL_ACCESS =
   "An Installation administrator then gives the new Agent access to its Secrets.";
 const MEMBER_GRANT_REFUSED =
-  "The Agent was created as a draft. Giving it access to its saved model and channel Secrets needs Installation administration access: open the saved Agent and ask an Installation administrator to grant it.";
+  "The Agent was created as a draft. Giving it access to its saved model and channel Secrets needs Installation administration. Ask an Installation administrator to open the saved Agent and grant it.";
 const INSTALLATION_REFUSAL =
   "Creating an Agent needs Installation access that your account does not have. Ask an Installation administrator to create this Agent.";
 
@@ -488,7 +489,7 @@ test("a member's refused Configuration create and empty Secret list name the acc
     .getByRole("alert")
     .filter({
       hasText:
-        "You do not have permission to create this Agent's Configuration. It needs Configuration create in this Namespace, which only an Installation administrator holds, plus Secret operate on each Secret it binds. Ask an Installation administrator.",
+        "You do not have permission to create this Agent's Configuration. It needs Configuration create in this Namespace, which only an Installation administrator holds, plus Secret operate on each Secret it binds. Ask an Installation administrator to create this Agent.",
     })
     .waitFor();
 
@@ -530,8 +531,7 @@ test("a member without Secret create sees the inline Create Secret action disabl
     noSecretCreate.credentials,
   );
   await page.getByRole("button", { name: "Start with default Preset", exact: true }).click();
-  const denial =
-    "Your access does not include creating Secrets in this Namespace. Only an Installation administrator can create Secrets: ask one to create it and to give you Secret read and operate on it.";
+  const denial = SECRET_CREATE_DENIED;
   await page.getByText(`Choose an existing Secret. ${denial}`, { exact: true }).first().waitFor();
   await page.getByLabel("API key Secret", { exact: true }).fill("no matching Secret");
   const action = page.getByRole("option", { name: `Create new Secret... ${denial}`, exact: true });
@@ -580,8 +580,7 @@ test("a Preset's Secret source follows the member's Secret create answer", async
     noSecretCreate.credentials,
   );
   await page.getByLabel("Preset template").selectOption(preset.data.id);
-  const denial =
-    "Your access does not include creating Secrets in this Namespace. Only an Installation administrator can create Secrets: ask one to create it and to give you Secret read and operate on it.";
+  const denial = SECRET_CREATE_DENIED;
   await page.getByText(`Choose an existing Secret. ${denial}`, { exact: true }).waitFor();
   const source = page.getByLabel("Secret source for Model Secret", { exact: true });
   assert.equal(await source.inputValue(), "existing");
