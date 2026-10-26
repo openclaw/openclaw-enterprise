@@ -42,6 +42,10 @@ const appliedPatches = [
     file: "openclaw-control-ui-browser-reconnect.patch",
     sha256: "25a84ab3b698e64f6e7a0bdf7d2058b1bb3b4b81bcd89eaaf4e13b9d6fa9d58d",
   },
+  {
+    file: "openclaw-terminated-gateway-namespace.patch",
+    sha256: "af52f6ec87e80f35f141c82cfd0e34a73b7ba90bf593fb4889a48b22dea76a11",
+  },
 ];
 const [command, sourceRoot, output] = process.argv.slice(2);
 const root = await realpath(sourceRoot);

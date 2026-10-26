@@ -66,6 +66,38 @@ to verify your local setup or ask an operator to
 Check for an actual answer from the configured model, not just a selected
 version or successful file read.
 
+## An embedded Gateway reports an unverifiable state owner
+
+After an unclean stop, the replacement Gateway can find the old owner's records
+on the Agent's volume. An eligible embedded Kubernetes Gateway can verify the
+first container instance's signed record within the same Pod. A new Pod has no
+such record. If startup reports an unverifiable owner, an operator must
+establish who last used that volume before allowing another writer. A Gateway
+started on the older image did not record the original PID 1 start time. An
+unclean stop on that image also requires operator confirmation.
+
+1. Record the Agent, state volume, and original container ID. On Kubernetes,
+   also record the Pod UID and node. Stop the Agent in OCC to prevent another
+   startup. Verify with the compute provider that the original container
+   terminated. If its node is unreachable, keep the Agent stopped until the
+   infrastructure operator verifies shutdown. A missing Pod or expired
+   heartbeat cannot establish this.
+2. Run the Gateway's pinned image as its runtime user in a maintenance container.
+   Mount the same retained storage at the Gateway's paths and use its state
+   directory, configuration path, and profile. Inspect the recorded holders.
+
+   ```sh
+   node /app/openclaw.mjs gateway recover-lock --json
+   ```
+
+3. Match every listed holder to the stopped workload. If any holder could
+   still write, leave the records in place. Otherwise, repeat the command with
+   `--confirm` and the fingerprint shown by inspection. OpenClaw refuses a
+   changed record. Inspect it again before deciding whether to confirm.
+4. Exit the maintenance container, deploy a new Agent version, and send a chat
+   message. The first successful reply verifies the Agent can use its database
+   after startup. [Stop and resume](../../reference/agents/deployment.md#stop-and-resume)
+
 ## A save or deployment lost its response
 
 The operation may have succeeded. Before retrying:

@@ -180,6 +180,13 @@ RUN --network=none --mount=type=tmpfs,target=/source/.artifacts \
 RUN --network=none cd ui && node ../scripts/run-node-package-bin.mts vitest run --config vitest.config.ts \
     --project unit --project unit-node \
     src/api/gateway-reachability.node.test.ts src/app/gateway-store.observers.test.ts src/app/app-shell-view.test.ts
+# The runtime needs supervised recovery across private PID namespaces. Native
+# lock reinspection and custody still guard every destructive operation.
+COPY deploy/runtime/openclaw-terminated-gateway-namespace.patch /tmp/openclaw-terminated-gateway-namespace.patch
+RUN echo 'af52f6ec87e80f35f141c82cfd0e34a73b7ba90bf593fb4889a48b22dea76a11  /tmp/openclaw-terminated-gateway-namespace.patch' | sha256sum --check --strict \
+    && git apply /tmp/openclaw-terminated-gateway-namespace.patch
+RUN --network=none OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
+    node --import ./scripts/tsx.mjs scripts/test-projects.mts src/infra/gateway-lock-recovery.test.ts
 # Follow the pinned upstream Docker assembly; plugin-local dependencies remain
 # separate when a plugin and core require different versions.
 RUN OPENCLAW_INTERNAL_DOCKER_BUILD_PLUGIN_IDS=codex,slack \

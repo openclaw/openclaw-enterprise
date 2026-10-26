@@ -18241,6 +18241,60 @@ test("external ChatGPT source preparation delivers the exact placeholder and acc
   }
 });
 
+test("only the ordinary embedded Gateway gets the Pod-local recovery key", async () => {
+  for (const variant of ["embedded", "dedicated", "custom-environment"]) {
+    const { driver, revision, objects, context } = workspaceSetupFixture(variant !== "dedicated");
+    if (variant === "custom-environment") {
+      driver.setLifecycleDrivers([
+        {
+          id: "custom-environment",
+          capability: "configuration",
+          implementation: "test",
+          computeLifecycleHooks: {
+            async beforeWorkloadStart(_revision, launch) {
+              launch.environment.EXTRA_INPUT = "opaque-key";
+            },
+          },
+        },
+      ]);
+    }
+    await driver.prepareRevision(revision, context);
+    const deployments = [...objects.values()].filter(({ kind }) => kind === "Deployment");
+    assert.ok(deployments.length > 0);
+    for (const { spec } of deployments) {
+      const pod = spec.template.spec;
+      const gateway = pod.containers[0];
+      const volumes = pod.volumes.filter(({ name }) => name.startsWith("gateway-owner-"));
+      const marker = gateway.env.find(({ name }) => name === "OPENCLAW_EMBEDDED_GATEWAY_OWNER");
+      if (variant !== "embedded") {
+        assert.deepEqual(volumes, [], variant);
+        assert.equal(marker, undefined, variant);
+        continue;
+      }
+      assert.equal(marker.value, "1");
+      assert.equal(
+        gateway.env.find(({ name }) => name === "OPENCLAW_POD_UID").valueFrom.fieldRef.fieldPath,
+        "metadata.uid",
+      );
+      assert.equal(pod.containers.length, 1);
+      assert.equal(pod.shareProcessNamespace, undefined);
+      assert.deepEqual(
+        volumes.map(({ emptyDir }) => emptyDir.medium),
+        ["Memory", "Memory"],
+      );
+      const key = { name: "gateway-owner-key", mountPath: "/run/oce-gateway-owner-key" };
+      const scratch = { name: "gateway-owner-start", mountPath: "/run/oce-gateway-owner-start" };
+      const mounts = (container) =>
+        container.volumeMounts.filter(({ name }) => volumes.some((volume) => volume.name === name));
+      assert.deepEqual(mounts(gateway), [{ ...key, readOnly: true }, scratch]);
+      const keyInits = pod.initContainers.filter((init) => mounts(init).length > 0);
+      assert.equal(keyInits.length, 1);
+      // An init that also mounts the writable Agent state could follow a link planted there.
+      assert.deepEqual(keyInits[0].volumeMounts, [key, scratch]);
+    }
+  }
+});
+
 for (const embedded of [true, false]) {
   test(`Kubernetes ${embedded ? "embedded" : "dedicated"} setup stays private and retains only its completion guard`, async () => {
     const { driver, revision, objects, records, state, setup, context } =

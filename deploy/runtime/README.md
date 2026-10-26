@@ -52,6 +52,10 @@ the native full-access Codex profile, and
 `openclaw-control-ui-browser-reconnect.patch`, which offers a browser navigation
 after the Control UI's access is refused. Remove each when the pinned OpenClaw
 does the same.
+`openclaw-terminated-gateway-namespace.patch` lets a supervisor that verified a
+private Linux PID namespace stopped recover only Gateway records from that
+namespace. OC still compares its lock fingerprint before recovery. An
+unattributed owner requires operator confirmation.
 The source archive and patch hashes identify the resulting custom build.
 Provenance `patches` maps every patch the Dockerfile applies, in order, to its
 SHA-256; `scripts/build-runtime-assets.mjs` holds that list, and a test checks it
