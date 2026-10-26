@@ -24,6 +24,7 @@ import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { registerAndSelectDrivers } from "../helpers/development.mjs";
 import { bindRole, permissionsFor } from "../helpers/iam-grants.mjs";
 import { requestFailure } from "../../apps/controller/src/http/errors.ts";
+import { agentPrincipalDenied } from "../helpers/refusal-text.mjs";
 
 const installation = {
   id: "installation-a",
@@ -1066,35 +1067,61 @@ test("Sandbox Drivers without an Agent configuration hook preserve the admitted 
   assert.equal(revision.configuration.plugins.entries.codex.config.appServer.sandbox, "read-only");
 });
 
-test("Sandbox admission rejects malformed provider configuration before creating a revision", async () => {
-  const { controller } = createController();
-  const sandbox = createSandboxDriver({
+for (const { title, implementation, namespaceName, agentName, configureAgent, message } of [
+  {
+    title: "malformed provider configuration",
     implementation: "malformed-containment",
-    configureAgent() {
-      return null;
-    },
+    namespaceName: "Malformed Sandbox configuration",
+    agentName: "Rejected dedicated Agent",
+    configureAgent: () => null,
+    message: "Configuration values must be a JSON object.",
+  },
+  {
+    // Deployment admits the Harness the stored Configuration selects; a Driver view that
+    // moves the model to another Harness runtime is refused.
+    title: "a provider configuration that changes the Harness runtime",
+    implementation: "runtime-changing-containment",
+    namespaceName: "Runtime-changing Sandbox configuration",
+    agentName: "Dedicated Agent on a moved runtime",
+    configureAgent: (configuration) => ({
+      ...configuration,
+      agents: {
+        ...configuration.agents,
+        defaults: {
+          ...configuration.agents.defaults,
+          model: "openai/gpt-5",
+          models: { "openai/gpt-5": { agentRuntime: { id: "openclaw" } } },
+        },
+      },
+    }),
+    message: "A Sandbox Driver cannot change the selected Harness runtime.",
+  },
+]) {
+  test(`Sandbox admission rejects ${title} before creating a revision`, async () => {
+    const { controller } = createController();
+    const sandbox = createSandboxDriver({ implementation, configureAgent });
+    controller.registerDriver(sandbox);
+    controller.selectDriver("sandbox", sandbox.id);
+
+    const target = await createDedicatedAgentForSandboxAdmission(
+      controller,
+      namespaceName,
+      agentName,
+      codexSandboxConfiguration(),
+    );
+
+    await assert.rejects(
+      controller.deployAgent("principal-admin", target, resolveApprovedDevelopmentHarness),
+      { name: "ScopeViolationError", message },
+    );
+    assert.deepEqual(
+      await controller.transact((state) =>
+        state.revisions.listRevisions(target.namespaceId, target.agentId),
+      ),
+      [],
+    );
   });
-  controller.registerDriver(sandbox);
-  controller.selectDriver("sandbox", sandbox.id);
-
-  const target = await createDedicatedAgentForSandboxAdmission(
-    controller,
-    "Malformed Sandbox configuration",
-    "Rejected dedicated Agent",
-    codexSandboxConfiguration(),
-  );
-
-  await assert.rejects(
-    controller.deployAgent("principal-admin", target, resolveApprovedDevelopmentHarness),
-    { name: "ScopeViolationError", message: "Configuration values must be a JSON object." },
-  );
-  assert.deepEqual(
-    await controller.transact((state) =>
-      state.revisions.listRevisions(target.namespaceId, target.agentId),
-    ),
-    [],
-  );
-});
+}
 
 for (const facets of [["networking"], ["filesystem"], ["process"], ["networking", "filesystem"]]) {
   test(`Sandbox admission accepts a dedicated Agent with facets ${facets.join(", ")}`, async () => {
@@ -1208,7 +1235,7 @@ async function createDedicatedNativeAgentWithUngrantedSecret(controller, name) {
   return { namespace, agent, secret };
 }
 
-test("deploy names the Agent service principal and the permission it lacks", async () => {
+test("deploy refuses for the Agent service principal's missing grant without naming the principal", async () => {
   const { controller } = createController();
   const sandbox = createSandboxDriver();
   controller.registerDriver(sandbox);
@@ -1236,18 +1263,15 @@ test("deploy names the Agent service principal and the permission it lacks", asy
     action: "operate",
     resource: { kind: "secret", id: secret.id, namespaceId: namespace.id },
   });
+  // This caller holds Secret operate but not Secret read, so the answer names no Secret; without
+  // the request's Agent ID it names no Agent, and it never names the principal (finding 2592).
+  assert.equal(refusal.agentId, agent.id);
+  assert.equal(refusal.callerMayReadResource, false);
   const failure = requestFailure(refusal);
   assert.equal(failure.status, 403);
   assert.equal(failure.code, "FORBIDDEN");
-  assert.match(failure.message, new RegExp(agent.servicePrincipalId));
-  assert.match(failure.message, /operate/);
-  assert.match(failure.message, new RegExp(`secret ${secret.id}`));
-
-  // Caller denials keep the generic message so they do not disclose resource details.
-  assert.equal(
-    requestFailure(new AuthorizationDeniedError("denied")).message,
-    "The exact platform operation was not authorized.",
-  );
+  assert.equal(failure.message, agentPrincipalDenied("This Agent", "one of its bound Secrets"));
+  // The refused deploy records no revision.
   assert.deepEqual(
     await controller.transact((state) => state.revisions.listRevisions(namespace.id, agent.id)),
     [],

@@ -1199,6 +1199,12 @@ test("Agent roster refusals name the setting and the fix", () => {
   const message = configurationRefusal({ agents: { entries: { [long]: false } } });
   assert.equal(Array.from(message).length, 256, message);
   assert.ok(message.endsWith("… must be an object."), message);
+  // A path that exactly fills the cap is kept whole.
+  const fits = "x".repeat(256 - "Configuration setting agents.entries. must be an object.".length);
+  assert.equal(
+    configurationRefusal({ agents: { entries: { [fits]: false } } }),
+    `Configuration setting agents.entries.${fits} must be an object.`,
+  );
 });
 
 test("model policy refusals name the Configuration setting", () => {
@@ -1862,6 +1868,9 @@ test("Harness admission rejects conflicting selections, mode mismatches, and una
         configurationGeneration: embedded.configurationGeneration,
         harness: embedded.harness,
         createdAt: embedded.createdAt,
+        // The deployment the listing names: the one admitted above, still queued.
+        deploymentStatus: "queued",
+        deploymentErrorCode: null,
       },
     ],
   );
@@ -2010,6 +2019,22 @@ test("The Installation lists exactly the OpenClaw execution modes Agent save and
       modes: [],
     })),
     { name: "full", sandbox: conformanceSandbox("full", facets), modes: ["dedicated"] },
+    // Admission's Sandbox view can refuse OpenClaw on Driver settings alone (finding 2347). The
+    // capability carries that refusal, so a reader learns which setting to change (finding 2373).
+    {
+      name: "full but its Agent view refuses OpenClaw",
+      sandbox: {
+        ...conformanceSandbox("refuses-openclaw", facets),
+        configureAgent(values, harness) {
+          if (harness.id === "openclaw") {
+            throw new ConfigurationHarnessError("This Sandbox Driver refuses OpenClaw.");
+          }
+          return values;
+        },
+      },
+      modes: [],
+      settingRefusals: { dedicated: "This Sandbox Driver refuses OpenClaw." },
+    },
     {
       name: "full but unavailable",
       sandbox: conformanceSandbox("unavailable", facets),
@@ -2038,6 +2063,7 @@ test("The Installation lists exactly the OpenClaw execution modes Agent save and
       capabilities.openclaw,
       {
         executionModes: shape.modes,
+        ...(shape.settingRefusals ? { settingRefusals: shape.settingRefusals } : {}),
         ...(shape.unavailable ? { sandboxDriverUnavailable: true } : {}),
       },
       shape.name,
@@ -2070,6 +2096,11 @@ test("The Installation lists exactly the OpenClaw execution modes Agent save and
           continue;
         }
         admitted = false;
+        // A setting refusal is the message admission itself returns.
+        const settingRefusal = shape.settingRefusals?.[executionMode];
+        if (settingRefusal !== undefined) {
+          assert.equal(error.message, settingRefusal, label);
+        }
       }
       assert.equal(admitted, shape.modes.includes(executionMode), label);
     }

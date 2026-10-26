@@ -22,6 +22,7 @@ import {
 } from "../../scripts/migration-catalog.mjs";
 import { migrateWithHistory } from "../../scripts/migration-history.mjs";
 import { createPostgresPool } from "../../packages/occ/src/state/postgres-pool.ts";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
 const migrationsDirectory = join(repositoryRoot, "migrations");
@@ -846,8 +847,7 @@ test(
     // The migration command reads only the logging section of the Installation startup file,
     // through the controller's own startup reader. A file the controller would refuse fails the
     // command with no migration output and the usual single structured failure line.
-    const configDirectory = await mkdtemp(join(tmpdir(), "occ-migration-config-"));
-    context.after(() => rm(configDirectory, { recursive: true, force: true }));
+    const configDirectory = await temporaryDirectory(context, "occ-migration-config-");
     const startupFile = async (name, contents) => {
       const path = join(configDirectory, name);
       await writeFile(path, contents, "utf8");

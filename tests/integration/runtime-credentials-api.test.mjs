@@ -11,6 +11,7 @@ import {
   ScopeViolationError,
 } from "../../packages/occ/src/index.ts";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
+import { assertApiError } from "../helpers/api-error.mjs";
 import { createControllerAuth } from "../helpers/password-hasher.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
@@ -22,6 +23,7 @@ import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { reservePort } from "../helpers/available-port.mjs";
 import { grantRole } from "../helpers/iam-grants.mjs";
+import { EMBEDDED_API_KEY_REQUIRED } from "../helpers/refusal-text.mjs";
 
 const uuidV4 = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
 const identifier = (prefix) => new RegExp(`^${prefix}_${uuidV4}$`);
@@ -374,8 +376,7 @@ async function createFixture({
 
 // A 403 that reached no Compute Driver call and was audited as this authorization denial.
 function assertDenied(fixture, response, authorization) {
-  assert.equal(response.status, 403);
-  assert.equal(response.body.error.code, "FORBIDDEN");
+  assertApiError(response, 403, "FORBIDDEN");
   assert.equal(fixture.computeDriver.calls.length, 0);
   const denial = fixture.auditSink.events.at(-1);
   assert.equal(denial.kind, "authorization_denial");
@@ -441,8 +442,7 @@ test("first draft deployment provisions generated credentials and later revision
   // Lost credentials after a historical revision require recovery, not silent regeneration.
   fixture.computeDriver.setStatus(namespace.id, agent.id, { transportConfigured: false });
   const missing = await fixture.request("POST", `${agentPath}/deploy`);
-  assert.equal(missing.status, 409, JSON.stringify(missing.body));
-  assert.equal(missing.body.error.code, "RESOURCE_CONFLICT");
+  assertApiError(missing, 409, "RESOURCE_CONFLICT");
   assert.equal(
     fixture.computeDriver.calls.filter(({ operation }) => operation === "provision").length,
     1,
@@ -492,8 +492,7 @@ test("Kubernetes deploy names an unsupported Harness authentication model provid
   // The caller must learn that, not that the resource already exists: deployment refuses the
   // pair, and so does the Agent's next save (finding 1117).
   const refused = await fixture.request("POST", `${agentPath}/deploy`);
-  assert.equal(refused.status, 409, JSON.stringify(refused.body));
-  assert.equal(refused.body.error.code, "RESOURCE_CONFLICT");
+  assertApiError(refused, 409, "RESOURCE_CONFLICT");
   assert.equal(refused.body.error.message, message);
   const updated = await fixture.request("PATCH", agentPath, {
     body: { configurationId: stored.data.configurationId },
@@ -517,13 +516,11 @@ test("Kubernetes deploy names an unsupported Harness authentication model provid
 test("Kubernetes names a Harness authentication method the execution mode cannot use, at save and deploy", async () => {
   const fixture = await createFixture({ computeDriver: createKubernetesComputeDriver() });
   const { namespace, agent, configuration, secret } = await fixture.bootstrapAgent();
-  const message =
-    "Agent setting harnessAuth.method must be api_key for embedded OpenClaw on Kubernetes Compute: change harnessAuth or executionMode.";
+  const message = EMBEDDED_API_KEY_REQUIRED;
   const agentsPath = `/namespaces/${namespace.id}/agents`;
   const agentPath = `${agentsPath}/${agent.id}`;
   const refused = (response) => {
-    assert.equal(response.status, 400, JSON.stringify(response.body));
-    assert.equal(response.body.error.code, "INVALID_REQUEST");
+    assertApiError(response, 400, "INVALID_REQUEST");
     assert.equal(response.body.error.message, message);
   };
   // The method alone decides it, so Agent create and update refuse it as deployment does.
@@ -685,8 +682,7 @@ test("runtime credential POST keeps session CSRF and exact Agent read plus opera
     origin: wrongLoopbackOrigin,
     body: {},
   });
-  assert.equal(csrfRejected.status, 403);
-  assert.equal(csrfRejected.body.error.code, "FORBIDDEN");
+  assertApiError(csrfRejected, 403, "FORBIDDEN");
   assert.equal(fixture.computeDriver.calls.length, 0);
 
   // Each grant is required on its own: operate without read, then read without operate.
@@ -723,8 +719,7 @@ test("runtime credential API rejects unsupported initial provisioning states and
 
   for (const body of invalidBodies) {
     const rejected = await fixture.request("POST", path, { body });
-    assert.equal(rejected.status, 400);
-    assert.equal(rejected.body.error.code, "INVALID_REQUEST");
+    assertApiError(rejected, 400, "INVALID_REQUEST");
   }
   assert.equal(fixture.computeDriver.calls.length, 0);
 
@@ -736,8 +731,7 @@ test("runtime credential API rejects unsupported initial provisioning states and
   const deployedRejected = await fixture.request("POST", path, {
     body: {},
   });
-  assert.equal(deployedRejected.status, 409);
-  assert.equal(deployedRejected.body.error.code, "RESOURCE_CONFLICT");
+  assertApiError(deployedRejected, 409, "RESOURCE_CONFLICT");
 });
 
 test("deployment diagnostics require exact revision read and Agent operate authorization", async () => {

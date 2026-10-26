@@ -3,12 +3,15 @@ import type {
   OpenClawConfigurationDocument,
 } from "@openclaw-enterprise/contracts";
 import {
+  configurationSettingMessage,
   environmentReference,
   invalidHeaderNameRequirement,
   isAdmittedHeaderName,
   isCredentialHeaderName,
+  keyedSettingPath,
   ModelCredentialValueError,
   refuseLiteralGatewayPassword,
+  secretInputShorthandName,
 } from "@openclaw-enterprise/occ";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { createUrlCredentialChecks } from "./url-credentials.ts";
@@ -81,6 +84,46 @@ const credentialHeaderMessage = (path: string): string =>
   `Configuration field ${path} holds a credential value inline, where a reference is required. Make the header value a \${NAME} reference, or Bearer \${NAME} for an Authorization header.`;
 const credentialKeyMessage = (path: string): string =>
   `Configuration field ${path} holds a credential value inline, where a reference is required. Make the value a \${NAME} reference or a SecretRef.`;
+// A channel's credential setting is named as Configuration save's channel rules name it
+// (`channels.slack.botToken`), so the Console shows the refusal under the Configuration JSON as
+// it shows theirs (finding 2517). The message never shows the value.
+const channelCredentialKeyMessage = (path: string): string =>
+  configurationSettingMessage(
+    settingPath(path),
+    "holds a credential value inline, where a reference is required. Make the value a ${NAME} reference or a SecretRef",
+  );
+// A key slot's value that holds a reference the runtime substitutes, but not as the whole value:
+// the `$NAME` form, a `${NAME:-fallback}`, or a `${NAME}` with other text, spaces or references
+// (findings 2493, 2503). The message names the form and never the text, which may hold the
+// credential, and names the setting as Configuration save's channel rules do
+// (`channels.slack.botToken`); any other value keeps the slot's inline-value message.
+function referenceFormMessage(value: unknown): ((path: string) => string) | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const references = [...value.matchAll(environmentReference)].filter(
+    ([, escaped]) => escaped === undefined,
+  );
+  const requirement =
+    secretInputShorthandName(value) !== undefined
+      ? "holds a $NAME value, where a credential reference is required. Write it as one ${NAME} reference, or a SecretRef"
+      : references.some(([, , fallback]) => fallback !== undefined)
+        ? "holds a ${NAME:-…} fallback, which would replace a missing credential. Make the value one ${NAME} reference without a fallback, or a SecretRef"
+        : references.length > 0
+          ? "holds a ${NAME} reference with other text, spaces or references. Make the value exactly one ${NAME} reference, or a SecretRef"
+          : undefined;
+  return requirement === undefined
+    ? undefined
+    : (path) => configurationSettingMessage(settingPath(path), requirement);
+}
+// The Configuration setting a JSON pointer names, such as `channels.slack.botToken`.
+function settingPath(path: string): string {
+  const [first = "", ...keys] = path
+    .slice(1)
+    .split("/")
+    .map((segment) => segment.replaceAll("~1", "/").replaceAll("~0", "~"));
+  return keys.reduce((parent, key) => keyedSettingPath(parent, key), first);
+}
 // A media query option that counts tokens rather than carrying one.
 const TOKEN_COUNT_OPTION =
   /(?:^|[-_.])(?:max|min|num|total|context|input|output|completion)[-_.]?tokens?$/i;
@@ -172,7 +215,12 @@ export function validateModelCredentialReferences(
     if (isSecretRef(value)) {
       return;
     }
-    throw new ModelCredentialValueError(path, message);
+    throw new ModelCredentialValueError(
+      path,
+      message === credentialKeyMessage || message === channelCredentialKeyMessage
+        ? (referenceFormMessage(value) ?? message)
+        : message,
+    );
   };
   // Whether a header named `name` in the headers object at `headersPath` carries a credential, and
   // whether it may hold `Bearer ${NAME}`: some gateways carry the bearer token in an
@@ -285,6 +333,7 @@ export function validateModelCredentialReferences(
   // (`requireToken: true`) passes.
   const refuseSensitiveSettings = (root: SettingPath, settings: unknown, owner: string): void => {
     const manifest = (SENSITIVE_MANIFEST_SETTINGS[owner] ?? []).map((field) => field.split("."));
+    const keyMessage = root[0] === "channels" ? channelCredentialKeyMessage : credentialKeyMessage;
     const marked = (relative: SettingPath): boolean =>
       manifest.some(
         (field) =>
@@ -298,7 +347,7 @@ export function validateModelCredentialReferences(
       const key = relative.at(-1);
       if (typeof value === "string") {
         if (sensitive) {
-          validateReference(value, pointer(...path), false, credentialKeyMessage);
+          validateReference(value, pointer(...path), false, keyMessage);
         }
         continue;
       }
@@ -314,7 +363,7 @@ export function validateModelCredentialReferences(
         continue;
       }
       if (sensitive && typeof key === "string" && SERVICE_ACCOUNT_SETTING.test(key)) {
-        validateReference(record, pointer(...path), false, credentialKeyMessage);
+        validateReference(record, pointer(...path), false, keyMessage);
       }
       if (key === "headers") {
         refuseCredentialHeaders(path, record, credentialHeaderMessage);

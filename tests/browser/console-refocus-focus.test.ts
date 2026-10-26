@@ -13,6 +13,7 @@ import {
   newPage,
 } from "./console-agents-browser-helpers.mjs";
 import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
+import { apiErrorResponse } from "../helpers/api-error.mjs";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
@@ -168,7 +169,7 @@ test("refocusing the Agents list after a row read failed keeps the reader's plac
   const { fixture, namespace, page } = await openDeployedList(t, "Refocus failed row");
   const failed = await holdRequests(t, page, deploymentsRead(namespace), {
     once: true,
-    fulfill: { status: 500, json: { error: { code: "INTERNAL", message: "Unavailable." } } },
+    fulfill: apiErrorResponse(500, "INTERNAL_ERROR", "Unavailable."),
   });
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
   await failed.requested;

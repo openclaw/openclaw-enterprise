@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
+import { readOpenclawSource } from "../../scripts/lib/openclaw-source.mjs";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
@@ -252,12 +253,7 @@ test(
       new URL("../fixtures/runtime-codex-subagent-model.mjs", import.meta.url),
       "utf8",
     );
-    const dockerfile = await readFile(
-      new URL("../../deploy/runtime/Dockerfile", import.meta.url),
-      "utf8",
-    );
-    const commit = dockerfile.match(/^ARG OPENCLAW_COMMIT=([0-9a-f]{40})$/m)?.[1];
-    assert.ok(commit, "The image source pin must be explicit.");
+    const { commit } = await readOpenclawSource();
     const cases = ["main", "string", "object", "alias"].map((agentId) => ({
       agentId,
       model: nativeIds[agentId === "alias" ? "parent" : agentId],

@@ -178,7 +178,7 @@ substitute. A capable exact-dispatch Driver with verified policy reduction v2
 can instead admit Git alongside independently authorized routes as v7; see
 [selection differences](../reference/drivers/selection.md#select-a-protected-sender).
 Fresh static `openai` registration while Proxy is selected produces an egress
-source. For the v5/v6 combination, retain a suitable existing ordinary source
+source (a Git-only `repository.openShell` Proxy refuses it with `409`). For the v5/v6 combination, retain a suitable existing ordinary source
 or provision it in a supported Gateway-only installation before enabling Git.
 If neither is available, stop before enrollment.
 Neither configuration qualifies stock OpenShell. Native prepared Git is a separate

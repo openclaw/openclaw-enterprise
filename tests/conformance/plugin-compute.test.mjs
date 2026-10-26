@@ -1,3 +1,5 @@
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -35,10 +37,12 @@ import {
 } from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import { DependencyUnavailableError } from "../../packages/occ/src/errors.ts";
+import { MAX_TIMER_DELAY_MS } from "../../packages/utils/src/index.ts";
 
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { runOpenClawRuntimeHelper } from "../helpers/plugin-runtime.mjs";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
+import { waitForResult } from "../helpers/wait-for.mjs";
 
 const CODEX_LINEAR_NATIVE_ID = "linear@openai-curated-remote";
 const CODEX_LINEAR_REMOTE_ID = "plugin_asdk_app_69a089a326dc8191b32a3f2553f5be2c";
@@ -72,16 +76,8 @@ function pluginAppServerToken(baseToken, revisionId, startupId) {
     .digest("hex");
 }
 
-async function waitForCondition(description, condition, timeoutMs = 1_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const result = await condition();
-    if (result !== undefined && result !== false) {
-      return result;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  assert.fail(`Timed out waiting for ${description}.`);
+function waitForCondition(description, condition, timeoutMs = 1_000) {
+  return waitForResult(description, condition, { timeoutMs, intervalMs: 10 });
 }
 
 async function readStatusFromHandlerAsync(handler, path) {
@@ -1619,6 +1615,34 @@ test("Codex runtime helper keeps malformed matching install responses generic", 
       assert.equal(result.error.diagnostic, undefined);
       assert.ok(result.requests.some((request) => request.method === "plugin/install"));
     });
+  }
+});
+
+// Number() read "12abc" as NaN, "" as 0 and 3e9 as a request timeout that fires after 1 ms
+// (finding 2312). The install deadline shares the bound.
+test("Codex runtime refuses request timeouts and install deadlines outside 1 to 2147483647 ms", () => {
+  const timers = (env) =>
+    JSON.parse(
+      vm.runInNewContext(
+        `${PLUGIN_RUNTIME_HELPERS}
+JSON.stringify([CODEX_PLUGIN_RUNTIME_REQUEST_TIMEOUT_MS, CODEX_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS]);`,
+        { Buffer, process: { env }, require: nodeRequire },
+      ),
+    );
+  assert.deepEqual(timers({}), [10_000, 60_000]);
+  for (const name of [
+    "OPENCLAW_PLUGIN_RUNTIME_REQUEST_TIMEOUT_MS",
+    "OPENCLAW_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS",
+  ]) {
+    const accepted = timers({ [name]: String(MAX_TIMER_DELAY_MS) });
+    assert.ok(accepted.includes(MAX_TIMER_DELAY_MS), name);
+    for (const value of ["12abc", "", "0", "-5", "1.5", "3e9", String(MAX_TIMER_DELAY_MS + 1)]) {
+      assert.throws(
+        () => timers({ [name]: value }),
+        { message: `${name} must be 1 to 2147483647 ms.` },
+        `${name}=${JSON.stringify(value)}`,
+      );
+    }
   }
 });
 
@@ -3243,13 +3267,14 @@ test("gateway runtime status maps native Slack channel status without provider d
   assert.equal(channelStatusCalls, 15);
 });
 
-test("Codex agent app-server uses a per-startup plugin status token", () => {
+test("Codex agent app-server uses a per-startup plugin status token", async () => {
   const directory = mkdtempSync(join(tmpdir(), "oce-plugin-token-"));
   const marker = join(directory, "ready");
   const baseToken = "capability-token-test-value";
   const revisionId = "revision-plugin-compute-1";
   let statusHandler;
   let appServerSpawn;
+  const { promise: startup, resolve: settled } = Promise.withResolvers();
   const files = new Map();
   try {
     const sandbox = {
@@ -3313,28 +3338,39 @@ test("Codex agent app-server uses a per-startup plugin status token", () => {
           };
         }
         if (specifier === "node:child_process") {
-          let nativeCalls = 0;
           return {
-            spawnSync() {
-              nativeCalls += 1;
-              return nativeCalls === 1
-                ? { status: 0 }
-                : {
-                    status: 0,
-                    stdout: [
-                      { type: "thread.started" },
-                      { type: "turn.started" },
-                      {
-                        type: "item.completed",
-                        item: { type: "agent_message", text: "READY" },
-                      },
-                      { type: "turn.completed" },
-                    ]
-                      .map((event) => JSON.stringify(event))
-                      .join("\n"),
-                  };
+            spawnSync(_command, args) {
+              assert.ok(args.includes("login"));
+              return { status: 0 };
             },
             spawn(command, args, options) {
+              if (args.includes("exec")) {
+                assert.equal(options.detached, true);
+                const child = Object.assign(new EventEmitter(), {
+                  stdout: new PassThrough(),
+                  stderr: new PassThrough(),
+                });
+                queueMicrotask(() => {
+                  child.stdout.end(
+                    [
+                      { type: "thread.started" },
+                      { type: "turn.started" },
+                      { type: "item.completed", item: { type: "agent_message", text: "READY" } },
+                      { type: "turn.completed" },
+                    ]
+                      .map(JSON.stringify)
+                      .join("\n"),
+                  );
+                  child.stderr.end();
+                  Promise.all([
+                    new Promise((resolve) => child.stdout.on("end", resolve)),
+                    new Promise((resolve) => child.stderr.on("end", resolve)),
+                  ]).then(() => child.emit("close", 0, null));
+                });
+                return child;
+              }
+              assert.ok(args.includes("app-server"));
+              settled();
               appServerSpawn = { command, args, options };
               return { on() {}, kill() {} };
             },
@@ -3345,6 +3381,7 @@ test("Codex agent app-server uses a per-startup plugin status token", () => {
     };
 
     vm.runInNewContext(AGENT_RUNTIME_ENTRYPOINT, sandbox);
+    await startup;
 
     assert.ok(statusHandler);
     assert.equal(appServerSpawn.command, "codex");

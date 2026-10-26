@@ -1,3 +1,5 @@
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -17,6 +19,7 @@ import {
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { OpenShellServiceTransportError } from "../../apps/controller/src/drivers/sandbox/openshell-service-transport.ts";
 import { DependencyUnavailableError } from "../../packages/occ/src/errors.ts";
+import { availablePort, refusingPort } from "../helpers/available-port.mjs";
 
 // A provider-owned Codex Harness (OpenShell) receives only the transport token's
 // verifier and no Compute status port. When it holds a startup failure it serves
@@ -31,16 +34,20 @@ const turnStarted = { type: "turn.started" };
 const assistant = { type: "item.completed", item: { type: "agent_message", text: "READY" } };
 const completed = { type: "turn.completed" };
 
-function runCodexEntrypoint({ env, login = { status: 0 }, probe, http }) {
+async function runCodexEntrypoint({ env, login = { status: 0 }, probe, http }) {
   const directory = mkdtempSync(join(tmpdir(), "openshell-held-failure-"));
   const servers = [];
   const diagnostics = [];
   let appServerStarts = 0;
+  const { promise: startup, resolve: settled } = Promise.withResolvers();
   const sandbox = {
     URL,
     Buffer,
     setTimeout() {},
-    setInterval() {},
+    clearTimeout() {},
+    setInterval() {
+      settled();
+    },
     console: { error: (message) => diagnostics.push(message) },
     process: {
       env: {
@@ -105,11 +112,29 @@ function runCodexEntrypoint({ env, login = { status: 0 }, probe, http }) {
             if (args.includes("login")) {
               return login;
             }
-            return probe;
+            assert.fail("only login uses spawnSync");
           },
-          spawn(_command, args) {
+          spawn(_command, args, options) {
+            if (args.includes("exec")) {
+              assert.equal(options.detached, true);
+              const child = Object.assign(new EventEmitter(), {
+                stdout: new PassThrough(),
+                stderr: new PassThrough(),
+              });
+              queueMicrotask(() => {
+                child.stdout.end(probe.stdout ?? "");
+                child.stderr.end(probe.stderr ?? "");
+                // close follows both terminal streams, as it does for ChildProcess.
+                Promise.all([
+                  new Promise((resolve) => child.stdout.on("end", resolve)),
+                  new Promise((resolve) => child.stderr.on("end", resolve)),
+                ]).then(() => child.emit("close", probe.status, null));
+              });
+              return child;
+            }
             assert.ok(args.includes("app-server"));
             appServerStarts++;
+            settled();
             return { on() {}, kill() {}, stderr: undefined };
           },
         };
@@ -119,6 +144,7 @@ function runCodexEntrypoint({ env, login = { status: 0 }, probe, http }) {
   };
   try {
     vm.runInNewContext(AGENT_RUNTIME_ENTRYPOINT, sandbox);
+    await startup;
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -178,8 +204,8 @@ test("a provider-owned Codex Harness serves its held startup failure only to the
       { check: "login", code: "LOGIN_FAILED" },
     ],
   ]) {
-    await t.test(name, () => {
-      const { servers, diagnostics, appServerStarts } = runCodexEntrypoint({
+    await t.test(name, async () => {
+      const { servers, diagnostics, appServerStarts } = await runCodexEntrypoint({
         env: providerEnv,
         ...options,
       });
@@ -241,8 +267,8 @@ test("a provider-owned Codex Harness serves its held startup failure only to the
   }
 });
 
-test("a Compute-owned Codex Harness keeps its held failure on the private status port", () => {
-  const { servers, appServerStarts } = runCodexEntrypoint({
+test("a Compute-owned Codex Harness keeps its held failure on the private status port", async () => {
+  const { servers, appServerStarts } = await runCodexEntrypoint({
     env: {
       APP_SERVER_TOKEN: TOKEN,
       OPENCLAW_AGENT_REVISION_ID: "rev_fixture",
@@ -260,8 +286,8 @@ test("a Compute-owned Codex Harness keeps its held failure on the private status
   );
 });
 
-test("a provider-owned Codex Harness with a working model starts the app-server and serves no status", () => {
-  const { servers, appServerStarts } = runCodexEntrypoint({
+test("a provider-owned Codex Harness with a working model starts the app-server and serves no status", async () => {
+  const { servers, appServerStarts } = await runCodexEntrypoint({
     env: providerEnv,
     probe: {
       status: 0,
@@ -293,10 +319,8 @@ async function close(server) {
 const serviceUrl = "http://tenant--sandbox.openshell.localhost:8080/";
 
 test("the OpenShell client reads a held failure from the real Harness wrapper through the service host", async (t) => {
-  const probeServer = createServer();
-  const freePort = await listen(probeServer);
-  await close(probeServer);
-  const { servers } = runCodexEntrypoint({
+  const freePort = await availablePort();
+  const { servers } = await runCodexEntrypoint({
     env: providerEnv,
     probe: failedProbe("stream error: model unavailable"),
     http: { createServer, port: freePort },
@@ -540,10 +564,11 @@ test("a refused OpenShell WebSocket handshake releases an unfinished HTTP respon
   }
 });
 
-test("an unreachable OpenShell gateway listener is a dependency failure, not a starting Harness", async () => {
-  const server = createServer();
-  const port = await listen(server);
-  await close(server);
+test("an unreachable OpenShell gateway listener is a dependency failure, not a starting Harness", async (t) => {
+  // A released port can be taken by a parallel test's listener; this one keeps refusing.
+  const refusing = await refusingPort();
+  t.after(() => refusing.release());
+  const { port } = refusing;
   const client = new GrpcOpenShellGatewayClient({ endpoint: `http://127.0.0.1:${port}` });
   for (const observe of [
     () =>
@@ -772,8 +797,8 @@ test("the OpenShell client verifies an IP-literal TLS gateway listener against t
 // Each wrapper status server answers 400 instead and keeps serving.
 test("runtime wrapper status servers answer 400 to a request target that is not a path", async (t) => {
   const badRequest = { error: "bad_request" };
-  await t.test("the provider-owned held failure checks the token first", () => {
-    const { servers } = runCodexEntrypoint({
+  await t.test("the provider-owned held failure checks the token first", async () => {
+    const { servers } = await runCodexEntrypoint({
       env: providerEnv,
       probe: failedProbe("stream error: model unavailable"),
     });
@@ -796,8 +821,8 @@ test("runtime wrapper status servers answer 400 to a request target that is not 
     assert.equal(call(handler, { authorization: `Bearer ${TOKEN}` }).status, 200);
   });
 
-  await t.test("the Compute status port answers before any route or token check", () => {
-    const { servers } = runCodexEntrypoint({
+  await t.test("the Compute status port answers before any route or token check", async () => {
+    const { servers } = await runCodexEntrypoint({
       env: {
         APP_SERVER_TOKEN: TOKEN,
         OPENCLAW_AGENT_REVISION_ID: "rev_fixture",
@@ -883,10 +908,8 @@ test("runtime wrapper status servers answer 400 to a request target that is not 
   );
 
   await t.test("a raw request target over HTTP leaves the held wrapper serving", async (t) => {
-    const probeServer = createServer();
-    const freePort = await listen(probeServer);
-    await close(probeServer);
-    const { servers } = runCodexEntrypoint({
+    const freePort = await availablePort();
+    const { servers } = await runCodexEntrypoint({
       env: providerEnv,
       probe: failedProbe("stream error: model unavailable"),
       http: { createServer, port: freePort },
@@ -1104,7 +1127,7 @@ test("a provider-owned native OpenClaw worker serves its held model-check failur
     ["an unclassified 401 stamped X-OpenShell-Policy", 23, undefined, "openshell-policy"],
     ["a rejected key forwarded with the relay's stamp", 34, "invalid_api_key", "mixed"],
   ]) {
-    await t.test(name, () => {
+    await t.test(name, async () => {
       const { servers, diagnostics, events, connectStarts } = runNativeWorkerEntrypoint({
         env: nativeProviderEnv,
         upfrontStatus,

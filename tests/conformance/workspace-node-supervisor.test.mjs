@@ -189,6 +189,7 @@ test(
         "hasSetup: process.env.OPENCLAW_NODE_SETUP_CODE !== undefined ||",
         "  process.env.OPENCLAW_NODE_SETUP_ENVELOPE !== undefined,",
         "caPath: process.env.NODE_EXTRA_CA_CERTS,",
+        "shellCaPath: process.env.OPENCLAW_SHELL_NODE_EXTRA_CA_CERTS,",
         "hasModelKey: process.env.OPENAI_API_KEY !== undefined,",
         'autoUpdateDisabled: process.env.OPENCLAW_NO_AUTO_UPDATE === "1",',
         'hasTransportToken: process.env.APP_SERVER_TOKEN !== undefined }) + "\\n");',
@@ -221,6 +222,9 @@ test(
     assert.equal((await stat(join(directory, ".oce-native-hooks"))).mode & 0o777, 0o700);
     assert.equal(await readFile(codex.caPath, "utf8"), "existing-public-ca\ngateway-public-ca");
     assert.equal(await readFile(node.caPath, "utf8"), "gateway-public-ca");
+    // Sandboxed commands cannot read the hook directory; they keep the Pod's own CA.
+    assert.equal(codex.shellCaPath, existingCa);
+    assert.equal(node.shellCaPath, undefined);
 
     process.kill(codex.pid, "SIGKILL");
     const afterCodex = await waitFor(
@@ -320,6 +324,7 @@ test(
         "const [events, kind] = process.argv.slice(2);",
         "appendFileSync(events, JSON.stringify({ kind, pid: process.pid,",
         "caPath: process.env.NODE_EXTRA_CA_CERTS,",
+        "shellCaPath: process.env.OPENCLAW_SHELL_NODE_EXTRA_CA_CERTS,",
         'hasCaPath: process.env.OPENCLAW_NODE_CA_PATH !== undefined }) + "\\n");',
         "setInterval(() => {}, 1_000);",
       ],
@@ -339,6 +344,8 @@ test(
     assert.equal((await stat(hooks)).mode & 0o777, 0o700);
     assert.equal(codex.caPath, join(hooks, "gateway-ca.pem"));
     assert.equal(await readFile(codex.caPath, "utf8"), "gateway-public-ca");
+    // No Pod CA: sandboxed commands get no NODE_EXTRA_CA_CERTS at all.
+    assert.equal(codex.shellCaPath, "");
     assert.equal(codex.hasCaPath, false);
   },
 );

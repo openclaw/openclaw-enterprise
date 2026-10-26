@@ -16,6 +16,7 @@ import { backendSummariesFromDefinitions } from "../../apps/controller/src/compo
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
+import { NAME_MAX_CHARACTERS } from "../../packages/contracts/src/api/plain-text.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
 import { authenticatedHeaders, signInWithEmailPassword } from "./auth-session.mjs";
@@ -24,6 +25,7 @@ import { createTestSecretDriver } from "./secret-driver.mjs";
 import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";
 import { reservePort } from "./available-port.mjs";
 import { sharedRsaPrivateKeyPem } from "../fixtures/repository-credentials/shared-keys.mjs";
+import { temporaryDirectory } from "./temporary-directory.mjs";
 
 export const backendFixtures = Object.freeze([
   Object.freeze({
@@ -41,20 +43,25 @@ export const backendFixtures = Object.freeze([
 function computeDriver({
   repositoryCredentials = false,
   channelRuntime = false,
+  routed = true,
   discoverHarnessModels = async () => [],
   agentProvisioning = false,
   sandboxDriver,
   credentialGatewayDriver,
+  // OCC applies the bundled Kubernetes Compute's own save rules (channel credentials only from
+  // Secret bindings, finding 2319) only under its implementation, such as `kubernetes-local`.
+  implementation = "test-memory-lifecycle",
 } = {}) {
   const driver = createTestKubernetesComputeDriver("console-compute", {
     repositoryCredentials,
     sandboxDriver,
     credentialGatewayDriver,
     channelRuntime,
+    routed,
   });
 
   return Object.assign(driver, {
-    implementation: "test-memory-lifecycle",
+    implementation,
     // A channel runtime needs runtime storage, whose Agent runtime credentials this fixture
     // does not provision unless repository credentials ask for them.
     ...(channelRuntime && !repositoryCredentials
@@ -85,6 +92,13 @@ function computeDriver({
     },
     async retireRevision() {},
   });
+}
+
+// The default model credential Secret's name for createAgent. An Agent name may use all of the
+// Name rule's characters, so "Auth <Agent name>" is cut to that length (in code points); the cut
+// can land after a space, which a Name cannot end with.
+function authSecretName(agentName) {
+  return Array.from(`Auth ${agentName}`).slice(0, NAME_MAX_CHARACTERS).join("").trimEnd();
 }
 
 function spkiHash(cert) {
@@ -387,8 +401,7 @@ export async function createConsoleAppFixture(t, options = {}) {
   ) {
     // Native value validation (Preset seeding, inline credential checks) needs the
     // real storage Driver; the in-memory test Driver accepts any values.
-    const root = await mkdtemp(join(tmpdir(), "occ-console-configuration-"));
-    t.after(() => rm(root, { recursive: true, force: true }));
+    const root = await temporaryDirectory(t, "occ-console-configuration-");
     configurationDriver = new FilesystemConfigurationDriver(root);
   }
   let controller;
@@ -405,10 +418,12 @@ export async function createConsoleAppFixture(t, options = {}) {
       computeDriver({
         repositoryCredentials: options.repositoryCredentials === true,
         channelRuntime: options.channelRuntime === true,
+        routed: options.routed !== false,
         discoverHarnessModels: options.discoverHarnessModels,
         agentProvisioning: options.agentProvisioning,
         sandboxDriver: options.sandboxDriver,
         credentialGatewayDriver: options.credentialGatewayDriver,
+        implementation: options.computeImplementation,
       }),
     configurationDriver:
       configurationDriver ?? createTestConfigurationDriver({ id: "console-configuration" }),
@@ -743,7 +758,7 @@ export async function createConsoleAppFixture(t, options = {}) {
         ? {
             method: "api_key",
             source: (
-              await createSecret(namespaceId, `Auth ${name}`, `test-api-key-${randomUUID()}`)
+              await createSecret(namespaceId, authSecretName(name), `test-api-key-${randomUUID()}`)
             ).ref,
           }
         : (options.harnessAuth ?? null);
@@ -831,6 +846,29 @@ export async function createConsoleAppFixture(t, options = {}) {
   }
 
   /**
+   * Runs `run` while the real IAM Driver throws on each authorization request `failing` selects,
+   * as an IAM outage on those decisions would, and restores the Driver afterwards.
+   * @template T
+   * @param {(request: { action: string, resource: { kind: string, id: string } }) => boolean} failing
+   * @param {() => Promise<T>} run
+   * @returns {Promise<T>}
+   */
+  async function withIamOutage(failing, run) {
+    const authorize = iamDriver.authorize;
+    iamDriver.authorize = async (request) => {
+      if (failing(request)) {
+        throw new Error("IAM outage");
+      }
+      return authorize.call(iamDriver, request);
+    };
+    try {
+      return await run();
+    } finally {
+      iamDriver.authorize = authorize;
+    }
+  }
+
+  /**
    * A Namespace member: an account whose one Role in `namespaceId` holds exactly `grants`, as
    * [action, resourceKind] pairs. It has no Installation access.
    * @param {string} label
@@ -864,8 +902,11 @@ export async function createConsoleAppFixture(t, options = {}) {
     memoryDatabase,
     provisionedAccounts,
     policy,
+    // The sink State and the API audit to: `options.auditSink`, or one the fixture made.
+    auditSink,
     // The real Native IAM Driver, for tests that simulate an IAM outage at its boundary.
     iamDriver,
+    withIamOutage,
     rawRequest,
     request,
     signIn,
@@ -889,4 +930,48 @@ export async function createConsoleAppFixture(t, options = {}) {
       return controller;
     },
   };
+}
+
+// The Role that fixture.createNamespaceMember made for `label`. Tests change it in place to
+// grant or revoke after sign-in: State reads the policy on each request.
+export function memberRole(fixture, label) {
+  const role = fixture.policy.roles.find(({ id }) => id === `role-${label}`);
+  assert.ok(role, `member ${label} has a Role`);
+  return role;
+}
+
+/** Adds `grants`, as [action, resourceKind] pairs, to member `label`'s Role. */
+export function grantMember(fixture, label, grants) {
+  memberRole(fixture, label).permissions.push(
+    ...grants.map(([action, resourceKind]) => ({ action, resourceKind })),
+  );
+}
+
+// The authorization denials an InMemoryAuditSink recorded: all of them, or those for `action`,
+// an exact action name or a RegExp for a family of actions.
+export function authorizationDenials(auditSink, action) {
+  const matches =
+    action === undefined
+      ? () => true
+      : typeof action === "string"
+        ? (name) => name === action
+        : (name) => action.test(name);
+  return auditSink
+    .list()
+    .filter((event) => event.kind === "authorization_denial" && matches(event.action));
+}
+
+// Runs `send` and returns its response with the checks its authorization denials name, as
+// { action, kind, id }, so a refusal can be shown to be audited once, for its own target.
+export async function denialsDuring(auditSink, send) {
+  const before = authorizationDenials(auditSink).length;
+  const response = await send();
+  const denials = authorizationDenials(auditSink)
+    .slice(before)
+    .map(({ authorization: { action, resource } }) => ({
+      action,
+      kind: resource.kind,
+      id: resource.id,
+    }));
+  return { response, denials };
 }

@@ -2,12 +2,11 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFile, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { createServer as createHttpsServer } from "node:https";
 import { promisify } from "node:util";
 import { inflateRawSync } from "node:zlib";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { reservePort, reservedPortArgs } from "../helpers/available-port.mjs";
 import { waitFor } from "../helpers/qa-utils.mjs";
@@ -25,7 +24,10 @@ import {
   PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
   RUNTIME_WRAPPER_COMMAND,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
-import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
+import {
+  nodeProgramArguments,
+  withoutLineComments,
+} from "../../apps/controller/src/drivers/compute/node-program.ts";
 import test from "node:test";
 import {
   admitLoggingConfiguration,
@@ -44,6 +46,7 @@ import {
   digest,
   selectorMatches,
 } from "../helpers/kubernetes-routed-scenarios.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const providerUrl = "ws://tenant--sandbox.openshell.localhost:8080/";
 const providerWorkspaceRoot = "/sandbox/enterprise";
@@ -1253,8 +1256,7 @@ test("provider Harness protected execution is released only on current signed in
         driver.prepareRevision(zero, zeroContext),
         (error) => error === released,
       );
-      const directory = await mkdtemp(join(tmpdir(), "oce-compute-deny-all-"));
-      t.after(() => rm(directory, { recursive: true, force: true }));
+      const directory = await temporaryDirectory(t, "oce-compute-deny-all-");
       const calls = join(directory, "codex-calls");
       await writeFile(calls, "");
       // Stub only the CLI. Use the owning prepareRevision's actual files and environment.
@@ -1462,7 +1464,9 @@ test("provider Harness protected execution is released only on current signed in
             const codex = node ? program(JSON.parse(child[1]).slice(1)) : outer;
             assert.equal(
               codex,
-              disabled ? PROTECTED_CODEX_RUNTIME_ENTRYPOINT : AGENT_RUNTIME_ENTRYPOINT,
+              withoutLineComments(
+                disabled ? PROTECTED_CODEX_RUNTIME_ENTRYPOINT : AGENT_RUNTIME_ENTRYPOINT,
+              ),
             );
             // Only the two model-calling invocations: the authentication probe and app-server.
             assert.equal(

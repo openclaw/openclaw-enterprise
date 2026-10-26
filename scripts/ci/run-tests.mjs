@@ -652,7 +652,7 @@ function sanitizePreparationError(error) {
   if (
     code !== "CI_PREPARATION_COMMAND_FAILED" ||
     !["database-create", "database-schema", "database-migrate"].includes(stage) ||
-    !["spawn", "exit", "signal", "timeout"].includes(failure)
+    !["spawn", "exit", "signal", "timeout", "connect", "query"].includes(failure)
   ) {
     return result;
   }
@@ -1153,6 +1153,7 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
 
   let nodeResult = null;
   let tests = [];
+  let skippedSuites = [];
   let fileFailure;
   let details;
   let nodeElapsedMs;
@@ -1221,6 +1222,16 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
           error: failureError(event.data.error),
           durationMs: event.data.durationMs,
         }));
+      // A skipped describe() never registers its tests, so only its suite event shows the skip.
+      skippedSuites = events
+        .filter(
+          (event) =>
+            event.type === "test:pass" &&
+            event.data?.testType === "suite" &&
+            event.data.skip !== undefined &&
+            event.data.name !== absolutePath,
+        )
+        .map((event) => event.data.name);
     }
   } catch (error) {
     issues.push(
@@ -1325,6 +1336,15 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
         }),
       );
     }
+    for (const name of skippedSuites) {
+      issues.push(
+        issue("unexpected-skip", `selected suite did not run its tests: ${name}`, {
+          file: relativePath,
+          name,
+          status: "skipped",
+        }),
+      );
+    }
   }
 
   const counts = { passed: 0, failed: 0, skipped: 0, todo: 0, total: tests.length };
@@ -1399,6 +1419,7 @@ async function runLane(root, manifest, laneName, statePath, resultsPath) {
       return next;
     };
     const results = new Array(lane.files.length);
+    let annotateFailure = process.env.GITHUB_ACTIONS === "true";
     const runAt = async (index, mode) => {
       const fileStarted = performance.now();
       const result = await runFile(root, lane, lane.files[index], statePath, prepareFile, setup);
@@ -1408,6 +1429,17 @@ async function runLane(root, manifest, laneName, statePath, resultsPath) {
       result.startOffsetMs = Math.round(fileStarted - laneStarted);
       result.wallDurationMs = Math.round(performance.now() - laneStarted) - result.startOffsetMs;
       results[index] = result;
+      if (annotateFailure && result.status === "failed") {
+        annotateFailure = false;
+        // A workflow command must never contain the child test's name, path, or output.
+        const message =
+          result.counts.failed > 0 && result.cleanup?.status === "passed"
+            ? "A test file reported failed tests and its cleanup passed."
+            : "A test file failed.";
+        process.stderr.write(
+          `::error title=Test lane failure::${message} Final lane results will follow.\n`,
+        );
+      }
       process.stderr.write(
         `run-tests: ${result.status} ${result.path} ${(result.wallDurationMs / 1000).toFixed(1)}s${mode === "parallel" ? " (parallel)" : ""}\n`,
       );

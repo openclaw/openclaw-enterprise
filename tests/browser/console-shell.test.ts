@@ -1,9 +1,17 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
+import { isDeepStrictEqual } from "node:util";
 import type { BrowserContextOptions, Locator, Page } from "playwright";
 
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { fileBrowser, login, newPage, settledView } from "./console-agents-browser-helpers.mjs";
+import { waitFor } from "../helpers/wait-for.mjs";
+import {
+  fileBrowser,
+  holdRequests,
+  login,
+  newPage,
+  settledView,
+} from "./console-agents-browser-helpers.mjs";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
@@ -44,6 +52,28 @@ async function visibleBox(locator: Locator) {
   const box = await locator.boundingBox();
   assert.ok(box, "expected a visible element to measure");
   return box;
+}
+
+// A media change resizes a <picture>'s img at once, but the browser re-selects its <source> in a
+// later rendering step and changes currentSrc only when the newly selected file has loaded
+// (finding 2287), so wait for the mark the check expects and report the last one seen.
+async function waitForMark(
+  mark: Locator,
+  expected: { path: string; width: number; height: number },
+) {
+  let seen: unknown;
+  await waitFor(
+    () => `the mascot ${JSON.stringify(expected)}; it was ${JSON.stringify(seen)}`,
+    async () => {
+      seen = await mark.evaluate((img: HTMLImageElement) => ({
+        path: img.complete && img.naturalWidth > 0 ? new URL(img.currentSrc).pathname : "(loading)",
+        width: img.width,
+        height: img.height,
+      }));
+      return isDeepStrictEqual(seen, expected) ? seen : undefined;
+    },
+    5_000,
+  );
 }
 
 // The navigation uses an inverse surface, but its account menu uses the regular surface.
@@ -123,6 +153,13 @@ test("the phone top bar opens the account menu from its avatar and the drawer fr
   const topbar = page.locator(".topbar");
   assert.equal(Math.round((await visibleBox(topbar)).height), 56);
   assert.equal(await topbar.locator(".brand").textContent(), "OpenClaw Enterprise");
+  const mark = topbar.locator(".brand img");
+  const inverse = { path: "/console/oce-mascot-inverse.png", width: 48, height: 38 };
+  await waitForMark(mark, inverse);
+  await page.emulateMedia({ forcedColors: "active" });
+  await waitForMark(mark, { path: "/console/oce-mascot.png", width: 20, height: 20 });
+  await page.emulateMedia({ forcedColors: "none" });
+  await waitForMark(mark, inverse);
   const header = await page
     .locator(".page-header")
     .evaluate((node) => node.getBoundingClientRect().bottom + globalThis.scrollY);
@@ -152,12 +189,16 @@ test("the phone top bar opens the account menu from its avatar and the drawer fr
   assert.equal(await avatar.evaluate((node) => node === globalThis.document.activeElement), true);
 
   // Opening the drawer closes the avatar's menu and brings the desktop navigation into reach.
+  await page.setViewportSize({ width: 320, height: phone.viewport.height });
   await avatar.click();
   await navigation.click();
   assert.equal(await menu.isVisible(), false);
   assert.equal(await avatar.getAttribute("aria-expanded"), "false");
   const sidebar = page.locator("#navigation-drawer");
   await sidebar.waitFor({ state: "visible" });
+  const name = await visibleBox(sidebar.locator(".brand-name"));
+  const close = await visibleBox(sidebar.locator(".drawer-close"));
+  assert.ok(name.x + name.width <= close.x, "the wordmark leaves the close target clear at 320px");
   assert.equal(
     (await style(sidebar, "backgroundColor")).backgroundColor,
     await tokenColor(page, "--color-surface-inverse"),
@@ -490,4 +531,44 @@ test("Namespaces read as a table whose rows open each Namespace's Agents", async
     (await page.evaluate(() => globalThis.document.documentElement.scrollWidth)) <= 390,
     "nothing scrolls sideways",
   );
+});
+
+// Each render of a page load replaces the shell, sidebar included: the held page, "Loading…" and
+// the page. A sidebar link pressed before such a render and released after it still opens, and
+// only once (finding 2505).
+test("a sidebar link pressed while a Namespace switch renders opens once", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Pressed", { ready: true });
+  const other = await fixture.createNamespace("Pressed other", { ready: true });
+  const { page } = await newPage(t, fixture, { browser, context: desktop });
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  await page.locator(settledView).waitFor();
+  // The other Namespace's Agent list waits, so its load is still rendering during the press.
+  const agents = await holdRequests(t, page, `**/namespaces/${other.id}/agents*`, { once: true });
+  await page.getByLabel("Namespace", { exact: true }).selectOption(other.id);
+  await agents.requested;
+  const position = () => page.evaluate(() => globalThis.history.state.consolePosition);
+  const switched = await position();
+  const link = page
+    .getByRole("navigation", { name: "Main navigation" })
+    .getByRole("link", { name: "Namespaces", exact: true });
+  const box = await visibleBox(link);
+  await link.evaluate((node: HTMLElement) => {
+    node.dataset.pressed = "";
+  });
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  agents.release();
+  // The load's next render puts a new link under the held press.
+  await waitFor(
+    "a render to replace the pressed link",
+    async () =>
+      (await link.evaluate((node: HTMLElement) => !("pressed" in node.dataset))) || undefined,
+  );
+  await page.mouse.up();
+  await page.waitForURL(`**/console/namespaces?namespace=${other.id}`);
+  await page.locator(settledView).getByRole("list", { name: "Namespaces" }).waitFor();
+  // One history entry: the click navigated once.
+  assert.equal(await position(), switched + 1);
 });

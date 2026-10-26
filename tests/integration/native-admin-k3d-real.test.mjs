@@ -1,4 +1,8 @@
-import { submitChatTurnWithAssistantProof, waitForStockUi } from "../helpers/native-ui-chat.mjs";
+import {
+  submitChatTurnWithAssistantProof,
+  textFromFrame,
+  waitForStockUi,
+} from "../helpers/native-ui-chat.mjs";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash, randomUUID, X509Certificate } from "node:crypto";
@@ -202,8 +206,7 @@ async function launchBrowser(context, ingress) {
   return browser;
 }
 
-async function login(page, origin, credentials, path) {
-  await page.goto(new URL(path, origin).href);
+async function login(page, credentials) {
   await page.getByLabel("Email", { exact: true }).fill(credentials.email);
   await page.getByLabel("Password").fill(credentials.password);
   await page.getByRole("button", { name: "Sign in" }).click();
@@ -680,12 +683,15 @@ async function assertSharedNativeSessions(context, { topology, browser, ingress,
     personContext.on("page", (observedPage) =>
       observedPage.on("websocket", (socket) => {
         if (new URL(socket.url()).origin === status.origin.replace(/^http/, "ws")) {
-          socket.on("framereceived", (frame) => frames.push({ ...frame, socket }));
+          socket.on("framereceived", (frame) =>
+            frames.push({ ...frame, socket, page: observedPage }),
+          );
         }
       }),
     );
     const page = await personContext.newPage();
-    await login(page, ingress.origin, credentials, agentDetailPath(topology));
+    await page.goto(new URL(agentDetailPath(topology), ingress.origin).href);
+    await login(page, credentials);
     // Login keeps the Console URL while its cookie request is pending. Observe
     // the authenticated Agent render before sending requests as this person.
     await page.getByRole("heading", { name: topology.agent.name, exact: true }).waitFor();
@@ -726,6 +732,8 @@ async function assertSharedNativeSessions(context, { topology, browser, ingress,
       frames,
       socket,
       agentBinding,
+      credentials,
+      userId: account.data.id,
       principalId: account.data.principalId,
     });
   }
@@ -779,7 +787,7 @@ async function assertSharedNativeSessions(context, { topology, browser, ingress,
     200,
   );
   assert.equal((await withdrawn.request(namespacePath)).status, 200, "discovery grant remains");
-  await submitChatTurnWithAssistantProof(
+  const lastReply = await submitChatTurnWithAssistantProof(
     unaffected.nativePage,
     `sharing-after-withdrawal-${randomUUID()}`,
     unaffected.frames,
@@ -787,6 +795,60 @@ async function assertSharedNativeSessions(context, { topology, browser, ingress,
   );
   context.diagnostic(
     `Selective sharing withdrawal closed the confirmed native stream in ${Math.ceil(elapsedMs)} ms; the other recipient completed a subsequent real model turn.`,
+  );
+
+  // Expire only this new user's single session. The scalar subquery rejects an
+  // ambiguous fixture. Leave the native tab, its cookies, and all grants alone.
+  const { nativePage, userId } = unaffected;
+  assert.equal(lastReply.page, nativePage);
+  assert.equal(lastReply.socket.isClosed(), false);
+  const [, health] = await Promise.all([
+    lastReply.socket.waitForEvent("close", { timeout: 45_000 }),
+    nativePage.waitForResponse(status.origin + "/healthz", { timeout: 45_000 }),
+    topology.observerPool
+      .query(
+        `UPDATE occ.session SET expires_at = clock_timestamp() - interval '1 second'
+         WHERE id = (SELECT id FROM occ.session WHERE user_id = $1)`,
+        [userId],
+      )
+      .then(({ rowCount }) => assert.equal(rowCount, 1, "expired this recipient's session")),
+  ]);
+  assert.equal(health.status(), 403, "the open native tab observed the session refusal");
+
+  const reconnect = nativePage.getByRole("link", {
+    name: "Reconnect in browser",
+    exact: true,
+  });
+  const [root] = await Promise.all([
+    nativePage.waitForResponse(
+      (response) => response.url() === status.url && response.request().isNavigationRequest(),
+    ),
+    reconnect.click({ timeout: 15_000 }),
+  ]);
+  assert.equal(root.status(), 302);
+  const agentKey = status.host.split(".")[0].slice("agent-".length);
+  // Console removes the fragment before showing sign-in. Check the redirect itself.
+  assert.equal(
+    await root.headerValue("location"),
+    ingress.origin + "/console/#native-agent=" + agentKey,
+  );
+  const [resolved] = await Promise.all([
+    nativePage.waitForResponse(ingress.origin + "/native-admin/return/" + agentKey),
+    login(nativePage, unaffected.credentials),
+  ]);
+  assert.equal(resolved.status(), 200);
+  const { agentId, namespaceId } = (await resolved.json()).data;
+  assert.equal(agentId, topology.agent.id);
+  assert.equal(namespaceId, topology.agent.namespaceId);
+
+  const reopened = await openNativeAdminConsole(nativePage, status.origin);
+  await waitFor("a live Gateway hello on the page opened after signing back in", () =>
+    unaffected.frames.find(
+      (frame) =>
+        frame.page === reopened &&
+        !frame.socket.isClosed() &&
+        JSON.parse(textFromFrame(frame)).payload?.type === "hello-ok",
+    ),
   );
 }
 
@@ -882,7 +944,8 @@ test(
     );
 
     const page = await browserContext.newPage();
-    await login(page, ingress.origin, topology.credentials, agentDetailPath(topology));
+    await page.goto(new URL(agentDetailPath(topology), ingress.origin).href);
+    await login(page, topology.credentials);
     await page.getByRole("heading", { name: topology.agent.name }).waitFor();
     await page
       .getByText(

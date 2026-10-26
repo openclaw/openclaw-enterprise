@@ -55,13 +55,24 @@ test("dev-up builds the default runtime only when real Compose leaves runtime im
   assert.ok(
     dockerLogs.some((entry) => entry.args.join(" ") === `image inspect ${defaultRuntimeImage}`),
   );
-  assert.ok(
-    dockerLogs.some(
-      (entry) =>
-        entry.args.join(" ") ===
-        `build -f deploy/runtime/Dockerfile --tag ${defaultRuntimeImage} .`,
-    ),
+  const source = JSON.parse(
+    await readFile(new URL("../../deploy/runtime/openclaw-source.json", import.meta.url), "utf8"),
   );
+  const runtimeBuild = dockerLogs.find((entry) => entry.args[0] === "build");
+  assert.deepEqual(runtimeBuild?.args, [
+    "build",
+    "-f",
+    "deploy/runtime/Dockerfile",
+    "--build-arg",
+    `OPENCLAW_COMMIT=${source.commit}`,
+    "--build-arg",
+    `OPENCLAW_SOURCE_SHA256=${source.sourceArchiveSha256}`,
+    "--build-arg",
+    `OPENCLAW_BUILD_TIMESTAMP=${source.buildTimestamp}`,
+    "--tag",
+    defaultRuntimeImage,
+    ".",
+  ]);
   assert.ok(
     dockerLogs.some(
       (entry) =>
@@ -114,11 +125,31 @@ test("dev-up starts Docker without Compose options on Bash 3.2", async (t) => {
   assert.match(result.stdout, /Container engine: Docker/);
 });
 
+test("dev-up refuses an invalid source identity before building or starting Compose", async (t) => {
+  const fixture = await createFixture(t);
+  const sourcePath = join(fixture.fixtureRepository, "deploy/runtime/openclaw-source.json");
+  const source = JSON.parse(await readFile(sourcePath, "utf8"));
+  // A malformed timestamp must not reach Docker or start a stack with an unbuildable image.
+  source.buildTimestamp = "2026-02-30T00:00:00Z";
+  await writeFile(sourcePath, JSON.stringify(source));
+
+  const result = await runDevUp([], fixture.env);
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /cannot read a valid deploy\/runtime\/openclaw-source.json/);
+  const dockerLogs = await readJsonLines(fixture.dockerLog);
+  assert.ok(dockerLogs.every((entry) => entry.args[0] !== "build"));
+  const composeCommands = composeInvocations(dockerLogs);
+  assert.ok(composeCommands.every((entry) => !entry.args.includes("up")));
+});
+
 test("dev-up preserves a selected custom runtime image and skips the quickstart build", async (t) => {
   const fixture = await createFixture(t);
   const keyOutput = join(fixture.directory, "custom-service-key.json");
   const env = { ...fixture.env, OPENCLAW_DEV_PORT: "4137" };
   const override = await customRuntimeOverride(fixture);
+  // A prebuilt selection does not consume this checkout's runtime source identity.
+  await writeFile(join(fixture.fixtureRepository, "deploy/runtime/openclaw-source.json"), "{}");
   const result = await runDevUp(
     ["--key-output", keyOutput, "--", ...composeOptions(fixture, override)],
     env,
@@ -434,7 +465,7 @@ test("dev-up starts Podman without Compose options on Bash 3.2", async (t) => {
   assert.match(result.stdout, /Container engine: Podman/);
 });
 
-test("dev-up preserves Compose files selected through COMPOSE_FILE for Podman", async (t) => {
+test("dev-up honors Podman Compose file selection from the environment and explicit flags", async (t) => {
   // A security override selected through the environment must participate in validation.
   const fixture = await createFixture(t, { engine: "podman" });
   const keyOutput = join(fixture.directory, "podman-compose-file-service-key.json");
@@ -459,6 +490,42 @@ test("dev-up preserves Compose files selected through COMPOSE_FILE for Podman", 
     invocations.some((entry) => entry.args.includes("up")),
     false,
   );
+
+  // Explicit file flags must override COMPOSE_FILE, including argparse's attached
+  // short form. Real Compose must load the selected file before startup proceeds.
+  for (const form of ["split", "attached", "long equals"]) {
+    await t.test(form, async (t) => {
+      const explicit = await createFixture(t, { engine: "podman" });
+      const sourceDirectory = join(explicit.directory, "source with spaces");
+      await symlink(explicit.env.DEV_UP_REPOSITORY, sourceDirectory);
+      const selectedFile = join(sourceDirectory, "compose.yaml");
+      const missingFile = join(explicit.directory, "missing-compose.yaml");
+      const fileArgs =
+        form === "split"
+          ? ["-f", selectedFile]
+          : [form === "attached" ? `-f${selectedFile}` : `--file=${selectedFile}`];
+      const result = await runDevUp(
+        [
+          "--key-output",
+          join(explicit.directory, "explicit-service-key.json"),
+          "--",
+          "--env-file",
+          explicit.emptyEnv,
+          "--project-name",
+          "oce-dev-up-explicit-files",
+          ...fileArgs,
+        ],
+        { ...explicit.env, COMPOSE_FILE: missingFile },
+      );
+
+      assert.equal(result.status, 0, result.stderr ?? result.error?.message);
+      assert.match(result.stdout, /OpenClaw Enterprise development stack is ready/);
+      assert.match(result.stdout, /API URL: http:\/\/127\.0\.0\.1:3000/);
+      const calls = composeInvocations(await readJsonLines(explicit.podmanLog));
+      assert.ok(calls.some((entry) => entry.args.includes("config")));
+      assert.ok(calls.every((entry) => !entry.args.includes(missingFile)));
+    });
+  }
 });
 
 test("dev-up accepts Docker when its server omits the platform name", async (t) => {

@@ -7,7 +7,6 @@ import { request } from "node:https";
 import { request as controlRequest } from "node:http";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
-import pg from "pg";
 import {
   InMemoryPlatformState,
   PostgresPlatformState,
@@ -27,7 +26,7 @@ import { startServiceProcessFixture } from "../fixtures/repository-credentials/s
 import { createTestResourceScope } from "../fixtures/repository-credentials/resources.mjs";
 import { run, temporaryDirectory } from "../fixtures/repository-credentials/process.mjs";
 import { appRoot, appExtension } from "../fixtures/repository-credentials/runtime.mjs";
-import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 
 function requestGitDiscovery(fixture, opened) {
@@ -66,8 +65,7 @@ test(
   "only the reserving broker generation fences its own reservation",
   { ...requiresPostgres, timeout: 30_000 },
   async (t) => {
-    const pool = new pg.Pool({ connectionString: databaseUrl, max: 2 });
-    t.after(() => pool.end());
+    const pool = testPool(t, { connectionString: databaseUrl, max: 2 });
     // The memory store refuses a fence of an open attempt itself; PostgreSQL's receipt trigger
     // refuses it (23514), which the store reports as an ownership or state violation.
     for (const [name, state, fenceRefusal] of [
@@ -167,8 +165,7 @@ test(
   { ...requiresPostgres, timeout: 60_000 },
   async (t) => {
     const resources = createTestResourceScope(t);
-    const pool = new pg.Pool({ connectionString: databaseUrl, max: 4 });
-    resources.after(() => pool.end());
+    const pool = testPool(resources, { connectionString: databaseUrl, max: 4 });
     let receiptServer;
     resources.after(() => receiptServer?.close());
     let preparedOwner;
@@ -719,8 +716,7 @@ test(
     for (const mode of ["delayed-commit", "unavailable", "abrupt-death"]) {
       await t.test(mode, async (context) => {
         const resources = createTestResourceScope(context);
-        const pool = new pg.Pool({ connectionString: databaseUrl, max: 4 });
-        resources.after(() => pool.end());
+        const pool = testPool(resources, { connectionString: databaseUrl, max: 4 });
         let listener;
         resources.after(() => listener?.close());
         const namespaceId = `ns_${randomUUID()}`;

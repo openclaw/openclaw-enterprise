@@ -180,8 +180,10 @@ published only after retries end.
 
 `AUTHENTICATION_FAILED` means the provider rejected the credential: OpenClaw
 probe status `auth` (401/403 or invalid key), 401 to OpenClaw's first, empty
-request to a default OpenAI or Anthropic endpoint, or a Codex `turn.failed`
-event or access-token login error reporting 401 or 403. The upfront 401 adds closed-set
+request to a default OpenAI or Anthropic endpoint, or a Codex `error` or
+`turn.failed` event or access-token login error reporting 401 or 403. The Codex
+probe stops its process group on the first streamed credential-rejection event.
+The upfront 401 adds closed-set
 `providerCode`, `responseHeaderMarker` (header names), `bodyShape`
 (`json-error-code`, `json-error-no-code`, `json-no-error`, `non-json`, `empty`),
 `providerErrorCode` and `providerErrorType` (`error.code`, `error.type`: `other` off-set,
@@ -318,11 +320,7 @@ workflow used by dedicated Codex; no startup override is required.
 A custom image can declare
 [`runtime.nativeWorkerSupport`](configuration.md#installation-startup-configuration). Without native-worker support, deploy and provisioning answer
 `400 INVALID_REQUEST`, the Console withholds Dedicated OpenClaw, and retry
-rechecks support. Deployment requires the qualifying SandboxDriver,
-admitted authentication, and supported projections above. Compute places model
-metadata and the credential reference only in the native node's configuration;
-the Gateway does not receive that inference credential. A missing model or disconnected node
-fails the turn without Gateway inference fallback.
+rechecks support.
 
 ## Related
 

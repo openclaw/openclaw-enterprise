@@ -76,7 +76,8 @@ The commands below also use `jq`.
 
 In the console, open the Agent's **Versions** list. **Current version** marks
 the version selected by OCC; selecting a version shows its read-only details
-beside the list. **Create new version** opens the current saved Configuration;
+beside the list. **Create new version**, in the page header, and the list's
+**New version** entry open the current saved Configuration;
 **Deploy new version** uses those saved settings and Agent plugin selections.
 Viewing an older version does not select it for deployment. The
 [HTTP API](../../reference/api.md#agent-revisions)

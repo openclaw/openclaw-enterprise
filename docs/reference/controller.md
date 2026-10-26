@@ -242,6 +242,9 @@ A prepared repository App key that cannot sign stops the worker with
   spaces (a trailing newline counts). Native admin without the path reports
   this code too. Helm mounts the file from `gatewayRouting.apiKeySecretName`;
   see [gateway routing](gateway-routing.md#service-key-and-native-identity).
+- **`WORKER_READINESS_PATH_INVALID` or `WORKER_LIVENESS_PATH_INVALID` at startup:**
+  The worker refuses an `OCC_WORKER_READINESS_PATH` or `OCC_WORKER_LIVENESS_PATH`
+  that is relative, names a directory, or cannot be written.
 - **`EXTERNAL_SIGN_IN_NATIVE_ADMIN_UNSUPPORTED` at startup:** GitHub, Google
   and OIDC sign-in support host-only cookies only, so the API refuses any of
   them with native admin enabled, before it connects to the database. Turn off

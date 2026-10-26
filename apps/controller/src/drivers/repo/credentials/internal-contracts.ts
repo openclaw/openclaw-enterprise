@@ -33,7 +33,15 @@ export interface RunningListeners {
   stopAdmission(): void;
   close(): Promise<void>;
 }
+/** Non-secret identifiers of the session a bearer opened, for operator logs only. */
+export type SessionLogIdentity = Readonly<{
+  sessionId: string;
+  namespaceId?: string;
+  repositoryRef?: string;
+}>;
 export interface ExchangeService {
+  /** The open session this bearer authenticates, if any; never the bearer or a credential. */
+  identify(bearer: string): SessionLogIdentity | undefined;
   reserve(bearer: string, head: RequestHead, signal: AbortSignal): ExchangeRef | Denied;
   plan(exchange: ExchangeRef): RequestPlan;
   execute(

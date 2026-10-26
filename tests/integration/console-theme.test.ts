@@ -24,7 +24,13 @@ test("mounted console themes serve public branding without changing API failures
     displayName,
     logo: "logo.png",
     favicon: "icon.png",
-    colors: { accent: "#2457C5", surface2: "#EEEEEE", accentSubtle: "#2457C514" },
+    colors: {
+      bg: "#DDEEFF66",
+      accent: "#2457C5",
+      surface2: "#EEEEEE",
+      accentSubtle: "#2457C514",
+      overlay: "#24386066",
+    },
   });
   const image = await readFile(
     new URL("../../apps/controller/src/console/favicon-32.png", import.meta.url),
@@ -48,9 +54,12 @@ test("mounted console themes serve public branding without changing API failures
   assert.doesNotMatch(policy, /unsafe-inline/);
   const css = await fixture.rawRequest("GET", "/console/theme/colors.css");
   assert.equal(css.response.status, 200);
+  assert.match(css.text, /--color-bg: #DDEEFF66/);
+  assert.match(css.text, /--color-canvas: color-mix\(in srgb, #DDEEFF 40%, Canvas\)/);
   assert.match(css.text, /--color-accent: #2457C5/);
   assert.match(css.text, /--color-surface-2: #EEEEEE/);
   assert.match(css.text, /--color-accent-subtle: #2457C514/);
+  assert.match(css.text, /--color-overlay-mix: #243860 40%/);
   const logo = await fetch(`${fixture.origin}/console/theme/logo.png`);
   assert.equal(logo.headers.get("content-type"), "image/png");
   assert.deepEqual(Buffer.from(await logo.arrayBuffer()), image);

@@ -58,9 +58,9 @@ uses only the operator certificate. Do not put both identities on one request.
 Gateway also needs to trust the private CA for OpenShell's advertised `wss`
 Harness endpoint.
 
-Build the base OCE image using the OpenClaw, Codex, and Node versions pinned by
-[the runtime Dockerfile](../../deploy/runtime/Dockerfile) and follow the
-[runtime recipe](../../deploy/runtime/README.md). Keep its frozen lockfile,
+Build the base OCE image through the [runtime recipe](../../deploy/runtime/README.md).
+Its [source manifest](../../deploy/runtime/openclaw-source.json) selects OpenClaw;
+the Dockerfile selects Codex and Node. Keep its frozen lockfile,
 source checksum, and native filesystem checks. Record the tested source commit
 and actual launched versions with each proof; earlier runtime evidence does not
 qualify a newer pin.
