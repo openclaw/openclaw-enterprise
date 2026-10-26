@@ -579,7 +579,7 @@ test("Slack credential gate reads the keys the default account's tokens name", a
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
   await page
     .getByText(
-      "The token pickers bind only SLACK_APP_TOKEN for the app token and SLACK_BOT_TOKEN for the bot token. These Slack tokens read the keys listed above: bind them through the Configuration API.",
+      "The token pickers bind only SLACK_APP_TOKEN for the app token and SLACK_BOT_TOKEN for the bot token. The Slack settings read the keys listed above: bind them through the Configuration API.",
     )
     .waitFor();
   const rows = page.locator("section.channel-secrets .credential-status-list");
@@ -619,56 +619,60 @@ test("swapped standard Slack token keys get the list, not role-labelled pickers"
   );
   const { page } = await newPage(t, fixture);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
-  await page.getByText(/^The token pickers bind only/).waitFor();
+  // The form renders with the section, pickers or not: check them before any copy.
+  await page.locator("section.channel-secrets form.credential-form").waitFor();
+  assert.equal(await page.getByLabel("Slack app token").count(), 0);
+  assert.equal(await page.getByLabel("Slack bot token").count(), 0);
   const rows = page.locator("section.channel-secrets .credential-status-list");
   assert.deepEqual(await rows.locator("dt").allTextContents(), [
     "SLACK_APP_TOKEN",
     "SLACK_BOT_TOKEN",
   ]);
-  assert.equal(await page.getByLabel("Slack app token").count(), 0);
-  assert.equal(await page.getByLabel("Slack bot token").count(), 0);
+  await page.getByText(/^The token pickers bind only/).waitFor();
   await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
 });
 
-// The Agent needs a grant on every Secret its tokens read, not only those the pickers bind. An
-// Installation administrator's console reads that grant for listed keys too: a missing one marks
-// the row, holds Deploy and offers Retry Secret access, which grants it without saving bindings.
-test("a listed Slack key without the Agent's grant holds Deploy and offers Retry", async (t) => {
+// Deploy checks that the Agent may operate every bound Secret, not only those the pickers bind or
+// the Slack settings read. An Installation administrator's console reads that grant for each: a
+// missing one marks its row, holds Deploy and offers Retry Secret access, which grants exactly that
+// Secret without saving bindings.
+async function ungrantedBoundSecret(t, { name, slackValues, bindings, ungranted, rows, badges }) {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Listed Slack grant", { ready: true });
-  const [appSecret, botSecret] = await existingSlackSecrets(fixture, namespace.id);
+  const namespace = await fixture.createNamespace(`${name} grant`, { ready: true });
+  const secrets = {};
+  const secretBindings = {};
+  for (const key of bindings) {
+    secrets[key] = await fixture.createSecret(namespace.id, `Bound ${key}`, `value-${key}`);
+    secretBindings[key] = envBinding(secrets[key]);
+  }
   const agent = await fixture.createAgent(
     namespace.id,
-    "Listed Slack Grant Agent",
-    nativeValues("listed-slack-grant", {
+    `${name} Grant Agent`,
+    nativeValues(`${name.toLowerCase().replaceAll(" ", "-")}-grant`, {
       harnessId: "codex",
-      channels: { slack: { ...slack, botToken: "${ACME_SLACK_BOT}" } },
+      channels: { slack: { ...slack, ...slackValues } },
     }),
-    {
-      executionMode: "dedicated",
-      secretBindings: {
-        SLACK_APP_TOKEN: envBinding(appSecret),
-        ACME_SLACK_BOT: envBinding(botSecret),
-      },
-    },
+    { executionMode: "dedicated", secretBindings },
   );
-  // Remove the app token Secret's grant, as an administrator revoking it would.
+  // Remove that Secret's grant, as an administrator revoking it would.
   const policyPath = `/namespaces/${namespace.id}/iam`;
   const listed = await fixture.request("GET", `${policyPath}/access-bindings`);
-  const appGrant = listed.data.find(
+  const grant = listed.data.find(
     (binding) =>
-      binding.subjectId === agent.servicePrincipalId && binding.resourceId === appSecret.id,
+      binding.subjectId === agent.servicePrincipalId &&
+      binding.resourceId === secrets[ungranted].id,
   );
-  assert.ok(appGrant, "createAgent grants the bound app token Secret");
-  const removed = await fixture.request("DELETE", `${policyPath}/access-bindings/${appGrant.id}`);
+  assert.ok(grant, `createAgent grants the Secret bound to ${ungranted}`);
+  const removed = await fixture.request("DELETE", `${policyPath}/access-bindings/${grant.id}`);
   assert.ok([200, 204].includes(removed.status), `binding removal answered ${removed.status}`);
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
-  const badges = page.locator("section.channel-secrets .credential-status-list .badge");
-  await page.getByText("Bound · Agent access not confirmed", { exact: true }).waitFor();
-  assert.deepEqual(await badges.allTextContents(), ["Bound", "Bound · Agent access not confirmed"]);
+  const list = page.locator("section.channel-secrets .credential-status-list");
+  await list.getByText(/· Agent access not confirmed$/).waitFor();
+  assert.deepEqual(await list.locator("dt").allTextContents(), rows);
+  assert.deepEqual(await list.locator(".badge").allTextContents(), badges);
   await page.getByText("Resolve the saved Secret access grant before deploying.").waitFor();
   assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
   await page.getByRole("button", { name: "Retry Secret access" }).click();
@@ -677,8 +681,13 @@ test("a listed Slack key without the Agent's grant holds Deploy and offers Retry
       "This Agent can use its saved Slack Secrets. Deploy the new version to deliver them.",
     )
     .waitFor();
-  assert.deepEqual(await badges.allTextContents(), ["Bound", "Bound"]);
-  assert.deepEqual(await secretGrants(fixture, requests, namespace.id, agent), [appSecret.id]);
+  assert.deepEqual(
+    await list.locator(".badge").allTextContents(),
+    badges.map((badge) => badge.replace(" · Agent access not confirmed", "")),
+  );
+  assert.deepEqual(await secretGrants(fixture, requests, namespace.id, agent), [
+    secrets[ungranted].id,
+  ]);
   // Retry writes no Configuration.
   assert.deepEqual(
     pathRequests(
@@ -689,7 +698,47 @@ test("a listed Slack key without the Agent's grant holds Deploy and offers Retry
     [],
   );
   await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
-});
+}
+
+test("a listed Slack key without the Agent's grant holds Deploy and offers Retry", (t) =>
+  ungrantedBoundSecret(t, {
+    name: "Listed Slack",
+    slackValues: { botToken: "${ACME_SLACK_BOT}" },
+    bindings: ["SLACK_APP_TOKEN", "ACME_SLACK_BOT"],
+    ungranted: "SLACK_APP_TOKEN",
+    rows: ["ACME_SLACK_BOT", "SLACK_APP_TOKEN"],
+    badges: ["Bound", "Bound · Agent access not confirmed"],
+  }));
+
+// HTTP mode reads no app token, so SLACK_APP_TOKEN left bound after a switch from Socket Mode is
+// read by no Slack setting, but Deploy still checks its grant. The tab showed "Ready to deploy."
+// with no Retry, and the deploy failed AUTHORIZATION_DENIED (finding 2558).
+test("a bound key no Slack setting reads still needs the Agent's grant", (t) =>
+  ungrantedBoundSecret(t, {
+    name: "HTTP leftover",
+    slackValues: { mode: "http", appToken: undefined, botToken: "${SLACK_BOT_TOKEN}" },
+    bindings: ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"],
+    ungranted: "SLACK_APP_TOKEN",
+    rows: ["Slack bot token", "SLACK_APP_TOKEN"],
+    badges: ["Bound", "Bound · not read by the Slack settings · Agent access not confirmed"],
+  }));
+
+// Tokens on other keys get the list; the standard pair left bound beside them is checked too
+// (finding 2558).
+test("a standard Slack key left bound beside other token keys needs the Agent's grant", (t) =>
+  ungrantedBoundSecret(t, {
+    name: "Other keys leftover",
+    slackValues: { appToken: "${ACME_APP}", botToken: "${ACME_BOT}" },
+    bindings: ["ACME_APP", "ACME_BOT", "SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"],
+    ungranted: "SLACK_APP_TOKEN",
+    rows: ["ACME_APP", "ACME_BOT", "SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"],
+    badges: [
+      "Bound",
+      "Bound",
+      "Bound · not read by the Slack settings · Agent access not confirmed",
+      "Bound · not read by the Slack settings",
+    ],
+  }));
 
 // HTTP mode reads no app token, so an account whose bot token reads SLACK_BOT_TOKEN binds only that
 // key. The tab keeps the bot token's picker, the only console path that rebinds it: the Channels
@@ -727,8 +776,18 @@ test("an HTTP-mode Slack account keeps the bot token picker alone", async (t) =>
   const botToken = page.getByLabel("Slack bot token");
   await waitForInputValue(botToken, secretOptionLabel(botSecret));
   assert.equal(await page.getByLabel("Slack app token").count(), 0);
+  // The signing secret has no picker, but save requires its binding, so it is listed too
+  // (finding 2554).
   const rows = page.locator("section.channel-secrets .credential-status-list");
-  assert.deepEqual(await rows.locator("dt").allTextContents(), ["Slack bot token"]);
+  assert.deepEqual(await rows.locator("dt").allTextContents(), [
+    "Slack bot token",
+    "SLACK_SIGNING_SECRET",
+  ]);
+  await page
+    .getByText(
+      "The Slack settings also read the other keys listed above: bind them through the Configuration API.",
+    )
+    .waitFor();
   await expectNoText(page, /The token pickers bind only/);
   await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
   // Rotating the bot token saves with only its picker filled.
@@ -748,6 +807,48 @@ test("an HTTP-mode Slack account keeps the bot token picker alone", async (t) =>
     SLACK_BOT_TOKEN: envBinding(replacement),
   });
   await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
+});
+
+// Save and deployment admission refuse a signing secret, user token or relay token reference
+// without a binding, as they refuse a token's (finding 2554). The tab listed only the tokens, so
+// Deploy was available for a Configuration the deploy refuses.
+test("a Slack signing secret without a binding holds Deploy", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Slack signing secret gate", { ready: true });
+  const [appSecret, botSecret] = await existingSlackSecrets(fixture, namespace.id);
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Slack Signing Secret Agent",
+    nativeValues("slack-signing-secret", {
+      harnessId: "codex",
+      channels: { slack: { ...slack, signingSecret: "${SLACK_SIGNING_SECRET}" } },
+    }),
+    {
+      executionMode: "dedicated",
+      secretBindings: {
+        SLACK_APP_TOKEN: envBinding(appSecret),
+        SLACK_BOT_TOKEN: envBinding(botSecret),
+      },
+    },
+  );
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
+  await page
+    .getByText(
+      "Complete these in Credentials before deploying: Slack Secret bindings (SLACK_SIGNING_SECRET).",
+    )
+    .waitFor();
+  const rows = page.locator("section.channel-secrets .credential-status-list");
+  assert.deepEqual(await rows.locator("dt").allTextContents(), [
+    "Slack app token",
+    "Slack bot token",
+    "SLACK_SIGNING_SECRET",
+  ]);
+  assert.deepEqual(await rows.locator("dd").allTextContents(), ["Bound", "Bound", "Missing"]);
+  // The token pickers stay: they still bind the tokens.
+  await waitForInputValue(page.getByLabel("Slack bot token"), secretOptionLabel(botSecret));
+  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
 });
 
 // A stored Configuration can hold a channel setting that save now refuses (breaking-changes

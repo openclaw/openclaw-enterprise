@@ -3,6 +3,10 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { slack } from "../../apps/controller/src/console/channels/slack.mts";
 import { missingChannelCredentialGroups } from "../../apps/controller/src/console/agents/credentials.mjs";
+import {
+  enabledChannelEntries,
+  requireChannelSecretBindings,
+} from "../../packages/occ/src/channel-secret-bindings.ts";
 
 // These are form inputs, not a replacement for configuration or threading logic.
 const fields = {
@@ -214,4 +218,78 @@ test("the deploy gate requires the keys the default Slack account's tokens name"
     missingChannelCredentialGroups(twoNames, bound("SLACK_BOT_TOKEN", "ACME_SLACK_A")),
     ["Slack Secret bindings (ACME_SLACK_B)"],
   );
+});
+
+// Deploy delivers what Configuration save and deployment admission accept, so the gate must never
+// wait for fewer bindings than they require: every name the Slack settings reference, the signing
+// secret, user token and relay token included (finding 2554). For each shape this collects the
+// names save requires from its own refusals, then leaves each one unbound, with the standard pair
+// bound, and expects the gate to hold Deploy.
+test("the deploy gate holds every Slack binding Configuration save requires", () => {
+  const env = (id) => ({ source: "env", provider: "default", id });
+  const shapes = [
+    { appToken: "${SLACK_APP_TOKEN}", botToken: "${SLACK_BOT_TOKEN}" },
+    {
+      appToken: "${SLACK_APP_TOKEN}",
+      botToken: "${SLACK_BOT_TOKEN}",
+      signingSecret: "${SLACK_SIGNING_SECRET}",
+      userToken: "$SLACK_USER_TOKEN",
+      relay: { authToken: "${SLACK_RELAY_TOKEN:-}" },
+    },
+    { mode: "http", botToken: "${SLACK_BOT_TOKEN}", signingSecret: env("SLACK_SIGNING_SECRET") },
+    { mode: "http", appToken: "xapp-${ACME_APP}", botToken: env("ACME_BOT") },
+    { appToken: "${ACME_APP}", botToken: "${ACME_BOT}", userToken: "${ACME_USER:-x}" },
+    // Outside a secret-input field, a fallback needs no binding; an env SecretRef always does.
+    { botToken: "${SLACK_BOT_TOKEN}", replyToMode: "${REPLY_MODE:-all}", extra: env("ACME_EXTRA") },
+    {
+      accounts: {
+        work: {
+          appToken: "${WORK_APP}",
+          botToken: env("WORK_BOT"),
+          signingSecret: "$WORK_SIGNING",
+          relay: { authToken: "${WORK_RELAY}" },
+        },
+        off: { enabled: false, appToken: "${OFF_APP}", botToken: "${OFF_BOT}" },
+      },
+    },
+  ];
+  const binding = (key) => ({ source: { kind: "secret", namespaceId: "ns_1", id: `sec_${key}` } });
+  for (const shape of shapes) {
+    const values = { channels: { slack: { enabled: true, ...shape } } };
+    const required = new Set();
+    for (;;) {
+      let missing;
+      try {
+        requireChannelSecretBindings(
+          values,
+          enabledChannelEntries(values),
+          (name) => required.has(name),
+          (_setting, requirement) => new Error(requirement),
+        );
+      } catch (error) {
+        missing = /^references (\S+) without a Configuration Secret binding/.exec(
+          error.message,
+        )?.[1];
+        assert.ok(missing, error.message);
+      }
+      if (missing === undefined) {
+        break;
+      }
+      required.add(missing);
+    }
+    assert.ok(required.size > 0, JSON.stringify(shape));
+    for (const name of required) {
+      const keys = [...required, "SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"].filter(
+        (key) => key !== name,
+      );
+      const configuration = {
+        secretBindings: Object.fromEntries(keys.map((key) => [key, binding(key)])),
+      };
+      assert.notDeepEqual(
+        missingChannelCredentialGroups(values, configuration),
+        [],
+        `${name} unbound: ${JSON.stringify(shape)}`,
+      );
+    }
+  }
 });
