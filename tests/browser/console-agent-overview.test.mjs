@@ -517,13 +517,16 @@ test("Stop stays when the Agents list's Agent read is older than a first deploym
   // The deployment completes and selects its version after the list read the Agents but before
   // the row reads its deployment, so the row's Agent still has no version selected.
   let activated = false;
-  await page.route(deploymentRecordUrl(fixture, namespace.id, agent.id, first.id), async (route) => {
-    if (!activated) {
-      activated = true;
-      await fixture.activateRevision(namespace.id, agent.id, first.id);
-    }
-    await route.fulfill(deploymentStatusResponse(first, { status: "succeeded" }));
-  });
+  await page.route(
+    deploymentRecordUrl(fixture, namespace.id, agent.id, first.id),
+    async (route) => {
+      if (!activated) {
+        activated = true;
+        await fixture.activateRevision(namespace.id, agent.id, first.id);
+      }
+      await route.fulfill(deploymentStatusResponse(first, { status: "succeeded" }));
+    },
+  );
 
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
   const row = page.getByRole("row").filter({ hasText: "Stale list" });
