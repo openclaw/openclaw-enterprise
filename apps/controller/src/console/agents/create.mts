@@ -38,7 +38,7 @@ import { WORKSPACE_DEFAULTS, WORKSPACE_DEFAULTS_ID } from "../workspace-defaults
 import { configuredHarnessId, harnessAuthDescription } from "./harness-auth.mjs";
 import { type DeviceLogin, createDeviceLogin } from "./device-login.mjs";
 import {
-  AGENT_CREATE_DENIED,
+  agentCreateDenied,
   askAdministratorTo,
   CONFIGURATION_CREATE_REFUSED,
   notIncluded,
@@ -661,7 +661,7 @@ export function renderCreateAgent(context: CreateAgentContext, restored?: unknow
   const notReady = createNamespaceState(context);
   const unavailable =
     context.permissions?.agents?.create === false
-      ? AGENT_CREATE_DENIED
+      ? agentCreateDenied(context.permissions)
       : notReady?.blocked
         ? notReady.note
         : null;

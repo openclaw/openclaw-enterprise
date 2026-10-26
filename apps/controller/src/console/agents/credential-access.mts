@@ -4,7 +4,7 @@ import type {
   Permission,
   SecretReference,
 } from "@openclaw-enterprise/contracts";
-import { responseFields } from "../api-client.mjs";
+import { INSTALLATION_ADMINISTRATION, responseFields } from "../api-client.mjs";
 import type { NamespacePageContext } from "../namespaces.mjs";
 import { namespacePath } from "./list.mjs";
 
@@ -233,9 +233,11 @@ export async function credentialOperateGrants(
   ids: readonly string[],
 ) {
   const [roles, bindings] = await Promise.all([
-    context.request(iamPath(context, "roles")).then((value) => policyList(value, policyRole)),
     context
-      .request(iamPath(context, "access-bindings"))
+      .request(iamPath(context, "roles"), INSTALLATION_ADMINISTRATION)
+      .then((value) => policyList(value, policyRole)),
+    context
+      .request(iamPath(context, "access-bindings"), INSTALLATION_ADMINISTRATION)
       .then((value) => policyList(value, policyBinding)),
   ]);
   const grants = new Map<string, boolean | undefined>();

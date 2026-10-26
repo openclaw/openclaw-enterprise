@@ -570,10 +570,29 @@ export const SecretConsumersSchema = Type.Object(
   },
 );
 
+export const SecretCallerPermissionsSchema = Type.Object(
+  {
+    update: Type.Boolean({
+      description:
+        "Whether the selected IAM Driver allows you to replace this Secret's value now (Secret update). Advisory only: lifecycle state or a later authorization decision can still prevent the operation.",
+    }),
+    delete: Type.Boolean({
+      description:
+        "Whether the selected IAM Driver allows you to delete this Secret now (Secret delete). Advisory only: current references, lifecycle state or a later authorization decision can still prevent the operation.",
+    }),
+  },
+  {
+    additionalProperties: false,
+    description:
+      "What the selected IAM Driver allows you to do to this Secret now. Checking it records no authorization denial. Returned by the exact Secret read only.",
+  },
+);
+
 export const SecretDetailSchema = Type.Object(
   {
     ...SecretSchema.properties,
     consumers: SecretConsumersSchema,
+    callerPermissions: SecretCallerPermissionsSchema,
   },
   { additionalProperties: false },
 );

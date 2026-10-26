@@ -599,7 +599,8 @@ test("Secret API stores values through the selected driver and returns metadata 
     `/namespaces/${namespace.id}/secrets/${created.data.id}`,
   );
   assert.equal(detail.status, 200);
-  // The exact read adds the Secret's consumers; nothing references this one yet.
+  // The exact read adds the Secret's consumers, and what the caller may do to it; nothing
+  // references this one yet, and the administrator may replace and delete it.
   assert.deepEqual(detail.data, {
     ...created.data,
     consumers: {
@@ -610,6 +611,7 @@ test("Secret API stores values through the selected driver and returns metadata 
       unreadable: 0,
       truncated: false,
     },
+    callerPermissions: { update: true, delete: true },
   });
 
   const updated = await request(

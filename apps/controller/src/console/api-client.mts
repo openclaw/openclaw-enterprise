@@ -9,6 +9,23 @@ export interface RequestOptions {
   responseType?: "json" | "text";
   /** A session-scoped read that a later view joins instead of aborting it. */
   outlivesView?: boolean;
+  /**
+   * A read only Installation administration may make. The console sends these one at a time until
+   * one succeeds, and refuses them unsent once it knows the caller does not administer the
+   * Installation (finding D760).
+   */
+  installationAdministration?: boolean;
+}
+
+/** Options for a read only Installation administration may make. */
+export const INSTALLATION_ADMINISTRATION = { installationAdministration: true } as const;
+
+/**
+ * Whether a refusal settled that the caller does not administer the Installation: the console
+ * refused the read unsent, or the refusal itself settled it. The page then takes its member path.
+ */
+export function refusedAsNonAdministrator(cause: unknown) {
+  return responseFields(cause).notAdministrator === true;
 }
 
 interface ApiClientOptions {

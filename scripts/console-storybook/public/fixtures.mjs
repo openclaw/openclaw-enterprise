@@ -1252,7 +1252,9 @@ export function installFixture(scenario, evidence) {
       }
       if (resource === "permissions" && method === "GET") {
         return response({
-          agents: { create: !scenario.readOnlyPermissionSummary },
+          agents: {
+            create: !scenario.readOnlyPermissionSummary && !scenario.agentCreateRestricted,
+          },
           secrets: { create: !scenario.secretCreateNotPermitted },
           // A read-only member is no Installation administrator either.
           installation: {
@@ -2410,6 +2412,7 @@ export function installFixture(scenario, evidence) {
                 truncated: false,
               },
             ),
+            callerPermissions: { update: true, delete: true, ...scenario.secretCallerPermissions },
           });
         }
         if (method === "PATCH") {

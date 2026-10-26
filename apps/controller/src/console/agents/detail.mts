@@ -393,6 +393,9 @@ function nativeDocument(values: OpenClawConfigurationDocument, label: string) {
 // The summary card's note, first deployment or redeploy alike, for a version this tab deployed
 // that the caller cannot read (finding D755).
 const DEPLOYED_VERSION_UNREADABLE = "You cannot read the version you deployed.";
+// Sharing policy reads need Installation administration (spec 3.8).
+const ACCESS_TAB_NEEDS_ADMINISTRATION =
+  "The Access tab needs Installation administration, which your access does not include.";
 // A draft the caller can read but neither change nor save (finding 2421).
 const READ_ONLY_DRAFT_NOTICE =
   "Version draft · read-only with your access. The next deployment uses it as saved.";
@@ -777,7 +780,7 @@ export async function renderAgentDetail(
     }
     const reason =
       requested === "access"
-        ? "The Access tab needs Installation administration, which your access does not include."
+        ? ACCESS_TAB_NEEDS_ADMINISTRATION
         : requested === "repositories" || requested === "credentials"
           ? `The ${requested === "credentials" ? "Credentials" : "Repositories"} tab is on the version draft only.`
           : requested === "logs"
@@ -1739,11 +1742,18 @@ export async function renderAgentDetail(
   let accessPanel: ReturnType<typeof renderAgentAccess> | null = null;
   // Replaces an Access tab whose policy read was refused with Configuration, in place, once the
   // page shows (a page still behind its loading stand-in would rebuild instead) and the
-  // navigation that opened the tab has finished.
+  // navigation that opened the tab has finished. It says why, as a link to the tab would for a
+  // known member: the refusal means the reader does not administer the Installation (finding
+  // D760).
   function leaveDeniedAccess({ refocus = false } = {}) {
     void revealed.then(() => {
-      if (selectedTab === "access" && context.isCurrent() && !deleting) {
+      const leaving = selectedTab === "access" && context.isCurrent() && !deleting;
+      if (leaving) {
         context.navigate(target(selected, "configuration"), namespaceId, true);
+      }
+      // The navigation switched tabs in place, unless it rebuilt the page.
+      if (leaving && selectedTab === "configuration" && context.isCurrent()) {
+        showTabNotice(`${ACCESS_TAB_NEEDS_ADMINISTRATION} Showing Configuration.`);
       }
       if (refocus && context.isCurrent() && document.activeElement === document.body) {
         tabControls.get(selectedTab)?.focus({ preventScroll: true });

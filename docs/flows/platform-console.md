@@ -207,9 +207,11 @@ returning safe startup summaries. Empty configuration returns an empty list;
 missing wiring or failed dependencies return errors.
 
 `apps/controller/src/console/secrets.mts:renderSecrets` lists metadata and reads
-the exact Secret's `consumers` before showing actions. Agent IDs link to their
-pages; hidden counts and truncation remain visible. Known references disable
-Delete; the server rechecks them. Create and replacement wait for Namespace
+the exact Secret's `consumers` before showing actions. Agents link to their
+pages by name, from the readable Agent list; hidden counts and truncation remain
+visible. Known references disable Delete; the server rechecks them. The read's
+advisory `callerPermissions` disable Replace and Delete with their reason. A
+`secret` link the readable list leaves out opens nothing and says why. Create and replacement wait for Namespace
 readiness; false `secrets.create` disables Create with its reason. Mutations use
 the tracked request client and Secret API, never a Driver.
 

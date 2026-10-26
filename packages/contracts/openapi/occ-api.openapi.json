@@ -31560,6 +31560,22 @@
                     "data": {
                       "additionalProperties": false,
                       "properties": {
+                        "callerPermissions": {
+                          "additionalProperties": false,
+                          "description": "What the selected IAM Driver allows you to do to this Secret now. Checking it records no authorization denial. Returned by the exact Secret read only.",
+                          "properties": {
+                            "delete": {
+                              "description": "Whether the selected IAM Driver allows you to delete this Secret now (Secret delete). Advisory only: current references, lifecycle state or a later authorization decision can still prevent the operation.",
+                              "type": "boolean"
+                            },
+                            "update": {
+                              "description": "Whether the selected IAM Driver allows you to replace this Secret's value now (Secret update). Advisory only: lifecycle state or a later authorization decision can still prevent the operation.",
+                              "type": "boolean"
+                            }
+                          },
+                          "required": ["update", "delete"],
+                          "type": "object"
+                        },
                         "consumers": {
                           "additionalProperties": false,
                           "description": "Current references that block deletion of the Secret. Returned by the exact Secret read only.",
@@ -31655,7 +31671,14 @@
                           "type": "object"
                         }
                       },
-                      "required": ["id", "namespaceId", "name", "ref", "consumers"],
+                      "required": [
+                        "id",
+                        "namespaceId",
+                        "name",
+                        "ref",
+                        "consumers",
+                        "callerPermissions"
+                      ],
                       "type": "object"
                     },
                     "meta": {

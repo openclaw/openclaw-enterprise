@@ -13,7 +13,7 @@ import { button, element, setText, statusBlock, requestIdLine } from "../dom.mjs
 import type { createDraftStore } from "../drafts.mjs";
 import { DELETE_CONFIRMATION, stopConfirmation, keptResources } from "./lifecycle-confirmation.mjs";
 import {
-  AGENT_CREATE_DENIED,
+  agentCreateDenied,
   AGENT_DELETE_DENIED,
   AGENT_STOP_DENIED,
   askForGrant,
@@ -226,6 +226,8 @@ export function renderAgentList(context: AgentListContext) {
   // enabled and then refused, and the note never pushes the table down (finding 1517). Gating
   // only: the API still authorizes creation, so an unknown answer keeps the control.
   const createDenied = context.permissions?.agents?.create === false;
+  // An administrator a Restriction keeps from creating still reads every Agent here (finding D759).
+  const sharedOnly = createDenied && context.permissions?.installation?.administer !== true;
   // A Namespace that is not ready names its status here, so the first sign is never a refused
   // Secret or submit, and one that takes no new Agent never invites creating one (finding 1895).
   let notReady = namespaceCreation(context.namespace);
@@ -268,7 +270,7 @@ export function renderAgentList(context: AgentListContext) {
           element(
             "p",
             { className: "muted", role: "status", id: "agents-create-denied" },
-            AGENT_CREATE_DENIED,
+            agentCreateDenied(context.permissions),
           ),
         ]
       : []),
@@ -802,7 +804,7 @@ export function renderAgentList(context: AgentListContext) {
             {},
             query
               ? "No matching Agents"
-              : createDenied
+              : sharedOnly
                 ? "No Agents are shared with you"
                 : "No Agents yet",
           ),
@@ -814,7 +816,9 @@ export function renderAgentList(context: AgentListContext) {
               : createDenied
                 ? // Under the note above: say what the reader can expect, not invite creating
                   // (finding 1521).
-                  "Agents in this Namespace that are shared with you appear here."
+                  sharedOnly
+                  ? "Agents in this Namespace that are shared with you appear here."
+                  : "Agents in this Namespace appear here."
                 : notReady?.blocked
                   ? context.namespace?.status === "provisioning" && !notReady.missing
                     ? "You can create Agents here once this Namespace is ready."

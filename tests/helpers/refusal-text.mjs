@@ -122,6 +122,10 @@ export const SIGN_IN_RATE_LIMITED_MINUTE = "Too many attempts. Wait a minute, th
 // grant people (findings 2496, 2508).
 export const AGENT_CREATE_DENIED =
   "Your access does not include creating Agents in this Namespace. Only an Installation administrator can create Agents: ask one to create it and to give you access to edit and deploy it.";
+// The same places for an Installation administrator whom a deny Restriction keeps from creating
+// Agents in this Namespace (finding D759): administration cannot lift it.
+export const AGENT_CREATE_RESTRICTED =
+  "A Restriction in this Namespace denies Agent create, even for Installation administrators. Ask whoever manages IAM Restrictions to lift it, or create the Agent in another Namespace.";
 // Secrets and Namespaces follow the same rule: Namespace Roles cannot grant people create.
 export const SECRET_CREATE_DENIED =
   "Your access does not include creating Secrets in this Namespace. Only an Installation administrator can create Secrets: ask one to create it and to give you Secret read and operate on it.";
@@ -143,6 +147,13 @@ export const notIncluded = (task, grant) =>
 export const credentialCheckedAtDeploy = (noun) =>
   `Deploying checks that this Agent can use the selected ${noun}. If it cannot, ask an Installation administrator to give the Agent ${noun} operate on it.`;
 export const AGENT_STOP_DENIED = notIncluded("stopping this Agent", "Agent operate on it");
+// The Secret dialog's disabled Replace value and Delete Secret, from the Secret read's answer
+// (finding D761).
+export const SECRET_UPDATE_DENIED = notIncluded(
+  "replacing this Secret's value",
+  "Secret update on it",
+);
+export const SECRET_DELETE_DENIED = notIncluded("deleting this Secret", "Secret delete on it");
 export const AGENT_DELETE_DENIED = notIncluded("deleting this Agent", "Agent delete on it");
 export const AGENT_STOP_AND_DELETE_DENIED = notIncluded(
   "stopping or deleting this Agent",
@@ -497,6 +508,15 @@ export const PLUGIN_CREDENTIALS_REJECTED =
 // Finding 2619. A bound Secret the caller's readable Secret list leaves out, shown without the
 // audited metadata read; and the Backends refusal a non-administrator gets without the read.
 export const BOUND_SECRET_UNLISTED = `A Secret is bound. Its name is unavailable: your access does not include reading it, or it was deleted. ${askForGrant("Secret read on it")}`;
+// A bound Secret whose metadata read was refused to a caller who may still administer the
+// Installation, such as one a Restriction on Secret read covers (finding 2549).
+export const BOUND_SECRET_READ_REFUSED = `A Secret is bound. Its name is hidden because your access does not include reading it. ${askForGrant("Secret read on it")}`;
+// Finding D761. A link to a Secret the readable list leaves out: missing and unreadable alike.
+export const SECRET_LINK_UNLISTED = `This Secret is not in your readable list: it may not exist, or your access does not include reading it. ${askForGrant("Secret read on it")}`;
+// Finding D760. A link to the Access tab, or its refused policy read, for a reader who does not
+// administer the Installation.
+export const ACCESS_TAB_UNAVAILABLE =
+  "The Access tab needs Installation administration, which your access does not include. Showing Configuration.";
 // Finding D756. Deploy beside a bound Secret the deployer may neither read nor operate: it names
 // no Secret, and the grant to ask for includes read.
 export const deployUnreadableSecrets = (count) =>

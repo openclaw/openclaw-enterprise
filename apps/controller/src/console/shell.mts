@@ -161,6 +161,8 @@ export function createShell({
   let namespaces: readonly Namespace[] = [];
   let namespaceId: string | null = null;
   let observabilityUrl: string | null = null;
+  // The shown shell's Observability link, if any.
+  let observabilityLink: HTMLAnchorElement | null = null;
   let menuControls: ReturnType<typeof createAccountMenus> | null = null;
   let drawerControls: {
     shell: HTMLElement;
@@ -603,20 +605,20 @@ export function createShell({
       });
       nav.append(link);
     }
+    observabilityLink = null;
     if (session && observabilityUrl) {
-      nav.append(
-        element(
-          "a",
-          {
-            href: observabilityUrl,
-            target: "_blank",
-            rel: "noopener noreferrer",
-          },
-          element("span", { className: "nav-icon", "aria-hidden": "true" }, "◉"),
-          "Observability",
-          externalLinkIcon(),
-        ),
+      observabilityLink = element(
+        "a",
+        {
+          href: observabilityUrl,
+          target: "_blank",
+          rel: "noopener noreferrer",
+        },
+        element("span", { className: "nav-icon", "aria-hidden": "true" }, "◉"),
+        "Observability",
+        externalLinkIcon(),
       );
+      nav.append(observabilityLink);
     }
     const revision =
       document.querySelector<HTMLMetaElement>('meta[name="occ-build-revision"]')?.content ?? "";
@@ -1086,6 +1088,13 @@ export function createShell({
       }
       // The sidebar, toggle and header precede the page view, so their match is found first.
       return sameControl(node, shell);
+    },
+    // The shown page learned that the caller does not administer the Installation, whose
+    // administrators alone get the link (finding D760).
+    dropObservabilityLink() {
+      observabilityUrl = null;
+      observabilityLink?.remove();
+      observabilityLink = null;
     },
     setLeaveGuard(guard: LeaveGuard) {
       refuseLeave = guard;

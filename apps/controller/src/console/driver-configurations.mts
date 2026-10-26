@@ -2,6 +2,7 @@ import type { DriverConfigurationDescriptor } from "@openclaw-enterprise/contrac
 import { button, element } from "./dom.mjs";
 import { renderAgentSandboxPolicy } from "./agents/sandbox-policy.mjs";
 import { readFailure } from "./agents/list.mjs";
+import { INSTALLATION_ADMINISTRATION, refusedAsNonAdministrator } from "./api-client.mjs";
 
 // The Agent's contributions authorize Agent read on it; the Installation's schemas, Installation
 // administer. A failed read says which, or how long to wait (finding 2538).
@@ -17,8 +18,12 @@ const INSTALLATION_SCHEMAS_NEED = {
 type ConfigurationContext = Parameters<typeof renderAgentSandboxPolicy>[0];
 type AgentOptions = Omit<Parameters<typeof renderAgentSandboxPolicy>[1], "descriptor">;
 
-async function discover({ request }: ConfigurationContext, path: string) {
-  const { configurations } = (await request(path)) as {
+async function discover(
+  { request }: ConfigurationContext,
+  path: string,
+  options?: typeof INSTALLATION_ADMINISTRATION,
+) {
+  const { configurations } = (await request(path, options)) as {
     configurations: readonly DriverConfigurationDescriptor[];
   };
   return configurations;
@@ -88,7 +93,7 @@ export function renderInstallationConfigurations(context: ConfigurationContext) 
     element("h2", {}, "Installation Driver configuration"),
     element("p", { role: "status" }, "Loading schemas…"),
   );
-  void discover(context, "/installation/driver-configurations")
+  void discover(context, "/installation/driver-configurations", INSTALLATION_ADMINISTRATION)
     .then((configurations) => {
       if (!context.isCurrent()) {
         return;
@@ -120,7 +125,11 @@ export function renderInstallationConfigurations(context: ConfigurationContext) 
       }
     })
     .catch((cause: unknown) => {
-      if (context.isCurrent()) {
+      if (context.isCurrent() && refusedAsNonAdministrator(cause)) {
+        // The refusal settled that the caller does not administer the Installation, whose
+        // administrators alone get this section: leave it out, as for any member (finding D760).
+        section.remove();
+      } else if (context.isCurrent()) {
         section.replaceChildren(
           element("h2", {}, "Installation Driver configuration"),
           element(

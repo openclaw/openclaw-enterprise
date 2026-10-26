@@ -7020,6 +7020,9 @@ Get exact Namespace-owned Secret metadata and its readable consumers
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
+| `data.callerPermissions` | `object` | Yes | What the selected IAM Driver allows you to do to this Secret now. Checking it records no authorization denial. Returned by the exact Secret read only. |
+| `data.callerPermissions.delete` | `boolean` | Yes | Whether the selected IAM Driver allows you to delete this Secret now (Secret delete). Advisory only: current references, lifecycle state or a later authorization decision can still prevent the operation. |
+| `data.callerPermissions.update` | `boolean` | Yes | Whether the selected IAM Driver allows you to replace this Secret's value now (Secret update). Advisory only: lifecycle state or a later authorization decision can still prevent the operation. |
 | `data.consumers` | `object` | Yes | Current references that block deletion of the Secret. Returned by the exact Secret read only. |
 | `data.consumers.agents` | `array<string>` | Yes | max items: 50; Agents that you can read. Each Agent has a Secret reference in its saved settings, selected Agent revision, or pending deployment. Deploy each Agent again to use a rotated value. |
 | `data.consumers.configurations` | `array<string>` | Yes | max items: 50; Readable Configurations whose `secretBindings` reference the Secret. |

@@ -38,6 +38,17 @@ export const AGENT_CREATE_DENIED = onlyAdministratorCreates(
   "in this Namespace",
   "create it and to give you access to edit and deploy it",
 );
+// An Installation administrator may still be refused Agent create: a deny Restriction overrides
+// every grant in its Namespace, administration included, and administration cannot lift it. The
+// permission answer says so when it holds Installation administer but not Agent create (finding
+// D759).
+export const AGENT_CREATE_RESTRICTED =
+  "A Restriction in this Namespace denies Agent create, even for Installation administrators. Ask whoever manages IAM Restrictions to lift it, or create the Agent in another Namespace.";
+/** Why the Namespace permission answer refuses Agent create: a Restriction, or missing access. */
+export const agentCreateDenied = (
+  permissions?: { installation?: { administer?: boolean } } | null,
+) =>
+  permissions?.installation?.administer === true ? AGENT_CREATE_RESTRICTED : AGENT_CREATE_DENIED;
 export const SECRET_CREATE_DENIED = onlyAdministratorCreates(
   "Secrets",
   "in this Namespace",
@@ -98,6 +109,9 @@ export const SECRET_UPDATE_DENIED = notIncluded(
   "Secret update on it",
 );
 export const SECRET_DELETE_DENIED = notIncluded("deleting this Secret", "Secret delete on it");
+// A link to a Secret the readable list leaves out. The list answers the same for a Secret that
+// does not exist, so the text says either may be true (finding D761).
+export const SECRET_LINK_UNLISTED = `This Secret is not in your readable list: it may not exist, or your access does not include reading it. ${askForGrant("Secret read on it")}`;
 export const SECRET_OPERATE_NEEDED = askForGrant("Secret operate on it");
 // Deploying authorizes Secret operate on each Secret the draft binds. A bound Secret the caller
 // may neither read nor operate keeps its name hidden, and the grant to ask for includes read

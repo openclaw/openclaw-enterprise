@@ -289,6 +289,65 @@ test("the Namespace Installation administer answer matches what Installation-wid
   assertApiError(await backends(), 403, "FORBIDDEN");
 });
 
+// The console's Secret dialog disables Replace value and Delete Secret when the exact Secret
+// read's callerPermissions say the caller may not, instead of refusing after the value is typed
+// (finding D761). So each must be the decision the real PATCH and DELETE make, including a
+// Restriction over an administrator, and reading it must audit nothing.
+test("the Secret read's caller answer matches what Secret replace and delete check", async (t) => {
+  const auditSink = new InMemoryAuditSink();
+  const fixture = await createConsoleAppFixture(t, { auditSink });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Secret write answer", { ready: true });
+  const secret = await fixture.createSecret(namespace.id, "Answered token", "synthetic-value");
+  const secretPath = `/namespaces/${namespace.id}/secrets/${secret.id}`;
+  const answer = async (session) => {
+    const read = await fixture.request("GET", secretPath, { session });
+    assert.equal(read.status, 200);
+    return read.data.callerPermissions;
+  };
+  const replace = (session) =>
+    fixture.request("PATCH", secretPath, { session, body: { value: "synthetic-rotated" } });
+  const denials = () => auditSink.list().filter((event) => event.kind === "authorization_denial");
+
+  // A reader may neither replace nor delete; a false answer is not an attempted operation.
+  const member = await fixture.createNamespaceMember("secret-write-answer", namespace.id, [
+    ["read", "namespace"],
+    ["read", "secret"],
+  ]);
+  const session = await fixture.signIn(member.credentials);
+  assert.deepEqual(await answer(session), { update: false, delete: false });
+  assert.deepEqual(denials(), []);
+  assertApiError(await replace(session), 403, "FORBIDDEN");
+  assertApiError(await fixture.request("DELETE", secretPath, { session }), 403, "FORBIDDEN");
+  assert.deepEqual(
+    denials().map((event) => event.action),
+    ["openclaw.secrets.update", "openclaw.secrets.delete"],
+  );
+
+  // Each grant changes its own answer and its own write.
+  const role = fixture.policy.roles.find(({ id }) => id === "role-secret-write-answer");
+  role.permissions.push({ action: "update", resourceKind: "secret" });
+  assert.deepEqual(await answer(session), { update: true, delete: false });
+  assert.equal((await replace(session)).status, 200);
+
+  // A Restriction on Secret update overrides an administrator's grant, in the answer and the
+  // write alike.
+  assert.deepEqual(await answer(), { update: true, delete: true });
+  fixture.policy.restrictions.push({
+    id: "deny-secret-update-here",
+    namespaceId: namespace.id,
+    resourceKind: "secret",
+    action: "update",
+    effect: "deny",
+  });
+  assert.deepEqual(await answer(), { update: false, delete: true });
+  assertApiError(await replace(), 403, "FORBIDDEN");
+
+  role.permissions.push({ action: "delete", resourceKind: "secret" });
+  assert.deepEqual(await answer(session), { update: false, delete: true });
+  assert.equal((await fixture.request("DELETE", secretPath, { session })).status, 204);
+});
+
 // The console's Logs view skips the log text read for a caller whose Agent answer says readLogs
 // is false, because the API audits each refused read as a denial (finding D758). So readLogs must
 // be the decision the log read makes: read_logs, or administer in its place unless a Restriction
@@ -2002,6 +2061,18 @@ test("an IAM failure on any caller permission decision fails the whole answer in
       503,
       "DEPENDENCY_UNAVAILABLE",
       label,
+    );
+  }
+  // The exact Secret read's callerPermissions (finding D761).
+  for (const action of ["update", "delete"]) {
+    assertApiError(
+      await outage(
+        `/namespaces/${namespace.id}/secrets/${bound.id}`,
+        decision(action, "secret", bound.id),
+      ),
+      503,
+      "DEPENDENCY_UNAVAILABLE",
+      `secret ${action}`,
     );
   }
 

@@ -3,7 +3,12 @@ import type {
   SecretMetadata,
   SecretReference,
 } from "@openclaw-enterprise/contracts";
-import { requestFailure, responseFields } from "../api-client.mjs";
+import {
+  INSTALLATION_ADMINISTRATION,
+  refusedAsNonAdministrator,
+  requestFailure,
+  responseFields,
+} from "../api-client.mjs";
 import type { AgentAccessContext } from "./credential-access.mjs";
 import {
   dismissOnBackdrop,
@@ -171,9 +176,9 @@ const secretMetadataReads = new WeakMap<SecretRequest, Map<string, Promise<unkno
 // as missing. Null when the list is not used or unknown (no readable Namespace, or a failed read,
 // which is dropped so the next render asks again); then each Secret is read.
 const readableSecretLists = new WeakMap<SecretRequest, Promise<ReadonlySet<string> | null>>();
-function readableSecretIds(context: SecretContext, request: SecretRequest) {
+function readableSecretIds(context: SecretContext, request: SecretRequest, administrator: boolean) {
   const { namespaceId } = context;
-  if (!namespaceId || context.namespace?.id !== namespaceId || context.installationAdmin === true) {
+  if (!namespaceId || context.namespace?.id !== namespaceId || administrator) {
     return Promise.resolve(null);
   }
   const known = readableSecretLists.get(request);
@@ -214,10 +219,22 @@ function readSecretMetadata(
   if (known) {
     return known;
   }
-  const read = readableSecretIds(context, request).then((readable) =>
-    readable && !readable.has(secretId)
-      ? Promise.reject(Object.assign(new Error("Secret not listed."), { unlisted: true }))
-      : request(href),
+  // An Installation administrator reads the Secret by ID. A refusal that settles the caller is
+  // no administrator after all (finding D760) takes the member path instead: the readable list,
+  // which audits nothing, then a read only of a listed Secret. Without the list it reads nothing.
+  const attempt = (administrator: boolean, refused?: unknown): Promise<unknown> =>
+    readableSecretIds(context, request, administrator).then((readable) =>
+      readable === null && refused !== undefined
+        ? Promise.reject(refused)
+        : readable && !readable.has(secretId)
+          ? Promise.reject(Object.assign(new Error("Secret not listed."), { unlisted: true }))
+          : request(href, administrator ? INSTALLATION_ADMINISTRATION : undefined),
+    );
+  const administrator = context.installationAdmin === true;
+  const read = attempt(administrator).catch((cause: unknown) =>
+    administrator && refusedAsNonAdministrator(cause)
+      ? attempt(false, cause)
+      : Promise.reject(cause),
   );
   reads.set(href, read);
   read.catch(() => {
@@ -308,8 +325,9 @@ export function renderSecretReference(context: SecretContext, source?: SecretRef
       const { status } = requestFailure(cause);
       // A refused read hides the Secret's name; the ID stays in the title for the administrator
       // who grants read on it (finding 2549). A Secret the readable list leaves out was not read:
-      // it is unreadable, or deleted after a historical version bound it (finding 2619).
-      if (responseFields(cause).unlisted === true) {
+      // it is unreadable, or deleted after a historical version bound it (finding 2619). A caller
+      // just found to be no administrator gets the same sentence as any member (finding D760).
+      if (responseFields(cause).unlisted === true || refusedAsNonAdministrator(cause)) {
         node.textContent = `${SECRET_UNLISTED} ${askForGrant("Secret read on it")}`;
         node.title = source.id;
       } else if (status === 403) {

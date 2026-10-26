@@ -2415,6 +2415,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         params,
         body,
         namespaceId,
+        callerMay: (action, resource) => callerMay(context.actorId, action, resource),
         transactIAM: async (work) => {
           const admitted = admissions.get(request);
           if (admitted === undefined) {

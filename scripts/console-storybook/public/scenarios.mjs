@@ -566,6 +566,31 @@ export const scenarios = {
     description:
       "Agent links and other consumer IDs are grouped by resource. The blue notice explains restricted visibility; the amber warning identifies an incomplete list. Simulated UI proof.",
   },
+  secretsReadOnly: {
+    group: "Pages/Secrets",
+    name: "Read only for this caller",
+    path: "/console/secrets",
+    secretCallerPermissions: { update: false, delete: false },
+    secretConsumers: {
+      agents: ["agt_00000000-0000-4000-8000-000000000001"],
+      configurations: [],
+      credentialSources: [],
+      provisioningRequests: [],
+      unreadable: 0,
+      truncated: false,
+    },
+    actions: [click("Demo model API key (simulated)")],
+    description:
+      "The Secret read says this caller may neither replace nor delete the Secret. Both buttons are disabled before any typing, and each names its reason. Consumers name the Agent, with its ID beside it. Simulated UI proof.",
+    gap: "The answer is advisory. The controller still authorizes each write.",
+  },
+  secretsLinkUnlisted: {
+    group: "Pages/Secrets",
+    name: "Link to an unlisted Secret",
+    path: "/console/secrets?secret=sec_not_listed",
+    description:
+      "A link to a Secret the readable list leaves out opens no dialog. A note says it may not exist or the caller may not read it, and who grants read. Nothing reads the Secret.",
+  },
   secretsReplace: {
     group: "Pages/Secrets",
     name: "Replace value",
@@ -1110,6 +1135,17 @@ export const scenarios = {
     readOnlyPermissionSummary: true,
     description:
       "A member without Agent create sees no Agents. The heading says none are shared with them, not that the Namespace has none, and nothing invites creating.",
+  },
+  agentsCreateBlockedByRestriction: {
+    group: "Pages/Agents",
+    name: "Create blocked by a Restriction",
+    agentCreateRestricted: true,
+    description:
+      "An Installation administrator in a Namespace whose deny Restriction blocks Agent create. Create Agent is disabled, and the note names the Restriction and who can lift it, not an administrator to ask.",
+    steps: [
+      "Check that Create Agent is disabled and that a screen reader names the note as its description.",
+    ],
+    gap: "The permission answer is advisory. The controller still authorizes each create.",
   },
   agentsUnreadableConfiguration: {
     group: "Pages/Agents",

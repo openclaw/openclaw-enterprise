@@ -50,6 +50,10 @@ let observabilityOwner = null;
 let installationAccessProbe = null;
 // Whether that owner administers the Installation: true, false, or null when unknown.
 let installationAdmin = null;
+// Set once this page load knows that answer is still true; see administrationRead.
+let administrationConfirmed = false;
+// The Installation-administration read this page load is waiting on, while it runs.
+let administrationCheck = null;
 const installationAccessStorageKey = "occ.console.installationAccess";
 const deniedReadsStorageKey = "occ.console.deniedReads";
 // Set once this tab has a session, until it signs out; see rememberSignedIn.
@@ -412,25 +416,34 @@ function probeInstallationAccess(owner) {
 // 2622). An administrator is probed for the destination URL, which the API allows. Gating
 // only: the API still authorizes every request. With no readable Namespace, or no answer, the
 // console probes.
-function installationAccess(owner, selectedRead, selectedPath) {
-  const readableId = namespaces.some((item) => item.id === namespaceId)
-    ? namespaceId
-    : (namespaces[0]?.id ?? null);
+function installationAccess(owner, selectedRead) {
+  const readableId = readableNamespaceId();
   const permissions =
-    readableId === null
-      ? Promise.resolve(null)
-      : selectedRead && readableId === namespaceId
-        ? selectedRead
-        : request(
-            readableId === namespaceId
-              ? selectedPath
-              : `/namespaces/${encodeURIComponent(readableId)}/permissions`,
-          ).catch(() => null);
+    selectedRead && readableId !== null && readableId === namespaceId
+      ? selectedRead
+      : readableNamespacePermissions();
   return permissions.then((answer) =>
     answer?.installation?.administer === false
       ? { url: null, admin: false, settled: true }
       : probeInstallationAccess(owner),
   );
+}
+
+// The selected Namespace when readable, else the first readable one, else null.
+function readableNamespaceId() {
+  return namespaces.some((item) => item.id === namespaceId)
+    ? namespaceId
+    : (namespaces[0]?.id ?? null);
+}
+
+// A readable Namespace's permission answer, or null without one. Reading it audits nothing.
+function readableNamespacePermissions(options = {}) {
+  const readableId = readableNamespaceId();
+  return readableId === null
+    ? Promise.resolve(null)
+    : request(`/namespaces/${encodeURIComponent(readableId)}/permissions`, options).catch(
+        () => null,
+      );
 }
 
 function forgetInstallationAccess() {
@@ -439,6 +452,77 @@ function forgetInstallationAccess() {
   } catch {
     // Nothing to clear without tab storage.
   }
+}
+
+// The caller does not administer the Installation: true for this tab, not kept across reloads,
+// which ask the permission answer again at no audited cost. The Observability link goes away.
+function settleNotAdministrator() {
+  forgetInstallationAccess();
+  observabilityUrl = null;
+  installationAdmin = false;
+  observabilityOwner = sessionOwnerKey(session);
+  shellUI.dropObservabilityLink();
+}
+
+// The refusal of a read only Installation administration may make, refused here without sending
+// it: this tab already knows the caller does not administer the Installation.
+function administrationRefusal() {
+  return Object.assign(new Error("Your access does not include Installation administration."), {
+    status: 403,
+    code: "FORBIDDEN",
+    notAdministrator: true,
+  });
+}
+
+// Reads only Installation administration may make (IAM policy lists, Driver configuration schemas,
+// a Secret's metadata read by ID on the administrator path), sent on an "administrator" answer
+// this tab settled earlier. An administrator revoked while signed in keeps that answer until one
+// of them is refused, and the API audits each refusal: the Access tab, a bound Secret and Settings
+// added six to the one Backends refusal (finding D760). So until one succeeds, a page load sends
+// them one at a time. A refusal asks a readable Namespace's permission answer, which audits
+// nothing, because a Restriction can refuse one read to an administrator; unless it confirms
+// administration, the refusal settles "not an administrator" for this tab, as a Backends refusal
+// does (finding 2627), and the reads still waiting are refused here, unsent. A probe answered in
+// this page load already confirms the answer. Gating only: the API still authorizes every read.
+function administrationRead(path, options) {
+  if (installationAdmin === false) {
+    return Promise.reject(administrationRefusal());
+  }
+  if (administrationConfirmed) {
+    return sendRequest(path, options);
+  }
+  if (administrationCheck) {
+    return administrationCheck.then(() => administrationRead(path, options));
+  }
+  const owner = sessionOwnerKey(session);
+  const read = sendRequest(path, options);
+  const check = read.then(
+    () => {
+      administrationConfirmed = true;
+    },
+    async (error) => {
+      if (error?.status !== 403) {
+        return;
+      }
+      const answer = await readableNamespacePermissions({ outlivesView: true });
+      if (owner === null || owner !== sessionOwnerKey(session)) {
+        return;
+      }
+      if (answer?.installation?.administer === true) {
+        administrationConfirmed = true;
+      } else {
+        settleNotAdministrator();
+        error.notAdministrator = true;
+      }
+    },
+  );
+  administrationCheck = check;
+  void check.then(() => {
+    if (administrationCheck === check) {
+      administrationCheck = null;
+    }
+  });
+  return check.then(() => read);
 }
 
 // Agent detail reads that the viewer's grants may not allow (saved settings, native admin
@@ -647,12 +731,18 @@ function namespaceAccessPanel(view, title, description) {
   view.querySelector(".state-panel > p")?.setAttribute("id", NAMESPACE_ACCESS_REASON_ID);
   shellUI.describeNamespaceSelector();
 }
-const request = createApiClient({
+const sendRequest = createApiClient({
   lifetime,
   hasSession: () => session !== null,
   onExpired: () => showExpiredLogin(),
   sessionKey: () => pinnedSessionKey,
 });
+
+function request(path, options = {}) {
+  return options.installationAdministration
+    ? administrationRead(path, options)
+    : sendRequest(path, options);
+}
 const retainedViews = new Map();
 // Other first visits that settle sooner swap pages without showing loading (finding 1407).
 const loadingDelayMs = 250;
@@ -949,6 +1039,9 @@ function resetReads({ retainView = false, returnLink = null } = {}) {
   leaveGuard = null;
   writeInFlight = null;
   mountedAgent = null;
+  // Each page load confirms Installation administration again before its reads that need it.
+  administrationConfirmed = false;
+  administrationCheck = null;
   clearPasswordInputs();
   shellUI.reset();
   if (retainView) {
@@ -1744,9 +1837,7 @@ async function loadPage({
         ? request(permissionsPath).catch(() => null)
         : null;
     const accessRead =
-      owner && observabilityOwner === owner
-        ? null
-        : installationAccess(owner, permissionsRead, permissionsPath);
+      owner && observabilityOwner === owner ? null : installationAccess(owner, permissionsRead);
     // Awaited after the first reads; a first read that fails first leaves it unawaited.
     accessRead?.catch(() => {});
     let firstPermissions = null;
@@ -1768,6 +1859,7 @@ async function loadPage({
             observabilityUrl = access.url;
             installationAdmin = access.admin;
             observabilityOwner = access.settled ? owner : null;
+            administrationConfirmed = access.admin === true;
           }
           if (installationAdmin === false) {
             throw Object.assign(new Error("Access denied."), { status: 403, code: "FORBIDDEN" });
@@ -1796,6 +1888,7 @@ async function loadPage({
       observabilityUrl = access.url;
       installationAdmin = access.admin;
       observabilityOwner = access.settled ? owner : null;
+      administrationConfirmed = access.admin === true;
     }
     const retainedState = retainedView?.state;
     let unchanged = false;
@@ -2367,10 +2460,7 @@ async function loadPage({
       // Observability link stayed (finding 2627). Now the shell below drops the link, the
       // refusal's Refresh asks the permission answer again, and a reload, without the tab's
       // stored answer, asks it too. Neither is audited.
-      forgetInstallationAccess();
-      observabilityUrl = null;
-      installationAdmin = false;
-      observabilityOwner = sessionOwnerKey(session);
+      settleNotAdministrator();
     }
     shell = renderShell(current.feature);
     if (current.agentId && error.status === 404 && current.namespace === null) {
