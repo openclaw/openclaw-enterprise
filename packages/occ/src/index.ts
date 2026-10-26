@@ -8547,6 +8547,8 @@ export class OpenClawController {
       id: `sbp_${agentId.slice(4)}`,
       namespaceId,
     });
+    // The cause comes before the editing setting and version checks it would otherwise hide (D774).
+    this.requireNetworkPolicyAvailable();
     return this.read(async (state) => {
       await this.exactNamespace(state, namespaceId);
       const agent = await state.agents.findAgent(namespaceId, agentId);
@@ -8863,6 +8865,8 @@ export class OpenClawController {
       id: `sbp_${agentId.slice(4)}`,
       namespaceId,
     });
+    // The cause comes before the editing setting and version checks it would otherwise hide (D774).
+    this.requireNetworkPolicyAvailable();
     return this.mutate(async (state) => {
       await this.lockNamespace(state, namespaceId);
       const agent = await state.agents.lockAgent(namespaceId, agentId);
@@ -8924,6 +8928,8 @@ export class OpenClawController {
       id: `sbp_${agentId.slice(4)}`,
       namespaceId,
     });
+    // The cause comes before the editing setting and version checks it would otherwise hide (D774).
+    this.requireNetworkPolicyAvailable();
     return this.mutate(async (state) => {
       const namespace = await this.lockNamespace(state, namespaceId);
       const agent = await state.agents.lockAgent(namespaceId, agentId);
@@ -8948,10 +8954,6 @@ export class OpenClawController {
       // A protected revision carries no Agent policy snapshot; name the rule, not the gap.
       if (revision?.executionAdmission.mode === "protected") {
         throw new ProtectedExecutionNetworkPolicyError("apply");
-      }
-      const unavailable = this.networkPolicyUnavailable();
-      if (unavailable !== undefined) {
-        throw new ResourceStateConflictError(unavailable);
       }
       if (
         driver === undefined ||
@@ -13810,6 +13812,13 @@ export class OpenClawController {
       );
     }
     return driver?.id ?? this.configuredServiceAccountDriverId;
+  }
+
+  private requireNetworkPolicyAvailable(): void {
+    const unavailable = this.networkPolicyUnavailable();
+    if (unavailable !== undefined) {
+      throw new ResourceStateConflictError(unavailable);
+    }
   }
 
   /** Why this Installation has no per-Agent network policy, or undefined when it has one. */
