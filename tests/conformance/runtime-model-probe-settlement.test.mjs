@@ -239,11 +239,14 @@ test("real generated probe marks spawn return and cleanup without changing CAP",
   const end =
     GATEWAY_RUNTIME_ENTRYPOINT.indexOf(
       "\n}\n",
-      GATEWAY_RUNTIME_ENTRYPOINT.indexOf("function runOpenClawAuthenticationProbe(fs, capMs) {"),
+      GATEWAY_RUNTIME_ENTRYPOINT.indexOf(
+        "function runOpenClawAuthenticationProbe(fs, capMs, cleanup) {",
+      ),
     ) + 2;
   const helper = GATEWAY_RUNTIME_ENTRYPOINT.slice(begin, end);
   assert.ok(begin >= 0 && end > begin);
   const events = [];
+  const cleanup = {};
   let removed = false;
   const fs = {
     mkdtempSync: () => "/owned",
@@ -253,8 +256,9 @@ test("real generated probe marks spawn return and cleanup without changing CAP",
       removed = true;
     },
   };
-  const code = vm.runInNewContext(helper + "\nrunOpenClawAuthenticationProbe(fs,110000)", {
+  const code = vm.runInNewContext(helper + "\nrunOpenClawAuthenticationProbe(fs,110000,cleanup)", {
     fs,
+    cleanup,
     Date,
     JSON,
     require: () => ({ spawnSync: () => ({ error: { code: "ETIMEDOUT" } }) }),
@@ -277,6 +281,8 @@ test("real generated probe marks spawn return and cleanup without changing CAP",
   });
   assert.equal(code, "CAP");
   assert.equal(removed, true);
+  // A removal that succeeds reports no cleanup error.
+  assert.deepEqual(cleanup, {});
   assert.deepEqual(
     events.map((event) => event.stage),
     ["prepare", "spawn", "returned", "cleanup", "complete"],
