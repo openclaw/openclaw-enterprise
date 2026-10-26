@@ -46,6 +46,36 @@ cannot reach the repository credential broker`.
 **Steps.** Fix or delete the named setting in the Configuration, or remove the
 Agent's repository bindings, then save or deploy again.
 
+## 2026-10-26: saved repository selections, protected deploy and protected sources name their refusal
+
+**What breaks.** More refusals name the rule and the fix instead of a generic
+answer:
+
+- Deploy, provisioning work and `GET …/repository-approval-scopes`, when the
+  saved repository selections are no longer approved: `409 RESOURCE_CONFLICT`
+  (was `400`, as in the next entry). Selections that the request sends keep `400`.
+- Deploy that the Credential Proxy cannot start (Installation-wide access or
+  Proxy sources without a selected Proxy, several sources without policy
+  reduction, no Sandbox Driver, other sources beside repository Git):
+  `409 RESOURCE_CONFLICT` (was `503` or `404`). Provisioning fails such work
+  instead of retrying.
+- Deploy of a live-adopted source without a `provider/model` in
+  `agents.defaults.model`: `400 INVALID_REQUEST` (was `404`).
+- Update or rotation of a prepared or credential-free credential source:
+  `409 RESOURCE_CONFLICT` (was `404`).
+- Deletion inside the registration fence and a failed device-login poll keep
+  `503`, with text that names the wait or the next step.
+- A failed provisioning status names these repository and Credential Proxy
+  refusals instead of `Agent provisioning could not complete.`
+
+**Who is affected.** Clients that branch on the old status or text. A missing
+resource, or one you cannot read, still answers `403` or `404`.
+
+**How to tell.** The message names the rule, for example
+`The saved repository selections are no longer approved for this Namespace`.
+
+**Steps.** Handle `409` for these requests, show the message and do not retry it.
+
 ## 2026-10-26: some refusals name their reason instead of 404, 409 or 503
 
 **What breaks.** These refusals no longer answer the generic `404 NOT_FOUND`,
@@ -302,23 +332,3 @@ version.
 **Steps.** Fix the named setting, or provision credentials in the
 operator-owned `<agentDir>/env` file instead of `secretBindings`; then deploy
 again.
-
-## 2026-10-24: OpenShell refuses OpenClaw Agents with several Sandbox ServiceAccounts
-
-**What breaks.** With the OpenShell Sandbox Driver, Agent save, deployment and
-provisioning refuse a dedicated OpenClaw Agent with `400` when
-`gateway.operatorWorkspaceResources` lists more than one ServiceAccount.
-Earlier builds admitted it and failed every new revision in workspace
-preparation, after its predecessors had stopped. The Installation's
-`openclaw.executionModes` now omits `dedicated` whenever these checks, or the
-`kubernetes.userNamespaces` check, refuse it. Codex Agents are unaffected.
-
-**Who is affected.** OpenShell Installations with several such ServiceAccounts
-and OpenClaw Agents; none of those Agents could deploy.
-
-**How to tell.** The refusal reads `Dedicated OpenClaw needs at most one
-ServiceAccount in gateway.operatorWorkspaceResources`, and Create Agent no
-longer offers Dedicated for OpenClaw.
-
-**Steps.** Keep one ServiceAccount in `gateway.operatorWorkspaceResources` and
-restart the controller, or switch the Agent to Codex.

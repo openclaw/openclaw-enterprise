@@ -75,11 +75,11 @@ test(
         assert.deepEqual(source.secrets, {});
         // Its grant was admitted once, at create: an update or rotation cannot change it, and
         // the caller who may change the source is told to replace it (finding 2536).
-        for (const [method, suffix, message] of [
-          ["PATCH", "", PROTECTED_SOURCE_UPDATE_REFUSED],
-          ["POST", "/rotate", PROTECTED_SOURCE_ROTATE_REFUSED],
+        for (const [method, suffix, options, message] of [
+          ["PATCH", "", { body: {} }, PROTECTED_SOURCE_UPDATE_REFUSED],
+          ["POST", "/rotate", {}, PROTECTED_SOURCE_ROTATE_REFUSED],
         ]) {
-          const refused = await app.request(method, `${path}/${source.id}${suffix}`, { body: {} });
+          const refused = await app.request(method, `${path}/${source.id}${suffix}`, options);
           assert.equal(refused.status, 409, `${method}: ${JSON.stringify(refused.body)}`);
           assert.equal(refused.body.error.code, "RESOURCE_CONFLICT", method);
           assert.equal(refused.body.error.message, message, method);
