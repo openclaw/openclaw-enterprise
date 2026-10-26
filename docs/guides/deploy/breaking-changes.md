@@ -28,12 +28,13 @@ Harness, or on embedded OpenClaw with the Codex Plugin Driver and plugins,
 Agent create and update, provisioning and deployment answer `400
 INVALID_REQUEST` when `plugins.entries.codex.config.appServer.networkProxy`
 has `enabled: false`, a `mode` other than `limited` or `full`, a non-boolean
-`allowLocalBinding`, or `domains` that is not an object mapping each host to
-`allow` or `deny`. Earlier builds saved and admitted it, and Kubernetes
-preparation refused it; a dedicated deploy had stopped the running version
-first. Configuration save still accepts it, because a Configuration does not
-know which Agents use it. A stored such Agent still reads, but each update or
-deploy is refused.
+`allowLocalBinding`, `domains` that is not an object mapping each host to
+`allow` or `deny`, or a `domains` entry with an empty host. Earlier builds saved
+and admitted it, and Kubernetes preparation refused it; a dedicated deploy had
+stopped the running version first. A deny of the broker host is still refused
+only in preparation, which alone knows the host. Configuration save still
+accepts these settings, because a Configuration does not know which Agents use
+it. A stored such Agent still reads, but each update or deploy is refused.
 
 **Who is affected.** Agents with repository bindings whose Configuration has
 such a setting. They could not deploy before either.
