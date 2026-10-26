@@ -244,21 +244,7 @@ test("the Namespace Installation administer answer matches what Installation-wid
   const backends = (session) => fixture.request("GET", "/backends", { session });
   const denials = () => auditSink.list().filter((event) => event.kind === "authorization_denial");
 
-  // An administrator whose Restriction denies Agent create in this Namespace still administers
-  // the Installation: Agent create says nothing about it.
-  fixture.policy.restrictions.push({
-    id: "deny-agent-create-here",
-    namespaceId: namespace.id,
-    resourceKind: "agent",
-    action: "create",
-    effect: "deny",
-  });
-  const restricted = await answer();
-  assert.deepEqual(restricted.agents, { create: false });
-  assert.deepEqual(restricted.installation, { administer: true });
-  assert.equal((await backends()).status, 200);
-
-  // A member with Namespace-wide Agent create does not.
+  // A member with Namespace-wide Agent create does not administer the Installation.
   const member = await fixture.createNamespaceMember("administer-answer", namespace.id, [
     ["read", "namespace"],
     ["create", "agent"],
@@ -274,6 +260,21 @@ test("the Namespace Installation administer answer matches what Installation-wid
     denials().map((event) => event.action),
     ["openclaw.backends.list"],
   );
+
+  // An administrator whose Restriction denies Agent create in this Namespace still administers
+  // the Installation: Agent create says nothing about it. The Restriction is Namespace-wide, so
+  // it applies to the member too; her answer was read above.
+  fixture.policy.restrictions.push({
+    id: "deny-agent-create-here",
+    namespaceId: namespace.id,
+    resourceKind: "agent",
+    action: "create",
+    effect: "deny",
+  });
+  const restricted = await answer();
+  assert.deepEqual(restricted.agents, { create: false });
+  assert.deepEqual(restricted.installation, { administer: true });
+  assert.equal((await backends()).status, 200);
 
   // A Restriction on Installation administer changes the answer as it changes the read.
   fixture.policy.restrictions.push({
