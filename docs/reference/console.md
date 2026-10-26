@@ -169,8 +169,11 @@ blocked until a status read succeeds or, in the list, until **Refresh**.
 An authorized empty list differs from a failed read. Access denials, unavailable
 dependencies, missing resources, and network failures clear affected rows and
 offer recovery. A denied Namespace list or draft Configuration read names the grant
-it checks; denials send you to an Installation administrator, who grants access.
-Backend error text is not rendered; include any displayed request
+it checks, and other denials of your own permission show the API's sentence naming
+the missing grant; denials send you to an Installation administrator, who grants access.
+A refusal the API explains, such as an invalid field, a name already in use or a
+lifecycle change, shows the API's sentence; a rate limit says how long to wait.
+Other backend error text is not rendered; include any displayed request
 ID when reporting an API failure. A current protected `401` clears private
 content and closes open channel editors and harness authentication controls.
 Interrupted response bodies and request deadlines keep the interrupted-read

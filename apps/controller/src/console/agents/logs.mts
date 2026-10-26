@@ -9,7 +9,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { type RequestOptions, requestFailure } from "../api-client.mjs";
 import { button, element, replaceChildrenIfChanged, setText, statusBlock } from "../dom.mjs";
-import { displayDate, namespacePath } from "./list.mjs";
+import { displayDate, namespacePath, retryAfterText } from "./list.mjs";
 import { fitLogTimeColumn, SOURCE_LABELS, podCard, recordRow, visibleText } from "./logs-view.mjs";
 
 interface AgentLogsContext {
@@ -128,9 +128,7 @@ function runtimeErrorText(
       return "Too many requests. Waiting before the next read.";
     }
     const seconds = error.retryAfterSeconds;
-    return seconds === undefined
-      ? "Too many requests. Try again shortly."
-      : `Too many requests. Try again in ${seconds} ${seconds === 1 ? "second" : "seconds"}.`;
+    return `Too many requests. ${seconds === undefined ? "Try again shortly." : retryAfterText(seconds)}`;
   }
   if (error.status === 504) {
     return "The read timed out. Try again.";

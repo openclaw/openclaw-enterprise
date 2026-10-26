@@ -2141,6 +2141,37 @@ test("Agent creation shows the API's duplicate-name conflict, a not-ready Namesp
   await page.unroute(agentsUrl, otherConflict);
   await page.getByRole("button", { name: "Create Agent", disabled: false }).waitFor();
 
+  // A typed conflict, here the Compute Driver refusing a gateway setting the saved
+  // Configuration holds (ComputeGatewaySettingError), names its cause (finding 2538).
+  const gatewayRefusal =
+    "Configuration setting gateway.tls.enabled must be omitted or false: Compute uses the native HTTP listener for readiness and private traffic.";
+  const typedConflict = async (route: Route) => {
+    if (route.request().method() !== "POST") {
+      await route.continue();
+      return;
+    }
+    await route.fulfill({
+      status: 409,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: { code: "RESOURCE_CONFLICT", message: gatewayRefusal },
+        meta: { requestId: "req_00000000-0000-4000-8000-000000000411" },
+      }),
+    });
+  };
+  await page.route(agentsUrl, typedConflict);
+  const typed = page.waitForResponse(agentPost);
+  await page.getByRole("button", { name: "Create Agent" }).click();
+  assert.equal((await typed).status(), 409);
+  await page
+    .getByRole("alert")
+    .filter({
+      hasText: `${gatewayRefusal} Check the Agent name and selections, then try again. Request ID: req_00000000-0000-4000-8000-000000000411`,
+    })
+    .waitFor();
+  await page.unroute(agentsUrl, typedConflict);
+  await page.getByRole("button", { name: "Create Agent", disabled: false }).waitFor();
+
   // A Namespace that is still provisioning is named as the cause, not a saved-state conflict.
   const notReady = async (route: Route) => {
     if (route.request().method() !== "POST") {

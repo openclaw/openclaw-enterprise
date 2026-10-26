@@ -18,6 +18,7 @@ import type {
   SecretListResponse,
 } from "../../packages/contracts/src/api/resources.ts";
 import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
+import { SECRET_NAME_CONFLICT, tooManyRequestsIn } from "../helpers/refusal-text.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { consoleStorage } from "../helpers/console-storage.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
@@ -460,8 +461,11 @@ test("console Secret writes honor read-only access, revocation and a new Agent r
   await dialog(page, "Delete Secret")
     .getByRole("button", { name: "Permanently delete Secret", exact: true })
     .click();
+  // The API's 409 names the reference the recheck found (finding 2538).
   await dialog(page, "Delete Secret")
-    .getByText(/Deletion is blocked/)
+    .getByText(
+      /^Could not delete this Secret\. The Secret is still referenced by Agent agt_\S+\. Remove those references first\. Close and reopen the Secret to inspect its current consumers\.$/,
+    )
     .waitFor();
   assert.equal((await fixture.request("GET", `${secretPath(namespace)}/${secret.id}`)).status, 200);
 });
@@ -489,10 +493,12 @@ test("a Secret name conflict allows correction, but a Namespace that stops being
   assert.equal(conflict.status(), 409);
   const { error }: ErrorResponse = await conflict.json();
   assert.equal(error.code, "RESOURCE_CONFLICT");
+  // The API's sentence names the rule, so the page shows it instead of guessing (finding 2559).
   await create
     .getByRole("alert")
-    .filter({ hasText: /name may already be in use/ })
+    .filter({ hasText: `The value was not saved. ${SECRET_NAME_CONFLICT} Enter the value again.` })
     .waitFor();
+  assert.equal(await create.getByText(/name may already be in use/).count(), 0);
   assert.equal(await createValue.inputValue(), "");
   assert.equal(await hasFocus(createName), true, "the duplicate name can be corrected here");
   await createName.fill("Another Secret");
@@ -549,7 +555,8 @@ test("Secret refusals keep their meaning, and incomplete consumers or a not-read
   // The Secret API never answers 429: that refusal comes from a rate limit in front of it (an
   // ingress or proxy), so it is the proxy's page with no API envelope. The 404 is the API's own.
   const refusals = [
-    proxyErrorResponse(429),
+    { ...proxyErrorResponse(429), headers: { "retry-after": "30" } },
+    { ...proxyErrorResponse(429), headers: { "retry-after": "600" } },
     apiErrorResponse(404, "NOT_FOUND", "The requested platform resource was not found."),
   ];
   await page.route(`${fixture.origin}${secretPath(namespace)}`, (route) => {
@@ -566,11 +573,23 @@ test("Secret refusals keep their meaning, and incomplete consumers or a not-read
   await submit.click();
   await create
     .getByRole("alert")
-    .filter({ hasText: "The value was not saved. Check the input and enter it again." })
+    // A rate limit is not an input problem: it says how long the proxy asked to wait.
+    .filter({ hasText: `The value was not saved. ${tooManyRequestsIn(30)} Enter the value again.` })
     .waitFor();
   assert.equal(await value.inputValue(), "");
   assert.equal(await value.isDisabled(), false, "a 429 allows another try");
   assert.equal(await submit.isDisabled(), false);
+  // A long wait reads in minutes.
+  await value.fill("synthetic-rate-limited-longer");
+  await submit.click();
+  await create
+    .getByRole("alert")
+    .filter({
+      hasText:
+        "The value was not saved. Too many requests. Try again in about 10 minutes. Enter the value again.",
+    })
+    .waitFor();
+  assert.equal(tooManyRequestsIn(600), "Too many requests. Try again in about 10 minutes.");
   await value.fill("synthetic-not-found");
   await submit.click();
   await create
@@ -581,7 +600,7 @@ test("Secret refusals keep their meaning, and incomplete consumers or a not-read
     .waitFor();
   assert.equal(await create.getByText(/Outcome unknown/).count(), 0);
   assert.equal(await submit.isDisabled(), true, "a 404 needs a fresh read");
-  assert.equal(pathRequests(requests, "POST", secretPath(namespace)).length, 2);
+  assert.equal(pathRequests(requests, "POST", secretPath(namespace)).length, 3);
   await create.getByRole("button", { name: "Close" }).click();
 
   // A truncated consumer list names no consumer, yet more references exist than it shows.
@@ -696,7 +715,7 @@ test("a reload asks first only while a Secret write is in flight", async (t) => 
   await expectWriteAsksBeforeUnload(t, page, url, {
     method: "POST",
     start: submit,
-    settled: () => create.getByText(/choose a unique name/).waitFor(),
+    settled: () => create.getByText(SECRET_NAME_CONFLICT, { exact: false }).waitFor(),
   });
   await create.getByLabel("Secret name").fill("Reload credential");
   await create.getByLabel("Value", { exact: true }).fill("synthetic-saved-value");

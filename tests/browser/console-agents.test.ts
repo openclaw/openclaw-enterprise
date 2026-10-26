@@ -76,7 +76,7 @@ import {
   openFailureDetails,
 } from "./console-deployment-activity-helpers.mjs";
 import {
-  CONSOLE_ACCESS_DENIED,
+  ADMINISTRATOR_ACCESS_DENIED,
   createDenied,
   DEPENDENCY_UNAVAILABLE,
   GENERIC_DENIAL,
@@ -1724,7 +1724,9 @@ test("Dedicated Agent creation keeps provisioning when optional repository disco
   );
   await page.getByRole("button", { name: "Create Agent" }).click();
   assert.equal((await admission).status(), 403);
-  await page.getByText(CONSOLE_ACCESS_DENIED).waitFor();
+  // This viewer read the Installation, which only an Installation administrator can, so the
+  // denial does not send them to one.
+  await page.getByText(ADMINISTRATOR_ACCESS_DENIED, { exact: true }).waitFor();
   const submitted = agentProvisionPostRequests(requests, namespace.id);
   assert.equal(submitted.length, 1);
   const body = submittedBody<ProvisionAgentBody>(submitted[0]);
@@ -1733,17 +1735,19 @@ test("Dedicated Agent creation keeps provisioning when optional repository disco
   assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
   assert.equal(agentPostRequests(requests, namespace.id).length, 0);
 
-  // A denial that names the missing grant (finding 2534) shows as the API wrote it, then the
-  // request ID.
-  const named = createDenied("Agent", namespace.id);
+  // A named denial (finding 2534) asks an Installation administrator, which this caller is, so
+  // the form keeps the plain text (finding 2113).
+  const requestId = `req_${randomUUID()}`;
   await page.unroute(`**/namespaces/${namespace.id}/agents/provision`);
   await page.route(`**/namespaces/${namespace.id}/agents/provision`, (route) =>
-    route.fulfill(apiErrorResponse(403, "FORBIDDEN", named)),
+    route.fulfill(
+      apiErrorResponse(403, "FORBIDDEN", createDenied("Agent", namespace.id), { requestId }),
+    ),
   );
   await page.getByRole("button", { name: "Create Agent" }).click();
-  const shown = page.getByText(named);
-  await shown.waitFor();
-  assert.ok((await shown.textContent())?.startsWith(`${named} Request ID: `));
+  await page
+    .getByText(`${ADMINISTRATOR_ACCESS_DENIED} Request ID: ${requestId}`, { exact: true })
+    .waitFor();
   assert.equal(agentProvisionPostRequests(requests, namespace.id).length, 2);
 });
 

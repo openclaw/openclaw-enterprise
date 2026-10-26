@@ -71,10 +71,14 @@ import {
   AGENT_SAVE_DENIED,
   CONFIGURATION_EDITS_PENDING,
   CONFIGURATION_SAVE_DENIED,
+  CONSOLE_ACCESS_DENIED,
+  NAMESPACE_NOT_READY,
   NEW_SECRET_OPERATE_DENIED,
   NEW_SECRET_OPERATE_REMEDY,
   READ_UNAVAILABLE,
+  RESOURCE_CONFLICT,
   SAVED_CONFIGURATION_CHANGED,
+  SECRET_NAME_CONFLICT,
   SECRET_OPERATE_DENIED,
   WORKSPACE_FILES_UNAVAILABLE,
   namespaceListDenied,
@@ -2436,10 +2440,8 @@ test("Agent credential Secret picker searches, validates, and preserves duplicat
   );
   await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
   assert.equal((await duplicate).status(), 409);
-  await dialog
-    .getByRole("alert")
-    .filter({ hasText: "may already exist in this Namespace" })
-    .waitFor();
+  // The API's own sentence for a taken name (finding 2538).
+  await dialog.getByRole("alert").filter({ hasText: SECRET_NAME_CONFLICT }).waitFor();
   assert.equal(
     await dialog.getByLabel("Name", { exact: true }).inputValue(),
     duplicateNameSecret.name,
@@ -2461,7 +2463,11 @@ test("Agent credential Secret picker searches, validates, and preserves duplicat
       status: createStatus,
       contentType: "application/json",
       body: JSON.stringify({
-        error: { code: conflictCode, message: "masked Secret create conflict" },
+        // The API's own messages: a taken name is the generic conflict, so the dialog guesses.
+        error: {
+          code: conflictCode,
+          message: conflictCode === "NAMESPACE_NOT_READY" ? NAMESPACE_NOT_READY : RESOURCE_CONFLICT,
+        },
         meta: { requestId: "req_00000000-0000-4000-8000-000000000409" },
       }),
     });
@@ -2537,6 +2543,9 @@ const HARNESS_GRANT_MISSING =
   "This Agent has no access to its authentication Secret, so deploying it would be refused. Select Save authentication source to grant it.";
 const HARNESS_GRANT_UNVERIFIED =
   "Authentication source saved, but this session did not verify that this Agent can use the selected Secret. Granting access needs Installation administration access: ask an Installation administrator to open this Agent's Credentials and select Save authentication source.";
+
+// Matches a fixed sentence inside a pattern that also matches a random request ID.
+const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 test("Agent credentials report partial harness Secret grant failure", async (t) => {
   const fixture = await createConsoleAppFixture(t);
@@ -2615,9 +2624,12 @@ test("Agent credentials report partial harness Secret grant failure", async (t) 
   });
   requests.length = 0;
   await page.getByRole("button", { name: "Retry credential access" }).click();
+  // The read's own refusal, not grant advice such as "this write may have succeeded".
   await page
     .getByText(
-      /^Authentication source saved, but this Agent could not be read before retrying its credential access\. .+ Select Retry credential access once the Agent can be read\.$/,
+      new RegExp(
+        `^${escapeRegExp(`Authentication source saved, but this Agent could not be read before retrying its credential access. ${CONSOLE_ACCESS_DENIED}`)} Request ID: req_[0-9a-f-]{36} Select Retry credential access once the Agent can be read\\.$`,
+      ),
     )
     .waitFor();
   assert.deepEqual(accessBindingPostRequests(requests, namespace.id), []);

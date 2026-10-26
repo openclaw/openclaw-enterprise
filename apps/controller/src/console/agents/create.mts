@@ -55,6 +55,7 @@ import {
   AGENT_CREATE_DENIED,
   type AgentNavigation,
   channelBindingRefusal,
+  describeFailure,
   GENERIC_CONFLICT,
   link,
   message,
@@ -1664,6 +1665,12 @@ function renderAgentForm(
   // and when anything is saved. capabilityDiscoveryDone stays false, so no hint claims an outcome.
   let capabilitiesUnreadable = false;
   const capabilitiesSettled = () => capabilityDiscoveryDone || capabilitiesUnreadable;
+  // A refused create shows the API's 400 sentence. Its denial names nobody to ask once the
+  // Installation read succeeded, which only an Installation administrator can do (finding 2113).
+  const createRefusal = (cause: unknown, mutation: boolean) =>
+    requestFailure(cause).status === 403 && capabilityDiscoveryDone && !capabilitiesUnreadable
+      ? administratorMessage(cause)
+      : rejectionMessage(cause, mutation);
   // The Namespace's permission answer this form decides with. A retry rereads it when the
   // console's read failed (finding 2110); the API still decides every write.
   let namespacePermissions = context.permissions;
@@ -3086,7 +3093,7 @@ function renderAgentForm(
       } else if (reason !== undefined && error.code !== "NAMESPACE_NOT_READY") {
         detail = followableRefusal(reason);
       } else {
-        detail = followableRefusal(rejectionMessage(cause, mutationStarted));
+        detail = followableRefusal(createRefusal(cause, mutationStarted));
       }
       const feedbackText = detail + (error.requestId ? ` Request ID: ${error.requestId}` : "");
       // A job that ended keeps its final status (none once it failed: the error line says so);
@@ -3664,8 +3671,13 @@ function renderAgentForm(
             : error.status === 409 && savedConfiguration && error.code !== "NAMESPACE_NOT_READY"
               ? error.serverMessage === AGENT_NAME_CONFLICT
                 ? AGENT_NAME_CONFLICT
-                : "Agent creation conflicts with the saved state. Check the Agent name and selections, then try again."
-              : followableRefusal(rejectionMessage(cause, mutationStarted));
+                : // A typed conflict names the setting or state that refused the create.
+                  describeFailure(cause, {
+                    mutation: mutationStarted,
+                    conflict: "Agent creation conflicts with the saved state.",
+                    next: "Check the Agent name and selections, then try again.",
+                  })
+              : followableRefusal(createRefusal(cause, mutationStarted));
       if (!savedAgent && savedConfiguration && knownRejection) {
         if (repositoryBindings.length) {
           requireRepositoryReload();

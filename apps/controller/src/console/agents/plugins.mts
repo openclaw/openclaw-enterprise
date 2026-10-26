@@ -20,7 +20,12 @@ import {
 import { type PluginDiscoveryContext, createPluginDiscovery } from "./plugin-discovery.mjs";
 import { isPluginSelections } from "./plugin-fields.mjs";
 import { createSlackApproverField } from "./slack-approvers.mjs";
-import { SAVE_REFUSALS, assertReadableConfiguration, message, rejectionMessage } from "./list.mjs";
+import {
+  SAVE_REFUSALS,
+  assertReadableConfiguration,
+  describeFailure,
+  rejectionMessage,
+} from "./list.mjs";
 import { configuredHarnessId } from "./harness-auth.mjs";
 
 type PluginAgent = Pick<
@@ -460,11 +465,14 @@ export function renderAgentPlugins(
             ? rejectionMessage(cause, mutationStarted)
             : error.status === 400
               ? "Plugin selections were rejected. Check plugin IDs and policy JSON, then retry."
-              : error.status === 409
-                ? "Plugin changes conflict with the current Agent state. Refresh this Agent before retrying."
-                : error.status === 501
-                  ? "This Installation has no compatible Plugin Driver for these selections. Ask an operator to select or configure one, then retry."
-                  : message(cause, mutationStarted);
+              : error.status === 501
+                ? "This Installation has no compatible Plugin Driver for these selections. Ask an operator to select or configure one, then retry."
+                : // A typed 409 names the setting or state that refused the save.
+                  describeFailure(cause, {
+                    mutation: mutationStarted,
+                    conflict: "Plugin changes conflict with the current Agent state.",
+                    next: "Refresh this Agent before retrying.",
+                  });
       // Save disables while it runs, which dropped focus to the page. Focus the reader moved
       // anywhere else while the save ran, in this section too, stays there (finding 1978).
       revealStatus(saveError, save);

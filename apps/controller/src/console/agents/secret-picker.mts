@@ -15,7 +15,13 @@ import {
   statusBlock,
   validateFields,
 } from "../dom.mjs";
-import { message, namespaceListNeed, namespacePath } from "./list.mjs";
+import {
+  describeFailure,
+  explainedConflict,
+  message,
+  namespaceListNeed,
+  namespacePath,
+} from "./list.mjs";
 import { NAME_MAX_CHARACTERS, namespaceNameProblem } from "../namespaces.mjs";
 import { secretValueControl } from "../secrets.mjs";
 
@@ -212,23 +218,16 @@ function credentialLink(href: string, label: string) {
   return element("a", { href, target: "_blank", rel: "noopener" }, `${label} (opens in new tab)`);
 }
 
-function credentialMutationError(status: number | undefined) {
-  if (status === 400) {
-    return "Check the Secret fields and try again.";
-  }
+// A Create Secret refusal other than a conflict: the API's 400 sentence names the field to fix.
+function secretCreateRefusal(cause: unknown) {
+  const { status } = requestFailure(cause);
   if (status === 403) {
     return "Access denied. You do not have permission to manage this Secret binding.";
   }
   if (status === 404) {
-    return "The selected Secret metadata is unavailable.";
+    return "This Namespace is no longer available. Close this dialog and refresh the page.";
   }
-  if (status === 409) {
-    return "The Secret or Configuration changed. Refresh before trying again.";
-  }
-  if (status === 429) {
-    return "Too many requests. Wait before trying again.";
-  }
-  return "Secret binding could not be confirmed. Refresh before trying again.";
+  return describeFailure(cause, { mutation: true, form: true });
 }
 
 export function createSecretReferenceField({
@@ -824,11 +823,14 @@ export function createSecretReferenceField({
         } else if (status === 409 && code === "NAMESPACE_NOT_READY") {
           feedback.textContent =
             "This Namespace is not ready, so it cannot store Secrets yet. Check its status on the Namespaces page: a provisioning Namespace becomes ready when its Kubernetes setup completes (on Kubernetes installs, after an operator grants the tenant RoleBindings).";
+        } else if (status === 409 && explainedConflict(cause) !== undefined) {
+          // A typed conflict names the state that refused the create.
+          feedback.textContent = describeFailure(cause, { mutation: true });
         } else if (status === 409) {
           feedback.textContent =
             "Secret creation conflicted. A Secret with this name may already exist in this Namespace. Check the name and Namespace state before trying again.";
         } else {
-          feedback.textContent = credentialMutationError(status);
+          feedback.textContent = secretCreateRefusal(cause);
         }
         submit.disabled = outcomeUnknown;
         cancel.disabled = false;
