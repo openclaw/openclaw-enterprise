@@ -1594,7 +1594,7 @@ test("Agent detail refocus checks access once without reloading an unfinished re
 test("a link to an unavailable Agent tab names it and shows Configuration", async (t) => {
   const fixture = await detailApp(t);
   const namespace = await fixture.createNamespace("Unavailable tab links", { ready: true });
-  const agent = await fixture.createAgent(namespace.id, "Tab link Agent");
+  const agent = await fixture.createAgent(namespace.id, "Tab link Agent", nativeValues("tabs"));
   const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const reader = await fixture.createNamespaceMember("tab-reader", namespace.id, AGENT_READ);
   const notice = (page) => page.locator(".agent-tab-notice");

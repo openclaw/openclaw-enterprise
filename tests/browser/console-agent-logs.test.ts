@@ -96,6 +96,16 @@ function resetComputeDriver() {
   computeDriver.calls.length = 0;
 }
 
+// What Logs says when a read is refused after the same read succeeded: the caller's access
+// changed, so it does not restate the rule (finding 2550).
+const LOGS_ACCESS_CHANGED =
+  "Your access to this Agent changed, so its logs are no longer shown. Refresh to check your access, or ask an Installation administrator.";
+const STATUS_ACCESS_CHANGED =
+  "Your access to this Agent changed, so its runtime status is no longer shown. Refresh to check your access, or ask an Installation administrator.";
+const LOGS_CHANGED = /^Your access to this Agent changed, so its logs are no longer shown\./;
+const STATUS_CHANGED =
+  /^Your access to this Agent changed, so its runtime status is no longer shown\./;
+
 async function logsFixture(t: TestContext) {
   const fixture: ConsoleFixture = await logsApp(t);
   resetComputeDriver();
@@ -2259,7 +2269,7 @@ test("a member's Back reuses a followed Logs view, and not once log access is re
   );
   const wasPainted = await watchPainted(page, { text: "member before leaving" });
   await page.goBack();
-  await page.getByText(/Log text requires Agent read_logs/).waitFor();
+  await page.getByText(LOGS_CHANGED).waitFor();
   assert.equal(await wasPainted(), false);
   assert.equal(await panel.evaluate((node) => node.isConnected), false);
   assert.equal(await pane.getByText("member before leaving").count(), 0);
@@ -2334,7 +2344,7 @@ test("Back rebuilds an Agent view whose runtime status or version read was refus
   revoke("agent", "operate");
   const wasPainted = await watchPainted(page, { selector: ".runtime-pod" });
   await page.goBack();
-  await page.getByText(/Runtime status requires Agent operate/).waitFor();
+  await page.getByText(STATUS_CHANGED).waitFor();
   await pane.getByText("operator output").waitFor();
   assert.equal(await viewKept(page), false);
   assert.equal(await wasPainted(), false);
@@ -2449,12 +2459,6 @@ async function watchPainted(page: Page, target: { text: string } | { selector: s
   };
 }
 
-// What Logs says when a read is refused after the same read succeeded (finding 2550).
-const LOGS_ACCESS_CHANGED =
-  "Your access to this Agent changed, so its logs are no longer shown. Refresh to check your access, or ask an Installation administrator.";
-const STATUS_ACCESS_CHANGED =
-  "Your access to this Agent changed, so its runtime status is no longer shown. Refresh to check your access, or ask an Installation administrator.";
-
 const refusedRoute = (status: number) => ({
   status,
   contentType: "application/json",
@@ -2477,7 +2481,7 @@ test("a refused follow poll clears the shown output, and Back rebuilds the view"
   await page.getByRole("button", { name: "Follow" }).click();
   changeGrant(role, "read_logs", false);
   await page.clock.runFor(2_000);
-  await page.getByText(/Log text requires Agent read_logs/).waitFor();
+  await page.getByText(LOGS_CHANGED).waitFor();
   assert.equal(await page.getByText("read before revoke").count(), 0);
   assert.equal(await pane.locator(":scope > *").count(), 0);
   assert.equal(await page.getByText(/Showing gateway in/).count(), 0);
@@ -2488,7 +2492,7 @@ test("a refused follow poll clears the shown output, and Back rebuilds the view"
   await leave();
   const wasPainted = await watchPainted(page, { text: "read before revoke" });
   await page.goBack();
-  await page.getByText(/Log text requires Agent read_logs/).waitFor();
+  await page.getByText(LOGS_CHANGED).waitFor();
   await waitForIdleFetches(page);
   assert.equal(await viewKept(page), false);
   assert.equal(await wasPainted(), false);
@@ -2553,7 +2557,7 @@ for (const delayed of ["follow", "download"]) {
       await startFollow();
     }
     await refusal;
-    const denied = page.getByText(/Log text requires Agent read_logs/);
+    const denied = page.getByText(LOGS_CHANGED);
     await denied.waitFor();
     const arriving = page.waitForResponse(url);
     held.release();
@@ -2608,7 +2612,7 @@ test("Back rebuilds a Logs view whose status read alone is refused since", async
   );
   const wasPainted = await watchPainted(page, { selector: ".runtime-pod" });
   await page.goBack();
-  await page.getByText(/Runtime status requires Agent operate/).waitFor();
+  await page.getByText(STATUS_CHANGED).waitFor();
   await waitForIdleFetches(page);
   assert.equal(await viewKept(page), false);
   assert.equal(await wasPainted(), false);
@@ -2616,7 +2620,7 @@ test("Back rebuilds a Logs view whose status read alone is refused since", async
   assert.equal(refusals, 1);
   await leave();
   await page.goBack();
-  await page.getByText(/Runtime status requires Agent operate/).waitFor();
+  await page.getByText(STATUS_CHANGED).waitFor();
   await waitForIdleFetches(page);
   await page.clock.runFor(10_000);
   await waitForIdleFetches(page);
@@ -2652,9 +2656,9 @@ test("a follow poll refused with operate revoked too clears the Pod cards at onc
   );
   // Only the follow poll's timer runs, well short of the 10 s status poll.
   await page.clock.runFor(2_000);
-  await page.getByText(/Log text requires Agent read_logs/).waitFor();
+  await page.getByText(LOGS_CHANGED).waitFor();
   await statusRefused;
-  await page.getByText(/Runtime status requires Agent operate/).waitFor();
+  await page.getByText(STATUS_CHANGED).waitFor();
   await waitForIdleFetches(page);
   assert.equal(await pods.count(), 0, "the Pod cards clear with the log refusal");
   assert.equal(await pane.locator(":scope > *").count(), 0);
@@ -2770,7 +2774,7 @@ for (const { name, revoked, podsKept, staleFails = false } of [
         response.url().endsWith(statusPath) && response.status() === (podsKept ? 200 : 403),
     );
     await page.clock.runFor(2_000);
-    await page.getByText(/Log text requires Agent read_logs/).waitFor();
+    await page.getByText(LOGS_CHANGED).waitFor();
     await fresh;
     const arriving = page.waitForResponse(
       (response) =>
@@ -2783,11 +2787,16 @@ for (const { name, revoked, podsKept, staleFails = false } of [
     assert.equal(statusReads(), before + 1);
     if (podsKept) {
       assert.ok((await pods.count()) > 0, "a fresh status answer keeps the Pod cards");
-      assert.equal(await page.getByText(/Runtime status requires Agent operate/).count(), 0);
+      assert.equal(
+        await page
+          .getByText(/Runtime status requires Agent operate|runtime status is no longer shown/)
+          .count(),
+        0,
+      );
       assert.equal(await page.getByText("The read timed out. Try again.").count(), 0);
     } else {
       assert.equal(await pods.count(), 0, "the stale answer does not bring the Pod cards back");
-      await page.getByText(/Runtime status requires Agent operate/).waitFor();
+      await page.getByText(STATUS_CHANGED).waitFor();
     }
     // The fresh read alone schedules the next poll, one interval on; a refused status stops.
     await page.clock.runFor(9_000);
@@ -2822,7 +2831,7 @@ test("a refused status poll clears the Pod details and keeps authorized log read
   );
   await page.clock.runFor(10_000);
   await denied;
-  await page.getByText(/Runtime status requires Agent operate/).waitFor();
+  await page.getByText(STATUS_CHANGED).waitFor();
   await waitForIdleFetches(page);
   assert.equal(await pods.count(), 0, "do not keep showing the last authorized Pod status");
   assert.equal(await page.locator("#runtime-log-pod option").count(), 0);
@@ -2916,7 +2925,7 @@ test("a restored operate grant shows status on Back, and a new sign-in asks for 
   changeGrant(role, "operate", false);
   permissionsBefore = permissionReads();
   await page.goBack();
-  await page.getByText(/Runtime status requires Agent operate/).waitFor();
+  await page.getByText(STATUS_CHANGED).waitFor();
   await waitForIdleFetches(page);
   assert.equal(statusReads(), 2);
   assert.equal(permissionReads() - permissionsBefore, 2);
@@ -2924,7 +2933,7 @@ test("a restored operate grant shows status on Back, and a new sign-in asks for 
   await leave();
   permissionsBefore = permissionReads();
   await page.goBack();
-  await page.getByText(/Runtime status requires Agent operate/).waitFor();
+  await page.getByText(STATUS_CHANGED).waitFor();
   await waitForIdleFetches(page);
   assert.equal(statusReads(), 2);
   assert.equal(permissionReads() - permissionsBefore, 1);
