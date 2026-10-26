@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { SshComputeDriver } from "../../apps/controller/src/drivers/compute/ssh/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
+import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   apiRequests,
@@ -155,7 +156,7 @@ test("a provisioning Namespace saves an Agent draft from a seeded runtime-auth P
       nodePath: "/usr/bin/node",
       openclawPath: "/opt/openclaw/index.js",
       user: "openclaw",
-      root: "/tmp/ssh-runtime-test",
+      root: "/var/lib/ssh-runtime-test",
     },
     network: { gatewayPortRange: { start: 18800, end: 18899 } },
   });
@@ -488,11 +489,7 @@ test("the Agents list keeps checking its Namespace after a failed read", async (
   assert.equal(await view.locator("#namespace-not-ready[data-kept]").count(), 1);
   await page.route(
     (url) => url.pathname === "/namespaces",
-    (route) =>
-      route.fulfill({
-        status: 503,
-        json: { error: { code: "UNAVAILABLE", message: "Try again." } },
-      }),
+    (route) => route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Try again.")),
     { times: 1 },
   );
   await poll();

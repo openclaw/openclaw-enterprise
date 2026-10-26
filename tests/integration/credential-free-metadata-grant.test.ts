@@ -9,6 +9,7 @@ import {
   type Namespace,
 } from "../../packages/contracts/src/index.ts";
 import type { OpenClawController } from "../../packages/occ/src/index.ts";
+import { assertApiError } from "../helpers/api-error.mjs";
 import type { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { captureMetadata } from "../helpers/github-metadata-exchange.mjs";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
@@ -156,8 +157,7 @@ test("credential-free route admission rejects changed, missing and undefined ext
       "POST",
       `/namespaces/${f.namespace.id}/agents/${f.agent.id}/deploy`,
     );
-    assert.equal(result.status, 404, name);
-    assert.equal(result.body.error.code, "NOT_FOUND", name);
+    assertApiError(result, 404, "NOT_FOUND", name);
     assert.deepEqual(await revisions(), [], name);
     assert.deepEqual(effects(), before, name);
   }

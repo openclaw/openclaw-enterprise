@@ -378,7 +378,7 @@ test("first-Agent runs psql through the k3d PostgreSQL StatefulSet", async (t) =
   );
 });
 
-test("first-Agent refuses a record from an older helper as such", async (t) => {
+test("first-Agent refuses an unrecognized saved record without calling it old", async (t) => {
   const { directory, engineLog, env } = await k3dFixture(t);
   const recordPath = join(
     directory,
@@ -404,26 +404,31 @@ test("first-Agent refuses a record from an older helper as such", async (t) => {
   // The current record shape passes the check and reaches the database step.
   assert.match(await run(current), /kubectl did not complete successfully \(exit 23\)/);
 
-  // Versions 1 and 2 predate the Harness and Control UI fields, and version 3 records saved
-  // before PAT support have no authMethod. None can be verified, so the refusal says the
-  // record is old, even with a model selected, instead of blaming a selection or an
-  // authentication method the caller kept (findings 1756, 1798).
+  // Versions 1 and 2, version 3 without authMethod, a string version, and a
+  // newer numeric version cannot be verified. The refusal does not call the
+  // record old or tell the operator that a new name recovers it (issue 3362).
   const beforePat = { ...current };
   delete beforePat.authMethod;
   for (const [label, record, extraEnv] of [
     ["version 1", { ...current, version: 1 }],
     ["version 2", { ...current, version: 2 }],
     ["version 3 without authMethod", beforePat],
+    ["version 3 only", { version: 3 }],
+    ["string version", { ...current, version: "3" }],
+    ["version 4", { ...current, version: 4 }],
     [
       "version 1 with a selected model",
       { ...current, version: 1 },
       { OPENCLAW_FIRST_AGENT_MODEL: "gpt-other" },
     ],
   ]) {
+    const saved = `${JSON.stringify(record)}\n`;
     const output = await run(record, extraEnv);
-    assert.match(output, /has a record from an older first-agent helper/, label);
-    assert.match(output, /Choose a new Agent name/, label);
+    assert.match(output, /saved record this helper does not recognize/, label);
+    assert.match(output, /Choosing a new Agent name starts a different Agent/, label);
+    assert.doesNotMatch(output, /older first-agent helper/, label);
     assert.doesNotMatch(output, /differs|Personal access tokens/, label);
+    assert.equal(await readFile(recordPath, "utf8"), saved, label);
     await assert.rejects(readFile(engineLog), { code: "ENOENT" }, label);
   }
 

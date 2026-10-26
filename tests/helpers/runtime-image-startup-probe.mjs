@@ -244,15 +244,29 @@ async function startupProbeEvidence(scenario, snapshot, loop) {
   return {
     probe: entries
       .filter(({ event }) => probeEvents.has(event))
-      .map(({ event, attempt, code, elapsedMs, capMs, cpuWaitMs, cause }) => ({
-        event,
-        attempt,
-        code,
-        elapsedMs,
-        capMs,
-        cpuWaitMs,
-        cause,
-      })),
+      .map(
+        ({
+          event,
+          attempt,
+          code,
+          elapsedMs,
+          capMs,
+          cpuWaitMs,
+          pressureWaitMs,
+          throttledWaitMs,
+          cause,
+        }) => ({
+          event,
+          attempt,
+          code,
+          elapsedMs,
+          capMs,
+          cpuWaitMs,
+          pressureWaitMs,
+          throttledWaitMs,
+          cause,
+        }),
+      ),
     stages: Object.fromEntries(
       entries
         .filter(({ event }) => event === "openclaw.model_probe_stage")

@@ -161,9 +161,11 @@ startup events such as `worker.started` would otherwise be lost for good.
 
 Before emitting the DaemonSet,
 `deploy/helm/openclaw-enterprise/templates/_helpers.tpl:openclaw.quantity`
-checks the Collector resource and volume quantities for obvious syntax errors.
-Malformed values stop rendering with the setting name; absent optional limits
-pass through. Kubernetes performs complete validation after rendering. See the
+checks the Collector resource and volume quantities for obvious syntax errors,
+and `openclaw.nonNegativeQuantity` and `openclaw.resourceRequirements` refuse
+negative values and unknown resource names. Malformed
+values stop rendering with the setting name; absent optional limits pass
+through. Kubernetes performs complete validation after rendering. See the
 [production settings](../reference/settings/production.md#production-operational-logging-collection)
 for the supported scope.
 
@@ -335,19 +337,5 @@ for panels, correlation, and authorization limits.
 - 2026-10-10 05:47: Retain admitted Agent provisioning work IDs in Collector correlation metadata. (authoring-run/93444a45-23c4-4b1c-9d53-391d9014d93f - cd30d20a297fdb0f2b712122b705aa4c168564ff)
 
 - 2026-10-10 00:44: Refuse noncanonical Collector exporter ports before Kubernetes YAML can change their meaning. (authoring-run/e72ad138-e0b2-498e-885b-f8fa56caaeb0 - 3e34cc0f4b469d29fc79d2c10a33f87a0921ee47)
-
-- 2026-10-09 23:11: Document renamed Loki exporter addresses and Collector refresh after demo upgrades. (authoring-run/8adc169e-fc08-40ad-823f-a80486252608 - 6668e2fc8477ca780b15e25a7320589a7612284f)
-
-- 2026-10-09 21:42: Bound demo Service names and keep Grafana datasource URLs aligned. (authoring-run/8adc169e-fc08-40ad-823f-a80486252608 - 49d1562335120b125d3f149a5a6a64a5c51577a9)
-
-- 2026-10-09 14:00: Export `http.dependency_unavailable`, the API warning that names the cause of a `503 DEPENDENCY_UNAVAILABLE` by request ID; the cause stays local. (fix-529-938)
-- 2026-10-08 10:17: Document Collector quantity syntax checks in the accompanying chart change. (authoring-run/95ed7983-818c-4af2-8875-1330333f5e41 - 1fce0eef361dd584212cc3f2ac4d75ab92eb8ff7)
-
-- 2026-10-06 13:30: Export `agent_provisioning.compute_refused`, the API warning that names a Compute provisioning refusal by request ID.
-- 2026-10-06 06:30: Export the API shutdown, idle database connection, device login, cluster credential denial, native admin audit failure and authentication startup warnings that other pages tell operators to look for.
-- 2026-10-05 05:30: Note that the Preset startup warnings come only from the API.
-- 2026-10-05 03:30: Export `presets.bundled-default-shadowed` as WARN with only its event name.
-- 2026-10-05 02:30: Export `presets.default-create-skipped` as WARN with only the Namespace ID.
-- 2026-10-04 23:10: Export `presets.default-refresh-skipped` as WARN with only the Namespace and Preset IDs. (bh13-fu2-collector - e54a08048)
 
 [Common logging documentation history](common-logging/history.md) preserves the earlier dated entries.

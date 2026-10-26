@@ -9,6 +9,7 @@ import {
   advanceCleanupRetries,
   completedPasses,
   completion,
+  expireWorkLease,
   removeAccessBindings,
   repositoryAttempts,
   repositoryBoundary,
@@ -337,12 +338,10 @@ test(
     });
     const crashed = await queue.claim();
     assert.equal(crashed?.idempotencyKey, crashedKey);
-    await fixture.observerPool.query(
-      `UPDATE occ.controller_work
-       SET lease_expires_at = clock_timestamp() - interval '1 second'
-       WHERE idempotency_key = $1 AND claim_token = $2::uuid`,
-      [crashedKey, crashed.claimToken],
-    );
+    await expireWorkLease(fixture.observerPool, {
+      key: crashedKey,
+      claimToken: crashed.claimToken,
+    });
     const recovery = await queue.recoverStale();
     assert.equal(recovery.recovered, 1);
 

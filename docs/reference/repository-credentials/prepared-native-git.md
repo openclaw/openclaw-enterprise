@@ -27,6 +27,13 @@ Reads cover the repository, not just the review branch. GitHub's `contents: writ
 permission is not branch-scoped: protect important refs at GitHub independently,
 without an App bypass. The Git-only profile exposes fetch and push, not GitHub REST or GraphQL.
 
+By default (`limits.exchangesPerSession: 4`), one repository session handles at most four
+Git requests at the same time. A fifth concurrent request gets HTTP 503, and Git shows
+`The requested URL returned error: 503`. The service-wide `limits.exchanges` bound (default 32)
+also answers 503, so a session can get it with fewer requests. Run parallel clones and
+fetches in groups no larger than the configured
+[service limits](../repository-credentials.md#client-routing-and-limits).
+
 A separately selected protected Credential Proxy can authorize a bounded
 `metadata-read` operation. Its [response policy](../../../apps/controller/src/drivers/repo/github/credentials/metadata-response.ts)
 requires HTTP 200 and the exact repository ID and full name. After stream end, the
@@ -46,10 +53,20 @@ base. Later feedback and commits use ordinary Git on the same branch. The Agent 
 also force-push or delete that branch, and deleting it closes the draft; protect the
 branch on GitHub to stop either.
 
+On this route, each grant allows one draft. The grant is the repository, review ref and
+base, and every Agent and version that has it shares the allowance. Closing the draft or
+deleting its branch does not give the allowance back. A later create gets
+`operation_conflict`, and GitHub does not receive it. Changing the policy's review ref, base
+or transport makes a new grant: after a new version deploys, it allows one more draft. The
+`draftPullLimit: none` opt-out applies only to [OpenShell Git](protected-openshell-git.md#use-the-admitted-repository).
+
 The Agent uses `oce-github pr-create --draft` with the head, base, title, optional
 explicit `--body` text and a fresh operation ID. The helper refuses `--body-file`;
-the JSON request body must fit within 64 KiB. If the reply is lost, look for the draft at GitHub;
-do not submit another create. The receipt identifies the admitted Agent session,
+the JSON request body must fit within 64 KiB. A broker refusal, such as a spent allowance or
+another head or base (`unsupported-request`), prints `Draft not created:` with the reason and
+states that GitHub did not receive the request. The helper prints `Draft not confirmed` only
+when the create may have reached GitHub. If the reply is lost, look
+for the draft at GitHub; do not submit another create. The receipt identifies the admitted Agent session,
 not the person who assigned the task. Use a trusted team for the initial trial;
 do not treat that receipt as per-person task authorization.
 
@@ -88,6 +105,39 @@ To withdraw access, remove the repository binding on the running Agent. Confirm 
 new authenticated fetch is denied and chat still works. Withdrawal cannot erase
 an existing clone or recall a push already sent. If the outcome of a push is
 unknown, inspect the remote ref before deciding what to do; do not replay it.
+
+## Read broker refusals
+
+Git shows only the HTTP status of a refusal, so read the reason in the log of the worker
+Pod's `repository-credentials` container. Each refused request that carried a session
+credential writes one `repository-credentials.denied` JSON line. `reasonCode` is the code
+the Agent received, and `reason` says where the broker refused the request:
+
+| `reason`              | Cause                                                                                                  |
+| --------------------- | ------------------------------------------------------------------------------------------------------ |
+| `session_unavailable` | The session is closed, expired or unknown to this broker                                               |
+| `capacity`            | The session has four requests in progress, or the broker is at its total limit (`exchange-capacity`)   |
+| `request_refused`     | A wrong `Host` or bad framing, or the route does not admit it (a GitHub API request on Git-only)       |
+| `input_refused`       | The request body was refused, for example a push to another ref or a draft with another head or base   |
+| `not_dispatched`      | The worker did not authorize the send, for example after withdrawal, or the GitHub connection failed   |
+| `operation_conflict`  | The grant's draft allowance was already used                                                           |
+| `credential_refused`  | The route does not accept the credential, for example a request for a repository that no binding names |
+| `service_error`       | An internal broker failure                                                                             |
+
+The line also carries `status`, and `operation` (such as `git-push`) once the route is known.
+A draft create that GitHub did not receive, for example because the connection failed, gets a
+`409` receipt with `not-submitted` and logs `not_dispatched`. An uncertain push or draft
+(`exchange-uncertain`, `outcome_unknown`) is not a refusal and is not logged.
+
+The session ID, Namespace and `repositoryRef` appear only when the credential names an open
+session. A `session_unavailable` line has none of them, because the broker no longer knows the
+session, for example after a worker Pod
+[restart](../../guides/repository-credentials/installation.md#install-and-verify). Match it by
+time to that restart or to the session's end. A request refused while the broker reads its
+head, for example for a wrong `Host`, is logged only when its credential names an open session.
+A line never carries the session credential,
+a token, a URL or a ref. Unauthenticated requests are part of Git's normal authentication and
+are not logged.
 
 ## Change the issuer
 

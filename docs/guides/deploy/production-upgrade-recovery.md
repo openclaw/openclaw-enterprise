@@ -15,6 +15,13 @@ candidate, reads the live Secret and Helm release, accepts only the recorded
 baseline or candidate, and continues the recorded fleet. It rejects unrelated drift. The evidence includes
 Secret contents and must remain private.
 
+For a failed writer scale, Helm upgrade, or rollout wait, read
+`native-command-failures.tsv` in the evidence directory. Each tab-separated row
+records the operation, component (`api`, `worker`, or `release`), and native exit
+code. Rows remain after resume; they record client failures, not whether a
+request took effect. Reconcile live state as described below before resuming.
+Other failures and killed processes might not produce a row.
+
 If a killed process leaves `.upgrade-lock`, first establish that no helper or
 its child commands are still running, then remove that empty directory and
 resume. This lock covers only processes sharing this evidence directory; it

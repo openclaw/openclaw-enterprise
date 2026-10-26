@@ -134,6 +134,9 @@ root-object JSON document; omitted or unknown kinds and malformed request
 shapes fail with `400`. Updates require the complete replacement `values`
 document and accept optional `secretBindings` and `expectedGeneration`, refusing
 a stale one under the row lock with an `/expectedGeneration` `409` detail.
+On the bundled Kubernetes Compute, writes refuse an enabled channel's unbound
+credential reference, or a Slack token SecretRef the Slack Channel Driver cannot
+read, with deployment's rule (`requireChannelSecretBindings`).
 `kind`, `generation`, and ownership are server-owned. OCC preserves nested values
 and SecretRefs unchanged. Malformed,
 generation-mismatched, or ownership-invalid persisted ConfigMaps fail with
@@ -215,6 +218,8 @@ its optional integration is skipped.
 
 ## Changelog
 
+- 2026-10-25: Writes refuse a Slack token SecretRef the Slack Channel Driver cannot read. (finding 2514)
+- 2026-10-25 13:00: Writes, provisioning and the Create Agent preflight refuse an enabled channel's unbound credential reference. (fix-2319, finding 2319)
 - 2026-10-23 13:40: Writes and Preset saves refuse an `agents` model without its provider, with deployment's text. (fix-1828, finding 1828)
 - 2026-10-14 10:30: Writes refuse literals in the other slots OpenClaw marks sensitive ([rules](configuration-driver/persistence-and-revisions.md)). (fix-1309, finding 1309)
 - 2026-10-14 09:30: Writes and deployment require references in the other key and header slots the Gateway sends ([list](../reference/configuration/secrets.md#secret-boundaries)); those header slots and MCP headers refuse invalid header names. Stored documents still read. (fix-1307, finding 1307)
@@ -223,42 +228,16 @@ its optional integration is skipped.
 - 2026-10-14 06:00: Configuration and Agent saves on every Compute refuse a model fallback on another provider than its primary's, naming the setting, as deployment now does; Kubernetes Configuration save also runs the model provider and `apiKey` rules deployment applies, and accepts OpenClaw's built-in `default` env provider in an `apiKey` reference. (fix-1298-1299, findings 1298-1299)
 - 2026-10-13 23:00: Configuration and Preset saves require references in MCP server credential headers, and read a `GIT_CONFIG_VALUE_<n>` or `GIT_CONFIG_PARAMETERS` value whose key names a git proxy as a proxy URL. (findings 1276, 1278)
 - 2026-10-13 18:00: Kubernetes credential header refusals quote the header name, not a word list; a Preset header name waiting on a variable saves on Kubernetes too. (findings 1207-1208)
-- 2026-10-13 16:00: The credential header rule also matches authentication, assertion, HMAC, JWT, license, OTP, pass, PIN and pwd words, `-v2` suffixes and `.` separators, and exempts partition, shard, sort and dedup keys; Configuration and Preset saves on every Compute refuse a header name that is not an HTTP field name, and Preset saves run the model provider settings check. (findings 1189-1191)
-- 2026-10-13 14:00: The credential header rule also matches any name ending in `key` or `keys` (not an idempotency or cache key), the words `bearer`, `credential`, `passcode`, `passphrase` and `signature`, and plurals; the Kubernetes message says "any key"; Configuration writes and Kubernetes Compute refuse a model provider `models` that is not a list, which hid its rows from the credential rules. (findings 1185-1186)
+- 2026-10-13 16:00: The credential header rule matches more credential words and separators and exempts partition, shard, sort and dedup keys; saves refuse a header name that is not an HTTP field name. (findings 1189-1191)
+- 2026-10-13 14:00: The credential header rule matches names ending in `key` or `keys` (not idempotency or cache keys) and more credential words; writes refuse a model provider `models` that is not a list. (findings 1185-1186)
 - 2026-10-13 10:00: Kubernetes Compute refuses credential headers and non-default `request.auth` on every model provider, and the Configuration Driver requires references in the request credential slots; a stored document that predates these rules still reads and an edit replaces it, while save and deployment refuse it with the Compute message. (#2265, findings 1142-1143)
 - 2026-10-11 15:00: Kubernetes deployment admission names the caller's Configuration setting for channel, credential and dedicated OpenClaw catalog refusals; Configuration save, provisioning and Preset save run the topology-independent ones through `validateConfiguration`; Agent create and update run deployment's Agent checks. (fix-1116-1117, findings 1116-1117)
 - 2026-10-11 14:30: Every JSON request body nested more than 24 levels deep is refused with `400 TOO_DEEP` before it is parsed, instead of a `500` and hundreds of megabytes of heap on Configuration and Preset writes. (fix-1124, finding 1124)
 - 2026-10-11 13:00: Configuration save refuses a Codex approval policy the Gateway refuses and a literal `gateway.auth.password`; Kubernetes deployment admission and provisioning refuse the gateway password, channel topology and workspace-node plugin settings that preparation or the Gateway refused only after predecessors stopped. (fix-1112-1115, findings 1112-1115)
 - 2026-10-11 12:00: Configuration POST/PATCH admit every Configuration the Kubernetes Driver stores (6 x (1 MiB + 32 KiB) body) and check the create or update grant before reading the body. (fix-1118, finding 1118)
-
 - 2026-10-10 08:00: Kubernetes renders `gateway.bind: lan` for an omitted or `auto` bind; Kubernetes and Docker Compute refuse other unreachable listeners (other binds, non-`0.0.0.0` custom hosts, Tailscale exposure) before version creation. (fix-996-999, findings 996-998)
-
 - 2026-10-10 11:29: Refuse Kubernetes native listeners that pass local readiness but cannot serve Pod-IP routes before version creation. (authoring-run/f29e292f-76cb-44a1-88b5-e0244f9164fc - f8a837e33b5c03bc0c92065e979485ee06960150)
-
 - 2026-10-09 19:00: Configuration create and update refuse an `agents` roster every deployment refuses, with deployment's text, through the shared `requireDeployableRoster`; an existing row still reads and deploys as before. (q35-roster-save, finding 874)
 - 2026-10-09 15:00: A failed Configuration delete or update compensates only while the metadata row is unchanged, so a delete or update another request committed after the lock was released is never undone and leaves no orphan ConfigMap. (fix-944-945)
-- 2026-10-09 13:00: Configuration create and delete register their compensation before the write and undo only what `inspectExact` shows they stored or removed, so a write that applied but answered an error leaves no orphan ConfigMap or metadata without one. (fix-916)
-- 2026-10-09 12:00: Provisioning resends a Configuration create still missing after its 90-second settle window, and a Configuration update's compensation is registered before the replace, so a replace that applied but answered an error is rolled back too. (fix-911)
-- 2026-10-06 15:00: Deployment admission refuses a native gateway setting Kubernetes Compute cannot deploy, naming it, instead of failing every preparation attempt. (dogfood-r36/deploy-gateway-settings)
-- 2026-10-05 16:38: Trace owned temporary-file cleanup after filesystem Configuration write or rename failure. (authoring-run/794614ec-1b79-47ec-95ed-f11128b4c611 - 69b5c21806187125a7a20b9ca447bb15f6f3e890)
 
-- 2026-10-03 16:30: Configuration writes reject reserved binding destinations and cross-Namespace Secret references as invalid requests instead of not-found, as provisioning does. (binding-400)
-
-- 2026-09-23 13:13: Align provisioning Configuration creation and recovery with canonical CP storage. (codex/01a0cf72-6985-7712-ba92-d8cc32470f24 - df4ca4474d90de2d4ab0dd6f6d03a64ebb92526a)
-
-- 2026-09-01 19:09: Trace Secret-binding admission and optional Sandbox transformation before immutable version creation; remove the obsolete TODO link. (01a05f95-dd80-7011-990f-d1c46b5bb3cc - aa366c49c44834d59f74994c5fd37fb8096f169f)
-- 2026-08-28 17:58: Updated moved feature-reference links for the documentation organization. (01a036f4-cf1d-7cc1-bbc1-000879038ac8 - 4270aa29b7015562049f46c6027962fd85b584a9)
-- 2026-08-27 00:05: Removed stale contract-suite commands and kept production-behavior conformance and integration verification. (01a036f4-cf1d-7cc1-bbc1-000879038ac8 - ab560806dbd945436835ab092ebd10bf3e50d942)
-- 2026-08-25 08:46: Clarified API-level Configuration validation and development filesystem Driver persistence boundaries. (01a03630-cd9f-7352-9e64-1d30de98c7dd - 949e57ba008486c7ad60978df79dc53cce31bee9)
-- 2026-08-21 20:53: Combined duplicate Configuration startup phases and narrowed verification to capability-specific tests and explicit infrastructure prerequisites. (01a0269c-0551-7f01-9dfc-ffb2a0896c94 - f6491502262d6190c95d2a910ee46283c30244f9)
-- 2026-08-21 20:05: Kept the trace focused on Configuration ownership and linked the canonical Driver startup flow. (01a0269c-0551-7f01-9dfc-ffb2a0896c94 - b651c4ae38310032f8cda47c868a9b282fb12ff3)
-- 2026-08-21 19:28: Clarified production package-backed IAM, Compute, and Configuration startup plus state-aware persisted IAM authorization refresh. (01a0269c-0551-7f01-9dfc-ffb2a0896c94 - a45b01d258c6a6b10db2301cad3303e2fa520f09)
-- 2026-08-21 17:28: Updated Configuration Driver initialization to the single asynchronous Installation-and-Drivers startup path. (01a0269c-0551-7f01-9dfc-ffb2a0896c94 - d17a87541cbebc8e333bd00bd90c42e734d91a80)
-- 2026-08-21 16:24: Clarified that production configuration reconciliation supports both embedded OpenClaw and dedicated Codex. (01a0259c-c825-71c3-8092-eb2afb161355 - 1379b0f500317e7f32559c711e31378eb22a8072)
-- 2026-08-20 22:43: Documented immutable Agent-owned Kubernetes configuration mounts and deferred snapshot cleanup; clarified that Secret Broker credential resolution and current-head live-cluster proof are unavailable. (01a02141-dc9e-7242-8a4f-0c74e14eebd5 - fb2be5b5b514f29669bd62aaac70d7c835de68d0)
-- 2026-08-20 22:26: Documented immutable Agent Configuration kind, monotonic generations, separate immutable version metadata, exact-resource authorization, and Compute-owned per-Agent gateway handoff. (01a02141-dc9e-7242-8a4f-0c74e14eebd5 - fb2be5b5b514f29669bd62aaac70d7c835de68d0)
-- 2026-08-20 19:03: Removed duplicate OpenClaw credential validation; OCC preserves native JSON while OpenClaw and SecretBroker own configuration and secret semantics. (01a01add-3345-76a2-8bf2-221bf4075636 - ba62d21b422da3175ce0035162b05c19323c95e1)
-- 2026-08-20 18:37: Documented native OpenClaw configuration documents, inline unresolved SecretRefs, centralized credential validation, single-entry ConfigMaps, and deeply immutable version snapshots. (01a01add-3345-76a2-8bf2-221bf4075636 - 2a82234a9214da410e75f94c07cd29aa165a6fa1)
-- 2026-08-19 15:12: Documented singleton startup configuration, Driver schemas, exact Namespace ConfigMap CRUD, and immutable Agent revision admission. (01a01b65-5e90-78f0-b899-ce53454884c6 - 1e048452d44be143677c4a2b83c959979126846c)
-- 2026-08-19 15:24: Clarified lazy ConfigMap authorization and unavailable live-cluster proof. (01a01b65-5e90-78f0-b899-ce53454884c6 - 1e048452d44be143677c4a2b83c959979126846c)
-- 2026-08-19 16:19: Simplified runtime Driver selection and tracked version stability across Compute configuration changes as future work. (01a01b65-5e90-78f0-b899-ce53454884c6 - 0e8413ee880a21a2db9b83cbf952f6d565378d67)
+[Configuration Driver flow documentation history](configuration-driver/history.md) preserves the older dated entries.

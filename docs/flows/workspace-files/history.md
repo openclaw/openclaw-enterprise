@@ -8,6 +8,18 @@ This record preserves the dated changes to the Agent workspace files flow. See t
 
 ## Changelog
 
+- 2026-10-09 20:28: Keep private workspace repair while removing retired native OAuth storage. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - ece639c78)
+
+- 2026-10-09 19:20: Dedicated Codex deployment requires `main`. (fix-969)
+
+- 2026-10-08 23:20: Initialize the approved Harness PVC before Sandbox provisioning, retain exact completion guards after relocation, and remove private writers during shutdown. (01a0e8ec-d02f-7b93-a59b-5b7fccf2ebaa)
+
+- 2026-10-08 14:42: Initialize OpenShell workspaces privately before Harness startup. (authoring-run/91f18132-f597-42a4-b024-036a23b5313d - ece639c78765727a67753639f6ab225a243e064d)
+
+- 2026-10-07 17:36: Remove the persistent OAuth exception from Harness credential storage. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - da984340ae4aafb03bb0c66bfd94ba40252625a5)
+
+- 2026-10-06 18:40: Say that OCC's model check refuses malformed provider rows before the Codex Gateway shape check, without naming the path. (dogfood-r38)
+
 - 2026-10-04 00:40: Fail activation at once when the Gateway refuses its own SDK connection as unauthorized. (f351-gateway-unauthorized)
 
 - 2026-10-01 15:11: Query Gateway workspace binding state through bounded SDK calls. (authoring-run/24df37c6-7eef-483a-a31c-d2c14a51ca6c - 521549df)

@@ -277,6 +277,8 @@ function configuration(env) {
         : { channelDirectoryManagedProxyHost }),
       ...(nativeAdmin === undefined ? {} : { nativeAdmin }),
       agentRuntimeLogsEnabled,
+      // The chart sets it when a sign-in egress rule opens HTTPS to any address (finding 2533).
+      apiHttpsEgressOpen: optionalBooleanEnvironment(env, "OCC_API_HTTPS_EGRESS_OPEN"),
     });
   }
 

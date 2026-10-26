@@ -13,6 +13,7 @@ import {
   resources,
   missing,
   waitFor,
+  waitForDeletedClaim,
   assertKubernetesFixtureAvailable,
   namespace,
   provisionFixtureAuth,
@@ -768,10 +769,7 @@ test(
       namespace: first,
       agent: { id: primaryAgent, namespaceId: first.id },
     });
-    await waitFor(
-      `Harness workspace claim ${harnessWorkspaceClaimName(primaryAgent)} to be deleted`,
-      () => missing("persistentvolumeclaim", harnessWorkspaceClaimName(primaryAgent), owned[0]),
-    );
+    await waitForDeletedClaim(harnessWorkspaceClaimName(primaryAgent), owned[0]);
     await assertHarnessWorkspaceClaim(
       owned[0],
       first.id,

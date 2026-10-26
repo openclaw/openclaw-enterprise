@@ -11,7 +11,7 @@ import {
   redactLogLine,
   redactOutputLine,
 } from "./failure-redaction.mjs";
-import { compareEventTimes } from "./kubernetes-event-time.mjs";
+import { compareEventTimes, eventObservedTime } from "./kubernetes-event-time.mjs";
 
 export async function k3dHostMetrics(directory) {
   const disk = await statfs(directory).catch(() => undefined);
@@ -448,7 +448,7 @@ function podStatus(type, pod) {
   };
 }
 
-// Projected events carry lastTimestamp, else eventTime, as lastTimestamp (eventStatus).
+// Projected events carry their latest observation as lastTimestamp (eventStatus).
 function compareEventTimestamps(left, right) {
   return compareEventTimes(left.lastTimestamp, right.lastTimestamp);
 }
@@ -519,9 +519,9 @@ function eventStatus(object) {
     type: object.type,
     reason: object.reason,
     message: safeText(object.message)?.slice(0, 512),
-    count: object.count,
+    count: object.series?.count ?? object.count,
     firstTimestamp: object.firstTimestamp ?? object.eventTime,
-    lastTimestamp: object.lastTimestamp ?? object.eventTime,
+    lastTimestamp: eventObservedTime(object),
   };
 }
 

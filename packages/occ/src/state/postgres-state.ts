@@ -64,7 +64,7 @@ import {
 } from "@openclaw-enterprise/contracts";
 import { freezeSnapshot, immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
 import {
-  AuthorizationDeniedError,
+  CallerStateDeniedError,
   AGENT_NAME_CONFLICT,
   CREDENTIAL_SOURCE_NAME_CONFLICT,
   DELETED_NAMESPACE_NAME_CONFLICT,
@@ -888,7 +888,7 @@ function databaseError(error: unknown): Error {
     "constraint" in error &&
     error.constraint === "held_authentication_session_is_current"
   ) {
-    return new AuthorizationDeniedError("The assigning session is no longer current.");
+    return new CallerStateDeniedError("The assigning session is no longer current.");
   }
   if (code === "23505") {
     const constraint =
@@ -3433,6 +3433,17 @@ export class PostgresPlatformState implements PlatformStateStore {
       },
       listAgents: async (namespaceId) =>
         Object.freeze((await listAgentRows(namespaceId)).map((row) => agentFromRow(row))),
+      // One probe of the (namespace_id, name) unique index.
+      hasAgentNamed: async (namespaceId, name) =>
+        (
+          await client.query(
+            `SELECT 1
+             FROM occ.agents AS a
+             JOIN occ.namespaces AS n ON n.id = a.namespace_id AND n.deleted_at IS NULL
+             WHERE a.namespace_id = $1 AND a.name = $2`,
+            [namespaceId, name],
+          )
+        ).rows.length > 0,
       listAgentsForBrowsing: async (namespaceId) =>
         Object.freeze((await listAgentRows(namespaceId)).map(agentForBrowsingFromRow)),
       listAgentReferences: async () =>

@@ -1,5 +1,10 @@
 import type { Agent, Permission } from "@openclaw-enterprise/contracts";
-import { type RequestOptions, requestFailure, responseFields } from "../api-client.mjs";
+import {
+  INSTALLATION_ADMINISTRATION,
+  type RequestOptions,
+  requestFailure,
+  responseFields,
+} from "../api-client.mjs";
 import {
   button,
   element,
@@ -7,6 +12,7 @@ import {
   setStatusTone,
   statusBlock,
   validateOnSubmit,
+  withRequestId,
 } from "../dom.mjs";
 import {
   type AgentAccessContext,
@@ -16,7 +22,7 @@ import {
   policyList,
   policyRole,
 } from "./credential-access.mjs";
-import { message, namespacePath, rejectionMessage } from "./list.mjs";
+import { describeFailure, message, namespacePath } from "./list.mjs";
 
 const discoveryPermissions = [{ action: "read", resourceKind: "namespace" }] satisfies Permission[];
 // People receive `prn_` Principal IDs; emails and other text never name an IAM subject.
@@ -228,8 +234,8 @@ export function renderAgentAccess(
 
   async function readPolicy() {
     const [roles, bindings] = await Promise.all([
-      context.request(`${path}/roles`),
-      context.request(`${path}/access-bindings`),
+      context.request(`${path}/roles`, INSTALLATION_ADMINISTRATION),
+      context.request(`${path}/access-bindings`, INSTALLATION_ADMINISTRATION),
     ]);
     if (!context.isCurrent()) {
       throw new DOMException("View closed", "AbortError");
@@ -264,11 +270,11 @@ export function renderAgentAccess(
         : sharing && (status === 404 || (status === 400 && unavailableShareInput(error)))
           ? "No existing person with that Principal ID can be granted access here, or this Agent is no longer available. Check the Principal ID."
           : mutation && !state.saved
-            ? rejectionMessage(error, mutation)
+            ? describeFailure(error, { mutation, form: true, next: "" })
             : message(error, mutation);
     state.error += " Refresh sharing to inspect current policy before another change.";
     if (requestId) {
-      state.error += ` Request ID: ${requestId}`;
+      state.error = withRequestId(state.error, requestId);
     }
   }
 

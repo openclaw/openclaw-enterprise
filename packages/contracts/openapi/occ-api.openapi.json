@@ -1783,7 +1783,7 @@
           }
         },
         "security": [{ "sessionCookie": [] }],
-        "summary": "Create an administrator-controlled local auth account",
+        "summary": "Create a local auth account as an Installation administrator",
         "tags": ["Authentication"],
         "x-openclaw-permissions": [
           { "action": "administer", "resourceKind": "installation", "scope": "requested" }
@@ -9435,7 +9435,7 @@
           }
         },
         "security": [{ "sessionCookie": [] }],
-        "summary": "Move the recovery designation to another administrator",
+        "summary": "Move the recovery designation to another Installation administrator",
         "tags": ["Authentication"],
         "x-openclaw-permissions": [
           { "action": "administer", "resourceKind": "installation", "scope": "requested" }
@@ -11446,7 +11446,7 @@
                               "additionalProperties": false,
                               "properties": {
                                 "executionModes": {
-                                  "description": "The OpenClaw execution modes this Installation's Sandbox Driver and runtime let an Agent deploy. Agent save also refuses Embedded with a selected Sandbox Driver, but saves Dedicated without one that can provision it; deploy refuses that. Empty when no mode can deploy: a selected Sandbox Driver refuses Embedded execution, Dedicated needs one that can provision dedicated OpenClaw, and a selected Sandbox Driver that is unavailable admits neither.",
+                                  "description": "The OpenClaw execution modes this Installation's Sandbox Driver and runtime let an Agent deploy. Agent save refuses Embedded with a selected Sandbox Driver, and Dedicated when the Sandbox Driver's settings refuse it (settingRefusals); it saves Dedicated without a Sandbox Driver that can provision it, which deploy refuses. Empty when no mode can deploy: a selected Sandbox Driver refuses Embedded execution, Dedicated needs one that can provision dedicated OpenClaw with settings that allow it, and a selected Sandbox Driver that is unavailable admits neither.",
                                   "items": {
                                     "anyOf": [
                                       { "const": "embedded", "type": "string" },
@@ -11461,6 +11461,14 @@
                                   "const": true,
                                   "description": "Present while the selected Sandbox Driver is unavailable. executionModes is then empty until it returns, and Agent save and deploy answer 503 DEPENDENCY_UNAVAILABLE.",
                                   "type": "boolean"
+                                },
+                                "settingRefusals": {
+                                  "additionalProperties": false,
+                                  "description": "Present when the selected Sandbox Driver can provision a mode missing from executionModes but its settings refuse it. Each value is the message Agent save and deploy return for that mode, naming the setting an operator changes. Absent for other reasons a mode is missing.",
+                                  "properties": {
+                                    "dedicated": { "minLength": 1, "type": "string" }
+                                  },
+                                  "type": "object"
                                 }
                               },
                               "required": ["executionModes"],
@@ -11797,7 +11805,7 @@
                               "additionalProperties": false,
                               "properties": {
                                 "executionModes": {
-                                  "description": "The OpenClaw execution modes this Installation's Sandbox Driver and runtime let an Agent deploy. Agent save also refuses Embedded with a selected Sandbox Driver, but saves Dedicated without one that can provision it; deploy refuses that. Empty when no mode can deploy: a selected Sandbox Driver refuses Embedded execution, Dedicated needs one that can provision dedicated OpenClaw, and a selected Sandbox Driver that is unavailable admits neither.",
+                                  "description": "The OpenClaw execution modes this Installation's Sandbox Driver and runtime let an Agent deploy. Agent save refuses Embedded with a selected Sandbox Driver, and Dedicated when the Sandbox Driver's settings refuse it (settingRefusals); it saves Dedicated without a Sandbox Driver that can provision it, which deploy refuses. Empty when no mode can deploy: a selected Sandbox Driver refuses Embedded execution, Dedicated needs one that can provision dedicated OpenClaw with settings that allow it, and a selected Sandbox Driver that is unavailable admits neither.",
                                   "items": {
                                     "anyOf": [
                                       { "const": "embedded", "type": "string" },
@@ -11812,6 +11820,14 @@
                                   "const": true,
                                   "description": "Present while the selected Sandbox Driver is unavailable. executionModes is then empty until it returns, and Agent save and deploy answer 503 DEPENDENCY_UNAVAILABLE.",
                                   "type": "boolean"
+                                },
+                                "settingRefusals": {
+                                  "additionalProperties": false,
+                                  "description": "Present when the selected Sandbox Driver can provision a mode missing from executionModes but its settings refuse it. Each value is the message Agent save and deploy return for that mode, naming the setting an operator changes. Absent for other reasons a mode is missing.",
+                                  "properties": {
+                                    "dedicated": { "minLength": 1, "type": "string" }
+                                  },
+                                  "type": "object"
                                 }
                               },
                               "required": ["executionModes"],
@@ -16171,6 +16187,11 @@
                     "meta": {
                       "additionalProperties": false,
                       "properties": {
+                        "notConfigured": {
+                          "const": true,
+                          "description": "Present when the Installation has no repository settings, so no repository credential Driver is selected. `data` is then empty, and Agent save refuses repository bindings with 409 RESOURCE_CONFLICT.",
+                          "type": "boolean"
+                        },
                         "requestId": {
                           "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
@@ -16227,7 +16248,7 @@
             "content": {
               "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
             },
-            "description": "Check `error.code`: `REPOSITORY_OPTIONS_UNAVAILABLE` means optional repository discovery is unavailable after Namespace lifecycle and Agent create authorization checks. Creation without repository bindings remains available subject to fresh authorization. `DEPENDENCY_UNAVAILABLE` includes IAM and other required dependency failures and does not permit proceeding. Successful discovery returns a data array, including an empty array when no repositories are approved."
+            "description": "Check `error.code`: `REPOSITORY_OPTIONS_UNAVAILABLE` means optional repository discovery is unavailable after Namespace lifecycle and Agent create authorization checks, because the selected Compute or Sandbox Driver cannot support repository credentials or the selected repository Driver is unavailable. Without repository settings the answer is 200 with `meta.notConfigured` instead. Creation without repository bindings remains available subject to fresh authorization. `DEPENDENCY_UNAVAILABLE` includes IAM and other required dependency failures and does not permit proceeding. Successful discovery returns a data array, including an empty array when no repositories are approved."
           }
         },
         "summary": "List approved repository choices for Agent creation in one Namespace",
@@ -16260,9 +16281,46 @@
                 "properties": {
                   "configuration": {
                     "additionalProperties": false,
-                    "description": "The Agent Configuration the caller will save, not yet saved.",
+                    "description": "The Agent Configuration the caller will save, not yet saved. With `secretBindings`, a channel credential reference without a binding is refused where Configuration create refuses it (the bundled Kubernetes Compute); the bound Secrets are not read. Without them, that check is skipped.",
                     "properties": {
                       "kind": { "const": "agent", "type": "string" },
+                      "secretBindings": {
+                        "additionalProperties": {
+                          "additionalProperties": false,
+                          "description": "Maps one destination environment variable to one exact Secret reference. Optional `delivery` defaults to `{ \"type\": \"env\" }` during admission.",
+                          "properties": {
+                            "delivery": {
+                              "additionalProperties": false,
+                              "description": "Gateway delivery mode. Only `{ \"type\": \"env\" }` is supported.",
+                              "properties": { "type": { "const": "env", "type": "string" } },
+                              "required": ["type"],
+                              "type": "object"
+                            },
+                            "source": {
+                              "additionalProperties": false,
+                              "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                              "properties": {
+                                "id": {
+                                  "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                },
+                                "kind": { "const": "secret", "type": "string" },
+                                "namespaceId": {
+                                  "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                }
+                              },
+                              "required": ["kind", "namespaceId", "id"],
+                              "type": "object"
+                            }
+                          },
+                          "required": ["source"],
+                          "type": "object"
+                        },
+                        "description": "Optional Secret binding map. Keys are destination environment variable names; at most 64 bindings are accepted. Each value must contain `source.kind`, `source.namespaceId`, and `source.id`, and may contain `delivery.type: \"env\"`. Admission rejects reserved or process-control destinations such as `OPENCLAW_*`, `CODEX_*`, `OPENAI_*`, `ANTHROPIC_*`, `OCC_*`, `KUBERNETES_*`, `PATH`, `HOME`, and proxy variables. Model authentication belongs to Agent.harnessAuth.",
+                        "maxProperties": 64,
+                        "type": "object"
+                      },
                       "values": {
                         "additionalProperties": { "$ref": "#/components/schemas/def-0" },
                         "description": "A native OpenClaw configuration document.",
@@ -16278,6 +16336,117 @@
                       { "const": "embedded", "type": "string" },
                       { "const": "dedicated", "type": "string" }
                     ]
+                  },
+                  "harnessAuth": {
+                    "anyOf": [
+                      {
+                        "anyOf": [
+                          {
+                            "additionalProperties": false,
+                            "properties": { "method": { "const": "runtime", "type": "string" } },
+                            "required": ["method"],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "method": { "const": "api_key", "type": "string" },
+                              "source": {
+                                "additionalProperties": false,
+                                "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                                "properties": {
+                                  "id": {
+                                    "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                    "type": "string"
+                                  },
+                                  "kind": { "const": "secret", "type": "string" },
+                                  "namespaceId": {
+                                    "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                    "type": "string"
+                                  }
+                                },
+                                "required": ["kind", "namespaceId", "id"],
+                                "type": "object"
+                              }
+                            },
+                            "required": ["method", "source"],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "method": { "const": "codex_pat", "type": "string" },
+                              "source": {
+                                "anyOf": [
+                                  {
+                                    "additionalProperties": false,
+                                    "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                                    "properties": {
+                                      "id": {
+                                        "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      },
+                                      "kind": { "const": "secret", "type": "string" },
+                                      "namespaceId": {
+                                        "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": ["kind", "namespaceId", "id"],
+                                    "type": "object"
+                                  },
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "id": {
+                                        "pattern": "^sa_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      },
+                                      "kind": { "const": "service_account", "type": "string" },
+                                      "namespaceId": {
+                                        "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": ["kind", "namespaceId", "id"],
+                                    "type": "object"
+                                  }
+                                ]
+                              }
+                            },
+                            "required": ["method", "source"],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "method": { "const": "credential_source", "type": "string" },
+                              "sourceId": {
+                                "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              }
+                            },
+                            "required": ["method", "sourceId"],
+                            "type": "object"
+                          }
+                        ]
+                      },
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "method": {
+                            "anyOf": [
+                              { "const": "api_key", "type": "string" },
+                              { "const": "codex_pat", "type": "string" }
+                            ]
+                          }
+                        },
+                        "required": ["method"],
+                        "type": "object"
+                      },
+                      { "type": "null" }
+                    ],
+                    "description": "The Harness authentication Agent create will name, so Agent save's check of it against the execution mode and Compute settings runs here too. For a Secret the caller saves next, send only its `method`. The Secret and credential source are not read; omitted or null skips this check."
                   },
                   "initialWorkspaceFiles": {
                     "additionalProperties": false,
@@ -16304,6 +16473,13 @@
                       }
                     },
                     "type": "object"
+                  },
+                  "name": {
+                    "description": "The Agent name create will use. A name that another Agent in the Namespace has is refused with create's `409`.",
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
+                    "type": "string"
                   },
                   "pluginApprovers": { "$ref": "#/components/schemas/def-2" },
                   "plugins": { "$ref": "#/components/schemas/def-6" }
@@ -16372,7 +16548,7 @@
             "description": "Default Response"
           }
         },
-        "summary": "Check an unsaved Agent Configuration, plugin selections and initial workspace files as Configuration and Agent create would, without saving anything",
+        "summary": "Check an unsaved Agent Configuration, plugin selections, initial workspace files and Harness authentication as Configuration and Agent create would, without saving anything",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "create", "resourceKind": "agent", "scope": "namespace" }
@@ -18468,6 +18644,11 @@
                           "type": "object"
                         },
                         "revision": { "minimum": 1, "type": "integer" },
+                        "sandboxDriverId": {
+                          "description": "The Sandbox Driver that provisions this version. Absent when the version runs without a Sandbox, so it has no Sandbox log source and records no policy denials.",
+                          "minLength": 1,
+                          "type": "string"
+                        },
                         "secretBindings": {
                           "additionalProperties": {
                             "additionalProperties": false,
@@ -21411,6 +21592,32 @@
                     "data": {
                       "additionalProperties": false,
                       "properties": {
+                        "administer": {
+                          "description": "Whether the selected IAM Driver allows Agent administer now, which native admin UI access needs. Advisory only: other required permissions (native admin UI also needs a signed-in console session), lifecycle state, or a later authorization decision can still prevent the operation.",
+                          "type": "boolean"
+                        },
+                        "agentSourcesOperate": {
+                          "description": "Whether the selected IAM Driver allows, now, the source grants that each Agent update checks: Secret operate on every Secret that the Agent's Configuration binds and on a Secret Harness authentication source, credential source operate on every credential source the Agent lists or uses for Harness authentication, and ServiceAccount read on a ServiceAccount Harness authentication source. `true` when the Agent and its Configuration bind no source. Reported only to a caller with Agent update and Configuration read whose Agent settings are readable; otherwise `false`. Advisory only: other required permissions, lifecycle state, sources that an update adds, or a later authorization decision can still prevent the operation.",
+                          "type": "boolean"
+                        },
+                        "configurationRead": {
+                          "description": "Whether the selected IAM Driver allows read of the Agent's Configuration now, which each Agent update needs. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
+                          "type": "boolean"
+                        },
+                        "configurationSecretsOperate": {
+                          "description": "Whether the selected IAM Driver allows Secret operate now on every Secret that the Agent's Configuration binds. Each Configuration save needs it for the Secrets it binds: the Secrets in its `secretBindings`, or every bound Secret when it omits them. `true` when the Configuration binds no Secret. Reported only to a caller with Configuration read and update; otherwise `false`. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
+                          "type": "boolean"
+                        },
+                        "configurationSecretsOperateDeniedBindings": {
+                          "description": "The names of the Agent's Configuration Secret bindings whose bound Secret the selected IAM Driver does not allow Secret operate on now, sorted. A Configuration save that submits `secretBindings` needs Secret operate only on the Secrets it submits, so a save that binds each listed name to another Secret does not need it on the Secrets they bind now. A save that omits `secretBindings` keeps every binding. Empty when `configurationSecretsOperate` is `true`, and when it is not reported: reported only to a caller with Configuration read and update. Advisory only: other required permissions, lifecycle state, the Secrets a save binds, or a later authorization decision can still prevent the operation.",
+                          "items": { "minLength": 1, "type": "string" },
+                          "maxItems": 64,
+                          "type": "array"
+                        },
+                        "configurationUpdate": {
+                          "description": "Whether the selected IAM Driver allows update of the Agent's Configuration now, which saving its draft Configuration needs. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
+                          "type": "boolean"
+                        },
                         "delete": {
                           "description": "Whether the selected IAM Driver allows Agent delete now. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
                           "type": "boolean"
@@ -21423,12 +21630,33 @@
                           "description": "Whether the selected IAM Driver allows Agent operate (used for Stop) now. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
                           "type": "boolean"
                         },
+                        "readLogs": {
+                          "description": "Whether the selected IAM Driver allows reading the Agent's runtime log text now: Agent `read_logs`, or Agent `administer` when no Restriction denies `read_logs`. Advisory only: other required permissions, Compute Driver support, or a later authorization decision can still prevent the read.",
+                          "type": "boolean"
+                        },
+                        "sandboxPolicyRead": {
+                          "description": "Whether the selected IAM Driver allows read now on the Agent's sandbox policy, which reading its network policy and policy suggestions needs. Advisory only: other required permissions, Sandbox Driver support, or a later authorization decision can still prevent the read.",
+                          "type": "boolean"
+                        },
                         "update": {
                           "description": "Whether the selected IAM Driver allows Agent update now. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
                           "type": "boolean"
                         }
                       },
-                      "required": ["update", "deploy", "operate", "delete"],
+                      "required": [
+                        "update",
+                        "deploy",
+                        "operate",
+                        "delete",
+                        "administer",
+                        "configurationUpdate",
+                        "configurationRead",
+                        "configurationSecretsOperate",
+                        "configurationSecretsOperateDeniedBindings",
+                        "agentSourcesOperate",
+                        "sandboxPolicyRead",
+                        "readLogs"
+                      ],
                       "type": "object"
                     },
                     "meta": {
@@ -21488,6 +21716,117 @@
           }
         },
         "summary": "Report advisory primary IAM permissions on a readable Agent, not authorization for a later operation",
+        "tags": ["Agents"],
+        "x-openclaw-permissions": [
+          { "action": "read", "resourceKind": "agent", "scope": "requested" }
+        ]
+      }
+    },
+    "/namespaces/{namespaceId}/agents/{agentId}/permissions/secrets": {
+      "get": {
+        "description": "Requires read permission on the requested Agent.",
+        "operationId": "getAgentSecretPermissions",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "agentId",
+            "required": true,
+            "schema": {
+              "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "operateDenied": {
+                          "description": "The IDs of the Namespace's Secrets that the caller may read but the selected IAM Driver does not allow Secret operate on now, sorted. Binding a Secret to this Agent's Configuration or as its Harness authentication source needs Secret operate on it, and so does deploying a draft that binds it. Empty when it is not reported: reported only to a caller with read on the Namespace and on the Agent's Configuration, and update on the Agent or its Configuration or deploy on the Agent. A caller with deploy but neither update gets only the Secrets the draft binds: its Configuration's Secret bindings and a Secret Harness authentication source. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
+                          "items": { "minLength": 1, "type": "string" },
+                          "type": "array"
+                        },
+                        "unreadableOperateDenied": {
+                          "description": "How many of the Secrets the draft binds the caller may neither read nor Secret operate now: its Configuration's Secret bindings and a Secret Harness authentication source. Deploying the draft needs Secret operate on each. A count only: the caller may not read them, so their IDs are never reported. 0 when it is not reported, under the same conditions as `operateDenied`. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
+                          "minimum": 0,
+                          "type": "integer"
+                        }
+                      },
+                      "required": ["operateDenied", "unreadableOperateDenied"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "Report the readable Secrets that the caller may not bind to a readable Agent, not authorization for a later operation",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "read", "resourceKind": "agent", "scope": "requested" }
@@ -22225,6 +22564,12 @@
             },
             "description": "Default Response"
           },
+          "409": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
           "500": {
             "content": {
               "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
@@ -22547,6 +22892,11 @@
                     "meta": {
                       "additionalProperties": false,
                       "properties": {
+                        "notConfigured": {
+                          "const": true,
+                          "description": "Present when the Installation has no repository settings, so no repository credential Driver is selected. `data` is then empty, and Agent save refuses repository bindings with 409 RESOURCE_CONFLICT.",
+                          "type": "boolean"
+                        },
                         "requestId": {
                           "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
@@ -22692,6 +23042,20 @@
                             "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
                             "type": "string"
                           },
+                          "deploymentErrorCode": {
+                            "anyOf": [{ "minLength": 1, "type": "string" }, { "type": "null" }],
+                            "description": "The `error.code` that reading this revision's deployment would report, or `null` when it reports no error. It tells a failure from a deployment that a newer version or a Stop ended."
+                          },
+                          "deploymentStatus": {
+                            "anyOf": [
+                              { "const": "queued", "type": "string" },
+                              { "const": "running", "type": "string" },
+                              { "const": "succeeded", "type": "string" },
+                              { "const": "failed", "type": "string" },
+                              { "type": "null" }
+                            ],
+                            "description": "The status that reading this revision's deployment would report, or `null` when OCC has no deployment record for it."
+                          },
                           "harness": {
                             "additionalProperties": false,
                             "properties": {
@@ -22726,7 +23090,9 @@
                           "configurationId",
                           "configurationGeneration",
                           "harness",
-                          "createdAt"
+                          "createdAt",
+                          "deploymentStatus",
+                          "deploymentErrorCode"
                         ],
                         "type": "object"
                       },
@@ -23084,6 +23450,11 @@
                               "type": "object"
                             },
                             "revision": { "minimum": 1, "type": "integer" },
+                            "sandboxDriverId": {
+                              "description": "The Sandbox Driver that provisions this version. Absent when the version runs without a Sandbox, so it has no Sandbox log source and records no policy denials.",
+                              "minLength": 1,
+                              "type": "string"
+                            },
                             "secretBindings": {
                               "additionalProperties": {
                                 "additionalProperties": false,
@@ -25978,6 +26349,12 @@
               "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
             },
             "description": "Default Response"
+          },
+          "409": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Conflict. The Agent has no running version: deploy it, or wait until its deployment finishes."
           },
           "500": {
             "content": {
@@ -29586,9 +29963,31 @@
                           },
                           "required": ["create"],
                           "type": "object"
+                        },
+                        "installation": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "administer": {
+                              "description": "Whether the selected IAM Driver allows Installation administer now, which Installation-wide operations such as listing Backends need. The check targets the Installation, not this Namespace. Advisory only: a later authorization decision can still prevent the operation.",
+                              "type": "boolean"
+                            }
+                          },
+                          "required": ["administer"],
+                          "type": "object"
+                        },
+                        "secrets": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "create": {
+                              "description": "Whether the selected IAM Driver allows Secret creation in this Namespace now. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
+                              "type": "boolean"
+                            }
+                          },
+                          "required": ["create"],
+                          "type": "object"
                         }
                       },
-                      "required": ["agents"],
+                      "required": ["agents", "secrets", "installation"],
                       "type": "object"
                     },
                     "meta": {
@@ -29648,6 +30047,103 @@
           }
         },
         "summary": "Report advisory primary IAM permissions on a readable Namespace, not authorization for a later operation",
+        "tags": ["Namespaces"],
+        "x-openclaw-permissions": [
+          { "action": "read", "resourceKind": "namespace", "scope": "requested" }
+        ]
+      }
+    },
+    "/namespaces/{namespaceId}/permissions/secrets": {
+      "get": {
+        "description": "Requires read permission on the requested Namespace.",
+        "operationId": "getNamespaceSecretPermissions",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "operateDenied": {
+                          "description": "The IDs of the Namespace's Secrets that the caller may read but the selected IAM Driver does not allow Secret operate on now, sorted. Agent creation needs Secret operate on each Secret it binds or uses: its Harness authentication source, its Configuration's Secret bindings, and a directory search Secret. Empty when it is not reported: reported only to a caller who may create an Agent in this Namespace. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
+                          "items": { "minLength": 1, "type": "string" },
+                          "type": "array"
+                        }
+                      },
+                      "required": ["operateDenied"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "Report the readable Secrets that the caller may not bind to a new Agent, not authorization for a later operation",
         "tags": ["Namespaces"],
         "x-openclaw-permissions": [
           { "action": "read", "resourceKind": "namespace", "scope": "requested" }
@@ -31070,6 +31566,22 @@
                     "data": {
                       "additionalProperties": false,
                       "properties": {
+                        "callerPermissions": {
+                          "additionalProperties": false,
+                          "description": "What the selected IAM Driver allows you to do to this Secret now. Checking it records no authorization denial. Returned by the exact Secret read only.",
+                          "properties": {
+                            "delete": {
+                              "description": "Whether the selected IAM Driver allows you to delete this Secret now (Secret delete). Advisory only: current references, lifecycle state or a later authorization decision can still prevent the operation.",
+                              "type": "boolean"
+                            },
+                            "update": {
+                              "description": "Whether the selected IAM Driver allows you to replace this Secret's value now (Secret update). Advisory only: lifecycle state or a later authorization decision can still prevent the operation.",
+                              "type": "boolean"
+                            }
+                          },
+                          "required": ["update", "delete"],
+                          "type": "object"
+                        },
                         "consumers": {
                           "additionalProperties": false,
                           "description": "Current references that block deletion of the Secret. Returned by the exact Secret read only.",
@@ -31165,7 +31677,14 @@
                           "type": "object"
                         }
                       },
-                      "required": ["id", "namespaceId", "name", "ref", "consumers"],
+                      "required": [
+                        "id",
+                        "namespaceId",
+                        "name",
+                        "ref",
+                        "consumers",
+                        "callerPermissions"
+                      ],
                       "type": "object"
                     },
                     "meta": {
@@ -31629,7 +32148,7 @@
         "operationId": "deleteServiceAccount",
         "parameters": [
           {
-            "description": "`true` deletes an account whose issued access token no ChatGPT Backend can revoke, and leaves the token for an administrator to revoke at the provider. With a ChatGPT Backend configured it is ignored and the token is revoked as usual.",
+            "description": "`true` deletes an account whose issued access token no ChatGPT Backend can revoke, and leaves the token for a ChatGPT workspace administrator to revoke at the provider. With a ChatGPT Backend configured it is ignored and the token is revoked as usual.",
             "in": "query",
             "name": "force",
             "required": false,

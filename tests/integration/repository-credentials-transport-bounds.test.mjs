@@ -33,7 +33,7 @@ const uploadOnly = [{ method: "POST", path: upload }];
 const completed = (bytes = 4) => ({ kind: "completed", status: 200, bytes, complete: true });
 // The peer controls only application bytes and when it reads or writes them.
 // The listener, route policy, credential ownership and TLS sender are production code.
-async function startTransport(t, onRequest, limits = {}) {
+async function startTransport(t, onRequest, limits = {}, { log } = {}) {
   const resources = createTestResourceScope(t);
   const { createSystemClock } = await appModule("drivers/repo/credentials/clock");
   const clock = createSystemClock();
@@ -70,6 +70,7 @@ async function startTransport(t, onRequest, limits = {}) {
     token,
     trustedEndpoints: { apiOrigin: github.origin, gitOrigin: origin, ca: tls.ca },
   });
+  const logs = [];
   const { service, listeners } = await startServiceListeners(resources, {
     config,
     factory,
@@ -77,9 +78,21 @@ async function startTransport(t, onRequest, limits = {}) {
     tls,
     // Pass the caller's original set so production owns the security-relevant copy.
     trustedUpstreamOrigins: trustedOrigins,
+    log: log ?? ((record) => logs.push(record)),
   });
   const opened = service.open({ durationSeconds: 300, profile: "git-write" });
-  return { config, tls, service, listeners, opened, github, received, resources, trustedOrigins };
+  return {
+    config,
+    tls,
+    service,
+    listeners,
+    opened,
+    github,
+    received,
+    resources,
+    trustedOrigins,
+    logs,
+  };
 }
 
 function startRequest(
@@ -354,6 +367,58 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
     await released(fixture);
   });
 
+  // Finding 2411: the operator log cannot change what the Agent receives, even if it throws.
+  bounded("a throwing operator log leaves the refusal and later requests unchanged", async (t) => {
+    const fixture = await startTransport(
+      t,
+      (incoming, outgoing) => {
+        incoming.resume();
+        outgoing.writeHead(200, replyHeaders).end("0000");
+      },
+      {},
+      {
+        log: () => {
+          throw new Error("operator log unavailable");
+        },
+      },
+    );
+    const unknown = { ...fixture.opened, bearer: "u".repeat(43) };
+    const refused = await readDiscovery(fixture, { opened: unknown });
+    assert.equal(refused.status, 401);
+    assert.deepEqual(await readDiscovery(fixture), completed());
+    await released(fixture);
+  });
+
+  // Finding 2429: a head refused after its fields are checked (here a wrong Host) is logged
+  // when its one Authorization field, in any scheme Git or gh sends, names an open session.
+  // A repeated field carries no single credential, so that refusal writes no line.
+  bounded("head refusals are logged only for one attributable credential", async (t) => {
+    const fixture = await startTransport(t, (incoming, outgoing) => {
+      incoming.resume();
+      outgoing.writeHead(200, replyHeaders).end("0000");
+    });
+    const { bearer, client, session } = fixture.opened;
+    const basic = `Basic ${Buffer.from(`${client.gitUsername}:${bearer}`).toString("base64")}`;
+    const refused = {
+      event: "repository-credentials.denied",
+      status: 400,
+      reasonCode: "unsupported-request",
+      reason: "request_refused",
+      sessionId: session.sessionId,
+    };
+    for (const authorization of [basic, `Bearer ${bearer}`, `token ${bearer}`]) {
+      const result = await readDiscovery(fixture, {
+        headers: { host: "localhost", authorization },
+      });
+      assert.equal(result.status, 400, authorization.split(" ")[0]);
+      assert.deepEqual(fixture.logs.splice(0), [refused], authorization.split(" ")[0]);
+    }
+    const repeated = await readDiscovery(fixture, { headers: { authorization: [basic, basic] } });
+    assert.equal(repeated.status, 400);
+    assert.deepEqual(fixture.logs, []);
+    assert.equal(fixture.received.length, 0);
+  });
+
   bounded(
     "occupied per-session and total exchange limits refuse excess traffic and recover",
     async (t) => {
@@ -387,8 +452,18 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
       heldClients[0].outgoing.end();
       await eventually(() => delivered[0] === 4);
 
-      // One total slot is still free: this refusal belongs to the session bound.
+      // One total slot is still free: this refusal belongs to the session bound. Its log
+      // record names the session, so an operator can tell it from a withdrawal (finding 2411).
       assertRefused(await readDiscovery(fixture, { opened: first }));
+      assert.deepEqual(fixture.logs.splice(0), [
+        {
+          event: "repository-credentials.denied",
+          status: 503,
+          reasonCode: "exchange-capacity",
+          reason: "capacity",
+          sessionId: first.session.sessionId,
+        },
+      ]);
       assert.equal(fixture.service.status(first.session.sessionId).activeUses, 1);
       assert.equal(fixture.github.issuesOfTokens.length, 0);
       assert.equal(fixture.received.length, 1);

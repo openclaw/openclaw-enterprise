@@ -62,7 +62,12 @@ not that Compute has shut down. Cancel restores focus to the invoking button; su
 For a stopped Agent, **Request Stop again** confirms a new stop intent, even with no selected
 version; the Console cannot inspect history or candidate cleanup. With no selected version
 and no readable versions yet (`setNoReadableVersions`), the Stop row is hidden unless the viewer
-just used it. The overview's **Runtime** row reports a requested stop.
+just used it. A running Agent with no selected version hides the row only when the latest
+deployment the page read failed (`setLatestDeployment`). A queued or in-progress one keeps Stop,
+and the confirmation says Stop cancels that deployment. An unreadable deployment or a failed read
+keeps Stop with a confirmation that names both outcomes; a succeeded one read before the Agent
+reread keeps the running-gateway text. The Agents list follows the same rule. The overview's
+**Runtime** row reports a requested stop.
 
 Refresh reads desired state and selected version, not live health. Denial stays inline; changed
 state updates panels in place. If the read finds deletion in progress, Agent detail switches to
@@ -85,8 +90,13 @@ the detail page. Acceptance starts asynchronous cleanup and marks the Agent dele
 rereads the exact Agent every few seconds; **Refresh deletion status** reads it
 on demand. A read error stops polling. Only a not-found read after
 an accepted or uncertain request, or when an already-deleting Agent is opened,
-returns to the Agents list in the selected Namespace. An already deleting Agent
-keeps **Request deletion again** beside Refresh. It opens a cancel-first confirmation
+returns to the Agents list in the selected Namespace. A `403` after the Agent was marked
+deleting means the caller can no longer follow cleanup. The Console stops polling and closes
+the repeat confirmation if it is open. If the reader confirmed a repeat while that status read was
+pending, the Console drops the unsent request. Neither action cancels a DELETE already sent or
+establishes whether cleanup finished.
+
+An already deleting Agent keeps **Request deletion again** beside Refresh. It opens a cancel-first confirmation
 and sends the same bodyless DELETE only when the reader confirms. Queued or claimed
 work stays unchanged; terminal work can restart under the controller's existing
 current-permission and retry-ownership checks. The view does not infer a worker

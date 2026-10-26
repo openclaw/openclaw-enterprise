@@ -343,8 +343,11 @@ test("a backward wall clock does not extend access or task authority", async () 
 test("a forward wall clock past the deadline closes the session before its timer fires", async () => {
   const { clock, service, opened, exchange } = setup();
   assert.equal((await service.execute(exchange(), send)).kind, "completed");
+  assert.equal(service.identify(opened.bearer)?.sessionId, opened.session.sessionId);
   // The wall deadline passes after one monotonic second, so the close timer has not fired.
   await clock.advance(1000, 86_401_000);
+  // A refusal log record cannot name the expired session either (finding 2429).
+  assert.equal(service.identify(opened.bearer), undefined);
   const refused = service.reserve(opened.bearer, head(clock), new AbortController().signal);
   assert.deepEqual(
     { kind: refused.kind, status: refused.status, code: refused.code },

@@ -159,13 +159,13 @@ commit, immutable images, Agent IDs, Agent revision IDs, commit SHA, and PR URL 
 credentials. A ready Pod or valid configuration does not prove this workflow;
 repeat the installed check after changing controller/runtime images.
 
-| Symptom                                                 | First check and recovery                                                                                                                                                                                                                                                                                                       |
-| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Admission rejected                                      | Compare the actual OCC Namespace ID, repository reference, selected profile, Backend IDs, and immutable registry across API, worker, and service.                                                                                                                                                                              |
-| TLS error or connection timeout                         | Check DNS, certificate SAN/public CA, Service 443 → 8443, and effective DNS/HTTPS NetworkPolicies. Keep certificate verification enabled.                                                                                                                                                                                      |
-| GitHub access denied                                    | Check repository selection, approved App permissions, numeric repository identity, repository rules and the selected access level. For this PR workflow, use Contributor with issue management off (`git-write`); in the Console choose **Contributor**, open **Customize access**, and turn off **Create and manage issues**. |
-| Push or PR response uncertain                           | Inspect GitHub's branch/PR state before retrying; do not blindly repeat a possible write.                                                                                                                                                                                                                                      |
-| Session lost after service restart, or deadline reached | Inspect retained cleanup obligations, then explicitly deploy a new authorized version. Its deployment does not settle earlier cleanup or replay operations.                                                                                                                                                                    |
+| Symptom                                            | First check and recovery                                                                                                                                                                                                                                                                                                       |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Admission rejected                                 | Compare the actual OCC Namespace ID, repository reference, selected profile, Backend IDs, and immutable registry across API, worker, and service.                                                                                                                                                                              |
+| TLS error or connection timeout                    | Check DNS, certificate SAN/public CA, Service 443 → 8443, and effective DNS/HTTPS NetworkPolicies. Keep certificate verification enabled.                                                                                                                                                                                      |
+| GitHub access denied                               | Check repository selection, approved App permissions, numeric repository identity, repository rules and the selected access level. For this PR workflow, use Contributor with issue management off (`git-write`); in the Console choose **Contributor**, open **Customize access**, and turn off **Create and manage issues**. |
+| Push or PR response uncertain                      | Inspect GitHub's branch/PR state before retrying; do not blindly repeat a possible write.                                                                                                                                                                                                                                      |
+| Git unavailable after restart, or deadline reached | After a normal restart the worker replaces sessions within about 30 seconds ([details](installation.md#install-and-verify)). Otherwise inspect retained cleanup obligations, then explicitly deploy a new authorized version; it does not settle earlier cleanup or replay operations.                                         |
 
 When finished, stop the Agent through its normal lifecycle. Confirm runtime
 retirement and [credential cleanup](../../reference/repository-credentials.md#sessions-and-closure);
@@ -186,14 +186,40 @@ the Secret holds a usable key; put one there as in the next section. A key that 
 bad while the worker runs is read at the next preparation, which logs `worker.error`
 with the same code and `reason`; the worker keeps running and retries every 5 seconds.
 
+## Rotate the App key
+
+The worker reads the mounted key again at each preparation pass. When the key
+changes, the worker retires the current token of every running Agent version
+and asks GitHub for a new token signed with the new key. This happens about a
+minute after the Secret changes, before GitHub has accepted the new key. If
+GitHub rejects it, every running Agent loses Git access, and restoring the old
+key does not give it back: each Agent needs a new deployment, as in the next
+section. A key the worker cannot read or parse is different: issued tokens stay
+usable until they expire, at most one hour (see the previous section).
+
+Rotate in this order:
+
+1. In the GitHub App settings, generate a new private key. Keep the old key;
+   GitHub accepts both until you delete one.
+2. Check that the new file is that key. Compare the output of
+   `openssl rsa -in new-key.pem -pubout -outform DER | openssl sha256 -binary | openssl base64`
+   with the SHA-256 fingerprint that the App settings show for the new key.
+3. Put the new key in `private-key.pem` of the Secret selected by
+   `repositoryCredentials.appKeySecretName`, using the protected-input procedure in
+   [installation](installation.md#prepare-the-registry-and-protected-inputs).
+4. After about two minutes, check that the worker logged no
+   `PREPARED_GITHUB_RECOVERY_REQUIRED` and that a running Agent can fetch.
+5. Delete the old key in the GitHub App settings. If the worker still signs with
+   a deleted key, GitHub refuses its next token renewal and each Agent needs a
+   new deployment.
+
 ## Replace a rejected App key
 
 Check the worker's `PREPARED_GITHUB_RECOVERY_REQUIRED` reason (`quarantined`, then
-`blocked`) for the affected revision and repository. Already issued material can
-remain usable until expiry. An active Agent or a working model reply does not
-prove Git access. After expiry, the OpenShell route reports unavailable material;
-a new deployment can wait at `REPOSITORY_GIT_MATERIAL_PENDING` and fail at its
-convergence deadline.
+`blocked`) for the affected revision and repository. That version has no usable
+Git token and the worker does not retry it. An active Agent or a working model
+reply does not prove Git access. On the OpenShell route, a new deployment can
+wait at `REPOSITORY_GIT_MATERIAL_PENDING` and fail at its convergence deadline.
 
 Put a key GitHub accepts in `private-key.pem` of the Secret selected by
 `repositoryCredentials.appKeySecretName`, using the protected-input procedure in

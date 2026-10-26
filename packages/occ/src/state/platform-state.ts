@@ -194,6 +194,11 @@ export interface AgentReadRepository {
   findAgent(namespaceId: string, agentId: string): Promise<Readonly<Agent> | undefined>;
   listAgents(namespaceId: string): Promise<readonly Readonly<Agent>[]>;
   /**
+   * Whether an Agent in the Namespace has exactly this name: the names the unique name
+   * constraint covers, Agents being deleted included. Reads no Agent settings.
+   */
+  hasAgentNamed(namespaceId: string, name: string): Promise<boolean>;
+  /**
    * The identity of every Agent in every live Namespace, in one read that decodes no saved
    * settings, for callers that resolve an opaque Agent address before authorizing it.
    */
@@ -2679,6 +2684,11 @@ function repositories(
               .filter((agent) => agent.namespaceId === namespaceId)
               .map((agent) => immutableCopy(agent))
           : [],
+      ),
+    hasAgentNamed: async (namespaceId, name) =>
+      snapshot.namespaces.get(namespaceId)?.deletedAt === undefined &&
+      Array.from(snapshot.agents.values()).some(
+        (agent) => agent.namespaceId === namespaceId && agent.name === name,
       ),
     listAgentReferences: async () => {
       const live = new Set(
