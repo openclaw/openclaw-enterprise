@@ -25,7 +25,11 @@ import {
   waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
-import { enterManualModel, openAdvancedSettings } from "./console-agents-test-support.mjs";
+import {
+  enterManualModel,
+  openAdvancedSettings,
+  submitCreateAgent,
+} from "./console-agents-test-support.mjs";
 import {
   callerDenied,
   refusedNamed,
@@ -285,13 +289,7 @@ test("Create Agent searches approvers with a search-only Slack Secret", async (t
   assert.ok(lookups.some((body) => body.secretId === bot.id && body.query === "free"));
   await page.getByLabel("Agent name").fill("Approver search Agent");
   await enterManualModel(page, "synthetic-model-key", "gpt-5.1");
-  const created = page.waitForResponse(
-    (response) =>
-      response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
-      response.request().method() === "POST",
-  );
-  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  assert.equal((await created).status(), 201);
+  await submitCreateAgent(page, fixture, namespace.id, { status: 201 });
   const body = pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents`).at(-1).body;
   assert.deepEqual(body.pluginApprovers, [{ channel: "slack", id: "team:TTEST123:user:UTEST123" }]);
   const configuration = pathRequests(

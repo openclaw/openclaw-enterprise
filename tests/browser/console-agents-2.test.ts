@@ -62,6 +62,8 @@ import {
   raceAgentName,
   runProvisioningPolls,
   waitForProvisioningFailure,
+  createAgentThroughForm,
+  submitCreateAgent,
 } from "./console-agents-test-support.mjs";
 import {
   AGENT_NAME_CONFLICT,
@@ -1609,15 +1611,7 @@ test("Agent creation offers mainline Anthropic models before credentials and sav
     pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/models`).length,
     0,
   );
-  const saved = page.waitForResponse(
-    (response) =>
-      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents` &&
-      response.request().method() === "POST",
-  );
-  await page.getByRole("button", { name: "Create Agent" }).click();
-  const response = await saved;
-  assert.equal(response.status(), 201);
-  const agent: AgentWire = (await response.json()).data;
+  const agent: AgentWire = await createAgentThroughForm(page, fixture, namespace.id);
   await page.waitForURL((url) => url.pathname === `/console/agents/${agent.id}`);
   assert.equal(agent.executionMode, "embedded");
   assert.equal(agent.backendId, null);
@@ -1833,15 +1827,7 @@ test("Agent creation can return from manual model entry to the list and save the
   assert.equal(await model.inputValue(), "gpt-6-sol");
   await page.getByRole("button", { name: "Choose a model from the list", exact: true }).click();
   assert.equal(await choice.inputValue(), "gpt-6-sol");
-  const saved = page.waitForResponse(
-    (response) =>
-      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents` &&
-      response.request().method() === "POST",
-  );
-  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  const response = await saved;
-  assert.equal(response.status(), 201);
-  const agent: AgentWire = (await response.json()).data;
+  const agent: AgentWire = await createAgentThroughForm(page, fixture, namespace.id);
   assert.deepEqual(agent.harnessAuth, { method: "api_key", source: secret.ref });
   const savedConfiguration = await fixture.request(
     "GET",
@@ -1906,15 +1892,7 @@ test("Agent creation accepts a manual model outside the static list and saves th
   );
   assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
   assert.equal(agentPostRequests(requests, namespace.id).length, 0);
-  const saved = page.waitForResponse(
-    (response) =>
-      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents` &&
-      response.request().method() === "POST",
-  );
-  await page.getByRole("button", { name: "Create Agent" }).click();
-  const response = await saved;
-  assert.equal(response.status(), 201);
-  const agent: AgentWire = (await response.json()).data;
+  const agent: AgentWire = await createAgentThroughForm(page, fixture, namespace.id);
   assert.deepEqual(agent.harnessAuth, { method: "api_key", source: selectedSecret.ref });
   await page.waitForURL((url) => url.pathname === `/console/agents/${agent.id}`);
   const configuration = await fixture.request(
@@ -2399,13 +2377,8 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
     }),
   );
   await page.getByLabel("Agent name").fill("Retry Agent Corrected");
-  const retryResponse = page.waitForResponse(
-    (response) =>
-      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents` &&
-      response.request().method() === "POST",
-  );
-  await page.getByRole("button", { name: "Create Agent" }).click();
-  const retried = await (await retryResponse).json();
+  const retryResponse = await submitCreateAgent(page, fixture, namespace.id);
+  const retried = await retryResponse.json();
   assert.equal(retried.data.name, "Retry Agent Corrected");
   assert.equal(retried.data.harnessAuth.method, "codex_pat");
   assert.equal(retried.data.configurationId, savedConfiguration.data.id);
@@ -2464,15 +2437,7 @@ test("Agent creation retries a denied credential grant without duplicating its s
   });
   await page.getByLabel("Agent name").fill("Grant retry Agent");
   await enterManualModel(page, "grant-retry-key", "gpt-4.1");
-  const created = page.waitForResponse(
-    (response) =>
-      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents` &&
-      response.request().method() === "POST",
-  );
-  await page.getByRole("button", { name: "Create Agent" }).click();
-  const response = await created;
-  assert.equal(response.status(), 201);
-  const agent: AgentWire = (await response.json()).data;
+  const agent: AgentWire = await createAgentThroughForm(page, fixture, namespace.id);
   await page
     .getByRole("alert")
     .filter({ hasText: /Agent was created, but credential access is not confirmed/ })

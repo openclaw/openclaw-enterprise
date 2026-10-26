@@ -77,6 +77,33 @@ export async function enterManualModel(page, apiKey, modelId = "gpt-4.1") {
   return secret;
 }
 
+// Selects Create Agent and returns the API's answer to the form's POST to `path` in the
+// Namespace: "agents" (an embedded Agent) by default, or "agents/provision" or
+// "agents/validate". With `status`, that answer must have it.
+export async function submitCreateAgent(
+  page,
+  fixture,
+  namespaceId,
+  { path = "agents", status } = {},
+) {
+  const url = `${fixture.origin}/namespaces/${namespaceId}/${path}`;
+  const answer = page.waitForResponse(
+    (response) => response.url() === url && response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  const response = await answer;
+  if (status !== undefined) {
+    assert.equal(response.status(), status, `POST ${path}: ${await response.text()}`);
+  }
+  return response;
+}
+
+// Selects Create Agent, which must create the Agent (201), and returns the created Agent.
+export async function createAgentThroughForm(page, fixture, namespaceId) {
+  const response = await submitCreateAgent(page, fixture, namespaceId, { status: 201 });
+  return (await response.json()).data;
+}
+
 export async function openAdvancedSettings(page) {
   const summary = page.locator(".launch-advanced:not([open]) > summary");
   if (await summary.count()) {

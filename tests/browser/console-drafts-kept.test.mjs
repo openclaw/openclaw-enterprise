@@ -30,6 +30,8 @@ import {
   routeInstallationProvisioning,
   raceAgentName,
   routeInstallationWithoutProvisioning,
+  submitCreateAgent,
+  createAgentThroughForm,
 } from "./console-agents-test-support.mjs";
 import {
   AGENT_NAME_CONFLICT,
@@ -152,13 +154,7 @@ test("a refused Create stays a draft for a reload and a return, and the retry re
   // Another create takes the name after the preflight, so the Secret and Configuration are saved
   // before the API refuses the Agent.
   await raceAgentName(page, fixture, namespace.id, "Existing Agent");
-  const conflict = page.waitForResponse(
-    (response) =>
-      response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
-      response.request().method() === "POST",
-  );
-  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  assert.equal((await conflict).status(), 409);
+  await submitCreateAgent(page, fixture, namespace.id, { status: 409 });
   await page.getByText(AGENT_NAME_CONFLICT).waitFor();
   // The form is still the reader's to fix, so a reload asks first (finding 1934).
   assert.equal(await asksBeforeUnload(page), true);
@@ -179,15 +175,7 @@ test("a refused Create stays a draft for a reload and a return, and the retry re
   // The retry uses the Secret the refused attempt saved; the restored form cannot pick another.
   assert.equal(await page.getByLabel("API key Secret", { exact: true }).isDisabled(), true);
   await name.fill("Kept Agent");
-  const createdResponse = page.waitForResponse(
-    (response) =>
-      response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
-      response.request().method() === "POST",
-  );
-  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  const created = await createdResponse;
-  assert.equal(created.status(), 201);
-  const { data } = await created.json();
+  const data = await createAgentThroughForm(page, fixture, namespace.id);
   await page.waitForURL((url) => url.pathname === `/console/agents/${data.id}`);
   assert.equal(data.name, "Kept Agent");
   assert.equal(data.configurationId, configurationId);
@@ -243,15 +231,7 @@ test("a draft kept after a refusal between the Secret and the Configuration keep
   await waitForInputValue(picker, "Refused configuration Agent");
   assert.equal(await picker.isDisabled(), true);
 
-  const createdResponse = page.waitForResponse(
-    (response) =>
-      response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
-      response.request().method() === "POST",
-  );
-  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  const created = await createdResponse;
-  assert.equal(created.status(), 201);
-  const { data } = await created.json();
+  const data = await createAgentThroughForm(page, fixture, namespace.id);
   await page.waitForURL((url) => url.pathname === `/console/agents/${data.id}`);
   assert.equal(data.harnessAuth.source.id, secretId);
   assert.equal(pathRequests(requests, "POST", `/namespaces/${namespace.id}/secrets`).length, 1);
