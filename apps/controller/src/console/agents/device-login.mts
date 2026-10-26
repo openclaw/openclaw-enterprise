@@ -164,7 +164,7 @@ export function createDeviceLogin({
     } else {
       error =
         failure.status === 403
-          ? "Access denied. Ask an administrator for permission to manage this Agent's login."
+          ? "Access denied. A device login needs Agent create in this Namespace, which only an Installation administrator holds. Ask one to complete this login."
           : failure.status === 410
             ? "This login expired. Cancel it and start a new login."
             : failure.status === 501
