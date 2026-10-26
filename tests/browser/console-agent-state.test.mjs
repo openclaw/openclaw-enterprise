@@ -898,7 +898,7 @@ test("Agent detail says an Agent's versions are hidden, not missing, when none i
   const rowStop = row.getByRole("button", { name: "Stop Pending history", exact: true });
   await waitForEnabled(rowStop);
   await rowStop.click();
-  dialog = page.getByRole("dialog", { name: "Stop this Agent?" });
+  dialog = page.getByRole("dialog", { name: "Stop Pending history?" });
   await dialog.getByText(unknownOutcome, { exact: true }).waitFor();
   await dialog.getByRole("button", { name: "Cancel" }).click();
   await dialog.waitFor({ state: "hidden" });

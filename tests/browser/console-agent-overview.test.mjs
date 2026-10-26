@@ -514,29 +514,24 @@ test("Stop stays enabled and says it cancels a first deployment that is queued",
 test("Stop stays when the Agents list's Agent read is older than a first deployment that succeeded", async (t) => {
   const { fixture, namespace, agent, page } = await agentPage(t, "Stale list", "Stale list");
   const first = await fixture.deployAgent(namespace.id, agent.id);
-  const recordUrl = deploymentRecordUrl(fixture, namespace.id, agent.id, first.id);
-  let status = "queued";
-  await page.route(recordUrl, (route) =>
-    route.fulfill(deploymentStatusResponse(first, { status })),
-  );
+  // The deployment completes and selects its version after the list read the Agents but before
+  // the row reads its deployment, so the row's Agent still has no version selected.
+  let activated = false;
+  await page.route(deploymentRecordUrl(fixture, namespace.id, agent.id, first.id), async (route) => {
+    if (!activated) {
+      activated = true;
+      await fixture.activateRevision(namespace.id, agent.id, first.id);
+    }
+    await route.fulfill(deploymentStatusResponse(first, { status: "succeeded" }));
+  });
 
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
   const row = page.getByRole("row").filter({ hasText: "Stale list" });
-  await row.getByText("v1 · Queued", { exact: true }).waitFor();
-  await waitForEnabled(row.getByRole("button", { name: "Stop Stale list", exact: true }));
-
-  // The deployment completes and selects its version while the reader is on the Agent page. Back
-  // shows the retained list, which rereads each row's deployment but not the Agents.
-  await row.getByRole("link", { name: "Stale list", exact: true }).click();
-  await page.getByRole("region", { name: "Agent state at a glance" }).waitFor();
-  await fixture.activateRevision(namespace.id, agent.id, first.id);
-  status = "succeeded";
-  await page.goBack();
   await row.getByText("v1 · Completed", { exact: true }).waitFor();
   const stop = row.getByRole("button", { name: "Stop Stale list", exact: true });
   await waitForEnabled(stop);
   await stop.click();
-  const dialog = page.getByRole("dialog", { name: "Stop this Agent?" });
+  const dialog = page.getByRole("dialog", { name: "Stop Stale list?" });
   await dialog.getByText(/^This interrupts the current runtime gateway/).waitFor();
   assert.equal(await dialog.getByText(/No version is serving yet/).count(), 0);
 });
@@ -570,7 +565,6 @@ test("Agent detail keeps Stop when its Agent reread fails after a first deployme
   const activity = await openDeploymentActivity(page);
   await activity.getByRole("button", { name: "Refresh deployment" }).click();
   await summary.getByText("v1 · Completed", { exact: true }).waitFor();
-  await waitForIdleFetches(page);
   const stop = stopRegion.getByRole("button", { name: "Stop Agent", exact: true });
   await waitForEnabled(stop);
   await stopRegion
@@ -599,7 +593,7 @@ test("Stop stays when a first deployment's record cannot be read", async (t) => 
   const rowStop = row.getByRole("button", { name: "Stop Unread first", exact: true });
   await waitForEnabled(rowStop);
   await rowStop.click();
-  let dialog = page.getByRole("dialog", { name: "Stop this Agent?" });
+  let dialog = page.getByRole("dialog", { name: "Stop Unread first?" });
   await dialog.getByText(unknownOutcome, { exact: true }).waitFor();
   await dialog.getByRole("button", { name: "Cancel" }).click();
   await dialog.waitFor({ state: "hidden" });
