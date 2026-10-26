@@ -1,6 +1,6 @@
 import type { AgentRead } from "@openclaw-enterprise/contracts";
 import { requestFailure, responseFields } from "../api-client.mjs";
-import { button, element, setHidden, setText, statusBlock } from "../dom.mjs";
+import { button, element, setHidden, setText, statusBlock, requestIdLine } from "../dom.mjs";
 import {
   type AgentLifecycleContext,
   type LifecycleError,
@@ -8,7 +8,7 @@ import {
   stopConfirmation,
 } from "./lifecycle-confirmation.mjs";
 import { AGENT_STOP_DENIED, askForGrant } from "./access-reasons.mjs";
-import { describeFailure, shortId } from "./list.mjs";
+import { AGENT_STATUS_READ_NEED, describeFailure, shortId } from "./list.mjs";
 
 export function createAgentStop(
   context: AgentLifecycleContext,
@@ -116,9 +116,9 @@ export function createAgentStop(
               null,
               // Initial drafts and completed stops both have no selected revision.
               state.agent.activeRevisionId
-                ? "Stop requested. OCC will not start this Agent again until you deploy a new version. Runtime shutdown completion is not exposed in Console."
+                ? "Stop requested. This Agent will not start again until you deploy a new version. The console does not show when its runtime finishes shutting down."
                 : state.cancelledFirstDeployment
-                  ? "Stop requested. The deployment in progress is cancelled, and OCC will not start this Agent until you deploy a new version."
+                  ? "Stop requested. The deployment in progress is cancelled, and this Agent will not start until you deploy a new version."
                   : "No version is selected. Deploy a new version to start this Agent.",
             ),
           ]
@@ -140,9 +140,7 @@ export function createAgentStop(
               "div",
               { className: "status", "data-tone": "danger", role: "alert" },
               element("p", { className: "status-body" }, state.error.text),
-              state.error.requestId
-                ? element("p", { className: "request-id" }, `Request ID: ${state.error.requestId}`)
-                : null,
+              state.error.requestId ? requestIdLine(state.error.requestId) : null,
             ),
           ]
         : []),
@@ -260,7 +258,7 @@ export function createAgentStop(
         context.navigate("agents");
       } else {
         state.error = {
-          text: `Could not refresh stop status. ${describeFailure(cause)}`,
+          text: `Could not refresh stop status. ${describeFailure(cause, { need: AGENT_STATUS_READ_NEED })}`,
           requestId: error.requestId,
         };
       }

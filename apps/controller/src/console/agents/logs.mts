@@ -15,6 +15,7 @@ import {
   replaceChildrenIfChanged,
   setText,
   statusBlock,
+  withRequestId,
 } from "../dom.mjs";
 import { LOG_TEXT_DENIED, RUNTIME_STATUS_DENIED } from "./access-reasons.mjs";
 import { displayDate, namespacePath, retryAfterText } from "./list.mjs";
@@ -149,10 +150,6 @@ function runtimeErrorText(
     return "This version is not available.";
   }
   return "Runtime status or logs are unavailable. Try again shortly.";
-}
-
-function withRequestId(text: string, error: RequestFailure) {
-  return error.requestId ? `${text} Request ID: ${error.requestId}` : text;
 }
 
 /**
@@ -485,13 +482,13 @@ export function renderAgentLogs(
     showLogError(
       error.status === 403 && revokedLogViews.has(deniedKey)
         ? LOGS_ACCESS_CHANGED
-        : withRequestId(runtimeErrorText(error, "logs", source.id, manualRead), error),
+        : withRequestId(runtimeErrorText(error, "logs", source.id, manualRead), error.requestId),
     );
     if (manualRead && error.status === 429 && error.retryAfterSeconds !== undefined) {
       // A later error or a successful read replaces the text and cancels this (finding 1715).
       // A view held for Back is updated too, so it never returns with a wait that has passed.
       retryHintTimer = setTimeout(() => {
-        showLogError(withRequestId("Too many requests. You can try again now.", error));
+        showLogError(withRequestId("Too many requests. You can try again now.", error.requestId));
       }, error.retryAfterSeconds * 1000);
     }
     if (error.status !== 403) {
@@ -735,7 +732,7 @@ export function renderAgentLogs(
         showStripStatus(
           error.status === 403 && revokedStatusViews.has(statusKey)
             ? STATUS_ACCESS_CHANGED
-            : withRequestId(runtimeErrorText(error, "status"), error),
+            : withRequestId(runtimeErrorText(error, "status"), error.requestId),
         );
         if (error.status === 403) {
           offerLogsWithoutStatus();

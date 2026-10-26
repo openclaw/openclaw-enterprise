@@ -461,6 +461,20 @@ function deniedReadsFor(owner) {
   };
 }
 
+// Refresh checks an Agent's version reads again: a version panel offers no Retry for a refusal
+// (finding D753), so Refresh is how a reader granted read since then sees the version.
+function forgetAgentRevisionDenials(owner, namespaceId, agentId) {
+  if (!owner) {
+    return;
+  }
+  const prefix = `/namespaces/${encodeURIComponent(namespaceId)}/agents/${encodeURIComponent(agentId)}/revisions/`;
+  const paths = storedDeniedReads(owner);
+  const kept = paths.filter((path) => !path.startsWith(prefix));
+  if (kept.length !== paths.length) {
+    storeDeniedReads(owner, kept);
+  }
+}
+
 function forgetDeniedReads() {
   try {
     sessionStorage.removeItem(deniedReadsStorageKey);
@@ -1295,6 +1309,7 @@ async function loadPage({
     // Refresh checks access again: an Agent's Logs view asks again instead of reusing a denial
     // remembered earlier in this sign-in (finding 2566).
     forgetRuntimeDenials(current.namespace, current.agentId);
+    forgetAgentRevisionDenials(sessionOwnerKey(session), current.namespace, current.agentId);
   }
   const active = resetReads({
     retainView: knownPrivateState,

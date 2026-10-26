@@ -64,6 +64,10 @@ const IF_NEEDED_VERSION_READ = `If you need it, ${ASK_INSTALLATION_ADMINISTRATOR
 export const VERSION_UNAVAILABLE = `This version does not exist or your access does not include it. ${IF_NEEDED_VERSION_READ}`;
 export const requestedVersionUnavailable = (version: string) =>
   `Version ${version} does not exist or your access does not include it, so this page shows no progress or outcome for it. ${IF_NEEDED_VERSION_READ}`;
+// A version this tab's own Deploy created exists: the API accepted it. A deployer without read on
+// it is told that, not that it may not exist (finding D751).
+export const deployAcceptedVersionUnreadable = (version: string) =>
+  `Deployment accepted. You cannot read version ${version}, so its progress and outcome are not shown here; ${ASK_INSTALLATION_ADMINISTRATOR} for AgentRevision read on it.`;
 
 // A rejected model credential is fixed in the Agent's Credentials, which needs Agent update. A
 // Secret-backed credential can also be replaced in place, which needs Secret update on that
@@ -107,7 +111,12 @@ export const LOG_TEXT_DENIED = `Log text requires ${LOG_TEXT_GRANT} on this Agen
 // Runtime status authorizes Agent operate and read plus AgentRevision read on the version.
 export const RUNTIME_STATUS_DENIED = `Runtime status requires Agent operate on this Agent and AgentRevision read on this version. Log text needs ${LOG_TEXT_GRANT}. ${askForGrant("the access you need")}`;
 
-// Saving a workspace file and running diagnostics authorize Agent operate.
+// Reading a workspace file authorizes Agent read; saving one and running diagnostics, Agent
+// operate.
+export const WORKSPACE_READ_DENIED = notIncluded(
+  "reading this Agent's workspace files",
+  "Agent read on it",
+);
 export const WORKSPACE_SAVE_DENIED = notIncluded(
   "saving this Agent's workspace files",
   "Agent operate on it",

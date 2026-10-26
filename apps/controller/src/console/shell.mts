@@ -1,6 +1,6 @@
 import type { BackendSummary, Namespace } from "@openclaw-enterprise/contracts";
 import { displayDate } from "./agents/list.mjs";
-import { button, describeDisabled, element, type statusBlock } from "./dom.mjs";
+import { button, describeDisabled, element, type statusBlock, requestIdLine } from "./dom.mjs";
 import type { createNavigation, pages } from "./navigation.mjs";
 
 interface Account {
@@ -70,7 +70,7 @@ export function panel(
       { className: "state-panel", role: "status" },
       element("h2", {}, title),
       element("p", {}, description),
-      requestId ? element("p", { className: "request-id" }, `Request ID: ${requestId}`) : null,
+      requestId ? requestIdLine(requestId) : null,
       action ? button(actionLabel, action) : null,
     ),
   );
@@ -647,7 +647,9 @@ export function createShell({
               "span",
               {
                 className: "occ-version",
-                title: knownRevision ? `OCC commit ${revision}` : "OCC build revision unavailable",
+                title: knownRevision
+                  ? `Control plane commit ${revision}`
+                  : "Control plane build revision unavailable",
               },
               knownRevision ? revision.slice(0, 8) : "dev",
             )

@@ -203,6 +203,11 @@ export const VERSION_UNAVAILABLE =
   "This version does not exist or your access does not include it. If you need it, ask an Installation administrator for AgentRevision read on it.";
 export const requestedVersionUnavailable = (version) =>
   `Version ${version} does not exist or your access does not include it, so this page shows no progress or outcome for it. If you need it, ask an Installation administrator for AgentRevision read on it.`;
+// A version the reader's own Deploy created exists, so the page says it was accepted (finding D751).
+export const deployAcceptedVersionUnreadable = (version) =>
+  `Deployment accepted. You cannot read version ${version}, so its progress and outcome are not shown here; ask an Installation administrator for AgentRevision read on it.`;
+export const VERSION_READ_DENIED =
+  "Your access does not include this version, so its configuration and deployment outcome are hidden. Ask an Installation administrator for AgentRevision read on it.";
 // A rejected model credential for a caller known to lack Agent update names the grants that fix
 // it and who gives them (finding D750): the failure banner, and the draft's deploy line. A
 // Secret-backed credential can also be replaced in place with Secret update on its Secret.
@@ -300,6 +305,24 @@ export const tooManyRequestsIn = (seconds) =>
   seconds < 120
     ? `Too many requests. Try again in ${seconds} ${seconds === 1 ? "second" : "seconds"}.`
     : `Too many requests. Try again in about ${Math.ceil(seconds / 60)} minutes.`;
+
+// Every console view that meets NAMESPACE_NOT_READY shows this one sentence (finding 2538).
+export const CONSOLE_NAMESPACE_NOT_READY =
+  "This Namespace is not ready yet. Check its status on the Namespaces page: a provisioning Namespace becomes ready when its Kubernetes setup completes. If it stays provisioning, ask an operator to finish that setup.";
+// Why a read failed with an outage (agents/list.mts readFailureReason).
+export const READ_OUTAGE_REASON =
+  "The service did not answer. Try again; if it continues, ask an operator to check the API.";
+export const OVERVIEW_REFRESH_FAILED =
+  "Current version and version history could not be refreshed.";
+// A workspace file read or write that the gateway did not answer.
+export const WORKSPACE_UNREACHABLE =
+  "Workspace files could not be reached: the Agent's gateway did not answer. Check that the Agent is running, then reload this file. If it continues, ask an operator to check the gateway.";
+// A workspace file request that never reached the API (a fetch that failed in the browser).
+export const WORKSPACE_API_UNREACHABLE =
+  "The request did not reach the API. Check your connection, then reload this file.";
+// A Stop that the API accepted for an Agent with a running version.
+export const STOP_REQUESTED =
+  "Stop requested. This Agent will not start again until you deploy a new version. The console does not show when its runtime finishes shutting down.";
 
 // The Agent page's Workspace tab without a deployed, reachable gateway.
 export const WORKSPACE_FILES_UNAVAILABLE =

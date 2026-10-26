@@ -67,10 +67,14 @@ import {
   RESOURCE_CONFLICT,
   RESOURCE_NOT_FOUND,
   SANDBOX_POLICY_READ_DENIED,
+  STOP_REQUESTED,
+  WORKSPACE_API_UNREACHABLE,
   WORKSPACE_FILES_UNAVAILABLE,
+  WORKSPACE_UNREACHABLE,
   askForGrant,
   notIncluded,
   deleteRefused,
+  tooManyRequestsIn,
 } from "../helpers/refusal-text.mjs";
 
 // The Console Browser lane runs the two Agent detail test files in parallel.
@@ -2424,7 +2428,7 @@ test("Agent sharing grants existing people exact discovery and native access, th
     .getByRole("dialog")
     .getByRole("button", { name: "Stop Agent", exact: true })
     .click();
-  await recipient.getByText("Stop requested. OCC will not start", { exact: false }).waitFor();
+  await recipient.getByText(STOP_REQUESTED, { exact: true }).waitFor();
 
   // The stale administrator list holds the specific sharing binding, not the new operate grant.
   await panel.getByRole("button", { name: "Remove binding", exact: true }).click();
@@ -4004,17 +4008,39 @@ test("explicit missing-file readback settles an uncertain workspace create witho
     (permission) => !(permission.action === "read" && permission.resourceKind === "agent"),
   );
   await reload.click();
-  await form.getByText("Access denied.", { exact: false }).waitFor();
+  // The API names the read grant its own denial checked (finding 2534).
+  await form.getByText(/^Not authorized: this needs Agent read on Agent /).waitFor();
   assert.equal(await save.isDisabled(), true);
   assert.equal(writeRequests().length, 1);
   administrator.permissions = permissions;
   unavailable = true;
   await reload.click();
-  await form.getByText("Workspace access is unavailable.", { exact: false }).waitFor();
+  await form.getByText(WORKSPACE_UNREACHABLE, { exact: false }).waitFor();
   assert.equal(await editor.isDisabled(), true);
   assert.equal(await save.isDisabled(), true);
   assert.equal(writeRequests().length, 1);
   unavailable = false;
+  // A rate limit says how long to wait instead of blaming the gateway (finding 2538).
+  await page.route(
+    fixture.origin + path,
+    (route) =>
+      route.request().method() === "GET"
+        ? route.fulfill({ ...proxyErrorResponse(429), headers: { "retry-after": "30" } })
+        : route.fallback(),
+    { times: 1 },
+  );
+  await reload.click();
+  await form.getByText(tooManyRequestsIn(30), { exact: false }).waitFor();
+  // A request that never reached the API says so, not that the gateway is down.
+  await page.route(
+    fixture.origin + path,
+    (route) => (route.request().method() === "GET" ? route.abort() : route.fallback()),
+    { times: 1 },
+  );
+  await reload.click();
+  await form.getByText(WORKSPACE_API_UNREACHABLE, { exact: true }).waitFor();
+  assert.equal(await save.isDisabled(), true);
+  assert.equal(writeRequests().length, 1);
   const reply = page.waitForResponse(
     (response) => response.url() === fixture.origin + path && response.request().method() === "GET",
   );
@@ -4048,7 +4074,7 @@ test("explicit missing-file readback settles an uncertain workspace create witho
   assert.equal(await save.isDisabled(), true);
   assert.equal(await readFile(join(root, "USER.md"), "utf8"), "# Deliberate replacement create\n");
   await reload.click();
-  await form.getByText("Workspace access is unavailable.", { exact: false }).waitFor();
+  await form.getByText(WORKSPACE_UNREACHABLE, { exact: false }).waitFor();
   assert.equal(await save.isDisabled(), true);
   await reload.click();
   await form.getByText("USER.md loaded.", { exact: true }).waitFor();

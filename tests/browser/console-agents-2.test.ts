@@ -65,6 +65,7 @@ import {
 } from "./console-agents-test-support.mjs";
 import {
   AGENT_NAME_CONFLICT,
+  CONSOLE_NAMESPACE_NOT_READY,
   GENERIC_DENIAL,
   NAMESPACE_NOT_READY,
   RESOURCE_CONFLICT,
@@ -2194,8 +2195,7 @@ test("Agent creation shows the API's duplicate-name conflict, a not-ready Namesp
   await page
     .getByRole("alert")
     .filter({
-      hasText:
-        "This Namespace is not ready yet. Check its status on the Namespaces page: a provisioning Namespace becomes ready when its Kubernetes setup completes (on Kubernetes installs, after an operator grants the tenant RoleBindings). Request ID: req_00000000-0000-4000-8000-000000000410",
+      hasText: `${CONSOLE_NAMESPACE_NOT_READY} Request ID: req_00000000-0000-4000-8000-000000000410`,
     })
     .waitFor();
   assert.equal(await page.getByText(/conflicts with the saved state/).count(), 0);
