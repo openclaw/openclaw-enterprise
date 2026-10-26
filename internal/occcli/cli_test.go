@@ -411,7 +411,7 @@ func TestAgentLogsRejectsInvalidFlagsBeforeAnyRequest(t *testing.T) {
 		stub := &runtimeLogStub{t: t}
 		_, _, err := runLogsCommand(t, context.Background(), stub, args...)
 		// The hint keeps the selected Namespace so the copied command targets the same Agent.
-		if err == nil || err.Error() != `agent agt_00000000-0000-4000-8000-000000000001 has no active revision and no revision you can read; if it was never deployed, run "occ --namespace ns_00000000-0000-4000-8000-000000000001 agent deploy agt_00000000-0000-4000-8000-000000000001" first; otherwise listing revisions needs revision read (ask an administrator to grant it), or pass --revision with a revision ID` {
+		if err == nil || err.Error() != `agent agt_00000000-0000-4000-8000-000000000001 has no active revision and no revision you can read; listing revisions needs AgentRevision read (ask an Installation administrator to grant it), or pass --revision with a revision ID; if it was never deployed, run "occ --namespace ns_00000000-0000-4000-8000-000000000001 agent deploy agt_00000000-0000-4000-8000-000000000001" first` {
 			t.Fatalf("follow=%v: expected a missing revision error, got %v", follow, err)
 		}
 		if len(stub.queries) != 0 {
@@ -447,7 +447,7 @@ func TestAgentLogsNameTheRevisionGrantWhenNoRevisionIsReadable(t *testing.T) {
 	}
 
 	reader := `{"update":false,"deploy":false,"operate":false,"delete":false}`
-	logsError := "agent agt_00000000-0000-4000-8000-000000000001 has no active revision and no revision you can read; listing revisions needs revision read (ask an administrator to grant it), or pass --revision with a revision ID"
+	logsError := "agent agt_00000000-0000-4000-8000-000000000001 has no active revision and no revision you can read; listing revisions needs AgentRevision read (ask an Installation administrator to grant it), or pass --revision with a revision ID"
 	for _, test := range []struct {
 		args        []string
 		permissions string
@@ -457,7 +457,7 @@ func TestAgentLogsNameTheRevisionGrantWhenNoRevisionIsReadable(t *testing.T) {
 		// Runtime status itself needs revision read, so --revision is no way around it.
 		{
 			[]string{"agent", "runtime", "agt_00000000-0000-4000-8000-000000000001"}, reader,
-			"agent agt_00000000-0000-4000-8000-000000000001 has no active revision and no revision you can read; listing revisions needs revision read (ask an administrator to grant it)",
+			"agent agt_00000000-0000-4000-8000-000000000001 has no active revision and no revision you can read; listing revisions needs AgentRevision read (ask an Installation administrator to grant it)",
 		},
 		// An unreadable permission summary cannot show deploy access: no deploy advice.
 		{[]string{"agent", "logs", "agt_00000000-0000-4000-8000-000000000001", "--source", "gateway"}, "forbidden", logsError},
@@ -877,7 +877,7 @@ func TestAgentLogsExitsNonZeroWhenLogsAreUnsupportedOrUnavailable(t *testing.T) 
 		{http.StatusNotImplemented, "NOT_IMPLEMENTED", true},
 		{http.StatusServiceUnavailable, "RUNTIME_LOGS_CLUSTER_RBAC", true},
 		{http.StatusServiceUnavailable, "RUNTIME_LOGS_UNAVAILABLE", false},
-		{http.StatusForbidden, "FORBIDDEN", true},
+		{http.StatusForbidden, "FORBIDDEN", false},
 	} {
 		stub := &runtimeLogStub{t: t, activeID: "rev_00000000-0000-4000-8000-000000000001", pages: []func(http.ResponseWriter, url.Values){
 			logPage("v1.first.sig", logLine(1, "info", "ready")),
@@ -1012,6 +1012,11 @@ func TestAgentStopNamesTheDeployCommandThatStartsTheAgentAgain(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests = append(requests, r.Method+" "+r.URL.Path)
 		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet {
+			// Before the stop, the Agent runs its active revision.
+			_, _ = io.WriteString(w, `{"data":{"id":"agt_00000000-0000-4000-8000-000000000001","name":"running-agent","namespaceId":"ns_00000000-0000-4000-8000-000000000001","desiredRuntimeState":"running","activeRevisionId":"rev_00000000-0000-4000-8000-000000000001"},"meta":{"requestId":"req_1"}}`)
+			return
+		}
 		_, _ = io.WriteString(w, `{"data":{"id":"agt_00000000-0000-4000-8000-000000000001","name":"stopped-agent","namespaceId":"ns_00000000-0000-4000-8000-000000000001","desiredRuntimeState":"stopped"},"meta":{"requestId":"req_1"}}`)
 	}))
 	t.Cleanup(server.Close)
@@ -1022,7 +1027,7 @@ func TestAgentStopNamesTheDeployCommandThatStartsTheAgentAgain(t *testing.T) {
 	if err := command.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"POST /namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/stop"}; !slices.Equal(requests, want) {
+	if want := []string{"GET /namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001", "POST /namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/stop"}; !slices.Equal(requests, want) {
 		t.Fatalf("requests = %v, want %v", requests, want)
 	}
 	if !strings.Contains(out.String(), "stopped-agent") {
@@ -1246,7 +1251,7 @@ func TestOCCURLMustBeABareOrigin(t *testing.T) {
 	}
 	// Control: an origin with or without a trailing slash passes, and the key file is read next.
 	for _, value := range []string{"https://occ.example.test", "http://occ.example.test:8080/"} {
-		if _, _, err := runHelp(t, "installation", "get", "--url", value, "--service-key-file", "unused"); err == nil || !strings.HasPrefix(err.Error(), "failed to read service-key file unused") {
+		if _, _, err := runHelp(t, "installation", "get", "--url", value, "--service-key-file", "unused"); err == nil || !strings.HasPrefix(err.Error(), "service-key file unused does not exist") {
 			t.Fatalf("--url %q error = %v, want the key file read failure", value, err)
 		}
 	}

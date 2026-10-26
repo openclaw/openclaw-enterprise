@@ -834,7 +834,7 @@ func TestDeploymentStatusWithoutRevisionsExplainsHowToDeploy(t *testing.T) {
 		agentPath + "/revisions":   `[]`,
 		agentPath + "/permissions": `{"update":false,"deploy":false,"operate":false,"delete":false}`,
 	}, "--namespace", testNamespaceID, "agent", "deployment-status", testAgentID)
-	want := "agent " + testAgentID + " has no revision you can read; listing revisions needs revision read (ask an administrator to grant it)"
+	want := "agent " + testAgentID + " has no revision you can read; listing revisions needs AgentRevision read (ask an Installation administrator to grant it)"
 	if err == nil || err.Error() != want {
 		t.Fatalf("reader error = %v, want %q", err, want)
 	}
