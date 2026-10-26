@@ -37,6 +37,8 @@ test("route registration rejects mixed-case literals that constrain a header nam
     "conditional header schema": {
       dependencies: { host: { propertyNames: { not: { const: "X-Blocked" } } } },
     },
+    "dependency trigger": { dependencies: { "X-Blocked": ["x-companion"] } },
+    "dependency array member": { dependencies: { "x-trigger": ["X-Blocked"] } },
     "conditional name": {
       propertyNames: { if: { const: "host" }, then: true, else: { not: { const: "X-Blocked" } } },
     },
@@ -66,6 +68,7 @@ test("lowercase header constraints preserve header values and query names", asyn
           type: "object",
           properties: { "x-mode": { const: "READ" } },
           required: ["x-mode"],
+          dependencies: { "x-trigger": ["x-companion"] },
           propertyNames: { not: { enum: ["x-blocked"] } },
         },
         querystring: { type: "object", propertyNames: { enum: ["Mode"] } },
@@ -86,5 +89,22 @@ test("lowercase header constraints preserve header values and query names", asyn
     assert.equal(denied.statusCode, 400);
     assert.equal(denied.json().error.code, "INVALID_REQUEST");
   }
-  assert.equal(hits, 1);
+  for (const headers of [
+    { "x-trigger": "1", "x-companion": "1" },
+    { "X-Trigger": "1", "X-Companion": "1" },
+    { "x-companion": "1" },
+  ]) {
+    const allowed = await app.inject({ url, headers: { "X-Mode": "READ", ...headers } });
+    assert.equal(allowed.statusCode, 200);
+    assert.deepEqual(allowed.json(), { mode: "READ", query: "READ" });
+  }
+  for (const name of ["x-trigger", "X-Trigger"]) {
+    const missing = await app.inject({ url, headers: { "X-Mode": "READ", [name]: "1" } });
+    assert.equal(missing.statusCode, 400);
+    assert.equal(missing.json().error.code, "INVALID_REQUEST");
+  }
+  const wrongValue = await app.inject({ url, headers: { "X-Mode": "read" } });
+  assert.equal(wrongValue.statusCode, 400);
+  assert.equal(wrongValue.json().error.code, "INVALID_REQUEST");
+  assert.equal(hits, 4);
 });

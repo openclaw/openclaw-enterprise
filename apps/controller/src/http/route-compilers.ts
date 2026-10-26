@@ -251,8 +251,13 @@ function* sameInstanceSchemas(root: unknown, instance: "headers" | "name") {
     }
     const dependencies = branch.dependencies;
     if (instance === "headers" && typeof dependencies === "object" && dependencies !== null) {
-      for (const child of Object.values(dependencies)) {
-        pending.add(child);
+      for (const [name, child] of Object.entries(dependencies)) {
+        assertLowercaseHeaderName(name);
+        if (Array.isArray(child)) {
+          child.forEach(assertLowercaseHeaderName);
+        } else {
+          pending.add(child);
+        }
       }
     }
   }
