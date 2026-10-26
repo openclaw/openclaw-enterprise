@@ -5292,7 +5292,7 @@ export class OpenClawController {
 
   /**
    * The Namespace's Secrets the principal may read but not operate (`readable`, sorted IDs), and
-   * how many of those among `unreadableAmong` it may neither read nor operate
+   * how many of its Secrets in `unreadableAmong` the principal may neither read nor operate
    * (`unreadableCount`): an advisory count for a client that deploys a draft binding them, which
    * needs operate on each (finding D756). The count names none, since the principal may not read
    * them. One read unit and one Secret scan; a false decision is an answer, not an audited
