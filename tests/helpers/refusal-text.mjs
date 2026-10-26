@@ -112,12 +112,17 @@ export const VERSION_UNAVAILABLE =
   "This version does not exist or your access does not include it. If you need it, ask an Installation administrator for AgentRevision read on it.";
 export const requestedVersionUnavailable = (version) =>
   `Version ${version} does not exist or your access does not include it, so this page shows no progress or outcome for it. If you need it, ask an Installation administrator for AgentRevision read on it.`;
-// A rejected model credential for a caller known to lack Agent update names who fixes it
-// (finding D750): the failure banner, and the draft's deploy line.
-export const MODEL_CREDENTIAL_REJECTED_ASK =
-  "The model provider rejected this version's credential (HTTP 401 or 403). Your access does not include changing it: ask an Installation administrator to update the Agent's model credential, then deploy a new version.";
-export const MODEL_CREDENTIAL_REJECTED_READ_ONLY =
-  "The last deployment's model credential was rejected. Your access does not include changing it: ask an Installation administrator to update it before deploying again.";
+// A rejected model credential for a caller known to lack Agent update names the grants that fix
+// it and who gives them (finding D750): the failure banner, and the draft's deploy line. A
+// Secret-backed credential can also be replaced in place with Secret update on its Secret.
+const credentialFixGrants = (secretBacked, then) =>
+  secretBacked
+    ? `Replacing its Secret's value needs Secret update on that Secret; choosing another credential needs Agent update on this Agent, which your access does not include. If your access does not include Secret update either, ask an Installation administrator for one of them. Then ${then}.`
+    : `Your access does not include changing it. Ask an Installation administrator for Agent update on this Agent. Then ${then}.`;
+export const modelCredentialRejectedAsk = (secretBacked) =>
+  `The model provider rejected this version's credential (HTTP 401 or 403). ${credentialFixGrants(secretBacked, "deploy a new version")}`;
+export const modelCredentialRejectedReadOnly = (secretBacked) =>
+  `The last deployment's model credential was rejected. ${credentialFixGrants(secretBacked, "deploy again")}`;
 // The API has no route to Slack (SlackRouteNotConfiguredError, apps/controller/src/drivers/channel/
 // slack.ts). Helm settings belong to whoever operates the Installation (finding D750).
 export const SLACK_ROUTE_NOT_CONFIGURED =

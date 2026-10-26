@@ -581,6 +581,7 @@ function namespaceUnavailablePanel(view, unavailableId) {
 function namespaceAccessPanel(view, title, description) {
   panel(view, title, description);
   view.querySelector(".state-panel > p")?.setAttribute("id", NAMESPACE_ACCESS_REASON_ID);
+  shellUI.describeNamespaceSelector();
 }
 const request = createApiClient({
   lifetime,

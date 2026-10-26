@@ -45,7 +45,7 @@ import {
   askForGrant,
   CONFIGURATION_UPDATE_DENIED,
   credentialCheckedAtDeploy,
-  MODEL_CREDENTIAL_REJECTED_READ_ONLY,
+  modelCredentialRejectedReadOnly,
   NEW_VERSIONS_READ,
   requestedVersionUnavailable,
   VERSION_READ_DENIED,
@@ -109,7 +109,7 @@ import {
   deploymentPending,
   readRevisionPage,
 } from "./deployment-evidence.mjs";
-import { createDeploymentRecovery } from "./deployment-recovery.mjs";
+import { createDeploymentRecovery, secretBackedCredential } from "./deployment-recovery.mjs";
 import {
   sameNamespaceSecretHref,
   secretMetadata,
@@ -2243,11 +2243,15 @@ export async function renderAgentDetail(
       }
       const hidden = [selected, currentRevisionId].find(revisionHidden);
       setHidden(statusLine, hidden === undefined);
+      // The current version is known to exist; a requested one that is not current, such as one
+      // from an edited link, may not (finding D750).
       setText(
         statusLine,
-        hidden
-          ? `You cannot read version ${shortId(hidden)}, so its progress and outcome are not shown here. ${readAccessHint}`
-          : "",
+        !hidden
+          ? ""
+          : hidden === currentRevisionId
+            ? `You cannot read version ${shortId(hidden)}, so its progress and outcome are not shown here. ${readAccessHint}`
+            : requestedVersionUnavailable(shortId(hidden)),
       );
       setLiveServing(false);
       stopPanel.setNothingRunning(false);
@@ -2992,10 +2996,12 @@ export async function renderAgentDetail(
             credentials?.deployGateMessage() ?? "Credential readiness could not be confirmed.";
           // Secret values can be updated in place, so a rejected credential warns instead of
           // blocking. It never reads "Ready to deploy.": deploying again does not fix it.
-          // A reader who cannot change the draft is told who updates it (finding D750).
+          // A reader who cannot change the draft is told which grants fix it (finding D750).
           const readOnly = draftReadOnly();
           const rejected = readOnly
-            ? MODEL_CREDENTIAL_REJECTED_READ_ONLY
+            ? modelCredentialRejectedReadOnly(
+                secretBackedCredential("harnessAuth" in agent ? agent.harnessAuth : undefined),
+              )
             : "The last deployment's model credential was rejected; update or replace it in Credentials before deploying again.";
           const status = !credentialRejected()
             ? gate
@@ -3867,7 +3873,11 @@ export async function renderAgentDetail(
             context.deniedReads?.forget(snapshotPath);
             context.navigate(target(selected, selectedTab), namespaceId, true);
           },
-          { version: selected !== "draft", exists: selected === currentRevisionId },
+          {
+            version: selected !== "draft",
+            // The current version and every listed one are known to exist.
+            exists: selected === currentRevisionId || listedRevisions.has(selected),
+          },
         ),
       );
     } else if (data) {

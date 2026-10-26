@@ -175,8 +175,9 @@ permission show the API's sentence naming the missing grant; denials send you to
 Installation administrator, who grants access. A version link the page cannot list says the
 version does not exist or your access does not include it, because a reader granted read per
 version cannot tell the two apart.
-A rejected model credential tells a person without Agent update to ask an Installation
-administrator to update it.
+A rejected model credential tells a person without Agent update which grants fix it: Agent
+update to choose another credential, or, for a Secret-backed credential, Secret update on that
+Secret to replace its value. It also says who gives them.
 A refusal the API explains, such as an invalid field, a name already in use or a
 lifecycle change, shows the API's sentence; a rate limit says how long to wait.
 Other backend error text is not rendered; include any displayed request

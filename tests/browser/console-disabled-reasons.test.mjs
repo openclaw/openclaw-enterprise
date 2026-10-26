@@ -107,3 +107,31 @@ test("a reader with no readable Namespace hears why the Namespace selector is di
     assert.equal(await accessibleDescription(selector), text, path);
   }
 });
+
+// The no-Namespace panel is the selector's only reason. A page without it, such as an
+// administrator's Backends page in an Installation with no Namespace, links no description that
+// is not there.
+test("the Namespace selector names no missing reason on a page without the no-Namespace panel", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  fixture.policy.restrictions.push({
+    id: "deny-all-namespace-read",
+    resourceKind: "namespace",
+    action: "read",
+    effect: "deny",
+  });
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, "/console/backends");
+  await page.getByRole("heading", { name: "Backends", exact: true }).waitFor();
+  const selector = page.getByLabel("Namespace", { exact: true });
+  assert.equal(await selector.isDisabled(), true);
+  assert.equal(await page.locator("#namespace-access-reason").count(), 0);
+  assert.deepEqual(
+    await selector.evaluate((node) =>
+      (node.getAttribute("aria-describedby") ?? "")
+        .split(/\s+/)
+        .filter((id) => id && !globalThis.document.getElementById(id)),
+    ),
+    [],
+  );
+});

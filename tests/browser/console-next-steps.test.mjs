@@ -4,8 +4,8 @@ import test from "node:test";
 
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
-  MODEL_CREDENTIAL_REJECTED_ASK,
-  MODEL_CREDENTIAL_REJECTED_READ_ONLY,
+  modelCredentialRejectedAsk,
+  modelCredentialRejectedReadOnly,
   requestedVersionUnavailable,
   VERSION_UNAVAILABLE,
 } from "../helpers/refusal-text.mjs";
@@ -53,7 +53,82 @@ test("a version link the page cannot list says the version may not exist", async
   assert.equal(await page.getByText("You cannot read this version").count(), 0);
 });
 
-test("a rejected model credential tells a member without Agent update who updates it", async (t) => {
+test("a version link stays hedged when the reader can read no version", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("No readable versions", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Unlisted Agent", nativeValues("none"));
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  // Agent read without AgentRevision read: the Versions list is empty for this reader.
+  const reader = await fixture.createNamespaceMember(
+    "no-version-reader",
+    namespace.id,
+    AGENT_READ.filter(([, kind]) => kind !== "agent_revision"),
+  );
+  const { page } = await newPage(t, fixture);
+
+  const madeUp = `rev_${randomUUID()}`;
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, madeUp, "configuration"),
+    reader.credentials,
+  );
+  await page.getByRole("heading", { name: "Version not found or not shared" }).waitFor();
+  // The requested version is not the current one, so it may not exist either.
+  const statusLine = page.locator(".agent-status-line");
+  await statusLine
+    .getByText(requestedVersionUnavailable(shortId(madeUp)), { exact: true })
+    .waitFor();
+  assert.equal(await page.getByText(/after each deployment/).count(), 0);
+});
+
+// A version the page lists exists. When the reader's read on it is revoked between the list read
+// and the version's own read, the page says the reader cannot read it, not that it may not exist.
+test("a listed version the reader can no longer read is not called possibly missing", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Revoked version", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Revoked Agent", nativeValues("rev"));
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const next = await fixture.deployAgent(namespace.id, agent.id);
+  const reader = await fixture.createNamespaceMember("revoked-reader", namespace.id, AGENT_READ);
+  const { page } = await newPage(t, fixture);
+  const listPath = `/namespaces/${namespace.id}/agents/${agent.id}/revisions`;
+  const listed = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === listPath && response.request().method() === "GET",
+  );
+  await page.route(
+    (url) => url.origin === fixture.origin && url.pathname === `${listPath}/${next.id}`,
+    async (route) => {
+      // The list has shown v2; the grant is revoked before v2's own read.
+      await listed;
+      if (!fixture.policy.restrictions.some((item) => item.id === `deny-read-${next.id}`)) {
+        fixture.policy.restrictions.push({
+          id: `deny-read-${next.id}`,
+          namespaceId: namespace.id,
+          resourceKind: "agent_revision",
+          resourceId: next.id,
+          action: "read",
+          effect: "deny",
+        });
+      }
+      await route.continue();
+    },
+  );
+
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, next.id, "configuration"),
+    reader.credentials,
+  );
+  await page.getByRole("heading", { name: "You cannot read this version" }).waitFor();
+  assert.equal(await page.getByText("Version not found or not shared").count(), 0);
+});
+
+test("a rejected model credential tells a member without Agent update which grants fix it", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Rejected for operator", { ready: true });
@@ -82,8 +157,11 @@ test("a rejected model credential tells a member without Agent update who update
     operator.credentials,
   );
   const recovery = page.getByRole("region", { name: "Deployment needs attention" });
-  await recovery.getByText(MODEL_CREDENTIAL_REJECTED_ASK).waitFor();
-  await page.getByText(MODEL_CREDENTIAL_REJECTED_READ_ONLY, { exact: true }).waitFor();
+  // The Agent's credential is a Secret, so the text names both grants that fix it: Secret update
+  // replaces the value in place, which the permission answer does not cover.
+  assert.equal(agent.harnessAuth.source.kind, "secret");
+  await recovery.getByText(modelCredentialRejectedAsk(true)).waitFor();
+  await page.getByText(modelCredentialRejectedReadOnly(true), { exact: true }).waitFor();
   // No step the operator cannot take: neither "update or replace" nor a link to Credentials.
   // The folded Deployment details keep the API's recorded message as it was recorded.
   assert.doesNotMatch(await recovery.innerText(), /update or replace/);
