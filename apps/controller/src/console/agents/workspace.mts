@@ -14,7 +14,11 @@ import {
   withRequestId,
 } from "../dom.mjs";
 import type { createDraftStore } from "../drafts.mjs";
-import { askForGrant, WORKSPACE_READ_DENIED, WORKSPACE_SAVE_DENIED } from "./access-reasons.mjs";
+import {
+  WORKSPACE_READ_DENIED,
+  WORKSPACE_SAVE_DENIED,
+  WORKSPACE_SAVE_REFUSED,
+} from "./access-reasons.mjs";
 import { describeFailure } from "./list.mjs";
 
 const filenames = ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"];
@@ -75,9 +79,7 @@ function fileError(error: FileFailure, writing: boolean, failure: unknown) {
   if (error.status === 403) {
     // Saving a file is an Agent operate action (finding 1540); reading one is Agent read, unless
     // the API names another grant.
-    text = writing
-      ? `You do not have permission to save this file. ${askForGrant("Agent operate on it")}`
-      : (namedDenial(error) ?? WORKSPACE_READ_DENIED);
+    text = writing ? WORKSPACE_SAVE_REFUSED : (namedDenial(error) ?? WORKSPACE_READ_DENIED);
   }
   if (error.status === 404) {
     text = "File unavailable or missing. Check Agent access before creating it.";

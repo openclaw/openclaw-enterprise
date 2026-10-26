@@ -7,7 +7,11 @@ import type {
 import { requestFailure, responseFields } from "../api-client.mjs";
 import type { NamespacePageContext } from "../namespaces.mjs";
 import { element, button, setStatusTone } from "../dom.mjs";
-import { askAdministratorTo } from "./access-reasons.mjs";
+import {
+  AGENT_CREATE_DENIED,
+  askAdministratorTo,
+  REPOSITORY_CHOICES_AGENT_DENIED,
+} from "./access-reasons.mjs";
 import { describeFailure, namespacePath } from "./list.mjs";
 import { visibleText } from "./logs-view.mjs";
 import {
@@ -1078,9 +1082,10 @@ export function createRepositoryFields(
     state.discovery = discovery;
     if (state.discovery === "denied") {
       setStatusTone(status, "danger");
+      // Agent options authorize Agent update; new-Agent options, Agent create (finding D753).
       status.textContent = initial.agentId
-        ? "Repository choices are denied because you are not authorized to update this Agent."
-        : "Repository choices are denied because you are not authorized to create Agents in this Namespace.";
+        ? REPOSITORY_CHOICES_AGENT_DENIED
+        : `Repository choices are not shown. ${AGENT_CREATE_DENIED}`;
     } else if (state.discovery === "conflict") {
       setStatusTone(status, "danger");
       // The API's 409 names the state, such as an Agent being deleted.

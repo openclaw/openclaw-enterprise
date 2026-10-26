@@ -271,11 +271,11 @@ export const POD_QUOTA_FULL =
 export const IMAGE_PULL_FAILING =
   "Kubernetes cannot pull a container image for this Agent and keeps retrying. Ask an administrator to check the runtime image reference and that the cluster's nodes can pull from its registry.";
 
-// Console refusals for a save the caller may not make.
+// Console refusals for a save the caller may not make, when the API names no grant.
 export const AGENT_SAVE_DENIED =
-  "You do not have permission to save this Agent. Ask an Installation administrator for Agent update and Configuration read on it, plus access to the Secrets, credential sources and Service Account it binds.";
+  "Save was refused: your access does not include saving this Agent. Ask an Installation administrator for Agent update and Configuration read on it, plus access to the Secrets, credential sources and Service Account it binds.";
 export const CONFIGURATION_SAVE_DENIED =
-  "You do not have permission to save this Configuration. Ask an Installation administrator for Configuration update on it, plus Secret operate on each Secret it binds.";
+  "Save was refused: your access does not include saving this Configuration. Ask an Installation administrator for Configuration update on it, plus Secret operate on each Secret it binds.";
 // A Secret field lists a Secret the caller may read but not operate disabled, with this reason,
 // and a save refused on one a fresh answer names says so (finding 2453).
 export const SECRET_OPERATE_DENIED =
@@ -293,12 +293,11 @@ export const NEW_SECRET_OPERATE_REMEDY =
 export const namespaceListDenied = (items) =>
   notIncluded(`listing ${items} in this Namespace`, "Namespace read");
 // What an Installation administrator's own refused request says: asking one would not help.
-export const ADMINISTRATOR_ACCESS_DENIED =
-  "Access denied. You do not have permission for this operation.";
+export const ADMINISTRATOR_ACCESS_DENIED = "Your access does not include this action.";
 export const CONSOLE_ACCESS_DENIED =
-  "Access denied. You do not have permission for this operation. Ask an Installation administrator to check your access.";
+  "Your access does not include this action. Ask an Installation administrator to check your access.";
 export const secretOperateRefused = (name) =>
-  `You do not have permission to bind ${name}. Each save needs Secret operate on every Secret it binds, which your access does not include for it. Choose another Secret, or ask an Installation administrator for Secret operate on it.`;
+  `Save was refused: your access does not include Secret operate on ${name}, which each save needs on every Secret it binds. Choose another Secret, or ask an Installation administrator for Secret operate on it.`;
 
 // The console's text for a read that failed with a 5xx.
 export const READ_UNAVAILABLE = "Service unavailable. The read could not be completed. Try again.";
@@ -499,3 +498,44 @@ export const PLUGIN_CREDENTIALS_REJECTED =
 // audited metadata read; and the Backends refusal a non-administrator gets without the read.
 export const BOUND_SECRET_UNLISTED = `A Secret is bound. Its name is unavailable: your access does not include reading it, or it was deleted. ${askForGrant("Secret read on it")}`;
 export const BACKENDS_DENIED = `Your account does not have access to Backends. Backends apply to the whole Installation, so choosing another Namespace would not change this. ${askForGrant("access")}`;
+// A write the console names after the API refused it, where it was tried (errcopy-console-1026b).
+export const actionRefused = (action, task, grant) =>
+  `${action} was refused: your access does not include ${task}. ${askForGrant(grant)}`;
+// A request that checks several grants shows the API's named one after "<Action> was refused:".
+export const refusedNamed = (action, grant, target) =>
+  `${action} was refused: this needs ${grant} on ${target}. Ask an Installation administrator to grant it.`;
+// A save's reread of the Agent and its Configuration was refused before the write.
+export const SAVE_READ_REFUSED = actionRefused(
+  "Save",
+  "reading this Agent's saved settings, which each save reads first",
+  "Agent read and Configuration read on it",
+);
+export const WORKSPACE_SAVE_REFUSED = actionRefused(
+  "Save",
+  "saving this Agent's workspace files",
+  "Agent operate on it",
+);
+// Configuration create, which only an Installation administrator holds.
+export const CONFIGURATION_CREATE_REFUSED =
+  "Create was refused: your access does not include creating this Agent's Configuration. That needs Configuration create in this Namespace, which only an Installation administrator holds, plus Secret operate on each Secret it binds. Ask an Installation administrator to create this Agent.";
+// Repository choices for an Agent (Agent update) and for a new Agent (Agent create).
+export const REPOSITORY_CHOICES_AGENT_DENIED = notIncluded(
+  "loading repository choices for this Agent",
+  "Agent update on it",
+);
+export const REPOSITORY_CHOICES_CREATE_DENIED =
+  "Repository choices are not shown. Your access does not include creating Agents in this Namespace. Only an Installation administrator can create Agents: ask one to create it and to give you access to edit and deploy it.";
+// The sandbox policy editing setting, which only an Installation administrator who also
+// administers the Agent can change.
+export const POLICY_EDITING_SETTING_REFUSED =
+  "Your access does not include changing the editing setting. Only an Installation administrator who also administers this Agent can change it.";
+// A Slack people or channel lookup the API refused without naming a grant.
+export const SLACK_LOOKUP_DENIED = notIncluded(
+  "looking up Slack people and channels with the selected Slack bot Secret",
+  "Secret operate on it",
+);
+// Rechecking an open Agent page when the API names no grant.
+export const AGENT_PAGE_READ_DENIED = notIncluded(
+  "reading this Agent, its versions or its Configuration",
+  "Agent read, AgentRevision read and Configuration read on them",
+);

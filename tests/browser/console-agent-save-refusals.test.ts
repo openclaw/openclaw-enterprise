@@ -39,7 +39,9 @@ import {
   DIAGNOSTICS_DENIED,
   stopRefused,
   WORKSPACE_SAVE_DENIED,
-  permissionRefused,
+  REPOSITORY_CHOICES_AGENT_DENIED,
+  SAVE_READ_REFUSED,
+  WORKSPACE_SAVE_REFUSED,
 } from "../helpers/refusal-text.mjs";
 
 // Every test opens its own context in one Chromium per file.
@@ -47,8 +49,7 @@ const browser = fileBrowser();
 
 // A member who can read an Agent and its Configuration, but not change them, was offered Save
 // on the Configuration JSON editor, the Slack drawer and the Agent-side editors. Each save
-// answered 403 and the console showed "Access denied. You do not have permission for this
-// operation.", naming no permission (finding 1530, D618). Configuration saves now name the
+// answered 403 and the console showed a bare "Access denied" sentence, naming no permission (finding 1530, D618). Configuration saves now name the
 // grant they need; Agent-side saves are disabled up front when the permission answer denies
 // Agent update.
 
@@ -56,10 +57,6 @@ const AGENT_SOURCES_SERVICE_ACCOUNT_DENIED =
   "Saving these settings needs operate on each Secret and credential source this Agent and its Configuration bind, and read on the ServiceAccount it uses for Harness authentication. Your access does not include all of them. Ask an Installation administrator for that access.";
 const AGENT_CONFIGURATION_READ_DENIED =
   "Saving these settings needs read access to this Agent's Configuration, which your access does not include. Ask an Installation administrator for Configuration read on it.";
-const READ_REFUSAL = permissionRefused(
-  "read this Agent's saved settings",
-  "Agent read and Configuration read on it",
-);
 
 // A member who can read the Namespace's Agents and Configurations but change nothing.
 const READER = "save-refusal-reader";
@@ -430,6 +427,35 @@ test("an unknown permission answer keeps the repository access editor", async (t
   assert.equal(await page.getByText(/read-only with your access/).count(), 0);
 });
 
+// Without a permission answer a reader's console still reads the repository choices. The API
+// refuses them for lack of Agent update, and the status says so and who grants it, not that the
+// choices are "denied" (finding D753).
+test("a refused repository choices read names the Agent update it needs", async (t) => {
+  const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId: string) => [
+    {
+      repositoryRef: "application",
+      repositoryId: "1602",
+      repository: "example/application",
+      namespaces: [{ namespaceId, profiles: ["git-read", "git-write", "git-full"] }],
+    },
+  ]);
+  const agent = await fixture.createAgent(namespace.id, "Repository Choices", nativeValues("repo"));
+  const member = await createReader(fixture, namespace);
+  const { page } = await newPage(t, fixture, { browser });
+  await withholdPermissionSummary(page, fixture, namespace.id, agent.id);
+  const refused = page.waitForResponse((response) =>
+    response.url().endsWith(`/namespaces/${namespace.id}/agents/${agent.id}/repository-options`),
+  );
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "repositories").href,
+    member.credentials,
+  );
+  assert.equal((await refused).status(), 403);
+  await page.getByText(REPOSITORY_CHOICES_AGENT_DENIED, { exact: true }).waitFor();
+});
+
 // The permission answer was read once per page, so a grant applied only after a full page
 // Refresh (finding 1538). Reload authentication source reads it again.
 test("a granted Agent update enables the Agent-side save on the next draft refresh", async (t) => {
@@ -563,7 +589,7 @@ for (const c of readRefusals) {
       ...c.deny(agent),
     });
     await c.save(page);
-    await page.getByText(READ_REFUSAL, { exact: true }).waitFor();
+    await page.getByText(SAVE_READ_REFUSED, { exact: true }).waitFor();
     assert.deepEqual(
       requests.filter(({ method }) => method === "PATCH"),
       [],
@@ -603,7 +629,7 @@ test("a refused workspace file save names Agent operate", async (t) => {
   await page.getByText("AGENTS.md loaded.", { exact: true }).waitFor();
   await editor.fill("after");
   await page.getByRole("button", { name: "Save AGENTS.md", exact: true }).click();
-  await page.getByText(permissionRefused("save this file", "Agent operate on it")).waitFor();
+  await page.getByText(WORKSPACE_SAVE_REFUSED, { exact: true }).waitFor();
   assert.equal(await editor.inputValue(), "after");
 });
 

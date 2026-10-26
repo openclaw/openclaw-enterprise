@@ -1794,6 +1794,39 @@ test("a tab refused after a revoke makes the next tab change read the page again
   assert.equal(await page.locator(".version-selection-notice").count(), 0);
 });
 
+// Returning to an open Agent page rechecks the Agent, its versions and the shown version in
+// place. Those are three grants, so a refusal shows the one the API names instead of "You do not
+// have permission to read this Agent, its versions, or its Configuration" (finding D753).
+test("A refused recheck of an open Agent page names the grant the API checked", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Refused recheck", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Refused recheck", nativeValues("rr"));
+  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const member = await fixture.createNamespaceMember("refused-recheck", namespace.id, AGENT_READ);
+  const { page } = await newPage(t, fixture);
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration"),
+    member.credentials,
+  );
+  await page.getByRole("tab", { name: "Configuration", selected: true }).waitFor();
+  revokeMemberGrant(fixture, "refused-recheck", ["read", "agent"]);
+  const refused = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}` &&
+      response.status() === 403,
+  );
+  await page.evaluate(() => {
+    globalThis.dispatchEvent(new Event("focus"));
+    globalThis.document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await refused;
+  await page.getByRole("heading", { name: "Access denied", exact: true }).waitFor();
+  await page.getByText(callerDenied("Agent read", `Agent ${agent.id}`), { exact: true }).waitFor();
+});
+
 for (const kind of ["agent", "configuration", "namespace"]) {
   test(`Agent detail refocus removes a revision when ${kind} access is revoked`, async (t) => {
     const fixture = await detailApp(t);
@@ -2704,7 +2737,11 @@ test("an Agent reader meets no refused read on Repositories, Policy denials or L
       "The version draft selects no repositories. The Agent runs without repository access.",
     )
     .waitFor();
-  await expectNoText(page, /Repository choices are denied/, settle);
+  await expectNoText(
+    page,
+    /repository choices for this Agent|Repository choices are not shown/,
+    settle,
+  );
   assert.equal(await page.getByRole("button", { name: "Retry repository choices" }).count(), 0);
   assert.equal(await page.getByRole("button", { name: "Save repository access" }).count(), 0);
 
@@ -2719,7 +2756,7 @@ test("an Agent reader meets no refused read on Repositories, Policy denials or L
   await noPolicyAccess.first().waitFor();
   await expectNoText(
     page,
-    /Deploy an Agent to load Sandbox policy decisions|permission to read|Suggestions come from|No Driver configurations/,
+    /Deploy an Agent to load Sandbox policy decisions|include reading (?:this Agent’s policy|policy suggestions|this Agent’s Sandbox logs)|Suggestions come from|No Driver configurations/,
     settle,
   );
   // The sentence names the suggestions too, so it is said once, on the network policy card: no
@@ -2746,7 +2783,7 @@ test("an Agent reader meets no refused read on Repositories, Policy denials or L
     .waitFor();
   await expectNoText(
     page,
-    /permission to read|no such runtime log source|window: unavailable|Denials in the loaded window/,
+    /include reading (?:this Agent’s policy|policy suggestions|this Agent’s Sandbox logs)|no such runtime log source|window: unavailable|Denials in the loaded window/,
     settle,
   );
   await sayOnce();

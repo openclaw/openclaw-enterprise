@@ -30,6 +30,7 @@ import {
 } from "./console-agents-browser-helpers.mjs";
 import {
   BOUND_SECRET_UNLISTED,
+  CONFIGURATION_SAVE_DENIED,
   SECRET_CREATE_DENIED,
   SLACK_SETUP_HINT,
 } from "../helpers/refusal-text.mjs";
@@ -753,7 +754,7 @@ describe("Agent channels", { concurrency: 3 }, () => {
     assert.equal(await allowedUsers.isVisible(), false);
     await selectSecret(dialog, "Slack app token", slackAppSecret);
     await page.getByRole("button", { name: "Save configuration" }).click();
-    await dialog.getByText(/Access denied|permission/i).waitFor();
+    await dialog.getByText(CONFIGURATION_SAVE_DENIED).waitFor();
     assert.equal(await allowEveryone.inputValue(), "everyone");
     await waitForEnabled(allowEveryone);
     assert.equal(await allowedUsers.isVisible(), false);

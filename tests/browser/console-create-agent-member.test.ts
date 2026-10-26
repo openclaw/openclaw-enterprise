@@ -29,7 +29,9 @@ import {
 } from "./console-agents-browser-helpers.mjs";
 import { waitForCreateFormReads } from "./console-agents-test-support.mjs";
 import {
+  ADMINISTRATOR_ACCESS_DENIED,
   AGENT_CREATE_DENIED,
+  CONFIGURATION_CREATE_REFUSED,
   GENERIC_DENIAL,
   SECRET_CREATE_DENIED,
   NEW_SECRET_OPERATE_DENIED,
@@ -402,7 +404,7 @@ test("a member's unconfirmed credential grant offers a retry until the API refus
 });
 
 const ADMINISTRATOR_GRANT_REQUEST = "req_00000000-0000-4000-8000-000000002543";
-const ADMINISTRATOR_GRANT_REFUSED = `${CREDENTIAL_ACCESS_UNCONFIRMED} Access denied. You do not have permission for this operation. Retry credential access, or open the saved Agent and ask an administrator to check access to its saved model and channel Secrets. Request ID: ${ADMINISTRATOR_GRANT_REQUEST}`;
+const ADMINISTRATOR_GRANT_REFUSED = `${CREDENTIAL_ACCESS_UNCONFIRMED} ${ADMINISTRATOR_ACCESS_DENIED} Retry credential access, or open the saved Agent and ask an administrator to check access to its saved model and channel Secrets. Request ID: ${ADMINISTRATOR_GRANT_REQUEST}`;
 
 test("an administrator's refused credential grant keeps the retry and the API's answer", async (t) => {
   const { fixture, namespace, secret } = await setup(t);
@@ -488,8 +490,7 @@ test("a member's refused Configuration create and empty Secret list name the acc
   await page
     .getByRole("alert")
     .filter({
-      hasText:
-        "You do not have permission to create this Agent's Configuration. It needs Configuration create in this Namespace, which only an Installation administrator holds, plus Secret operate on each Secret it binds. Ask an Installation administrator to create this Agent.",
+      hasText: CONFIGURATION_CREATE_REFUSED,
     })
     .waitFor();
 

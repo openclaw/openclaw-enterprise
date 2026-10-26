@@ -9,10 +9,15 @@ import { GENERIC_DENIAL, namedDenial, requestFailure, responseFields } from "../
 import { element } from "../dom.mjs";
 import type { createNavigation } from "../navigation.mjs";
 import {
+  ACCESS_NOT_INCLUDED,
+  AGENT_PAGE_READ_DENIED,
+  AGENT_SAVE_REFUSED,
   ASK_INSTALLATION_ADMINISTRATOR,
   askAdministratorTo,
   askForGrant,
+  CONFIGURATION_SAVE_REFUSED,
   notIncluded,
+  SAVE_READ_REFUSED,
 } from "./access-reasons.mjs";
 
 export const displayDate = (value: string) => new Date(value).toLocaleString();
@@ -122,9 +127,6 @@ export const AGENT_STATUS_READ_NEED: AccessNeed = {
   grant: "Agent read on it",
 };
 
-// A 403 that names no grant. message() adds who grants access; administratorMessage() does not.
-const PLAIN_ACCESS_DENIED = "Access denied. You do not have permission for this operation.";
-
 // The API records these deployment endings as failed, but nothing went wrong with the version,
 // so the console shows a neutral outcome instead. A newer version took over before this one
 // became current (finding 1353; the record never names the newer version, so neither does the
@@ -183,7 +185,7 @@ export const NEUTRAL_DEPLOYMENT_NOTES = {
 export function administratorMessage(cause: unknown): string {
   const error = responseFields(cause);
   return error.status === 403 && typeof error.refusal !== "string"
-    ? PLAIN_ACCESS_DENIED
+    ? ACCESS_NOT_INCLUDED
     : message(cause);
 }
 
@@ -210,7 +212,7 @@ export function message(cause: unknown, mutation = false, need?: AccessNeed): st
       : need
         ? notIncluded(need.task, need.grant)
         : (namedDenial(cause) ??
-          `${PLAIN_ACCESS_DENIED} ${askAdministratorTo("check your access")}`);
+          `${ACCESS_NOT_INCLUDED} ${askAdministratorTo("check your access")}`);
   }
   if (error.status === 404) {
     return "Resource unavailable in this Namespace. Check the ID and your access.";
@@ -271,20 +273,33 @@ export function preAdmissionRefusal(cause: unknown) {
 
 // A refused save names the grants it needs, as Stop, Delete and occ do (finding 1530). Each save
 // shows one fixed text for every 403, so it says nothing the server did not: no IDs, and nothing
-// about whether a resource exists.
+// about whether a resource exists. The API's named denial would show the saved resource's raw ID
+// where this names it in words.
 export const SAVE_REFUSALS = Object.freeze({
-  configuration: `You do not have permission to save this Configuration. ${askForGrant(
-    "Configuration update on it, plus Secret operate on each Secret it binds",
-  )}`,
-  agent: `You do not have permission to save this Agent. ${askForGrant(
-    "Agent update and Configuration read on it, plus access to the Secrets, credential sources and Service Account it binds",
-  )}`,
-  // A save first rereads the Agent and its Configuration; a refused read is not a refused
-  // update (finding 1540).
-  read: `You do not have permission to read this Agent's saved settings. ${askForGrant(
-    "Agent read and Configuration read on it",
-  )}`,
+  configuration: CONFIGURATION_SAVE_REFUSED,
+  agent: AGENT_SAVE_REFUSED,
+  read: SAVE_READ_REFUSED,
 });
+
+const NAMED_DENIAL_PREFIX = "Not authorized: ";
+
+/**
+ * The API's named denial after the refused action ("Slack lookup was refused: this needs Secret
+ * operate on ..."), or undefined when the API named no grant. A request that checks several
+ * grants uses it: the API names the one it lacked, where the console's own text lists them all.
+ */
+export function namedRefusal(action: string, cause: unknown) {
+  const named = namedDenial(cause);
+  return named === undefined
+    ? undefined
+    : `${action} was refused: ${named.slice(NAMED_DENIAL_PREFIX.length)}`;
+}
+
+// Rechecking an open Agent page reads the Agent, its versions and the shown version or draft: the
+// API names the one grant it lacked.
+export function agentPageReadRefusal(cause: unknown) {
+  return namedDenial(cause) ?? AGENT_PAGE_READ_DENIED;
+}
 
 // A refused save that binds Secrets a permission answer read after the refusal says the caller
 // may not operate: it names them and that grant, not the Configuration update the caller may
@@ -293,7 +308,7 @@ export function secretOperateRefusal(names: readonly string[]) {
   const them = names.length > 1 ? "them" : "it";
   const listed =
     names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
-  return `You do not have permission to bind ${listed}. Each save needs Secret operate on every Secret it binds, which your access does not include for ${them}. Choose another Secret, or ${ASK_INSTALLATION_ADMINISTRATOR} for Secret operate on ${them}.`;
+  return `Save was refused: your access does not include Secret operate on ${listed}, which each save needs on every Secret it binds. Choose another Secret, or ${ASK_INSTALLATION_ADMINISTRATOR} for Secret operate on ${them}.`;
 }
 
 // Shown beside Agent-side save controls when the caller's permission answer denies Agent update.

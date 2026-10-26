@@ -1,6 +1,7 @@
 import { renderInstallationConfigurations } from "./driver-configurations.mjs";
 import { element, button, statusBlock, trackVisualViewport } from "./dom.mjs";
 import {
+  agentPageReadRefusal,
   clearResolvedSecretNames,
   noteConsoleLoad,
   renderAgentList,
@@ -2618,7 +2619,7 @@ async function revalidateMountedAgent(current) {
           ? "Resource unavailable"
           : "Request unavailable",
       error.status === 403
-        ? `You do not have permission to read this Agent, its versions, or its Configuration. ${askForGrant("read access to them")}`
+        ? agentPageReadRefusal(error)
         : "The read could not be completed. Retry to check current access and saved state.",
       // A permission refusal offers the header's Refresh, not a Retry that repeats it.
       error.status === 403 ? undefined : "Retry",
