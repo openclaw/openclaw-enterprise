@@ -9,6 +9,7 @@ export const DeletionDiscovered = story("stopReadDiscoversDeletion");
 export const RepeatConfirmation = story("stopRepeatConfirm");
 export const NoSelectedVersion = story("stopNoSelection");
 export const FirstDeploymentFailed = story("stopFirstDeploymentFailed");
+export const FirstDeploymentQueued = story("stopFirstDeploymentQueued");
 export const NeverDeployed = story("stopNeverDeployed");
 export const RepeatUnknown = story("stopRepeatUnknown");
 export const Denied = story("stopDenied");

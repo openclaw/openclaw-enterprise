@@ -62,7 +62,9 @@ not that Compute has shut down. Cancel restores focus to the invoking button; su
 For a stopped Agent, **Request Stop again** confirms a new stop intent, even with no selected
 version; the Console cannot inspect history or candidate cleanup. With no selected version
 and no readable versions yet (`setNoReadableVersions`), the Stop row is hidden unless the viewer
-just used it. The overview's **Runtime** row reports a requested stop.
+just used it. A running Agent with no selected version keeps the row only while the latest
+readable deployment is queued or in progress (`setNothingRunning`); Stop then cancels that first
+deployment, and the confirmation says so. The Agents list follows the same rule. The overview's **Runtime** row reports a requested stop.
 
 Refresh reads desired state and selected version, not live health. Denial stays inline; changed
 state updates panels in place. If the read finds deletion in progress, Agent detail switches to

@@ -216,8 +216,9 @@ An accepted stop shows **Runtime: Stop requested** in the overview; it does not
 prove the runtime finished. **Refresh stop status** reads desired state and
 selected version. If another operator has started deletion, the page shows deletion recovery.
 An uncertain result blocks another stop until a refresh.
-With no selected or readable version, as before a first deploy, there is no Stop
-row. To resume,
+With no selected version, there is no Stop row: before a first deploy, after a
+failed first deployment, or when you cannot read the deploying version. While a
+first deployment is queued or in progress, **Stop Agent** cancels it. To resume,
 open **Create new version** and select **Deploy new version**, which creates a new
 version. See [Stop and resume](../../reference/agents/deployment.md#stop-and-resume).
 

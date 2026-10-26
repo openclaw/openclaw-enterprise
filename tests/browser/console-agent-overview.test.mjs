@@ -430,9 +430,9 @@ for (const [code, outcome] of [
 }
 
 // A first deployment that failed leaves the Agent requested to run with no version selected
-// (finding 2385). Stop would change nothing, so the danger zone disables it and says why,
-// instead of offering to stop "the running version".
-test("Stop is disabled with its reason when a failed first deployment left nothing running", async (t) => {
+// (findings 2385, D691). Stop would change nothing, so the danger zone offers no Stop row, as
+// the Agents list offers no Stop icon, instead of offering to stop "the running version".
+test("Stop is hidden when a failed first deployment left nothing running", async (t) => {
   const { fixture, namespace, agent, page } = await agentPage(t, "Failed first", "Failed first");
   const failed = await fixture.deployAgent(namespace.id, agent.id);
   await routeFailedRecord(page, fixture, namespace, agent, failed);
@@ -440,17 +440,8 @@ test("Stop is disabled with its reason when a failed first deployment left nothi
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
   const summary = page.locator(".agent-current-summary");
   await summary.getByText("v1 · Failed", { exact: true }).waitFor();
-  const stopRegion = page.getByRole("region", { name: "Stop Agent", exact: true });
-  await stopRegion
-    .getByText(
-      "No version is running, so there is nothing to stop. Deploy a new version to start this Agent.",
-      { exact: true },
-    )
-    .waitFor();
-  assert.equal(
-    await stopRegion.getByRole("button", { name: "Stop Agent", exact: true }).isDisabled(),
-    true,
-  );
+  await page.getByRole("region", { name: "Delete Agent", exact: true }).waitFor();
+  assert.equal(await page.getByRole("region", { name: "Stop Agent", exact: true }).count(), 0);
 });
 
 // The Agents list follows the detail page: once the row's deployment read shows the failed first
@@ -479,9 +470,10 @@ test("the Agents list hides Stop when a failed first deployment left nothing run
   await waitForEnabled(row.getByRole("button", { name: "Stop Failed list", exact: true }));
 });
 
-// Only a failed first deployment leaves nothing to stop. While a first deployment is still queued
-// no version is current either, but Stop ends that deployment, so it stays enabled.
-test("Stop stays enabled while a first deployment is queued", async (t) => {
+// Only a first deployment in progress gives an Agent with no current version something to stop.
+// While it is still queued, Stop stays enabled and says it cancels that deployment: no gateway
+// runs yet to interrupt (finding D691).
+test("Stop stays enabled and says it cancels a first deployment that is queued", async (t) => {
   const { fixture, namespace, agent, page } = await agentPage(t, "Queued first", "Queued first");
   const queued = await fixture.deployAgent(namespace.id, agent.id);
   await page.route(deploymentRecordUrl(fixture, namespace.id, agent.id, queued.id), (route) =>
@@ -492,8 +484,30 @@ test("Stop stays enabled while a first deployment is queued", async (t) => {
   const summary = page.locator(".agent-current-summary");
   await summary.getByText("v1 · Queued", { exact: true }).waitFor();
   const stopRegion = page.getByRole("region", { name: "Stop Agent", exact: true });
-  await waitForEnabled(stopRegion.getByRole("button", { name: "Stop Agent", exact: true }));
+  const stop = stopRegion.getByRole("button", { name: "Stop Agent", exact: true });
+  await waitForEnabled(stop);
   assert.equal(await stopRegion.getByText(/nothing to stop/).count(), 0);
+  await stopRegion
+    .getByText("Cancels the deployment in progress. The Agent stays and can be deployed again.", {
+      exact: true,
+    })
+    .waitFor();
+  await stop.click();
+  const dialog = page.getByRole("dialog", { name: "Stop this Agent?" });
+  await dialog
+    .getByText(
+      "No version is serving yet, so this cancels the deployment in progress. Configuration, versions, Credentials, and workspace data are retained. Deploy a new version to start the Agent again.",
+      { exact: true },
+    )
+    .waitFor();
+  assert.equal(await dialog.getByText(/runtime gateway/).count(), 0);
+  await dialog.getByRole("button", { name: "Stop Agent", exact: true }).click();
+  await stopRegion
+    .getByText(
+      "Stop requested. The deployment in progress is cancelled, and OCC will not start this Agent until you deploy a new version.",
+      { exact: true },
+    )
+    .waitFor();
 });
 
 // The failed first version's own page (finding 2403) said "Not verified" for Live serving while

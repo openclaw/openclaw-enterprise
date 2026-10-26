@@ -19,6 +19,15 @@ export interface LifecycleError {
 export const STOP_CONFIRMATION =
   "This interrupts the current runtime gateway and ends any reply in progress; open chats can keep showing it as responding. Configuration, versions, Credentials, and workspace data are retained. Deploy a new version to start the Agent again.";
 
+// With no version selected, Stop is offered only while a first deployment is in progress, and
+// all it does is cancel that deployment: no gateway runs yet to interrupt (finding D691).
+export const STOP_FIRST_DEPLOYMENT_CONFIRMATION =
+  "No version is serving yet, so this cancels the deployment in progress. Configuration, versions, Credentials, and workspace data are retained. Deploy a new version to start the Agent again.";
+
+export function stopConfirmation(agent: Pick<AgentRead, "activeRevisionId">) {
+  return agent.activeRevisionId ? STOP_CONFIRMATION : STOP_FIRST_DEPLOYMENT_CONFIRMATION;
+}
+
 export const DELETE_CONFIRMATION =
   "This permanently deletes the Agent, its version history, and its workspace data. This cannot be undone.";
 
