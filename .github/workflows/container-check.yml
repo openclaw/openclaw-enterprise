@@ -67,7 +67,7 @@ jobs:
         with:
           node-version: "24.16.0"
       - name: Select the checked-in Node base for standalone verification
-        if: ${{ !inputs.source_sha }}
+        if: ${{ !inputs.ci_run_id }}
         run: |
           NODE_BASE_IMAGE="$(node -p 'require("./scripts/ci/test-suites/images-packaging.json").prepare.defaultEnv.NODE_BASE_IMAGE')"
           [[ "$NODE_BASE_IMAGE" =~ ^[^[:space:]]+@sha256:[a-fA-F0-9]{64}$ ]]
