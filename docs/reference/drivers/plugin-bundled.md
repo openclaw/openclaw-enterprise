@@ -70,13 +70,12 @@ catalog searches its bundled entries.
 The console preloads the first page when a PAT is entered or selected in Create
 Agent, or an editable Agent's Plugins tab opens with a bound PAT Secret;
 **Configure plugins** reuses that page or its pending request. Replacing the PAT
-clears results and preloads a fresh first page; selections remain. Search runs
-300 ms after the last keystroke and resets pagination when the query changes;
-Enter, page navigation, and explicit loads run immediately. Loading feedback
-covers that delay and lasts until the response, even with no earlier entries;
-tool lookups show it until details arrive. Configured-plugin and tool filters
-stay instant and local. Closing the picker or changing its credential cancels
-pending searches. Requests have a 15-second deadline and 4 MiB response limit.
+clears results and preloads a fresh first page; selections remain. Search waits
+300 ms after the last keystroke (Enter, page navigation and explicit loads run at
+once) and resets pagination for a new query. Loading feedback lasts until the
+response, even with no earlier entries; tool lookups show it until details
+arrive. Closing the picker or changing its credential cancels pending searches.
+Configured-plugin and tool filters stay instant and local. Requests have a 15-second deadline and 4 MiB response limit.
 Discovery does not read Codex home, install plugins, or return download URLs.
 Plugin details show available website, privacy-policy, and terms-of-service
 links; invalid or non-HTTPS URLs are omitted.
@@ -97,8 +96,8 @@ Unavailable entries show the reported cause and a recovery link:
 
 | Cause                                              | Next step                                                                                           |
 | -------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| Disabled by administrator                          | Ask a workspace administrator to review access for the token's identity.                            |
-| Plan not eligible                                  | Ask the administrator to review workspace plan availability.                                        |
+| Disabled by a ChatGPT workspace administrator      | Ask a ChatGPT workspace administrator to review access for the token's identity.                    |
+| Plan not eligible                                  | Ask a ChatGPT workspace administrator to review plan availability.                                  |
 | Required app unavailable                           | Review app access and setup; credentials alone may not resolve this.                                |
 | No recognized reason                               | Review workspace plugin access without assuming a specific cause.                                   |
 | Unsupported native components or no apps or skills | Check [native limits](#native-mappings-and-limits); changing ChatGPT access cannot add OCE support. |
@@ -320,8 +319,7 @@ preserves other Agents' state.
 
 Source and contract tests, direct MCP calls, package listings, and rendered
 bridge configuration do not prove native Agent behavior or compatibility with
-every runtime image. Native proof requires the opt-in real-runtime lane; the
-testing guide also covers contributor fixture setup and proof notes.
+every runtime image; native proof needs the testing guide's opt-in real-runtime lane.
 
 Disabling a selection does not uninstall it. Native remote installation can enable
 the plugin on the credential's account. Agent-local plugin/app policy and the

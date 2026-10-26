@@ -14,7 +14,12 @@ import type {
   ShutdownSummary,
   SessionStatus,
 } from "./service-contracts.ts";
-import type { CredentialServiceOwner, ExchangeRef, ExchangeSender } from "./internal-contracts.ts";
+import type {
+  CredentialServiceOwner,
+  ExchangeRef,
+  ExchangeSender,
+  SessionLogIdentity,
+} from "./internal-contracts.ts";
 import { createCustody } from "./custody.ts";
 import type { CustodyOwner } from "./custody.ts";
 import { createLifecycle } from "./lifecycle.ts";
@@ -36,6 +41,7 @@ import type { SessionAdmission } from "./sessions.ts";
 type Admission = Omit<SessionAdmission, "bearer">;
 interface Session {
   readonly admission: Admission;
+  readonly logIdentity: SessionLogIdentity;
   state: SessionStatus["state"];
   readonly owned?: Readonly<{
     custody: CustodyOwner;
@@ -323,6 +329,15 @@ export function createCredentialService(
       }
       const openedSession: Session = {
         admission,
+        logIdentity: Object.freeze({
+          sessionId: admission.authority.sessionId,
+          ...(isBoundInput(admittedInput)
+            ? {
+                namespaceId: admittedInput.namespaceId,
+                repositoryRef: admittedInput.repositoryRef,
+              }
+            : {}),
+        }),
         ...(prepared === undefined ? {} : { prepared }),
         ...(owned === undefined ? {} : { owned }),
         state: "OPEN",
@@ -357,6 +372,11 @@ export function createCredentialService(
       }
       close(session);
       return snapshot(session);
+    },
+    identify(bearer: string) {
+      const digest = bearerDigest(bearer);
+      const session = digest ? bearers.get(digest) : undefined;
+      return session && isOpen(session) ? session.logIdentity : undefined;
     },
     reserve(bearer: string, head: RequestHead, signal: AbortSignal) {
       const digest = bearerDigest(bearer);

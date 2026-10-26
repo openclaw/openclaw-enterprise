@@ -252,6 +252,10 @@ references, ordered by kind and ID; `truncated: true` means more exist. An Agent
 that uses a listed Configuration but has not deployed it is not listed; its next
 deployment reads the current value.
 
+The same read returns `callerPermissions`: whether you may replace (`update`) and
+delete (`delete`) the Secret now. It is advisory and records no denial; the write
+is still authorized when you send it.
+
 ## Delete
 
 Delete only unreferenced Secrets. This example uses an authenticated human

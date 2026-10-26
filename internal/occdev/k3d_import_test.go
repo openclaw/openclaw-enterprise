@@ -243,25 +243,8 @@ func TestImportArchiveDirectDoesNotRetryAnotherFailureAfterAClosedStream(t *test
 
 func TestDevelopmentImageImportRetriesAClosedStreamAndVerifiesTheDigest(t *testing.T) {
 	state := kubernetesOnlyOpenShellState(t)
-	image := "ghcr.io/openclaw/runtime@" + profileTestDigest
-	// The staging name mirrors importDevelopmentImage on purpose, so the tag
-	// that reaches the cluster is pinned.
-	sum := sha256.Sum256([]byte(image))
-	staging := fmt.Sprintf("openclaw-development/import-%x:%s", sum[:6], state.Cluster)
-	recorded := "localhost/" + staging
-	reference := strings.TrimSuffix(recorded, ":"+state.Cluster) + "@" + profileTestDigest
-	server := "k3d-" + state.Cluster + "-server-0"
-	commands := fakeProfileCommands(t, map[string]string{
-		"podman": `"image inspect ` + staging + `") exit 1 ;;
-"tag ` + image + ` ` + staging + `") ;;
-"image inspect --format {{json .RepoTags}} ` + staging + `") echo '["` + recorded + `"]' ;;
-"image inspect --format {{.Os}}/{{.Architecture}} ` + recorded + `") echo linux/amd64 ;;
-"image save --output "*" ` + recorded + `") printf archive > "$4" ;;
-"exec ` + server + ` ctr -n k8s.io images list") echo "` + recorded + ` application/vnd.oci.image.manifest.v1+json ` + profileTestDigest + `" ;;
-"exec ` + server + ` ctr -n k8s.io images tag ` + recorded + ` ` + reference + `") ;;
-"image rm ` + recorded + `") ;;`,
-		"k3d": flakyK3dImportCase(t, state.Cluster, ""),
-	})
+	listed := "RECORDED application/vnd.oci.image.manifest.v1+json DIGEST"
+	image, recorded, reference, commands := digestImportCommands(t, state, false, "linux/amd64", listed, flakyK3dImportCase(t, state.Cluster, ""))
 	var stdout bytes.Buffer
 	r := newRunner(Options{Repository: state.Repository, Out: &stdout})
 	r.engine = "podman"
@@ -274,4 +257,94 @@ func TestDevelopmentImageImportRetriesAClosedStreamAndVerifiesTheDigest(t *testi
 		t.Fatalf("unexpected runtime reference: %q", got)
 	}
 	assertRetriedImport(t, commands(), filepath.Join(state.directory, developmentImportArchive(recorded)), state.Cluster, stdout.String())
+	// The staging tag exists only for this import; leaving it would block the next run.
+	tagged, removed := -1, -1
+	for index, command := range commands() {
+		if strings.HasPrefix(command, "podman exec ") && strings.Contains(command, " ctr -n k8s.io images tag ") {
+			tagged = index
+		}
+		if command == "podman image rm "+recorded {
+			removed = index
+		}
+	}
+	if tagged < 0 || removed < tagged {
+		t.Fatalf("the staging tag was not removed after the node tag (tag %d, rm %d):\n%s", tagged, removed, strings.Join(commands(), "\n"))
+	}
+}
+
+// digestImportCommands fakes podman and k3d for importDevelopmentImage on a
+// digest image. stagingExists answers the staging-name probe, platform the
+// recorded platform, listed is the node's `ctr images list` output (the
+// placeholders RECORDED and DIGEST stand for the recorded name and a valid
+// digest), and k3dImport is the k3d case for the archive import. The staging
+// name mirrors importDevelopmentImage on purpose, so the tag that reaches the
+// cluster is pinned.
+func digestImportCommands(t *testing.T, state *developmentState, stagingExists bool, platform, listed, k3dImport string) (image, recorded, reference string, commands func() []string) {
+	t.Helper()
+	image = "ghcr.io/openclaw/runtime@" + profileTestDigest
+	sum := sha256.Sum256([]byte(image))
+	staging := fmt.Sprintf("openclaw-development/import-%x:%s", sum[:6], state.Cluster)
+	recorded = "localhost/" + staging
+	reference = strings.TrimSuffix(recorded, ":"+state.Cluster) + "@" + profileTestDigest
+	server := "k3d-" + state.Cluster + "-server-0"
+	probe := "exit 1"
+	if stagingExists {
+		probe = "echo '[{}]'"
+	}
+	listed = strings.NewReplacer("RECORDED", recorded, "DIGEST", profileTestDigest).Replace(listed)
+	commands = fakeProfileCommands(t, map[string]string{
+		"podman": `"image inspect ` + staging + `") ` + probe + ` ;;
+"tag ` + image + ` ` + staging + `") ;;
+"image inspect --format {{json .RepoTags}} ` + staging + `") echo '["` + recorded + `"]' ;;
+"image inspect --format {{.Os}}/{{.Architecture}} ` + recorded + `") echo ` + platform + ` ;;
+"image save --output "*" ` + recorded + `") printf archive > "$4" ;;
+"exec ` + server + ` ctr -n k8s.io images list") printf '%s\n' "` + listed + `" ;;
+"exec ` + server + ` ctr -n k8s.io images tag ` + recorded + ` ` + reference + `") ;;
+"image rm ` + recorded + `") ;;`,
+		"k3d": k3dImport,
+	})
+	return image, recorded, reference, commands
+}
+
+func TestDevelopmentImageImportRefusesWhatItCannotVerify(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		stagingExists bool
+		platform      string
+		listed        string
+		want          string
+	}{
+		// Tagging over an existing staging name, then removing it, would delete
+		// an image this run does not own.
+		{"existing staging image", true, "linux/amd64", "RECORDED application/vnd.oci.image.manifest.v1+json DIGEST", "development staging image already exists"},
+		{"non-Linux platform", false, "darwin/arm64", "RECORDED application/vnd.oci.image.manifest.v1+json DIGEST", "must contain a Linux platform"},
+		{"two digests for one name", false, "linux/amd64", "RECORDED application/vnd.oci.image.manifest.v1+json DIGEST\nRECORDED application/vnd.oci.image.manifest.v1+json sha256:" + strings.Repeat("0", 64), "ambiguous imported image"},
+		{"malformed digest", false, "linux/amd64", "RECORDED application/vnd.oci.image.manifest.v1+json sha256:abc", "could not resolve imported image digest"},
+		// Nothing listed under the recorded name leaves the digest empty.
+		{"image absent from the node", false, "linux/amd64", "other/image:1 application/vnd.oci.image.manifest.v1+json DIGEST", "could not resolve imported image digest"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state := kubernetesOnlyOpenShellState(t)
+			image, recorded, _, commands := digestImportCommands(t, state, tc.stagingExists, tc.platform, tc.listed, `"image import --mode direct "*" -c `+state.Cluster+`") ;;`)
+			r := newRunner(Options{Repository: state.Repository})
+			r.engine = "podman"
+			got, err := r.importDevelopmentImage(context.Background(), state, image)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("got %q, %v; want %q\n%s", got, err, tc.want, strings.Join(commands(), "\n"))
+			}
+			removed := false
+			for _, command := range commands() {
+				if strings.HasPrefix(command, "podman tag ") && tc.stagingExists {
+					t.Fatalf("retagged over an existing staging image: %q", command)
+				}
+				if strings.Contains(command, " ctr -n k8s.io images tag ") {
+					t.Fatalf("tagged an unverified image in the node: %q", command)
+				}
+				removed = removed || command == "podman image rm "+recorded
+			}
+			if removed == tc.stagingExists {
+				t.Fatalf("staging image removal = %v for staging-exists = %v:\n%s", removed, tc.stagingExists, strings.Join(commands(), "\n"))
+			}
+		})
+	}
 }

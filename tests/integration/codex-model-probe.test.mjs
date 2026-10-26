@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { AGENT_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { readJsonLines } from "../helpers/json-lines.mjs";
 import { waitUntil } from "../helpers/wait-for.mjs";
 
 const execute = promisify(execFile);
@@ -210,8 +211,7 @@ async function startLauncher(
   return {
     name,
     exited,
-    calls: async () =>
-      (await readFile(join(directory, "calls"), "utf8")).trim().split("\n").map(JSON.parse),
+    calls: () => readJsonLines(join(directory, "calls")),
     output: () => output,
     errors: () => errors,
     stop: () => stop,

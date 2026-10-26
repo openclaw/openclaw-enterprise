@@ -30,6 +30,7 @@ import {
 import { refusingPort } from "../helpers/available-port.mjs";
 import { withEnvironment } from "../helpers/environment.mjs";
 import { commandPath, prependPath, writeCommand } from "../helpers/fake-commands.mjs";
+import { readJsonLines } from "../helpers/json-lines.mjs";
 import {
   createOpenShellKubernetesFixture,
   failedRecoveryDiagnostic,
@@ -238,10 +239,7 @@ if (readFileSync(${JSON.stringify(calls)}, "utf8").trim().split("\\n").length <=
         (error) => ({ error }),
       ),
   );
-  const kubectlCalls = (await readFile(calls, "utf8"))
-    .trim()
-    .split("\n")
-    .map((line) => JSON.parse(line));
+  const kubectlCalls = await readJsonLines(calls);
   return { ...outcome, kubectlCalls, sleeps, logs };
 }
 

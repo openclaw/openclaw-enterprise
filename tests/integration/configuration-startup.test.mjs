@@ -6,7 +6,7 @@ import {
   randomBytes,
   randomUUID,
 } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -214,6 +214,36 @@ test("Credential Proxy startup preserves the selection and refuses retired keys"
         await assert.rejects(load(), /drivers\.conduit is retired; use drivers\.credential_proxy/);
       });
     }
+  }
+
+  // Finding 2361: the retired drivers.repo refusal named only native Git, which startup refuses
+  // beside a Sandbox. It now names the path that fits the selected Sandbox.
+  for (const [sandbox, advice] of [
+    [
+      "bundled",
+      /configure repository\.openShell with repository\.preparedGitHub \(the bundled OpenShell Driver refuses git-write\), or repository\.nativeSender without drivers\.sandbox or drivers\.credential_proxy\./,
+    ],
+    [
+      "package",
+      /configure repository\.preparedGitHub with the package's drivers\.credential_proxy and no repository\.openShell, or repository\.nativeSender without drivers\.sandbox/,
+    ],
+    ["none", /then configure repository\.nativeSender with repository\.preparedGitHub\. Do not/],
+  ]) {
+    await t.test(`retired drivers.repo, Sandbox ${sandbox}`, async () => {
+      const invalid = structuredClone(configuration);
+      invalid.drivers.repo = { id: "repository-credentials", configuration: {} };
+      if (sandbox === "none") {
+        delete invalid.drivers.sandbox;
+      } else if (sandbox === "package") {
+        invalid.drivers.sandbox.package = "@example/installed-sender";
+      }
+      await writeFile(path, JSON.stringify(invalid));
+      await assert.rejects(load(), (error) => {
+        assert.match(error.message, /^drivers\.repo native admission is retired\./);
+        assert.match(error.message, advice);
+        return true;
+      });
+    });
   }
 });
 
@@ -1591,6 +1621,59 @@ test("production server and worker resolve singleton startup without an Installa
     "PERSISTENCE_UNAVAILABLE",
   );
   assert.doesNotMatch(worker.stderr, /OCC_INSTALLATION_ID|explicit Installation/);
+});
+
+// An unwritable readiness path left the worker running but never Ready (finding 2311). Both
+// health markers are probed before PostgreSQL; readiness through a sibling file, since its
+// marker must not appear before queue health does. The code names the setting (finding 2327),
+// whether the path is relative, in a missing directory or an existing directory.
+test("worker refuses an unwritable readiness or liveness path before opening PostgreSQL", async (t) => {
+  const path = await fixture(t);
+  const directory = await temporaryDirectory(t, "occ-worker-markers-");
+  const shared = {
+    PATH: process.env.PATH,
+    NODE_ENV: "production",
+    OCC_CONFIG_PATH: path,
+    OCC_DATABASE_URL: "postgresql://127.0.0.1:1/occ",
+  };
+  const occupied = join(directory, "occupied");
+  await mkdir(join(occupied, "entry"), { recursive: true });
+  const refusals = [
+    ["OCC_WORKER_READINESS_PATH", "WORKER_READINESS_PATH_INVALID"],
+    ["OCC_WORKER_LIVENESS_PATH", "WORKER_LIVENESS_PATH_INVALID"],
+  ].flatMap(([setting, code]) =>
+    ["marker", join(directory, "missing", "marker"), occupied].map((marker) => ({
+      setting,
+      code,
+      marker,
+    })),
+  );
+  const ready = join(directory, "ready");
+  const [writable, ...refused] = await settled([
+    boot("apps/controller/src/worker.mjs", { ...shared, OCC_WORKER_READINESS_PATH: ready }),
+    ...refusals.map(({ setting, marker }) =>
+      boot("apps/controller/src/worker.mjs", { ...shared, [setting]: marker }),
+    ),
+  ]);
+  for (const [index, { setting, code, marker }] of refusals.entries()) {
+    const worker = refused[index];
+    assert.equal(worker.status, 1, `${setting}=${marker}`);
+    assert.equal(
+      startupDiagnostic(worker.stderr, "worker.startup-error").code,
+      code,
+      `${setting}=${marker}`,
+    );
+    // The code names the setting; the configured path stays out of the log.
+    assert.ok(!worker.stderr.includes(directory), setting);
+  }
+  // A writable path reaches PostgreSQL, leaving neither the marker nor the probe behind.
+  assert.equal(writable.status, 1);
+  assert.equal(
+    startupDiagnostic(writable.stderr, "worker.startup-error").code,
+    "PERSISTENCE_UNAVAILABLE",
+  );
+  assert.deepEqual((await readdir(directory)).sort(), ["occupied"]);
+  assert.deepEqual(await readdir(occupied), ["entry"]);
 });
 
 test("only the actual API process reads ChatGPT admin credentials and backend accounts require PostgreSQL", async (t) => {

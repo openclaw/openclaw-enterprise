@@ -22,6 +22,7 @@ import {
   resources,
   missing,
   waitFor,
+  waitForDeletedClaim,
   assertKubernetesFixtureAvailable,
   namespace,
   agentName,
@@ -522,23 +523,23 @@ test(
       await assertDeployDenied(namespaceId, created.data.id, `${label} before model Secret grant`);
       await grantSecretOperate(namespaceId, created.data.servicePrincipalId, secret.data.id, label);
       if (boundSecret !== undefined) {
-        // Isolate missing channel credentials from the model permission denial above.
+        // Configuration save refuses channel credentials without Secret bindings, naming the
+        // setting and the binding, before any deployment (finding 2319).
         const missingConfiguration = await request(
           "PATCH",
           `/namespaces/${namespaceId}/configurations/${configuration.data.id}`,
           { values: missingChannelBindingValues },
         );
-        assert.equal(missingConfiguration.status, 200, JSON.stringify(missingConfiguration.error));
-        const missingBindings = await request(
-          "POST",
-          `/namespaces/${namespaceId}/agents/${created.data.id}/deploy`,
-        );
         assert.equal(
-          missingBindings.status,
+          missingConfiguration.status,
           400,
-          `${label} before channel Secret bindings: ${JSON.stringify(missingBindings.error)}`,
+          `${label} before channel Secret bindings: ${JSON.stringify(missingConfiguration.error)}`,
         );
-        assert.equal(missingBindings.error.code, "CHANNEL_CREDENTIAL_BINDING_REQUIRED");
+        assert.equal(missingConfiguration.error.code, "INVALID_REQUEST");
+        assert.match(
+          missingConfiguration.error.message,
+          /^Configuration setting channels\.slack\.appToken references SLACK_APP_TOKEN without a Configuration Secret binding: /,
+        );
         // This k3d fixture has no runtime.channels proxy and uses the fixture image,
         // so successful deployment proves generic API/IAM/admission/gateway Secret
         // projection. Real Slack channel runtime proof belongs to the real-runtime suite.
@@ -1541,7 +1542,7 @@ test(
       deletedClaims.push(`gateway-state-${hash(adoptedTenant.id)}`);
     }
     for (const name of deletedClaims) {
-      assert.equal(await missing("persistentvolumeclaim", name, existingName), true);
+      await waitForDeletedClaim(name, existingName);
     }
     assert.equal(await missing("deployment", gatewayName(adoptedTenant.id), existingName), true);
     assert.equal(await missing("service", gatewayName(adoptedTenant.id), existingName), true);

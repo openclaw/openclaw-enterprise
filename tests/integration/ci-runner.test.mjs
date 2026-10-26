@@ -4836,6 +4836,34 @@ for (const scenario of [
       failure: "spawn",
     },
   },
+  // A refused statement or no session, from the direct connection to the lane's server
+  // (scripts/ci/postgres-admin.mjs), which has no process exit code or signal.
+  {
+    name: "query",
+    input: {
+      code: "CI_PREPARATION_COMMAND_FAILED",
+      stage: "database-create",
+      failure: "query",
+      timedOut: false,
+    },
+    expected: {
+      name: "Error",
+      code: "CI_PREPARATION_COMMAND_FAILED",
+      stage: "database-create",
+      failure: "query",
+      timedOut: false,
+    },
+  },
+  {
+    name: "connect",
+    input: { code: "CI_PREPARATION_COMMAND_FAILED", stage: "database-schema", failure: "connect" },
+    expected: {
+      name: "Error",
+      code: "CI_PREPARATION_COMMAND_FAILED",
+      stage: "database-schema",
+      failure: "connect",
+    },
+  },
   {
     name: "signal",
     input: {

@@ -12,6 +12,18 @@ export const FormNamespaceBecomesReady = story("createFormNamespaceBecomesReady"
 export const FormNamespaceFailed = story("createFormNamespaceFailed");
 export const FormNamespaceMissing = story("createFormNamespaceMissing");
 export const CreateForm = { ...story("createForm"), name: "OpenAI with Codex harness" };
+export const CreateSecretCreateNotPermitted = {
+  ...story("createSecretCreateNotPermitted"),
+  name: "Secret creation not permitted",
+};
+export const CreateSecretOperateDenied = {
+  ...story("createSecretOperateDenied"),
+  name: "Secret operate not permitted",
+};
+export const CreateRepositoryNotConfigured = {
+  ...story("createRepositoryNotConfigured"),
+  name: "Repository access not set up",
+};
 export const CreateInvalidConfiguration = {
   ...story("createInvalidConfiguration"),
   name: "Invalid Configuration JSON",
@@ -55,6 +67,9 @@ export const CreateSecretRequiredFields = {
   name: "Create Secret required fields",
 };
 export const CreateSecretRefused = story("createSecretRefused");
+export const CreateSecretFieldsRefused = story("createSecretFieldsRefused");
+export const CreateAgentNameRefused = story("createAgentNameRefused");
+export const CreateWorkspaceFileRefused = story("createWorkspaceFileRefused");
 export const CreateModelSecretRequired = story("createModelSecretRequired");
 export const CreateSlackSecretStaged = {
   ...story("createSlackSecretStaged"),
@@ -77,6 +92,10 @@ export const CreatePending = story("createPending");
 export const CreateDeploymentNamedWait = story("createDeploymentNamedWait");
 export const CreateDeploymentPodQuotaFull = story("createDeploymentPodQuotaFull");
 export const CreateDeploymentImagePullFailed = story("createDeploymentImagePullFailed");
+export const CreateDeploymentSuperseded = {
+  ...story("createDeploymentSuperseded"),
+  name: "A newer deployment took over",
+};
 export const CreateDeploymentFailed = story("createDeploymentFailed");
 export const CreateDeploymentStopped = story("createDeploymentStopped");
 export const CreateProvisioningStopped = story("createProvisioningStopped");
@@ -104,6 +123,14 @@ export const CreateOpenclawWithoutNativeWorkers = {
 export const CreateOpenclawNoExecutionMode = {
   ...story("createOpenclawNoExecutionMode"),
   name: "OpenClaw with no usable execution mode",
+};
+export const CreateOpenclawSettingRefusal = {
+  ...story("createOpenclawSettingRefusal"),
+  name: "OpenClaw refused by Sandbox Driver settings",
+};
+export const CreateOpenclawSettingRefusalAnthropic = {
+  ...story("createOpenclawSettingRefusalAnthropic"),
+  name: "OpenClaw refused by Sandbox Driver settings, Anthropic",
 };
 export const CreateOpenclawSandboxDriverOutage = {
   ...story("createOpenclawSandboxDriverOutage"),
@@ -232,6 +259,10 @@ export const CreatePreflightTimeout = {
   ...story("createPreflightTimeout"),
   name: "Configuration check timed out",
 };
+export const CreateNameTaken = {
+  ...story("createNameTaken"),
+  name: "Agent name taken",
+};
 export const CreatePluginPreflightRefusal = {
   ...story("createPluginPreflightRefusal"),
   name: "Plugin refusal before anything is saved",
@@ -245,6 +276,10 @@ export const CreateUnknown = { ...story("createUnknown"), name: "Provisioning ou
 export const CreatePasswordPreset = {
   ...story("createPasswordPreset"),
   name: "Standard Codex password variable",
+};
+export const CreatePasswordPresetOperateSome = {
+  ...story("createPasswordPresetOperateSome"),
+  name: "Standard Codex, Secret operate on some Secrets",
 };
 export const CreatePasswordPresetMissingModel = {
   ...story("createPasswordPresetMissingModel"),

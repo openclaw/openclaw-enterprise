@@ -1,12 +1,29 @@
 import type { AgentRead } from "@openclaw-enterprise/contracts";
-import { type createApiClient, requestFailure, responseFields } from "../api-client.mjs";
-import { element, button, setFieldError, statusBlock, validateFields } from "../dom.mjs";
+import {
+  type createApiClient,
+  namedDenial,
+  requestFailure,
+  responseFields,
+} from "../api-client.mjs";
+import {
+  element,
+  button,
+  setFieldError,
+  statusBlock,
+  validateFields,
+  withRequestId,
+} from "../dom.mjs";
 import type { createDraftStore } from "../drafts.mjs";
+import {
+  WORKSPACE_READ_DENIED,
+  WORKSPACE_SAVE_DENIED,
+  WORKSPACE_SAVE_REFUSED,
+} from "./access-reasons.mjs";
+import { describeFailure } from "./list.mjs";
 
 const filenames = ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"];
 // Shown when the caller's permission answer denies Agent operate, which saving a file needs.
-const OPERATE_DENIED =
-  "Your access does not include operating this Agent. Ask an administrator for Agent operate access to save workspace files.";
+const OPERATE_DENIED = WORKSPACE_SAVE_DENIED;
 
 interface WorkspaceContext {
   request: ReturnType<typeof createApiClient>;
@@ -23,13 +40,46 @@ interface WorkspaceDraft {
 
 type FileFailure = ReturnType<typeof requestFailure>;
 
-function fileError(error: FileFailure, writing: boolean) {
-  let text = "Workspace access is unavailable. Check the Agent gateway and try reloading.";
+// The API's workspace file rule (normalizeInitialWorkspaceFiles in
+// packages/contracts/src/workspace-setup.ts and the workspace file write route): valid Unicode,
+// no NUL, at most 16 KiB of UTF-8.
+const WORKSPACE_FILE_MAX_BYTES = 16384;
+
+/**
+ * Why the API would refuse `content` for the workspace file `name`, naming the file and only the
+ * rule it breaks, or "" when it would accept it. The Workspace tab and Create Agent's initial
+ * workspace files share it (findings 2341, 2366).
+ */
+export function workspaceFileProblem(name: string, content: string) {
+  if (content.includes("\0") || !content.isWellFormed()) {
+    return `Use valid Unicode without NUL characters in ${name}.`;
+  }
+  if (new TextEncoder().encode(content).length > WORKSPACE_FILE_MAX_BYTES) {
+    return `Use at most 16 KiB (16,384 UTF-8 bytes) in ${name}.`;
+  }
+  return "";
+}
+
+const WORKSPACE_GATEWAY_UNAVAILABLE =
+  "Workspace files could not be reached: the Agent's gateway did not answer. Check that the Agent is running, then reload this file. If it continues, ask an operator to check the gateway.";
+const WORKSPACE_API_UNREACHABLE =
+  "The request did not reach the API. Check your connection, then reload this file.";
+
+function fileError(error: FileFailure, writing: boolean, failure: unknown) {
+  // A failure without its own text below says why by status (finding 2538): a rate limit how
+  // long to wait, a conflict the API's reason, a request that never reached the API that, and
+  // anything else that the gateway did not answer.
+  const { name } = responseFields(failure);
+  let text =
+    error.status === 409 || error.status === 429
+      ? describeFailure(error)
+      : error.status === undefined && (name === "TypeError" || name === "TimeoutError")
+        ? WORKSPACE_API_UNREACHABLE
+        : WORKSPACE_GATEWAY_UNAVAILABLE;
   if (error.status === 403) {
-    // Saving a file is an Agent operate action (finding 1540).
-    text = writing
-      ? "You do not have permission to save this file. Ask an administrator for Agent operate access."
-      : "Access denied. You do not have permission for this file operation.";
+    // Saving a file is an Agent operate action (finding 1540); reading one is Agent read, unless
+    // the API names another grant.
+    text = writing ? WORKSPACE_SAVE_REFUSED : (namedDenial(error) ?? WORKSPACE_READ_DENIED);
   }
   if (error.status === 404) {
     text = "File unavailable or missing. Check Agent access before creating it.";
@@ -42,7 +92,7 @@ function fileError(error: FileFailure, writing: boolean) {
     text =
       "Outcome unknown. Your write may have succeeded. Reload this file and review its current contents before saving again.";
   }
-  return text + (error.requestId ? ` Request ID: ${error.requestId}` : "");
+  return withRequestId(text, error.requestId);
 }
 
 // Only this answer confirms the file itself is absent. A resource or scope 404 does not establish
@@ -71,6 +121,7 @@ export function renderWorkspaceFiles(
 ) {
   const refreshers: Array<() => Promise<void>> = [];
   const denials: Array<() => void> = [];
+  const restorations: Array<() => void> = [];
   let operateDenied = false;
   const section = element(
     "section",
@@ -98,7 +149,7 @@ export function renderWorkspaceFiles(
       element(
         "p",
         { className: "muted", role: "status" },
-        "Workspace files require a deployed Agent with a current version and a reachable gateway.",
+        "Workspace files require a deployed Agent with a current version and a reachable gateway. Deploy the Agent to read or edit them.",
       ),
     );
     return { section, refresh: () => {} };
@@ -182,11 +233,21 @@ export function renderWorkspaceFiles(
       if (operateDenied) {
         save.setAttribute("aria-disabled", "true");
         save.setAttribute("aria-describedby", operateNote.id);
+      } else {
+        save.removeAttribute("aria-disabled");
+        save.removeAttribute("aria-describedby");
       }
     };
+    const missingDenied = `${name} is missing.`;
     denials.push(() => {
       if (status.textContent === missingCreate) {
-        status.textContent = `${name} is missing.`;
+        status.textContent = missingDenied;
+      }
+      updateControls();
+    });
+    restorations.push(() => {
+      if (status.textContent === missingDenied) {
+        status.textContent = missingCreate;
       }
       updateControls();
     });
@@ -194,10 +255,19 @@ export function renderWorkspaceFiles(
       editor.setCustomValidity("");
       updateControls();
     });
+    // Save and Reload are disabled while their request runs, which drops focus to the page.
+    // Focus that was in this file's form goes back to `target` when the request settles
+    // (finding 2366).
+    const returnFocus = (held: boolean, target: HTMLElement) => {
+      if (held && context.isCurrent() && document.activeElement === document.body) {
+        target.focus();
+      }
+    };
     async function load(discard = false) {
       if (pending || !context.isCurrent()) {
         return;
       }
+      const held = form.contains(document.activeElement);
       operations += 1;
       pending = true;
       rereadFailed = false;
@@ -250,12 +320,13 @@ export function renderWorkspaceFiles(
           loaded = false;
         }
         status.textContent = canCreate ? missingText() : "";
-        errorNotice.textContent = canCreate ? "" : fileError(cause, false);
+        errorNotice.textContent = canCreate ? "" : fileError(cause, false, failure);
       } finally {
         if (context.isCurrent()) {
           pending = false;
           writing = false;
           updateControls();
+          returnFocus(held, reload);
           // A version change during this request may have been answered by the old version.
           if (refreshAfterPending) {
             refreshAfterPending = false;
@@ -277,18 +348,14 @@ export function renderWorkspaceFiles(
         return;
       }
       const content = editor.value;
-      if (
-        content.includes("\0") ||
-        !content.isWellFormed() ||
-        new TextEncoder().encode(content).length > 16384
-      ) {
-        editor.setCustomValidity(
-          "Use valid Unicode without NUL characters, within 16 KiB of UTF-8 content.",
-        );
+      const problem = workspaceFileProblem(name, content);
+      if (problem) {
+        editor.setCustomValidity(problem);
         // The error goes under the file, without the browser's bubble (UX plan C3).
         validateFields([editor]);
         return;
       }
+      const held = form.contains(document.activeElement);
       operations += 1;
       pending = true;
       writing = true;
@@ -324,12 +391,13 @@ export function renderWorkspaceFiles(
         }
         outcomeUnknown = writeOutcomeUnknown(cause.status);
         status.textContent = "";
-        errorNotice.textContent = fileError(cause, true);
+        errorNotice.textContent = fileError(cause, true, failure);
       } finally {
         if (context.isCurrent()) {
           pending = false;
           writing = false;
           updateControls();
+          returnFocus(held, editor);
           // A version change during this request may have been answered by the old version.
           if (refreshAfterPending) {
             refreshAfterPending = false;
@@ -428,18 +496,39 @@ export function renderWorkspaceFiles(
   // An answer already settled applies before this section is first painted. It also applies while
   // the tab is parked (another tab is shown), since the page restores these nodes on return; it
   // changes only this section's own nodes.
-  void operateAllowed?.then((allowed) => {
-    if (allowed === false) {
-      operateDenied = true;
+  function applyOperate(allowed: boolean | undefined) {
+    const denied = allowed === false;
+    if (denied === operateDenied) {
+      return;
+    }
+    operateDenied = denied;
+    if (denied) {
       operateNote.textContent = OPERATE_DENIED;
       operateNote.hidden = false;
       for (const deny of denials) {
         deny();
       }
+      return;
+    }
+    operateNote.hidden = true;
+    operateNote.textContent = "";
+    for (const restore of restorations) {
+      restore();
+    }
+  }
+  // Once the page has passed a newer answer, a late first answer must not replace it.
+  let operateAnswered = false;
+  void operateAllowed?.then((allowed) => {
+    if (!operateAnswered) {
+      applyOperate(allowed);
     }
   });
   return {
     section,
+    applyOperate(allowed: boolean | undefined) {
+      operateAnswered = true;
+      applyOperate(allowed);
+    },
     refresh: () => {
       for (const refresh of refreshers) {
         void refresh();

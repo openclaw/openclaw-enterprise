@@ -13,6 +13,7 @@ import {
 import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { createInstallationDriverConfiguration as installation } from "../helpers/installation-driver-configuration.mjs";
 import { compileCacheEnvironment } from "../helpers/compile-cache.mjs";
+import { jsonEvent } from "../helpers/json-lines.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const namespaceId = "ns_00000000-0000-4000-8000-000000000001";
@@ -50,14 +51,7 @@ async function rotateProjectedSecretKey(projected, contents) {
 const computeDriver = (overrides) => createReadyComputeDriver("compute-workspace-files", overrides);
 
 function startupDiagnostic(stderr) {
-  const diagnostic = stderr
-    .trim()
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => JSON.parse(line))
-    .find((line) => line.event === "startup-error");
-  assert.ok(diagnostic, stderr);
-  return diagnostic;
+  return jsonEvent(stderr, "startup-error", { strict: true });
 }
 
 function revision(overrides = {}) {

@@ -3,7 +3,13 @@ import test from "node:test";
 import vm from "node:vm";
 import { CODEX_FAILURE_OUTPUT_CLASS_HELPER } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { CODEX_FAILURE_OUTPUT_CLASSES } from "../../packages/contracts/src/runtime-failure.mjs";
-import { checkCodexStartup, login, probe, timedOut } from "../fixtures/codex-native-startup.mjs";
+import {
+  checkCodexStartup,
+  createCodexStartup,
+  login,
+  probe,
+  timedOut,
+} from "../fixtures/codex-native-startup.mjs";
 
 const ready = {
   phases: [
@@ -480,6 +486,51 @@ test("Codex runtime gates startup and readiness on a successful native authentic
 // Finding 1576: one provider 5xx or dropped stream must not fail a deployment for good.
 // A transient failure gets the single retry a model timeout gets, inside the same 61 s
 // budget; the held cause is the last attempt's, marked as retried.
+// Finding 2412: Codex runs hook commands outside its sandbox with its own environment, and
+// sandboxed commands with the environment shell_environment_policy shapes. The sandbox
+// cannot read the hook directory, so its commands keep the CA path the Pod set.
+test("Codex app-server gives sandboxed commands the Pod's CA path, never the hook directory's", (t) => {
+  const hookCa = "/home/node/.oce-native-hooks/gateway-ca.pem";
+  const podCa = "/run/oce/repository-credentials/sessions/session/ca-bundle.pem";
+  const readyTurn = probe([
+    { type: "turn.started" },
+    { type: "item.completed", item: { type: "agent_message", text: "READY" } },
+    { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } },
+  ]);
+  for (const [name, shellCa, expected] of [
+    ["without a hook CA copy, Codex keeps its settings", undefined, []],
+    [
+      "a Pod CA reaches sandboxed commands",
+      podCa,
+      ["-c", "shell_environment_policy.set.NODE_EXTRA_CA_CERTS=" + JSON.stringify(podCa)],
+    ],
+    [
+      "without a Pod CA, sandboxed commands get none",
+      "",
+      ["-c", 'shell_environment_policy.exclude=["NODE_EXTRA_CA_CERTS"]'],
+    ],
+  ]) {
+    const runtime = createCodexStartup(t, {
+      native: [login(), readyTurn],
+      environment: {
+        NODE_EXTRA_CA_CERTS: hookCa,
+        ...(shellCa === undefined ? {} : { OPENCLAW_SHELL_NODE_EXTRA_CA_CERTS: shellCa }),
+      },
+    });
+    runtime.start();
+    runtime.assertNativeScriptConsumed();
+    assert.equal(runtime.appServerSpawns.length, 1, name);
+    const [{ args, env }] = runtime.appServerSpawns;
+    const caArguments = args.flatMap((argument, index) =>
+      argument.includes("NODE_EXTRA_CA_CERTS") ? [args[index - 1], argument] : [],
+    );
+    assert.deepEqual(caArguments, expected, name);
+    // Hook commands inherit the app-server's own environment.
+    assert.equal(env.NODE_EXTRA_CA_CERTS, hookCa, name);
+    assert.equal(Object.hasOwn(env, "OPENCLAW_SHELL_NODE_EXTRA_CA_CERTS"), false, name);
+  }
+});
+
 test("Codex runtime retries a transient startup model probe failure once", async (t) => {
   const started = { type: "turn.started" };
   const assistant = { type: "item.completed", item: { type: "agent_message", text: "READY" } };

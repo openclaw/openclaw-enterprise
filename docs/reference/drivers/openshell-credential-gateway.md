@@ -71,13 +71,12 @@ selects the bundled [Credential Refresh](credential-refresh.md) implementation,
 which must be the same Backend's `credential_refresh` member. With it and
 `toolBinaries`, the catalog adds the OAuth2 types.
 
-Changing binary lists rewrites profiles on the next update, deployment, or
-repair; until that succeeds, removed binaries retain access and deployment stays
-pending. To cut access immediately, withdraw or delete the source. Mixed-version
-controller replicas can overwrite each other's lists. Removing `toolBinaries`
-blocks tool-source registrations, updates, deployments, and repairs with
-`409 RESOURCE_CONFLICT`, because OpenShell treats an empty list as any binary.
-Existing sources remain readable and deletable.
+Binary-list changes apply on update, deployment or repair; until success,
+removed binaries retain access and deployment stays pending. Withdraw or delete
+the source for immediate revocation. Mixed-version replicas can overwrite lists.
+Removing `toolBinaries` returns `409 RESOURCE_CONFLICT` for tool-source
+registration, update, deployment and repair: OpenShell treats empty lists as any
+binary. Existing sources remain readable and deletable.
 
 Startup rejects the selection when:
 
@@ -88,10 +87,9 @@ Startup rejects the selection when:
 - `drivers.credential_refresh` is selected without `drivers.credential_gateway`; or
 - the configuration has any key other than `binaries` and `toolBinaries`.
 
-Both API and worker need gateway access with Backend credentials: the API
-registers/deletes providers; the worker creates Sandboxes, updates profiles and
-reads attachment status. The selected Refresh Driver owns device exchange and
-refresh configuration.
+Both API and worker require Backend credentials. The API registers/deletes
+providers; the worker creates Sandboxes, updates profiles and reads attachment
+status. The Refresh Driver owns device exchange and refresh configuration.
 
 ## Source-type catalog
 
@@ -119,7 +117,7 @@ The Harness stores only an opaque `personal_access_token`. Readiness requires
 native login and model execution
 ([bootstrap flow](../../flows/openshell-sandbox-provisioning.md#2-derive-the-provider-owned-harness-request)).
 
-`openai` defaults to `https://api.openai.com/v1`. Custom HTTPS Responses endpoints must end in `/v1`, optionally after a prefix such as `/api`. Before Secret reads or persistence, `400 INVALID_REQUEST` rejects wildcards, port `0`, an `@` or credentials, spaces, controls, a missing `//`, queries, fragments, and a host that is not an exact DNS name, as for `bearer-token`. OCC stores the normalized, immutable endpoint; register a new source to change it.
+`openai` defaults to `https://api.openai.com/v1`. Custom HTTPS endpoints must end in `/v1`, optionally after a prefix such as `/api`. Codex requires Responses; dedicated native OpenClaw uses the API selected in its explicit model catalog. Every native model endpoint must match the bound source endpoint, including its path. Before Secret reads or persistence, `400 INVALID_REQUEST` rejects wildcards, port `0`, an `@` or credentials, spaces, controls, a missing `//`, queries, fragments, and a host that is not an exact DNS name, as for `bearer-token`. OCC stores the normalized, immutable endpoint; register a new source to change it.
 
 Invalid `bearer-token` and OAuth2 values return field-specific `400` before Secret
 reads or persistence:
@@ -148,34 +146,8 @@ Registration rejects provider types outside this catalog.
 
 ### Experimental Codex OAuth PoC
 
-The experimental `codex-oauth` type uses upstream `GetProviderCredentials` and
-matching supervisor/static launcher binaries. Select paired `credential_refresh`
-and configure [operator TLS and issuer trust](../../testing/openshell-oauth.md).
-The pinned upstream binaries implement the required contracts.
-
-Ordinary Backend authentication handles other operations. Access-token retrieval
-alone uses `operatorTls`: a trusted gateway-CA certificate with `OU=operator`
-and `openshell.gateway.mtls_auth.operator_enabled`. It rejects bearer headers and
-forwarded identity. Protect its gateway-wide key. OCC checks exact source rights
-before retrieval and discovery; Namespace-scoped OpenShell identities remain deferred.
-
-Refresh exchanges the device grant into OpenShell custody; OCC stores an opaque
-session. `withSourceToken` requests five-minute validity; OpenShell may refresh
-and persists successors. Tokens enter only the trusted callback, never the Console.
-Cancellation cannot undo refresh. Agent revisions reuse metadata and placeholders.
-
-The Sandbox wraps the stable placeholder in the documented JWT alias for Codex's
-local account metadata. OpenShell replaces the whole alias, enforcing identity,
-revocation, endpoints and expiry. Selected runtime plugins remain unsupported;
-directory discovery does not prove execution. See
-[OAuth storage](kubernetes-compute/codex-oauth-storage.md).
-
-#### WIP boundaries
-
-- **Connection recovery and metadata.** Grant configuration and account metadata
-  are separate writes; interrupted handoff may require reconnecting. An initial
-  device-poll timeout closes the session and requires a fresh login. Metadata
-  is a login-time snapshot, so account changes require a new login and Agent revision.
+The experimental `codex-oauth` type, its operator TLS, token custody and WIP boundaries
+are described in [Experimental Codex OAuth PoC](openshell-credential-gateway/codex-oauth-poc.md).
 
 ## OAuth2 refresh sources
 
@@ -252,7 +224,8 @@ it (OpenShell hides unauthorized Sandboxes as missing); a refusal fails with
 `SANDBOX_GATEWAY_UNAUTHORIZED`.
 
 For API-key Codex, Compute selects a named provider with the source endpoint and
-HTTPS Responses transport. Native OpenClaw requires the default OpenAI endpoint.
+HTTPS Responses transport. Native OpenClaw retains its configured OpenAI-compatible
+endpoint and API selector, with every catalog model bound to that source endpoint.
 The Harness receives an `openshell:resolve:env:` placeholder as `OPENAI_API_KEY`
 for API keys or `CODEX_ACCESS_TOKEN` for Codex PATs. Codex stores it through native
 login; OpenClaw reads it through node-local model configuration. The supervisor

@@ -93,7 +93,15 @@ test("docs build renders every authored page and preserves repository ownership"
     /GET \/namespaces\/\{namespaceId\}\/agents\/\{agentId\}\/workspace\/files\/\{name\}/,
   );
   const architecture = await readFile(join(root, "dist/docs/design/index.html"), "utf8");
-  assert.match(architecture, /mermaid/);
+  assert.match(architecture, /<img\b[^>]*src="\/assets\/oce-architecture\.svg"/);
+  assert.deepEqual(
+    await readFile(join(root, "dist/docs/assets/oce-architecture.svg")),
+    await readFile(join(root, "docs/assets/oce-architecture.svg")),
+    "The published architecture image must preserve the authored SVG",
+  );
+  // The overview uses an SVG; the deployment chapter still exercises Mermaid rendering.
+  const workloads = await readFile(join(root, "dist/docs/design/workloads/index.html"), "utf8");
+  assert.match(workloads, /<figure\b[^>]*data-mermaid=/);
   const asset = await readFile(join(root, "dist/docs/assets/lobster-mech-transparent.png"));
   assert.equal(asset.readUInt32BE(0), 0x89504e47, "Brand asset must remain a PNG");
 });

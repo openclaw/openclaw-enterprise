@@ -74,6 +74,11 @@ follows `:focus-visible`. No part of any ring may be cut off.
     Secret**: the list scrolls. Press Tab: the list closes and focus moves to
     the metadata link, not the page. The list is never a Tab stop; Up and Down
     move through its options from the field (finding 1919).
+17. Open **Pages / Create Agent / OpenAI with Codex harness** at 1280 x 800.
+    The form is taller than the window. **Cancel**, **Start over** and
+    **Create Agent** stay in a row at the foot of the window while you scroll,
+    and **Create Agent** is the only filled button. At the end of the page the
+    row settles below Channels (finding 2098).
 
 Check steps 1 to 5 again at a narrow viewport (390 px; use **Plugins (phone)**
 for step 5).

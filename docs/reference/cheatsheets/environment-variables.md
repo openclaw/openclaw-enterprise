@@ -53,6 +53,7 @@ console uses the current origin and has no separate environment settings.
 - `OCC_AUTH_COOKIE_DOMAIN` — Shared parent domain for console and Agent cookies; required when the pilot is enabled.
 - `OCC_GATEWAY_API_KEY_PATH` — API/worker absolute path to the private gateway service-key file for operator RPCs and dedicated node enrollment.
 - `OCC_CHANNEL_DIRECTORY_PROXY_URL` — Optional API-only HTTP(S) proxy endpoint for production Slack directory lookup and credential validation; set by Helm `slackProxy.enabled` or `api.channelDirectoryProxyUrl`.
+- `OCC_API_HTTPS_EGRESS_OPEN` — `true` when API egress allows TCP 443 to any address, so a Slack check without a proxy can succeed; default: `false`. Set by the chart from sign-in `egressCidrs`.
 - `OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST` — Exact Kubernetes Service host accepted as a managed Slack directory proxy; set only by Helm `slackProxy.enabled`.
 - `NODE_EXTRA_CA_CERTS` — Additional process-wide Node.js PEM trust, read at startup. The chart combines API roots ([OIDC CA settings](../settings/oidc.md)); Compute combines public [Sandbox endpoint](../drivers/sandbox.md#interface) and execution-cluster roots for the dedicated Gateway.
 - `OCC_GATEWAY_CA_PATH` — API-only path to the Gateway-only CA bundle that dedicated Harness nodes trust; empty means none. Unset, node enrollment uses `NODE_EXTRA_CA_CERTS`. Helm sets it with OIDC CA values.
@@ -93,11 +94,11 @@ The worker shares `NODE_ENV`, `OCC_DATABASE_URL`, and `OCC_CONFIG_PATH` with
 the API. It does not use API listener or session-authentication settings. See
 [worker settings](../settings/operations.md#controller-worker-environment).
 
-- `OCC_WORKER_POLL_INTERVAL_MS` — Idle polling delay; default: `250` ms.
-- `OCC_WORKER_LEASE_DURATION_MS` — Claim lease; default: `5000` ms.
+- `OCC_WORKER_POLL_INTERVAL_MS` — Idle polling delay; default: `250` ms; at most `2147483647`.
+- `OCC_WORKER_LEASE_DURATION_MS` — Claim lease; default: `5000` ms; at most `2147483647`.
 - `OCC_WORKER_MAX_ATTEMPTS` — Maximum work attempts; default: `5`.
 - `OCC_WORKER_CONVERGENCE_TIMEOUT_MS` — Namespace convergence timeout; default: `900000` ms.
-- `OCC_WORKER_DATABASE_TIMEOUT_MS` — Client-side bound on each worker database query; default: `60000` ms.
+- `OCC_WORKER_DATABASE_TIMEOUT_MS` — Client-side bound on each worker database query; default: `60000` ms; at most `2147483647`.
 - `OCC_WORKER_READINESS_PATH` — Optional absolute path for the readiness marker; packaged probes require it.
 - `OCC_WORKER_LIVENESS_PATH` — Optional absolute path for the run-loop progress marker; the packaged liveness probe checks its age.
 

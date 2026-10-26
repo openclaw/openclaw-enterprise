@@ -12,6 +12,7 @@ import {
   currentComputeAbortSignal,
 } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
+import { jsonLineDestination } from "../helpers/json-lines.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
 import {
@@ -1798,16 +1799,7 @@ test(
     const logger = createWorkerLogEmitter(
       createOccLogger({
         component: "occ-worker",
-        destination: {
-          write(chunk) {
-            for (const line of String(chunk).split("\n")) {
-              if (line.length > 0) {
-                output.push(JSON.parse(line));
-              }
-            }
-            return true;
-          },
-        },
+        destination: jsonLineDestination(output),
       }),
     );
     const log = (event) => {

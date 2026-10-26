@@ -14,6 +14,7 @@ import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { createInstallationDriverConfiguration } from "./installation-driver-configuration.mjs";
 import { createTestConfigurationDriver } from "./configuration-driver.mjs";
+import { jsonLineDestination } from "./json-lines.mjs";
 import { createTestSecretDriver } from "./secret-driver.mjs";
 import {
   privateBootstrapDirectory,
@@ -59,16 +60,7 @@ export function memoryLogger() {
     events,
     logger: createOccLogger({
       component: "occ-api-sign-in-proof",
-      destination: {
-        write(chunk) {
-          for (const line of String(chunk).split("\n")) {
-            if (line.length > 0) {
-              events.push(JSON.parse(line));
-            }
-          }
-          return true;
-        },
-      },
+      destination: jsonLineDestination(events),
     }),
   };
 }

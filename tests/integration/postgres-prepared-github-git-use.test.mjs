@@ -17,6 +17,7 @@ import {
   startProtectedOwner,
 } from "../fixtures/prepared-repository-git.mjs";
 import { fixtureInstallationId } from "../fixtures/repository-credentials/github.mjs";
+import { clockBehind } from "../helpers/prepared-standing-git-peer.ts";
 
 // Refusal must come from the durable admission guard, before any issuer or retirement call.
 async function assertUseGuarded(f) {
@@ -846,3 +847,29 @@ for (const outcome of ["refused", "response lost"]) {
     },
   );
 }
+
+test(
+  "the worker's prepared owner measures a token's remaining validity by the system clock",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (t) => {
+    // The worker starts the owner without a clock. GitHub answers with a 100 s token: by the
+    // system clock 40 s remain after the 60 s skew allowance, less than the 60 s minimum, so the
+    // owner keeps the token only to retire it. An owner whose wall clock reads 50 s behind (the
+    // seam the standing Git transfer test uses) finds 90 s and installs it. Only the clock
+    // differs, so the refusal proves that the default clock is the system clock.
+    const attempts = async (ownerClock) => {
+      const f = await fixture(t, { tokenLifetimeMs: 100_000, ownerClock });
+      await prepare(f);
+      return (
+        await f.pool.query(
+          "SELECT state, custody FROM occ.prepared_github_attempts WHERE source_id=$1",
+          [f.familyId],
+        )
+      ).rows;
+    };
+    assert.deepEqual(await attempts(undefined), [{ state: "quarantined", custody: "retire" }]);
+    assert.deepEqual(await attempts(clockBehind(50_000)), [
+      { state: "committed", custody: "current" },
+    ]);
+  },
+);

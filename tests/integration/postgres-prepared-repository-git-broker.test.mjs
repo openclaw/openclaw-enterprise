@@ -84,11 +84,14 @@ async function startBroker(
   });
   const service = createCredentialService({ config, factory, clock });
   t.after(() => service.shutdown(5000));
+  // The production composition writes each refusal record to the broker's log (finding 2411).
+  const logs = [];
   const server = await startListeners({
     service,
     factory,
     clock,
     tls,
+    log: (record) => logs.push(record),
     config: { ...config, gateway: { ...config.gateway, listen: "127.0.0.1:0" } },
     upstreamCa: tls.ca,
     trustedUpstreamOrigins: factory.trustedUpstreamOrigins,
@@ -156,6 +159,12 @@ async function startBroker(
     address,
     origin,
     observed,
+    logs,
+    identity: {
+      sessionId: opened.session.sessionId,
+      namespaceId,
+      repositoryRef: binding.repositoryRef,
+    },
     opened,
     openSession,
     env,
@@ -169,6 +178,24 @@ async function startBroker(
 
 // Exercise the normal authenticated HTTP withdrawal against the exact same State as
 // the worker. This component test does not start Compute or a model/chat session.
+// Finding 2411: each refused authenticated request logs exactly one record with the code
+// the Agent received (an error envelope's code, or a receipt's error), where it was refused,
+// the operation once known, and the session.
+function refusedOnceBy(b, response, reason, operation) {
+  assert.ok(response.status >= 400, response.text);
+  const { error } = JSON.parse(response.text);
+  assert.deepEqual(b.logs.splice(0), [
+    {
+      event: "repository-credentials.denied",
+      status: response.status,
+      reasonCode: typeof error === "string" ? error : error.code,
+      reason,
+      ...(operation === undefined ? {} : { operation }),
+      ...b.identity,
+    },
+  ]);
+}
+
 async function withdrawRepositoryBinding(t, { state, agent }) {
   const installation = await state.read((unit) => unit.installations.getInstallation());
   const auth = await createTestAuthPrincipal({ installationId: installation.id });
@@ -223,7 +250,16 @@ test(
         )
       ).rows[0].n;
 
-    assert.equal((await b.http(discovery)).status, 503);
+    const refusedOnce = (response, reason, operation) =>
+      refusedOnceBy(b, response, reason, operation);
+    const logged = [];
+    const keep = () => logged.push(...b.logs);
+
+    // No prepared material yet: the owner cannot authorize the send, so nothing is sent.
+    const cold = await b.http(discovery);
+    assert.equal(cold.status, 503);
+    keep();
+    refusedOnce(cold, "not_dispatched", "git-discovery");
     assert.equal(f.gh.issuesOfTokens.length, 0);
     await prepare(f);
     assert.equal((await b.http(discovery)).status, 200);
@@ -238,19 +274,41 @@ test(
       body: line(b.pushRef) + line("refs/heads/main") + "0000",
     });
     assert.equal(mixed.status, 400);
+    keep();
+    refusedOnce(mixed, "input_refused", "git-push");
+    // Another repository, GitHub REST and GraphQL are outside the Git-only route, so the
+    // session's Git credential is not accepted there; the record still names the session.
     for (const path of [
       discovery.replace(b.repository, "wrong/other"),
       "/repos/" + b.repository,
       "/graphql",
     ]) {
-      assert.ok((await b.http(path)).status >= 400);
+      const response = await b.http(path);
+      keep();
+      refusedOnce(response, "credential_refused");
     }
+    // Finding 2429: a head refused before authentication (here a wrong Host that the
+    // certificate still names) is logged when its credential names the open session; the
+    // route is not known yet, so the record has no operation.
+    const wrongHost = await b.http(discovery, { headers: { host: "localhost" } });
+    assert.equal(wrongHost.status, 400);
+    keep();
+    refusedOnce(wrongHost, "request_refused");
+    // With an API credential, the Git-only route refuses the REST request itself.
+    const rest = await b.http("/repos/" + b.repository, {
+      headers: { authorization: "Bearer " + b.opened.bearer },
+    });
+    keep();
+    refusedOnce(rest, "request_refused");
     assert.equal(await useCount(), before);
     assert.equal(b.observed.length, beforeOrigin);
 
     // The owner commits a use, TLS completes, but no HTTP request crosses an expired send window.
     b.slow(true);
-    assert.equal((await b.http(discovery)).status, 503);
+    const late = await b.http(discovery);
+    assert.equal(late.status, 503);
+    keep();
+    refusedOnce(late, "not_dispatched", "git-discovery");
     b.slow(false);
     assert.equal(await useCount(), before + 1);
     assert.equal(b.observed.length, beforeOrigin);
@@ -303,6 +361,8 @@ test(
     assert.equal(pushes(), count + 1);
 
     assert.equal((await b.http(discovery)).status, 200);
+    // Successful Git requests and an uncertain push are not refusals.
+    assert.deepEqual(b.logs, []);
     const sent = b.observed.length;
     const used = await useCount();
     // The production listener deliberately serves only one request per TLS connection.
@@ -324,7 +384,17 @@ test(
     });
     assert.equal(withdrawn, true);
     assert.equal(revoked.status, 503);
-    assert.equal((await b.http(discovery)).status, 503);
+    keep();
+    refusedOnce(revoked, "not_dispatched", "git-fetch");
+    const after = await b.http(discovery);
+    assert.equal(after.status, 503);
+    keep();
+    refusedOnce(after, "not_dispatched", "git-discovery");
+    // Records name the session, never its bearer, the token, a ref or the repository.
+    const text = JSON.stringify(logged);
+    for (const secret of [b.opened.bearer, b.pushRef, b.repository]) {
+      assert.ok(!text.includes(secret));
+    }
     assert.equal(b.observed.length, sent);
     assert.equal(await useCount(), used);
     assert.equal(f.gh.issuesOfTokens.length, 1);
@@ -333,6 +403,7 @@ test(
 
 for (const mode of [
   "Git only",
+  "connection failed before any write",
   "created",
   "created in GitHub's spelling",
   "lost provider reply",
@@ -370,6 +441,7 @@ for (const mode of [
     };
     const send = (input = {}) =>
       b.http(path, { method: "POST", headers, body: JSON.stringify(packet), ...input });
+    let invoke;
     const observed = () => f.gh.trace.filter((q) => q.method === "POST" && q.target === path);
     if (!draftPull) {
       await prepare(f);
@@ -393,6 +465,25 @@ for (const mode of [
     }
     assert.equal(observed().length, 0);
     assert.equal(f.gh.issuesOfTokens.length, 1);
+
+    if (mode === "connection failed before any write") {
+      // Finding 2429: the GitHub connection fails before TLS, so the broker settles the create
+      // as not sent. The Agent gets a recorded 409 and the operator one not_dispatched line;
+      // a same-operation replay returns that receipt and is logged the same way.
+      b.logs.splice(0);
+      f.gh.refuseNextConnection();
+      for (let i = 0; i < 2; i++) {
+        const response = await send();
+        assert.equal(response.status, 409);
+        const value = JSON.parse(response.text);
+        assert.equal(value.operationId, operationId);
+        assert.equal(value.error, "not-submitted");
+        refusedOnceBy(b, response, "not_dispatched", "api");
+      }
+      assert.equal(observed().length, 0);
+      assert.equal(f.gh.pulls.size, 0);
+      return;
+    }
 
     if (settles) {
       // Exercise the shipping client and real computed manifest through an obligatory CONNECT.
@@ -419,27 +510,33 @@ for (const mode of [
         "../../apps/controller/src/drivers/repo/github/credentials/client/draft-pr.ts",
         import.meta.url,
       ).href;
-      const args = [
+      const args = (operation = operationId, target = base) => [
         "pr-create",
         "--operation-id",
-        operationId,
+        operation,
         "--draft",
         "--head",
         head,
         "--base",
-        base,
+        target,
         "--title",
         title,
       ];
+      // The helper's own entry point, so its exit code and failure line are the Agent's view.
       const command =
-        "import {createDraftPull} from " +
+        "import {createDraftPull,draftPullFailureMessage} from " +
         JSON.stringify(client) +
-        "; await createDraftPull(process.argv.slice(2),process.argv[1]);";
-      const invoke = (extra) =>
-        run(process.execPath, ["--input-type=module", "-e", command, root, ...args, ...extra], {
-          env: { ...cleanEnvironment(), HTTPS_PROXY: proxyAddress },
-          allowFailure: true,
-        });
+        "; await createDraftPull(process.argv.slice(2),process.argv[1]).catch((e)=>" +
+        "{const f=draftPullFailureMessage(e);process.stderr.write(f.message+'\\n');process.exitCode=f.exitCode;});";
+      invoke = (extra, operation, target) =>
+        run(
+          process.execPath,
+          ["--input-type=module", "-e", command, root, ...args(operation, target), ...extra],
+          {
+            env: { ...cleanEnvironment(), HTTPS_PROXY: proxyAddress },
+            allowFailure: true,
+          },
+        );
       const bodyFile = join(await temporaryDirectory(t), "body.txt");
       await writeFile(bodyFile, "file contents must stay local");
       const refused = await invoke(["--body-file", bodyFile]);
@@ -461,6 +558,22 @@ for (const mode of [
         !output.stdout.includes("must-not-escape"),
         "upstream nested credentials must never be returned",
       );
+      // Finding 2410: a definite broker refusal names its code and says GitHub received
+      // nothing; only an unknown outcome prints "Draft not confirmed".
+      const refusal = (result) => {
+        assert.equal(result.code, 1, result.stderr);
+        assert.doesNotMatch(result.stderr, /Draft not confirmed/);
+        return result.stderr.trim().split("\n").at(-1);
+      };
+      assert.equal(
+        refusal(await invoke(["--body", body], randomUUID(), "other")),
+        "Draft not created: the repository broker refused it (unsupported-request); GitHub did not receive it. This repository binding does not allow this create; do not retry it. Ask an operator if the branch or base should change.",
+      );
+      assert.match(
+        refusal(await invoke(["--body", body], randomUUID())),
+        /^Draft not created: the grant's draft-create allowance was already used\. GitHub did not receive this request\./,
+      );
+      assert.equal(observed().length, 1, "neither refusal reached GitHub");
       const repeat = await send();
       assert.equal(repeat.status, 201);
       assert.deepEqual(
@@ -474,6 +587,7 @@ for (const mode of [
       if (mode === "lost provider reply") {
         f.gh.disconnectAfterMutation("POST", path);
       }
+      b.logs.splice(0);
       for (let i = 0; i < 2; i++) {
         const response = await send();
         assert.equal(response.status, 409);
@@ -481,12 +595,19 @@ for (const mode of [
         assert.equal(value.operationId, operationId);
         assert.equal(value.error, "outcome_unknown");
       }
+      // GitHub may have created this draft, so the operator log records no refusal.
+      assert.deepEqual(b.logs, []);
     }
+    // Finding 2429: another operation or a changed request gets the spent allowance's receipt.
+    // GitHub received nothing for it, so each is one operation_conflict line.
+    b.logs.splice(0);
     const other = await send({ headers: { ...headers, "x-oce-operation-id": randomUUID() } });
     assert.equal(other.status, 409);
     assert.equal(JSON.parse(other.text).error, "operation_conflict");
+    refusedOnceBy(b, other, "operation_conflict", "api");
     const changed = await send({ body: JSON.stringify({ ...packet, title: "different" }) });
     assert.equal(JSON.parse(changed.text).error, "operation_conflict");
+    refusedOnceBy(b, changed, "operation_conflict", "api");
     // An independently authenticated observer reconciles by reading, never by trying another create.
     // Its observation cannot be presented as a delivered result to the Agent which lost the reply.
     const observer = randomUUID();
@@ -528,6 +649,14 @@ for (const mode of [
     );
     await f.withdraw();
     assert.equal((await send()).status, 503, "cannot replay even a receipt after withdrawal");
+    if (invoke) {
+      const withdrawn = await invoke(["--body", body], randomUUID());
+      assert.equal(withdrawn.code, 1, withdrawn.stderr);
+      assert.equal(
+        withdrawn.stderr.trim().split("\n").at(-1),
+        "Draft not created: the repository broker refused it (unavailable); GitHub did not receive it. Retry once; if it is refused again, ask an operator to check the repository-credentials container log in the worker Pod.",
+      );
+    }
     assert.equal(observed().length, 1);
     // A legitimate replacement with the identical grant and old client operation cannot obtain
     // the prior admission's receipt, a second permit, or a fresh token by trying this endpoint.
