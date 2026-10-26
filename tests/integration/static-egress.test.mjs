@@ -17,6 +17,7 @@ import {
 } from "../../apps/controller/src/composition/installation-config.ts";
 import { createCredentialProxyInstallationConfiguration } from "../helpers/installation-driver-configuration.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { PROXY_REGISTRATION_UNAVAILABLE } from "../helpers/refusal-text.mjs";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { OpenShellEgressIdentity } from "../../apps/controller/src/drivers/egress-proxy/openshell-identity.ts";
@@ -383,7 +384,8 @@ test("protected admission requires the actual counterpart and exact loaded polic
     "failed candidate cannot leave admitted source metadata",
   );
   await assert.rejects(f.egress.configureRevision(f.context), {
-    name: "DependencyUnavailableError",
+    name: "RetryLaterError",
+    message: PROXY_REGISTRATION_UNAVAILABLE,
   });
   f.observed.available = true;
   const expectedPolicy = structuredClone(f.observed.policy);

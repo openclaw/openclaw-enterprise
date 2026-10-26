@@ -48,7 +48,7 @@ import {
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import {
   ConfigurationHarnessError,
-  CredentialSourceConfigError,
+  CredentialSourceRegistrationConfigError,
   CredentialSourceRevisionError,
   DependencyUnavailableError,
   SandboxGatewayUnauthorizedError,
@@ -4647,7 +4647,7 @@ test("the OpenShell bearer-token type exists only with toolBinaries and validate
   ]) {
     await assert.rejects(
       driver.registerSource(context("cs_00000000-0000-4000-8000-0000000000f1"), tokenInput(config)),
-      CredentialSourceConfigError,
+      CredentialSourceRegistrationConfigError,
       JSON.stringify(config),
     );
   }
