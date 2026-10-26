@@ -3329,8 +3329,8 @@ test("Agent detail has no Stop row for an Agent that was never deployed", async 
     ["Delete Agent"],
   );
 
-  // The first deploy creates a version and requests the Agent running, so Stop returns.
-  const revision = await fixture.deployAgent(namespace.id, agent.id);
+  // Once a deployed version is selected for service, something runs, so Stop returns.
+  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   await page.goto(detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration").href);
   await page.getByRole("heading", { name: "Version v1" }).waitFor();
   await stopRegion.getByRole("button", { name: "Stop Agent", exact: true }).waitFor();
