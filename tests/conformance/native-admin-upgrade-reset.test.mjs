@@ -110,6 +110,7 @@ async function transportOwner(t, { authorize, append }) {
   const origin = `https://${host}`;
   const revision = {
     id: "rev_a",
+    compute: { id: "compute_test", implementation: "native-admin-reset-test" },
     configuration: {
       gateway: {
         auth: {
@@ -154,6 +155,8 @@ async function transportOwner(t, { authorize, append }) {
         return authorize({ agent, revision, denied });
       },
       selectedDriver: () => ({
+        id: "compute_test",
+        implementation: "native-admin-reset-test",
         getGatewayEndpoint: () => `wss://127.0.0.1:${gateway.address().port}/`,
       }),
     }),
@@ -481,6 +484,7 @@ function denialOwner(t, overrides = {}) {
   const origin = `https://${host}`;
   const revision = {
     id: "rev_a",
+    compute: { id: "compute_test", implementation: "native-admin-reset-test" },
     configuration: {
       gateway: {
         auth: {
@@ -529,7 +533,11 @@ function denialOwner(t, overrides = {}) {
       getAdministerableActiveAgentRevision() {
         return overrides.authorize?.({ agent, revision, denied }) ?? Promise.reject(denied);
       },
-      selectedDriver: () => ({ getGatewayEndpoint: () => "wss://gateway.example.test" }),
+      selectedDriver: () => ({
+        id: "compute_test",
+        implementation: "native-admin-reset-test",
+        getGatewayEndpoint: () => "wss://gateway.example.test",
+      }),
     }),
     selectedIAMDriver: () => ({
       id: "iam_test",
