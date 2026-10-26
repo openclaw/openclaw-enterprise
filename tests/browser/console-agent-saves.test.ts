@@ -92,7 +92,9 @@ const pageReloadReads = (requests: Requests) =>
     .filter((request) => request.method === "GET")
     .map((request) => request.path)
     .filter((path) => /\/api\/auth\/session|\/revisions|\/permissions|\/deployments/.test(path))
-    .filter((path) => !/\/agents\/[^/]+\/permissions$/.test(path));
+    // The permission answers are read again by an in-place refresh too: the draft's Deploy gate
+    // follows the Secret operate answer (finding 2546).
+    .filter((path) => !/\/agents\/[^/]+\/permissions(\/secrets)?$/.test(path));
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();

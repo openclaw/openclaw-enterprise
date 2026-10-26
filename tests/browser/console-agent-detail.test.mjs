@@ -4771,6 +4771,8 @@ test("Secret fields refuse a readable Secret the editor cannot operate", async (
   const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
+  // The draft reads the answer when it opens, for its Deploy gate; the pickers reuse it.
+  const answer = page.waitForResponse((r) => r.url().endsWith(path + "/permissions/secrets"));
   await login(
     page,
     fixture,
@@ -4779,7 +4781,6 @@ test("Secret fields refuse a readable Secret the editor cannot operate", async (
   );
   const save = page.getByRole("button", { name: "Save channel Secrets" });
   await waitForEnabled(page.getByLabel("Slack bot token", { exact: true }));
-  const answer = page.waitForResponse((r) => r.url().endsWith(path + "/permissions/secrets"));
   const denied = await operateDeniedSecretOption(page, "Slack bot token", spare);
   assert.deepEqual((await (await answer).json()).data, { operateDenied: [spare.id] });
   // A forced click skips the disabled check: choosing it still stages nothing.
