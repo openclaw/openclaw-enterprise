@@ -532,6 +532,7 @@ test("Agent page Stop shows the API's 400 and 409 reasons", async (t) => {
       const agent = await fixture.createAgent(namespace.id, "Refused stop", nativeValues("stop"));
       const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
       const { page } = await newPage(t, fixture);
+      await trackSettledFetches(page);
       await page.route(
         `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/stop`,
         (route) =>

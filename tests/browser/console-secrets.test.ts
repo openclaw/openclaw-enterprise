@@ -600,7 +600,7 @@ test("Secret refusals keep their meaning, and incomplete consumers or a not-read
     .waitFor();
   assert.equal(await create.getByText(/Outcome unknown/).count(), 0);
   assert.equal(await submit.isDisabled(), true, "a 404 needs a fresh read");
-  assert.equal(pathRequests(requests, "POST", secretPath(namespace)).length, 2);
+  assert.equal(pathRequests(requests, "POST", secretPath(namespace)).length, 3);
   await create.getByRole("button", { name: "Close" }).click();
 
   // A truncated consumer list names no consumer, yet more references exist than it shows.
@@ -715,7 +715,7 @@ test("a reload asks first only while a Secret write is in flight", async (t) => 
   await expectWriteAsksBeforeUnload(t, page, url, {
     method: "POST",
     start: submit,
-    settled: () => create.getByText(/choose a unique name/).waitFor(),
+    settled: () => create.getByText(SECRET_NAME_CONFLICT, { exact: false }).waitFor(),
   });
   await create.getByLabel("Secret name").fill("Reload credential");
   await create.getByLabel("Value", { exact: true }).fill("synthetic-saved-value");
