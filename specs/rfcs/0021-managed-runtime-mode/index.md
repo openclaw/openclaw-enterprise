@@ -148,3 +148,12 @@ No Codex app-server change is established as necessary for this Gateway-facing P
 ## Remaining work
 
 [Remaining work and verification](remaining-work.md) records the runtime protection, Gateway integration and qualification still needed for this proposal.
+
+**Proposed embedded Gateway recovery.** After an unclean stop, Compute may
+automatically confirm native lock recovery only if it verifies that the exact
+previous workload stopped and prevents other writers from attaching to that
+Agent’s state through replacement startup. An old heartbeat or a report from
+the embedded Gateway cannot establish that custody. Without proof, recovery
+requires operator confirmation. The [embedded recovery plan](../../plans/0048-embedded-gateway-owner-recovery.md)
+describes the Docker proposal and the outstanding storage requirement. Dedicated
+recovery has a separate [implementation under review](https://github.com/openclaw/openclaw-enterprise/pull/3355).
