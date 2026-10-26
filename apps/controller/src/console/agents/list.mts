@@ -375,6 +375,84 @@ export function rejectionMessage(cause: unknown, mutation = false): string {
     : message(cause, mutation);
 }
 
+// The API's answer to a request that does not match its schema. It names a JSON path, which
+// helps where the reader typed the value, but the console sent everything else itself.
+const CONTRACT_MISMATCH = "The request does not match the operation contract";
+
+// When to try again after the API's Retry-After: seconds up to two minutes, then whole minutes.
+export function retryAfterText(seconds: number) {
+  if (seconds < 120) {
+    return `Try again in ${seconds} ${seconds === 1 ? "second" : "seconds"}.`;
+  }
+  return `Try again in about ${Math.ceil(seconds / 60)} minutes.`;
+}
+
+// How long a rate-limited reader waits: the API's Retry-After when it sent one.
+function tooManyRequests(cause: unknown) {
+  const seconds = requestFailure(cause).retryAfterSeconds;
+  return `Too many requests. ${seconds === undefined ? "Wait before trying again." : retryAfterText(seconds)}`;
+}
+
+// The API's sentence for a 409 that explains itself, or undefined for a conflict it does not
+// explain (no message, or the generic "already exists" text), where the view says its own.
+export function explainedConflict(cause: unknown): string | undefined {
+  const { status, serverMessage } = requestFailure(cause);
+  return status === 409 && serverMessage !== undefined && serverMessage !== GENERIC_CONFLICT
+    ? serverMessage
+    : undefined;
+}
+
+// One description of a failed request for the views that once showed a bare message()
+// (finding 2538). The API's 400 and typed 409 sentences name the rule or the state that
+// refused the request, and the API never puts a secret value in one, so they show as written
+// (views set them as textContent). `next` follows a 409: the step that recovers in this view,
+// such as a refresh ("" when the view adds its own); `conflict` replaces the generic sentence
+// for a 409 the API does not explain.
+// `form` says the reader entered the values sent, so a 400 the API does not explain asks to check
+// them; without a form it never mentions entered values. Denials, missing resources and
+// unanswered requests keep message()'s text.
+export function describeFailure(
+  cause: unknown,
+  {
+    mutation = false,
+    form = false,
+    next,
+    conflict = "The request conflicts with the current state.",
+  }: {
+    mutation?: boolean;
+    form?: boolean;
+    next?: string;
+    conflict?: string;
+  } = {},
+): string {
+  const error = requestFailure(cause);
+  const then = next ? ` ${next}` : "";
+  if (error.status === 400) {
+    if (
+      error.serverMessage !== undefined &&
+      (form || !error.serverMessage.startsWith(CONTRACT_MISMATCH))
+    ) {
+      return error.serverMessage;
+    }
+    return form
+      ? message(cause, mutation)
+      : "The API refused this request as malformed. Refresh the page and try again.";
+  }
+  if (error.status === 409) {
+    if (error.code === "NAMESPACE_NOT_READY") {
+      return NAMESPACE_NOT_READY_MESSAGE;
+    }
+    const explained = explainedConflict(cause);
+    return explained !== undefined
+      ? `${explained}${then}`
+      : `${conflict}${next === undefined ? " Refresh, then try again." : then}`;
+  }
+  if (error.status === 429) {
+    return tooManyRequests(cause);
+  }
+  return message(cause, mutation);
+}
+
 // A channel credential value that Configuration save or provisioning refuses: a reference without
 // a Secret binding, a `${` the runtime does not substitute, or a value the setting "holds" that is
 // not one whole reference or a SecretRef it accepts, an inline credential included (findings 2319,

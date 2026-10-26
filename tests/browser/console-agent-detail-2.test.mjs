@@ -61,6 +61,7 @@ import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import {
   DEPENDENCY_UNAVAILABLE,
   GENERIC_DENIAL,
+  MALFORMED_REQUEST,
   RESOURCE_NOT_FOUND,
   WORKSPACE_FILES_UNAVAILABLE,
   accessDeniedNeeding,
@@ -506,13 +507,71 @@ test("Repeat deletion preserves bounded retry ownership feedback and ordinary de
   assert.equal((await fixture.request("GET", path)).data.status, "deleting");
 });
 
+// The API's 400 and 409 answers for Stop (contractMessage and occ's stopAgent). Stop has no form,
+// so a schema refusal does not ask to check entered values; a typed 409 shows the API's sentence;
+// a conflict the API does not explain keeps the page's own sentence (findings 2538, 2561).
+test("Agent page Stop shows the API's 400 and 409 reasons", async (t) => {
+  for (const [label, status, serverMessage, text] of [
+    ["schema", 400, "The request does not match the operation contract.", MALFORMED_REQUEST],
+    [
+      "typed conflict",
+      409,
+      "The Agent lifecycle changed during stop.",
+      "The Agent lifecycle changed during stop. Refresh stop status before trying again.",
+    ],
+    [
+      "generic conflict",
+      409,
+      "The requested platform resource already exists.",
+      "This Agent lifecycle changed while stopping. Refresh stop status before trying again.",
+    ],
+  ]) {
+    await t.test(label, async (t) => {
+      const fixture = await detailApp(t);
+      const namespace = await fixture.createNamespace(`Refused stop ${label}`, { ready: true });
+      const agent = await fixture.createAgent(namespace.id, "Refused stop", nativeValues("stop"));
+      const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+      const { page } = await newPage(t, fixture);
+      await trackSettledFetches(page);
+      await page.route(
+        `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/stop`,
+        (route) =>
+          route.fulfill(
+            apiErrorResponse(
+              status,
+              status === 400 ? "INVALID_REQUEST" : "RESOURCE_CONFLICT",
+              serverMessage,
+            ),
+          ),
+      );
+      await login(
+        page,
+        fixture,
+        detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration"),
+      );
+      const stopRegion = page.getByRole("region", { name: "Stop Agent", exact: true });
+      await stopRegion.getByRole("button", { name: "Stop Agent", exact: true }).click();
+      await page
+        .getByRole("dialog", { name: "Stop this Agent?" })
+        .getByRole("button", { name: "Stop Agent" })
+        .click();
+      await stopRegion.getByText(text, { exact: false }).waitFor();
+      await expectNoText(page, /entered values/, () => waitForIdleFetches(page));
+    });
+  }
+});
+
 test("failed repeat deletion preserves feedback when a poll was rearmed during its request", async (t) => {
-  for (const [status, text, guarded] of [
-    [400, "Check the entered values and resource IDs, then try again.", false],
+  // The API's 400 and 409 answers for this route (contractMessage and occ's deleteAgent). Delete
+  // has no form, so a schema refusal does not ask to check entered values, and the API's typed
+  // 409 sentence shows with the step that recovers (finding 2538).
+  for (const [status, text, guarded, serverMessage] of [
+    [400, MALFORMED_REQUEST, false, "The request does not match the operation contract."],
     [
       409,
-      "This Agent could not be deleted in its current state. Refresh its status before trying again.",
+      "The Agent lifecycle changed during deletion. Refresh deletion status before trying again.",
       true,
+      "The Agent lifecycle changed during deletion.",
     ],
     [429, "Too many requests. Wait before trying again.", false],
   ]) {
@@ -556,7 +615,7 @@ test("failed repeat deletion preserves feedback when a poll was rearmed during i
             : apiErrorResponse(
                 status,
                 status === 409 ? "RESOURCE_CONFLICT" : "INVALID_REQUEST",
-                "Controlled repeat refusal",
+                serverMessage,
               ),
         );
       });
@@ -1588,6 +1647,82 @@ test("Agent detail refocus checks access once without reloading an unfinished re
   assert.equal(pathRequests(requests, "PATCH", configurationPath).length, 1);
 });
 
+// A link to a tab this version or this reader does not have silently showed Configuration and
+// kept tab=… in the address (finding 2552). The page now names the tab and why, shows
+// Configuration, and drops the note once another tab is chosen. The address then names
+// Configuration, so a reload or a shared link does not repeat the note (finding 2567).
+test("a link to an unavailable Agent tab names it and shows Configuration", async (t) => {
+  const fixture = await detailApp(t);
+  const namespace = await fixture.createNamespace("Unavailable tab links", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Tab link Agent", nativeValues("tabs"));
+  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const reader = await fixture.createNamespaceMember("tab-reader", namespace.id, AGENT_READ);
+  const notice = (page) => page.locator(".agent-tab-notice");
+  for (const [revisionId, tab, text] of [
+    [
+      revision.id,
+      "credentials",
+      "The Credentials tab is on the version draft only. Showing Configuration.",
+    ],
+    [
+      revision.id,
+      "repositories",
+      "The Repositories tab is on the version draft only. Showing Configuration.",
+    ],
+    ["draft", "logs", "The Logs tab is on deployed versions only. Showing Configuration."],
+    [
+      "draft",
+      "access",
+      "The Access tab needs Installation administration, which your access does not include. Showing Configuration.",
+    ],
+    ["draft", "bogus", "This Agent has no “bogus” tab. Showing Configuration."],
+  ]) {
+    const { page } = await newPage(t, fixture);
+    await trackSettledFetches(page);
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, revisionId, tab),
+      reader.credentials,
+    );
+    await page.getByRole("tab", { name: "Configuration", selected: true }).waitFor();
+    await notice(page).getByText(text, { exact: true }).waitFor();
+    assert.equal(await notice(page).getAttribute("role"), "status");
+    // The address names the tab shown, in place: the page and its note stay.
+    await page.waitForURL((url) => url.searchParams.get("tab") === "configuration");
+    assert.equal(new URL(page.url()).searchParams.get("revision"), revisionId);
+    await notice(page).getByText(text, { exact: true }).waitFor();
+    if (tab === "bogus") {
+      // A reload opens Configuration from the corrected address, without the note.
+      await page.reload();
+      await page.getByRole("tab", { name: "Configuration", selected: true }).waitFor();
+      await waitForIdleFetches(page);
+      assert.equal(await notice(page).isHidden(), true);
+      continue;
+    }
+    // Choosing a tab answers the note.
+    await page.getByRole("tab", { name: "Plugins", exact: true }).click();
+    await page.getByRole("tab", { name: "Plugins", selected: true }).waitFor();
+    assert.equal(await notice(page).isHidden(), true);
+  }
+  // A tab the reader has, or an empty tab, shows no note.
+  for (const tab of ["plugins", ""]) {
+    const { page } = await newPage(t, fixture);
+    await trackSettledFetches(page);
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, "draft", tab),
+      reader.credentials,
+    );
+    await page
+      .getByRole("tab", { name: tab ? "Plugins" : "Configuration", selected: true })
+      .waitFor();
+    await waitForIdleFetches(page);
+    assert.equal(await notice(page).isHidden(), true);
+  }
+});
+
 for (const kind of ["agent", "configuration", "namespace"]) {
   test(`Agent detail refocus removes a revision when ${kind} access is revoked`, async (t) => {
     const fixture = await detailApp(t);
@@ -1618,6 +1753,10 @@ for (const kind of ["agent", "configuration", "namespace"]) {
         exact: true,
       })
       .waitFor();
+    if (kind === "namespace") {
+      // The page listed this Namespace earlier in the sign-in, so access was lost (finding 2550).
+      await page.getByText(/^This Namespace is missing or you no longer have access/).waitFor();
+    }
     await expectNoText(page, /Configuration draft|Create new version|Revoked revision Agent/, () =>
       waitForIdleFetches(page),
     );

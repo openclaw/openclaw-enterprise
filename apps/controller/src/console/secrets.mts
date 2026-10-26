@@ -5,6 +5,7 @@ import type {
   SecretMetadata,
 } from "@openclaw-enterprise/contracts";
 import type { Static } from "typebox";
+import { describeFailure, explainedConflict } from "./agents/list.mjs";
 import { requestFailure, responseFields } from "./api-client.mjs";
 import { button, dismissOnBackdrop, element, field, statusBlock, validateFields } from "./dom.mjs";
 import { namespaceNameProblem, type NamespacePageContext } from "./namespaces.mjs";
@@ -584,7 +585,11 @@ export function renderSecrets(
         canSubmit = status === 400 || status === 429 || nameConflict;
         const unknown = !canSubmit && status !== 403 && status !== 404 && status !== 409;
         value.value = "";
-        let description = "The value was not saved. Check the input and enter it again.";
+        // A 400 shows the API's sentence naming the field to fix; a 429 says how long to wait.
+        let description =
+          status === 400 && error.serverMessage === undefined
+            ? "The value was not saved. Check the input and enter it again."
+            : `The value was not saved. ${describeFailure(cause, { mutation: true, form: true })} Enter the value again.`;
         if (unknown) {
           description = replacing
             ? "Outcome unknown. The value may have changed and cannot be read back. Close this dialog and verify credential use before deciding to submit a new replacement."
@@ -593,13 +598,21 @@ export function renderSecrets(
           description =
             "Your access does not include this Secret operation. Ask an administrator for access.";
         } else if (nameConflict) {
+          // The API names the taken name's rule; the generic conflict keeps the hedge.
+          const explained = explainedConflict(cause);
           description =
-            "The name may already be in use. Check the list, choose a unique name, and enter the value again.";
+            explained === undefined
+              ? "The name may already be in use. Check the list, choose a unique name, and enter the value again."
+              : `The value was not saved. ${explained} Enter the value again.`;
         } else if (status === 409) {
           description =
             code === "NAMESPACE_NOT_READY"
               ? "This Namespace is not ready for Secret changes. Close and Refresh to check its current state."
-              : "The Secret cannot be saved in its current state. Close and Refresh before trying again.";
+              : describeFailure(cause, {
+                  mutation: true,
+                  conflict: "The Secret cannot be saved in its current state.",
+                  next: "Close and Refresh before trying again.",
+                });
         } else if (status === 404) {
           description =
             "This Secret or Namespace is no longer available. Close and Refresh the list.";
@@ -661,15 +674,19 @@ export function renderSecrets(
         }
         const error = requestFailure(cause);
         unknown = error.status === undefined || ![400, 403, 404, 409, 429].includes(error.status);
-        let description = "Could not delete this Secret. Close and Refresh before trying again.";
+        let description = `Could not delete this Secret. ${describeFailure(cause, { mutation: true })}`;
         if (unknown) {
           description =
             "Outcome unknown. The Secret may have been deleted. Check its status before deciding to delete again.";
         } else if (error.status === 403) {
           description = "Your access does not include deleting this Secret.";
         } else if (error.status === 409) {
-          description =
-            "Deletion is blocked by current references or a lifecycle conflict. Close and reopen the Secret to inspect its current consumers.";
+          // The API names what still uses the Secret, or the change that raced this deletion.
+          description = `Could not delete this Secret. ${describeFailure(cause, {
+            mutation: true,
+            conflict: "Deletion is blocked by current references or a lifecycle conflict.",
+            next: "Close and reopen the Secret to inspect its current consumers.",
+          })}`;
         } else if (error.status === 404) {
           description = "The Secret is no longer available. Close and Refresh the list.";
         }

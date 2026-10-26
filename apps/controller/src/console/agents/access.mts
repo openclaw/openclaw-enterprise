@@ -16,7 +16,7 @@ import {
   policyList,
   policyRole,
 } from "./credential-access.mjs";
-import { message, namespacePath, rejectionMessage } from "./list.mjs";
+import { describeFailure, message, namespacePath } from "./list.mjs";
 
 const discoveryPermissions = [{ action: "read", resourceKind: "namespace" }] satisfies Permission[];
 // People receive `prn_` Principal IDs; emails and other text never name an IAM subject.
@@ -264,7 +264,7 @@ export function renderAgentAccess(
         : sharing && (status === 404 || (status === 400 && unavailableShareInput(error)))
           ? "No existing person with that Principal ID can be granted access here, or this Agent is no longer available. Check the Principal ID."
           : mutation && !state.saved
-            ? rejectionMessage(error, mutation)
+            ? describeFailure(error, { mutation, form: true, next: "" })
             : message(error, mutation);
     state.error += " Refresh sharing to inspect current policy before another change.";
     if (requestId) {

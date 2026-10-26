@@ -2615,7 +2615,7 @@ revisionTest(
         error: {
           code: "SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED",
           message:
-            "The Sandbox Driver cannot deliver Secret-backed environment variables to the Harness.",
+            "The Sandbox Driver cannot deliver Secret-backed environment variables to the Harness. Use credential sources instead of Secret bindings, or ask an Installation administrator for a Sandbox Driver that supports them, then deploy again.",
         },
       },
     });
@@ -3350,7 +3350,8 @@ for (const { label, failure, code, message } of [
         "A Kubernetes API request timed out.",
       ),
     code: "KUBERNETES_API_UNAVAILABLE",
-    message: "The Kubernetes API was still unavailable at the deployment deadline.",
+    message:
+      "The Kubernetes API was still unavailable at the deployment deadline. Deploy again; if it keeps failing, ask an operator to check the cluster's API server.",
   },
   {
     label: "OpenShell admission limit",
@@ -3362,7 +3363,7 @@ for (const { label, failure, code, message } of [
       }),
     code: "SANDBOX_ADMISSION_LIMIT_REACHED",
     message:
-      "The Sandbox gateway still refused new requests from the controller (request admission limit reached) at the deployment deadline.",
+      "The Sandbox gateway still refused new controller requests (request admission limit reached) at the deployment deadline. Deploy again once other Sandbox work has finished; if it keeps failing, ask an operator to check the gateway's request limit.",
   },
   {
     // Finding 2040: a gateway that never comes back is bounded by the deadline too.
@@ -3370,7 +3371,8 @@ for (const { label, failure, code, message } of [
     failure: () =>
       new SandboxGatewayUnavailableError("OpenShell CreateSandbox failed with gRPC status 14."),
     code: "SANDBOX_GATEWAY_UNAVAILABLE",
-    message: "The Sandbox gateway still did not answer the controller at the deployment deadline.",
+    message:
+      "The Sandbox gateway still did not answer the controller at the deployment deadline. Deploy again; if it keeps failing, ask an operator to check the Sandbox gateway.",
   },
 ]) {
   test(

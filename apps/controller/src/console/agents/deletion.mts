@@ -14,7 +14,7 @@ import {
   type LifecycleError,
   keptResources,
 } from "./lifecycle-confirmation.mjs";
-import { message } from "./list.mjs";
+import { describeFailure } from "./list.mjs";
 
 // Deletion finishes in the background; poll until the Agent is gone, then return to the list.
 export const DELETION_POLL_MS = 3000;
@@ -230,7 +230,7 @@ export function createAgentDeletion(
         clearTimeout(pollTimer);
       } else {
         state.error = {
-          text: `Could not refresh deletion status. ${message(cause)}`,
+          text: `Could not refresh deletion status. ${describeFailure(cause)}`,
           requestId: error.requestId,
         };
         // Stop polling on errors; the reader can retry with Refresh deletion status.
@@ -339,12 +339,14 @@ export function createAgentDeletion(
         state.needsRefresh = true;
         text =
           "This Agent is no longer available for deletion. Refresh its status to return to the Agents list if it is gone.";
-      } else if (error.status === 409) {
-        state.needsRefresh = true;
-        text =
-          "This Agent could not be deleted in its current state. Refresh its status before trying again.";
-      } else if (error.status === 400 || error.status === 429) {
-        text = message(cause);
+      } else if (error.status === 400 || error.status === 409 || error.status === 429) {
+        // The API's own reason for a 400 or 409, such as a lifecycle change during deletion.
+        state.needsRefresh = error.status === 409;
+        text = describeFailure(cause, {
+          mutation: true,
+          conflict: "This Agent could not be deleted in its current state.",
+          next: "Refresh deletion status before trying again.",
+        });
       } else {
         state.needsRefresh = true;
         text =

@@ -7,7 +7,7 @@ import type {
 import { requestFailure, responseFields } from "../api-client.mjs";
 import type { NamespacePageContext } from "../namespaces.mjs";
 import { element, button, setStatusTone } from "../dom.mjs";
-import { message, namespacePath } from "./list.mjs";
+import { describeFailure, namespacePath } from "./list.mjs";
 import { visibleText } from "./logs-view.mjs";
 import {
   repositoryProfiles,
@@ -1075,17 +1075,21 @@ export function createRepositoryFields(
         : "Repository choices are denied because you are not authorized to create Agents in this Namespace.";
     } else if (state.discovery === "conflict") {
       setStatusTone(status, "danger");
+      // The API's 409 names the state, such as an Agent being deleted.
       status.textContent = initial.agentId
-        ? "Repository choices conflict with the current Agent or Namespace. Reload this draft before continuing."
+        ? describeFailure(error, {
+            conflict: "Repository choices conflict with the current Agent or Namespace.",
+            next: "Reload this draft before continuing.",
+          })
         : "This Namespace no longer accepts new Agents.";
     } else if (clearSelections) {
       setStatusTone(status, "danger");
-      status.textContent = `Repository choices could not be reloaded. ${message(error)} Retry the reload or start a new draft.`;
+      status.textContent = `Repository choices could not be reloaded. ${describeFailure(error)} Retry the reload or start a new draft.`;
     } else if (state.discovery === "draft-only" || state.discovery === "not-configured") {
       showSetupLink();
     } else {
       setStatusTone(status, "danger");
-      status.textContent = `Repository choices could not be loaded. ${message(error)} Retry repository choices before ${initial.agentId ? "saving repository access" : "creating an Agent"}.`;
+      status.textContent = `Repository choices could not be loaded. ${describeFailure(error)} Retry repository choices before ${initial.agentId ? "saving repository access" : "creating an Agent"}.`;
     }
     retry.hidden = clearSelections || ["draft-only", "not-configured"].includes(state.discovery);
     revealInvalidSelections();

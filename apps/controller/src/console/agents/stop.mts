@@ -6,7 +6,7 @@ import {
   type LifecycleError,
   STOP_CONFIRMATION,
 } from "./lifecycle-confirmation.mjs";
-import { message, shortId } from "./list.mjs";
+import { describeFailure, shortId } from "./list.mjs";
 
 export function createAgentStop(
   context: AgentLifecycleContext,
@@ -250,7 +250,7 @@ export function createAgentStop(
         context.navigate("agents");
       } else {
         state.error = {
-          text: `Could not refresh stop status. ${message(cause)}`,
+          text: `Could not refresh stop status. ${describeFailure(cause)}`,
           requestId: error.requestId,
         };
       }
@@ -320,12 +320,14 @@ export function createAgentStop(
         state.needsRefresh = true;
         text =
           "This Agent is no longer available for stopping. Refresh stop status to return to the Agents list if it is gone.";
-      } else if (error.status === 409) {
-        state.needsRefresh = true;
-        text =
-          "This Agent lifecycle changed while stopping. Refresh stop status before trying again.";
-      } else if (error.status === 400 || error.status === 429) {
-        text = message(cause, true);
+      } else if (error.status === 400 || error.status === 409 || error.status === 429) {
+        // The API's own reason for a 400 or 409, such as a lifecycle change during the stop.
+        state.needsRefresh = error.status === 409;
+        text = describeFailure(cause, {
+          mutation: true,
+          conflict: "This Agent lifecycle changed while stopping.",
+          next: "Refresh stop status before trying again.",
+        });
       } else {
         state.needsRefresh = true;
         text =

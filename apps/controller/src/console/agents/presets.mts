@@ -15,7 +15,7 @@ import {
   requiredPresetVariables,
   validatePresetTemplate,
 } from "../preset-variables.mjs";
-import { message, namespaceListNeed, namespacePath } from "./list.mjs";
+import { describeFailure, message, namespaceListNeed, namespacePath } from "./list.mjs";
 import type { SecretsOperateDenied } from "./credential-access.mjs";
 import {
   NEW_SECRET_OPERATE_DENIED,
@@ -592,7 +592,7 @@ export function createPresetFields(
       if (requestFailure(error).status === 401) {
         context.onExpired();
       } else {
-        feedback.textContent = message(error);
+        feedback.textContent = `This Preset could not be loaded. ${describeFailure(error)}`;
         // Use Preset stays disabled, so the filled style goes back to the shortcut.
         emphasize(false);
       }

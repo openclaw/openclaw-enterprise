@@ -14,6 +14,10 @@ export const NAMESPACE_NOT_READY = "The requested Namespace is not ready.";
 // (AGENT_NAME_CONFLICT in errors.ts); a provisioning job that loses the name race reports it too.
 export const AGENT_NAME_CONFLICT =
   "An Agent with this name already exists in this Namespace. Choose a different name.";
+export const SECRET_NAME_CONFLICT =
+  "A Secret with this name already exists in this Namespace. Choose a different name.";
+export const NAMESPACE_NAME_CONFLICT =
+  "A Namespace with this name already exists. Choose a different name.";
 // Create Agent and the Agents list for a caller without Agent create, which Namespace Roles cannot
 // grant people (findings 2496, 2508).
 export const AGENT_CREATE_DENIED =
@@ -51,12 +55,24 @@ export const accessDeniedNeeding = (task, grant) =>
 // A Namespace list (Secrets, Presets, Service Accounts) is refused for lack of Namespace read.
 export const namespaceListDenied = (items) =>
   accessDeniedNeeding(`Listing ${items} in this Namespace`, "Namespace read");
+// What an Installation administrator's own refused request says: asking one would not help.
+export const ADMINISTRATOR_ACCESS_DENIED =
+  "Access denied. You do not have permission for this operation.";
 export const CONSOLE_ACCESS_DENIED = `Access denied. You do not have permission for this operation. Granting it ${ASK_INSTALLATION_ADMINISTRATOR} check your access.`;
 export const secretOperateRefused = (name) =>
   `You do not have permission to bind ${name}. Each save needs Secret operate on every Secret it binds, which your access does not include for it. Choose another Secret, or ask an administrator for Secret operate on it.`;
 
 // The console's text for a read that failed with a 5xx.
 export const READ_UNAVAILABLE = "Service unavailable. The read could not be completed. Try again.";
+// The console's text for a 400 the API does not explain, where the reader entered nothing (Stop,
+// Delete): the console sent a request the API's schema refused.
+export const MALFORMED_REQUEST =
+  "The API refused this request as malformed. Refresh the page and try again.";
+// A 429 with Retry-After names the wait: seconds up to two minutes, then whole minutes.
+export const tooManyRequestsIn = (seconds) =>
+  seconds < 120
+    ? `Too many requests. Try again in ${seconds} ${seconds === 1 ? "second" : "seconds"}.`
+    : `Too many requests. Try again in about ${Math.ceil(seconds / 60)} minutes.`;
 
 // The Agent page's Workspace tab without a deployed, reachable gateway.
 export const WORKSPACE_FILES_UNAVAILABLE =

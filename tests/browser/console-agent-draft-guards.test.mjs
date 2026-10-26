@@ -800,6 +800,63 @@ test("overlapping policy refreshes retain the newest read and continue pending p
   assert.equal((await fixture.request("GET", base)).data.policy.application.state, "pending");
 });
 
+// A failed live application says why and what to do next instead of showing only its reason
+// code; only an unconfirmed one keeps the "may have accepted part" notice (finding 2537). The
+// fixture has no worker, so the reads after a real apply answer with the failure the worker
+// records for that application (worker/sandbox-policy.ts).
+for (const c of [
+  {
+    reason: "SANDBOX_POLICY_CEILING_CHANGED",
+    // The worker repeats this check after it sent the policy, so the text never claims that
+    // nothing was applied (finding 2570).
+    text: "The Installation delegation ceiling changed and no longer covers every saved rule. The controller does not send this policy again, and it did not confirm whether the Sandbox runs it. Remove the rules outside the ceiling, save, then apply again.",
+  },
+  {
+    reason: "SANDBOX_POLICY_UNCONFIRMED",
+    text: "Application was not confirmed. The provider may have accepted part of the request; refresh and retry explicitly. No redeployment was started.",
+  },
+]) {
+  test(`a failed policy application (${c.reason}) says why and what to do next`, async (t) => {
+    const { fixture, namespace, agent, base } = await createPolicyConsole(t, [
+      delegatedPolicyGrant,
+    ]);
+    const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+    assert.equal(
+      (
+        await fixture.request("PUT", base, {
+          body: { expectedVersion: 1, additions: [delegatedPolicyGrant] },
+        })
+      ).status,
+      200,
+    );
+    const { page } = await newPage(t, fixture);
+    await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revision.id, "policy"));
+    await page.getByText("Matches saved policy v2.", { exact: false }).waitFor();
+    await page
+      .getByRole("button", { name: "Apply saved policy to current revision", exact: true })
+      .click();
+    await page.getByText(/Application to the current revision is pending/).waitFor();
+    await page.route(`${fixture.origin}${base}`, async (route) => {
+      if (route.request().method() !== "GET") {
+        await route.fallback();
+        return;
+      }
+      const response = await route.fetch();
+      const body = await response.json();
+      const { application } = body.data.policy;
+      assert.equal(application.state, "pending");
+      body.data.policy.application = { ...application, state: "failed", reason: c.reason };
+      await route.fulfill({ response, json: body });
+    });
+    // The pending application's poll reads the failure.
+    const notice = page.locator(".notice", { hasText: c.text });
+    await notice.waitFor();
+    assert.equal(await notice.textContent(), c.text);
+    // The code stays on the status line beside the failed state.
+    await page.getByText(`Application: failed · ${c.reason} ·`, { exact: false }).waitFor();
+  });
+}
+
 test("Agent deployment requires a reload after repository access changes", async (t) => {
   const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId) => [
     {

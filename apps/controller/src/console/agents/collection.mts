@@ -23,10 +23,10 @@ import {
   NAMESPACE_RECHECK_MS,
   NEUTRAL_DEPLOYMENT_NOTES,
   deploymentOutcome,
+  describeFailure,
   displayDate,
   hasUnbrokenRun,
   link,
-  message,
   namespaceCreation,
   namespacePath,
   neutralDeploymentOutcome,
@@ -503,13 +503,14 @@ export function renderAgentList(context: AgentListContext) {
           ? `You do not have permission to stop ${item.name}. Ask an administrator for Agent operate access.`
           : `You do not have permission to delete ${item.name}. Ask an administrator for Agent delete access.`;
     } else if (error.status === 400 || error.status === 429) {
-      text = message(error, true);
+      text = `Could not ${kind === "stop" ? "stop" : "delete"} ${item.name}. ${describeFailure(cause, { mutation: true })}`;
     } else {
       unsettled.add(item.id);
       if (error.status === 404) {
         text = `${item.name} is no longer available. Select Refresh to update the list.`;
       } else if (error.status === 409) {
-        text = `${item.name} changed while the request was sent. Select Refresh before trying again.`;
+        // The API's own reason, such as a lifecycle change while the request ran.
+        text = `Could not ${kind === "stop" ? "stop" : "delete"} ${item.name}. ${describeFailure(cause, { mutation: true, conflict: `${item.name} changed while the request was sent.`, next: "Select Refresh before trying again." })}`;
       } else {
         text = `Outcome unknown. ${kind === "stop" ? "Stop" : "Deletion"} may have been accepted for ${item.name}. Select Refresh before trying again.`;
       }
