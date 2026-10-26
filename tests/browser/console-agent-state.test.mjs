@@ -808,7 +808,7 @@ test("Agent detail says when the current or requested version cannot be read", a
   await page
     .locator(".agent-status-line")
     .getByText(
-      /Ask an Agent administrator for read access to new versions\. If this Agent is set up for a channel such as Slack, you can message it there when that channel allows you\.$/,
+      /Each new version needs its own AgentRevision read: ask an Installation administrator to grant it after each deployment\. If this Agent is set up for a channel such as Slack, you can message it there when that channel allows you\.$/,
     )
     .waitFor();
   await page.getByRole("heading", { name: "You cannot read this version" }).waitFor();
@@ -842,7 +842,7 @@ test("Agent detail says an Agent's versions are hidden, not missing, when none i
   await page.getByRole("heading", { name: "Hidden history" }).waitFor();
   await page
     .getByText(
-      "No readable versions. This Agent has versions your access does not include. Ask an Agent administrator for read access to them.",
+      "No readable versions. This Agent has versions your access does not include. Ask an Installation administrator for AgentRevision read on them.",
     )
     .waitFor();
   assert.equal(
@@ -1669,7 +1669,11 @@ test("Agents list row actions explain missing access and still report a refused 
   const dialog = page.getByRole("dialog", { name: "Stop Guarded Agent?" });
   await dialog.waitFor();
   advice.release();
-  await dialog.getByText("Your access does not include stopping this Agent.").waitFor();
+  await dialog
+    .getByText(
+      "Your access does not include stopping this Agent. Ask an Installation administrator for Agent operate on it.",
+    )
+    .waitFor();
   const confirm = dialog.getByRole("button", { name: "Stop Agent" });
   assert.equal(await confirm.isDisabled(), true);
   const cancel = dialog.getByRole("button", { name: "Cancel" });
@@ -1682,7 +1686,12 @@ test("Agents list row actions explain missing access and still report a refused 
 
   // The Agent's real permission read reports neither action, so both icons are disabled with a
   // visible reason before any confirmation, and nothing is sent.
-  await row.getByText("No access to stop or delete", { exact: true }).waitFor();
+  await row
+    .getByText(
+      "Your access does not include stopping or deleting this Agent. Ask an Installation administrator for Agent operate and Agent delete on it.",
+      { exact: true },
+    )
+    .waitFor();
   assert.equal(await stop.isDisabled(), true);
   assert.equal(await remove.isDisabled(), true);
   assert.deepEqual(nonAuthWriteRequests(requests), []);
@@ -1690,7 +1699,12 @@ test("Agents list row actions explain missing access and still report a refused 
   // An operate grant shows after Refresh: Stop becomes available while Delete stays explained.
   const operate = await bind([{ action: "operate", resourceKind: "agent" }], "agent", agent.id);
   await refresh.click();
-  await row.getByText("No access to delete", { exact: true }).waitFor();
+  await row
+    .getByText(
+      "Your access does not include deleting this Agent. Ask an Installation administrator for Agent delete on it.",
+      { exact: true },
+    )
+    .waitFor();
   await stopEnabled();
   assert.equal(await remove.isDisabled(), true);
 
@@ -1706,7 +1720,7 @@ test("Agents list row actions explain missing access and still report a refused 
   await page
     .getByRole("alert")
     .getByText(
-      "You do not have permission to stop Guarded Agent. Ask an administrator for Agent operate access.",
+      "You do not have permission to stop Guarded Agent. Ask an Installation administrator for Agent operate on it.",
     )
     .waitFor();
   assert.equal(agentStopRequests(requests, namespace.id, agent.id).length, 1);
@@ -1795,11 +1809,21 @@ test("Agents list permission advice updates its own row without moving focus els
   // arrives. Guarded Agent's icons must update, and focus must stay where it was.
   let release = await holdGuardedAdvice();
   await login(page, fixture, listUrl(namespace.id), person.credentials);
-  await otherRow.getByText("No access to stop or delete", { exact: true }).waitFor();
+  await otherRow
+    .getByText(
+      "Your access does not include stopping or deleting this Agent. Ask an Installation administrator for Agent operate and Agent delete on it.",
+      { exact: true },
+    )
+    .waitFor();
   const otherLink = otherRow.getByRole("link", { name: "Other Agent" });
   await otherLink.focus();
   release();
-  await guardedRow.getByText("No access to stop or delete", { exact: true }).waitFor();
+  await guardedRow
+    .getByText(
+      "Your access does not include stopping or deleting this Agent. Ask an Installation administrator for Agent operate and Agent delete on it.",
+      { exact: true },
+    )
+    .waitFor();
   assert.equal(
     await guardedRow.getByRole("button", { name: "Stop Guarded Agent" }).isDisabled(),
     true,
@@ -1816,7 +1840,12 @@ test("Agents list permission advice updates its own row without moving focus els
   );
   await guardedStop.focus();
   release();
-  await guardedRow.getByText("No access to stop or delete", { exact: true }).waitFor();
+  await guardedRow
+    .getByText(
+      "Your access does not include stopping or deleting this Agent. Ask an Installation administrator for Agent operate and Agent delete on it.",
+      { exact: true },
+    )
+    .waitFor();
   await page.waitForFunction(
     () => globalThis.document.activeElement?.textContent === "Guarded Agent",
   );

@@ -2266,7 +2266,8 @@ test("a different Secret in a create response cannot stage a binding or repeat t
 // The Secrets page disables Create Secret when the Namespace's permission answer denies Secret
 // create; the inline Create Secret action in the Credentials tab offered the same refused write
 // (finding 2442). It stays listed, disabled with the reason, until a grant.
-const SECRET_CREATE_DENIED = "Your access does not include creating Secrets in this Namespace.";
+const SECRET_CREATE_DENIED =
+  "Your access does not include creating Secrets in this Namespace. Only an Installation administrator can create Secrets: ask one to create it and to give you Secret read and operate on it.";
 test("the Credentials tab's inline Create Secret follows the Secret create answer", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -2506,7 +2507,8 @@ test("Agent credential Secret picker searches, validates, and preserves duplicat
   await dialog
     .getByRole("alert")
     .filter({
-      hasText: "Access denied. You do not have permission to manage this Secret binding.",
+      hasText:
+        "Your access does not include creating Secrets in this Namespace. Only an Installation administrator can create Secrets: ask one to create it and to give you Secret read and operate on it.",
     })
     .waitFor();
   await waitForEnabled(dialog.getByLabel("Name", { exact: true }));
@@ -4073,10 +4075,11 @@ test("a version editor without Agent update can recover a failed deployment from
 });
 
 // The Agent page's copy for a caller without Configuration update (finding 2421).
-const CONFIGURATION_READ_ONLY = "Your access does not include editing this Configuration.";
+const CONFIGURATION_READ_ONLY =
+  "Your access does not include editing this Configuration. Ask an Installation administrator for Configuration update on it.";
 const CHANNELS_READ_ONLY = `These are the version draft’s channel settings. ${CONFIGURATION_READ_ONLY}`;
 const CONFIGURATION_SECRETS_READ_ONLY =
-  "Saving this Configuration needs Secret operate on each Secret it binds, which your access does not include.";
+  "Saving this Configuration needs Secret operate on each Secret it binds, which your access does not include. Ask an Installation administrator for Secret operate on each of them.";
 // A channel save keeps a binding whose Secret the member may not operate (finding 2444).
 const KEPT_SECRET_CHANNEL_SECRETS =
   "Each Configuration save needs Secret operate on every Secret it keeps bound. Your access does not include it for EXTERNAL_API_TOKEN, which channel saves keep.";
@@ -4087,7 +4090,7 @@ const KEEPS_BOT_TOKEN =
 const DISABLE_KEEPS_BOT_TOKEN =
   "Disabling keeps Slack bot token on a Secret your access cannot operate. Choose another Secret for it in Edit Slack first, then disable.";
 const AGENT_SOURCES_DENIED =
-  "Saving these settings needs operate on each Secret and credential source this Agent and its Configuration bind, which your access does not include. Ask an administrator for that access.";
+  "Saving these settings needs operate on each Secret and credential source this Agent and its Configuration bind, which your access does not include. Ask an Installation administrator for that access.";
 // Slack Socket Mode reading its tokens from SLACK_APP_TOKEN and SLACK_BOT_TOKEN, which a test
 // binds to Secrets or leaves unbound.
 const SOCKET_SLACK = {

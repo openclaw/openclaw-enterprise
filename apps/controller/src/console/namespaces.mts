@@ -85,11 +85,11 @@ export function renderNamespaces(
     create.setAttribute("aria-describedby", refusal.id);
     collection.before(refusal);
     emptyText.textContent =
-      "Ask an administrator to create a Namespace or grant access to an existing one.";
+      "Ask an Installation administrator to create a Namespace or to give you access to an existing one.";
   }
   emptyText.textContent = administrator
-    ? "Create a Namespace to get started, or ask an administrator for access to an existing one."
-    : "Ask an administrator for access to an existing Namespace, or create one if your role allows it.";
+    ? "Create a Namespace to get started."
+    : "No Namespaces are shared with you. Ask an Installation administrator to give you access to one.";
   context.view.replaceChildren(
     element(
       "div",
@@ -289,7 +289,7 @@ export function renderNamespaces(
             statusBlock(
               "info",
               null,
-              "Your access does not include viewing this Namespace. Ask an administrator for access to open its Agents.",
+              "Your access does not include viewing this Namespace. Ask an Installation administrator for Namespace read on it to open its Agents.",
               [],
               { id: "create-namespace-access" },
             ),

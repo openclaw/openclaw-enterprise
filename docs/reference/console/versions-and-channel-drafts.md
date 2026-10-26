@@ -65,8 +65,9 @@ without repeating the Agent update. Partial saves survive navigation. Grants do 
 provider readiness.
 
 Configuration and Slack summaries show bound Secret names and IDs for the viewed
-draft or version. Names require exact same-Namespace Secret `read`; denied,
-missing, or failed reads show the ID with **Metadata unavailable**. **No Secret
+draft or version. Names require exact same-Namespace Secret `read`; a denied
+read says a Secret is bound and its name is hidden, with the ID in the tooltip, and
+missing or failed reads show the ID with **Metadata unavailable**. **No Secret
 bound** means no binding. Values are never read, and metadata does not prove
 credential validity.
 

@@ -1190,7 +1190,7 @@ export const scenarios = {
     description:
       "The permission summary says this caller can neither stop nor delete these Agents. Each row disables its icons and says why before any confirmation.",
     steps: [
-      "Find No access to stop or delete under each row's icons. The icons do not open a confirmation.",
+      "Under each row's icons, find that your access does not include stopping or deleting the Agent, and that an Installation administrator can grant Agent operate and Agent delete. The icons do not open a confirmation.",
       "Open an Agent: its detail page explains the same restrictions.",
     ],
     gap: "The summary is advisory. The controller still authorizes each write.",

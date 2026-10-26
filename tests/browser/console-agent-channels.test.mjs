@@ -1563,7 +1563,7 @@ describe("Agent channels", { concurrency: 3 }, () => {
     assert.equal(await drawer.getByText(/or create/).count(), 0);
     await drawer.getByLabel("Slack app token", { exact: true }).fill("Create a new Secret");
     const action = drawer.getByRole("option", {
-      name: "Create new Secret... Your access does not include creating Secrets in this Namespace.",
+      name: "Create new Secret... Your access does not include creating Secrets in this Namespace. Only an Installation administrator can create Secrets: ask one to create it and to give you Secret read and operate on it.",
       exact: true,
     });
     await action.waitFor();

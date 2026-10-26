@@ -312,7 +312,7 @@ test("A failed older version raises no recovery while the current version is hid
   await page
     .locator(".agent-status-line")
     .getByText(
-      /The current version, rev_.*, is one you cannot read, so this page cannot tell whether the failed v1 deployment affects it\. Ask an Agent administrator for read access/,
+      /The current version, rev_.*, is one you cannot read, so this page cannot tell whether the failed v1 deployment affects it\. Each new version needs its own AgentRevision read/,
     )
     .waitFor();
   assert.equal(await page.locator(".deployment-recovery").isHidden(), true);
@@ -968,7 +968,7 @@ test("A failed version raises no recovery while the current version is on no loa
   assert.equal(await page.getByRole("button", { name: "Show older versions" }).count(), 0);
   await statusLine
     .getByText(
-      /The current version, rev_.*, is one you cannot read, so this page cannot tell whether the failed v2 deployment affects it\. Ask an Agent administrator for read access/,
+      /The current version, rev_.*, is one you cannot read, so this page cannot tell whether the failed v2 deployment affects it\. Each new version needs its own AgentRevision read/,
     )
     .waitFor();
   assert.equal(await page.locator(".deployment-recovery").isHidden(), true);

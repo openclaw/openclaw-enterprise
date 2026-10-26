@@ -297,7 +297,7 @@ export function createPresetFields(
         }
         field.secretStatus.textContent =
           createDenied && !field.secrets.length
-            ? `No Secrets you can read in this Namespace. ${SECRET_CREATE_DENIED} Ask an administrator for read access to an existing one.`
+            ? `No Secrets you can read in this Namespace. ${SECRET_CREATE_DENIED} Or ask one for Secret read and operate on an existing Secret.`
             : newSecretDenied
               ? `Choose an existing Secret. ${newSecretHint}`
               : field.secrets.length
@@ -639,7 +639,7 @@ export function createPresetFields(
       }
       if (presets.length === 0) {
         status.textContent =
-          "No Presets available to you in this Namespace. Ask an administrator to install default-codex or another Preset, or to give you read access to a Preset.";
+          "No Presets available to you in this Namespace. Ask an Installation administrator to install default-codex or another Preset, or to give you Preset read on one.";
       } else {
         status.textContent = chooseHint();
       }

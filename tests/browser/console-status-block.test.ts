@@ -934,7 +934,8 @@ async function answerDiagnostics(page: Page, revisionId: string) {
   return runs;
 }
 
-const DIAGNOSTICS_REASON = "Your access does not include running diagnostics for this Agent.";
+const DIAGNOSTICS_REASON =
+  "Your access does not include running diagnostics for this Agent. Ask an Installation administrator for Agent operate on it.";
 
 test("Run diagnostics access and outcomes", async (t) => {
   const fixture = await createConsoleAppFixture(t);

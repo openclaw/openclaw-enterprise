@@ -362,7 +362,7 @@ test("a member is not invited to create, and a real IAM denial disables Create N
   assert.equal(await isPrimary(opener), false);
   assert.equal(
     await emptyText.textContent(),
-    "Ask an administrator for access to an existing Namespace, or create one if your role allows it.",
+    "No Namespaces are shared with you. Ask an Installation administrator to give you access to one.",
   );
   await opener.click();
   const dialog = page.getByRole("dialog", { name: "Create Namespace", exact: true });
@@ -394,7 +394,7 @@ test("a member is not invited to create, and a real IAM denial disables Create N
   assert.equal(await page.evaluate(() => globalThis.document.activeElement?.textContent), REFUSED);
   assert.equal(
     await emptyText.textContent(),
-    "Ask an administrator to create a Namespace or grant access to an existing one.",
+    "Ask an Installation administrator to create a Namespace or to give you access to an existing one.",
   );
   // The page's Refresh offers creation again, as the refusal says (finding 2083); Escape after
   // the next refusal also leaves focus on it.

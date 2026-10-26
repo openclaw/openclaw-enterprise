@@ -2238,11 +2238,11 @@ async function loadPage({
       shell.view,
       title,
       agentDenied
-        ? "You do not have access to this Agent or its settings, or it was deleted. Ask its owner to share it with you."
+        ? "You do not have access to this Agent or its settings, or it was deleted. Ask an Installation administrator for Agent read on it."
         : installationDenied
           ? "Your account does not have access to Backends. Backends apply to the whole Installation, so choosing another Namespace would not change this. Ask an Installation administrator for access."
           : error.status === 403
-            ? "Your account does not have access to this page in this Namespace. Ask an administrator for access, or choose another Namespace."
+            ? "Your account does not have access to this page in this Namespace. Ask an Installation administrator for access, or choose another Namespace."
             : "The read could not be completed. Retry to check current access and saved state.",
       "Retry",
       () => void loadPage(),

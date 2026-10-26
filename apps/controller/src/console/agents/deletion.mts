@@ -14,6 +14,7 @@ import {
   type LifecycleError,
   keptResources,
 } from "./lifecycle-confirmation.mjs";
+import { AGENT_DELETE_DENIED, askForGrant } from "./access-reasons.mjs";
 import { describeFailure } from "./list.mjs";
 
 // Deletion finishes in the background; poll until the Agent is gone, then return to the list.
@@ -31,7 +32,7 @@ export function createAgentDeletion(
     className: "danger-zone-row deletion-note",
     "aria-labelledby": "agent-deletion-title",
   });
-  const permissionNotice = "Your access does not include deleting this Agent.";
+  const permissionNotice = AGENT_DELETE_DENIED;
   let restrictConfirmation: (() => void) | undefined;
   const feedback = element("div", { className: "danger-zone-feedback" });
   const actions = element("div", { className: "danger-zone-actions" });
@@ -334,7 +335,7 @@ export function createAgentDeletion(
           error.serverMessage !== undefined &&
           error.serverMessage !== "The exact platform operation was not authorized."
             ? error.serverMessage
-            : "You do not have permission to delete this Agent. Ask an administrator for Agent delete access.";
+            : `You do not have permission to delete this Agent. ${askForGrant("Agent delete on it")}`;
       } else if (error.status === 404) {
         state.needsRefresh = true;
         text =

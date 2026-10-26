@@ -359,7 +359,7 @@ test("Create Agent keeps the search Secret out of plugin approver lookups", asyn
     .filter({ hasText: "Create new Secret..." });
   assert.equal(
     await createAction.textContent(),
-    "Create new Secret... Your access does not include creating Secrets in this Namespace.",
+    "Create new Secret... Your access does not include creating Secrets in this Namespace. Only an Installation administrator can create Secrets: ask one to create it and to give you Secret read and operate on it.",
   );
   assert.equal(await createAction.getAttribute("aria-disabled"), "true");
   // The spare token is listed disabled with the reason, and a forced click chooses nothing, so

@@ -16,13 +16,23 @@ import {
 } from "../configuration-fields.mjs";
 import { button, element } from "../dom.mjs";
 import type { NamespacePageContext } from "../namespaces.mjs";
+import { askForGrant, SANDBOX_POLICY_READ_DENIED } from "./access-reasons.mjs";
 import { namespacePath, rejectionMessage } from "./list.mjs";
 import { recordRow, visibleText } from "./logs-view.mjs";
 
 type Policy = SandboxPolicyViewWire["policy"];
 
-const POLICY_READ_DENIED =
-  "Your access does not include reading this Agent’s network policy or its suggestions.";
+const POLICY_READ_DENIED = SANDBOX_POLICY_READ_DENIED;
+// What each refused request checks: Sandbox log text needs Agent read_logs (with Agent read and
+// read on the version); the policy and suggestions need SandboxPolicy read; validation, preview
+// and save need Agent manage_policy and SandboxPolicy update.
+const LOG_GRANT = "Agent read_logs on it";
+const POLICY_READ_GRANT = "SandboxPolicy read on it";
+const POLICY_CHANGE_GRANT = "Agent manage_policy and SandboxPolicy update on it";
+// The editing setting needs Installation administer and Agent administer, which no Namespace Role
+// can grant, so the reason names who can change it instead.
+const EDITING_SETTING_DENIED =
+  "You do not have permission to change the editing setting. Only an Installation administrator who also administers this Agent can change it.";
 // A draft of an Agent with no current version: never deployed, stopped, or first deployment
 // still running. The copy fits each, and a reader who cannot deploy is not told to.
 const NO_CURRENT_VERSION_DENIALS =
@@ -37,10 +47,11 @@ const NO_SANDBOX_SUGGESTIONS =
   "Suggestions come from policy denials. This Agent version runs without a Sandbox, so it has none.";
 type LogLine = Extract<RuntimeLogRecord, { type: "line" }>;
 
-function errorText(cause: unknown, subject: string) {
+// A 403 names the grant the refused request checks and who gives it (finding 2539).
+function errorText(cause: unknown, subject: string, grant: string) {
   const { status, serverMessage } = requestFailure(cause);
   if (status === 403) {
-    return `You do not have permission to ${subject}.`;
+    return `You do not have permission to ${subject}. ${askForGrant(grant)}`;
   }
   if (status === 409 && serverMessage) {
     return serverMessage;
@@ -378,7 +389,7 @@ export function renderAgentSandboxPolicy(
         return;
       }
       follow.checked = false;
-      logStatus.textContent = errorText(error, "read this Agent’s Sandbox logs");
+      logStatus.textContent = errorText(error, "read this Agent’s Sandbox logs", LOG_GRANT);
       if (records.length === 0) {
         count.textContent = "Denials in the loaded window: unavailable";
         logRows.replaceChildren();
@@ -493,7 +504,7 @@ export function renderAgentSandboxPolicy(
       }
       recommendations = [];
       suggestionsDenied = requestFailure(error).status === 403;
-      suggestionStatus.textContent = errorText(error, "read policy suggestions");
+      suggestionStatus.textContent = errorText(error, "read policy suggestions", POLICY_READ_GRANT);
     }
     suggestionsReading = false;
     renderSuggestions();
@@ -509,7 +520,8 @@ export function renderAgentSandboxPolicy(
   async function mutate(
     operation: () => Promise<void>,
     requiresEditAuthority = true,
-    failureMessage = (error: unknown) => errorText(error, "change this Agent’s policy"),
+    failureMessage = (error: unknown) =>
+      errorText(error, "change this Agent’s policy", POLICY_CHANGE_GRANT),
   ) {
     if (mutation || unknownOutcome) {
       return;
@@ -648,13 +660,20 @@ export function renderAgentSandboxPolicy(
       button(
         editingEnabled ? "Disable policy editing" : "Enable policy editing",
         () =>
-          void mutate(async () => {
-            await context.request(`${policyPath}/editing`, {
-              method: "PATCH",
-              body: { enabled: !editingEnabled },
-            });
-            await loadPolicy();
-          }, false),
+          void mutate(
+            async () => {
+              await context.request(`${policyPath}/editing`, {
+                method: "PATCH",
+                body: { enabled: !editingEnabled },
+              });
+              await loadPolicy();
+            },
+            false,
+            (error) =>
+              requestFailure(error).status === 403
+                ? EDITING_SETTING_DENIED
+                : errorText(error, "change the editing setting", POLICY_CHANGE_GRANT),
+          ),
         { disabled: mutation },
       ),
       element(
@@ -820,7 +839,7 @@ export function renderAgentSandboxPolicy(
           return;
         }
         validationDetails = requestErrorDetails(error);
-        feedback.textContent = `${errorText(error, "validate this Agent’s policy")} Your draft is retained. Reload policy to review a conflict.`;
+        feedback.textContent = `${errorText(error, "validate this Agent’s policy", POLICY_CHANGE_GRANT)} Your draft is retained. Reload policy to review a conflict.`;
         feedback.className = "error";
         feedback.setAttribute("role", "alert");
         renderPolicy();
@@ -880,7 +899,7 @@ export function renderAgentSandboxPolicy(
             if (error === unconfirmedSave) {
               return unconfirmedSave.message;
             }
-            const reason = errorText(error, "change this Agent’s policy");
+            const reason = errorText(error, "change this Agent’s policy", POLICY_CHANGE_GRANT);
             return savedVersion === undefined
               ? reason
               : `Policy v${savedVersion} was saved, but application to the current revision was not confirmed. ${reason}`;
@@ -1039,7 +1058,11 @@ export function renderAgentSandboxPolicy(
       readFailed = true;
       policyPanel.replaceChildren(
         element("h2", {}, "Agent network policy"),
-        element("p", { role: "alert" }, errorText(error, "read this Agent’s policy")),
+        element(
+          "p",
+          { role: "alert" },
+          errorText(error, "read this Agent’s policy", POLICY_READ_GRANT),
+        ),
         ...(requestFailure(error).status === 403
           ? []
           : [button("Retry policy read", () => void loadPolicy())]),

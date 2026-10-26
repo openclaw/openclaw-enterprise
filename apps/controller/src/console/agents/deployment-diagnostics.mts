@@ -240,7 +240,7 @@ export function createVersionDiagnostics(
             statusBlock(
               "info",
               null,
-              "Your access does not include running diagnostics for this Agent.",
+              "Your access does not include running diagnostics for this Agent. Ask an Installation administrator for Agent operate on it.",
             ),
           ]
         : []),

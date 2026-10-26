@@ -230,9 +230,16 @@ test("A refused policy read offers no Retry", async (t) => {
   const tab = page.locator(".sandbox-policy");
   await tab
     .getByRole("alert")
-    .filter({ hasText: "You do not have permission to read this Agent’s policy." })
+    .filter({
+      hasText:
+        "You do not have permission to read this Agent’s policy. Ask an Installation administrator for SandboxPolicy read on it.",
+    })
     .waitFor();
-  await tab.getByText("You do not have permission to read policy suggestions.").waitFor();
+  await tab
+    .getByText(
+      "You do not have permission to read policy suggestions. Ask an Installation administrator for SandboxPolicy read on it.",
+    )
+    .waitFor();
   assert.equal(await tab.getByRole("button", { name: "Retry policy read" }).count(), 0);
   assert.equal(await tab.getByRole("button", { name: "Refresh suggestions" }).count(), 0);
   // No policy descriptor is visible, but the independent log read must not wait forever.

@@ -40,14 +40,9 @@ export function renderAgentDriverConfigurations(
       section.replaceChildren();
       if (configurations.length === 0) {
         // Sandbox logs have independent read_logs authority, even when no policy owner is readable.
+        // The policy card already says what the reader's access does not include, so an internal
+        // "no Driver configurations" sentence would only repeat it in other words (finding 2549).
         section.append(renderAgentSandboxPolicy(active, options));
-        section.append(
-          element(
-            "p",
-            {},
-            "No Driver configurations are available to this account for this Agent.",
-          ),
-        );
       }
       for (const descriptor of configurations) {
         section.append(

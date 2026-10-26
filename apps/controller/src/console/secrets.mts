@@ -5,6 +5,12 @@ import type {
   SecretMetadata,
 } from "@openclaw-enterprise/contracts";
 import type { Static } from "typebox";
+import {
+  SECRET_CREATE_DENIED,
+  SECRET_DELETE_DENIED,
+  SECRET_READ_DENIED,
+  SECRET_UPDATE_DENIED,
+} from "./agents/access-reasons.mjs";
 import { describeFailure } from "./agents/list.mjs";
 import { requestFailure, responseFields } from "./api-client.mjs";
 import { button, dismissOnBackdrop, element, field, statusBlock, validateFields } from "./dom.mjs";
@@ -186,7 +192,7 @@ export function renderSecrets(
           element(
             "p",
             { className: "muted", role: "status", id: "secrets-create-denied" },
-            "Your access does not include creating Secrets in this Namespace.",
+            SECRET_CREATE_DENIED,
           ),
         ]
       : []),
@@ -212,7 +218,16 @@ export function renderSecrets(
         element(
           "section",
           { className: "state-panel" },
-          element("h2", {}, items.length ? "No matching Secrets" : "No Secrets yet"),
+          // A reader without create sees only Secrets shared with them, not every Secret here.
+          element(
+            "h2",
+            {},
+            items.length
+              ? "No matching Secrets"
+              : createDenied
+                ? "No Secrets are shared with you"
+                : "No Secrets yet",
+          ),
           element(
             "p",
             {},
@@ -369,7 +384,7 @@ export function renderSecrets(
       current.body.replaceChildren();
       let description = "Could not read this Secret. Close and try again.";
       if (error.status === 403) {
-        description = "You do not have permission to read this Secret.";
+        description = SECRET_READ_DENIED;
       } else if (error.status === 404) {
         description =
           "This Secret is no longer available in this Namespace. Close and Refresh the list.";
@@ -438,7 +453,7 @@ export function renderSecrets(
         statusBlock(
           "info",
           null,
-          `${consumers.unreadable} additional consumer(s) cannot be shown with your access. Ask an administrator to inspect them.`,
+          `${consumers.unreadable} additional consumer(s) cannot be shown with your access. Ask an Installation administrator to inspect them.`,
         ),
       );
     }
@@ -592,8 +607,9 @@ export function renderSecrets(
             ? "Outcome unknown. The value may have changed and cannot be read back. Close this dialog and verify credential use before deciding to submit a new replacement."
             : "Outcome unknown. The Secret may have been created. Close this dialog and Refresh the list before deciding to create another.";
         } else if (status === 403) {
-          description =
-            "Your access does not include this Secret operation. Ask an administrator for access.";
+          // Create is checked on the Namespace, which no Namespace Role grants; replace is Secret
+          // update on this Secret.
+          description = replacing ? SECRET_UPDATE_DENIED : SECRET_CREATE_DENIED;
         } else if (nameConflict) {
           description =
             "The name may already be in use. Check the list, choose a unique name, and enter the value again.";
@@ -671,7 +687,7 @@ export function renderSecrets(
           description =
             "Outcome unknown. The Secret may have been deleted. Check its status before deciding to delete again.";
         } else if (error.status === 403) {
-          description = "Your access does not include deleting this Secret.";
+          description = SECRET_DELETE_DENIED;
         } else if (error.status === 409) {
           // The API names what still uses the Secret, or the change that raced this deletion.
           description = `Could not delete this Secret. ${describeFailure(cause, {

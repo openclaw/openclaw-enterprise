@@ -1278,7 +1278,7 @@ test("console retained views clear after session expiry and exact Agent denial",
   // Someone else's Agent link says what the reader can do, not that a collection is unreadable.
   await page
     .getByText(
-      "You do not have access to this Agent or its settings, or it was deleted. Ask its owner to share it with you.",
+      "You do not have access to this Agent or its settings, or it was deleted. Ask an Installation administrator for Agent read on it.",
     )
     .waitFor();
   await expectNoText(page, /Configuration draft|Selected revision/, () => waitForIdleFetches(page));
@@ -2233,12 +2233,7 @@ test("Namespaces recovers stale selection inline and handles losing all readable
   });
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
   await page.getByRole("heading", { name: "No accessible namespaces", exact: true }).waitFor();
-  await page
-    .getByText(
-      "Create a Namespace to get started, or ask an administrator for access to an existing one.",
-      { exact: true },
-    )
-    .waitFor();
+  await page.getByText("Create a Namespace to get started.", { exact: true }).waitFor();
   await waitForEnabled(page.getByRole("button", { name: "Create Namespace", exact: true }));
   assert.equal(await page.getByRole("combobox").count(), 0);
   assert.equal(

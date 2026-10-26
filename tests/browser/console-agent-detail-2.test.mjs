@@ -482,7 +482,7 @@ test("Repeat deletion preserves bounded retry ownership feedback and ordinary de
   };
   await confirm();
   await page.getByRole("alert").getByText(ownership, { exact: true }).waitFor();
-  await expectNoText(page, "Ask an administrator for Agent delete access", () =>
+  await expectNoText(page, "Ask an Installation administrator for Agent delete on it", () =>
     waitForIdleFetches(page),
   );
   assert.equal(writes, 1);
@@ -2508,7 +2508,7 @@ test("an Agent reader meets no refused read on Repositories, Policy denials or L
     .getByText("Policy denials come from deployed versions. Open the current version to see them.")
     .waitFor();
   const noPolicyAccess = page.getByText(
-    "Your access does not include reading this Agent’s network policy or its suggestions.",
+    "Your access does not include reading this Agent’s network policy or its suggestions. Ask an Installation administrator for SandboxPolicy read on it.",
   );
   await noPolicyAccess.first().waitFor();
   await settle();
@@ -3975,9 +3975,12 @@ test("Secret summaries retain revision bindings and distinguish unreadable metad
   await page.screenshot({ path: join(artifacts, "bound-harness-revision.png"), fullPage: true });
   await page.getByRole("tab", { name: "Channels", exact: true }).click();
   await page.getByRole("link", { name: "Revision Slack app", exact: true }).waitFor();
-  await page
-    .getByText(`Bound Secret · ${bot.id} · Metadata unavailable (access denied)`, { exact: true })
-    .waitFor();
+  const hiddenSecret = page.getByText(
+    "A Secret is bound. Its name is hidden because your access does not include reading it. Ask an Installation administrator for Secret read on it.",
+    { exact: true },
+  );
+  await hiddenSecret.waitFor();
+  assert.equal(await hiddenSecret.getAttribute("title"), bot.id);
   assert.equal(await page.getByRole("button", { name: /Configure Slack|Edit Slack/ }).count(), 0);
   await page.screenshot({ path: join(artifacts, "bound-channels-restricted.png"), fullPage: true });
   assert.equal(

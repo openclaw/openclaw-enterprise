@@ -609,7 +609,7 @@ for (const viewport of consoleViewports) {
       ],
       [
         apiErrorResponse(403, "FORBIDDEN", "refused"),
-        "Access denied. You do not have permission to manage this Secret binding.",
+        "Your access does not include creating Secrets in this Namespace. Only an Installation administrator can create Secrets: ask one to create it and to give you Secret read and operate on it.",
       ],
       [proxyErrorResponse(429), "Too many requests. Wait before trying again."],
     ] as const;

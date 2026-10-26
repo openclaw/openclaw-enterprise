@@ -38,6 +38,12 @@ import { renderAgentAccess } from "./access.mjs";
 import { renderNativeAdminAccess } from "./native-admin.mjs";
 import { createAgentDeletion } from "./deletion.mjs";
 import { createAgentStop } from "./stop.mjs";
+import {
+  askForGrant,
+  CONFIGURATION_UPDATE_DENIED,
+  NEW_VERSIONS_READ,
+  VERSION_READ_DENIED,
+} from "./access-reasons.mjs";
 import { renderAgentPlugins } from "./plugins.mjs";
 import { repositoryProfile, repositoryWriteAccessHelp } from "./repository-profiles.mjs";
 import { createRepositoryFields } from "./repositories.mjs";
@@ -304,9 +310,7 @@ function errorPanel(
     element(
       "p",
       {},
-      versionDenied
-        ? "Your access to this Agent does not include this version, so its configuration and deployment outcome are hidden. Ask an Agent administrator for read access to it."
-        : message(cause, false, DRAFT_CONFIGURATION_NEED),
+      versionDenied ? VERSION_READ_DENIED : message(cause, false, DRAFT_CONFIGURATION_NEED),
     ),
     responseFields(cause).remembered === true
       ? element(
@@ -350,10 +354,9 @@ function nativeDocument(values: OpenClawConfigurationDocument, label: string) {
 // A draft the caller can read but neither change nor save (finding 2421).
 const READ_ONLY_DRAFT_NOTICE =
   "Version draft · read-only with your access. The next deployment uses it as saved.";
-const CONFIGURATION_READ_ONLY = "Your access does not include editing this Configuration.";
+const CONFIGURATION_READ_ONLY = CONFIGURATION_UPDATE_DENIED;
 // Saving a Configuration also needs Secret operate on every Secret it binds (finding 2437).
-const CONFIGURATION_SECRETS_READ_ONLY =
-  "Saving this Configuration needs Secret operate on each Secret it binds, which your access does not include.";
+const CONFIGURATION_SECRETS_READ_ONLY = `Saving this Configuration needs Secret operate on each Secret it binds, which your access does not include. ${askForGrant("Secret operate on each of them")}`;
 // A save's reread or its PATCH found a newer Configuration generation than the page's.
 const CONFIGURATION_CHANGED =
   "The saved Configuration changed while you were editing. Reload this draft before saving.";
@@ -1036,8 +1039,7 @@ export async function renderAgentDetail(
   }
   // Members have no console chat, and native admin needs administer (and is off under
   // external sign-in), so point only at paths that work in every sign-in mode.
-  const readAccessHint =
-    "Ask an Agent administrator for read access to new versions. If this Agent is set up for a channel such as Slack, you can message it there when that channel allows you.";
+  const readAccessHint = `${NEW_VERSIONS_READ} If this Agent is set up for a channel such as Slack, you can message it there when that channel allows you.`;
   function renderCurrentVersion() {
     const current = visibleRevisions.find((revision) => revision.id === currentRevisionId);
     const version = current
@@ -2040,7 +2042,7 @@ export async function renderAgentDetail(
               // A current version, or a deploy that set the Agent running, means versions
               // exist and are hidden. A stopped Agent may have versions too; the record cannot say.
               currentRevisionId || currentRuntimeState === "running"
-                ? "No readable versions. This Agent has versions your access does not include. Ask an Agent administrator for read access to them."
+                ? `No readable versions. This Agent has versions your access does not include. ${askForGrant("AgentRevision read on them")}`
                 : "No readable versions. Creating an Agent alone does not create a version; if this Agent was deployed before, your access does not include its versions.",
             )
           : null,

@@ -503,7 +503,7 @@ test("a member's refused Configuration create and empty Secret list name the acc
   await other.getByRole("button", { name: "Start with default Preset", exact: true }).click();
   await other
     .getByText(
-      "No Secrets you can read in this Namespace. Create a new Secret to bind this field, or ask an administrator for read access to an existing one.",
+      "No Secrets you can read in this Namespace. Create a new Secret to bind this field, or ask an Installation administrator for Secret read and operate on an existing one.",
       { exact: true },
     )
     .first()
@@ -530,7 +530,8 @@ test("a member without Secret create sees the inline Create Secret action disabl
     noSecretCreate.credentials,
   );
   await page.getByRole("button", { name: "Start with default Preset", exact: true }).click();
-  const denial = "Your access does not include creating Secrets in this Namespace.";
+  const denial =
+    "Your access does not include creating Secrets in this Namespace. Only an Installation administrator can create Secrets: ask one to create it and to give you Secret read and operate on it.";
   await page.getByText(`Choose an existing Secret. ${denial}`, { exact: true }).first().waitFor();
   await page.getByLabel("API key Secret", { exact: true }).fill("no matching Secret");
   const action = page.getByRole("option", { name: `Create new Secret... ${denial}`, exact: true });
@@ -579,7 +580,8 @@ test("a Preset's Secret source follows the member's Secret create answer", async
     noSecretCreate.credentials,
   );
   await page.getByLabel("Preset template").selectOption(preset.data.id);
-  const denial = "Your access does not include creating Secrets in this Namespace.";
+  const denial =
+    "Your access does not include creating Secrets in this Namespace. Only an Installation administrator can create Secrets: ask one to create it and to give you Secret read and operate on it.";
   await page.getByText(`Choose an existing Secret. ${denial}`, { exact: true }).waitFor();
   const source = page.getByLabel("Secret source for Model Secret", { exact: true });
   assert.equal(await source.inputValue(), "existing");

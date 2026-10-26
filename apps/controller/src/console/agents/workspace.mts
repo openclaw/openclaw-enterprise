@@ -6,7 +6,7 @@ import type { createDraftStore } from "../drafts.mjs";
 const filenames = ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"];
 // Shown when the caller's permission answer denies Agent operate, which saving a file needs.
 const OPERATE_DENIED =
-  "Your access does not include operating this Agent. Ask an administrator for Agent operate access to save workspace files.";
+  "Your access does not include operating this Agent. Ask an Installation administrator for Agent operate on it to save workspace files.";
 
 interface WorkspaceContext {
   request: ReturnType<typeof createApiClient>;
@@ -48,7 +48,7 @@ function fileError(error: FileFailure, writing: boolean) {
   if (error.status === 403) {
     // Saving a file is an Agent operate action (finding 1540).
     text = writing
-      ? "You do not have permission to save this file. Ask an administrator for Agent operate access."
+      ? "You do not have permission to save this file. Ask an Installation administrator for Agent operate on it."
       : "Access denied. You do not have permission for this file operation.";
   }
   if (error.status === 404) {

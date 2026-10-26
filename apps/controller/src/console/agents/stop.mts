@@ -6,6 +6,7 @@ import {
   type LifecycleError,
   STOP_CONFIRMATION,
 } from "./lifecycle-confirmation.mjs";
+import { AGENT_STOP_DENIED, askForGrant } from "./access-reasons.mjs";
 import { describeFailure, shortId } from "./list.mjs";
 
 export function createAgentStop(
@@ -21,9 +22,8 @@ export function createAgentStop(
     className: "danger-zone-row stop-note",
     "aria-labelledby": "agent-stop-title",
   });
-  const permissionNotice = "Your access does not include stopping this Agent.";
-  const STOP_REFUSED =
-    "You do not have permission to stop this Agent. Ask an administrator for Agent operate access.";
+  const permissionNotice = AGENT_STOP_DENIED;
+  const STOP_REFUSED = `You do not have permission to stop this Agent. ${askForGrant("Agent operate on it")}`;
   let restrictConfirmation: (() => void) | undefined;
   const feedback = element("div", { className: "danger-zone-feedback" });
   const actions = element("div", { className: "danger-zone-actions" });

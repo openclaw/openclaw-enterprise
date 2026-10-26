@@ -192,7 +192,7 @@ export function message(cause: unknown, mutation = false, need?: AccessNeed): st
       configuration: "native configuration",
     };
     const field = typeof error.field === "string" ? fieldLabels[error.field] : undefined;
-    return `Saved ${field ?? "configuration"} could not be read. Editing and deployment are unavailable for these settings. Ask an administrator to repair the saved configuration, then refresh this page.`;
+    return `Saved ${field ?? "configuration"} could not be read. Editing and deployment are unavailable for these settings. Ask an Installation administrator to repair the saved configuration, then refresh this page.`;
   }
   if (error.status === 403) {
     return typeof error.refusal === "string"
@@ -263,12 +263,12 @@ export function preAdmissionRefusal(cause: unknown) {
 // about whether a resource exists.
 export const SAVE_REFUSALS = Object.freeze({
   configuration:
-    "You do not have permission to save this Configuration. Ask an administrator for Configuration update access, plus Secret operate on each Secret it binds.",
+    "You do not have permission to save this Configuration. Ask an Installation administrator for Configuration update on it, plus Secret operate on each Secret it binds.",
   agent:
-    "You do not have permission to save this Agent. Ask an administrator for Agent update and Configuration read access, plus access to the Secrets, credential sources and Service Account it binds.",
+    "You do not have permission to save this Agent. Ask an Installation administrator for Agent update and Configuration read on it, plus access to the Secrets, credential sources and Service Account it binds.",
   // A save first rereads the Agent and its Configuration; a refused read is not a refused
   // update (finding 1540).
-  read: "You do not have permission to read this Agent's saved settings. Ask an administrator for Agent read and Configuration read access.",
+  read: "You do not have permission to read this Agent's saved settings. Ask an Installation administrator for Agent read and Configuration read on it.",
 });
 
 // A refused save that binds Secrets a permission answer read after the refusal says the caller
@@ -278,26 +278,26 @@ export function secretOperateRefusal(names: readonly string[]) {
   const them = names.length > 1 ? "them" : "it";
   const listed =
     names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
-  return `You do not have permission to bind ${listed}. Each save needs Secret operate on every Secret it binds, which your access does not include for ${them}. Choose another Secret, or ask an administrator for Secret operate on ${them}.`;
+  return `You do not have permission to bind ${listed}. Each save needs Secret operate on every Secret it binds, which your access does not include for ${them}. Choose another Secret, or ask an Installation administrator for Secret operate on ${them}.`;
 }
 
 // Shown beside Agent-side save controls when the caller's permission answer denies Agent update.
 // Gating only: an unknown answer keeps the controls, and the API still decides.
 export const AGENT_UPDATE_DENIED =
-  "Your access does not include updating this Agent. Ask an administrator for Agent update access to save these settings.";
+  "Your access does not include updating this Agent. Ask an Installation administrator for Agent update on it to save these settings.";
 // Shown instead when the answer allows Agent update but not the Configuration read each Agent
 // update needs; the source note would name the wrong grant.
 export const AGENT_CONFIGURATION_READ_DENIED =
-  "Saving these settings needs read access to this Agent's Configuration, which your access does not include. Ask an administrator for Configuration read access.";
+  "Saving these settings needs read access to this Agent's Configuration, which your access does not include. Ask an Installation administrator for Configuration read on it.";
 // Shown instead when the answer allows Agent update but not the source grants each Agent update
 // also checks on what the Agent and its Configuration bind (finding 2441).
 export const AGENT_SOURCES_DENIED =
-  "Saving these settings needs operate on each Secret and credential source this Agent and its Configuration bind, which your access does not include. Ask an administrator for that access.";
+  "Saving these settings needs operate on each Secret and credential source this Agent and its Configuration bind, which your access does not include. Ask an Installation administrator for that access.";
 // Shown instead when the Agent uses a ServiceAccount for Harness authentication: each Agent update
 // also checks read on it, and the answer does not say which of the grants is missing (finding
 // 2459).
 export const AGENT_SOURCES_SERVICE_ACCOUNT_DENIED =
-  "Saving these settings needs operate on each Secret and credential source this Agent and its Configuration bind, and read on the ServiceAccount it uses for Harness authentication. Your access does not include all of them. Ask an administrator for that access.";
+  "Saving these settings needs operate on each Secret and credential source this Agent and its Configuration bind, and read on the ServiceAccount it uses for Harness authentication. Your access does not include all of them. Ask an Installation administrator for that access.";
 
 // Why the permission answer says an Agent-side save would be refused, or undefined when it allows
 // the save or is unknown. Each Agent update also needs Configuration read and checks the caller's

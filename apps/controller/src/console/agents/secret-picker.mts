@@ -15,6 +15,7 @@ import {
   statusBlock,
   validateFields,
 } from "../dom.mjs";
+import { askForGrant, SECRET_CREATE_DENIED, SECRET_OPERATE_NEEDED } from "./access-reasons.mjs";
 import {
   GENERIC_CONFLICT,
   describeFailure,
@@ -35,12 +36,10 @@ type SecretContext = Partial<AgentAccessContext> & {
 
 // Shown for the inline Create Secret action when the permission answer denies Secret create, as
 // on the Secrets page (finding 2442).
-export const SECRET_CREATE_DENIED =
-  "Your access does not include creating Secrets in this Namespace.";
+export { SECRET_CREATE_DENIED };
 // Shown on a listed Secret the caller may read but not operate: a save that binds it would be
 // refused (finding 2453).
-export const SECRET_OPERATE_DENIED =
-  "Binding it needs Secret operate, which your access does not include.";
+export const SECRET_OPERATE_DENIED = `Binding it needs Secret operate, which your access does not include. ${SECRET_OPERATE_NEEDED}`;
 // A new Secret gets no Secret operate grant of its own. A caller denied operate on a readable
 // Secret holds it per Secret, not across the Namespace, so Agent create would refuse a new one
 // after it was saved (finding 2492).
@@ -49,7 +48,7 @@ export const NEW_SECRET_OPERATE_DENIED =
 // What works instead. Namespace Roles grant Secret operate on one exact Secret, never across the
 // Namespace, so the remedy names that grant (finding 2507).
 export const NEW_SECRET_OPERATE_REMEDY =
-  "To use a new Secret, create it on the Secrets page, then ask an administrator to grant you Secret operate on that Secret.";
+  "To use a new Secret, create it on the Secrets page, then ask an Installation administrator for Secret operate on it.";
 
 // The API's Name length for Secrets, in code points: the Name rule namespaces.mts mirrors.
 export const SECRET_NAME_MAX_CHARACTERS = NAME_MAX_CHARACTERS;
@@ -206,7 +205,14 @@ export function renderSecretReference(context: SecretContext, source?: SecretRef
         resolvedSecretNames.delete(key);
       }
       const { status } = requestFailure(cause);
-      node.textContent = `${bound} · Metadata unavailable${status === 403 ? " (access denied)" : ""}`;
+      // A refused read hides the Secret's name; the ID stays in the title for the administrator
+      // who grants read on it (finding 2549).
+      if (status === 403) {
+        node.textContent = `A Secret is bound. Its name is hidden because your access does not include reading it. ${askForGrant("Secret read on it")}`;
+        node.title = source.id;
+      } else {
+        node.textContent = `${bound} · Metadata unavailable`;
+      }
       if (status === 401) {
         context.onExpired?.();
       }
@@ -222,7 +228,7 @@ function credentialLink(href: string, label: string) {
 function secretCreateRefusal(cause: unknown) {
   const { status } = requestFailure(cause);
   if (status === 403) {
-    return "Access denied. You do not have permission to manage this Secret binding.";
+    return SECRET_CREATE_DENIED;
   }
   if (status === 404) {
     return "This Namespace is no longer available. Close this dialog and refresh the page.";
@@ -573,7 +579,7 @@ export function createSecretReferenceField({
     if (createDenied) {
       return secrets.length
         ? `Choose an existing Secret. ${SECRET_CREATE_DENIED}`
-        : `No Secrets you can read in this Namespace. ${SECRET_CREATE_DENIED} Ask an administrator for read access to an existing one.`;
+        : `No Secrets you can read in this Namespace. ${SECRET_CREATE_DENIED} Or ask one for Secret read and operate on an existing Secret.`;
     }
     if (operateDenied.size) {
       return `Choose an existing Secret. ${NEW_SECRET_OPERATE_DENIED} ${NEW_SECRET_OPERATE_REMEDY}`;
@@ -581,7 +587,7 @@ export function createSecretReferenceField({
     return secrets.length
       ? "Choose an existing Secret or create a new one."
       : context.installationAdmin === false
-        ? "No Secrets you can read in this Namespace. Create a new Secret to bind this field, or ask an administrator for read access to an existing one."
+        ? "No Secrets you can read in this Namespace. Create a new Secret to bind this field, or ask an Installation administrator for Secret read and operate on an existing one."
         : "No readable Secrets yet. Create a new Secret to bind this field.";
   }
 

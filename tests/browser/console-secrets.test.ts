@@ -327,7 +327,10 @@ test("console Secret writes honor read-only access, revocation and a new Agent r
   const createSecret = page.getByRole("button", { name: "Create Secret", exact: true });
   const createReason = page
     .getByRole("status")
-    .filter({ hasText: "Your access does not include creating Secrets in this Namespace." });
+    .filter({
+      hasText:
+        "Your access does not include creating Secrets in this Namespace. Only an Installation administrator can create Secrets: ask one to create it and to give you Secret read and operate on it.",
+    });
   await createReason.waitFor();
   assert.equal(await createSecret.isDisabled(), true);
   assert.equal(

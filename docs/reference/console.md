@@ -164,8 +164,10 @@ blocked until a status read succeeds or, in the list, until **Refresh**.
 
 An authorized empty list differs from a failed read. Access denials, unavailable
 dependencies, missing resources, and network failures clear affected rows and
-offer recovery. A denied Namespace list or draft Configuration read names the grant
-it checks; denials send you to an Installation administrator, who grants access.
+offer recovery. A denied Namespace list or draft Configuration read, and a control
+disabled for lack of access, names the grant the API checks, such as Agent operate
+to stop an Agent or AgentRevision read on each new version; denials send you to an
+Installation administrator, who grants access.
 A refusal the API explains, such as an invalid field, a name already in use or a
 lifecycle change, shows the API's sentence; a rate limit says how long to wait.
 Other backend error text is not rendered; include any displayed request

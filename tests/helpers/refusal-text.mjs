@@ -32,20 +32,20 @@ export const CODEX_PLACEMENT_REFUSAL = `${DEDICATED_PLACEMENT_REQUIREMENT} Codex
 
 // Console refusals for a save the caller may not make.
 export const AGENT_SAVE_DENIED =
-  "You do not have permission to save this Agent. Ask an administrator for Agent update and Configuration read access, plus access to the Secrets, credential sources and Service Account it binds.";
+  "You do not have permission to save this Agent. Ask an Installation administrator for Agent update and Configuration read on it, plus access to the Secrets, credential sources and Service Account it binds.";
 export const CONFIGURATION_SAVE_DENIED =
-  "You do not have permission to save this Configuration. Ask an administrator for Configuration update access, plus Secret operate on each Secret it binds.";
+  "You do not have permission to save this Configuration. Ask an Installation administrator for Configuration update on it, plus Secret operate on each Secret it binds.";
 // A Secret field lists a Secret the caller may read but not operate disabled, with this reason,
 // and a save refused on one a fresh answer names says so (finding 2453).
 export const SECRET_OPERATE_DENIED =
-  "Binding it needs Secret operate, which your access does not include.";
+  "Binding it needs Secret operate, which your access does not include. Ask an Installation administrator for Secret operate on it.";
 // Create Agent's Create new Secret choice and typed model key, for a caller whose Secret operate
 // covers only some Secrets: a new Secret gets no operate grant of its own (finding 2492).
 export const NEW_SECRET_OPERATE_DENIED =
   "Your access includes Secret operate on only some Secrets in this Namespace, so an Agent cannot use a new Secret you create here.";
 // What an administrator can grant instead: Secret operate on one exact Secret (finding 2507).
 export const NEW_SECRET_OPERATE_REMEDY =
-  "To use a new Secret, create it on the Secrets page, then ask an administrator to grant you Secret operate on that Secret.";
+  "To use a new Secret, create it on the Secrets page, then ask an Installation administrator for Secret operate on it.";
 // The console's 403 for a read that names its grant, and for one that names none. Granting access
 // is Installation administration (findings 1920, 2259, 2260).
 const ASK_INSTALLATION_ADMINISTRATOR =
@@ -60,7 +60,7 @@ export const ADMINISTRATOR_ACCESS_DENIED =
   "Access denied. You do not have permission for this operation.";
 export const CONSOLE_ACCESS_DENIED = `Access denied. You do not have permission for this operation. Granting it ${ASK_INSTALLATION_ADMINISTRATOR} check your access.`;
 export const secretOperateRefused = (name) =>
-  `You do not have permission to bind ${name}. Each save needs Secret operate on every Secret it binds, which your access does not include for it. Choose another Secret, or ask an administrator for Secret operate on it.`;
+  `You do not have permission to bind ${name}. Each save needs Secret operate on every Secret it binds, which your access does not include for it. Choose another Secret, or ask an Installation administrator for Secret operate on it.`;
 
 // The console's text for a read that failed with a 5xx.
 export const READ_UNAVAILABLE = "Service unavailable. The read could not be completed. Try again.";
