@@ -77,11 +77,12 @@ A first read landing after the `FIRST_ACTIVITY_WAIT_MS` reveal shows its outcome
 the details folded, unless cleanup, warnings, or an overview error open them. If an
 overview refresh cannot identify this Agent, the page keeps the outcome and says so.
 
-On failure, `agents/deployment-recovery.mts` shows the API's message or suggests checking
-Logs if the message gives no next step. It hides the Logs link if the caller was denied the
-log text or version during this sign-in. **Open Configuration** needs Configuration `update`,
+On failure, `agents/deployment-recovery.mts` shows the API's message, which names the next
+step. OCC's `deployment-failure-steps.ts` table, served at `/console/deployment-failure-steps.mjs`,
+gives each code's step kind: `deploy-again`, `logs` or `change`. It hides the Logs link if the
+caller was denied the log text or version during this sign-in. **Open Configuration** needs Configuration `update`,
 bound Secret `operate` and no known read denial. **Open version draft** (read-only Configuration) and
-**Deploy again** (per the message) need `deploy` and a readable Configuration; Deploy again focuses
+**Deploy again** (`deploy-again` codes) need `deploy` and a readable Configuration; Deploy again focuses
 **Deploy new version**. Credentials recovery needs Agent saves. Hidden or unlisted
 current versions suppress recovery; viewed versions show results. Activity polls every
 `DEPLOYMENT_POLL_MS` through transient read errors until a result, denial, or missing
