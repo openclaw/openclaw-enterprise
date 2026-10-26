@@ -547,6 +547,9 @@ func openShellOidcAuthConfiguration(external *externalOpenShell) map[string]any 
 		"tokenUrl":         external.oidcTokenURL,
 		"clientId":         external.oidcClientID,
 		"clientSecretPath": openShellClientSecretContainerPath,
+		// Keycloak and similar issuers reject client_secret_post for confidential
+		// clients; basic is the interoperable default for the client-credentials grant.
+		"tokenAuth": "client_secret_basic",
 	}
 }
 
