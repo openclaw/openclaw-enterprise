@@ -42,6 +42,9 @@ export const SECRET_NAME_CONFLICT =
   "A Secret with this name already exists in this Namespace. Choose a different name.";
 export const NAMESPACE_NAME_CONFLICT =
   "A Namespace with this name already exists. Choose a different name.";
+// The sign-in endpoints' 503 (apps/controller/src/auth/index.ts); the console words its own.
+export const SIGN_IN_UNAVAILABLE =
+  "Sign-in is temporarily unavailable. Try again shortly. If it continues, ask an operator to check the API logs.";
 // Create Agent and the Agents list for a caller without Agent create, which Namespace Roles cannot
 // grant people (findings 2496, 2508).
 export const AGENT_CREATE_DENIED =
@@ -49,6 +52,9 @@ export const AGENT_CREATE_DENIED =
 // Secrets and Namespaces follow the same rule: Namespace Roles cannot grant people create.
 export const SECRET_CREATE_DENIED =
   "Your access does not include creating Secrets in this Namespace. Only an Installation administrator can create Secrets: ask one to create it and to give you Secret read and operate on it.";
+// Create Agent for a member whose Installation read and Agent create are both refused (create.mts).
+export const AGENT_CREATE_INSTALLATION_DENIED =
+  "Creating an Agent needs Installation access that your account does not have. Ask an Installation administrator to create this Agent.";
 export const CONSOLE_NAMESPACE_CREATE_DENIED =
   "Your access does not include creating Namespaces in this Installation. Only an Installation administrator can create Namespaces: ask one to create a Namespace or to give you access to an existing one.";
 
@@ -64,9 +70,16 @@ export const AGENT_STOP_AND_DELETE_DENIED = notIncluded(
   "stopping or deleting this Agent",
   "Agent operate and Agent delete on it",
 );
-// A refused Stop names the Agent on the Agents list and "this Agent" on its page.
-export const stopRefused = (name) =>
-  `You do not have permission to stop ${name}. ${askForGrant("Agent operate on it")}`;
+// Each version has its own AgentRevision read grant, so a reader who deploys still needs read on
+// each new version, granted after it exists.
+export const NEW_VERSIONS_READ =
+  "Each new version needs its own AgentRevision read: ask an Installation administrator to grant it after each deployment.";
+// A request the API refused for lack of a grant: what the reader tried, then the grant to ask for.
+export const permissionRefused = (task, grant) =>
+  `You do not have permission to ${task}. ${askForGrant(grant)}`;
+// A refused Stop or Delete names the Agent on the Agents list and "this Agent" on its page.
+export const stopRefused = (name) => permissionRefused(`stop ${name}`, "Agent operate on it");
+export const deleteRefused = (name) => permissionRefused(`delete ${name}`, "Agent delete on it");
 export const CONFIGURATION_UPDATE_DENIED = notIncluded(
   "editing this Configuration",
   "Configuration update on it",
@@ -117,6 +130,18 @@ export const AGENT_DEVICE_LOGIN_CANCEL_DENIED = notIncluded(
 export const DEDICATED_PLACEMENT_REQUIREMENT =
   "Dedicated Agents need gateway routing and node enrollment in this Installation's Kubernetes Compute configuration.";
 export const CODEX_PLACEMENT_REFUSAL = `${DEDICATED_PLACEMENT_REQUIREMENT} Codex runs only as a Dedicated Agent: select Embedded OpenClaw, or ask an operator to configure it.`;
+// Kubernetes Compute's harness rules: embedded OpenClaw takes only API key authentication, and
+// Dedicated Codex takes its model credential only from the Harness authentication binding.
+export const EMBEDDED_API_KEY_REQUIRED =
+  "Agent setting harnessAuth.method must be api_key for embedded OpenClaw on Kubernetes Compute: change harnessAuth or executionMode.";
+export const codexApiKeyRefusal = (setting) =>
+  `Configuration setting ${setting} must be unset: Dedicated Codex receives model credentials from the Agent's Harness authentication binding.`;
+// Deployment progress that asks an administrator to act, in fixed copy that never shows the
+// quota's numbers or the image reference (packages/occ/src/state/controller-work.ts).
+export const POD_QUOTA_FULL =
+  "The Namespace's Pod quota is full. Stop or delete an Agent, or ask an administrator to raise the quota.";
+export const IMAGE_PULL_FAILING =
+  "Kubernetes cannot pull a container image for this Agent and keeps retrying. Ask an administrator to check the runtime image reference and that the cluster's nodes can pull from its registry.";
 
 // Console refusals for a save the caller may not make.
 export const AGENT_SAVE_DENIED =
@@ -193,6 +218,20 @@ const REFERENCE_FORMS = {
 };
 export const referenceFormRefusal = (setting, form) =>
   `Configuration setting ${setting} ${REFERENCE_FORMS[form]}.`;
+// A channel credential's ${NAME} with no Configuration Secret binding for it, and a ${ the runtime
+// does not substitute (finding 2477): a lowercase ${name} shows as written, ${NAME-text} only by
+// its name, and other text (which may be the token) not at all
+// (packages/occ/src/channel-secret-bindings.ts).
+export const unboundReferenceRefusal = (setting, name) =>
+  `Configuration setting ${setting} references ${name} without a Configuration Secret binding: bind ${name} in secretBindings to an environment-backed Secret, or remove the reference.`;
+const USE_UPPERCASE =
+  "use an uppercase ${NAME} bound to a Secret in secretBindings, or escape literal text as $${NAME}";
+export const unsubstitutedReferenceRefusal = (setting, shown) =>
+  shown === undefined
+    ? `Configuration setting ${setting} contains a \${ the runtime does not substitute: ${USE_UPPERCASE}.`
+    : `Configuration setting ${setting} contains ${shown}, which the runtime does not substitute: ${USE_UPPERCASE}.`;
+export const unsubstitutedFallbackRefusal = (setting, name) =>
+  `Configuration setting ${setting} contains \${${name}-…}, which the runtime does not substitute: write a fallback as \${${name}:-text}, with ${name} bound to a Secret in secretBindings.`;
 // The Slack token rule's refusal of an object the Slack Channel Driver cannot read: a SecretRef it
 // does not read, or another object (findings 2514, 2518, 2527).
 const SLACK_TOKEN_OBJECTS = { secretRef: "a SecretRef", object: "an object" };

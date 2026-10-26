@@ -45,7 +45,6 @@ import { createPolicyConsole } from "./console-sandbox-policy-fixture.ts";
 import {
   AGENT_SAVE_DENIED,
   agentPrincipalDenied,
-  askForGrant,
   callerDenied,
   CHANNEL_SECRETS_CONFIGURATION_CHANGED,
   CONFIGURATION_SAVE_DENIED,
@@ -55,6 +54,7 @@ import {
   READ_UNAVAILABLE,
   REPOSITORY_EDITS_PENDING,
   RESOURCE_CONFLICT,
+  permissionRefused,
 } from "../helpers/refusal-text.mjs";
 
 test("Agent policy ceiling rejection is announced in view and preserves unsaved additions", async (t) => {
@@ -238,13 +238,11 @@ test("A refused policy read offers no Retry", async (t) => {
   await tab
     .getByRole("alert")
     .filter({
-      hasText: `You do not have permission to read this Agent’s policy. ${askForGrant("SandboxPolicy read on it")}`,
+      hasText: permissionRefused("read this Agent’s policy", "SandboxPolicy read on it"),
     })
     .waitFor();
   await tab
-    .getByText(
-      `You do not have permission to read policy suggestions. ${askForGrant("SandboxPolicy read on it")}`,
-    )
+    .getByText(permissionRefused("read policy suggestions", "SandboxPolicy read on it"))
     .waitFor();
   assert.equal(await tab.getByRole("button", { name: "Retry policy read" }).count(), 0);
   assert.equal(await tab.getByRole("button", { name: "Refresh suggestions" }).count(), 0);
@@ -1454,10 +1452,6 @@ test("Deploy names the bound Secrets an operator may not operate", async (t) => 
   const reason =
     "Deploying needs Secret operate on Demo model credential, which your access does not include. Ask an Installation administrator to grant it.";
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
-  const deployPosts = (requests) =>
-    requests.filter(
-      ({ method, path: requested }) => method === "POST" && requested === `${path}/deploy`,
-    );
 
   // Known answer: Deploy is disabled up front and nothing is sent.
   {
@@ -1468,7 +1462,7 @@ test("Deploy names the bound Secrets an operator may not operate", async (t) => 
     await page.getByText(reason, { exact: true }).waitFor();
     const deploy = page.getByRole("button", { name: "Deploy new version" });
     assert.equal(await deploy.isDisabled(), true);
-    assert.deepEqual(deployPosts(requests), []);
+    assert.deepEqual(pathRequests(requests, "POST", `${path}/deploy`), []);
   }
 
   // Unknown answer: the first Secret answer fails, so Deploy stays enabled and the API decides.
@@ -1517,8 +1511,7 @@ test("Deploy names the bound Secrets an operator may not operate", async (t) => 
     await login(page, fixture, url, operator.credentials);
     await page.getByRole("heading", { name: "Operator Secret Agent" }).waitFor();
     const deploy = page.getByRole("button", { name: "Deploy new version" });
-    await waitForEnabled(deploy);
-    await expectNoText(page, reason);
+    await expectNoText(page, reason, () => waitForEnabled(deploy));
     const admitted = page.waitForResponse(
       (response) =>
         response.url() === `${fixture.origin}${path}/deploy` &&

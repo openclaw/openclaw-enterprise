@@ -68,6 +68,9 @@ import {
   GENERIC_DENIAL,
   NAMESPACE_NOT_READY,
   RESOURCE_CONFLICT,
+  POD_QUOTA_FULL,
+  IMAGE_PULL_FAILING,
+  codexApiKeyRefusal,
 } from "../helpers/refusal-text.mjs";
 
 const defaultCodexPreset = JSON.parse(
@@ -934,8 +937,6 @@ test("Dedicated Agent creation keeps one provisioning label while the job retrie
 // does not establish either change (findings 1617, 1637). The page clock drives the one-second
 // polls, so the four modes don't wait for them in real time.
 test("Dedicated Agent creation names a full Namespace Pod quota while it waits", async (t) => {
-  const quotaFull =
-    "The Namespace's Pod quota is full. Stop or delete an Agent, or ask an administrator to raise the quota.";
   for (const mode of ["readable", "refused", "interrupted", "access lost"] as const) {
     const fixture = await createConsoleAppFixture(t);
     await fixture.bootstrap();
@@ -1010,10 +1011,14 @@ test("Dedicated Agent creation names a full Namespace Pod quota while it waits",
     );
     const attempts: (ProvisioningMessage | "stalled" | "unavailable")[] =
       mode === "interrupted"
-        ? [{ code: "NAMESPACE_POD_QUOTA_EXCEEDED", message: quotaFull }, "stalled", "unavailable"]
+        ? [
+            { code: "NAMESPACE_POD_QUOTA_EXCEEDED", message: POD_QUOTA_FULL },
+            "stalled",
+            "unavailable",
+          ]
         : [
-            { code: "NAMESPACE_POD_QUOTA_EXCEEDED", message: quotaFull },
-            { code: "NAMESPACE_POD_QUOTA_EXCEEDED", message: quotaFull },
+            { code: "NAMESPACE_POD_QUOTA_EXCEEDED", message: POD_QUOTA_FULL },
+            { code: "NAMESPACE_POD_QUOTA_EXCEEDED", message: POD_QUOTA_FULL },
             { code: "REVISION_INCOMPLETE", message: "Waiting for the runtime to become ready." },
           ];
     const deploymentReads: number[] = [];
@@ -1137,7 +1142,7 @@ test("Dedicated Agent creation names a full Namespace Pod quota while it waits",
           "Provisioning request accepted.",
           "Provisioning queued…",
           "Provisioning Agent…",
-          quotaFull,
+          POD_QUOTA_FULL,
           "Provisioning Agent…",
         ],
         refused: ["Provisioning request accepted.", "Provisioning queued…", "Provisioning Agent…"],
@@ -1145,7 +1150,7 @@ test("Dedicated Agent creation names a full Namespace Pod quota while it waits",
           "Provisioning request accepted.",
           "Provisioning queued…",
           "Provisioning Agent…",
-          quotaFull,
+          POD_QUOTA_FULL,
         ],
       }[mode === "access lost" ? "readable" : mode],
       `deployment reads: ${mode}`,
@@ -1162,10 +1167,6 @@ test("Dedicated Agent creation names a full Namespace Pod quota while it waits",
 test("Dedicated Agent creation names the first deployment's wait while it provisions", async (t) => {
   const runtime = "Waiting for the runtime to become ready.";
   const node = "Workloads are ready; waiting for the workspace node to connect to the Gateway.";
-  const quotaFull =
-    "The Namespace's Pod quota is full. Stop or delete an Agent, or ask an administrator to raise the quota.";
-  const pullFailed =
-    "Kubernetes cannot pull a container image for this Agent and keeps retrying. Ask an administrator to check the runtime image reference and that the cluster's nodes can pull from its registry.";
   const stopping =
     "The Agent was stopped; its gateway is finishing active work before the stop completes.";
   for (const reader of ["deployment reader", "member without deployment access"]) {
@@ -1234,8 +1235,8 @@ test("Dedicated Agent creation names the first deployment's wait while it provis
     // fails. The image pull, the quota and the stop stand alone. A member can't read the
     // deployment and gets the job's own code.
     const runtimeWait = { code: "REVISION_INCOMPLETE", message: runtime };
-    const quotaWait = { code: "NAMESPACE_POD_QUOTA_EXCEEDED", message: quotaFull };
-    const pullWait = { code: "REVISION_IMAGE_PULL_FAILED", message: pullFailed };
+    const quotaWait = { code: "NAMESPACE_POD_QUOTA_EXCEEDED", message: POD_QUOTA_FULL };
+    const pullWait = { code: "REVISION_IMAGE_PULL_FAILED", message: IMAGE_PULL_FAILING };
     const stopWait = { code: "AGENT_STOP_YIELDED", message: stopping };
     const polls: [ProvisioningMessage, ProvisioningMessage | 403 | 503][] = deploymentReader
       ? [
@@ -1338,11 +1339,11 @@ test("Dedicated Agent creation names the first deployment's wait while it provis
             "Provisioning queued…",
             "Provisioning Agent…",
             `Provisioning Agent… ${runtime}`,
-            pullFailed,
-            quotaFull,
-            pullFailed,
+            IMAGE_PULL_FAILING,
+            POD_QUOTA_FULL,
+            IMAGE_PULL_FAILING,
             `Provisioning Agent… ${node}`,
-            quotaFull,
+            POD_QUOTA_FULL,
             "Provisioning Agent…",
             stopping,
             "Provisioning Agent…",
@@ -2012,8 +2013,7 @@ test("Agent creation names the Configuration field that holds an inline model cr
   await page.getByRole("button", { name: "Create Agent" }).click();
   assert.equal((await rejected).status(), 400);
   const feedback = page.getByRole("alert").filter({
-    hasText:
-      "Configuration setting models.providers.openai.apiKey must be unset: Dedicated Codex receives model credentials from the Agent's Harness authentication binding.",
+    hasText: codexApiKeyRefusal("models.providers.openai.apiKey"),
   });
   await feedback.waitFor();
   // Only the editor holds the key; the explanation never repeats it.

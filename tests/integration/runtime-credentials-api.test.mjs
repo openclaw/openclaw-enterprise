@@ -23,6 +23,7 @@ import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { reservePort } from "../helpers/available-port.mjs";
 import { grantRole } from "../helpers/iam-grants.mjs";
+import { EMBEDDED_API_KEY_REQUIRED } from "../helpers/refusal-text.mjs";
 
 const uuidV4 = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
 const identifier = (prefix) => new RegExp(`^${prefix}_${uuidV4}$`);
@@ -515,8 +516,7 @@ test("Kubernetes deploy names an unsupported Harness authentication model provid
 test("Kubernetes names a Harness authentication method the execution mode cannot use, at save and deploy", async () => {
   const fixture = await createFixture({ computeDriver: createKubernetesComputeDriver() });
   const { namespace, agent, configuration, secret } = await fixture.bootstrapAgent();
-  const message =
-    "Agent setting harnessAuth.method must be api_key for embedded OpenClaw on Kubernetes Compute: change harnessAuth or executionMode.";
+  const message = EMBEDDED_API_KEY_REQUIRED;
   const agentsPath = `/namespaces/${namespace.id}/agents`;
   const agentPath = `${agentsPath}/${agent.id}`;
   const refused = (response) => {

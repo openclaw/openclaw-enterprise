@@ -32,7 +32,7 @@ import {
   writeRequests,
 } from "./console-agents-browser-helpers.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
-import { WORKSPACE_FILES_UNAVAILABLE } from "../helpers/refusal-text.mjs";
+import { WORKSPACE_FILES_UNAVAILABLE, SIGN_IN_UNAVAILABLE } from "../helpers/refusal-text.mjs";
 
 const defaultCodexPreset = JSON.parse(
   await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
@@ -1515,7 +1515,7 @@ test("sign-in failures name a rate limit, an outage and the origin check", async
   });
   const limited = (seconds) =>
     failure(429, "RATE_LIMITED", "Too many attempts.", { "retry-after": String(seconds) });
-  const outage = failure(503, "DEPENDENCY_UNAVAILABLE", "Sign-in is temporarily unavailable.");
+  const outage = failure(503, "DEPENDENCY_UNAVAILABLE", SIGN_IN_UNAVAILABLE);
   const signIn = async (expected) => {
     await page.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
     // A wrong password: no step may sign in, whatever the API answers.

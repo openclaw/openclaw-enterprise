@@ -72,7 +72,12 @@ import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs
 import { createOccLogger, emitOccLogEvent } from "../../apps/controller/src/logging.ts";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
 import { conformanceKubeconfig } from "../helpers/kubernetes-compute.mjs";
-import { unreadableSlackTokenRefusal } from "../helpers/refusal-text.mjs";
+import {
+  unboundReferenceRefusal,
+  unreadableSlackTokenRefusal,
+  unsubstitutedFallbackRefusal,
+  unsubstitutedReferenceRefusal,
+} from "../helpers/refusal-text.mjs";
 import {
   tenant,
   apiKeyAuth,
@@ -10262,8 +10267,7 @@ test("native channel providers require Secret bindings and project them only to 
     // missing binding, as save does.
     {
       name: "ConfigurationHarnessError",
-      message:
-        "Configuration setting channels.slack.botToken references SLACK_BOT_TOKEN without a Configuration Secret binding: bind SLACK_BOT_TOKEN in secretBindings to an environment-backed Secret, or remove the reference.",
+      message: unboundReferenceRefusal("channels.slack.botToken", "SLACK_BOT_TOKEN"),
     },
   );
   // Agent save passes null bindings: OCC's Configuration save runs the channel binding rule.
@@ -10346,8 +10350,7 @@ test("native channel providers require Secret bindings and project them only to 
         ),
       {
         name: "ConfigurationHarnessError",
-        message:
-          "Configuration setting channels.slack.botToken references SLACK_BOT_TOKEN without a Configuration Secret binding: bind SLACK_BOT_TOKEN in secretBindings to an environment-backed Secret, or remove the reference.",
+        message: unboundReferenceRefusal("channels.slack.botToken", "SLACK_BOT_TOKEN"),
       },
       botToken,
     );
@@ -10364,18 +10367,13 @@ test("native channel providers require Secret bindings and project them only to 
   // refuses it whatever the bindings hold (finding 2477). That text may be the token itself, so
   // the message shows it only as a plain `${name}`, or only the name of `${NAME-text}`; the
   // message is also the deployment diagnostic.
-  const useUppercase =
-    "use an uppercase ${NAME} bound to a Secret in secretBindings, or escape literal text as $${NAME}";
   const token = "xoxb-1234567890-0987654321-AbCdEfGhIjKl";
-  const tokenForm = `Configuration setting channels.slack.botToken contains a \${ the runtime does not substitute: ${useUppercase}.`;
+  const tokenForm = unsubstitutedReferenceRefusal("channels.slack.botToken");
   for (const [botToken, message] of [
-    [
-      "${slack_bot}",
-      `Configuration setting channels.slack.botToken contains \${slack_bot}, which the runtime does not substitute: ${useUppercase}.`,
-    ],
+    ["${slack_bot}", unsubstitutedReferenceRefusal("channels.slack.botToken", "${slack_bot}")],
     [
       "${SLACK_BOT_TOKEN-xoxb-fallback}",
-      "Configuration setting channels.slack.botToken contains ${SLACK_BOT_TOKEN-…}, which the runtime does not substitute: write a fallback as ${SLACK_BOT_TOKEN:-text}, with SLACK_BOT_TOKEN bound to a Secret in secretBindings.",
+      unsubstitutedFallbackRefusal("channels.slack.botToken", "SLACK_BOT_TOKEN"),
     ],
     [`\${${token}}`, tokenForm],
     [`\${${token}`, tokenForm],
@@ -10413,8 +10411,7 @@ test("native channel providers require Secret bindings and project them only to 
       ),
     {
       name: "ConfigurationHarnessError",
-      message:
-        "Configuration setting channels.slack.accounts.ops.botToken references OPS_BOT without a Configuration Secret binding: bind OPS_BOT in secretBindings to an environment-backed Secret, or remove the reference.",
+      message: unboundReferenceRefusal("channels.slack.accounts.ops.botToken", "OPS_BOT"),
     },
   );
   assert.throws(
@@ -10427,7 +10424,10 @@ test("native channel providers require Secret bindings and project them only to 
       ),
     {
       name: "ConfigurationHarnessError",
-      message: `Configuration setting channels.slack.accounts.ops.relay.authToken contains \${relay}, which the runtime does not substitute: ${useUppercase}.`,
+      message: unsubstitutedReferenceRefusal(
+        "channels.slack.accounts.ops.relay.authToken",
+        "${relay}",
+      ),
     },
   );
   // Admission refuses a Slack token SecretRef the Slack Channel Driver cannot read, as save does

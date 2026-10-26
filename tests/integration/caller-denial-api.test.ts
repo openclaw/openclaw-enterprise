@@ -14,6 +14,14 @@ import {
 } from "../helpers/refusal-text.mjs";
 
 type Body = Record<string, unknown> | undefined;
+type Fixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
+type Grants = Parameters<Fixture["createNamespaceMember"]>[2];
+
+// A signed-in Namespace member whose one Role holds exactly `grants`.
+async function memberSession(fixture: Fixture, label: string, namespaceId: string, grants: Grants) {
+  const member = await fixture.createNamespaceMember(label, namespaceId, grants);
+  return fixture.signIn(member.credentials);
+}
 
 // The production Fastify app with the Native IAM Driver and a live policy (finding 2534). A
 // caller's own 403 names the grant its request checked and who grants it. It never names an ID
@@ -31,10 +39,7 @@ test("a caller's own denial names the missing grant without disclosing what the 
   const agents = `/namespaces/${namespace.id}/agents`;
 
   // Namespace read only: every Agent operation below checks a grant the member lacks.
-  const member = await fixture.createNamespaceMember("no-grant", namespace.id, [
-    ["read", "namespace"],
-  ]);
-  const session = await fixture.signIn(member.credentials);
+  const session = await memberSession(fixture, "no-grant", namespace.id, [["read", "namespace"]]);
   const refusal = async (
     method: string,
     path: string,
@@ -106,11 +111,10 @@ test("a caller's own denial names the missing grant without disclosing what the 
   // A Restriction denies a member who holds the grant; the member above holds none. Both get
   // the same answer, so the text never tells that an operator wrote a rule for this Agent.
   const restricted = await fixture.createAgent(namespace.id, "Restricted Agent", values);
-  const reader = await fixture.createNamespaceMember("restricted-reader", namespace.id, [
+  const readerSession = await memberSession(fixture, "restricted-reader", namespace.id, [
     ["read", "namespace"],
     ["read", "agent"],
   ]);
-  const readerSession = await fixture.signIn(reader.credentials);
   fixture.policy.restrictions.push({
     id: "deny-restricted-agent-read",
     namespaceId: namespace.id,
@@ -127,13 +131,12 @@ test("a caller's own denial names the missing grant without disclosing what the 
   // A secondary grant names its ID only when the request carried it. Updating an Agent sends
   // the Configuration ID, so its Configuration read names it; deploying sends none, so the same
   // check on the stored Configuration names no ID.
-  const editor = await fixture.createNamespaceMember("agent-editor", namespace.id, [
+  const editorSession = await memberSession(fixture, "agent-editor", namespace.id, [
     ["read", "namespace"],
     ["read", "agent"],
     ["update", "agent"],
     ["deploy", "agent"],
   ]);
-  const editorSession = await fixture.signIn(editor.credentials);
   const sent = await refusal(
     "PATCH",
     `${agents}/${agent.id}`,
@@ -154,21 +157,19 @@ test("a caller's own denial names the missing grant without disclosing what the 
   // Agent's model Secret from its stored Harness binding; a deployer without Secret operate learns
   // its ID only when it holds Secret read, which already shows that ID.
   const secretId = agent.harnessAuth.source.id;
-  const deployer: [string, string][] = [
+  const deployer: Grants = [
     ["read", "namespace"],
     ["read", "agent"],
     ["deploy", "agent"],
     ["read", "configuration"],
   ];
-  const deployRefusal = async (label: string, grants: [string, string][]) => {
-    const member = await fixture.createNamespaceMember(label, namespace.id, grants as never);
-    return refusal(
+  const deployRefusal = async (label: string, grants: Grants) =>
+    refusal(
       "POST",
       `${agents}/${agent.id}/deploy`,
       undefined,
-      await fixture.signIn(member.credentials),
+      await memberSession(fixture, label, namespace.id, grants),
     );
-  };
   assert.equal(
     (await deployRefusal("deployer-unread-secret", deployer)).message,
     callerDenied("Secret operate", "a Secret this request uses"),
@@ -178,17 +179,14 @@ test("a caller's own denial names the missing grant without disclosing what the 
     callerDenied("Secret operate", `Secret ${secretId}`),
   );
   // An Agent's SandboxPolicy ID derives from the Agent ID the path carries, so its denial names it.
-  const policyReader = await fixture.createNamespaceMember("policy-reader", namespace.id, [
-    ["read", "namespace"],
-    ["read", "agent"],
-  ]);
+  // Agent read without SandboxPolicy read, the same grants as the restricted reader above.
   assert.equal(
     (
       await refusal(
         "GET",
         `${agents}/${agent.id}/sandbox-policy/networking`,
         undefined,
-        await fixture.signIn(policyReader.credentials),
+        readerSession,
       )
     ).message,
     callerDenied("SandboxPolicy read", `SandboxPolicy sbp_${agent.id.slice(4)}`),
@@ -222,16 +220,15 @@ test("an Agent principal's deploy refusal names its bound Secret only to a calle
     ),
   );
   const deployPath = `/namespaces/${namespace.id}/agents/${agent.id}/deploy`;
-  const deployGrants: [string, string][] = [
+  const deployGrants: Grants = [
     ["read", "namespace"],
     ["deploy", "agent"],
     ["read", "configuration"],
     ["operate", "secret"],
   ];
-  const refusal = async (label: string, grants: [string, string][]) => {
-    const member = await fixture.createNamespaceMember(label, namespace.id, grants as never);
+  const refusal = async (label: string, grants: Grants) => {
     const response = await fixture.request("POST", deployPath, {
-      session: await fixture.signIn(member.credentials),
+      session: await memberSession(fixture, label, namespace.id, grants),
     });
     assertApiError(response, 403, "FORBIDDEN", label);
     return response.body.error.message as string;

@@ -732,13 +732,21 @@ test("Model edits preserve refusals for invalid Advanced JSON rosters", async (t
     "fallbacks without a primary",
     "inherited without a default",
   ] as const;
+  // One signed-in tab serves every case. Each case loads Create Agent again, which starts a fresh
+  // form: the form keeps no draft across a page load.
+  const { page } = await newPage(t, fixture);
+  const createUrl = `/console/agents/new?namespace=${namespace.id}`;
+  await login(page, fixture, createUrl);
+  let loaded = true;
   for (const scenario of scenarios) {
     for (const clearFirst of [false, true]) {
       await t.test(
         `${scenario}: ${clearFirst ? "clear then select" : "direct select"}`,
-        async (subtest) => {
-          const { page } = await newPage(subtest, fixture);
-          await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+        async () => {
+          if (!loaded) {
+            await page.goto(new URL(createUrl, fixture.origin).href);
+          }
+          loaded = false;
           await page.getByLabel("Preset template").selectOption(preset.data.id);
           await page.getByRole("button", { name: "Use Preset", exact: true }).click();
           await openAdvancedSettings(page);
