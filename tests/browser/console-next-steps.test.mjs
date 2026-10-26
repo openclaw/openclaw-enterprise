@@ -210,7 +210,9 @@ test("a rejected credential's record stops alerting once the Agent binds another
 
   // The administrator binds another Secret; the next deployment uses it.
   const replacement = await fixture.createSecret(namespace.id, "rebound-key", "test-api-key-2");
+  await fixture.grantAgentSecretOperate(agent, replacement.ref);
   await fixture.updateAgent(namespace.id, agent.id, {
+    configurationId: agent.configurationId,
     harnessAuth: { method: "api_key", source: replacement.ref },
   });
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
