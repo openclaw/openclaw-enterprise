@@ -406,8 +406,9 @@ export function createSecretReferenceField({
   const labelNode = element("label", { for: id }, label);
   const metadataLink = credentialLink("#", metadataLabel);
   const secrets: SecretMetadata[] = [];
-  // Whether `secrets` holds the caller's readable list yet. Until it does, nothing is known to be
-  // unlisted, and the link stays as it was first drawn.
+  // Whether the list read settled: `secrets` then holds every Secret the field knows the caller
+  // may read (none after a refused read). Until it settles, nothing is known to be unlisted, and
+  // the link stays as it was first drawn.
   let secretsListed = false;
   // Set once a binding is staged, so a Secret list that arrives later keeps its hint.
   let staged = false;
@@ -1051,6 +1052,9 @@ export function createSecretReferenceField({
           return;
         }
         listedHint = false;
+        // A refused list shows no Secret as readable, so none gets a link.
+        secretsListed = true;
+        updateMetadataLink();
         setStatusTone(status, "danger");
         status.textContent = expired
           ? "Your session has expired."
