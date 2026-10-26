@@ -104,16 +104,13 @@ selection, flags, output formats, retries and exit codes.
 Installation administrators hold Agent `administer`, which already reaches Gateway
 log text in the [native admin UI](../../reference/agent-native-admin.md). To
 delegate log reading, bind a Namespace Role with Agent `read_logs` and `read` to
-the exact Agent; it covers every version, including later deployments. Opening
-the Agent in the console also needs Namespace `read` bound to that Namespace
-(otherwise it shows "Namespace unavailable"). Runtime status needs `read`
-bound to each Agent revision by ID. A `read_logs` Restriction blocks log text even for
-administrators. Without `operate`, the Logs tab has no runtime strip or Pod
-picker; it reads each source's current Pod and says when a source is missing.
-The console checks the Agent's permission answer (`readLogs`) first: without log
-text access, the tab shows what it needs and sends no audited read.
-Service principals use the same grants. Every request and follow poll is
-authorized again, so revoking a grant stops the next poll. See
+the exact Agent; it covers every version. Opening the Agent in the console also
+needs Namespace `read` (otherwise it shows "Namespace unavailable"). Runtime
+status needs `read` bound to each Agent revision by ID. A `read_logs`
+Restriction blocks log text even for administrators. Without `operate`, the Logs
+tab has no runtime strip or Pod picker. When the Agent permission answer's
+`readLogs` is false, the tab skips the audited read. Service principals use the
+same grants. Each request and follow poll is authorized again. See
 [authorization](../../reference/authorization.md).
 
 ## What the output contains
