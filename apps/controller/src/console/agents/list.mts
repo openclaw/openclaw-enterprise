@@ -391,10 +391,12 @@ export function tooManyRequests(cause: unknown) {
 // (finding 2538). The API's 400 and typed 409 sentences name the rule or the state that
 // refused the request, and the API never puts a secret value in one, so they show as written
 // (views set them as textContent). `next` follows a 409: the step that recovers in this view,
-// such as a refresh ("" when the view adds its own); `conflict` replaces the generic sentence for a 409 the API does not explain.
+// such as a refresh ("" when the view adds its own); `conflict` replaces the generic sentence
+// for a 409 the API does not explain.
 // `form` says the reader entered the values sent, so a 400 the API does not explain asks to check
-// them; without a form it never mentions entered values. Denials, missing resources and
-// unanswered requests keep message()'s text.
+// them; without a form it never mentions entered values. A denial names `need`'s grant, or
+// nobody to ask when the view knows the reader is an Installation administrator
+// (administratorMessage). Missing resources and unanswered requests keep message()'s text.
 export function describeFailure(
   cause: unknown,
   {
@@ -402,7 +404,16 @@ export function describeFailure(
     form = false,
     next,
     conflict = "The request conflicts with the current state.",
-  }: { mutation?: boolean; form?: boolean; next?: string; conflict?: string } = {},
+    need,
+    administrator = false,
+  }: {
+    mutation?: boolean;
+    form?: boolean;
+    next?: string;
+    conflict?: string;
+    need?: AccessNeed;
+    administrator?: boolean;
+  } = {},
 ): string {
   const error = requestFailure(cause);
   const then = next ? ` ${next}` : "";
@@ -428,7 +439,7 @@ export function describeFailure(
   if (error.status === 429) {
     return tooManyRequests(cause);
   }
-  return message(cause, mutation);
+  return administrator ? administratorMessage(cause) : message(cause, mutation, need);
 }
 
 // A channel credential value that Configuration save or provisioning refuses: a reference without

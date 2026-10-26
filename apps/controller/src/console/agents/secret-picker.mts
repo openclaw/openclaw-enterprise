@@ -15,10 +15,15 @@ import {
   statusBlock,
   validateFields,
 } from "../dom.mjs";
-import { message, namespaceListNeed, namespacePath } from "./list.mjs";
+import {
+  GENERIC_CONFLICT,
+  describeFailure,
+  message,
+  namespaceListNeed,
+  namespacePath,
+} from "./list.mjs";
 import { NAME_MAX_CHARACTERS, namespaceNameProblem } from "../namespaces.mjs";
 import { secretValueControl } from "../secrets.mjs";
-import { GENERIC_CONFLICT, describeFailure } from "./list.mjs";
 
 // A preview can show an existing reference without a live Namespace or request function.
 type SecretContext = Partial<AgentAccessContext> & {

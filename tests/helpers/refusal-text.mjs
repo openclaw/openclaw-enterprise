@@ -55,6 +55,9 @@ export const accessDeniedNeeding = (task, grant) =>
 // A Namespace list (Secrets, Presets, Service Accounts) is refused for lack of Namespace read.
 export const namespaceListDenied = (items) =>
   accessDeniedNeeding(`Listing ${items} in this Namespace`, "Namespace read");
+// What an Installation administrator's own refused request says: asking one would not help.
+export const ADMINISTRATOR_ACCESS_DENIED =
+  "Access denied. You do not have permission for this operation.";
 export const CONSOLE_ACCESS_DENIED = `Access denied. You do not have permission for this operation. Granting it ${ASK_INSTALLATION_ADMINISTRATOR} check your access.`;
 export const secretOperateRefused = (name) =>
   `You do not have permission to bind ${name}. Each save needs Secret operate on every Secret it binds, which your access does not include for it. Choose another Secret, or ask an administrator for Secret operate on it.`;

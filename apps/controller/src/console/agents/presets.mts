@@ -15,9 +15,8 @@ import {
   requiredPresetVariables,
   validatePresetTemplate,
 } from "../preset-variables.mjs";
-import { message, namespaceListNeed, namespacePath } from "./list.mjs";
+import { describeFailure, message, namespaceListNeed, namespacePath } from "./list.mjs";
 import type { SecretsOperateDenied } from "./credential-access.mjs";
-import { describeFailure } from "./list.mjs";
 import {
   NEW_SECRET_OPERATE_DENIED,
   NEW_SECRET_OPERATE_REMEDY,

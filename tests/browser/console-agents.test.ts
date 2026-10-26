@@ -76,7 +76,7 @@ import {
   openFailureDetails,
 } from "./console-deployment-activity-helpers.mjs";
 import {
-  CONSOLE_ACCESS_DENIED,
+  ADMINISTRATOR_ACCESS_DENIED,
   DEPENDENCY_UNAVAILABLE,
   GENERIC_DENIAL,
 } from "../helpers/refusal-text.mjs";
@@ -1723,7 +1723,9 @@ test("Dedicated Agent creation keeps provisioning when optional repository disco
   );
   await page.getByRole("button", { name: "Create Agent" }).click();
   assert.equal((await admission).status(), 403);
-  await page.getByText(CONSOLE_ACCESS_DENIED).waitFor();
+  // This viewer read the Installation, which only an Installation administrator can, so the
+  // denial does not send them to one.
+  await page.getByText(ADMINISTRATOR_ACCESS_DENIED, { exact: true }).waitFor();
   const submitted = agentProvisionPostRequests(requests, namespace.id);
   assert.equal(submitted.length, 1);
   const body = submittedBody<ProvisionAgentBody>(submitted[0]);
