@@ -851,7 +851,7 @@ test("Agent detail says when the current or requested version cannot be read", a
       requestedVersionUnavailable(`${requested.id.slice(0, 12)}…${requested.id.slice(-6)}`),
     )
     .waitFor();
-  await page.getByRole("heading", { name: "Version unavailable" }).waitFor();
+  await page.getByRole("heading", { name: "Version unavailable", exact: true }).waitFor();
   await page.getByText(VERSION_UNAVAILABLE, { exact: true }).waitFor();
 });
 

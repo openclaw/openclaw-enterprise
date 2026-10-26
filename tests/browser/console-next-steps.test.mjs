@@ -32,7 +32,9 @@ test("a version link the page cannot list says the version may not exist", async
   const reader = await fixture.createNamespaceMember("link-reader", namespace.id, AGENT_READ);
   const { page } = await newPage(t, fixture);
 
-  // A made-up version ID: the API answers it as it answers a version the reader may not read.
+  // A made-up version ID. With read on every version the API answers it as missing (404); a
+  // reader granted read per version gets the answer a version they may not read gets (403,
+  // console-agent-state.test.mjs). Both say the version may not exist.
   const madeUp = `rev_${randomUUID()}`;
   await login(
     page,
@@ -40,7 +42,7 @@ test("a version link the page cannot list says the version may not exist", async
     detailUrl(fixture, namespace.id, agent.id, madeUp, "configuration"),
     reader.credentials,
   );
-  await page.getByRole("heading", { name: "Version unavailable" }).waitFor();
+  await page.getByRole("heading", { name: "Version unavailable", exact: true }).waitFor();
   await page.getByText(VERSION_UNAVAILABLE, { exact: true }).waitFor();
   // The current version is readable, so the status line speaks only of the requested one.
   const statusLine = page.locator(".agent-status-line");
@@ -83,6 +85,8 @@ test("a rejected model credential tells a member without Agent update who update
   await recovery.getByText(MODEL_CREDENTIAL_REJECTED_ASK).waitFor();
   await page.getByText(MODEL_CREDENTIAL_REJECTED_READ_ONLY, { exact: true }).waitFor();
   // No step the operator cannot take: neither "update or replace" nor a link to Credentials.
-  assert.equal(await page.getByText(/update or replace/).count(), 0);
+  // The folded Deployment details keep the API's recorded message as it was recorded.
+  assert.doesNotMatch(await recovery.innerText(), /update or replace/);
+  assert.doesNotMatch(await page.locator(".agent-draft-actions").innerText(), /update or replace/);
   assert.equal(await recovery.getByRole("link", { name: "Open Credentials" }).count(), 0);
 });

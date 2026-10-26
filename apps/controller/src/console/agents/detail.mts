@@ -312,27 +312,23 @@ function errorPanel(
   }
   // Revision read is granted per version; Agent access alone does not cover new versions. A
   // version not known to exist, such as one from an edited link, is answered as one the caller
-  // may not read, so the text says it may not exist (finding D750).
-  const versionDenied = version && error.status === 403;
-  const versionHeading = exists ? "You cannot read this version" : "Version unavailable";
-  const versionReason = exists ? VERSION_READ_DENIED : VERSION_UNAVAILABLE;
+  // may not read (403) or as missing (404), so the text says either may be true (finding D750).
+  let heading = "Configuration unavailable";
+  let reason = message(cause, false, DRAFT_CONFIGURATION_NEED);
+  if (error.code === "SAVED_CONFIGURATION_UNREADABLE") {
+    heading = "Saved configuration unreadable";
+  } else if (version && exists && error.status === 403) {
+    heading = "You cannot read this version";
+    reason = VERSION_READ_DENIED;
+  } else if (version && !exists && (error.status === 403 || error.status === 404)) {
+    heading = "Version unavailable";
+    reason = VERSION_UNAVAILABLE;
+  }
   return element(
     "section",
     { className: "state-panel", role: "alert" },
-    element(
-      "h2",
-      {},
-      error.code === "SAVED_CONFIGURATION_UNREADABLE"
-        ? "Saved configuration unreadable"
-        : versionDenied
-          ? versionHeading
-          : "Configuration unavailable",
-    ),
-    element(
-      "p",
-      {},
-      versionDenied ? versionReason : message(cause, false, DRAFT_CONFIGURATION_NEED),
-    ),
+    element("h2", {}, heading),
+    element("p", {}, reason),
     responseFields(cause).remembered === true
       ? element(
           "p",
