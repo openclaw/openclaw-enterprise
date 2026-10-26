@@ -2219,19 +2219,6 @@ export async function renderAgentDetail(
     versionRecord?.setFailureShownAbove(recoveryRevisionId === selected);
   }
 
-  // With no version selected, a first deployment still queued or in progress keeps Stop, which
-  // cancels it (finding 2580). One that failed or ended otherwise leaves nothing to stop (finding
-  // 2385). Undefined while the latest deployment's status is read.
-  function nothingToStop(): boolean | undefined {
-    if (currentRevisionId) {
-      return false;
-    }
-    if (latestDeploymentStatus) {
-      return latestDeploymentStatus !== "queued" && latestDeploymentStatus !== "running";
-    }
-    return latestDeploymentUnavailable ? true : undefined;
-  }
-
   function renderLatestDeployment() {
     markVersionOutcomes();
     const latest = visibleRevisions[0];
@@ -2258,12 +2245,14 @@ export async function renderAgentDetail(
           : "",
       );
       setLiveServing(false);
-      // With no version selected and none this viewer can read, there is no deployment in
-      // progress for Stop to cancel that this page could show (finding D691).
-      stopPanel.setNothingRunning(latestRevisionResult ? !currentRevisionId : undefined);
+      // This viewer reads no deployment, so Stop keeps its row and says it may cancel one or
+      // interrupt a gateway (finding D691); the API answers if nothing runs.
+      stopPanel.setLatestDeployment(null);
       return;
     }
-    stopPanel.setNothingRunning(nothingToStop());
+    // Stop hides only for a failed first deployment, and says it cancels one still queued or in
+    // progress (findings 2385, 2580, D691). A failed read is unknown, not failed.
+    stopPanel.setLatestDeployment(latestDeploymentStatus);
     const label = latestDeploymentStatus ? outcomeLabel(latestDeploymentStatus) : undefined;
     // A superseded or stopped deployment is neutral: it raises no banner and says nothing about
     // serving.

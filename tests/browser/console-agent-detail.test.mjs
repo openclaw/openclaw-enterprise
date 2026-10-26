@@ -3127,6 +3127,24 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
   await page
     .getByText("No version is selected. Deploy a new version to start this Agent.")
     .waitFor();
+  // A completed stop also clears the selected version, but no deployment is in progress: a new
+  // stop intent must not say it cancels one, nor report one cancelled (finding D691).
+  await page.getByRole("button", { name: "Request Stop again", exact: true }).click();
+  dialog = page.getByRole("dialog", { name: "Stop this Agent?" });
+  await dialog.getByText(/^This interrupts the current runtime gateway/).waitFor();
+  assert.equal(await dialog.getByText(/deployment in progress/).count(), 0);
+  const repeated = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/stop` &&
+      response.request().method() === "POST",
+  );
+  await dialog.getByRole("button", { name: "Stop Agent" }).click();
+  assert.equal((await repeated).status(), 202);
+  await dialog.waitFor({ state: "hidden" });
+  await page
+    .getByText("No version is selected. Deploy a new version to start this Agent.")
+    .waitFor();
+  assert.equal(await page.getByText(/deployment in progress is cancelled/).count(), 0);
 
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await page.getByRole("button", { name: "Create new version", exact: true }).last().click();

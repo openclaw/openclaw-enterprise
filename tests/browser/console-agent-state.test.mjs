@@ -877,18 +877,31 @@ test("Agent detail says an Agent's versions are hidden, not missing, when none i
   await page.goto(detailUrl(fixture, namespace.id, pending.id, "draft", "configuration").href);
   await page.getByRole("heading", { name: "Pending history" }).waitFor();
   await page.getByText(/^No readable versions\. This Agent has versions your access/).waitFor();
-  // Nothing this reader can see runs or is deploying, so neither the page nor the Agents list
-  // offers Stop, whose dialog would describe a gateway that does not exist (finding D691).
-  await page.getByRole("region", { name: "Delete Agent", exact: true }).waitFor();
-  assert.equal(await page.getByRole("region", { name: "Stop Agent", exact: true }).count(), 0);
+  // Agent operate and AgentRevision read are separate grants. This reader may stop the Agent but
+  // cannot read the deploying version, so Stop stays on the page and the Agents list: the API
+  // answers if nothing runs. Its dialog cannot say which, so it names both outcomes instead of
+  // describing a gateway that may not exist (finding D691).
+  const unknownOutcome =
+    "This cancels a deployment in progress or, if a version already started, interrupts its runtime gateway and ends any reply in progress. Configuration, versions, Credentials, and workspace data are retained. Deploy a new version to start the Agent again.";
+  const stop = page
+    .getByRole("region", { name: "Stop Agent", exact: true })
+    .getByRole("button", { name: "Stop Agent", exact: true });
+  await waitForEnabled(stop);
+  await stop.click();
+  let dialog = page.getByRole("dialog", { name: "Stop this Agent?" });
+  await dialog.getByText(unknownOutcome, { exact: true }).waitFor();
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await dialog.waitFor({ state: "hidden" });
   await page.goto(new URL(`/console/agents?namespace=${namespace.id}`, page.url()).href);
   const row = page.getByRole("row").filter({ hasText: "Pending history" });
   await row.getByText("No visible deployments", { exact: true }).waitFor();
-  await row.getByRole("button", { name: "Delete Pending history", exact: true }).waitFor();
-  assert.equal(
-    await row.getByRole("button", { name: "Stop Pending history", exact: true }).count(),
-    0,
-  );
+  const rowStop = row.getByRole("button", { name: "Stop Pending history", exact: true });
+  await waitForEnabled(rowStop);
+  await rowStop.click();
+  dialog = page.getByRole("dialog", { name: "Stop this Agent?" });
+  await dialog.getByText(unknownOutcome, { exact: true }).waitFor();
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await dialog.waitFor({ state: "hidden" });
 
   // A never-deployed Agent keeps the creation hint.
   const fresh = await fixture.createAgent(namespace.id, "No history", nativeValues("v1"));

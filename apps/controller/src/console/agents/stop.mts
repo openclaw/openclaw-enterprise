@@ -4,6 +4,7 @@ import { button, element, setHidden, setText, statusBlock } from "../dom.mjs";
 import {
   type AgentLifecycleContext,
   type LifecycleError,
+  cancelsFirstDeployment,
   stopConfirmation,
 } from "./lifecycle-confirmation.mjs";
 import { AGENT_STOP_DENIED, askForGrant } from "./access-reasons.mjs";
@@ -45,10 +46,10 @@ export function createAgentStop(
     versionLabel(id: string): string | undefined;
     used: boolean;
     /**
-     * The detail page's answer: no version is selected and no first deployment this viewer can
-     * read is in progress. Undefined until the page knows.
+     * The status of the latest deployment the detail page read, or null when this viewer cannot
+     * read it (no readable version, or a failed read). Undefined until the page knows.
      */
-    nothingRunning: boolean | undefined;
+    latestDeployment: string | null | undefined;
     /** This viewer's Stop cancelled a first deployment, before any version was selected. */
     cancelledFirstDeployment: boolean;
   } = {
@@ -63,7 +64,7 @@ export function createAgentStop(
     versionLabel: () => undefined,
     // Set once this viewer opens Stop or refreshes here, so the row never vanishes under them.
     used: false,
-    nothingRunning: undefined,
+    latestDeployment: undefined,
     cancelledFirstDeployment: false,
   };
 
@@ -78,16 +79,17 @@ export function createAgentStop(
 
   function render() {
     const requested = state.agent.desiredRuntimeState === "stopped";
-    // A first deployment that failed, or one this viewer cannot read, leaves the Agent requested
-    // to run with no version selected: Stop would change nothing, so the row is hidden, as on the
-    // Agents list (findings 2385, D691). Until the page knows, it stays hidden too. Only a first
-    // deployment in progress keeps Stop, which then cancels it.
-    const idle = !requested && !state.agent.activeRevisionId && state.nothingRunning !== false;
+    // A first deployment that failed leaves the Agent requested to run with no version selected:
+    // Stop would change nothing, so the row is hidden, as on the Agents list (findings 2385,
+    // D691). Only a failure this page read decides it. A succeeded deployment read against an
+    // older Agent read, an unreadable deployment, or a failed read keeps Stop, and the API answers
+    // if nothing runs.
+    const idle = !requested && !state.agent.activeRevisionId && state.latestDeployment === "failed";
     setText(
       summary,
-      state.agent.activeRevisionId || requested
-        ? "Stops the running version. The Agent stays and can be deployed again."
-        : "Cancels the deployment in progress. The Agent stays and can be deployed again.",
+      cancelsFirstDeployment(state.agent, state.latestDeployment)
+        ? "Cancels the deployment in progress. The Agent stays and can be deployed again."
+        : "Stops the running version. The Agent stays and can be deployed again.",
     );
     // A running Agent's row is the title, its sentence and Stop; the overview already shows the
     // current version. After a stop request the row reports what Refresh reads back.
@@ -309,7 +311,9 @@ export function createAgentStop(
       if (stopped.desiredRuntimeState !== "stopped") {
         throw new Error("Invalid Agent stop response");
       }
-      state.cancelledFirstDeployment = !state.agent.activeRevisionId && !stopped.activeRevisionId;
+      // Only a stop whose dialog said it cancels a deployment in progress reports that it did.
+      state.cancelledFirstDeployment =
+        cancelsFirstDeployment(state.agent, state.latestDeployment) && !stopped.activeRevisionId;
       dialog.close();
       setAgent(stopped);
     } catch (cause) {
@@ -380,7 +384,7 @@ export function createAgentStop(
     const description = element(
       "p",
       { id: "agent-stop-confirm-description", "aria-live": "polite" },
-      stopConfirmation(state.agent),
+      stopConfirmation(state.agent, state.latestDeployment),
     );
     const showRestriction = () => {
       // A late answer cannot undo a request already sent.
@@ -472,13 +476,13 @@ export function createAgentStop(
       state.noReadableVersions = value;
       render();
     },
-    // The detail page reports whether nothing runs: no version is selected and no first
-    // deployment it can read is in progress (undefined while it reads).
-    setNothingRunning(value: boolean | undefined) {
-      if (state.nothingRunning === value) {
+    // The detail page reports the latest deployment's status, or null when this viewer cannot
+    // read it.
+    setLatestDeployment(value: string | null) {
+      if (state.latestDeployment === value) {
         return;
       }
-      state.nothingRunning = value;
+      state.latestDeployment = value;
       render();
     },
     // `label(id)` names a version as the page does ("v3"), or is undefined when unlisted. Only a

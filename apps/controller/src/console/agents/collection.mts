@@ -190,10 +190,24 @@ export function renderAgentList(context: AgentListContext) {
   // Agents whose last row action had a conflicting or unconfirmed outcome. Their actions stay
   // disabled until Refresh rereads the list, so the console never repeats an uncertain write.
   const unsettled = new Set<string>();
-  // Agents with no selected version whose first deployment is queued or in progress: Stop cancels
-  // it. Any other Agent with no selected version has nothing to stop, as on Agent detail
-  // (findings 2385, D691), including one whose deployment this viewer cannot read.
-  const firstDeploymentsInProgress = new Set<string>();
+  // Each row's latest deployment outcome, once its read shows one. With no version selected, a
+  // failed one leaves nothing to stop, as on Agent detail (finding 2385), and one queued or in
+  // progress makes the row's Stop dialog say it cancels that deployment (finding D691). A row
+  // without one (no visible deployment, or a failed read) keeps Stop: the API answers.
+  const latestDeployments = new Map<string, string>();
+  const failedFirst = (item: AgentRead) =>
+    !item.activeRevisionId && latestDeployments.get(item.id) === "failed";
+  function setLatestDeployment(item: AgentRead, outcome: string | null) {
+    const before = failedFirst(item);
+    if (outcome) {
+      latestDeployments.set(item.id, outcome);
+    } else {
+      latestDeployments.delete(item.id);
+    }
+    if (failedFirst(item) !== before) {
+      updateRowActions(item.id);
+    }
+  }
   const rowControls = new Map<
     string,
     ReturnType<typeof rowActions> & {
@@ -373,23 +387,14 @@ export function renderAgentList(context: AgentListContext) {
           return;
         }
         if (result === null) {
+          setLatestDeployment(item, null);
           fill("No visible deployments");
           return;
         }
         const neutral = neutralDeploymentOutcome(result.status);
         // Each read decides again: a retained list rereads on resume, and a first deployment
-        // retried since then (queued or deploying) gets Stop, as on Agent detail (finding 2580).
-        const inProgress =
-          !item.activeRevisionId &&
-          (result.status.status === "queued" || result.status.status === "running");
-        if (inProgress !== firstDeploymentsInProgress.has(item.id)) {
-          if (inProgress) {
-            firstDeploymentsInProgress.add(item.id);
-          } else {
-            firstDeploymentsInProgress.delete(item.id);
-          }
-          updateRowActions(item.id);
-        }
+        // retried since then (queued or deploying) keeps Stop, as on Agent detail (finding 2580).
+        setLatestDeployment(item, deploymentOutcome(result.status));
         const failure =
           !neutral && result.status.status === "failed"
             ? (result.status.error?.message ?? "Deployment failed.")
@@ -417,6 +422,7 @@ export function renderAgentList(context: AgentListContext) {
         if (!context.isCurrent()) {
           return;
         }
+        setLatestDeployment(item, null);
         fill(
           requestFailure(error).status === 403
             ? "Deployment access denied"
@@ -589,7 +595,7 @@ export function renderAgentList(context: AgentListContext) {
     const description = element(
       "p",
       { id: "agent-row-confirm-description", "aria-live": "polite" },
-      stopping ? stopConfirmation(item) : DELETE_CONFIRMATION,
+      stopping ? stopConfirmation(item, latestDeployments.get(item.id)) : DELETE_CONFIRMATION,
     );
     const kept = stopping ? null : keptResources(item);
     const dialog = element("dialog", {
@@ -677,10 +683,8 @@ export function renderAgentList(context: AgentListContext) {
     const available = item.status !== "deleting" && !unsettled.has(item.id);
     const stopped = item.desiredRuntimeState === "stopped";
     // New Agents start stopped with no version, and a first deployment that failed selects none,
-    // so there is nothing to stop yet; Agent detail shows no Stop control then either. Only a
-    // first deployment in progress keeps Stop, which cancels it.
-    const neverStarted =
-      !item.activeRevisionId && (stopped || !firstDeploymentsInProgress.has(item.id));
+    // so there is nothing to stop yet; Agent detail shows no Stop control then either.
+    const neverStarted = !item.activeRevisionId && (stopped || failedFirst(item));
     const allowed = permissions.get(item.id);
     const canStop = neverStarted || allowed?.operate !== false;
     const canDelete = allowed?.delete !== false;
