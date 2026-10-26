@@ -26,7 +26,12 @@ import {
 } from "./console-agents-browser-helpers.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import { enterManualModel, openAdvancedSettings } from "./console-agents-test-support.mjs";
-import { callerDenied, refusedNamed, SECRET_CREATE_DENIED } from "../helpers/refusal-text.mjs";
+import {
+  callerDenied,
+  refusedNamed,
+  SECRET_CREATE_DENIED,
+  SLACK_LOOKUP_DENIED,
+} from "../helpers/refusal-text.mjs";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
@@ -258,7 +263,8 @@ test("Create Agent searches approvers with a search-only Slack Secret", async (t
   await selectSecret(page, "Slack bot token Secret for people search", bot);
   denied = true;
   await people.fill("denied");
-  await page.getByText(/permission to use its selected Slack bot Secret/).waitFor();
+  // The API named no grant here, so the console names the Secret's.
+  await page.getByText(SLACK_LOOKUP_DENIED).waitFor();
   denied = false;
   await people.fill("nobody");
   await page.getByText("No matches found. Try another name or paste an exact ID.").waitFor();

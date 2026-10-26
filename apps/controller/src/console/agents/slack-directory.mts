@@ -127,13 +127,13 @@ function lookupError(error: ReturnType<typeof requestFailure>, cause: unknown) {
   };
   const reason = error.code ? reasons[error.code] : undefined;
   if (error.status === 403) {
-    // The lookup checks Secret operate on the bot Secret and update (or create) on the Agent, so
-    // the API's named grant wins over a list of all of them.
+    // The lookup checks Secret operate on the bot Secret, and Agent update (or Agent create on a
+    // new Agent), so the API's named grant wins; without one, the Secret's grant is named.
     return (
       namedRefusal("Slack lookup", cause) ??
       notIncluded(
-        "looking up Slack people and channels here",
-        "Secret operate on the selected Slack bot Secret and Agent update on this Agent",
+        "looking up Slack people and channels with the selected Slack bot Secret",
+        "Secret operate on it",
       )
     );
   }

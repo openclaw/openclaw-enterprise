@@ -520,6 +520,15 @@ export const REPOSITORY_CHOICES_AGENT_DENIED = notIncluded(
 );
 export const REPOSITORY_CHOICES_CREATE_DENIED =
   "Repository choices are not shown. Your access does not include creating Agents in this Namespace. Only an Installation administrator can create Agents: ask one to create it and to give you access to edit and deploy it.";
+// The sandbox policy editing setting, which only an Installation administrator who also
+// administers the Agent can change.
+export const POLICY_EDITING_SETTING_REFUSED =
+  "Your access does not include changing the editing setting. Only an Installation administrator who also administers this Agent can change it.";
+// A Slack people or channel lookup the API refused without naming a grant.
+export const SLACK_LOOKUP_DENIED = notIncluded(
+  "looking up Slack people and channels with the selected Slack bot Secret",
+  "Secret operate on it",
+);
 // Rechecking an open Agent page when the API names no grant.
 export const AGENT_PAGE_READ_DENIED = notIncluded(
   "reading this Agent, its versions or its Configuration",
