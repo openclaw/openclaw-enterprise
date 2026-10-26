@@ -8,7 +8,7 @@ rfc: ../rfcs/0021-managed-runtime-mode/index.md
 - **Delivery status:** Planned
 - **Source baseline:** `3cf3b894896a7d6c87d7016792537377cdeb3d37`
 
-An embedded Agent can lose its Gateway container and retain its SQLite databases and owner locks. The replacement sees an owner from another PID namespace. A stale heartbeat cannot tell it whether that process can still write. The pinned OC therefore refuses takeover. OCE should recover unattended when Compute can prove the previous workload stopped and exclude every other writer until the replacement has taken custody. Otherwise the operator must verify ownership before confirming recovery. [Managed-mode failure](https://github.com/openclaw/openclaw-enterprise/actions/runs/40007750867/job/120629137870) · [Harness-policy failure](https://github.com/openclaw/openclaw-enterprise/actions/runs/40020642283/job/120644075211)
+An embedded Agent can lose its Gateway container and retain its SQLite databases and owner locks. The replacement sees an owner from another PID namespace. A stale heartbeat cannot tell it whether that process can still write. The pinned OC therefore refuses takeover. OCE should recover unattended when Compute can prove the previous workload stopped and exclude every other writer until the replacement has taken custody. Otherwise the operator must verify ownership before confirming recovery. [Managed-mode failure](https://github.com/openclaw/openclaw-enterprise/actions/runs/40373715330/job/121751158800) · [Harness-policy failure](https://github.com/openclaw/openclaw-enterprise/actions/runs/40020642283/job/120644075211)
 
 ## Proposed first implementation
 
@@ -29,6 +29,9 @@ Keep two release checks:
 - **Image.** Exercise a live foreign owner, an unclean stop and native database recovery on the retained image state. With independent confirmation of the stop, send the first chat immediately at readiness. Verify HTTP 200 and the controlled provider's response. On OC `9cc4450e`, a disposable Docker run with 1 CPU and 4 GiB refused the live contender, then returned HTTP 200 and `READY` after explicit operator confirmation. This qualified the operator path. The repository's [raw-image regression](../../tests/integration/runtime-image-gateway-unclean-restart.test.mjs) still expects automatic takeover from heartbeat age.
 - **Compute.** Exercise the real replacement lifecycle without operator confirmation or artificial heartbeat aging. Kill the exact Gateway, preserve state, and require the first chat after readiness to return HTTP 200 and `READY`. Prove that a live second writer, a second attachment racing confirmation, a replaced volume, missing termination evidence or a changed fingerprint prevents clearance. Keep the unattended release gate until a qualified provider passes it.
 
+When a provider qualifies, document which deployments can recover automatically and when an operator must confirm the stop. [Agent troubleshooting](../../docs/guides/topics/agent-troubleshoot.md) · [Docker Compute](../../docs/reference/drivers/docker-compute.md)
+
 ## Changelog
 
-- 2026-10-26 — Proposed embedded recovery against `3cf3b894` and recorded the operator-confirmed Docker experiment.
+- 2026-10-26 18:18 UTC — Updated the release evidence to OCE `ef236876`.
+- 2026-10-26 17:09 UTC — Proposed embedded recovery against `3cf3b894` and recorded the Docker experiments (Codex/01a1558e-c27f-7bc0-a403-af59e9364ddf).
