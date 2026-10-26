@@ -27,8 +27,9 @@ export async function refusedAnswer(work, options) {
  * nothing else may differ: the whole error is compared, `details` included (finding 2628).
  *
  * `send(id)` returns an HTTP response with `status` and its error in `error` or `body.error`, or
- * a flat `{ status, code, message }` such as `refusedAnswer` gives. The first answer must have
- * `status` (403 by default), so two identical successes or two not-founds cannot pass.
+ * a flat `{ status, code, message }` such as `refusedAnswer` gives. A success (a body with no
+ * error) is compared by status alone: its data, such as timestamps, differs. The first answer
+ * must have `status` (403 by default), so two identical successes or two not-founds cannot pass.
  * Returns that answer.
  */
 export async function assertSameAnswer(send, ids, { status = 403, label = "" } = {}) {
@@ -36,7 +37,8 @@ export async function assertSameAnswer(send, ids, { status = 403, label = "" } =
   const answers = [];
   for (const id of ids) {
     const response = await send(id);
-    const error = response.error ?? response.body?.error ?? response;
+    const error =
+      response.error ?? response.body?.error ?? (response.body === undefined ? response : {});
     answers.push({ ...idHidden(error, id), status: response.status });
   }
   const prefix = label === "" ? "" : `${label}: `;
