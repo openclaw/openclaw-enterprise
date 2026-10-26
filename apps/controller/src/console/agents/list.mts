@@ -97,8 +97,9 @@ export const askInstallationAdministrator = (task: string) =>
 
 // The grant a read needs, so its 403 names it as Stop, Delete and occ's hints do (finding 1530):
 // `task` says what the request does and `grant` names the one permission it checks, in the
-// permissions cheat sheet's words, with the task, where the API's own denial (finding 2534) names
-// a raw ID instead. The text depends only on the request, never on whether the resource exists.
+// permissions cheat sheet's words. It wins over the API's named denial (finding 2534), which
+// shows a raw ID where this names the task. The text depends only on the request, never on
+// whether the resource exists.
 export interface AccessNeed {
   readonly task: string;
   readonly grant: string;
