@@ -10,10 +10,10 @@ import (
 // reorder or hide table columns for whoever lists the resource.
 func TestTableEscapesInvisibleAndControlCharactersInCells(t *testing.T) {
 	list := `[` +
-		`{"id":"agt_1","name":"report\u202egnp.exe","status":"active"},` +
-		`{"id":"agt_2","name":"zero\u200bwidth\u009b2J","status":"active"},` +
-		`{"id":"agt_3","name":"日本語 エージェント","status":"active"},` +
-		`{"id":"agt_4","name":"\"report\\u202egnp.exe\"","status":"active"}` +
+		`{"id":"agt_00000000-0000-4000-8000-000000000001","name":"report\u202egnp.exe","status":"active"},` +
+		`{"id":"agt_00000000-0000-4000-8000-000000000002","name":"zero\u200bwidth\u009b2J","status":"active"},` +
+		`{"id":"agt_00000000-0000-4000-8000-000000000003","name":"日本語 エージェント","status":"active"},` +
+		`{"id":"agt_00000000-0000-4000-8000-000000000004","name":"\"report\\u202egnp.exe\"","status":"active"}` +
 		`]`
 	responses := map[string]string{"GET /namespaces/" + testNamespaceID + "/agents": list}
 	out, _, err := runOCC(t, responses, "--namespace", testNamespaceID, "agent", "list")

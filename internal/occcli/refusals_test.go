@@ -200,7 +200,7 @@ func TestNamespaceKeyRefusalNamesTheKeysNamespace(t *testing.T) {
 	// No recorded Namespace, or one that is not a plain ID, is not printed.
 	for _, contents := range []string{
 		`{"data":{"key":"test-key"}}`,
-		`{"data":{"key":"test-key","namespaceId":"ns_1\u001b[2J"}}`,
+		`{"data":{"key":"test-key","namespaceId":"ns_00000000-0000-4000-8000-000000000001\u001b[2J"}}`,
 		`{"data":{"key":"test-key","namespaceId":"\u001b[2Jns_1"}}`,
 		`{"data":{"key":"test-key","namespaceId":"ns_"}}`,
 		`{"data":{"key":"test-key","namespaceId":"ns_` + strings.Repeat("a", 65) + `"}}`,
