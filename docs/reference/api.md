@@ -86,7 +86,7 @@ the paths.
 
 | Operation | Summary |
 | --- | --- |
-| [`POST /api/auth/accounts`](#post-apiauthaccounts) | Create an administrator-controlled local auth account |
+| [`POST /api/auth/accounts`](#post-apiauthaccounts) | Create a local auth account as an Installation administrator |
 | [`GET /api/auth/accounts/{userId}`](#get-apiauthaccountsuserid) | Inspect current human account state |
 | [`POST /api/auth/accounts/{userId}/disable`](#post-apiauthaccountsuseriddisable) | Disable a human account |
 | [`POST /api/auth/accounts/{userId}/enable`](#post-apiauthaccountsuseridenable) | Re-enable a disabled human account |
@@ -107,7 +107,7 @@ the paths.
 | [`POST /api/auth/providers/oidc/result`](#post-apiauthprovidersoidcresult) | Confirm which session an OIDC sign-in created |
 | [`POST /api/auth/providers/oidc/start`](#post-apiauthprovidersoidcstart) | Start OIDC sign-in for an enrolled account |
 | [`GET /api/auth/recovery`](#get-apiauthrecovery) | Inspect the recovery account designation |
-| [`POST /api/auth/recovery`](#post-apiauthrecovery) | Move the recovery designation to another administrator |
+| [`POST /api/auth/recovery`](#post-apiauthrecovery) | Move the recovery designation to another Installation administrator |
 | [`POST /api/auth/service-keys`](#post-apiauthservicekeys) | Issue a service API key |
 | [`DELETE /api/auth/service-keys/{keyId}`](#delete-apiauthservicekeyskeyid) | Revoke a service API key |
 | [`GET /api/auth/session`](#get-apiauthsession) | Inspect authentication without revealing session tokens |
@@ -118,7 +118,7 @@ the paths.
 
 <span id="post-apiauthaccounts"></span>
 
-Create an administrator-controlled local auth account
+Create a local auth account as an Installation administrator
 
 **Operation ID:** `createAuthAccount`
 
@@ -967,7 +967,7 @@ Inspect the recovery account designation
 
 <span id="post-apiauthrecovery"></span>
 
-Move the recovery designation to another administrator
+Move the recovery designation to another Installation administrator
 
 **Operation ID:** `replaceAuthRecovery`
 

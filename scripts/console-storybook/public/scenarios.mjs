@@ -134,7 +134,7 @@ const unavailablePlugins = [
     name: "Team chat",
     available: false,
     unavailableReason:
-      "Disabled by a ChatGPT workspace administrator. Ask an administrator to enable access for the user or service account behind this token.",
+      "Disabled by a ChatGPT workspace administrator. Ask one to enable access for the user or service account behind this token.",
     unavailableHelp: pluginSetup.links[0],
     tools: null,
   },
@@ -144,7 +144,7 @@ const unavailablePlugins = [
     name: "Analytics",
     available: false,
     unavailableReason:
-      "This workspace's plan is not eligible for this plugin. Ask a workspace administrator to review plan availability.",
+      "This workspace's plan is not eligible for this plugin. Ask a ChatGPT workspace administrator to review plan availability.",
     unavailableHelp: pluginSetup.links[0],
     tools: null,
   },

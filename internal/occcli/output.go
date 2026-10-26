@@ -336,7 +336,7 @@ func (app *application) printUnrevokedServiceAccountDeletion(warnings io.Writer,
 	}
 	noticef(
 		warnings,
-		"warning: the access token of service account %s was not revoked; an administrator must revoke it at the provider (%s). The audit event names its credential ID.",
+		"warning: the access token of service account %s was not revoked; a ChatGPT workspace administrator must revoke it at the provider (%s). The audit event names its credential ID.",
 		id,
 		backend,
 	)

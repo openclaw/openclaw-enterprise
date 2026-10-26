@@ -1389,7 +1389,7 @@ for (const c of [
   },
   {
     code: "DEPENDENCY_UNAVAILABLE",
-    step: "Deploy again; if it keeps failing, ask an admin to check the controller worker log.",
+    step: "Deploy again; if it keeps failing",
     action: "Deploy again",
     primary: "Deploy again",
   },

@@ -48,7 +48,12 @@ import {
   repositoryAttempts,
   repositoryBoundary,
 } from "../helpers/postgres-worker-revision-support.mjs";
-import { POD_QUOTA_FULL, IMAGE_PULL_FAILING } from "../helpers/refusal-text.mjs";
+import {
+  DEPLOYMENT_FAILED,
+  IMAGE_PULL_FAILING,
+  POD_QUOTA_FULL,
+  WORKSPACE_SETUP_RETRYING,
+} from "../helpers/refusal-text.mjs";
 
 // Deployment, dispatch, convergence and the persisted lifecycle. Credential-source withdrawals and
 // listed sources that lose their grant or readiness are in the -credential-sources sibling; the
@@ -1448,8 +1453,7 @@ revisionTest(
     // Finding 1677: Kubernetes is restarting a failed workspace setup that may still pass.
     assert.deepEqual(await progress(setupRetrying, setupRetryingRevision), {
       code: "WORKSPACE_SETUP_RETRYING",
-      message:
-        "Workspace setup failed; Kubernetes is retrying it. If it keeps failing, ask an admin to check the Agent's workspace storage and runtime image.",
+      message: WORKSPACE_SETUP_RETRYING,
     });
     // Finding 1762: the kubelet cannot pull an image; fixed copy, never the image reference.
     assert.deepEqual(await progress(imagePull, imagePullRevision), {
@@ -2359,8 +2363,7 @@ for (const scenario of [
       activeRevisionId: null,
       error: {
         code: "RUNTIME_CPU_STARVED",
-        message:
-          "Deployment runtime did not get enough CPU to finish its startup model check, because of a CPU limit below one core or a busy node. Ask an admin to raise the limit or free node capacity, then deploy a new version.",
+        message: DEPLOYMENT_FAILED.RUNTIME_CPU_STARVED,
       },
     },
   },
@@ -2380,8 +2383,7 @@ for (const scenario of [
       activeRevisionId: null,
       error: {
         code: "WORKSPACE_SETUP_REFUSED",
-        message:
-          "Initial workspace setup refused this version, and retries would too: its files, setup record or runtime defaults differ from what the Agent was created with. Ask an admin to check workspace storage and the runtime image; do not delete the setup record.",
+        message: DEPLOYMENT_FAILED.WORKSPACE_SETUP_REFUSED,
       },
     },
   },

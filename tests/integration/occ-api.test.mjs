@@ -43,6 +43,7 @@ import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
   AGENT_NAME_CONFLICT,
   callerDenied,
+  DEPLOYMENT_FAILED,
   referenceFormRefusal,
   SERVICE_ACCOUNT_CROSS_NAMESPACE,
   SLACK_ROUTE_NOT_CONFIGURED,
@@ -3092,46 +3093,38 @@ test("a refused deployment's status names its cause and remedy without naming pr
   const workKey = `agent_revision:${admitted.data.id}:reconcile`;
   const path = `/namespaces/${namespace.id}/agents/${agent.id}/deployments/${admitted.data.id}`;
   const messages = {
-    AUTHORIZATION_DENIED:
-      "The deploying account, or the Agent's own identity, lost a permission the revision needs: deploy on the Agent, read on its Configuration, or use of a bound Secret, credential source or ServiceAccount. Ask an admin to grant it, then deploy again.",
+    AUTHORIZATION_DENIED: DEPLOYMENT_FAILED.AUTHORIZATION_DENIED,
     ACTOR_REVOKED:
       "The account that requested this deployment is no longer an active account in the Installation. Deploy again from an account with deploy access to the Agent.",
     HARNESS_AUTH_REQUIRED:
       "This revision has no Harness authentication method. Set one on the Agent, then deploy again.",
-    BACKEND_UNAVAILABLE:
-      "The Backend this revision was admitted with is no longer configured on the Installation. Ask an admin to restore it, or move the Agent to a configured Backend, then deploy again.",
+    BACKEND_UNAVAILABLE: DEPLOYMENT_FAILED.BACKEND_UNAVAILABLE,
     HARNESS_AUTH_SOURCE_CHANGED:
       "The ServiceAccount this revision authenticates with is missing, has no access token, or its credential changed since admission. Bind an available ServiceAccount, or deploy again to admit a revision with its current credential.",
     SECRET_BINDING_UNAVAILABLE:
       "A Secret this revision binds is missing or no longer belongs to the selected Secret Driver. Bind available Secrets, then deploy again.",
     NAMESPACE_NOT_READY:
       "The Agent's Namespace was not ready when the controller ran this deployment, for example while it is being deleted. Deploy again once the Namespace is ready.",
-    WORKSPACE_SETUP_UNSUPPORTED:
-      "The Agent was created with initial workspace files, which the Installation's Compute Driver cannot set up. Ask an admin to select a Compute Driver that supports them, then deploy again, or create the Agent without initial workspace files.",
+    WORKSPACE_SETUP_UNSUPPORTED: DEPLOYMENT_FAILED.WORKSPACE_SETUP_UNSUPPORTED,
     REPOSITORY_REVISION_STOPPED:
       "Deployment ended because the Agent was stopped or its Namespace is no longer ready. To run the Agent, deploy again once its Namespace is ready.",
     REPOSITORY_REVISION_SUPERSEDED: "Deployment was superseded by a newer revision.",
     // Finding 1045: repository credential refusals name cause and remedy, never the repository.
-    REPOSITORY_RUNTIME_UNSUPPORTED:
-      "This revision can no longer get repository credentials: they need an embedded OpenClaw or dedicated Codex runtime, no Sandbox Driver, and a Compute Driver set up for them. Ask an admin to restore that, or remove repository access, then deploy again.",
-    REPOSITORY_BINDING_UNAVAILABLE:
-      "A repository this revision binds, or its access level, is no longer approved for the Agent's Namespace. Choose approved repository access on the Agent, or ask an admin to approve it again, then deploy again.",
+    REPOSITORY_RUNTIME_UNSUPPORTED: DEPLOYMENT_FAILED.REPOSITORY_RUNTIME_UNSUPPORTED,
+    REPOSITORY_BINDING_UNAVAILABLE: DEPLOYMENT_FAILED.REPOSITORY_BINDING_UNAVAILABLE,
     REPOSITORY_BINDING_CHANGED:
       "The approval behind a repository this revision binds changed since admission, for example the access levels or push rules approved for the Agent's Namespace. Deploy again to admit a revision with the current approval.",
-    REPOSITORY_DRIVER_MISMATCH:
-      "The Installation no longer selects the repository credential Driver this revision was admitted with. Deploy again, choosing approved repository access first if refused. If it selects none, remove the repository access or ask an admin to select one.",
+    REPOSITORY_DRIVER_MISMATCH: DEPLOYMENT_FAILED.REPOSITORY_DRIVER_MISMATCH,
     REPOSITORY_CREDENTIAL_DEADLINE_EXCEEDED:
       "This revision's repository access deadline, fixed when the revision was admitted, has passed. Deploy again to admit a revision with a new deadline.",
-    DEPENDENCY_UNAVAILABLE:
-      "A dependency the controller needs stayed unavailable through every attempt. Deploy again; if it keeps failing, ask an admin to check the controller worker log.",
+    DEPENDENCY_UNAVAILABLE: DEPLOYMENT_FAILED.DEPENDENCY_UNAVAILABLE,
     LEASE_EXPIRED:
       "The controller worker stopped or lost its claim during this deployment's last attempt. Deploy again.",
     // Finding 1393: held runtime failures name the next step too, so occ and HTTP clients get
     // the guidance the console used to add on its own.
     RUNTIME_AUTHENTICATION_FAILED:
       "The model provider rejected this version's credential (HTTP 401 or 403). Check that the key or token is valid and can use the selected model, update or replace the Agent's model credential, then deploy a new version.",
-    RUNTIME_CPU_STARVED:
-      "Deployment runtime did not get enough CPU to finish its startup model check, because of a CPU limit below one core or a busy node. Ask an admin to raise the limit or free node capacity, then deploy a new version.",
+    RUNTIME_CPU_STARVED: DEPLOYMENT_FAILED.RUNTIME_CPU_STARVED,
     RUNTIME_MODEL_PROBE_TIMEOUT:
       "The startup model check got no reply from the provider in time. With OpenClaw this includes an unreachable provider (refused connection or unknown host). Check egress, proxy or a custom baseUrl and that the provider responds, then deploy a new version.",
     RUNTIME_LOGIN_FAILED:

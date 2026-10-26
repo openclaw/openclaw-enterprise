@@ -1284,7 +1284,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     iamAction: "administer",
     resourceKind: "installation",
     authorizationTarget: "installation",
-    summary: "Create an administrator-controlled local auth account",
+    summary: "Create a local auth account as an Installation administrator",
     tags: ["Authentication"],
     schema: {
       body: {
@@ -3837,7 +3837,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       resourceKind: "installation",
       authorizationTarget: "installation",
       tags: ["Authentication"],
-      summary: "Move the recovery designation to another administrator",
+      summary: "Move the recovery designation to another Installation administrator",
       schema: {},
     } as unknown as OccApiRoute;
     routes.post(
