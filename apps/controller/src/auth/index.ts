@@ -1082,16 +1082,11 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
             cookieCache: { enabled: false },
           },
           logger: { disabled: true },
-          onAPIError: {
-            onError(error) {
-              // Better Call logs unclassified exceptions even when the auth logger is disabled.
-              throw error instanceof APIError
-                ? error
-                : APIError.fromStatus("SERVICE_UNAVAILABLE", {
-                    message: "Authentication dependency unavailable.",
-                  });
-            },
-          },
+          // Better Call logs an unclassified exception to the console even when the auth
+          // logger is disabled, and since Better Auth 1.7.9 `onAPIError.onError` can only
+          // observe it. Throwing leaves the router without logging; runPrivateEndpoint owns
+          // the error and answers it as a dependency failure.
+          onAPIError: { throw: true },
         }),
     plugins: [
       ...(humanLogin === undefined ? [] : [humanLogin.plugin]),
@@ -1367,13 +1362,21 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
     if (body !== undefined) {
       headers.set("content-type", "application/json");
     }
-    const response = await auth.handler(
-      new Request(url, {
-        method: request.method,
-        headers,
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      }),
-    );
+    let response: Response;
+    try {
+      response = await auth.handler(
+        new Request(url, {
+          method: request.method,
+          headers,
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        }),
+      );
+    } catch {
+      // Better Auth answers its own APIErrors; it throws only an error it cannot classify
+      // (onAPIError.throw), such as a database or audit failure. The error itself may hold
+      // dependency detail, so it is not logged or returned.
+      throw new AuthDependencyUnavailable();
+    }
     if (!response.ok) {
       if (response.status === 429) {
         throw APIError.fromStatus("TOO_MANY_REQUESTS", {

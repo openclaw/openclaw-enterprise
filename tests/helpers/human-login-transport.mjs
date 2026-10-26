@@ -9,7 +9,7 @@ import { listen } from "./listen.mjs";
 import { waitUntil } from "./wait-for.mjs";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
-const { APIError, betterAuth } = await import(require.resolve("better-auth"));
+const { betterAuth } = await import(require.resolve("better-auth"));
 const { memoryAdapter } = await import(require.resolve("better-auth/adapters/memory"));
 
 export const loginOrigin = "https://console.example.test";
@@ -94,26 +94,26 @@ export function createLoginFixture({
     plugins: [login.plugin],
     rateLimit: { enabled: false },
     logger: { level: "debug", log: (...values) => authLogs.push(values) },
-    onAPIError: {
-      onError(error) {
-        if (error instanceof APIError) {
-          throw error;
-        }
-        errors.push(error);
-        throw APIError.fromStatus("SERVICE_UNAVAILABLE", {
-          message: "Authentication dependency unavailable.",
-        });
-      },
-    },
+    // As in the controller's human-login profile: an error Better Auth cannot classify
+    // leaves its router unlogged instead of becoming a console-logged 500.
+    onAPIError: { throw: true },
   });
   // The controller wrapper sets x-occ-client-ip from the socket peer or a trusted ingress.
-  const call = (path, init, ip = "10.0.0.1") =>
-    auth.handler(
-      new Request(`${loginOrigin}/api/auth${path}`, {
-        ...init,
-        headers: { ...init?.headers, "x-occ-client-ip": ip },
-      }),
-    );
+  // It also owns the thrown dependency error and answers it as 503; this boundary records
+  // the error so tests can prove the endpoint passed it on unchanged.
+  const call = async (path, init, ip = "10.0.0.1") => {
+    try {
+      return await auth.handler(
+        new Request(`${loginOrigin}/api/auth${path}`, {
+          ...init,
+          headers: { ...init?.headers, "x-occ-client-ip": ip },
+        }),
+      );
+    } catch (error) {
+      errors.push(error);
+      return Response.json({ message: "Authentication dependency unavailable." }, { status: 503 });
+    }
+  };
   return {
     auth,
     db,
