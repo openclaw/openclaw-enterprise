@@ -17,6 +17,7 @@ import {
   recordLayoutShifts,
   takeLayoutShifts,
   trackSettledFetches,
+  shortId,
   waitForEnabled,
   waitForIdleFetches,
 } from "./console-agents-browser-helpers.mjs";
@@ -38,6 +39,7 @@ import {
   requestedVersionUnavailable,
   stopRefused,
   NEW_VERSIONS_READ,
+  STOP_UNKNOWN_DEPLOYMENT_CONFIRMATION,
   VERSION_UNAVAILABLE,
 } from "../helpers/refusal-text.mjs";
 
@@ -846,11 +848,7 @@ test("Agent detail says when the current or requested version cannot be read", a
   // The page cannot tell a version it may not read from one that does not exist, so it says
   // either may be true, and does not ask for read "after each deployment" (finding D750).
   const statusLine = page.locator(".agent-status-line");
-  await statusLine
-    .getByText(
-      requestedVersionUnavailable(`${requested.id.slice(0, 12)}…${requested.id.slice(-6)}`),
-    )
-    .waitFor();
+  await statusLine.getByText(requestedVersionUnavailable(shortId(requested.id))).waitFor();
   await page.getByRole("heading", { name: "Version not found or not shared" }).waitFor();
   await page.getByText(VERSION_UNAVAILABLE, { exact: true }).waitFor();
 });
@@ -886,15 +884,13 @@ test("Agent detail says an Agent's versions are hidden, not missing, when none i
   // cannot read the deploying version, so Stop stays on the page and the Agents list: the API
   // answers if nothing runs. Its dialog cannot say which, so it names both outcomes instead of
   // describing a gateway that may not exist (finding D691).
-  const unknownOutcome =
-    "This cancels a deployment in progress or, if a version already started, interrupts its runtime gateway and ends any reply in progress. Configuration, versions, Credentials, and workspace data are retained. Deploy a new version to start the Agent again.";
   const stop = page
     .getByRole("region", { name: "Stop Agent", exact: true })
     .getByRole("button", { name: "Stop Agent", exact: true });
   await waitForEnabled(stop);
   await stop.click();
   let dialog = page.getByRole("dialog", { name: "Stop this Agent?" });
-  await dialog.getByText(unknownOutcome, { exact: true }).waitFor();
+  await dialog.getByText(STOP_UNKNOWN_DEPLOYMENT_CONFIRMATION, { exact: true }).waitFor();
   await dialog.getByRole("button", { name: "Cancel" }).click();
   await dialog.waitFor({ state: "hidden" });
   await page.goto(new URL(`/console/agents?namespace=${namespace.id}`, page.url()).href);
@@ -904,7 +900,7 @@ test("Agent detail says an Agent's versions are hidden, not missing, when none i
   await waitForEnabled(rowStop);
   await rowStop.click();
   dialog = page.getByRole("dialog", { name: "Stop Pending history?" });
-  await dialog.getByText(unknownOutcome, { exact: true }).waitFor();
+  await dialog.getByText(STOP_UNKNOWN_DEPLOYMENT_CONFIRMATION, { exact: true }).waitFor();
   await dialog.getByRole("button", { name: "Cancel" }).click();
   await dialog.waitFor({ state: "hidden" });
 

@@ -81,6 +81,7 @@ import {
   DEPENDENCY_UNAVAILABLE,
   GENERIC_DENIAL,
   AGENT_CREATE_INSTALLATION_DENIED,
+  CHANNELS_NEED_DEDICATED,
 } from "../helpers/refusal-text.mjs";
 
 const defaultCodexPreset = JSON.parse(
@@ -2315,9 +2316,7 @@ test("Agent creation withholds Dedicated OpenClaw unless the Installation report
     "Runtime details · Embedded",
   );
   // Slack is simply unavailable for Embedded Agents, not an error.
-  const embeddedChannelNote = page.getByText(
-    "Channels require Dedicated execution. Embedded Agents can only keep channels disabled.",
-  );
+  const embeddedChannelNote = page.getByText(CHANNELS_NEED_DEDICATED);
   await embeddedChannelNote.waitFor();
   assert.equal(await embeddedChannelNote.getAttribute("class"), "hint");
   // Codex keeps Dedicated execution; only native OpenClaw depends on the runtime.
