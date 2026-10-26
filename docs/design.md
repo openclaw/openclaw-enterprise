@@ -3,17 +3,73 @@ title: OpenClaw Enterprise architecture
 authors:
   - Kevin Lin
 created: 2026-07-08
-last_updated: 2026-10-03
+last_updated: 2026-10-26
+human_verified: true
 ---
 
 # OpenClaw Enterprise architecture
+
+<a id="architecture"></a>
+<a id="system-overview"></a>
+<a id="summary"></a>
+<a id="motivation"></a>
+<a id="goals"></a>
+<a id="proposal"></a>
+<a id="platform-resources"></a>
+
+## Overview
 
 OpenClaw Enterprise (OCE) provides a multi-tenant control plane for configuring,
 deploying, and operating Agents. OpenClaw Control Plane (OCC) owns desired state,
 authorization, and resource lifecycles. Installation-selected Drivers turn that
 state into infrastructure and runtime operations.
 
-## Implementation status
+See [OpenClaw Enterprise concepts](guides/concepts.md) for detailed explanations
+of Installations, Namespaces, Agents, Harnesses, configuration, and identity.
+
+The diagram shows the target architecture. **Tool Gateway, Agent Identity,
+Model Registry, Router, and the shared context layer are planned additions.**
+Dashed boxes labeled “Planned” and dashed arrows identify these additions and
+their pending connections. Solid arrows show implemented relationships, subject
+to the [implementation status](#implementation-status) and Driver limits below.
+
+![OCE target architecture: control plane on the left, data plane on the right, and shared context and observability layers below. Dashed components and connections are planned.](assets/oce-architecture.svg)
+
+The planned Tool Gateway and Agent Identity components are distinct from the
+per-Agent OpenClaw gateways, ServicePrincipals, and Kubernetes identities that
+exist today. The Sandbox boundary depends on the selected Compute and Sandbox
+Drivers. The shared context layer will cover knowledge retrieval and grounding,
+session history, and long-term memory. Metrics, logs, and audit evidence cover
+implemented paths today; application tracing remains planned. See
+[observability](guides/observability.md) for current signal coverage. Coverage of
+planned services will depend on their implementation.
+
+<a id="system-model"></a>
+
+## Details
+
+Each deployment owns exactly one server-selected Installation containing isolated
+Namespaces. A Namespace is a logical tenant boundary; it can span more than one
+physical Kubernetes namespace. Each deployed Agent owns its gateway and version
+history. OCC manages multiple single-Agent runtimes rather than making one
+OpenClaw gateway multi-tenant.
+
+The platform supports global Namespace settings. Resource references follow the
+scope and authorization rules of each resource type.
+
+OCC owns platform resources and immutable deployment snapshots. External systems
+retain ownership of infrastructure, provider accounts, credentials, and model
+sources. Drivers operate those systems through interfaces with defined responsibilities; they cannot
+grant themselves authorization or change platform-resource ownership.
+
+<a id="non-goals"></a>
+
+An Agent inheriting its creator's identity is not yet supported. Gateways and
+workloads are runtime components, not an extra execution resource between an
+Agent and its deployment. Detailed APIs, storage schemas, and integration
+protocols belong to their feature references.
+
+### Implementation status
 
 This is the authoritative architecture overview. It describes the implemented
 system and identifies [remaining design work](#remaining-design-work) separately.
@@ -28,114 +84,32 @@ namespace with separate Pods, identities and storage. External access-gateway ad
 token authentication to OCC, and general credential-free model inference remain
 planned. The two-cluster profile is experimental.
 
-<a id="openclaw-as-the-open-enterprise-agent-platform"></a>
-Kubernetes Compute supports [protected execution](reference/credential-sources/protected-inference.md)
-with the selected Credential Proxy and a matching OpenShell Sandbox. Compute verifies
-the current installation before it signs the workload release. Other Compute Drivers
-and readers that cannot interpret the admission refuse it. The bundled OpenShell
-release cannot enforce this path; qualify the exact pair before rollout.
+<a id="current-limitations"></a>
+<a id="near-term-future-work"></a>
 
-<a id="summary"></a>
-<a id="motivation"></a>
-<a id="goals"></a>
-<a id="proposal"></a>
+### Remaining design work
 
-## System model
+These approved requirements are not established by the implemented architecture:
 
-Each deployment owns exactly one server-selected Installation containing isolated
-Namespaces. A Namespace is a logical tenant boundary; it can span more than one
-physical Kubernetes namespace. Each deployed Agent owns its gateway and version
-history. OCC manages multiple single-Agent runtimes rather than making one
-OpenClaw gateway multi-tenant.
+| Area                         | Current boundary and remaining work                                                                                                                                                                                                                                                                                                                    |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Tool Gateway                 | The Tool Gateway component and its tool connections in the target diagram are planned additions. Existing per-Agent OpenClaw gateways remain part of the supported runtime.                                                                                                                                                                            |
+| Shared context               | The shared layer for knowledge retrieval, grounding, session history, and long-term memory is planned.                                                                                                                                                                                                                                                 |
+| External admission           | Sessions and service keys authenticate to OCC. The separate OpenClaw Access Gateway (OAG) and trusted-ingress admission protocol remain planned. See [access design](design/access.md).                                                                                                                                                                |
+| Agent Identity               | The Agent Identity component is planned. Agents own ServicePrincipals and may receive projected Kubernetes tokens. OCC token verification, identity exchange, and workload API authentication remain deferred. See [authorization](reference/authorization.md#principals).                                                                             |
+| Model mediation              | Model Registry and Router are planned additions. Harnesses receive scoped model credentials. General `InferenceDriver` mediation, restricted model egress, and credential-free execution remain planned; OpenShell credential substitution is not a supported deployment substitute. See [runtime isolation](reference/security/runtime-isolation.md). |
+| Runtime trust                | Separate placement is implemented; general mutually authenticated, workload-bound transport and complete two-cluster runtime acceptance remain pending. See [Kubernetes Compute](reference/drivers/kubernetes-compute.md).                                                                                                                             |
+| Resource and policy coverage | Agent-owned SandboxPolicy network additions are implemented. General shared containment policies, the published Harness and Channel resource model, and Restrictions across every integration remain beyond the current contracts. See [resource requirements](design/resources.md) and [Sandbox contract](reference/drivers/sandbox.md).              |
 
-OCC owns platform resources and immutable deployment snapshots. External systems
-retain ownership of infrastructure, provider accounts, credentials, and model
-sources. Drivers operate those systems through interfaces with defined responsibilities; they cannot
-grant themselves authorization or change platform-resource ownership.
+Agent and Plugin Directories, plugin invocation approval workflows, broader audit
+export and retention, Budgets, and Routers remain future work. Existing logging
+and metrics integrations have their own [operational contracts](guides/observability.md).
 
-<a id="non-goals"></a>
-
-The platform does not support multiple Installations in one deployment or
-cross-Namespace resource references. An Agent inheriting its creator's identity
-is not yet supported. Gateways and workloads are runtime components, not an extra execution
-resource between an Agent and its deployment. Detailed APIs, storage schemas,
-and integration protocols belong to their feature references.
-
-<a id="architecture"></a>
-
-## System overview
+## Control Plane
 
 The API serves the console and authorized resource operations. An independent
 worker claims durable work and invokes selected Drivers. PostgreSQL stores
 platform state, IAM policy, controller work, and audit evidence.
-
-The diagram shows implemented single-cluster Kubernetes relationships. Each Agent chooses
-embedded or dedicated execution. Optional and experimental integrations are
-described below rather than implied by the diagram.
-
-```mermaid
----
-config:
-  theme: base
-  htmlLabels: true
-  themeVariables:
-    fontSize: 15px
-    lineColor: "#8b949e"
-    edgeLabelBackground: "#ffffff"
-  flowchart:
-    nodeSpacing: 30
-    rankSpacing: 40
-    subGraphTitleMargin:
-      top: 8
-      bottom: 16
----
-flowchart TB
-    USER["<b>Users and automation</b><br/>Sessions or service keys"]
-    subgraph OCC["OpenClaw Control Plane"]
-        API["<b>API and console</b><br/>Authentication and admission"]
-        IAM["<b>IAM Driver</b><br/>Exact-resource authorization"]
-        DB[("<b>PostgreSQL</b><br/>Resources, work and audit")]
-        WORKER["<b>Controller worker</b><br/>Reconciliation"]
-        COMPUTE["<b>Compute Driver</b><br/>Runtime lifecycle"]
-    end
-    subgraph TENANT["Tenant namespace"]
-        GATEWAY["<b>Dedicated Gateway</b><br/>Private state and identity"]
-        HARNESS["<b>Dedicated Harness</b><br/>Workspace and model credential"]
-        EMBEDDED["<b>Embedded OpenClaw</b><br/>Gateway and Harness"]
-    end
-    USER -->|"requests"| API
-    API -->|"authorizes"| IAM
-    API -->|"commits state, work and audit"| DB
-    WORKER -->|"claims work and commits results"| DB
-    WORKER -->|"reauthorizes"| IAM
-    WORKER -->|"reconciles"| COMPUTE
-    COMPUTE -->|"manages"| GATEWAY
-    COMPUTE -->|"manages"| HARNESS
-    COMPUTE -->|"manages"| EMBEDDED
-    GATEWAY <-->|"Agent traffic and scoped file operations"| HARNESS
-    classDef platform fill:#e8eef5,stroke:#7d91a8,color:#172b42,stroke-width:1px
-    classDef runtime fill:#e4efeb,stroke:#78968b,color:#19372d,stroke-width:1px
-    classDef external fill:#eee9f2,stroke:#95859f,color:#35263f,stroke-width:1px
-    class API,IAM,DB,WORKER,COMPUTE platform
-    class GATEWAY,HARNESS,EMBEDDED runtime
-    class USER external
-    style OCC fill:#fafafa,stroke:#b7bec6,stroke-width:1px
-    style TENANT fill:#fafafa,stroke:#b7bec6,stroke-width:1px
-```
-
-## Platform resources
-
-Namespaces contain Configurations, ServiceAccounts, Secrets, CredentialSources,
-Presets, and Agents. Each Agent owns immutable AgentRevisions. References must
-stay within their admitted scope. Optional Agent-owned plugin selections are
-saved in Agent revisions and resolved by the selected PluginDriver at startup.
-
-[Concepts](guides/concepts.md) explains these resources.
-[Resources and tenant boundaries](design/resources.md) records their design
-requirements, including planned resources that are not public API capabilities.
-[Topics](guides/topics/README.md) links to current feature contracts.
-
-## Control plane
 
 The API authenticates human sessions and non-Agent service keys, resolves an
 explicitly provisioned identity, and authorizes exact resource operations.
@@ -165,6 +139,27 @@ output. See [startup](flows/platform-startup.md) and
 | `packages/audit`     | Audit events and sensitive-value sanitization.                |
 
 [Repository layout](layout.md) owns directory placement and package boundaries.
+
+<a id="agent-execution"></a>
+
+## Data Plane
+
+The data plane runs Agent conversations and tool execution. Each deployed
+Agent owns a gateway that receives messages and manages client connections.
+Its Harness executes model turns and tools against the Agent's workspace and
+selected credentials.
+
+Embedded OpenClaw runs its gateway and Harness together in the data plane.
+Dedicated Kubernetes execution uses separate Gateway and Harness Pods, identities
+and storage within one tenant namespace in a single cluster. The Gateway uses scoped remote file operations rather than
+mounting the Harness workspace. Only the model-executing consumer receives its
+model credential; a dedicated Gateway does not.
+
+<a id="agent-provisioning-sequence"></a>
+
+See [Harness execution](reference/harness-execution.md) for runtime behavior and
+limits, and [Agent deployment](design/workloads.md#current-provisioning-sequence)
+for the provisioning sequence.
 
 ## Drivers
 
@@ -197,49 +192,16 @@ Other Drivers participate through
 [Compute lifecycle hooks](flows/compute-driver-lifecycle-hooks.md) with defined
 startup and cleanup operations.
 
-## Agent execution
-
-Embedded OpenClaw runs its gateway and Harness together in the data plane.
-Dedicated Kubernetes execution uses separate Gateway and Harness Pods, identities
-and storage within one tenant namespace in a single cluster. The Gateway uses scoped remote file operations rather than
-mounting the Harness workspace. Only the model-executing consumer receives its
-model credential; a dedicated Gateway does not.
-
-Operators must configure disjoint trusted Gateway and untrusted Harness node
-pools. Sharing a namespace trusts its workload managers with both roles; credential
-mounts and NetworkPolicies do not restrict a namespace administrator. The default
-placement uses one Kubernetes cluster; a second execution cluster is an
-[experimental profile](testing/kubernetes.md#two-cluster-validation), with incomplete runtime
-acceptance. See [Harness execution](reference/harness-execution.md) and
-[Kubernetes Compute](reference/drivers/kubernetes-compute.md).
-
-### Agent provisioning sequence
-
-Creating an Agent records a definition. Deploying it admits an immutable
-AgentRevision for asynchronous provisioning. The successful path is:
-
-1. Authorize and create the Namespace; queue its infrastructure work.
-2. The worker reauthorizes the caller, ensures backing infrastructure through
-   Compute, and records readiness.
-3. Authorize deployment and each protected reference; snapshot admitted inputs
-   in an Agent revision and queue its work.
-4. The worker reauthorizes, prepares the exact Agent runtime, and checks readiness.
-5. Activate through the Driver's commit ordering, record the selected version
-   under the live work claim, and retire the predecessor.
-
-Editing a draft does not change the running version. Admission does not prove
-runtime readiness. Replacement may interrupt service; embedded replacement can
-stop the predecessor before replacement credentials are validated. See
-[authentication during replacement](reference/harness-execution.md#harness-authentication),
-[reconciliation](reference/controller/reconciliation.md), and the
-[detailed sequence](design/workloads.md#current-provisioning-sequence).
-
-## Security boundaries
+## Security Boundaries
 
 IAM checks exact resources and protected references. Agent-scoped identities,
 Namespace isolation, and explicit Secret bindings constrain access. Secret
 values stay out of OCC resource responses, Agent revisions, and audit records.
 Required authorization or audit failures block mutations.
+
+Operators must configure disjoint trusted Gateway and untrusted Harness node
+pools. Sharing a namespace trusts its workload managers with both roles; credential
+mounts and NetworkPolicies do not restrict a namespace administrator.
 
 Kubernetes uses restricted Pod security, scoped ServiceAccounts, and
 NetworkPolicies. Controller credentials remain trusted within their granted
@@ -248,6 +210,14 @@ Model credentials currently reach the executing Harness, and same-cluster
 Codex transport uses capability-token `ws://`, not mutually authenticated TLS.
 [Security](reference/security.md) and
 [runtime isolation](reference/security/runtime-isolation.md) own these limits.
+
+<a id="openclaw-as-the-open-enterprise-agent-platform"></a>
+
+Kubernetes Compute supports [protected execution](reference/credential-sources/protected-inference.md)
+with the selected Credential Proxy and a matching OpenShell Sandbox. Compute verifies
+the current installation before it signs the workload release. Other Compute Drivers
+and readers that cannot interpret the admission refuse it. The bundled OpenShell
+release cannot enforce this path; qualify the exact pair before rollout.
 
 ### Native admin pilot exception
 
@@ -261,7 +231,14 @@ Configuration and immutable AgentRevision records remain authoritative for
 managed deployments. Native edits may diverge; OCC neither imports them nor
 promises to reset persistent gateway state on redeployment.
 
-## Deployment modes
+<a id="deployment-modes"></a>
+
+## Deployment
+
+The default placement uses one Kubernetes cluster; a second execution cluster is an
+[experimental profile](testing/kubernetes.md#two-cluster-validation), with incomplete runtime
+acceptance. See [Harness execution](reference/harness-execution.md) and
+[Kubernetes Compute](reference/drivers/kubernetes-compute.md).
 
 - **Local Kubernetes:** API, worker, PostgreSQL, and Agent workloads run in an
   owned k3d cluster hosted by Docker or Podman. Start with [Local Setup](guides/quickstart.md).
@@ -275,26 +252,7 @@ promises to reset persistent gateway state on redeployment.
   Host networking and runtime credentials remain the operator's responsibility;
   see [SSH Compute](reference/drivers/ssh-compute.md).
 
-<a id="current-limitations"></a>
-<a id="near-term-future-work"></a>
-
-## Remaining design work
-
-These approved requirements are not established by the implemented architecture:
-
-| Area                         | Current boundary and remaining work                                                                                                                                                                                                                                                                                                       |
-| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| External admission           | Sessions and service keys authenticate to OCC. The separate OpenClaw Access Gateway (OAG) and trusted-ingress admission protocol remain planned. See [access design](design/access.md).                                                                                                                                                   |
-| Workload identity            | Agents own ServicePrincipals and may receive projected Kubernetes tokens. OCC token verification, identity exchange, and workload API authentication remain deferred. See [authorization](reference/authorization.md#principals).                                                                                                         |
-| Model mediation              | Harnesses receive scoped model credentials. General `InferenceDriver` mediation, restricted model egress, and credential-free execution remain planned; OpenShell credential substitution is not a supported deployment substitute. See [runtime isolation](reference/security/runtime-isolation.md).                                     |
-| Runtime trust                | Separate placement is implemented; general mutually authenticated, workload-bound transport and complete two-cluster runtime acceptance remain pending. See [Kubernetes Compute](reference/drivers/kubernetes-compute.md).                                                                                                                |
-| Resource and policy coverage | Agent-owned SandboxPolicy network additions are implemented. General shared containment policies, the published Harness and Channel resource model, and Restrictions across every integration remain beyond the current contracts. See [resource requirements](design/resources.md) and [Sandbox contract](reference/drivers/sandbox.md). |
-
-Agent and Plugin Directories, plugin invocation approval workflows, broader audit
-export and retention, Budgets, and Routers remain future work. Existing logging
-and metrics integrations have their own [operational contracts](guides/observability.md).
-
-## Design chapters
+## Design Chapters
 
 These chapters preserve the approved ownership and security requirements, with
 explicit implementation limits. They do not turn planned contracts into
@@ -306,7 +264,7 @@ supported capabilities:
 - [Drivers and Backends](design/drivers.md)
 - [Platform safeguards](design/safeguards.md)
 
-## Related documentation
+## Related Documentation
 
 - [Documentation map](README.md)
 - [Feature topics](guides/topics/README.md)

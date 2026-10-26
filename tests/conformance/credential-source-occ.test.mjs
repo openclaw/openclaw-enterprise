@@ -23,10 +23,13 @@ import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { grantRole } from "../helpers/iam-grants.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
+  CREDENTIAL_SOURCE_DRIVER_CHANGED,
   credentialSourceFieldRequired,
   credentialSourceFieldUnknown,
   registrationFenceRetry,
   RESOURCE_NOT_FOUND,
+  WITHDRAWAL_NO_ACTIVE_VERSION,
+  WITHDRAWAL_NOT_FOUND,
   WITHDRAWAL_SOURCE_NOT_USED,
 } from "../helpers/refusal-text.mjs";
 import { assertSameAnswer, refusedAnswer } from "../helpers/refusal-answers.mjs";
@@ -1830,6 +1833,11 @@ test("withdrawal is recorded for the active revision and queued once, and the re
     controller.withdrawAgentCredentialSource(administrator, request),
     ResourceConflictError,
   );
+  // Its read says why there is nothing to read rather than a bare 404 (finding D762).
+  assert.deepEqual(
+    await refusedAnswer(() => controller.readAgentCredentialWithdrawal(administrator, request)),
+    { status: 404, code: "NOT_FOUND", message: WITHDRAWAL_NO_ACTIVE_VERSION },
+  );
   const revision = await controller.deployAgent(
     administrator,
     { namespaceId: namespace.id, agentId: agent.id },
@@ -1884,6 +1892,14 @@ test("withdrawal is recorded for the active revision and queued once, and the re
         controller.withdrawAgentCredentialSource(administrator, { ...request, credentialSourceId }),
       ),
       { status: 409, code: "RESOURCE_CONFLICT", message: WITHDRAWAL_SOURCE_NOT_USED },
+    );
+    // The read of a withdrawal the active version lacks names that, the same for both IDs
+    // (finding D762).
+    assert.deepEqual(
+      await refusedAnswer(() =>
+        controller.readAgentCredentialWithdrawal(administrator, { ...request, credentialSourceId }),
+      ),
+      { status: 404, code: "NOT_FOUND", message: WITHDRAWAL_NOT_FOUND },
     );
   }
   // A withdrawn source stays referenced by the active revision until a redeploy replaces it,
@@ -3301,7 +3317,7 @@ test("a source type the gateway stops offering is a 409 naming the fix, after th
         code: "RESOURCE_CONFLICT",
         // Fixed text that names the Installation setting and where it is documented.
         message:
-          "The selected Credential Gateway does not offer this credential source type. An administrator must enable it, for example toolBinaries for OpenShell bearer-token; see https://docs-enterprise.openclaw.org/reference/drivers/openshell-credential-gateway/",
+          "The Credential Gateway does not offer this credential source type. An Installation administrator must enable it, for example toolBinaries for OpenShell bearer-token; see https://docs-enterprise.openclaw.org/reference/drivers/openshell-credential-gateway/",
       },
     );
     return true;
@@ -3398,7 +3414,7 @@ test("after a Credential Gateway change, every path refuses an old source with o
       {
         status: 503,
         code: "DEPENDENCY_UNAVAILABLE",
-        message: new CredentialSourceDriverError().message,
+        message: CREDENTIAL_SOURCE_DRIVER_CHANGED,
       },
     );
     assert.doesNotMatch(message, /cs_|credential-gateway-/);

@@ -165,7 +165,7 @@ export function createDeviceLogin({
       (busy
         ? "Checking Codex login…"
         : unconfirmed
-          ? "Sign-in may have started, but the Console could not confirm it. Do not start another sign-in until an administrator investigates the pending attempt."
+          ? "Sign-in may have started, but the Console could not confirm it. Do not start another sign-in until an Installation administrator investigates the pending attempt."
           : challenge?.status === "ready"
             ? "ChatGPT login ready. Clearing this selection leaves the saved credential source available."
             : challenge

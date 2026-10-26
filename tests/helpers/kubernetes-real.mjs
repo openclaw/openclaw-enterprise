@@ -29,7 +29,7 @@ export function diagnosticDeadlinePassed() {
   return diagnosticDeadline.getStore()?.aborted === true;
 }
 
-async function kubectlFor(selection, ...args) {
+async function kubectlFor(selection, args, options) {
   // Inside a failure diagnostic, kubectl stops at its deadline (finding 1557).
   const signal = diagnosticDeadline.getStore();
   signal?.throwIfAborted();
@@ -39,6 +39,7 @@ async function kubectlFor(selection, ...args) {
   }
   const { stdout } = await execute("kubectl", kubectlArguments(selection, args), {
     maxBuffer: 4 * 1024 * 1024,
+    ...options,
     signal,
   });
   return stdout;
@@ -632,7 +633,7 @@ export function inlineProbeCommand(source, ...probeArguments) {
 
 export function createKubernetesClient({
   selection,
-  kubectl = (...args) => kubectlFor(selection, ...args),
+  kubectl = (...args) => kubectlFor(selection, args),
   waitTimeoutMs = 240_000,
   waitIntervalMs = 750,
 }) {
@@ -692,8 +693,12 @@ export async function validateExplicitK3dLoopbackContext(selection) {
     "OCC_TEST_KUBERNETES_KUBECONFIG must explicitly select disposable k3d.",
   );
   assert.match(kubernetesContext ?? "", /^k3d-/, "a dedicated k3d-* context is required");
+  // Flattening reads local files, where kubectl's API request timeout does not apply.
   const configuration = JSON.parse(
-    await kubectlFor(selection, "config", "view", "--minify", "--flatten", "-o", "json"),
+    await kubectlFor(selection, ["config", "view", "--minify", "--flatten", "-o", "json"], {
+      timeout: 30_000,
+      killSignal: "SIGKILL",
+    }),
   );
   assert.equal(configuration.contexts?.length, 1);
   assert.equal(configuration.contexts[0].name, kubernetesContext);

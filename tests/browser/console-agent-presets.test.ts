@@ -885,7 +885,7 @@ test("Runtime-auth Presets are refused before anything is saved where Compute re
   );
   assert.equal(preset.status, 201);
   const refusal =
-    "This Preset's operator-managed credentials need a Compute Driver that supplies them. Agent setting harnessAuth.method must be api_key for embedded OpenClaw on Kubernetes Compute. Ask an administrator to change the Preset's harnessAuth or the Compute Driver, or start without a Preset.";
+    "This Preset's operator-managed credentials need a Compute Driver that supplies them. Agent setting harnessAuth.method must be api_key for embedded OpenClaw on Kubernetes Compute. Ask an Installation administrator to change the Preset's harnessAuth or the Compute Driver, or start without a Preset.";
   const validatePath = `/namespaces/${namespace.id}/agents/validate`;
   const createButton = (page: Page) =>
     page.getByRole("button", { name: "Create Agent", exact: true });

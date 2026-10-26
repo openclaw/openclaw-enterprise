@@ -266,10 +266,30 @@ export async function qualifyIsolation(t, { serviceImage, clientImage }) {
     ]);
     await waitForPath(join(control, "control.sock"));
 
+    async function containerState(name, since) {
+      // Docker state only: never the container's output or arguments, which can carry credentials.
+      const offset = (time) =>
+        time && !time.startsWith("0001-") ? `+${Date.parse(time) - since} ms` : "never";
+      try {
+        const inspected = await runCommand("docker", [
+          "inspect",
+          "--type",
+          "container",
+          "--format",
+          "{{json .State}}",
+          name,
+        ]);
+        const state = JSON.parse(inspected.stdout);
+        return `container ${state.Status}, started ${offset(state.StartedAt)}, finished ${offset(state.FinishedAt)}, exit ${state.ExitCode}, oom ${state.OOMKilled}`;
+      } catch {
+        return "container state unavailable";
+      }
+    }
     async function operator(operation, args) {
       // Only the trusted operator mounts the parent holding all sessions.
       work.check();
       created.add(names.operator);
+      const called = Date.now();
       const result = await docker([
         "run",
         "--name",
@@ -288,7 +308,15 @@ export async function qualifyIsolation(t, { serviceImage, clientImage }) {
         "--socket",
         "/run/repository-control/control.sock",
         ...args,
-      ]);
+      ]).catch(async (error) => {
+        // Finding 2655: one CI run timed out here after 30 s; the step normally takes under 2 s. Name the step
+        // and the container's Docker state, so the next failure shows whether the container
+        // never started, kept running or exited while `docker run` stayed attached.
+        throw new Error(
+          `operator ${operation} ${error.message} after ${Date.now() - called} ms; ${await containerState(names.operator, called)}`,
+          { cause: error },
+        );
+      });
       clientOutputs.push(result.stdout, result.stderr);
       await docker(["rm", names.operator]);
       created.delete(names.operator);

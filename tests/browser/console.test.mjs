@@ -1322,6 +1322,12 @@ test("console retained views clear after session expiry and exact Agent denial",
     .waitFor();
   // Retry would repeat the refusal; the header's Refresh checks access again (finding 2549).
   assert.equal(await page.locator(".state-panel").getByRole("button").count(), 0);
+  // The request ID is kept for whoever traces the denial, behind a disclosure, so it is not read
+  // as part of the reason (finding D770).
+  const deniedPanel = page.locator(".state-panel");
+  assert.doesNotMatch(await deniedPanel.innerText(), /Request ID/);
+  await deniedPanel.getByText("Request details", { exact: true }).click();
+  assert.match(await deniedPanel.locator("details .request-id").innerText(), /^Request ID: \S+$/);
   await expectNoText(page, /Configuration draft|Selected revision/, () => waitForIdleFetches(page));
 });
 
@@ -1533,7 +1539,7 @@ test("Google sign-in accepts only a Google authorization URL and confirms throug
 const GOOGLE_EXCHANGE_REFUSED =
   "Could not finish signing in with Google. The sign-in in this tab did not complete in time, or another sign-in replaced it. Select Continue with Google to start again.";
 const GOOGLE_PROVIDER_GONE =
-  "Could not finish signing in with Google. Google sign-in is no longer available on this Installation. Use another sign-in method, or ask an administrator.";
+  "Could not finish signing in with Google. Google sign-in is no longer available on this Installation. Use another sign-in method, or ask an Installation administrator.";
 const UNTRUSTED_ORIGIN_SIGN_IN =
   "Sign-in was refused because this page was not opened from the console's configured address. Open the console from its configured URL and sign in there. If you did, ask an operator to check the console address setting (OCC_AUTH_BASE_URL) and any proxy in front of it.";
 
@@ -1698,7 +1704,7 @@ test("OIDC sign-in uses the discovered label and accepts only the discovered end
   assert.equal(refused.status(), 403);
   await page
     .getByText(
-      "Could not finish signing in with Acme SSO. Acme SSO sign-in is no longer available on this Installation. Use another sign-in method, or ask an administrator.",
+      "Could not finish signing in with Acme SSO. Acme SSO sign-in is no longer available on this Installation. Use another sign-in method, or ask an Installation administrator.",
       { exact: true },
     )
     .waitFor();
@@ -1733,18 +1739,18 @@ test("GitHub allowlist refusals tell the person why, and other reasons stay gene
   const cases = [
     [
       "membership",
-      "Your GitHub account is not a member of an organization or team allowed to sign in here. If you were invited, accept the invitation on GitHub and try again; otherwise ask an administrator for access or use your password.",
-      "Your GitHub account is not a member of an organization or team allowed to sign in here. If you were invited, accept the invitation on GitHub and try again; otherwise ask an administrator for access.",
+      "Your GitHub account is not a member of an organization or team allowed to sign in here. If you were invited, accept the invitation on GitHub and try again; otherwise ask an Installation administrator for access or use your password.",
+      "Your GitHub account is not a member of an organization or team allowed to sign in here. If you were invited, accept the invitation on GitHub and try again; otherwise ask an Installation administrator for access.",
     ],
     [
       "membership-unavailable",
       "Could not check your GitHub organization membership. Try again later or use your password.",
-      "Could not check your GitHub organization membership. Try again later; if this keeps happening, ask an administrator.",
+      "Could not check your GitHub organization membership. Try again later; if this keeps happening, ask an Installation administrator.",
     ],
     [
       "toString",
       "Could not sign in with GitHub. Try again or use your password.",
-      "Could not sign in with GitHub. Try again, or ask an administrator to attach your GitHub identity to your account.",
+      "Could not sign in with GitHub. Try again, or ask an Installation administrator to attach your GitHub identity to your account.",
     ],
   ];
   for (const [reason, withPassword, recoveryOnly] of cases) {
@@ -1843,7 +1849,7 @@ test("a provider outage says sign-in is unavailable, not to get attached", async
       [true, `${label} sign-in is unavailable right now. Try again later or use your password.`],
       [
         false,
-        `${label} sign-in is unavailable right now. Try again later. If you are an administrator, use Recovery sign-in.`,
+        `${label} sign-in is unavailable right now. Try again later. If you are an Installation administrator, use Recovery sign-in.`,
       ],
     ]) {
       password = available;
@@ -1896,7 +1902,7 @@ test("recovery-only password sign-in keeps the form behind Recovery sign-in", as
   // Without a password to fall back on, the provider error points to an administrator.
   await page
     .getByText(
-      "Could not sign in with GitHub. Try again, or ask an administrator to attach your GitHub identity to your account.",
+      "Could not sign in with GitHub. Try again, or ask an Installation administrator to attach your GitHub identity to your account.",
     )
     .waitFor();
   assert.equal(await page.getByLabel("Password").isVisible(), false);

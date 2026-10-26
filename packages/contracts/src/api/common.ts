@@ -169,7 +169,7 @@ export const ServiceAccountDeleteQuery = Type.Object(
     force: Type.Optional(
       Type.Union([Type.Literal("true"), Type.Literal("false")], {
         description:
-          "`true` deletes an account whose issued access token no ChatGPT Backend can revoke, and leaves the token for an administrator to revoke at the provider. With a ChatGPT Backend configured it is ignored and the token is revoked as usual.",
+          "`true` deletes an account whose issued access token no ChatGPT Backend can revoke, and leaves the token for a ChatGPT workspace administrator to revoke at the provider. With a ChatGPT Backend configured it is ignored and the token is revoked as usual.",
       }),
     ),
   },

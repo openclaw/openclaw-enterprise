@@ -1959,7 +1959,7 @@ test("the Gateway hint skips a rollout's old Harness Pod and covers a Harness wi
 
 // The permission answer already says the reader lacks operate and log text, so neither the status
 // read nor the log text read, each an audited denial, is sent (findings 2454, D758); the strip and
-// the log pane still say what each needs.
+// the log pane each say what they need.
 test("a reader without operate learns what log text needs and is not asked for status", async (t) => {
   const { fixture, namespace, agent, revisionId } = await logsFixture(t);
   const { account: reader } = await logsMember(fixture, namespace, "runtime-reader", ["read"]);
@@ -1970,6 +1970,8 @@ test("a reader without operate learns what log text needs and is not asked for s
 
   await page.getByText(RUNTIME_STATUS_DENIED).waitFor();
   await page.locator(".log-error").getByText(LOG_TEXT_DENIED, { exact: true }).waitFor();
+  // One refusal, one sentence: only the log pane says what log text needs (finding D763).
+  assert.equal(await page.getByText(/read_logs/).count(), 1);
   const statusReads = () =>
     requests.filter(({ path }) => path.endsWith(`/deployments/${revisionId}/runtime`)).length;
   await settlePageRequests(page);
@@ -1985,7 +1987,7 @@ test("a reader without operate learns what log text needs and is not asked for s
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await page.getByRole("tab", { name: "Logs", exact: true }).click();
   // The reopened tab shows this text only after its status decision, so a read would have started.
-  await page.getByText(/Log text needs Agent read_logs/).waitFor();
+  await page.getByText(RUNTIME_STATUS_DENIED).waitFor();
   await settlePageRequests(page);
   assert.equal(statusReads(), 0);
   assert.equal(logRequests(requests, revisionId).length, 0);

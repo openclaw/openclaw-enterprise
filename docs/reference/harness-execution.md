@@ -318,11 +318,7 @@ workflow used by dedicated Codex; no startup override is required.
 A custom image can declare
 [`runtime.nativeWorkerSupport`](configuration.md#installation-startup-configuration). Without native-worker support, deploy and provisioning answer
 `400 INVALID_REQUEST`, the Console withholds Dedicated OpenClaw, and retry
-rechecks support. Deployment requires the qualifying SandboxDriver,
-admitted authentication, and supported projections above. Compute places model
-metadata and the credential reference only in the native node's configuration;
-the Gateway does not receive that inference credential. A missing model or disconnected node
-fails the turn without Gateway inference fallback.
+rechecks support.
 
 ## Related
 

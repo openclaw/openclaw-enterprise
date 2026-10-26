@@ -9,6 +9,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import {
   NoActiveAgentRevisionError,
+  QualifiedAuthorizationDeniedError,
   ResourceConflictError,
   type AuthorizationDeniedError,
   type OpenClawController,
@@ -877,6 +878,12 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       actorId: context.actorId,
       namespaceId,
       agentId,
+    }).catch((error: unknown) => {
+      // With native admin off, Agent administer alone would not open it, so the caller's denial
+      // says so (finding D762). The setting is the Installation's, the same for every Agent.
+      throw options.nativeAdmin?.enabled === true
+        ? error
+        : QualifiedAuthorizationDeniedError.qualify(error, "native_admin_off");
     });
     reply.send({
       data: nativeAdminAvailabilityData(availability),

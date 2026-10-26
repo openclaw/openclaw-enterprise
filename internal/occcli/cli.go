@@ -666,7 +666,7 @@ func (app *application) serviceAccountCommand() *cobra.Command {
 		Short: "Delete an unreferenced ServiceAccount",
 		Long: "Delete an unreferenced ServiceAccount, revoking its issued access token.\n" +
 			"--force also deletes an account whose token no ChatGPT Backend can revoke, because\n" +
-			"the Backend is gone; an administrator must then revoke the token at the provider.\n" +
+			"the Backend is gone; a ChatGPT workspace administrator must then revoke it at the provider.\n" +
 			"With a ChatGPT Backend configured, --force changes nothing: the token is revoked.",
 		Args: idArgs(serviceAccountIDArg),
 		RunE: func(command *cobra.Command, args []string) error {

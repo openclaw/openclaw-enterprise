@@ -1018,7 +1018,7 @@ test("Dedicated Agent provisioning names a Namespace that is not ready", async (
 const DEDICATED_SANDBOX_REFUSAL =
   "Dedicated OpenClaw requires a provisioning SandboxDriver with networking, filesystem, and process containment.";
 const NO_OPENCLAW_MODE =
-  "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and it cannot run Dedicated OpenClaw. Choose OpenAI with the Codex harness, or ask an administrator to select a Sandbox Driver that can provision dedicated OpenClaw, with a runtime that has native worker support.";
+  "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and it cannot run Dedicated OpenClaw. Choose OpenAI with the Codex harness, or ask an Installation administrator to select a Sandbox Driver that can provision dedicated OpenClaw, with a runtime that has native worker support.";
 
 // Saves a Preset whose template holds `agent` and the Configuration nativeValues(`marker`).
 async function savePreset(fixture, namespace, name, agent, marker) {
@@ -1116,7 +1116,7 @@ test("Without a provisioning Sandbox Driver, Create Agent withholds Dedicated Op
   await alert.waitFor();
   assert.equal(
     await alert.textContent(),
-    "Dedicated OpenClaw is unavailable: this installation selects no Sandbox Driver. Choose the Codex harness or Embedded execution, or ask an administrator to select a Sandbox Driver that can provision dedicated OpenClaw.",
+    "Dedicated OpenClaw is unavailable: this installation selects no Sandbox Driver. Choose the Codex harness or Embedded execution, or ask an Installation administrator to select a Sandbox Driver that can provision dedicated OpenClaw.",
   );
   assert.equal(await presetPage.getByLabel("Execution mode").inputValue(), "dedicated");
   assert.match(
@@ -1568,7 +1568,7 @@ test("Create Agent trims placement advice when the Sandbox Driver refuses Embedd
 });
 
 const SANDBOX_DRIVER_OUTAGE =
-  "Agents cannot be created right now: this installation's Sandbox Driver is unavailable. Reload this page to check again, or ask an administrator if it persists.";
+  "Agents cannot be created right now: this installation's Sandbox Driver is unavailable. Reload this page to check again, or ask an Installation administrator if it persists.";
 
 test("During a Sandbox Driver outage, Create Agent says Agents are unavailable for now, not that the driver cannot run OpenClaw", async (t) => {
   // Agent save and deploy answer a retryable 503 for every harness in this state, so the copy must
@@ -1871,7 +1871,7 @@ test("Operator-managed Preset credentials name the Preset when the Installation 
   for (const [openclaw, text] of [
     [
       { executionModes: [] },
-      "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and it cannot run Dedicated OpenClaw. This Preset's operator-managed credentials require OpenClaw. Ask an administrator, or start without a Preset.",
+      "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and it cannot run Dedicated OpenClaw. This Preset's operator-managed credentials require OpenClaw. Ask an Installation administrator, or start without a Preset.",
     ],
     // A setting refusal names the setting as the API words it (finding 2373), but not its "Select
     // Codex" advice: the Preset locks the harness to OpenClaw (finding 2392).
@@ -1883,11 +1883,11 @@ test("Operator-managed Preset credentials name the Preset when the Installation 
             "Dedicated OpenClaw needs example.setting: false in the Sandbox Driver configuration. Select Codex, or ask an operator to set it.",
         },
       },
-      "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and its settings refuse Dedicated OpenClaw. Dedicated OpenClaw needs example.setting: false in the Sandbox Driver configuration. This Preset's operator-managed credentials require OpenClaw. Ask an administrator, or start without a Preset.",
+      "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and its settings refuse Dedicated OpenClaw. Dedicated OpenClaw needs example.setting: false in the Sandbox Driver configuration. This Preset's operator-managed credentials require OpenClaw. Ask an Installation administrator, or start without a Preset.",
     ],
     [
       { executionModes: ["dedicated"] },
-      "This Preset's operator-managed credentials require Embedded OpenClaw, which this installation refuses because it selects a Sandbox Driver. Ask an administrator, or start without a Preset.",
+      "This Preset's operator-managed credentials require Embedded OpenClaw, which this installation refuses because it selects a Sandbox Driver. Ask an Installation administrator, or start without a Preset.",
     ],
     // An outage needs time, not a different Preset (finding 1624).
     [{ executionModes: [], sandboxDriverUnavailable: true }, SANDBOX_DRIVER_OUTAGE],
@@ -1998,7 +1998,7 @@ test("Operator-managed Preset credentials without a mode keep Embedded when the 
   await alert.waitFor();
   assert.equal(
     await alert.textContent(),
-    "This Preset's operator-managed credentials require Embedded OpenClaw, which this installation refuses because it selects a Sandbox Driver. Ask an administrator, or start without a Preset.",
+    "This Preset's operator-managed credentials require Embedded OpenClaw, which this installation refuses because it selects a Sandbox Driver. Ask an Installation administrator, or start without a Preset.",
   );
   assert.equal(await page.getByLabel("Execution mode").inputValue(), "embedded");
 });

@@ -24,6 +24,7 @@ import {
   SECRET_CREATE_DENIED,
   SECRET_DELETE_DENIED,
   SECRET_LINK_UNLISTED,
+  secretLinkUnlistedAdministrator,
   SECRET_NAME_CONFLICT,
   SECRET_UPDATE_DENIED,
   tooManyRequestsIn,
@@ -149,6 +150,21 @@ test("console Secret creation, replacement, Agent consumers and cleanup use real
     );
   }
   assert.doesNotMatch(JSON.stringify(audit.list()), /synthetic-console-(credential|replacement)/);
+
+  // An administrator's link to a Secret the list leaves out, here the one just deleted, says it
+  // is not in her readable list and asks nothing: she is the administrator the member text
+  // sends readers to (finding D769). A malformed ID is not repeated on the page.
+  for (const [linkedId, shown] of [
+    [secret.id, `Secret ${secret.id}`],
+    ["sec_not-a-secret-id", "such Secret"],
+  ]) {
+    await page.goto(`${fixture.origin}${secretsUrl(namespace)}&secret=${linkedId}`);
+    await page
+      .getByRole("status")
+      .getByText(secretLinkUnlistedAdministrator(shown), { exact: true })
+      .waitFor();
+    assert.equal(await page.getByRole("dialog").count(), 0);
+  }
 });
 
 test("unknown console Secret writes erase entered material and never replay mutations", async (t) => {

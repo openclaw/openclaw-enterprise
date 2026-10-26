@@ -10,6 +10,10 @@ import {
   tenantRequest as request,
 } from "../helpers/tenant-reader-app.mjs";
 import { bindRole } from "../helpers/iam-grants.mjs";
+import {
+  workspaceVersionStarting,
+  workspaceWithoutRunningVersion,
+} from "../helpers/refusal-text.mjs";
 
 const installationId = "ins_4033697e-6397-4cc6-9b04-8ec17af78cf1";
 const publicOrigin = "http://127.0.0.1";
@@ -124,7 +128,9 @@ async function createNamespace(fixture, name) {
   return result.payload.data;
 }
 
-async function createAgent(fixture, namespace, name) {
+// `stage` is how far the Agent gets: "draft" (created, never deployed), "starting" (deploy
+// accepted, no version active yet) or "active" (the default).
+async function createAgent(fixture, namespace, name, { stage = "active" } = {}) {
   const configuration = await request(fixture.app, `/namespaces/${namespace.id}/configurations`, {
     body: { kind: "agent", values: {} },
   });
@@ -164,12 +170,18 @@ async function createAgent(fixture, namespace, name) {
     namespaceId: namespace.id,
     resource: { kind: "secret", id: secret.id },
   });
+  if (stage === "draft") {
+    return { agent: created.payload.data };
+  }
   const deployed = await request(
     fixture.app,
     `/namespaces/${namespace.id}/agents/${created.payload.data.id}/deploy`,
     { method: "POST" },
   );
   assert.equal(deployed.response.status, 202);
+  if (stage === "starting") {
+    return { agent: created.payload.data, revision: deployed.payload.data };
+  }
   await fixture.controller.transact((unit) =>
     unit.agents.compareAndSetActiveRevision(
       namespace.id,
@@ -360,6 +372,70 @@ test("Agent workspace file routes authorize the caller before reporting unconfig
   // An authorized caller still gets 503 for both. The two refusals are the only file audits.
   assertUnavailable(await request(unconfigured, path));
   assertUnavailable(await put(unconfigured, path, { content: "unconfigured\n" }));
+  assert.deepEqual(
+    fileAudits(fixture).map((event) => event.kind),
+    ["authorization_denial", "authorization_denial"],
+  );
+});
+
+// An Agent with no running version has no workspace to reach: a lifecycle state the caller can
+// change, so the answer names it and the next step instead of a retryable 503 (finding D768). It
+// comes after the Agent grant, as the 503 for unconfigured access does (finding 2584).
+test("Agent workspace file routes name an Agent with no running version after its grant", async (context) => {
+  const workspaceFilesAccess = {
+    async read() {
+      throw new Error("an Agent with no running version must not reach workspace file read");
+    },
+    async write() {
+      throw new Error("an Agent with no running version must not reach workspace file write");
+    },
+  };
+  const fixture = await createFixture({ workspaceFilesAccess });
+  const namespace = await createNamespace(fixture, "No running version");
+  const { agent: draft } = await createAgent(fixture, namespace, "Never deployed", {
+    stage: "draft",
+  });
+  const { agent: starting } = await createAgent(fixture, namespace, "Still starting", {
+    stage: "starting",
+  });
+  const session = fixture.session(fixture.tenantAReader);
+  const path = (agent) =>
+    `/namespaces/${namespace.id}/agents/${agent.id}/workspace/files/AGENTS.md`;
+  const assertConflict = (result, message) => {
+    assert.equal(result.response.status, 409);
+    assert.equal(result.payload.error.code, "RESOURCE_CONFLICT");
+    assert.equal(result.payload.error.message, message);
+  };
+
+  // A caller with no grant on the draft gets its refusal, not the draft's state.
+  const denied = await request(fixture.app, path(draft), { session });
+  assert.equal(denied.response.status, 403);
+  assert.equal(denied.payload.error.code, "FORBIDDEN");
+  for (const grant of [...fixture.state.roles, ...fixture.state.bindings]) {
+    if (["role-tenant-a-reader", "binding-tenant-a-reader"].includes(grant.id)) {
+      replaceForCase(context, grant, "namespaceId", namespace.id);
+    }
+  }
+  // With Agent read the reader learns the draft's state; a write still needs operate first.
+  assertConflict(
+    await request(fixture.app, path(draft), { session }),
+    workspaceWithoutRunningVersion(draft.id),
+  );
+  const writeDenied = await put(fixture.app, path(draft), { content: "x\n" }, { session });
+  assert.equal(writeDenied.response.status, 403);
+  // An operator gets the same answer for a write, and one naming the wait for a deployment that
+  // has not activated a version yet.
+  assertConflict(
+    await put(fixture.app, path(draft), { content: "x\n" }),
+    workspaceWithoutRunningVersion(draft.id),
+  );
+  for (const result of [
+    await request(fixture.app, path(starting)),
+    await put(fixture.app, path(starting), { content: "x\n" }),
+  ]) {
+    assertConflict(result, workspaceVersionStarting(starting.id));
+  }
+  // Only the two refused callers are audited: the state answers record no file outcome.
   assert.deepEqual(
     fileAudits(fixture).map((event) => event.kind),
     ["authorization_denial", "authorization_denial"],

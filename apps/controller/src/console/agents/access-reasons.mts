@@ -112,6 +112,12 @@ export const SECRET_DELETE_DENIED = notIncluded("deleting this Secret", "Secret 
 // A link to a Secret the readable list leaves out. The list answers the same for a Secret that
 // does not exist, so the text says either may be true (finding D761).
 export const SECRET_LINK_UNLISTED = `This Secret is not in your readable list: it may not exist, or your access does not include reading it. ${askForGrant("Secret read on it")}`;
+// The same link for an Installation administrator, who is that "Installation administrator": the
+// text asks nothing, and names the linked Secret only when its ID is well formed, so a link
+// cannot put other words on the page (finding D769).
+const SECRET_ID = /^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+export const secretLinkUnlistedForAdministrator = (secretId: string) =>
+  `No ${SECRET_ID.test(secretId) ? `Secret ${secretId}` : "such Secret"} is in your readable list for this Namespace.`;
 export const SECRET_OPERATE_NEEDED = askForGrant("Secret operate on it");
 // Deploying authorizes Secret operate on each Secret the draft binds. A bound Secret the caller
 // may neither read nor operate keeps its name hidden, and the grant to ask for includes read
@@ -137,8 +143,9 @@ export const SANDBOX_POLICY_READ_DENIED = notIncluded(
 // and the CLI name the grant in these words (finding 2599); the page is open, so Agent read is held.
 export const LOG_TEXT_GRANT = "Agent read_logs (or Agent administer)";
 export const LOG_TEXT_DENIED = `Log text requires ${LOG_TEXT_GRANT} on this Agent. ${askAdministratorTo("grant it")}`;
-// Runtime status authorizes Agent operate and read plus AgentRevision read on the version.
-export const RUNTIME_STATUS_DENIED = `Runtime status requires Agent operate on this Agent and AgentRevision read on this version. Log text needs ${LOG_TEXT_GRANT}. ${askForGrant("the access you need")}`;
+// Runtime status authorizes Agent operate and read plus AgentRevision read on the version. The
+// log pane says what log text needs in its own words, so this names only status (finding D763).
+export const RUNTIME_STATUS_DENIED = `Runtime status requires Agent operate on this Agent and AgentRevision read on this version. ${askAdministratorTo("grant them")}`;
 
 // Reading a workspace file authorizes Agent read; saving one and running diagnostics, Agent
 // operate.

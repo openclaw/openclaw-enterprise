@@ -75,9 +75,10 @@ as the reason Dedicated OpenClaw is disabled.
    repositories, and workspace files for supported Dedicated provisioning.
    Provisioning waits for deployment activation or failure, naming the deployment's current wait
    when you can read the deployment.
-   Success opens Agent details. Failure links to the same Agent and version;
-   correct its cause and deploy again through **Deployment activity**. If the
-   first deployment was stopped, no repair is needed before deploying again.
+   Success opens Agent details. If a newer deployment takes over, Create stays open
+   and offers no retry or link. The job identifies only the deployment that ended.
+   For a failed deployment, open the linked Agent and version and follow its recovery
+   guidance. After a Stop, deploy again when ready.
    Ordinary creation saves Configuration first and opens a draft on **Create new version**,
    without a workload. After deployment, use the
    [workspace editor](../console.md#edit-workspace-files). Pending inputs have no
@@ -178,7 +179,8 @@ attempt. Follow [interrupted sign-in recovery](../../guides/deploy/credential-li
 After a lost admission response, **Retry provisioning request** resubmits the same
 request ID and saved Secret references. Retry acknowledged jobs through their URL;
 if refused after an unknown outcome, **Create Agent** resends
-the same request. A refused retry of a failed job shows the API's reason when it names
+the same request. If the result changes or omits a previously observed first deployment
+version, the Console keeps the outcome unknown and offers Retry. A refused retry of a failed job shows the API's reason when it names
 one, such as a deleted Secret; **Create Agent** then submits a new request. Saved
 Secrets are reused, never deleted automatically. After a lost Secret save, check
 existing Namespace Secrets before starting again.
@@ -187,9 +189,9 @@ existing Namespace Secrets before starting again.
 `registering`/`deleting`, requiring source `delete`. Retry removal after the gateway's
 registration safety window if needed. See the [provisioning flow](../../flows/agent-provisioning.md) for the API sequence.
 
-A failed or stopped first deployment, or a Stop before it
-(`PROVISIONING_CANCELLED`), keeps the Agent and its name; provisioning cannot
-retry. Open that Agent and deploy. If it failed for another reason, correct that cause first.
+A failed or stopped first deployment keeps the Agent and its name. Follow the failed
+version's recovery guidance. After a Stop, including a Stop before deployment
+(`PROVISIONING_CANCELLED`), open the Agent and deploy when ready.
 
 If Agent creation is rejected after Configuration saves, correct the ordinary
 zero-binding Agent's editable fields and retry. The retry reuses Configuration
