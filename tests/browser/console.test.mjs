@@ -555,8 +555,10 @@ test("console shows the external observability link only to Installation adminis
   assert.equal(probes, 1);
 });
 
-test("a navigation while the Installation-access probe is answered does not ask again", async (t) => {
-  // The API audits every denied probe, so the Console must not repeat one it already sent.
+// The API audits every denied probe, so the Console must not repeat one it already sent. A
+// navigation's page load first asks the permission answer, then probes: the earlier probe can
+// still be pending at that point, or settle while the permission answer is read.
+async function navigateDuringInstallationAccessProbe(t, { settleFirst }) {
   let answered = 0;
   const fixture = await createConsoleAppFixture(t, {
     observabilityUrl: "https://metrics.example.test/d/operations",
@@ -584,10 +586,19 @@ test("a navigation while the Installation-access probe is answered does not ask 
     });
   });
   const { page } = await newPage(t, fixture);
-  // The permission answer that would rule out administration fails, so the Console probes.
-  await page.route(`${fixture.origin}/namespaces/${namespace.id}/permissions`, (route) =>
-    route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Try again.")),
-  );
+  // The permission answer that would rule out administration fails, so the Console probes. With
+  // settleFirst, the navigation's answer is held until the first probe has settled.
+  let permissionReads = 0;
+  const navigationAsked = deferred();
+  const probeSettled = deferred();
+  await page.route(`${fixture.origin}/namespaces/${namespace.id}/permissions`, async (route) => {
+    permissionReads += 1;
+    if (settleFirst && permissionReads === 2) {
+      navigationAsked.resolve();
+      await probeSettled.promise;
+    }
+    await route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Try again."));
+  });
   // The API has answered (and audited) the probe; its response reaches the page only later.
   const probe = await holdRoute(t, page, "**/observability", (route, response) =>
     route.fulfill({ response }),
@@ -596,11 +607,25 @@ test("a navigation while the Installation-access probe is answered does not ask 
   await probe.waitForRelease();
   await page.getByRole("link", { name: "Namespaces" }).click();
   await page.waitForURL(/\/console\/namespaces/);
-  probe.release();
+  if (settleFirst) {
+    await navigationAsked.promise;
+    probe.release();
+    // The Console keeps a settled answer for the tab in session storage.
+    await page.waitForFunction(() => sessionStorage.getItem("occ.console.installationAccess"));
+    probeSettled.resolve();
+  } else {
+    probe.release();
+  }
   await page.getByRole("list", { name: "Namespaces" }).getByText("Probe access").waitFor();
   assert.equal(await page.getByRole("link", { name: "Observability" }).count(), 0);
   assert.equal(answered, 1);
-});
+}
+
+test("a navigation while the Installation-access probe is answered does not ask again", (t) =>
+  navigateDuringInstallationAccessProbe(t, { settleFirst: false }));
+
+test("a probe that settles while the next page reads its permission answer is not sent again", (t) =>
+  navigateDuringInstallationAccessProbe(t, { settleFirst: true }));
 
 test("console ignores stale collection successes and errors while switching Namespaces", async (t) => {
   const fixture = await createConsoleAppFixture(t);

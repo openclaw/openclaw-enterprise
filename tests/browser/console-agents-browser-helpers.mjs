@@ -565,6 +565,15 @@ export async function waitForInputValue(locator, expected, timeoutMs = 10_000) {
   );
 }
 
+// The Agent page builds its tab while the view is still held back (display: none) for its first
+// reads, and a picker's Secret list can load before the view is shown (findings 2034, 2626). A
+// test that measures layout waits through this, not waitForInputValue alone: a hidden field
+// measures 0 x 0.
+export async function waitForShownInputValue(locator, expected, timeoutMs = 10_000) {
+  await waitForInputValue(locator, expected, timeoutMs);
+  await locator.waitFor({ state: "visible", timeout: timeoutMs });
+}
+
 // A control becomes enabled when the page state behind it settles, which can be a task or more
 // after the text a test waits for (finding 2116). A test that expects a control to be usable
 // waits through this; one isEnabled() read can see the earlier state. A check that a control is
