@@ -260,9 +260,31 @@ Creation issues no session.
 
 The only Installation Role is the built-in Installation administrator
 (`role_admin_<uuid>`). The API cannot create other Installation Roles, and the
-Namespace policy API does not list this one. Omit `roleId` for everyone except
-another Installation administrator, then grant Namespace access with the
-returned `principalId`; see [Add a person](../guides/topics/iam.md#add-a-person).
+Namespace policy API does not list this one. Omit `roleId` for Namespace users,
+then grant Namespace access with the returned `principalId`; see
+[Add a person](../guides/topics/iam.md#add-a-person).
+
+### Appointed Installation administrators
+
+A `roleId` binding is scoped to the exact Installation. The bootstrap
+administrator's binding is unscoped. An appointed account therefore holds only
+`installation:administer` and `installation:read`:
+
+- It can create accounts, read the Installation, Backends and the observability
+  link, and [issue service keys](authentication/service-api-keys.md#issuance)
+  for principals whose grants it already holds.
+- Its Namespace list is empty. It cannot create or read Namespaces, create
+  Secrets, credential sources or Agents, start a device login, read the
+  deployment inventory, or change Namespace IAM. Each refusal is a `403`
+  audited as an authorization denial, and its message still says to ask an
+  Installation administrator.
+- An Installation administrator can bind the account to a Namespace Role with
+  `namespace:read`. Namespace IAM writes then work in that Namespace. Namespace
+  create stays refused.
+
+Appoint one only for account and service-key administration. The draft
+[RFC in PR #889](https://github.com/openclaw/openclaw-enterprise/pull/889)
+proposes a change to this behavior.
 A representative provisioning body is:
 
 ```json

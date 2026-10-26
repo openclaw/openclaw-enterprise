@@ -51,6 +51,9 @@ authorized Installation-scoped service key. A Namespace-scoped key cannot access
 another Namespace or Installation endpoints. An Installation-scoped key still
 needs its principal’s own grants; it does not inherit the issuer’s. See
 [service key scope](../authentication/service-api-keys.md#request-admission-and-scope).
+An account created with the Installation administrator `roleId` holds only
+`installation:administer` and `installation:read`; see
+[appointed administrators](../authentication.md#appointed-installation-administrators).
 
 ## Denial messages
 

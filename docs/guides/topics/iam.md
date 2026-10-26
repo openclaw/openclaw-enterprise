@@ -127,9 +127,15 @@ nobody uses. It is still a credential:
 Add actions such as `update` or `deploy` to the Role for more access; see
 [Authorization](../../reference/authorization.md) for actions and scope. Role
 creation refuses `create` Permissions, and a binding refuses a Role with none
-for its target's kind, because those grants could never apply. Pass the
-Installation administrator `roleId` at creation only for someone who
-administers the whole Installation.
+for its target's kind, because those grants could never apply.
+
+The Installation administrator `roleId` at creation does not copy the bootstrap
+administrator's access. It grants account and service-key administration only;
+the account cannot create or read Namespaces, Secrets or Agents. To let it
+manage IAM in one Namespace, bind it there to a Role with `namespace:read`. See
+[appointed administrators](../../reference/authentication.md#appointed-installation-administrators)
+for the exact limits and the proposal that would change them. Use Namespace
+bindings for everyone else.
 
 ## Remove a person
 
