@@ -18,7 +18,9 @@ import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { createServer, request as httpsRequest } from "node:https";
 import { buffer } from "node:stream/consumers";
+import { assertApiError } from "../helpers/api-error.mjs";
 import { selfSigned } from "../helpers/certificates.mjs";
+import { LIVE_SOURCE_MODEL_REQUIRED } from "../helpers/refusal-text.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { listen } from "../helpers/listen.mjs";
 import { requestId, staticEgressFixture } from "../helpers/static-egress.mjs";
@@ -366,7 +368,8 @@ async function workspaceJourney(t: TestContext, persistence: "memory" | "postgre
     "POST",
     `/namespaces/${f.namespace.id}/agents/${f.agent.id}/deploy`,
   );
-  assert.equal(undeployable.status, 404, JSON.stringify(undeployable.body));
+  assertApiError(undeployable, 400, "INVALID_REQUEST");
+  assert.equal(undeployable.body.error.message, LIVE_SOURCE_MODEL_REQUIRED);
   body.configurationId = f.agent.configurationId;
   assert.equal((await patch()).status, 200);
   const deployed = await f.deployAgent(f.namespace.id, agent.id);
