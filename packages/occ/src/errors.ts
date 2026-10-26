@@ -1414,9 +1414,9 @@ const RETRY_LATER_MESSAGES = Object.freeze({
  * A 503 whose fixed text tells the caller when to retry or what to start again (finding 2536).
  * Each is raised only after the caller's grant and lookup, and names no resource, so HTTP
  * returns the text instead of the generic one. It stays a DependencyUnavailableError, so
- * workers still retry it. A failed device login keeps the Refresh Driver's error as `cause`:
- * the API's 503 log record names only its class and code, never its message, so the operator
- * the text sends to the logs finds why.
+ * workers still retry it. A failed device login keeps the Refresh Driver's error as `cause`, so
+ * the API's 503 log record, which the text points the caller to, names that error's class and
+ * code (never its message).
  */
 export class RetryLaterError extends DependencyUnavailableError {
   constructor(reason: "deviceLoginFailed", cause: unknown);
