@@ -2066,8 +2066,10 @@ function probeExitFailure({ error, status, signal }) {
 // the container's CPU limit (cgroup cpu.max, at most one core), at most 600 s.
 // A probe that still reaches it after waiting for CPU for over a quarter of the
 // time reports MODEL_PROBE_CPU_STARVED: a restart would get the same CPU. The
-// wait is cgroup cpu.pressure (throttling and node contention) or, on kernels
-// without pressure accounting, cpu.stat throttled_usec (throttling only).
+// wait is the larger of the cgroup cpu.pressure delta (throttling and node
+// contention) and the cpu.stat throttled_usec delta (throttling only), each
+// used only when both of its samples are valid: on one CI VM pressure read 8x
+// low and hid a starved probe as a timeout (finding 2271).
 // OpenClaw buckets provider 401/403 and invalid-key responses as "auth". Only
 // that deterministic rejection fails the deployment before its deadline.
 // The turn allows 256 output tokens. A reasoning model spends output tokens on
@@ -2082,12 +2084,13 @@ function probeOpenClawAuthenticationFailure() {
   const [quota, period] = cgroup("cpu.max").split(" ");
   const capMs = Math.min(600000, 20000 + Math.ceil(45000 / Math.min(1, quota / period || 1)));
   const read = (name) => (name === "cpu.pressure" ? /^some .*total=(\d+)/m : /throttled_usec (\d+)/).exec(cgroup(name))?.[1] / 1000;
-  const startedAt = Date.now(), pressure = read("cpu.pressure"), metric = Number.isFinite(pressure) ? "cpu.pressure" : "cpu.stat", before = metric === "cpu.pressure" ? pressure : read(metric);
+  const counters = ["cpu.pressure", "cpu.stat"], startedAt = Date.now(), before = counters.map(read);
   let code = runOpenClawAuthenticationProbe(fs, capMs), cause, provider;
   if (typeof code === "object") ({ code, cause, ...provider } = code);
-  const elapsedMs = Date.now() - startedAt, after = read(metric), cpuWaitMs = Math.round(Number.isFinite(after) && after >= before ? after - before : NaN);
+  const elapsedMs = Date.now() - startedAt, [pressureWaitMs, throttledWaitMs] = counters.map((name, i) => { const wait = read(name) - before[i]; return wait >= 0 ? Math.round(wait) : NaN; });
+  const waits = [pressureWaitMs, throttledWaitMs].filter(Number.isFinite), cpuWaitMs = waits.length ? Math.max(...waits) : NaN;
   if (code === "CAP") code = cpuWaitMs > elapsedMs / 4 ? "MODEL_PROBE_CPU_STARVED" : "MODEL_PROBE_TIMEOUT";
-  console.error(JSON.stringify({ event: "openclaw.model_probe", elapsedMs, capMs, cpuWaitMs, code: code ?? "READY", cause, ...provider }));
+  console.error(JSON.stringify({ event: "openclaw.model_probe", elapsedMs, capMs, cpuWaitMs, pressureWaitMs, throttledWaitMs, code: code ?? "READY", cause, ...provider }));
   return code === undefined ? undefined : { code, cause };
 }
 
