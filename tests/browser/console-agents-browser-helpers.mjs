@@ -1074,6 +1074,9 @@ export function statusTone(locator, { text = false } = {}) {
   );
 }
 
+// A long resource ID as the console shortens it in text: its first 12 and last 6 characters.
+export const shortId = (id) => `${id.slice(0, 12)}…${id.slice(-6)}`;
+
 // A control's accessible description from aria-describedby: the text of each element it names,
 // in order (finding D749). A referenced ID that renders nothing adds nothing.
 export function accessibleDescription(locator) {

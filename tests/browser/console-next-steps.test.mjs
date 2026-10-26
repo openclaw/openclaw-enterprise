@@ -16,12 +16,11 @@ import {
   nativeValues,
   newPage,
   routeFailedDeployment,
+  shortId,
 } from "./console-agents-browser-helpers.mjs";
 
 // A next step the reader cannot take is a dead end (finding D750). Each page below names what
 // the reader can do: ask an Installation administrator, or accept that a version may not exist.
-
-const shortId = (id) => `${id.slice(0, 12)}…${id.slice(-6)}`;
 
 test("a version link the page cannot list says the version may not exist", async (t) => {
   const fixture = await createConsoleAppFixture(t);

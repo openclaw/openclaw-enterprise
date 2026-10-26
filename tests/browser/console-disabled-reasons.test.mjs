@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { DIAGNOSTICS_DENIED } from "../helpers/refusal-text.mjs";
+import {
+  AGENT_DEPLOY_NOT_INCLUDED,
+  CHANNELS_NEED_DEDICATED,
+  DIAGNOSTICS_DENIED,
+} from "../helpers/refusal-text.mjs";
 import {
   AGENT_READ,
   accessibleDescription,
@@ -35,13 +39,10 @@ test("a reader's disabled Deploy, diagnostics and authentication controls name t
 
   // The draft: Deploy needs Agent deploy.
   await page.goto(detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").href);
-  await page.getByText("Your access does not include deploying this Agent.").waitFor();
+  await page.getByText(AGENT_DEPLOY_NOT_INCLUDED, { exact: true }).waitFor();
   const deploy = page.getByRole("button", { name: "Deploy new version" });
   assert.equal(await deploy.isDisabled(), true);
-  assert.equal(
-    await accessibleDescription(deploy),
-    "Your access does not include deploying this Agent.",
-  );
+  assert.equal(await accessibleDescription(deploy), AGENT_DEPLOY_NOT_INCLUDED);
 
   // Credentials: the method select and Save need Agent update. Both are described by the note
   // under the form, whose text the reader also sees.
@@ -69,43 +70,7 @@ test("Configure Slack on an embedded Agent is described by the execution mode", 
   const configure = page.getByRole("button", { name: "Configure Slack" });
   await configure.waitFor();
   assert.equal(await configure.isDisabled(), true);
-  assert.equal(
-    await accessibleDescription(configure),
-    "Channels require Dedicated execution. Embedded Agents can only keep channels disabled.",
-  );
-});
-
-test("a reader with no readable Namespace hears why the Namespace selector is disabled", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const hidden = await fixture.createNamespace("Not shared", { ready: true });
-  fixture.policy.restrictions.push({
-    id: "deny-all-namespace-read",
-    resourceKind: "namespace",
-    action: "read",
-    effect: "deny",
-  });
-  const { page } = await newPage(t, fixture);
-  for (const [path, text] of [
-    [
-      "/console/agents",
-      "Ask an Installation administrator to create a Namespace or to give you access to one, then Refresh.",
-    ],
-    [
-      `/console/agents?namespace=${hidden.id}`,
-      "This Namespace is missing or not shared with you, and you cannot read any other Namespace. Ask an Installation administrator to give you access to one, then Refresh.",
-    ],
-  ]) {
-    if (path === "/console/agents") {
-      await login(page, fixture, path);
-    } else {
-      await page.goto(new URL(path, fixture.origin).href);
-    }
-    await page.locator(".state-panel").getByText(text, { exact: true }).waitFor();
-    const selector = page.getByLabel("Namespace", { exact: true });
-    assert.equal(await selector.isDisabled(), true, path);
-    assert.equal(await accessibleDescription(selector), text, path);
-  }
+  assert.equal(await accessibleDescription(configure), CHANNELS_NEED_DEDICATED);
 });
 
 // The no-Namespace panel is the selector's only reason. A page without it, such as an

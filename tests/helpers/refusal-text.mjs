@@ -110,6 +110,24 @@ export const AGENT_STOP_AND_DELETE_DENIED = notIncluded(
   "stopping or deleting this Agent",
   "Agent operate and Agent delete on it",
 );
+// Deploy's status line on the draft for a reader without Agent deploy.
+export const AGENT_DEPLOY_NOT_INCLUDED = "Your access does not include deploying this Agent.";
+// The Stop confirmation, on the Agents list and the Agent page, by what the page read of the
+// Agent's version and its latest deployment (apps/controller/src/console/agents/
+// lifecycle-confirmation.mts, finding D691).
+const STOP_KEEPS =
+  "Configuration, versions, Credentials, and workspace data are retained. Deploy a new version to start the Agent again.";
+// A version is selected for service.
+export const STOP_CONFIRMATION = `This interrupts the current runtime gateway and ends any reply in progress; open chats can keep showing it as responding. ${STOP_KEEPS}`;
+// No version is selected and the first deployment is queued or in progress.
+export const STOP_FIRST_DEPLOYMENT_CONFIRMATION = `No version is serving yet, so this cancels the deployment in progress. ${STOP_KEEPS}`;
+// No version is selected and the page could not read the latest deployment's outcome.
+export const STOP_UNKNOWN_DEPLOYMENT_CONFIRMATION = `This cancels a deployment in progress or, if a version already started, interrupts its runtime gateway and ends any reply in progress. ${STOP_KEEPS}`;
+// The Agent page's Stop row, by whether Stop would cancel a first deployment in progress.
+export const STOP_CANCELS_FIRST_DEPLOYMENT =
+  "Cancels the deployment in progress. The Agent stays and can be deployed again.";
+export const STOP_RUNNING_VERSION =
+  "Stops the running version. The Agent stays and can be deployed again.";
 // Each version has its own AgentRevision read grant, so a reader who deploys still needs read on
 // each new version, granted after it exists.
 export const NEW_VERSIONS_READ =
@@ -303,6 +321,9 @@ export const unreadableSlackTokenRefusal = (setting, held) =>
 // standard names (finding 2506).
 export const CHANNEL_BINDING_CONSOLE_REMEDY =
   "This editor does not save Secret bindings: bind SLACK_APP_TOKEN and SLACK_BOT_TOKEN on the Credentials tab or in the Slack editor on the Channels tab, and other names through the Configuration API.";
+// The Slack card of an Embedded Agent, on Create Agent and the Agent page's Channels tab.
+export const CHANNELS_NEED_DEDICATED =
+  "Channels require Dedicated execution. Embedded Agents can only keep channels disabled.";
 export const CHANNEL_BINDING_FORM_REMEDY =
   "On this form, the Slack channel settings bind SLACK_APP_TOKEN and SLACK_BOT_TOKEN to the Secrets you select there; bind other names through the Configuration API after the Agent exists.";
 // A Codex network proxy setting that blocks the repository credential broker for an Agent with
