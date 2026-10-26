@@ -1362,15 +1362,14 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
     if (body !== undefined) {
       headers.set("content-type", "application/json");
     }
+    const authRequest = new Request(url, {
+      method: request.method,
+      headers,
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
     let response: Response;
     try {
-      response = await auth.handler(
-        new Request(url, {
-          method: request.method,
-          headers,
-          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-        }),
-      );
+      response = await auth.handler(authRequest);
     } catch {
       // Better Auth answers its own APIErrors; it throws only an error it cannot classify
       // (onAPIError.throw), such as a database or audit failure. The error itself may hold
