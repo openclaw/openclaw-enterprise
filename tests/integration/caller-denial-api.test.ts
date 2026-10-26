@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 
+import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -448,8 +449,8 @@ test("an Agent update's denial on the current Harness authentication says every 
 // which only a Restriction causes. A member refused the same create keeps the plain text, which
 // never tells a Restriction from a missing grant.
 test("a create a Restriction denies names it only to an Installation administrator", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  const { auditSink } = fixture;
+  const auditSink = new InMemoryAuditSink();
+  const fixture = await createConsoleAppFixture(t, { auditSink });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Restricted creation", { ready: true });
   const configuration = await fixture.createConfiguration(
