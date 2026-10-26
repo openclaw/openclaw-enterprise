@@ -206,6 +206,8 @@ export const requestedVersionUnavailable = (version) =>
 // A version the reader's own Deploy created exists, so the page says it was accepted (finding D751).
 export const deployAcceptedVersionUnreadable = (version) =>
   `Deployment accepted. You cannot read version ${version}, so its progress and outcome are not shown here; ask an Installation administrator for AgentRevision read on it.`;
+// The summary card for that version, after a first deployment or a redeploy alike (finding D755).
+export const DEPLOYED_VERSION_UNREADABLE = "You cannot read the version you deployed.";
 export const VERSION_READ_DENIED =
   "Your access does not include this version, so its configuration and deployment outcome are hidden. Ask an Installation administrator for AgentRevision read on it.";
 // A rejected model credential for a caller known to lack Agent update names the grants that fix
@@ -447,3 +449,10 @@ export const BROKER_HOST_DENIED = brokerProxyRefusal(
 export const COMPUTE_TOPOLOGY_REPOSITORY_UNSUPPORTED =
   "The selected Compute Driver cannot deliver repository credentials to this Harness topology.";
 export const PROVISIONING_NOT_COMPLETED = "Agent provisioning could not complete.";
+// The heading wherever a caller reads no Namespace, on every page alike (finding D755).
+export const NO_READABLE_NAMESPACES = "No readable Namespaces";
+// An Installation without repository access. Only an Installation administrator can set it up,
+// so only one gets the setup guide link; anyone else is told whom to ask (finding D754).
+export const REPOSITORY_ACCESS_NOT_CONFIGURED =
+  "This Installation has no repository access, so this Agent cannot use repositories.";
+export const REPOSITORY_SETUP_ASK = "Ask an Installation administrator to set it up.";

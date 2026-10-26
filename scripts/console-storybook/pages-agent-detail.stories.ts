@@ -159,6 +159,7 @@ export const DeployAgentPrincipalDenied = {
 export const RepositoryEditor = story("repositoryEditor");
 export const RepositoryEditorUpdateDenied = story("repositoryEditorUpdateDenied");
 export const RepositoryEditorNotConfigured = story("repositoryEditorNotConfigured");
+export const RepositoryEditorNotConfiguredMember = story("repositoryEditorNotConfiguredMember");
 export const RepositoryEditorLoading = story("repositoryEditorLoading");
 export const RepositoryEditorSaveRefused = story("repositoryEditorSaveRefused");
 export const ConfigurationNavigation = story("configurationNavigation");

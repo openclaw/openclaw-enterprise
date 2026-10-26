@@ -22,7 +22,7 @@ import {
 } from "./shell.mjs";
 import { createDraftStore } from "./drafts.mjs";
 import { renderRuntimeImages } from "./runtime-images.mjs";
-import { renderNamespaces } from "./namespaces.mjs";
+import { NO_READABLE_NAMESPACES, renderNamespaces } from "./namespaces.mjs";
 import { renderSecrets } from "./secrets.mjs";
 
 const app = document.querySelector("#app");
@@ -1950,7 +1950,7 @@ async function loadPage({
         // panel adds no second Refresh (finding 2371).
         namespaceAccessPanel(
           shell.view,
-          "No readable Namespaces",
+          NO_READABLE_NAMESPACES,
           "Ask an Installation administrator to create a Namespace or to give you access to one, then Refresh.",
         );
       } else {

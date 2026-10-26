@@ -375,6 +375,9 @@ function nativeDocument(values: OpenClawConfigurationDocument, label: string) {
   );
 }
 
+// The summary card's note, first deployment or redeploy alike, for a version this tab deployed
+// that the caller cannot read (finding D755).
+const DEPLOYED_VERSION_UNREADABLE = "You cannot read the version you deployed.";
 // A draft the caller can read but neither change nor save (finding 2421).
 const READ_ONLY_DRAFT_NOTICE =
   "Version draft · read-only with your access. The next deployment uses it as saved.";
@@ -2265,18 +2268,27 @@ export async function renderAgentDetail(
     if (!latest) {
       showRecovery(null);
       delete latestDeploymentValue.dataset.outcome;
+      const accepted = acceptedHiddenVersion(0);
       if (latestRevisionResult) {
         const rejected = latestRevisionResult.status === "rejected";
-        setText(latestDeploymentValue, rejected ? "Unavailable" : "None");
+        // A version this tab deployed exists, so a first deployment the caller cannot read gets
+        // the same card as a redeploy, not "None" (finding D755).
+        setText(
+          latestDeploymentValue,
+          rejected ? "Unavailable" : accepted ? "Deployment accepted" : "None",
+        );
         setText(
           latestDeploymentNote,
-          rejected ? "Version history could not be read." : "No readable deployments.",
+          rejected
+            ? "Version history could not be read."
+            : accepted
+              ? DEPLOYED_VERSION_UNREADABLE
+              : "No readable deployments.",
         );
       } else {
         setDelayedText(latestDeploymentValue, "", "Loading…");
         setDelayedText(latestDeploymentNote, "", "Reading deployment history.");
       }
-      const accepted = acceptedHiddenVersion(0);
       const hidden = accepted ?? [selected, currentRevisionId].find(revisionHidden);
       setHidden(statusLine, hidden === undefined);
       // The current version is known to exist, and so is one this tab deployed; a requested one
@@ -2346,7 +2358,7 @@ export async function renderAgentDetail(
       setText(latestDeploymentValue, "Deployment accepted");
       setText(
         latestDeploymentNote,
-        `You cannot read the version you deployed. v${latest.revision}${label ? ` (${label})` : ""} is older.`,
+        `${DEPLOYED_VERSION_UNREADABLE} v${latest.revision}${label ? ` (${label})` : ""} is older.`,
       );
     } else if (newerHidden) {
       setText(latestDeploymentValue, "Newer version hidden");
