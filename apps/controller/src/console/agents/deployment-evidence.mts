@@ -27,7 +27,14 @@ export interface DeploymentContext {
   isCurrent(): boolean;
   onExpired(): void;
   onResume?(resume: () => void): void;
+  /**
+   * The page's own words for a recorded failure, if any, in place of the API's message: the API
+   * words one next step for everyone (finding D752). `settled` says the failure asks for nothing
+   * more, so it is not an alert.
+   */
+  failureText?(error: RecordedError): { text: string; settled?: boolean } | undefined;
 }
+type RecordedError = NonNullable<Deployment["error"]>;
 
 // One page of revision summaries, newest first (finding 1323). Summaries carry no saved
 // settings; read the exact revision for those.
@@ -83,10 +90,11 @@ function runtimeFailureCauseText(cause: RuntimeFailureCause) {
   return retried ? `${label} (${detail}).${retry}` : `${label} (${detail})`;
 }
 
-function deploymentFailure(error: Deployment["error"]) {
+function deploymentFailure(error: Deployment["error"], context: DeploymentContext) {
   if (!error) {
     return element("p", { className: "muted" }, "No persisted startup failure.");
   }
+  const worded = context.failureText?.(error);
   const { data } = error;
   const runtimeFailure: RuntimeFailureEvidence | undefined =
     data && "runtimeFailure" in data ? data.runtimeFailure : undefined;
@@ -94,7 +102,9 @@ function deploymentFailure(error: Deployment["error"]) {
   return element(
     "div",
     {},
-    statusBlock("danger", null, `${error.code}: ${error.message}`),
+    worded?.settled
+      ? element("p", { className: "muted" }, `${error.code}: ${worded.text}`)
+      : statusBlock("danger", null, `${error.code}: ${worded?.text ?? error.message}`),
     preparation
       ? element(
           "div",
@@ -163,7 +173,7 @@ function deploymentFailure(error: Deployment["error"]) {
 
 // A recorded result: the failure, or a neutral note when a newer version superseded this one
 // or the owner stopped the Agent during its deployment.
-function deploymentResult(record: Deployment) {
+function deploymentResult(record: Deployment, context: DeploymentContext) {
   const neutral = neutralDeploymentOutcome(record);
   if (neutral === "superseded") {
     return element(
@@ -179,7 +189,7 @@ function deploymentResult(record: Deployment) {
       `The Agent was stopped before this deployment finished (${record.error?.code}). This version did not fail; deploy a new version when you want it running.`,
     );
   }
-  return deploymentFailure(record.error);
+  return deploymentFailure(record.error, context);
 }
 
 function deploymentProgress(record: Deployment) {
@@ -498,7 +508,7 @@ export function createDeploymentStatusPanel(
         { className: "deployment-outcome" },
         `Recorded status: ${outcomeLabel(deploymentOutcome(record))}`,
       ),
-      record.error ? deploymentResult(record) : null,
+      record.error ? deploymentResult(record, context) : null,
       record.warnings?.length
         ? statusBlock(
             "warning",
@@ -593,7 +603,8 @@ export function createDeploymentStatusPanel(
   }
 
   void loadStatus();
-  return section;
+  // The page calls rerender when what its failureText answers changes.
+  return Object.assign(section, { rerender: render });
 }
 
 // With shared, Deployment activity is reading this version's record, so the panel waits for
@@ -717,7 +728,7 @@ export function createVersionDeploymentEvidence(
                     { className: "muted deployment-failure-above" },
                     "The error and its next step are at the top of this page.",
                   )
-                : deploymentResult(status),
+                : deploymentResult(status, context),
               status.warnings?.length
                 ? element(
                     "div",
@@ -765,6 +776,8 @@ export function createVersionDeploymentEvidence(
     show,
     release,
     setFailureShownAbove,
+    // The page calls this when what its failureText answers changes.
+    rerender: render,
     // The page calls this when its current version changes.
     renderDiagnostics: diagnostics.render,
     applyOperate: diagnostics.applyOperate,

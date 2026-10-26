@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { DIAGNOSTICS_DENIED } from "../helpers/refusal-text.mjs";
+import {
+  AGENT_DEPLOY_DENIED,
+  DIAGNOSTICS_DENIED,
+  NAMESPACE_UNAVAILABLE,
+} from "../helpers/refusal-text.mjs";
 import {
   AGENT_READ,
   accessibleDescription,
@@ -35,13 +39,11 @@ test("a reader's disabled Deploy, diagnostics and authentication controls name t
 
   // The draft: Deploy needs Agent deploy.
   await page.goto(detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").href);
-  await page.getByText("Your access does not include deploying this Agent.").waitFor();
+  // The reason names the grant to ask for (finding D753).
+  await page.getByText(AGENT_DEPLOY_DENIED, { exact: true }).waitFor();
   const deploy = page.getByRole("button", { name: "Deploy new version" });
   assert.equal(await deploy.isDisabled(), true);
-  assert.equal(
-    await accessibleDescription(deploy),
-    "Your access does not include deploying this Agent.",
-  );
+  assert.equal(await accessibleDescription(deploy), AGENT_DEPLOY_DENIED);
 
   // Credentials: the method select and Save need Agent update. Both are described by the note
   // under the form, whose text the reader also sees.
@@ -93,7 +95,7 @@ test("a reader with no readable Namespace hears why the Namespace selector is di
     ],
     [
       `/console/agents?namespace=${hidden.id}`,
-      "This Namespace is missing or not shared with you, and you cannot read any other Namespace. Ask an Installation administrator to give you access to one, then Refresh.",
+      `${NAMESPACE_UNAVAILABLE}, and you cannot read any other Namespace. Ask an Installation administrator to give you access to one, then Refresh.`,
     ],
   ]) {
     if (path === "/console/agents") {

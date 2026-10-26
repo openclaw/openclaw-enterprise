@@ -44,6 +44,17 @@ export const NAMESPACE_CREATE_DENIED = onlyAdministratorCreates(
 // POST /agents/{id}/stop authorizes Agent operate; DELETE /agents/{id} authorizes Agent delete.
 export const AGENT_STOP_DENIED = notIncluded("stopping this Agent", "Agent operate on it");
 export const AGENT_DELETE_DENIED = notIncluded("deleting this Agent", "Agent delete on it");
+// A Stop or Delete the API refused, on the Agent's page ("this Agent") or its Agents row (its
+// name). It says what was refused, then the same reason as the permission answer (finding D753).
+export const stopRefused = (target: string) =>
+  `Stop was refused: your access does not include stopping ${target}. ${askForGrant("Agent operate on it")}`;
+export const deleteRefused = (target: string) =>
+  `Deletion was refused: your access does not include deleting ${target}. ${askForGrant("Agent delete on it")}`;
+// POST /agents/{id}/deploy authorizes Agent deploy.
+export const AGENT_DEPLOY_DENIED = notIncluded("deploying this Agent", "Agent deploy on it");
+// A Namespace the reader cannot read: deleted, never shared or no longer shared. One sentence
+// for every page, which cannot tell these apart (finding D753).
+export const NAMESPACE_UNAVAILABLE = "This Namespace is missing or your access does not include it";
 // Saving a draft Configuration authorizes Configuration update on it.
 export const CONFIGURATION_UPDATE_DENIED = notIncluded(
   "editing this Configuration",
@@ -77,6 +88,10 @@ export const modelCredentialRejectedAsk = (secretBacked: boolean) =>
   `The model provider rejected this version's credential (HTTP 401 or 403). ${credentialFixGrants(secretBacked, "deploy a new version")}`;
 export const modelCredentialRejectedReadOnly = (secretBacked: boolean) =>
   `The last deployment's model credential was rejected. ${credentialFixGrants(secretBacked, "deploy again")}`;
+// The Agent no longer binds the credential the failed version was deployed with, so the recorded
+// failure asks for nothing more: the next deployment uses the new one (finding D752).
+export const MODEL_CREDENTIAL_REJECTED_REPLACED =
+  "The model provider rejected this version's credential (HTTP 401 or 403). The Agent now uses a different credential: deploy a new version to use it.";
 
 // A Secret field with nothing to choose for a caller who can neither create nor read a Secret.
 export const NO_SECRETS_CREATE_DENIED = `No Secrets you can read in this Namespace. ${SECRET_CREATE_DENIED} Or ask one for Secret read and operate on an existing Secret.`;

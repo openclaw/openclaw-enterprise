@@ -14,7 +14,7 @@ import {
   type LifecycleError,
   keptResources,
 } from "./lifecycle-confirmation.mjs";
-import { AGENT_DELETE_DENIED, askForGrant } from "./access-reasons.mjs";
+import { AGENT_DELETE_DENIED, deleteRefused } from "./access-reasons.mjs";
 import { describeFailure } from "./list.mjs";
 
 // Deletion finishes in the background; poll until the Agent is gone, then return to the list.
@@ -338,7 +338,7 @@ export function createAgentDeletion(
           error.serverMessage !== undefined &&
           error.serverMessage !== GENERIC_DENIAL
             ? error.serverMessage
-            : `You do not have permission to delete this Agent. ${askForGrant("Agent delete on it")}`);
+            : deleteRefused("this Agent"));
       } else if (error.status === 404) {
         state.needsRefresh = true;
         text =

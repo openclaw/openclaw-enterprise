@@ -89,6 +89,7 @@ import {
   namespaceListDenied,
   secretOperateRefused,
   stopRefused,
+  AGENT_DEPLOY_DENIED,
 } from "../helpers/refusal-text.mjs";
 
 test("Agent detail separates the current version, viewed version, and latest deployment", async (t) => {
@@ -3671,7 +3672,7 @@ test("a read-only principal sees Agent mutation controls disabled or absent befo
 
   const draft = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
   await page.goto(draft.href);
-  await page.getByText("Your access does not include deploying this Agent.").waitFor();
+  await page.getByText(AGENT_DEPLOY_DENIED, { exact: true }).waitFor();
   assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
 
   // The summary is a probe, not an attempted operation: no write was sent and nothing was
@@ -4183,7 +4184,7 @@ test("a reader without update views the version draft read-only", async (t) => {
     await page.getByText("Edit and save Configuration, plugins, or Channels").isVisible(),
     false,
   );
-  await page.getByText("Your access does not include deploying this Agent.").waitFor();
+  await page.getByText(AGENT_DEPLOY_DENIED, { exact: true }).waitFor();
   const entry = page.getByRole("button", { name: "View version draft", exact: true });
   await entry.getByText("Read-only Configuration", { exact: true }).waitFor();
 
@@ -4491,7 +4492,7 @@ test("a late permission answer turns a reader's Channels and Channel Secrets rea
   await page
     .getByRole("button", { name: "Set up credentials", exact: true })
     .waitFor({ state: "hidden" });
-  await page.getByText("Your access does not include deploying this Agent.").waitFor();
+  await page.getByText(AGENT_DEPLOY_DENIED, { exact: true }).waitFor();
 
   // The Channel Secrets panel was built before the answer, with enabled pickers.
   await page.getByRole("tab", { name: "Credentials", exact: true }).click();

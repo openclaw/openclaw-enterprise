@@ -4,6 +4,8 @@ import test from "node:test";
 
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
+  MODEL_CREDENTIAL_REJECTED_RECORDED,
+  MODEL_CREDENTIAL_REJECTED_REPLACED,
   modelCredentialRejectedAsk,
   modelCredentialRejectedReadOnly,
   requestedVersionUnavailable,
@@ -163,8 +165,60 @@ test("a rejected model credential tells a member without Agent update which gran
   await recovery.getByText(modelCredentialRejectedAsk(true)).waitFor();
   await page.getByText(modelCredentialRejectedReadOnly(true), { exact: true }).waitFor();
   // No step the operator cannot take: neither "update or replace" nor a link to Credentials.
-  // The folded Deployment details keep the API's recorded message as it was recorded.
   assert.doesNotMatch(await recovery.innerText(), /update or replace/);
   assert.doesNotMatch(await page.locator(".agent-draft-actions").innerText(), /update or replace/);
   assert.equal(await recovery.getByRole("link", { name: "Open Credentials" }).count(), 0);
+  // The deployment record's alert and the Agents list say it in the same words (finding D752).
+  const activity = page.getByRole("region", { name: "Deployment activity" });
+  await activity
+    .getByRole("alert", { includeHidden: true })
+    .getByText(`RUNTIME_AUTHENTICATION_FAILED: ${modelCredentialRejectedAsk(true)}`, {
+      exact: true,
+    })
+    .waitFor({ state: "attached" });
+  assert.doesNotMatch(await activity.textContent(), /update or replace/);
+  await page.goto(new URL(`/console/agents?namespace=${namespace.id}`, page.url()).href);
+  const row = page.getByRole("row").filter({ hasText: "Rejected Agent" });
+  await row.getByText(modelCredentialRejectedAsk(true), { exact: true }).waitFor();
+  assert.doesNotMatch(await row.innerText(), /update or replace/);
+});
+
+// The deployment record keeps the API's next step for a caller who may change the credential.
+// Once the Agent binds another credential, the failure no longer asks for anything: it is not an
+// alert next to "Ready to deploy." (finding D752).
+test("a rejected credential's record stops alerting once the Agent binds another credential", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Rebound credential", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Rebound Agent", nativeValues("rebound"));
+  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture);
+  await routeFailedDeployment(page, fixture, {
+    namespaceId: namespace.id,
+    agentId: agent.id,
+    deploymentId: revision.id,
+    code: "RUNTIME_AUTHENTICATION_FAILED",
+  });
+  const draft = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
+  await login(page, fixture, draft);
+  const activity = page.getByRole("region", { name: "Deployment activity" });
+  const recorded = `RUNTIME_AUTHENTICATION_FAILED: ${MODEL_CREDENTIAL_REJECTED_RECORDED}`;
+  await activity
+    .getByRole("alert", { includeHidden: true })
+    .getByText(recorded, { exact: true })
+    .waitFor({ state: "attached" });
+
+  // The administrator binds another Secret; the next deployment uses it.
+  const replacement = await fixture.createSecret(namespace.id, "rebound-key", "test-api-key-2");
+  await fixture.updateAgent(namespace.id, agent.id, {
+    harnessAuth: { method: "api_key", source: replacement.ref },
+  });
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await activity
+    .getByText(`RUNTIME_AUTHENTICATION_FAILED: ${MODEL_CREDENTIAL_REJECTED_REPLACED}`, {
+      exact: true,
+    })
+    .waitFor({ state: "attached" });
+  assert.equal(await activity.getByRole("alert", { includeHidden: true }).count(), 0);
+  assert.equal(await activity.getByText(recorded).count(), 0);
 });

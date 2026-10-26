@@ -71,6 +71,7 @@ import {
   askForGrant,
   notIncluded,
   deleteRefused,
+  NAMESPACE_UNAVAILABLE,
 } from "../helpers/refusal-text.mjs";
 
 // The Console Browser lane runs the two Agent detail test files in parallel.
@@ -1819,7 +1820,7 @@ for (const kind of ["agent", "configuration", "namespace"]) {
       .waitFor();
     if (kind === "namespace") {
       // The page listed this Namespace earlier in the sign-in, so access was lost (finding 2550).
-      await page.getByText(/^This Namespace is missing or you no longer have access/).waitFor();
+      await page.getByText(new RegExp(`^${RegExp.escape(NAMESPACE_UNAVAILABLE)}`)).waitFor();
     }
     await expectNoText(page, /Configuration draft|Create new version|Revoked revision Agent/, () =>
       waitForIdleFetches(page),

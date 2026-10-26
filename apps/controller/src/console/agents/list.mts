@@ -12,6 +12,7 @@ import {
   ASK_INSTALLATION_ADMINISTRATOR,
   askAdministratorTo,
   askForGrant,
+  NAMESPACE_UNAVAILABLE,
   notIncluded,
 } from "./access-reasons.mjs";
 
@@ -82,7 +83,7 @@ export function namespaceCreation(
 export const NAMESPACE_MISSING = Object.freeze({
   blocked: true,
   missing: true,
-  note: "This Namespace is missing or you no longer have access. Choose another Namespace.",
+  note: `${NAMESPACE_UNAVAILABLE}. Choose another Namespace.`,
 });
 
 // The API's catch-all answers: a caller's own denial that names no grant (api-client.mts) and an

@@ -40,11 +40,13 @@ import { renderNativeAdminAccess } from "./native-admin.mjs";
 import { createAgentDeletion } from "./deletion.mjs";
 import { createAgentStop } from "./stop.mjs";
 import {
+  AGENT_DEPLOY_DENIED,
   ASK_INSTALLATION_ADMINISTRATOR,
   askAdministratorTo,
   askForGrant,
   CONFIGURATION_UPDATE_DENIED,
   credentialCheckedAtDeploy,
+  MODEL_CREDENTIAL_REJECTED_REPLACED,
   modelCredentialRejectedReadOnly,
   NEW_VERSIONS_READ,
   requestedVersionUnavailable,
@@ -109,7 +111,11 @@ import {
   deploymentPending,
   readRevisionPage,
 } from "./deployment-evidence.mjs";
-import { createDeploymentRecovery, secretBackedCredential } from "./deployment-recovery.mjs";
+import {
+  createDeploymentRecovery,
+  credentialRejectedAsk,
+  secretBackedCredential,
+} from "./deployment-recovery.mjs";
 import {
   sameNamespaceSecretHref,
   secretMetadata,
@@ -2386,6 +2392,40 @@ export async function renderAgentDetail(
             activityPanel,
           },
     );
+    // The permission answer this waits for words the recorded failure too (finding D752).
+    rerenderRecordedFailures();
+  }
+  // The newest version's credential binding, once read, differs from the Agent's: the Agent was
+  // given another credential since that version was deployed.
+  function credentialReplacedSince(revisionId: string) {
+    return (
+      latestRevisionDetail !== null &&
+      "harnessAuth" in latestRevisionDetail &&
+      latestRevisionDetail.id === revisionId &&
+      latestRevisionDetail.id === visibleRevisions[0]?.id &&
+      JSON.stringify(latestRevisionDetail.harnessAuth) !== JSON.stringify(agent.harnessAuth)
+    );
+  }
+  // A recorded rejected model credential in this caller's words, as the recovery banner says it
+  // (finding D752): the API's step needs Agent update. Once the Agent binds another credential the
+  // record no longer asks for anything, so it is not an alert.
+  function recordedFailureText(error: { code: string }, revisionId: string) {
+    if (error.code !== "RUNTIME_AUTHENTICATION_FAILED") {
+      return undefined;
+    }
+    if (credentialReplacedSince(revisionId)) {
+      return { text: MODEL_CREDENTIAL_REJECTED_REPLACED, settled: true };
+    }
+    const ask = credentialRejectedAsk(error.code, agent.harnessAuth, callerPermissions);
+    return ask === undefined ? undefined : { text: ask };
+  }
+  // The answers recordedFailureText reads changed: the permission answer, the Agent's binding or
+  // the newest version's detail.
+  function rerenderRecordedFailures() {
+    if ("rerender" in activityPanel && typeof activityPanel.rerender === "function") {
+      activityPanel.rerender();
+    }
+    versionRecord?.rerender();
   }
   // List summaries omit the credential binding a revision was admitted with, so the
   // rejected-credential hint reads the newest revision once.
@@ -2407,6 +2447,7 @@ export async function renderAgentDetail(
       }
       latestRevisionDetail = detail;
       refreshDeployControls();
+      rerenderRecordedFailures();
     } catch {
       // Without the detail the hint stays generic; the deployment status still shows.
     } finally {
@@ -2504,7 +2545,7 @@ export async function renderAgentDetail(
       };
       const nextPanel: HTMLElement = mostRecent
         ? createDeploymentStatusPanel(
-            context,
+            { ...context, failureText: (error) => recordedFailureText(error, mostRecent.id) },
             path,
             mostRecent,
             (freshAgent, freshRevisions) =>
@@ -2672,21 +2713,26 @@ export async function renderAgentDetail(
       return { error: found.configurationReadError };
     }
     if ("revision" in found) {
-      versionRecord = createVersionDeploymentEvidence(context, path, selected, {
-        shared: activityRevisionId === selected && !latestDeploymentUnavailable,
-        operateAllowed: latestPermissionsRead.then((permissions) => permissions?.operate),
-        isCurrentVersion: () => currentRevisionId === selected,
-        // After a reload only the latest record feeds the cache, so an earlier failed version
-        // read "Historical" with no mark beside its own "Failed" record (finding 2407).
-        onRecord: (record) => {
-          const key = failedVersionKey(path, selected);
-          if (deploymentOutcome(record) === "failed" && !failedVersions.has(key)) {
-            failedVersions.add(key);
-            renderVersionNotice();
-            markVersionOutcomes();
-          }
+      versionRecord = createVersionDeploymentEvidence(
+        { ...context, failureText: (error) => recordedFailureText(error, selected) },
+        path,
+        selected,
+        {
+          shared: activityRevisionId === selected && !latestDeploymentUnavailable,
+          operateAllowed: latestPermissionsRead.then((permissions) => permissions?.operate),
+          isCurrentVersion: () => currentRevisionId === selected,
+          // After a reload only the latest record feeds the cache, so an earlier failed version
+          // read "Historical" with no mark beside its own "Failed" record (finding 2407).
+          onRecord: (record) => {
+            const key = failedVersionKey(path, selected);
+            if (deploymentOutcome(record) === "failed" && !failedVersions.has(key)) {
+              failedVersions.add(key);
+              renderVersionNotice();
+              markVersionOutcomes();
+            }
+          },
         },
-      });
+      );
       versionEvidence.append(...versionRecord.panels);
       versionRecord.setFailureShownAbove(recoveryRevisionId === selected);
       if (latestDeploymentRecord?.deploymentId === selected) {
@@ -2942,7 +2988,7 @@ export async function renderAgentDetail(
       }
       if (!deployPending) {
         if (callerPermissions?.deploy === false) {
-          deployStatus.textContent = "Your access does not include deploying this Agent.";
+          deployStatus.textContent = AGENT_DEPLOY_DENIED;
         } else if (deploySecretsDenied.length) {
           const reason = deploySecretsOperateReason(deploySecretsDenied);
           // A refused deployment's alert already says it.

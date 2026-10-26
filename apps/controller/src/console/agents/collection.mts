@@ -12,12 +12,14 @@ import { type RequestOptions, requestFailure } from "../api-client.mjs";
 import { button, element, setText, statusBlock } from "../dom.mjs";
 import type { createDraftStore } from "../drafts.mjs";
 import { DELETE_CONFIRMATION, stopConfirmation, keptResources } from "./lifecycle-confirmation.mjs";
+import { credentialRejectedAsk } from "./deployment-recovery.mjs";
 import {
   AGENT_CREATE_DENIED,
   AGENT_DELETE_DENIED,
   AGENT_STOP_DENIED,
-  askForGrant,
+  deleteRefused,
   notIncluded,
+  stopRefused,
 } from "./access-reasons.mjs";
 import {
   type AgentNavigation,
@@ -219,6 +221,8 @@ export function renderAgentList(context: AgentListContext) {
   // row's icon before confirmation; a failed read keeps the usual path, and the API still
   // authorizes every write.
   const permissionReads = new Set<string>();
+  // Each row's permission answer as it settles (null when it failed), for text that depends on it.
+  const permissionAnswers = new Map<string, Promise<AgentPermissions | null>>();
   const permissions = new Map<string, AgentPermissions>();
   type RestrictDialog = (id: string, answer: AgentPermissions) => void;
   let restrictOpenDialog: RestrictDialog | null = null;
@@ -296,7 +300,18 @@ export function renderAgentList(context: AgentListContext) {
           `${agentPath}/deployments/${encodeURIComponent(latest.id)}`,
           rowRead,
         )) as AgentDeploymentStatusWire;
-        return { revision: latest, status };
+        // A rejected model credential is worded for the caller, as on the Agent's page (finding
+        // D752), so that row waits for its permission answer.
+        const code = status.status === "failed" ? status.error?.code : undefined;
+        const credentialAsk =
+          code === "RUNTIME_AUTHENTICATION_FAILED"
+            ? credentialRejectedAsk(
+                code,
+                "harnessAuth" in item ? item.harnessAuth : undefined,
+                await permissionAnswers.get(item.id),
+              )
+            : undefined;
+        return { revision: latest, status, credentialAsk };
       }),
     };
   }
@@ -397,7 +412,7 @@ export function renderAgentList(context: AgentListContext) {
         setLatestDeployment(item, deploymentOutcome(result.status));
         const failure =
           !neutral && result.status.status === "failed"
-            ? (result.status.error?.message ?? "Deployment failed.")
+            ? (result.credentialAsk ?? result.status.error?.message ?? "Deployment failed.")
             : null;
         // A long failure fits one line; its title and the Agent page give the whole text.
         fill(
@@ -495,12 +510,18 @@ export function renderAgentList(context: AgentListContext) {
       return;
     }
     permissionReads.add(item.id);
-    void context.request(`${agentRequestPath(item.id)}/permissions`, rowRead).then(
-      (result) => {
+    const read = context
+      .request(`${agentRequestPath(item.id)}/permissions`, rowRead)
+      .then((result) => result as AgentPermissions);
+    permissionAnswers.set(
+      item.id,
+      read.catch(() => null),
+    );
+    void read.then(
+      (answer) => {
         if (!context.isCurrent()) {
           return;
         }
-        const answer = result as AgentPermissions;
         const previous = permissions.get(item.id);
         permissions.set(item.id, answer);
         if (restricts(answer) || restricts(previous)) {
@@ -523,10 +544,7 @@ export function renderAgentList(context: AgentListContext) {
     }
     let text;
     if (error.status === 403) {
-      text =
-        kind === "stop"
-          ? `You do not have permission to stop ${item.name}. ${askForGrant("Agent operate on it")}`
-          : `You do not have permission to delete ${item.name}. ${askForGrant("Agent delete on it")}`;
+      text = kind === "stop" ? stopRefused(item.name) : deleteRefused(item.name);
     } else if (error.status === 400 || error.status === 429) {
       text = `Could not ${kind === "stop" ? "stop" : "delete"} ${item.name}. ${describeFailure(cause, { mutation: true })}`;
     } else {

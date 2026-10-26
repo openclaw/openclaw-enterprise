@@ -45,6 +45,24 @@ const DEPLOYMENT_FAILURE_LINKS: Readonly<Record<string, Exclude<RecoveryTab, "lo
   INVALID_HARNESS_AUTH: "credentials",
 };
 
+// The API's step for a rejected model credential is to update it in Credentials, which needs Agent
+// update. A caller whose permission answer denies that is told which grants fix it and who gives
+// them instead: a Secret-backed credential can also be replaced in place with Secret update, which
+// the answer does not cover (finding D750). The recovery banner, the deployment record and the
+// Agents list say it in the same words (finding D752). The API still authorizes each save.
+export function credentialRejectedAsk(
+  code: string | null | undefined,
+  harnessAuth: Parameters<typeof secretBackedCredential>[0],
+  permissions: Static<typeof AgentCallerPermissionsResponse>["data"] | null | undefined,
+) {
+  return code === "RUNTIME_AUTHENTICATION_FAILED" &&
+    harnessAuth?.method !== "runtime" &&
+    permissions != null &&
+    !(permissions.update === true && agentSaveDenial(permissions) === undefined)
+    ? modelCredentialRejectedAsk(secretBackedCredential(harnessAuth))
+    : undefined;
+}
+
 /** A model credential held in an OCC Secret, whose value Secret update replaces in place. */
 export function secretBackedCredential(
   harnessAuth: { method: string; source?: { kind: string } } | null | undefined,
@@ -184,20 +202,9 @@ export function createDeploymentRecovery(
     const generic = logsAllowed
       ? "Check the failed version’s logs before deploying a new version."
       : "Ask someone with log access to check the failed version’s logs before deploying a new version.";
-    // The API's step for a rejected model credential is to update it in Credentials, which needs
-    // Agent update. A caller whose permission answer denies that is told which grants fix it and
-    // who gives them instead: a Secret-backed credential can also be replaced in place with
-    // Secret update, which the answer does not cover (finding D750). The API still authorizes
-    // each save.
     const harnessAuth = "harnessAuth" in agent ? agent.harnessAuth : undefined;
-    const credentialFixDenied =
-      code === "RUNTIME_AUTHENTICATION_FAILED" &&
-      harnessAuth?.method !== "runtime" &&
-      permissions !== null &&
-      !(permissions.update === true && agentSaveDenial(permissions) === undefined);
-    const failureText = credentialFixDenied
-      ? modelCredentialRejectedAsk(secretBackedCredential(harnessAuth))
-      : errorMessage;
+    const credentialFixAsk = credentialRejectedAsk(code, harnessAuth, permissions);
+    const failureText = credentialFixAsk ?? errorMessage;
     let impact = failureText || generic;
     if (servingImpact === "replacement-failed") {
       impact = `${currentLabel} is still selected, but its runtime was probably stopped for this deployment.${failureText ? ` ${failureText}` : ""}`;

@@ -30,6 +30,12 @@ export const INSTALLATION_ADMINISTER_DENIED =
 // The native admin host names the grant but no Agent: the host, not the caller, names the Agent.
 export const NATIVE_ADMIN_DENIED =
   "Not authorized: opening this Agent's native admin UI needs Agent administer on it. Ask an Installation administrator to grant it.";
+// An IAM AccessBinding subject that is an email, and one that is no eligible principal: an unknown
+// ID gets the same answer as an ineligible one (finding D753).
+export const BINDING_SUBJECT_EMAIL =
+  "The IAM AccessBinding subject is an email address, not a principal ID. Use the person's principalId (prn_…), which GET /api/auth/accounts/<userId> returns.";
+export const BINDING_SUBJECT_INELIGIBLE =
+  "The IAM AccessBinding subject must be a human Principal, a non-Agent ServicePrincipal of this Namespace, or the ServicePrincipal of a live Agent here.";
 export const DEPENDENCY_UNAVAILABLE = "A required platform dependency is unavailable.";
 export const RESOURCE_CONFLICT = "The requested platform resource already exists.";
 export const RESOURCE_NOT_FOUND = "The requested platform resource was not found.";
@@ -106,6 +112,10 @@ export const credentialCheckedAtDeploy = (noun) =>
   `Deploying checks that this Agent can use the selected ${noun}. If it cannot, ask an Installation administrator to give the Agent ${noun} operate on it.`;
 export const AGENT_STOP_DENIED = notIncluded("stopping this Agent", "Agent operate on it");
 export const AGENT_DELETE_DENIED = notIncluded("deleting this Agent", "Agent delete on it");
+// The draft's Deploy for a reader without Agent deploy names the grant (finding D753).
+export const AGENT_DEPLOY_DENIED = notIncluded("deploying this Agent", "Agent deploy on it");
+// A Namespace the reader cannot read, deleted or not shared, in one sentence (finding D753).
+export const NAMESPACE_UNAVAILABLE = "This Namespace is missing or your access does not include it";
 export const AGENT_STOP_AND_DELETE_DENIED = notIncluded(
   "stopping or deleting this Agent",
   "Agent operate and Agent delete on it",
@@ -117,9 +127,12 @@ export const NEW_VERSIONS_READ =
 // A request the API refused for lack of a grant: what the reader tried, then the grant to ask for.
 export const permissionRefused = (task, grant) =>
   `You do not have permission to ${task}. ${askForGrant(grant)}`;
-// A refused Stop or Delete names the Agent on the Agents list and "this Agent" on its page.
-export const stopRefused = (name) => permissionRefused(`stop ${name}`, "Agent operate on it");
-export const deleteRefused = (name) => permissionRefused(`delete ${name}`, "Agent delete on it");
+// A refused Stop or Delete names the Agent on the Agents list and "this Agent" on its page, says
+// what was refused, then the reason (finding D753).
+export const stopRefused = (name) =>
+  `Stop was refused: your access does not include stopping ${name}. ${askForGrant("Agent operate on it")}`;
+export const deleteRefused = (name) =>
+  `Deletion was refused: your access does not include deleting ${name}. ${askForGrant("Agent delete on it")}`;
 export const CONFIGURATION_UPDATE_DENIED = notIncluded(
   "editing this Configuration",
   "Configuration update on it",
@@ -158,10 +171,16 @@ export const modelCredentialRejectedAsk = (secretBacked) =>
   `The model provider rejected this version's credential (HTTP 401 or 403). ${credentialFixGrants(secretBacked, "deploy a new version")}`;
 export const modelCredentialRejectedReadOnly = (secretBacked) =>
   `The last deployment's model credential was rejected. ${credentialFixGrants(secretBacked, "deploy again")}`;
+// The recorded failure once the Agent binds another credential than the failed version (D752).
+export const MODEL_CREDENTIAL_REJECTED_REPLACED =
+  "The model provider rejected this version's credential (HTTP 401 or 403). The Agent now uses a different credential: deploy a new version to use it.";
+// The API's recorded message for the same failure, which tells everyone to change the credential.
+export const MODEL_CREDENTIAL_REJECTED_RECORDED =
+  "The model provider rejected this version's credential (HTTP 401 or 403). Check that the key or token is valid and can use the selected model, update or replace the Agent's model credential, then deploy a new version.";
 // The API has no route to Slack (SlackRouteNotConfiguredError, apps/controller/src/drivers/channel/
-// slack.ts). Helm settings belong to whoever operates the Installation (finding D750).
+// slack.ts). A member reads who to ask, not Helm keys; the guide lists them (findings D750, D753).
 export const SLACK_ROUTE_NOT_CONFIGURED =
-  "OCC could not reach Slack, and the API has no Slack proxy. If the API has another approved route to Slack, try again. Otherwise ask the Installation operator to set Helm slackProxy.enabled or api.channelDirectoryProxyUrl; see the Slack integration guide.";
+  "OCC could not reach Slack, and the API has no Slack proxy. If the API has another approved route to Slack, try again. Otherwise ask an Installation administrator to give the API a route to Slack; the Slack integration guide lists the Helm settings.";
 // Agent-side save controls, from the caller's permission answer (findings 2441, 2459).
 export const AGENT_UPDATE_DENIED = notIncluded(
   "saving these settings",

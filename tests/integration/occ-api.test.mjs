@@ -42,6 +42,8 @@ import { jsonLineDestination } from "../helpers/json-lines.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
   AGENT_NAME_CONFLICT,
+  BINDING_SUBJECT_EMAIL,
+  BINDING_SUBJECT_INELIGIBLE,
   callerDenied,
   referenceFormRefusal,
   SERVICE_ACCOUNT_CROSS_NAMESPACE,
@@ -2067,6 +2069,13 @@ test("Namespace IAM reports invalid policy input as 400 with the field and refus
     assertApiError(rejected, 400, "INVALID_REQUEST", path);
     assert.deepEqual(rejected.body.error.details, [{ path, code: "INVALID_VALUE" }]);
   }
+  // An email is the caller's own input, so the answer names that mistake; an unknown principal ID
+  // keeps the answer an ineligible one gets, so it reveals no principal (finding D753).
+  const email = await bind({ subjectId: "nora@example.com" });
+  assertApiError(email, 400, "INVALID_REQUEST", "/subjectId");
+  assert.equal(email.body.error.message, BINDING_SUBJECT_EMAIL);
+  const unknown = await bind({ subjectId: `prn_${randomUUID()}` });
+  assert.equal(unknown.body.error.message, BINDING_SUBJECT_INELIGIBLE);
 
   // A Role still referenced by an AccessBinding names the reason, not "already exists".
   const binding = await bind({});

@@ -1184,6 +1184,20 @@ export function namespaceRoleGrantsBeyondRead(role: Pick<Role, "permissions">): 
   );
 }
 
+/**
+ * An AccessBinding subject is a principal ID, which never holds "@". An email is the caller's own
+ * input, so naming the mistake reveals nothing about which principals exist; an unknown ID keeps
+ * the answer an ineligible one gets (finding D753).
+ */
+export function assertBindingSubjectNotEmail(subjectId: string): void {
+  if (subjectId.includes("@")) {
+    throw new IAMPolicyValidationError(
+      "/subjectId",
+      "The IAM AccessBinding subject is an email address, not a principal ID. Use the person's principalId (prn_…), which GET /api/auth/accounts/<userId> returns.",
+    );
+  }
+}
+
 const secretIdentifier =
   /^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const namespaceIdentifier =
@@ -3284,6 +3298,7 @@ function repositories(
           "Namespace IAM Roles support only Namespace read.",
         );
       }
+      assertBindingSubjectNotEmail(binding.subjectId);
       if (
         binding.subjectKind !== "identity" ||
         !policySubjectExists(namespace.id, binding.subjectId)
