@@ -33,11 +33,13 @@ import {
   login,
   nativeValues,
   newPage,
+  settledFetches,
   settlePageRequests,
   trackSettledFetches,
   waitForCondition,
   waitForEnabled,
   waitForIdleFetches,
+  waitForSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
 import { withholdPermissionSummary } from "./console-agents-test-support.mjs";
 
@@ -160,6 +162,32 @@ const atBottom = (node: Element) => node.scrollTop + node.clientHeight >= node.s
 
 function logRequests(requests: ReturnType<typeof apiRequests>, revisionId: string) {
   return requests.filter(({ path }) => path.includes(`/deployments/${revisionId}/runtime/logs`));
+}
+
+// Records DOM writes to the nodes each selector matches now. A text or screenshot check cannot
+// tell an untouched live region from one rewritten with the same text, which assistive
+// technology may announce again, so steadiness is asserted on the writes themselves.
+function recordWrites(page: Page, targets: readonly (readonly [string, MutationObserverInit])[]) {
+  return page.evaluateHandle((targets) => {
+    const changes: string[] = [];
+    const observer = new globalThis.MutationObserver((records) => {
+      for (const record of records) {
+        const node =
+          record.target instanceof Element ? record.target : record.target.parentElement!;
+        changes.push(`${record.type} ${node.id || node.className}`);
+      }
+    });
+    for (const [selector, options] of targets) {
+      const nodes = globalThis.document.querySelectorAll(selector);
+      if (nodes.length === 0) {
+        throw new Error(`Nothing matches ${selector}.`);
+      }
+      for (const node of nodes) {
+        observer.observe(node, options);
+      }
+    }
+    return changes;
+  }, targets);
 }
 
 test("a failed deployment's Logs link opens its version in view without reloading", async (t) => {
@@ -958,29 +986,17 @@ test("an unchanged runtime status poll leaves the status strip and pickers untou
   const strip = page.locator(".runtime-strip");
   await strip.locator(".runtime-pod").nth(1).waitFor();
   await page.locator("#runtime-log-pod:not([hidden])").waitFor();
-  const observed = ["#runtime-log-source", "#runtime-log-pod", ".runtime-strip", ".log-retention"];
-  const rewrites = await page.evaluateHandle((selectors) => {
-    const changes: string[] = [];
-    const observer = new globalThis.MutationObserver((records) => {
-      for (const record of records) {
-        const node =
-          record.target instanceof Element ? record.target : record.target.parentElement!;
-        changes.push(`${record.type} ${node.id || node.className}`);
-      }
-    });
-    const announcing = [...globalThis.document.querySelectorAll(".agent-logs [role='status']")];
-    for (const node of [
-      ...selectors.map((selector) => globalThis.document.querySelector(selector)),
-      ...announcing,
-    ]) {
-      observer.observe(node!, {
-        childList: true,
-        subtree: true,
-        characterData: true,
-      });
-    }
-    return changes;
-  }, observed);
+  const content = { childList: true, subtree: true, characterData: true };
+  const rewrites = await recordWrites(
+    page,
+    [
+      "#runtime-log-source",
+      "#runtime-log-pod",
+      ".runtime-strip",
+      ".log-retention",
+      ".agent-logs [role='status']",
+    ].map((selector) => [selector, content] as const),
+  );
   // The observation time sits outside every status region, with aria-live=off, because it
   // changes on every poll and a status region would announce each one (finding 1425).
   const observedLine = page.locator(".agent-logs [aria-live='off']");
@@ -1664,6 +1680,92 @@ test("a rate-limited Refresh logs keeps the loaded lines and says when to try ag
   assert.match((await logError.textContent()) ?? "", /Try again in 3 seconds\./u);
   assert.equal(await log.locator(".log-row").count(), 0);
   assert.equal(await outputStatus.textContent(), "");
+});
+
+// Follow polls every two seconds. One that brings nothing new must not write to the rows or the
+// live statuses: a write would clear text the reader selected and re-announce the same status.
+test("Follow leaves filtered rows and status lines untouched on an idle poll", async (t) => {
+  const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
+  computeDriver.state.lines = [line(1, "keep first"), line(2, "hide first")];
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revisionId, "logs"));
+  const pane = page.getByRole("log", { name: "Runtime log output" });
+  await pane.getByText("hide first").waitFor();
+  await page.locator("#runtime-log-filter").fill("keep");
+  await pane.getByText("hide first").waitFor({ state: "hidden" });
+  const status = page.locator(".log-filter-status");
+  const scope = "Filters search only the lines loaded in this view, not the whole container log.";
+  assert.equal(await status.textContent(), `Showing 1 of 2 loaded lines. ${scope}`);
+  const content = { childList: true, subtree: true, characterData: true };
+  // Only the rows loaded now: Follow is expected to append new ones.
+  const writes = await recordWrites(page, [
+    [".log-pane > *", { attributeFilter: ["hidden"] }],
+    [".log-filter-status", content],
+    [".log-output-status", content],
+  ]);
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revisionId}/runtime/logs`;
+  const before = await settledFetches(page, path);
+  const idle = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === path && url.searchParams.has("cursor");
+  });
+  await page.getByRole("button", { name: "Follow", exact: true }).click();
+  await page.clock.runFor(2_000);
+  assert.deepEqual((await (await idle).json()).data.records, []);
+  // The response alone is too early: the page must also have handled its body.
+  await waitForSettledFetches(page, path, before + 1);
+  assert.deepEqual(await writes.jsonValue(), []);
+
+  // New lines are filtered as they arrive; only the count changes for the rows shown before.
+  computeDriver.state.lines.push(line(3, "keep later"), line(4, "hide later"));
+  await page.clock.runFor(2_000);
+  await waitForSettledFetches(page, path, before + 2);
+  await pane.getByText("keep later").waitFor();
+  assert.equal(await pane.getByText("hide later").isVisible(), false);
+  assert.equal(await pane.getByText("hide first").isVisible(), false);
+  assert.equal(await pane.getByText("keep first").isVisible(), true);
+  assert.equal(await status.textContent(), `Showing 2 of 4 loaded lines. ${scope}`);
+  assert.deepEqual(await writes.jsonValue(), ["childList log-filter-status"]);
+  await writes.dispose();
+
+  // A refresh whose tail is now empty still recounts the cleared pane.
+  await page.getByRole("button", { name: "Following", exact: true }).click();
+  computeDriver.state.lines = [];
+  await page.getByRole("button", { name: "Refresh logs" }).click();
+  await page.locator(".log-output-status", { hasText: /^No info-or-higher output/ }).waitFor();
+  assert.equal(await status.textContent(), `Showing 0 of 0 loaded lines. ${scope}`);
+});
+
+test("Follow reports the first output after an empty tail, and a failed refresh keeps it", async (t) => {
+  const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
+  computeDriver.state.lines = [];
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revisionId, "logs"));
+  const status = page.locator(".log-output-status");
+  await status.filter({ hasText: "No info-or-higher output in the last 200 lines." }).waitFor();
+
+  // The first followed line replaces the empty-tail explanation.
+  computeDriver.state.lines.push(line(1, "first followed output"));
+  await page.getByRole("button", { name: "Follow", exact: true }).click();
+  await page.clock.runFor(2_000);
+  const pane = page.getByRole("log", { name: "Runtime log output" });
+  await pane.getByText("first followed output").waitFor();
+  await waitForIdleFetches(page);
+  const shown = await status.textContent();
+  assert.match(shown ?? "", /^Showing gateway in /u);
+
+  // A rate-limited Refresh keeps the lines, and puts back the status that describes them.
+  await page.getByRole("button", { name: "Following", exact: true }).click();
+  await page.route("**/runtime/logs?*", (route) => route.fulfill(rateLimitedResponse(5)));
+  await page.getByRole("button", { name: "Refresh logs" }).click();
+  await waitForIdleFetches(page);
+  assert.match((await page.locator(".log-error").textContent()) ?? "", /Try again in 5 seconds\./u);
+  await pane.getByText("first followed output").waitFor();
+  assert.equal(await status.textContent(), shown);
 });
 
 // A refresh keeps its lines until its page arrives, but only for the selection they belong to:

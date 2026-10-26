@@ -1,6 +1,6 @@
 ---
 created: 2026-09-30
-updated: 2026-10-24
+updated: 2026-10-26
 last_updated_session: authoring-run/3954aa04-12f8-4a8e-bb62-a4d9a8603edd
 ---
 
@@ -196,6 +196,7 @@ take `-previous.log` from the request.
 
 `console/agents/logs.mts` clears output when status selects another source, Pod or instance.
 Only a readable replacement starts a fresh tail. Status denial preserves log access; cached `403` avoids repeat denials.
+Follow leaves loaded rows and unchanged statuses alone; its first line replaces an empty-tail status.
 Pod cards show state/exit; Gateway links Harness output or Deployment activity.
 
 CLI flags, follow polling and `Retry-After` handling (`internal/occclient/transport.go:apiError`): see the
@@ -225,6 +226,8 @@ Driver failures use fixed `RUNTIME_LOGS_*` codes; requests have ten-second deadl
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-26: Follow polls no longer rewrite loaded rows or unchanged statuses (port of #2502).
 
 - 2026-10-24 13:19: Validate output. (authoring-run/3954aa04-12f8-4a8e-bb62-a4d9a8603edd - 1b59554add06e9f7be0b0a730202f558c939a661)
 

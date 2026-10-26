@@ -779,22 +779,31 @@ export function renderAgentLogs(
 
   // Client-side only: filters narrow the rows already loaded, never the server read.
   function applyFilters() {
-    let lines = 0;
-    let shown = 0;
     for (const row of pane.children as HTMLCollectionOf<HTMLElement>) {
       row.hidden = !rowVisible(row);
-      if (row.dataset.level !== undefined) {
-        lines += 1;
-        shown += row.hidden ? 0 : 1;
-      }
     }
-    const filtering = hiddenLevels.size > 0 || filterInput.value.trim() !== "";
-    filterStatus.textContent = filtering
-      ? `Showing ${shown} of ${lines} loaded lines. Filters search only the lines loaded in this view, not the whole container log.`
-      : "Filters search only the lines loaded in this view, not the whole container log.";
+    updateFilterStatus();
+  }
+
+  // The status is a live region: an unchanged count is not written again, so a Follow poll
+  // neither re-announces it nor touches rows the reader may have selected text in.
+  function updateFilterStatus() {
+    let text = "Filters search only the lines loaded in this view, not the whole container log.";
+    if (hiddenLevels.size > 0 || filterInput.value.trim() !== "") {
+      // Gap and withheld notices have no level and are not counted.
+      const lines = pane.querySelectorAll(":scope > [data-level]").length;
+      const shown = pane.querySelectorAll(":scope > [data-level]:not([hidden])").length;
+      text = `Showing ${shown} of ${lines} loaded lines. ${text}`;
+    }
+    if (filterStatus.textContent !== text) {
+      filterStatus.textContent = text;
+    }
   }
 
   function appendRecords(records: readonly RuntimeLogRecord[]) {
+    if (records.length === 0) {
+      return;
+    }
     const atBottom = pane.scrollTop + pane.clientHeight >= pane.scrollHeight - 24;
     for (const record of records) {
       const row = recordRow(record);
@@ -806,7 +815,8 @@ export function renderAgentLogs(
       pane.firstChild.remove();
       rows -= 1;
     }
-    applyFilters();
+    // New rows were filtered as they were added; the rows already shown keep their state.
+    updateFilterStatus();
     if (atBottom) {
       pane.scrollTop = pane.scrollHeight;
     }
@@ -984,6 +994,7 @@ export function renderAgentLogs(
         pane.replaceChildren();
         rows = 0;
         shownSelection = selection;
+        updateFilterStatus();
       }
       cursor = page.cursor;
       appendRecords(page.records);
@@ -992,19 +1003,23 @@ export function renderAgentLogs(
         lastStream = page.stream;
         renderPickers();
       }
-      const lines = page.records.filter(({ type }) => type === "line").length;
-      if (restart) {
-        logStatus.textContent =
+      const hasLine = page.records.some(({ type }) => type === "line");
+      // A Follow poll's first line replaces an empty tail's "No output" status.
+      if (restart || hasLine) {
+        const text =
           page.stream === null
             ? "This version has no running Pod for this source."
-            : lines === 0 && page.withheld > 0
+            : !hasLine && page.withheld > 0
               ? `Only withheld output in the last ${TAIL_LINES} lines.`
-              : lines === 0
+              : !hasLine
                 ? `No ${includeDebug.checked ? "" : "info-or-higher "}output in the last ${TAIL_LINES} lines.`
                 : source.kind === "sandbox"
                   ? `Showing policy decisions and supervisor output of sandbox ${page.stream.sandbox ?? ""}.`
                   : `Showing ${previous.checked ? "the previous instance of " : ""}${page.stream.container} in ${page.stream.pod}.`;
-        shownStatus = logStatus.textContent;
+        if (logStatus.textContent !== text) {
+          logStatus.textContent = text;
+        }
+        shownStatus = text;
       }
     } catch (cause) {
       const error = requestFailure(cause);
