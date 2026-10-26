@@ -67,10 +67,12 @@ export const READ_UNAVAILABLE = "Service unavailable. The read could not be comp
 // The console's text for a 400 the API does not explain, where the reader entered nothing (Stop,
 // Delete): the console sent a request the API's schema refused.
 export const MALFORMED_REQUEST =
-  "The API refused this request as malformed. Refresh the page and try again. If it happens again, report it with the request ID.";
-// A 429 with Retry-After names the wait.
+  "The API refused this request as malformed. Refresh the page and try again.";
+// A 429 with Retry-After names the wait: seconds up to two minutes, then whole minutes.
 export const tooManyRequestsIn = (seconds) =>
-  `Too many requests. Try again in ${seconds} ${seconds === 1 ? "second" : "seconds"}.`;
+  seconds < 120
+    ? `Too many requests. Try again in ${seconds} ${seconds === 1 ? "second" : "seconds"}.`
+    : `Too many requests. Try again in about ${Math.ceil(seconds / 60)} minutes.`;
 
 // The Agent page's Workspace tab without a deployed, reachable gateway.
 export const WORKSPACE_FILES_UNAVAILABLE =

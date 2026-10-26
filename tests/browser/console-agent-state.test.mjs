@@ -28,6 +28,7 @@ import {
 } from "./console-deployment-activity-helpers.mjs";
 import { agentDeleteRequests, agentStopRequests } from "./console-agents-test-support.mjs";
 import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
+import { MALFORMED_REQUEST } from "../helpers/refusal-text.mjs";
 
 function deploymentBody(
   namespaceId,
@@ -1615,6 +1616,71 @@ for (const action of ["Stop", "Delete"]) {
     );
   });
 }
+
+// A row's Stop and Delete have no form: a schema refusal does not ask to check entered values, a
+// typed 409 shows the API's sentence, and a conflict the API does not explain keeps the list's own
+// sentence (findings 2538, 2561).
+test("Agents list row Stop and Delete show the API's 400 and 409 reasons", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Row refusals", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Refused Row", nativeValues("row"));
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const { page } = await newPage(t, fixture);
+  let answer;
+  await page.route(`${fixture.origin}${agentPath}/stop`, (route) => route.fulfill(answer));
+  await page.route(`${fixture.origin}${agentPath}`, (route) =>
+    route.request().method() === "DELETE" ? route.fulfill(answer) : route.fallback(),
+  );
+  await login(page, fixture, listUrl(namespace.id));
+  const row = page.getByRole("row").filter({ hasText: "Refused Row" });
+  const refresh = page.getByRole("button", { name: "Refresh", exact: true });
+  for (const [kind, status, serverMessage, reason] of [
+    ["stop", 400, "The request does not match the operation contract.", MALFORMED_REQUEST],
+    [
+      "stop",
+      409,
+      "The Agent lifecycle changed during stop.",
+      "The Agent lifecycle changed during stop. Select Refresh before trying again.",
+    ],
+    [
+      "delete",
+      409,
+      "The requested platform resource already exists.",
+      "Refused Row changed while the request was sent. Select Refresh before trying again.",
+    ],
+    ["delete", 400, "The request does not match the operation contract.", MALFORMED_REQUEST],
+  ]) {
+    answer = apiErrorResponse(
+      status,
+      status === 400 ? "INVALID_REQUEST" : "RESOURCE_CONFLICT",
+      serverMessage,
+    );
+    const stopping = kind === "stop";
+    await waitForEnabled(
+      row.getByRole("button", { name: `${stopping ? "Stop" : "Delete"} Refused Row`, exact: true }),
+    );
+    await row
+      .getByRole("button", { name: `${stopping ? "Stop" : "Delete"} Refused Row`, exact: true })
+      .click();
+    await page
+      .getByRole("dialog", { name: `${stopping ? "Stop" : "Delete"} Refused Row?` })
+      .getByRole("button", {
+        name: stopping ? "Stop Agent" : "Permanently delete Agent",
+        exact: true,
+      })
+      .click();
+    await page
+      .getByText(`Could not ${kind} Refused Row. ${reason}`, { exact: false })
+      .first()
+      .waitFor();
+    assert.equal(await page.getByText(/entered values/).count(), 0);
+    if (status === 409) {
+      await refresh.click();
+    }
+  }
+});
 
 test("Agents list row actions explain missing access and still report a refused or uncertain write", async (t) => {
   const fixture = await createConsoleAppFixture(t, { provisionedPeople: ["row-reader"] });

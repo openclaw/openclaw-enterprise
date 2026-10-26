@@ -605,6 +605,8 @@ export const scenarios = {
         method: "DELETE",
         status: 409,
         code: "RESOURCE_CONFLICT",
+        message:
+          "The Secret is still referenced by Agent agt_00000000-0000-4000-8000-000000000001. Remove those references first.",
       },
     ],
     actions: [
@@ -3228,6 +3230,9 @@ export const scenarios = {
         path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents",
         method: "POST",
         status: 409,
+        code: "RESOURCE_CONFLICT",
+        message:
+          "The selected Compute Driver cannot deliver repository credentials to this Harness topology.",
         once: true,
       },
     ],

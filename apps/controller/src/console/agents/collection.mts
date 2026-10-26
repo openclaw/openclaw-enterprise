@@ -510,7 +510,7 @@ export function renderAgentList(context: AgentListContext) {
         text = `${item.name} is no longer available. Select Refresh to update the list.`;
       } else if (error.status === 409) {
         // The API's own reason, such as a lifecycle change while the request ran.
-        text = `Could not ${kind === "stop" ? "stop" : "delete"} ${item.name}. ${describeFailure(cause, { mutation: true, next: "Select Refresh before trying again." })}`;
+        text = `Could not ${kind === "stop" ? "stop" : "delete"} ${item.name}. ${describeFailure(cause, { mutation: true, conflict: `${item.name} changed while the request was sent.`, next: "Select Refresh before trying again." })}`;
       } else {
         text = `Outcome unknown. ${kind === "stop" ? "Stop" : "Deletion"} may have been accepted for ${item.name}. Select Refresh before trying again.`;
       }

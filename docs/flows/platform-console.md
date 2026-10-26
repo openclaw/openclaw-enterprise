@@ -303,8 +303,9 @@ remains and the reader hasn’t moved on. Draft save baselines and Namespace sco
 Authorization and dependency failures clear affected content and expose recovery;
 a current protected `401` clears all private state. `pagehide` clears
 private DOM, previews, and drafts even for BFCache; persisted `pageshow` performs
-a fresh load. Failure views show local reasons and `req_<UUID>` request IDs, never
-backend error text. Backend authorization denial clears every retained preview,
+a fresh load. Failure views show local reasons and `req_<UUID>` request IDs. The
+only backend text they show is a refusal the API explains (a 400 naming the field or
+rule, a typed 409 naming the state), set as text. Backend authorization denial clears every retained preview,
 including other Namespace selections, because the permission is Installation-wide.
 
 The [detail action flow](platform-console/agent-stop-and-deletion.md#stop-agent) traces

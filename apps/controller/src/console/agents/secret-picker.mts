@@ -16,8 +16,8 @@ import {
   validateFields,
 } from "../dom.mjs";
 import {
-  GENERIC_CONFLICT,
   describeFailure,
+  explainedConflict,
   message,
   namespaceListNeed,
   namespacePath,
@@ -823,7 +823,7 @@ export function createSecretReferenceField({
         } else if (status === 409 && code === "NAMESPACE_NOT_READY") {
           feedback.textContent =
             "This Namespace is not ready, so it cannot store Secrets yet. Check its status on the Namespaces page: a provisioning Namespace becomes ready when its Kubernetes setup completes (on Kubernetes installs, after an operator grants the tenant RoleBindings).";
-        } else if (status === 409 && requestFailure(cause).serverMessage !== GENERIC_CONFLICT) {
+        } else if (status === 409 && explainedConflict(cause) !== undefined) {
           // A typed conflict names the state that refused the create.
           feedback.textContent = describeFailure(cause, { mutation: true });
         } else if (status === 409) {
