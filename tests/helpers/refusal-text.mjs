@@ -630,6 +630,10 @@ export const WITHDRAWAL_NO_ACTIVE_VERSION =
   "The Agent has no active version, so it has no credential withdrawals. Deploy the Agent first.";
 export const WITHDRAWAL_NOT_FOUND =
   "The Agent's active version has no withdrawal for this credential source: either the version does not use it, or no withdrawal was requested for it.";
+// A policy denial that names only OpenShell's policy DNS placeholder address, with no record
+// of the host it stood for in the loaded log: the row proposes no rule (D771).
+export const PLACEHOLDER_DESTINATION =
+  "OpenShell logged only a placeholder address for this connection, and the record that names its hostname is not in the loaded log, so this denial proposes no rule. Add a rule for the hostname in Manage rules.";
 export const POLICY_RECOMMENDATIONS_NO_SANDBOX =
   "This version runs without a Sandbox, so it records no network denials to recommend policy from. Policy recommendations need an Agent deployed with a Sandbox Driver such as OpenShell.";
 export const DEVICE_LOGIN_NOT_CONFIGURED =

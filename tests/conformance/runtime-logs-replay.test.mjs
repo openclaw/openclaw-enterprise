@@ -1,4 +1,4 @@
-import { openShellLogDecision } from "../../apps/controller/src/drivers/sandbox/openshell-log-decisions.ts";
+import { openShellLogDecisions } from "../../apps/controller/src/drivers/sandbox/openshell-log-decisions.ts";
 import assert from "node:assert/strict";
 import { readdir, readFile, writeFile } from "node:fs/promises";
 import test from "node:test";
@@ -84,11 +84,12 @@ async function replay(entry) {
   }
   if (entry.replay === "openshell-sandbox") {
     const chunk = JSON.parse(text);
+    const lines = entry.lines === undefined ? chunk.lines : entry.lines(chunk.lines);
     const { records, withheld } = sanitizeSandboxLogLines(
       { source: "sandbox", sandbox: chunk.sandbox },
-      chunk.lines.map(openShellLogDecision),
+      openShellLogDecisions(lines),
     );
-    return { input: chunk.lines.length, withheld, records };
+    return { input: lines.length, withheld, records };
   }
   if (entry.replay === "kubernetes-events") {
     const { items } = JSON.parse(text);
@@ -343,6 +344,72 @@ test("OpenShell decisions keep rule and engine; the pinned source never sends a 
   assert.equal(denied[0].fields.reason, "no matching policy");
   const gatewayOrigin = sandbox.records.find(({ fields }) => fields?.source === "gateway");
   assert.equal(gatewayOrigin.fields.activity, "CONFIG:LOADED");
+});
+
+test("OpenShell placeholder addresses resolve to the host its policy DNS mapped, never to the address", async () => {
+  // D771 (dogfood-r52, OpenShell 0.1.5): a second port of a host with a rule is denied with
+  // the placeholder address that host's lookup was answered with. The `Policy DNS mapped` record
+  // just before it names the host; after an apply the host moves to a new address.
+  const { fixtures } = await manifest();
+  const sandbox = await replay(
+    fixtures.find(({ file }) => file === "sandbox-openshell-placeholder-denials.json"),
+  );
+  assert.equal(sandbox.withheld, 0);
+  const denied = sandbox.records.filter(({ decision }) => decision?.decision === "denied");
+  assert.deepEqual(
+    denied.map(({ decision, fields }) => [
+      decision.binary ?? null,
+      decision.host ?? null,
+      decision.port ?? null,
+      fields.dst_host ?? null,
+      fields.dst_placeholder_ip ?? null,
+    ]),
+    [
+      [
+        "/usr/bin/python3.11",
+        "fake-model.oce-r52-fake.svc.cluster.local",
+        8083,
+        null,
+        "198.18.0.2",
+      ],
+      [
+        "/usr/bin/python3.11",
+        "fake-model.oce-r52-fake.svc.cluster.local",
+        8084,
+        null,
+        "198.18.0.2",
+      ],
+      [
+        "/usr/bin/python3.11",
+        "fake-model.oce-r52-fake.svc.cluster.local",
+        8084,
+        null,
+        "198.18.0.6",
+      ],
+      [
+        "/usr/bin/python3.11",
+        "kubernetes.default.svc.cluster.local",
+        443,
+        "kubernetes.default.svc.cluster.local",
+        null,
+      ],
+      // D772: a DNS refusal names the query; it knows no executable and no port.
+      [null, "example.com", null, "example.com", null],
+      ["/usr/bin/curl", "example.com", 443, "example.com", null],
+    ],
+  );
+  // The same denial read without its mapping record names no host, so nothing can propose
+  // the placeholder as a destination.
+  const lone = await replay({
+    ...fixtures.find(({ file }) => file === "sandbox-openshell-placeholder-denials.json"),
+    lines: (lines) => lines.filter(({ message }) => !message.startsWith("CONFIG:")),
+  });
+  const unmapped = lone.records.filter(({ fields }) => fields?.dst_placeholder_ip !== undefined);
+  assert.equal(unmapped.length, 3);
+  for (const record of unmapped) {
+    assert.equal(record.decision.host, undefined, record.message);
+    assert.equal(record.fields.dst_host, undefined, record.message);
+  }
 });
 
 test("real Kubernetes Events mask node, image and object names before they reach the status", async () => {

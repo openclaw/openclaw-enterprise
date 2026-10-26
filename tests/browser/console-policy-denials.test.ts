@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import type { Page } from "playwright";
 import type { RuntimeLogRecord, SandboxNetworkGrant } from "../../packages/contracts/src/index.ts";
 import { createPolicyConsole } from "./console-sandbox-policy-fixture.ts";
+import { PLACEHOLDER_DESTINATION } from "../helpers/refusal-text.mjs";
+import { openShellSandboxRecords } from "../helpers/runtime-logs.mjs";
+
 import {
   apiRequests,
   detailUrl,
@@ -372,6 +376,107 @@ test("Allow this opens the editor at its new rule and a covered suggestion adds 
   assert.equal(pathRequests(requests, "POST", `${base}/validate`).length, 1);
   assert.equal(pathRequests(requests, "PUT", base).length, 1);
   assert.equal((await fixture.request("GET", base)).data.policy.version, 3);
+});
+
+test("OpenShell placeholder denials show and propose the mapped hostname, never the placeholder", async (t) => {
+  // D771/D772 (dogfood-r52): records come from the captured OpenShell lines through the
+  // Driver's parser and OCC's sanitizer. A second port of a host that has a rule is denied
+  // with the placeholder address its policy DNS answered; the record before it names the host.
+  const host = "fake-model.oce-r52-fake.svc.cluster.local";
+  const python = "/usr/bin/python3.11";
+  const reachable: SandboxNetworkGrant = {
+    id: "fake-model-ports",
+    binary: python,
+    host,
+    ports: [{ from: 8083, to: 8084 }],
+  };
+  const { fixture, namespace, agent, base } = await createPolicyConsole(t, [reachable]);
+  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const { lines } = JSON.parse(
+    readFileSync(
+      new URL(
+        "../fixtures/runtime-logs/replay/sandbox-openshell-placeholder-denials.json",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  ) as { lines: { time: string; message: string }[] };
+  const mapped = lines.findIndex(({ message }) => message.includes("-> 198.18.0.2:8083 "));
+  const refusal = lines.findIndex(({ message }) => message.startsWith("NET:REFUSE"));
+  const records = [
+    // The mapping record and the denial it resolves, then the DNS refusal and its observation.
+    ...openShellSandboxRecords(lines.slice(mapped - 2, mapped + 1)),
+    ...openShellSandboxRecords(lines.slice(refusal, refusal + 2)),
+    // A placeholder whose mapping record is not in the read names no host.
+    ...openShellSandboxRecords([
+      {
+        ...lines[mapped]!,
+        time: "2026-10-26T20:48:00.000000000Z",
+        message:
+          "NET:OPEN [MED] DENIED /usr/bin/python3.11(0) -> 198.18.0.4:8084 [reason:transparent_tcp_mapping_denied]",
+      },
+    ]),
+    // A record that carries the placeholder as its host is still not proposed.
+    denial({ ...reachable, host: "198.19.0.9" }, 1, 8084),
+  ];
+  const { page } = await newPage(t, fixture);
+  await logWindow(
+    page,
+    fixture.origin,
+    `/namespaces/${namespace.id}/agents/${agent.id}`,
+    revision.id,
+    records,
+  );
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revision.id, "policy"));
+  const tab = page.locator(".sandbox-policy");
+  await tab.getByText("4 in loaded window", { exact: true }).waitFor();
+  // Newest first. A DNS refusal names its host and no executable.
+  assert.deepEqual(await tab.locator(".sandbox-denial-binary").allInnerTexts(), [
+    "python3.11",
+    "python3.11",
+    "DNS lookup",
+    "python3.11",
+  ]);
+  assert.deepEqual(await tab.locator(".sandbox-denial-destination").allInnerTexts(), [
+    "Hostname not logged · 198.19.0.9:8084",
+    "Hostname not logged · 198.18.0.4:8084",
+    "example.com",
+    `${host}:8083`,
+  ]);
+  // Only the mapped denial can become a rule: the placeholders and the refusal propose none.
+  await tab.getByText("Select page (1)", { exact: true }).waitFor();
+  for (const address of ["198.19.0.9", "198.18.0.4"]) {
+    const row = tab.locator(".sandbox-decision", { hasText: address });
+    assert.equal(await row.getByRole("button", { name: "Allow this", exact: true }).count(), 0);
+    assert.equal(await row.locator(".sandbox-denial-select input").isDisabled(), true);
+  }
+  const unmapped = tab.locator(".sandbox-decision", { hasText: "198.18.0.4" });
+  await unmapped.getByRole("button", { name: "Show denial details", exact: true }).click();
+  await unmapped.getByText(PLACEHOLDER_DESTINATION, { exact: true }).waitFor();
+
+  await tab
+    .locator(".sandbox-decision", { hasText: `${host}:8083` })
+    .getByRole("button", { name: "Allow this", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog", { name: "Edit network rule", exact: true });
+  await dialog.getByText(/^Rules added to your proposal\./).waitFor();
+  assert.equal(
+    await dialog.getByRole("textbox", { name: "Destination hostname", exact: true }).inputValue(),
+    host,
+  );
+  assert.equal(await dialog.getByLabel("Start port", { exact: true }).inputValue(), "8083");
+  await dialog.getByRole("button", { name: "Review changes", exact: true }).click();
+  // The real validate route admits the hostname inside the ceiling.
+  const review = page.getByRole("dialog", { name: "Review policy changes", exact: true });
+  await review.getByText("Rules to add or update · 1", { exact: true }).waitFor();
+  const validations = pathRequests(requests, "POST", `${base}/validate`);
+  assert.equal(validations.length, 1);
+  const { additions } = validations[0]!.body as { additions: SandboxNetworkGrant[] };
+  assert.deepEqual(
+    additions.map((grant) => [grant.binary, grant.host, grant.ports]),
+    [[python, host, [{ from: 8083, to: 8083 }]]],
+  );
 });
 
 test("a policy batch outside the Installation ceiling retains its draft and does not save or apply", async (t) => {

@@ -3,9 +3,13 @@ import { randomUUID } from "node:crypto";
 
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
-import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
+import {
+  InMemoryPlatformState,
+  OpenClawController,
+  sanitizeSandboxLogLines,
+} from "../../packages/occ/src/index.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
-import { openShellLogDecision } from "../../apps/controller/src/drivers/sandbox/openshell-log-decisions.ts";
+import { openShellLogDecisions } from "../../apps/controller/src/drivers/sandbox/openshell-log-decisions.ts";
 import { createControllerApp } from "../../apps/controller/src/index.ts";
 import {
   authenticatedHeaders,
@@ -19,6 +23,16 @@ import { grantRole } from "./iam-grants.mjs";
 import { createTestSecretDriver } from "./secret-driver.mjs";
 
 export const runtimeLogPodUid = "0f3b6c1e-7d52-4f4b-9a2e-5c6d7e8f9a01";
+
+/**
+ * The runtime log records a read of raw OpenShell Sandbox lines produces: the Driver's
+ * decoration over the whole read, then OCC's sanitizer. Console tests that route the log
+ * page serve these, so what they render is what the product parses.
+ */
+export function openShellSandboxRecords(lines, sandbox = "browser-policy") {
+  return sanitizeSandboxLogLines({ source: "sandbox", sandbox }, openShellLogDecisions(lines))
+    .records;
+}
 
 /**
  * A Compute Driver that implements the runtime log contract over in-memory Pod state.
@@ -262,7 +276,7 @@ export function createProviderSandboxDriver({ id = "console-sandbox" } = {}) {
       return {
         sandbox: sandboxName(context.revision),
         observedAt: "2026-09-30T12:00:05.000Z",
-        lines: state.lines.map(openShellLogDecision),
+        lines: openShellLogDecisions(state.lines),
         bufferTotal: state.lines.length,
       };
     },
