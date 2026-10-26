@@ -1,10 +1,14 @@
+import { randomUUID } from "node:crypto";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { validateInstallationTokenResponse } from "../../apps/controller/src/drivers/repo/github/credentials/driver/acquisition-response.ts";
 import { githubMetadataProvider } from "../../apps/controller/src/drivers/egress-proxy/github-metadata.ts";
 import { captureMetadata, dispatchMetadata } from "../helpers/github-metadata-exchange.mjs";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
-import { credentialSourceFieldRequired } from "../helpers/refusal-text.mjs";
+import {
+  CREDENTIAL_SOURCE_SECRETS_CROSS_NAMESPACES,
+  credentialSourceFieldRequired,
+} from "../helpers/refusal-text.mjs";
 import { createPreparedStore } from "../fixtures/repository-credentials/github/prepared-store.mjs";
 import {
   startGitHubFixture,
@@ -134,6 +138,18 @@ test("consented protected repository read uses only exact, already prepared meta
       );
       assert.equal(owner, undefined);
       input.config.authority = "execution";
+      // An issuer Secret reference to another Namespace is the request's own error, refused as
+      // the Credential Gateway path refuses it (finding 2536), before any issuer work.
+      const crossed = await app.request("POST", path, {
+        body: {
+          ...input,
+          secrets: { private_key: { ...secret.ref, namespaceId: `ns_${randomUUID()}` } },
+        },
+      });
+      assert.equal(crossed.status, 400, JSON.stringify(crossed.body));
+      assert.equal(crossed.body.error.code, "INVALID_REQUEST");
+      assert.equal(crossed.body.error.message, CREDENTIAL_SOURCE_SECRETS_CROSS_NAMESPACES);
+      assert.equal(owner, undefined);
       const created = await app.request("POST", path, { body: input });
       assert.equal(created.status, 201, JSON.stringify(created.body));
       const source = created.data;

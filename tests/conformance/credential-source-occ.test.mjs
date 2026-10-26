@@ -28,6 +28,7 @@ import {
   registrationFenceRetry,
   RESOURCE_NOT_FOUND,
   sentIdHidden,
+  WITHDRAWAL_SOURCE_NOT_USED,
 } from "../helpers/refusal-text.mjs";
 
 const administrator = "principal-source-administrator";
@@ -1865,20 +1866,28 @@ test("withdrawal is recorded for the active revision and queued once, and the re
   );
   assert.equal(withdrawalWork().length, 1);
 
-  // Only a source the active revision was admitted with can be withdrawn.
+  // Only a source the active revision was admitted with can be withdrawn. The check reads the
+  // revision's bindings, never the source, so another source and a missing ID answer alike: a
+  // 409 that names no source (finding 2536).
   const other = await controller.createCredentialSource(administrator, {
     namespaceId: namespace.id,
     name: "other",
     type: "openai",
     secrets: { api_key: secret.ref },
   });
-  await assert.rejects(
-    controller.withdrawAgentCredentialSource(administrator, {
-      ...request,
-      credentialSourceId: other.id,
-    }),
-    ScopeViolationError,
-  );
+  for (const credentialSourceId of [other.id, `cs_${crypto.randomUUID()}`]) {
+    await assert.rejects(
+      controller.withdrawAgentCredentialSource(administrator, { ...request, credentialSourceId }),
+      (error) => {
+        const { status, code, message } = requestFailure(error);
+        assert.deepEqual(
+          { status, code, message },
+          { status: 409, code: "RESOURCE_CONFLICT", message: WITHDRAWAL_SOURCE_NOT_USED },
+        );
+        return true;
+      },
+    );
+  }
   // A withdrawn source stays referenced by the active revision until a redeploy replaces it,
   // and that reference, not the queued withdrawal, is what the refusal names.
   await assert.rejects(

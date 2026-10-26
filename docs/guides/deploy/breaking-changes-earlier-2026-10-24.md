@@ -7,6 +7,28 @@ apply when you upgrade from a source commit older than their date. Entries are
 newest first. Steps marked _untested_ have not been run against a real
 Installation.
 
+## 2026-10-24: SSH deployment checks Gateway authentication and Secret bindings
+
+**What breaks.** On SSH Compute, deployment refuses a
+Configuration whose `gateway` or `gateway.auth` is not an object, whose
+`gateway.auth.mode` is not `trusted-proxy` or `password`, which sets another
+`gateway.auth` field such as `token`, or whose `gateway.auth.password` is not
+the `OPENCLAW_GATEWAY_PASSWORD` reference, with `409 RESOURCE_CONFLICT`.
+Deployment and provisioning refuse non-empty Configuration `secretBindings` with `400`. Earlier builds
+answered `202`, and every preparation failed. Agent save is unchanged.
+
+**Who is affected.** SSH Installations with such a Configuration; none of them
+could deploy.
+
+**How to tell.** The deploy answers with a message such as `Configuration
+setting gateway.auth.mode must be trusted-proxy or password`, or
+`Configuration secretBindings must be empty on SSH Compute`, and creates no
+version.
+
+**Steps.** Fix the named setting, or provision credentials in the
+operator-owned `<agentDir>/env` file instead of `secretBindings`; then deploy
+again.
+
 ## 2026-10-24: OpenShell refuses OpenClaw Agents with several Sandbox ServiceAccounts
 
 **What breaks.** With the OpenShell Sandbox Driver, Agent save, deployment and

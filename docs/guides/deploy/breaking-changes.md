@@ -21,6 +21,30 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-26: protected source create and credential withdrawal name their refusal
+
+**What breaks.** More refusals name the rule instead of a generic answer:
+
+- Credential source create with a Credential Proxy selected: a type the Proxy
+  cannot protect answers `409 RESOURCE_CONFLICT` and lists the types it
+  protects; a Secret reference to another Namespace answers `400
+INVALID_REQUEST`, as without a Proxy (both were `404`).
+- Create of a prepared or credential-free source whose `config.agent_id` names
+  an Agent being deleted: `409 AGENT_DELETING`; an embedded Agent:
+  `409 RESOURCE_CONFLICT` (both were `404`).
+- Withdrawal of a source that the Agent's active version does not use:
+  `409 RESOURCE_CONFLICT` (was `404`), for any source ID.
+- Agent save or deploy that binds a Proxy-owned source after the Installation
+  dropped `drivers.credential_proxy`: `409 RESOURCE_CONFLICT` (was `500`).
+
+**Who is affected.** Clients that branch on the old status or text. A missing
+resource, or one you cannot read, still answers `403` or `404`.
+
+**How to tell.** The message names the rule, for example `the selected
+Credential Proxy cannot protect codex-pat sources`.
+
+**Steps.** Handle `409` for these requests, show the message and do not retry it.
+
 ## 2026-10-26: a Codex network proxy that blocks the repository broker is refused at save
 
 **What breaks.** For an Agent with repository bindings on a dedicated Codex
@@ -310,25 +334,3 @@ OpenClaw Harness`).
 
 **Steps.** Remove the Agent's plugins, or change its Configuration or execution
 mode to a supported Harness, then save again.
-
-## 2026-10-24: SSH deployment checks Gateway authentication and Secret bindings
-
-**What breaks.** On SSH Compute, deployment refuses a
-Configuration whose `gateway` or `gateway.auth` is not an object, whose
-`gateway.auth.mode` is not `trusted-proxy` or `password`, which sets another
-`gateway.auth` field such as `token`, or whose `gateway.auth.password` is not
-the `OPENCLAW_GATEWAY_PASSWORD` reference, with `409 RESOURCE_CONFLICT`.
-Deployment and provisioning refuse non-empty Configuration `secretBindings` with `400`. Earlier builds
-answered `202`, and every preparation failed. Agent save is unchanged.
-
-**Who is affected.** SSH Installations with such a Configuration; none of them
-could deploy.
-
-**How to tell.** The deploy answers with a message such as `Configuration
-setting gateway.auth.mode must be trusted-proxy or password`, or
-`Configuration secretBindings must be empty on SSH Compute`, and creates no
-version.
-
-**Steps.** Fix the named setting, or provision credentials in the
-operator-owned `<agentDir>/env` file instead of `secretBindings`; then deploy
-again.

@@ -1083,6 +1083,8 @@ const BUNDLED_KUBERNETES_COMPUTE: ReadonlySet<string> = new Set([
 ]);
 /** Bounds each synchronous Credential Gateway call made while serving an API request. */
 const CREDENTIAL_GATEWAY_TIMEOUT_MS = 30_000;
+const CREDENTIAL_SOURCE_SECRETS_CROSS_NAMESPACES =
+  "Credential source Secrets cannot cross Namespaces.";
 const MAX_AGENT_CREDENTIAL_SOURCES = 8;
 /** Overall deadline for one runtime status or log request, Driver calls included. */
 const RUNTIME_LOG_REQUEST_TIMEOUT_MS = 10_000;
@@ -5785,15 +5787,22 @@ export class OpenClawController {
       id: grant.isolationId,
     });
     const agent = await state.agents.findAgent(namespaceId, grant.isolationId);
-    if (
-      !agent ||
-      agent.status !== "active" ||
-      agent.executionMode !== "dedicated" ||
-      issuer?.namespaceId !== namespaceId ||
-      !/^https:\/\/[a-z0-9.-]+(?::\d+)?$/.test(origin)
-    ) {
+    // An Agent the caller may operate but that does not exist stays a 404. The refusals after it
+    // concern an Agent the caller holds operate on, or the Secret reference the request sent, so
+    // they name their cause (finding 2536).
+    if (!agent) {
       throw new ScopeViolationError(
-        "A prepared credential source requires this Namespace, dedicated Agent and trusted HTTPS origin.",
+        "A prepared credential source requires an Agent in this Namespace.",
+      );
+    }
+    this.assertProtectedSourceAgent(agent);
+    if (issuer?.namespaceId !== namespaceId) {
+      throw new SecretBindingValidationError(CREDENTIAL_SOURCE_SECRETS_CROSS_NAMESPACES);
+    }
+    if (!/^https:\/\/[a-z0-9.-]+(?::\d+)?$/.test(origin)) {
+      // The origin is the Installation's issuer setting, validated at startup.
+      throw new ScopeViolationError(
+        "A prepared credential source requires a trusted HTTPS origin.",
       );
     }
     await this.authorize(principalId, "operate", issuer);
@@ -5823,6 +5832,21 @@ export class OpenClawController {
     };
   }
 
+  /**
+   * A protected source names its Agent in `config.agent_id`, after the caller's operate grant on
+   * it and its lookup, so a refusal may name the Agent's state (finding 2536).
+   */
+  private assertProtectedSourceAgent(agent: Readonly<Agent>): void {
+    if (agent.status !== "active") {
+      throw new AgentDeletingError();
+    }
+    if (agent.executionMode !== "dedicated") {
+      throw new ResourceStateConflictError(
+        "config.agent_id names an embedded Agent, and a protected credential source serves only a dedicated Agent. Name a dedicated Agent in this Namespace.",
+      );
+    }
+  }
+
   private async admitCredentialFreeMetadata(
     state: PlatformUnitOfWork,
     principalId: string,
@@ -5835,9 +5859,10 @@ export class OpenClawController {
     const id = grant.isolationId;
     await this.authorize(principalId, "operate", { kind: "agent", namespaceId, id });
     const agent = await state.agents.findAgent(namespaceId, id);
-    if (agent?.executionMode !== "dedicated" || agent.status !== "active") {
+    if (!agent) {
       throw new ScopeViolationError("Credential-free metadata requires this dedicated Agent.");
     }
+    this.assertProtectedSourceAgent(agent);
     await control.assertAvailable(AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS));
     return immutableCopy({
       key: {
@@ -5875,17 +5900,25 @@ export class OpenClawController {
       provider.sourceType.rotation === "refresh" ||
       provider.sourceType.secrets.length !== 1
     ) {
-      throw new ScopeViolationError("The protected egress provider does not support this source.");
+      // An Installation property about the type the request sent (finding 2536). The who comes
+      // before the type list, so the 256-character cap never cuts it.
+      throw new ResourceStateConflictError(
+        `The selected Credential Proxy cannot protect ${type} sources, and a Proxy protects every new source. Ask an Installation administrator, or create a type it protects: ${control.providers.map((entry) => entry.sourceType.type).join(", ")}.`,
+      );
     }
     provider.normalizeConfig(config);
     // An Installation property: a Proxy that cannot serve the source refuses it before any
     // Secret is read (finding 2360).
     await control.assertAvailable(AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS));
     const reference = references[provider.sourceType.secrets[0]!.name];
-    if (!reference || reference.namespaceId !== namespaceId) {
+    if (!reference) {
       throw new ScopeViolationError(
         "Protected source material must belong to the exact Namespace.",
       );
+    }
+    if (reference.namespaceId !== namespaceId) {
+      // The reference the request sent, refused as the Credential Gateway path refuses it.
+      throw new SecretBindingValidationError(CREDENTIAL_SOURCE_SECRETS_CROSS_NAMESPACES);
     }
     await this.authorize(principalId, "operate", reference);
     const secret = await state.secrets.lockSecret(namespaceId, reference.id);
@@ -6334,7 +6367,7 @@ export class OpenClawController {
   ): Promise<Record<string, string>> {
     // Reject a foreign reference before any authorization or Secret lookup, as Secret bindings do.
     if (Object.values(references).some((reference) => reference.namespaceId !== namespace.id)) {
-      throw new SecretBindingValidationError("Credential source Secrets cannot cross Namespaces.");
+      throw new SecretBindingValidationError(CREDENTIAL_SOURCE_SECRETS_CROSS_NAMESPACES);
     }
     for (const reference of Object.values(references)) {
       await this.authorize(principalId, "operate", reference);
@@ -7653,7 +7686,7 @@ export class OpenClawController {
     let result: CredentialSourceDeviceAuthorizationResult;
     try {
       result = await refresh.pollDeviceAuthorization(context, session.privateState!);
-    } catch {
+    } catch (error) {
       // An uncertain external exchange is not replayed. The source remains visible for recovery.
       await this.secretOperation(() =>
         driver.compareAndSwap!(
@@ -7662,7 +7695,7 @@ export class OpenClawController {
           JSON.stringify({ ...session, phase: "cancelled", privateState: undefined }),
         ),
       );
-      throw new RetryLaterError("deviceLoginFailed");
+      throw new RetryLaterError("deviceLoginFailed", error);
     }
     await this.authorizeDeviceAuthorizationScope(principalId, namespaceId, agentId);
     await this.authorize(principalId, "operate", { kind: "secret", id: secretId, namespaceId });
@@ -10390,12 +10423,14 @@ export class OpenClawController {
       agent.id,
       agent.activeRevisionId,
     );
-    if (
-      revision === undefined ||
-      !revisionHoldsCredentialSource(revision, input.credentialSourceId)
-    ) {
-      throw new ScopeViolationError(
-        "The Agent's active revision does not use this credential source.",
+    if (revision === undefined) {
+      throw new ScopeViolationError("The Agent's active revision is unavailable.");
+    }
+    if (!revisionHoldsCredentialSource(revision, input.credentialSourceId)) {
+      // After the Agent operate grant. The check reads only the revision's bindings, never the
+      // source, so a missing source ID and one the caller cannot read answer alike (finding 2536).
+      throw new ResourceStateConflictError(
+        "The Agent's active version does not use this credential source, so there is nothing to withdraw. Withdraw a source that the deployed version uses.",
       );
     }
     return revision;
@@ -11498,6 +11533,15 @@ export class OpenClawController {
         throw new ScopeViolationError(
           "The credential source is unavailable in the exact Namespace.",
         );
+      }
+      if (
+        source.ownerCapability === "credential_proxy" &&
+        !this.selections.has("credential_proxy")
+      ) {
+        // An Installation change dropped the Proxy that owns this source, so Agent save and
+        // deploy cannot bind it. The caller holds this source's operate grant, and the text names
+        // no source (finding 2536); resolving the missing owner answered a 500.
+        throw new CredentialProxyAdmissionError("sourcesWithoutProxy");
       }
       this.credentialSourceOwner(source);
     }
