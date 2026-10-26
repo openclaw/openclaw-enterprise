@@ -81,6 +81,12 @@ export async function enterManualModel(page, apiKey, modelId = "gpt-4.1") {
 // Selects Create Agent and returns the API's answer to the form's POST to `path` in the
 // Namespace: "agents" (an embedded Agent) by default, or "agents/provision" or
 // "agents/validate". With `status`, that answer must have it.
+/**
+ * @param {import("playwright").Page} page
+ * @param {{ origin: string }} fixture
+ * @param {string} namespaceId
+ * @param {{ path?: string, status?: number }} [options]
+ */
 export async function submitCreateAgent(
   page,
   fixture,
@@ -202,9 +208,14 @@ const provisioningMeta = { requestId: "req_00000000-0000-4000-8000-000000000001"
 
 // One provisioning job, `workId`, in `namespaceId`. `job(status, extra)` is one status read of
 // it; `failed(extra)` is the read that ends it after its retries (a dependency outage).
+/**
+ * @param {string} namespaceId
+ * @param {string} workId
+ */
 export function provisioningJob(namespaceId, workId) {
   const updatedAt = new Date().toISOString();
   const url = `/namespaces/${namespaceId}/agents/provision/${workId}`;
+  /** @type {(status: string, extra?: object) => Record<string, unknown>} */
   const job = (status, extra = {}) => ({
     workId,
     status,
@@ -214,6 +225,7 @@ export function provisioningJob(namespaceId, workId) {
     url,
     ...extra,
   });
+  /** @type {(extra?: object) => Record<string, unknown>} */
   const failed = (extra = {}) =>
     job("failed", {
       ...extra,
@@ -226,7 +238,13 @@ export function provisioningJob(namespaceId, workId) {
 // as the API does, and answers each status read of the job with the next of `reads` (the last
 // one repeats), or with `reads(index)` when it is a function. With `reads` null the caller
 // routes the job's reads itself. Returns live counts of the requests and reads.
+/**
+ * @param {import("playwright").Page} page
+ * @param {ReturnType<typeof provisioningJob>} work
+ * @param {readonly object[] | ((index: number) => object) | null} reads
+ */
 export async function routeProvisioningJob(page, work, reads) {
+  /** @type {{ submitted: number, reads: number, requestId: string | undefined }} */
   const state = { submitted: 0, reads: 0, requestId: undefined };
   await page.route(`**/namespaces/${work.namespaceId}/agents/provision`, (route) => {
     state.submitted += 1;
