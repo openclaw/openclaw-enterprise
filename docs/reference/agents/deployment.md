@@ -147,10 +147,11 @@ reapplying the original text, preserving edits made in the live workspace.
 Admission checks what the Installation supports before the Agent service
 principal's grants: an unsupported topology, such as dedicated native OpenClaw
 without [native worker support](../harness-execution.md#native-worker-support),
-gets its capability error even when the Agent principal also lacks a grant.
-When only the Agent principal's grant is missing, the `403` names the grant the
-Agent lacks and asks an Installation administrator to give it. It names the
-Secret or credential source only when you can read it or sent its ID. Its audit
+gets its capability error even when the Agent principal lacks a grant.
+When only the Agent principal's grant is missing, the `403` names the Agent's
+missing grant and asks an Installation administrator to give it. It names the
+Secret or credential source only when you sent its ID or can read both it and
+the Agent. Its audit
 event records your request with reason code `AGENT_PRINCIPAL_NOT_AUTHORIZED`
 and names that principal, its grant and IAM evidence.
 Admission then asks Compute to check the Configuration's gateway settings. On

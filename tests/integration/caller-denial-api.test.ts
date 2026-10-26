@@ -155,7 +155,8 @@ test("a caller's own denial names the missing grant without disclosing what the 
 
   // A stored resource the caller may already read is named (finding 2594). Deploying reads the
   // Agent's model Secret from its stored Harness binding; a deployer without Secret operate learns
-  // its ID only when it holds Secret read, which already shows that ID.
+  // its ID only when it holds Secret read, which already shows that ID, and Agent read, which
+  // already shows that this Agent binds it.
   const secretId = agent.harnessAuth.source.id;
   const deployer: Grants = [
     ["read", "namespace"],
@@ -178,6 +179,20 @@ test("a caller's own denial names the missing grant without disclosing what the 
     (await deployRefusal("deployer-read-secret", [...deployer, ["read", "secret"]])).message,
     callerDenied("Secret operate", `Secret ${secretId}`),
   );
+  // Secret read without Agent read: the caller may read the Secret but not the Agent record that
+  // binds it, so the text names no Secret.
+  const withoutAgentRead = deployer.filter(
+    ([action, kind]) => !(action === "read" && kind === "agent"),
+  );
+  assert.equal(
+    (
+      await deployRefusal("deployer-read-secret-not-agent", [
+        ...withoutAgentRead,
+        ["read", "secret"],
+      ])
+    ).message,
+    callerDenied("Secret operate", "a Secret this request uses"),
+  );
   // An Agent's SandboxPolicy ID derives from the Agent ID the path carries, so its denial names it.
   // Agent read without SandboxPolicy read, the same grants as the restricted reader above.
   assert.equal(
@@ -195,9 +210,9 @@ test("a caller's own denial names the missing grant without disclosing what the 
 
 // Finding 2592: when the Agent's own service principal lacks Secret operate on its model
 // credential, deploy is refused for the Agent, not the caller. That Secret comes from the Agent's
-// stored binding, so the refusal names it only to a caller who may read it, and never names the
-// principal. A deployer who holds Secret operate but not Secret read learns no Secret ID.
-test("an Agent principal's deploy refusal names its bound Secret only to a caller who may read it", async (t) => {
+// stored binding, so the refusal names it only to a caller who may read both it and the Agent,
+// and never names the principal. Secret read alone shows the Secret, not that this Agent uses it.
+test("an Agent principal's deploy refusal names its bound Secret only to a caller who may read it and the Agent", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Agent principal denials", { ready: true });
@@ -240,7 +255,20 @@ test("an Agent principal's deploy refusal names its bound Secret only to a calle
   assert.equal(hidden, agentPrincipalDenied(`Agent ${agent.id}`, "one of its bound Secrets"));
   assert.equal(hidden.includes(secretId), false);
   assert.equal(hidden.includes(agent.servicePrincipalId), false);
-  // The same grants plus Secret read: the caller can already see the Secret, so it is named.
-  const named = await refusal("deploy-and-secret-read", [...deployGrants, ["read", "secret"]]);
+  // Secret read or Agent read alone: the caller sees the Secret or the Agent record, never both,
+  // so it cannot already tell that this Agent binds this Secret and the text names none.
+  const generic = agentPrincipalDenied(`Agent ${agent.id}`, "one of its bound Secrets");
+  for (const [label, grant] of [
+    ["deploy-and-secret-read", ["read", "secret"]],
+    ["deploy-and-agent-read", ["read", "agent"]],
+  ] as const) {
+    assert.equal(await refusal(label, [...deployGrants, grant]), generic, label);
+  }
+  // Both reads: the caller can already see the Secret and the binding, so the Secret is named.
+  const named = await refusal("deploy-secret-and-agent-read", [
+    ...deployGrants,
+    ["read", "secret"],
+    ["read", "agent"],
+  ]);
   assert.equal(named, agentPrincipalDenied(`Agent ${agent.id}`, `Secret ${secretId}`));
 });

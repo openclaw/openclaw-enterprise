@@ -147,8 +147,8 @@ export function requestedValues(request: {
  * The text when an Agent's own service principal, not the caller, lacks a grant that deployment
  * needs (finding 2592). The caller cannot fix it, so it asks an Installation administrator to give
  * the Agent access. The resource comes from the Agent's stored bindings: the text names it only when
- * the request carried its ID or the caller may read it, and names the Agent only when the request
- * carried its ID. It never names the principal, which the audit event records.
+ * the request carried its ID or the caller may read both it and the Agent, and names the Agent only
+ * when the request carried its ID. It never names the principal, which the audit event records.
  */
 export function agentPrincipalDenialMessage(
   denial: {

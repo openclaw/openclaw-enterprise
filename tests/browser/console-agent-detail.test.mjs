@@ -85,6 +85,7 @@ import {
   SECRET_NAME_CONFLICT,
   SECRET_OPERATE_DENIED,
   WORKSPACE_FILES_UNAVAILABLE,
+  credentialCheckedAtDeploy,
   namespaceListDenied,
   secretOperateRefused,
   stopRefused,
@@ -2540,8 +2541,8 @@ const HARNESS_GRANT_REFUSED =
 // An Installation administrator's console read the IAM policy and found no grant (finding 2260).
 const HARNESS_GRANT_MISSING =
   "This Agent has no access to its authentication Secret, so deploying it would be refused. Select Save authentication source to grant it.";
-const HARNESS_GRANT_UNVERIFIED =
-  "Authentication source saved, but this session did not verify that this Agent can use the selected Secret. Granting access needs Installation administration access: ask an Installation administrator to open this Agent's Credentials and select Save authentication source.";
+// A member's save sends no grant: the deploy checks the Agent's access (finding D748).
+const HARNESS_SAVED_FOR_MEMBER = `Authentication source saved. ${credentialCheckedAtDeploy("Secret")}`;
 
 test("Agent credentials report partial harness Secret grant failure", async (t) => {
   const fixture = await createConsoleAppFixture(t);
@@ -2662,10 +2663,10 @@ test("Agent credentials report partial harness Secret grant failure", async (t) 
 });
 
 // Granting the Agent its authentication Secret writes IAM policy, which needs Installation
-// administration. A member's save sends no IAM request, so it says this session did not verify
-// the Agent's access, whether or not an administrator already granted it. It names who finishes
-// the grant and how, and offers no Retry the API would refuse. The named step grants it.
-test("Agent credentials name the administrator step for a member's harness Secret grant", async (t) => {
+// administration. A member's save sends no IAM request, whether or not an administrator already
+// granted it. The card settles to one saved state that says the deploy checks the Agent's access
+// and who gives it, and stays editable (finding D748). An administrator's save grants it.
+test("Agent credentials settle a member's harness Secret save and say who grants access", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Member harness grant", { ready: true });
@@ -2674,6 +2675,7 @@ test("Agent credentials name the administrator step for a member's harness Secre
     "Member harness Secret",
     "hidden-member-harness",
   );
+  const otherSecret = await fixture.createSecret(namespace.id, "Other member Secret", "hidden");
   const ungranted = await fixture.createAgent(
     namespace.id,
     "Member Harness Agent",
@@ -2698,15 +2700,12 @@ test("Agent credentials name the administrator step for a member's harness Secre
     // The session's Installation read already found this account is no administrator.
     assert.equal((await probe).status(), 403);
     await selectSecret(page, "API key Secret", replacementSecret);
-    await page.getByRole("button", { name: "Save authentication source" }).click();
-    const warning = page.getByRole("alert").filter({ hasText: HARNESS_GRANT_UNVERIFIED });
-    await warning.waitFor();
-    assert.equal(await warning.textContent(), HARNESS_GRANT_UNVERIFIED);
-    assert.deepEqual(await statusTone(warning), {
-      className: "status",
-      tone: "warning",
-      role: "alert",
-    });
+    const save = page.getByRole("button", { name: "Save authentication source" });
+    await save.click();
+    const notice = page.getByRole("status").filter({ hasText: HARNESS_SAVED_FOR_MEMBER });
+    await notice.waitFor();
+    assert.equal(await notice.textContent(), HARNESS_SAVED_FOR_MEMBER);
+    assert.deepEqual(await statusTone(notice), { className: "hint", tone: null, role: "status" });
     // The Agent saved its new source; no IAM request went out that the API would refuse and
     // audit.
     const saved = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
@@ -2715,22 +2714,28 @@ test("Agent credentials name the administrator step for a member's harness Secre
       requests.filter(({ path }) => path.includes("/iam/")),
       [],
     );
-    // No dead Retry: only Reload remains. The save finished and nothing this member can do
-    // confirms the grant, so Deploy is not held: the API checks the Agent's access when it
-    // deploys (finding 2547).
+    // No dead Retry, and the card stays editable: the save finished and nothing this member
+    // can do confirms the grant, so Deploy is not held either: the API checks the Agent's access
+    // when it deploys (findings 2547, D748).
     assert.equal(await page.getByRole("button", { name: "Retry credential access" }).count(), 0);
-    assert.equal(await page.getByRole("button", { name: "Save authentication source" }).count(), 0);
+    await waitForEnabled(save);
     await waitForEnabled(page.getByRole("button", { name: "Reload authentication source" }));
+    await waitForEnabled(page.locator("#harness-auth-method"));
+    await waitForEnabled(page.getByLabel("API key Secret", { exact: true }));
     const deploy = page.getByRole("button", { name: "Deploy new version" });
     await expectNoText(page, "Confirm authentication and Secret access in Credentials", () =>
       waitForEnabled(deploy),
     );
-    // The rebuilt tab keeps the same words, still offers no Retry and still holds nothing.
+    // The rebuilt tab still offers no Retry, still holds nothing and stays editable.
     await page.getByRole("tab", { name: "Configuration", exact: true }).click();
     await page.getByRole("tab", { name: "Credentials", exact: true }).click();
-    await page.getByRole("alert").filter({ hasText: HARNESS_GRANT_UNVERIFIED }).waitFor();
+    await waitForEnabled(save);
     assert.equal(await page.getByRole("button", { name: "Retry credential access" }).count(), 0);
     assert.equal(await deploy.isDisabled(), false);
+    // Another selection is staged, and the card says only that, not "saved" beside it.
+    await selectSecret(page, "API key Secret", otherSecret);
+    await page.getByText("Secret binding staged. Save changes to apply it.").waitFor();
+    assert.equal(await page.getByText(HARNESS_SAVED_FOR_MEMBER).count(), 0);
   }
 
   // The administrator the warning names opens the Agent's Credentials: its IAM policy read finds

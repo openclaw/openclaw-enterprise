@@ -12,7 +12,14 @@ import { ASK_INSTALLATION_ADMINISTRATOR, askForGrant } from "./agents/access-rea
 import { createApiClient } from "./api-client.mjs";
 import { createViewLifetime } from "./view-lifetime.mjs";
 import { createNavigation, pages } from "./navigation.mjs";
-import { brandContents, createShell, initials, panel, sorted } from "./shell.mjs";
+import {
+  brandContents,
+  createShell,
+  initials,
+  NAMESPACE_ACCESS_REASON_ID,
+  panel,
+  sorted,
+} from "./shell.mjs";
 import { createDraftStore } from "./drafts.mjs";
 import { renderRuntimeImages } from "./runtime-images.mjs";
 import { renderNamespaces } from "./namespaces.mjs";
@@ -562,11 +569,18 @@ function namespaceUnavailablePanel(view, unavailableId) {
     );
     return;
   }
-  panel(
+  namespaceAccessPanel(
     view,
     "Namespace unavailable",
     `${why}, and you cannot read any other Namespace. Ask an Installation administrator to give you access to one, then Refresh.`,
   );
+}
+
+// A panel for a reader with no Namespace to select: its sentence describes the header's disabled
+// selector (finding D749).
+function namespaceAccessPanel(view, title, description) {
+  panel(view, title, description);
+  view.querySelector(".state-panel > p")?.setAttribute("id", NAMESPACE_ACCESS_REASON_ID);
 }
 const request = createApiClient({
   lifetime,
@@ -1918,7 +1932,7 @@ async function loadPage({
       if (namespaceId === null) {
         // With nothing to switch to, the header's Refresh is the one way to look again, so the
         // panel adds no second Refresh (finding 2371).
-        panel(
+        namespaceAccessPanel(
           shell.view,
           "No readable Namespaces",
           "Ask an Installation administrator to create a Namespace or to give you access to one, then Refresh.",
