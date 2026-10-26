@@ -20,10 +20,12 @@ After configuration setup, OCE sets three variables on the managed Gateway.
 | `OPENCLAW_DISABLE_GATEWAY_LOCAL_TERMINALS=1` | The Gateway refuses local terminals. Authorized node-relayed terminals remain available.   |
 | `OPENCLAW_DISABLE_CRON_HOST_EXECUTION=1`     | The Gateway refuses Gateway-hosted command jobs. Ordinary scheduled Agent turns still run. |
 
-The [runtime source pin](../../../deploy/runtime/Dockerfile) includes all three controls.
+The [pinned OpenClaw revision](../../../deploy/runtime/openclaw-source.json) includes all three controls.
 The Compute Driver must declare support and launch a qualified runtime.
 Kubernetes requires a configured Gateway runtime. SSH rejects managed revisions.
 See the [Docker deployment limits](../drivers/docker-compute.md).
+After a hard crash in either mode, an embedded Gateway can require
+[operator recovery](../../guides/topics/agent-troubleshoot.md#an-embedded-gateway-reports-an-unverifiable-state-owner).
 
 Deploying with managed mode back on restores OCE’s configuration and can discard
 Gateway-local edits. Replacing the Gateway can interrupt service. If a deployment
