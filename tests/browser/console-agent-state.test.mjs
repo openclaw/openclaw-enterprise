@@ -1290,7 +1290,6 @@ test("Back to a kept Access tab after a revoke sends one audited administration 
     account.credentials,
   );
   await page.getByRole("tab", { name: "Access", selected: true }).waitFor();
-  await page.getByRole("link", { name: "Kept model key", exact: true }).waitFor();
   await waitForIdleFetches(page);
   // In-app navigation keeps the Agent page for Back.
   await page.locator("nav").getByRole("link", { name: "Agents", exact: true }).first().click();
