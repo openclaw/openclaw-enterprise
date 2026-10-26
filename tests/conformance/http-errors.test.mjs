@@ -15,13 +15,20 @@ import {
   PROVISIONING_REFUSAL_CODES,
   preAdmissionRefusal,
 } from "../../apps/controller/src/console/agents/list.mts";
-import { ERROR_CODES, PresetValidationError } from "../../packages/contracts/src/index.ts";
+import { requestedValues } from "../../apps/controller/src/http/caller-denial.ts";
+import {
+  ERROR_CODES,
+  PresetValidationError,
+  RESOURCE_KINDS,
+  SUPPORTED_PERMISSION_ACTIONS,
+} from "../../packages/contracts/src/index.ts";
 import { normalizeRequestSecretBindings } from "../../packages/occ/src/agent-provisioning.ts";
 import {
   AgentCredentialSourceBindingError,
   AgentDeletingError,
   AgentPrincipalAuthorizationError,
   AuthorizationDeniedError,
+  CallerStateDeniedError,
   ChannelCredentialError,
   ChannelDirectoryError,
   ConfigurationGenerationConflictError,
@@ -66,6 +73,7 @@ import {
 } from "../../packages/occ/src/index.ts";
 import {
   AGENT_NAME_CONFLICT,
+  callerDenied,
   DEPENDENCY_UNAVAILABLE,
   GENERIC_DENIAL,
   NAMESPACE_NOT_READY,
@@ -779,7 +787,7 @@ const cases = [
 
   // 401/403: authorization.
   [
-    "a caller denial stays generic",
+    "a caller denial without a checked grant stays generic",
     new AuthorizationDeniedError(INTERNAL),
     {
       status: 403,
@@ -787,6 +795,31 @@ const cases = [
       message: GENERIC_DENIAL,
     },
   ],
+  [
+    "a caller denial names the grant it checked, never the IAM decision's reason",
+    new AuthorizationDeniedError(INTERNAL, undefined, {
+      action: "update",
+      resource: agentResource,
+    }),
+    {
+      status: 403,
+      code: "FORBIDDEN",
+      // Without the request's values no ID is named.
+      message: callerDenied("Agent update", "an Agent this request uses"),
+    },
+  ],
+  ...[
+    "The acting account is disabled.",
+    "Only the initiating actor can retry provisioning.",
+    "Only the initiating actor can read provisioning status.",
+    "The human administrator session is no longer current.",
+    "The assigning session is no longer current.",
+    "The acting identity is unavailable.",
+  ].map((reason) => [
+    `a denial about the caller's own state says so: ${reason}`,
+    new CallerStateDeniedError(reason),
+    { status: 403, code: "FORBIDDEN", message: reason },
+  ]),
   [
     "a deletion retry owned by another actor names the condition",
     new DeletionRetryOwnedError("prn_initiator", agentResource),
@@ -1397,4 +1430,60 @@ test("a contract message shows fewer problems rather than cut a path below 32 ch
     `The request does not match the operation contract: body /${"0".repeat(40)} has the wrong type (expected string); body /${"1".repeat(40)} has the wrong type (expected string); and 2 more.`,
   );
   assert.equal(failure.details.length, 4);
+});
+
+// Finding 2534: for every grant a platform operation checks, the caller's own denial names it with
+// one prefix, fits the wire cap, names an ID only when the request carried it, and reads the same
+// for a Restriction as for a missing grant.
+test("a caller denial names each checked grant without disclosing a Restriction or an unsent ID", () => {
+  const id = `id_${"a".repeat(125)}`;
+  for (const kind of RESOURCE_KINDS) {
+    for (const action of SUPPORTED_PERMISSION_ACTIONS[kind]) {
+      const resource = { kind, id, namespaceId: "ns_1" };
+      const label = `${kind}:${action}`;
+      const denied = (reason, evidence, requested) =>
+        requestFailure(
+          new AuthorizationDeniedError(reason, evidence, { action, resource }),
+          requested,
+        ).message;
+      const sent = requestedValues({ namespaceId: "ns_1", id }, {}, undefined);
+      const restricted = denied(
+        "A matching Restriction denied the operation.",
+        { bindingIds: ["binding-1"], roleIds: ["role-1"], restrictionIds: ["restriction-1"] },
+        sent,
+      );
+      const ungranted = denied(
+        "No explicit scoped binding grants the exact action and resource.",
+        { bindingIds: [], roleIds: [], restrictionIds: [] },
+        sent,
+      );
+      assert.equal(restricted, ungranted, label);
+      assert.match(restricted, /^Not authorized: /, label);
+      assert.ok(restricted.length <= 256, label);
+      assert.doesNotMatch(
+        restricted,
+        /restriction-1|binding-1|role-1|matching|binding grants/,
+        label,
+      );
+      // An exact resource is named only when the request carried its ID; a create names the
+      // Namespace it targets, and an Installation names nothing.
+      const named = kind !== "installation" && action !== "create";
+      assert.equal(restricted.includes(id), named, label);
+      const unsent = denied("", undefined, requestedValues({ other: "value" }));
+      assert.equal(unsent.includes(id), false, label);
+      assert.equal(unsent.includes("ns_1"), false, label);
+    }
+  }
+  // An ID outside the plain shape is never echoed, even when the request carried it.
+  const odd = "agt_1\u001b[2J";
+  assert.equal(
+    requestFailure(
+      new AuthorizationDeniedError("", undefined, {
+        action: "read",
+        resource: { kind: "agent", id: odd, namespaceId: "ns_1" },
+      }),
+      requestedValues({ agentId: odd }),
+    ).message,
+    callerDenied("Agent read", "an Agent this request uses"),
+  );
 });

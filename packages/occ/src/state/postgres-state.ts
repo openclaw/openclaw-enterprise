@@ -64,7 +64,7 @@ import {
 } from "@openclaw-enterprise/contracts";
 import { freezeSnapshot, immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
 import {
-  AuthorizationDeniedError,
+  CallerStateDeniedError,
   AGENT_NAME_CONFLICT,
   CREDENTIAL_SOURCE_NAME_CONFLICT,
   DELETED_NAMESPACE_NAME_CONFLICT,
@@ -888,7 +888,7 @@ function databaseError(error: unknown): Error {
     "constraint" in error &&
     error.constraint === "held_authentication_session_is_current"
   ) {
-    return new AuthorizationDeniedError("The assigning session is no longer current.");
+    return new CallerStateDeniedError("The assigning session is no longer current.");
   }
   if (code === "23505") {
     const constraint =

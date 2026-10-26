@@ -105,6 +105,7 @@ import {
 } from "./gateway/contracts.ts";
 import type { NativeAdminAccessConfig } from "./gateway/native-admin.ts";
 import { createAgentHandlers } from "./http/agents.ts";
+import { callerDenialMessage, GENERIC_DENIAL, requestedValues } from "./http/caller-denial.ts";
 import { configurationHandlers } from "./http/configurations.ts";
 import { credentialSourceHandlers } from "./http/credential-sources.ts";
 import { jsonPointer, type ErrorDetail } from "./http/error-details.ts";
@@ -1581,7 +1582,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     }
     if (!decision.allowed) {
       await denial(operation, request, "authorization_denial", context, decision.evidence);
-      throw failure(403, "FORBIDDEN", "The exact platform operation was not authorized.");
+      throw failure(
+        403,
+        "FORBIDDEN",
+        callerDenialMessage({ action: "administer", resource: target }),
+      );
     }
     return { selected, target, decision };
   }
@@ -1941,7 +1946,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           identity.subject !== admitted.externalIdentity.subject)
     ) {
       await denial(operation, request, "authorization_denial");
-      throw failure(403, "FORBIDDEN", "The exact platform operation was not authorized.");
+      throw failure(403, "FORBIDDEN", GENERIC_DENIAL);
     }
 
     const context: RequestContext = {
@@ -4321,7 +4326,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   });
 
   app.setErrorHandler(async (error, request, reply) => {
-    let mapped = requestFailure(error);
+    // A caller's own denial names a resource ID only when this request carried it.
+    let mapped = requestFailure(
+      error,
+      requestedValues(request.params, request.query, request.body),
+    );
     if (error instanceof RuntimeLogsError && error.retryAfterSeconds !== undefined) {
       reply.header("retry-after", String(error.retryAfterSeconds));
     }

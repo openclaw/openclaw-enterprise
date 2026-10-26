@@ -6,6 +6,21 @@
 // The API's generic error messages (apps/controller/src/http/errors.ts). Console tests use them
 // as the server's answer in fulfilled routes, and API tests expect them in error envelopes.
 export const GENERIC_DENIAL = "The exact platform operation was not authorized.";
+// A caller's own denial names the grant the request checked and who grants it (finding 2534,
+// apps/controller/src/http/caller-denial.ts). `target` is "<Kind> <id>" for an ID the request
+// carried, otherwise "a <Kind> this request uses".
+export const callerDenied = (grant, target) =>
+  `Not authorized: this needs ${grant} on ${target}. Ask an Installation administrator to grant it.`;
+// A create needs the collection grant, which Namespace Roles cannot give.
+export const createDenied = (kind, namespaceId) =>
+  `Not authorized: this needs ${kind} create in Namespace ${namespaceId}. Namespace Roles cannot grant create: ask an Installation administrator to create the ${kind} for you or to grant it.`;
+export const NAMESPACE_CREATE_DENIED =
+  "Not authorized: this needs Namespace create. Ask an Installation administrator to create the Namespace for you or to grant it.";
+export const INSTALLATION_ADMINISTER_DENIED =
+  "Not authorized: this needs Installation administer. Ask an Installation administrator to do it for you or to grant it.";
+// The native admin host names the grant but no Agent: the host, not the caller, names the Agent.
+export const NATIVE_ADMIN_DENIED =
+  "Not authorized: opening this Agent's native admin UI needs Agent administer on it. Ask an Installation administrator to grant it.";
 export const DEPENDENCY_UNAVAILABLE = "A required platform dependency is unavailable.";
 export const RESOURCE_CONFLICT = "The requested platform resource already exists.";
 export const RESOURCE_NOT_FOUND = "The requested platform resource was not found.";

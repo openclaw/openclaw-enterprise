@@ -7,6 +7,7 @@ import test from "node:test";
 
 import { deriveNativeAdminHost } from "../../apps/controller/src/gateway/native-admin.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
+import { NATIVE_ADMIN_DENIED } from "../helpers/refusal-text.mjs";
 import { createControllerAuth } from "../helpers/password-hasher.mjs";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
@@ -934,6 +935,8 @@ test("native admin proxy strips browser credentials and preserves the Agent gate
     headers: nativeHeaders,
   });
   assert.equal(iamDenied.statusCode, 403, iamDenied.body);
+  // A Restriction reads the same as a missing grant.
+  assert.equal(iamDenied.json().error.message, NATIVE_ADMIN_DENIED);
   assert.equal(iamDenied.headers["set-cookie"], undefined);
   assert.equal(
     context.upstream.requests.length,
@@ -973,6 +976,8 @@ test("native admin proxy resolves a host only to the live Agent it names", async
   ]) {
     const denied = await proxied(namespaceId, agentId);
     assert.equal(denied.statusCode, 403, `${label}: ${denied.body}`);
+    // The same text as a caller denied on a live Agent, so a host reveals no Agent.
+    assert.deepEqual(denied.json().error, { code: "FORBIDDEN", message: NATIVE_ADMIN_DENIED });
   }
   // Another Namespace's Agent resolves to itself alone; it has no active revision to serve.
   const otherHost = await proxied(other.id, otherAgent.id);
@@ -1319,5 +1324,6 @@ test("a browser Back to a denied Agent gateway stays 403 and links to the consol
   });
   assert.equal(api.statusCode, 403);
   assert.match(api.headers["content-type"], /^application\/json/);
-  assert.equal(api.json().error.code, "FORBIDDEN");
+  // The JSON refusal names the grant but not the Agent, which the host named, not the caller.
+  assert.deepEqual(api.json().error, { code: "FORBIDDEN", message: NATIVE_ADMIN_DENIED });
 });

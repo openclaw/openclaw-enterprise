@@ -5,7 +5,7 @@ import type {
   Namespace,
 } from "@openclaw-enterprise/contracts";
 import type { Static } from "typebox";
-import { requestFailure, responseFields } from "../api-client.mjs";
+import { GENERIC_DENIAL, namedDenial, requestFailure, responseFields } from "../api-client.mjs";
 import { element } from "../dom.mjs";
 import type { createNavigation } from "../navigation.mjs";
 
@@ -79,9 +79,10 @@ export const NAMESPACE_MISSING = Object.freeze({
   note: "This Namespace is missing or you no longer have access. Choose another Namespace.",
 });
 
-// The API's catch-all answers: a caller's own denial and an untyped conflict. They name nothing
-// the caller can act on, so views keep their own guidance instead of showing them.
-export const GENERIC_DENIAL = "The exact platform operation was not authorized.";
+// The API's catch-all answers: a caller's own denial that names no grant (api-client.mts) and an
+// untyped conflict. They name nothing the caller can act on, so views keep their own guidance
+// instead of showing them.
+export { GENERIC_DENIAL };
 // Why Create Agent is disabled for a caller without Agent create. Namespace Roles cannot grant
 // people Agent create, so it names who can create the Agent instead (findings 2496, 2508).
 export const AGENT_CREATE_DENIED =
@@ -96,8 +97,9 @@ export const askInstallationAdministrator = (task: string) =>
 
 // The grant a read needs, so its 403 names it as Stop, Delete and occ's hints do (finding 1530):
 // `task` says what the request does and `grant` names the one permission it checks, in the
-// permissions cheat sheet's words. The API keeps the caller's own denial generic, so the view
-// names it. The text depends only on the request, never on whether the resource exists.
+// permissions cheat sheet's words. An API that names the caller's missing grant itself (finding
+// 2534) takes precedence; this covers an older API's generic denial. The text depends only on
+// the request, never on whether the resource exists.
 export interface AccessNeed {
   readonly task: string;
   readonly grant: string;
@@ -197,9 +199,10 @@ export function message(cause: unknown, mutation = false, need?: AccessNeed): st
   if (error.status === 403) {
     return typeof error.refusal === "string"
       ? error.refusal
-      : need
-        ? accessDenied(need)
-        : `${PLAIN_ACCESS_DENIED} Granting it ${askInstallationAdministrator("check your access")}`;
+      : (namedDenial(cause) ??
+          (need
+            ? accessDenied(need)
+            : `${PLAIN_ACCESS_DENIED} Granting it ${askInstallationAdministrator("check your access")}`));
   }
   if (error.status === 404) {
     return "Resource unavailable in this Namespace. Check the ID and your access.";

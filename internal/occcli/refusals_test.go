@@ -166,8 +166,13 @@ func TestRefusedCommandsNameTheGrantTheyNeed(t *testing.T) {
 		t.Fatalf("namespace list refusal = %v, want %q", err, want)
 	}
 	// A 403 that names its own cause, such as an Agent principal's missing
-	// grant, and other failures ("" answers 404) keep OCC's text alone.
-	for _, message := range []string{"The Agent principal is not authorized to operate the Secret.", ""} {
+	// grant or the caller's own missing grant (finding 2534), and other
+	// failures ("" answers 404) keep OCC's text alone.
+	for _, message := range []string{
+		"The Agent principal is not authorized to operate the Secret.",
+		"Not authorized: this needs Agent deploy on Agent " + testAgentID + ". Ask an Installation administrator to grant it.",
+		"",
+	} {
 		err := runRefused(t, keyFile, message, "--namespace", testNamespaceID, "agent", "deploy", testAgentID)
 		if err == nil || strings.Contains(err.Error(), "hint:") {
 			t.Fatalf("refusal %q = %v, want no hint", message, err)

@@ -103,8 +103,10 @@ var permissionKinds = map[string]string{
 	"sandbox_policy":    "SandboxPolicy",
 }
 
-// OCC's two caller-scope refusals. Other 403 messages name their own cause
-// (for example an Agent principal's missing grant) and get no hint.
+// OCC's two caller-scope refusals that name no cause. Other 403 messages name
+// their own cause and get no hint: an Agent principal's missing grant, or the
+// caller's own missing grant, which OCC names after "Not authorized:" (finding
+// 2534). Only an older OCC sends genericRefusal for every caller denial.
 const (
 	genericRefusal           = "The exact platform operation was not authorized."
 	admittedNamespaceRefusal = "The admitted Namespace does not match."

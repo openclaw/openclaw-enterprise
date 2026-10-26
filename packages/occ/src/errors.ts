@@ -37,6 +37,13 @@ export class AuthorizationDeniedError extends Error {
 }
 
 /**
+ * A denial about the caller's own account, session or role in a job, not a missing grant: a
+ * disabled account, a session that is no longer current, or another actor's provisioning job.
+ * Its message is fixed text about the caller's own state, so HTTP returns it as written.
+ */
+export class CallerStateDeniedError extends AuthorizationDeniedError {}
+
+/**
  * The Agent's own service principal, not the caller, lacks a grant that deployment needs.
  * The caller is already authorized for the Agent, so naming the principal and the missing
  * grant tells an operator exactly what to bind without disclosing anything new.

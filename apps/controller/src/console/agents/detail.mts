@@ -245,9 +245,10 @@ function deployFailureText(cause: unknown, submitted: boolean) {
     return rejectionMessage(cause, submitted);
   }
   // A typed refusal is written for the caller: a 409 names the setting or state to fix, and a
-  // 403 other than the caller's own denial names the Agent's service principal and a resource
-  // the caller was already authorized to operate. Showing it reveals nothing the API did not
-  // already tell this caller (D94).
+  // 403 names the grant the caller's own request lacks (finding 2534) or the Agent's service
+  // principal and a resource the caller was already authorized to operate. Showing it reveals
+  // nothing the API did not already tell this caller (D94). Only an older API's generic denial
+  // gets the console's guidance below.
   if (
     error.serverMessage !== undefined &&
     error.serverMessage !== GENERIC_DENIAL &&

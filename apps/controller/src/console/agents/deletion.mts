@@ -1,5 +1,5 @@
 import type { AgentRead } from "@openclaw-enterprise/contracts";
-import { requestFailure, responseFields } from "../api-client.mjs";
+import { GENERIC_DENIAL, namedDenial, requestFailure, responseFields } from "../api-client.mjs";
 import {
   button,
   element,
@@ -329,12 +329,15 @@ export function createAgentDeletion(
       dialog.close();
       let text;
       if (error.status === 403) {
+        // The API's named denial (finding 2534), or a retry refusal such as another actor's
+        // deletion; an older API's generic denial gets the console's text.
         text =
-          state.deleting &&
+          namedDenial(cause) ??
+          (state.deleting &&
           error.serverMessage !== undefined &&
-          error.serverMessage !== "The exact platform operation was not authorized."
+          error.serverMessage !== GENERIC_DENIAL
             ? error.serverMessage
-            : "You do not have permission to delete this Agent. Ask an administrator for Agent delete access.";
+            : "You do not have permission to delete this Agent. Ask an administrator for Agent delete access.");
       } else if (error.status === 404) {
         state.needsRefresh = true;
         text =
