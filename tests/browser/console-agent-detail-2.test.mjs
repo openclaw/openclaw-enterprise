@@ -68,6 +68,7 @@ import {
   RESOURCE_NOT_FOUND,
   SANDBOX_POLICY_READ_DENIED,
   STOP_REQUESTED,
+  WORKSPACE_API_UNREACHABLE,
   WORKSPACE_FILES_UNAVAILABLE,
   WORKSPACE_UNREACHABLE,
   askForGrant,
@@ -4030,6 +4031,14 @@ test("explicit missing-file readback settles an uncertain workspace create witho
   );
   await reload.click();
   await form.getByText(tooManyRequestsIn(30), { exact: false }).waitFor();
+  // A request that never reached the API says so, not that the gateway is down.
+  await page.route(
+    fixture.origin + path,
+    (route) => (route.request().method() === "GET" ? route.abort() : route.fallback()),
+    { times: 1 },
+  );
+  await reload.click();
+  await form.getByText(WORKSPACE_API_UNREACHABLE, { exact: true }).waitFor();
   assert.equal(await save.isDisabled(), true);
   assert.equal(writeRequests().length, 1);
   const reply = page.waitForResponse(

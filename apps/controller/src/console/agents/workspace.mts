@@ -56,13 +56,22 @@ export function workspaceFileProblem(name: string, content: string) {
   return "";
 }
 
-function fileError(error: FileFailure, writing: boolean) {
+const WORKSPACE_GATEWAY_UNAVAILABLE =
+  "Workspace files could not be reached: the Agent's gateway did not answer. Check that the Agent is running, then reload this file. If it continues, ask an operator to check the gateway.";
+const WORKSPACE_API_UNREACHABLE =
+  "The request did not reach the API. Check your connection, then reload this file.";
+
+function fileError(error: FileFailure, writing: boolean, failure: unknown) {
   // A failure without its own text below says why by status (finding 2538): a rate limit how
-  // long to wait, a conflict the API's reason, and anything else that the gateway did not answer.
+  // long to wait, a conflict the API's reason, a request that never reached the API that, and
+  // anything else that the gateway did not answer.
+  const { name } = responseFields(failure);
   let text =
     error.status === 409 || error.status === 429
       ? describeFailure(error)
-      : "Workspace files could not be reached: the Agent's gateway did not answer. Check that the Agent is running, then reload this file. If it continues, ask an operator to check the gateway.";
+      : error.status === undefined && (name === "TypeError" || name === "TimeoutError")
+        ? WORKSPACE_API_UNREACHABLE
+        : WORKSPACE_GATEWAY_UNAVAILABLE;
   if (error.status === 403) {
     // Saving a file is an Agent operate action (finding 1540); reading one is Agent read, unless
     // the API names another grant.
@@ -309,7 +318,7 @@ export function renderWorkspaceFiles(
           loaded = false;
         }
         status.textContent = canCreate ? missingText() : "";
-        errorNotice.textContent = canCreate ? "" : fileError(cause, false);
+        errorNotice.textContent = canCreate ? "" : fileError(cause, false, failure);
       } finally {
         if (context.isCurrent()) {
           pending = false;
@@ -380,7 +389,7 @@ export function renderWorkspaceFiles(
         }
         outcomeUnknown = writeOutcomeUnknown(cause.status);
         status.textContent = "";
-        errorNotice.textContent = fileError(cause, true);
+        errorNotice.textContent = fileError(cause, true, failure);
       } finally {
         if (context.isCurrent()) {
           pending = false;
