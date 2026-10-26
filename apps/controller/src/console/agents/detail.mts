@@ -17,6 +17,7 @@ import type { ConsolePageContext } from "../page-context.mjs";
 import { renderAgentDriverConfigurations } from "../driver-configurations.mjs";
 import {
   button,
+  describeDisabled,
   element,
   fieldError,
   focusSaveOutcome,
@@ -3003,6 +3004,9 @@ export async function renderAgentDetail(
               : status;
         }
       }
+      // A disabled Deploy is described by the line that says why, or by a refused deployment's
+      // alert when that line defers to it (finding D749).
+      describeDisabled(deploy, deployStatus.textContent ? deployStatus : deployFeedback);
       updateChecklist();
     }
     // The last deployment's model credential was rejected and the draft still uses it.
@@ -4253,6 +4257,16 @@ export async function renderAgentDetail(
       let pending = false;
       // Set when the caller's permission answer denies Agent update (finding 1530).
       let updateDenied = false;
+      // The method select and Save are described by the note that says why they are disabled
+      // (finding D749).
+      const describeUpdateDenial = () => {
+        const method = auth.section.querySelector<HTMLElement>("#harness-auth-method");
+        for (const control of [save, method]) {
+          if (control) {
+            describeDisabled(control, updateDenied ? updateNote : null);
+          }
+        }
+      };
       const applyUpdateDenial = (reason: string | undefined) => {
         // Retry credential access only rechecks the Secret grant; it is not an Agent update.
         if (savedAuthentication || (reason === undefined && !updateDenied)) {
@@ -4267,6 +4281,7 @@ export async function renderAgentDetail(
           // An edit that cannot be saved would only block Deploy (finding 1539).
           auth.setDisabled(outcomeUnknown || updateDenied);
         }
+        describeUpdateDenial();
       };
       void agentSaveDenied.then((reason) => {
         if (context.isCurrent()) {
@@ -4585,6 +4600,7 @@ export async function renderAgentDetail(
             reload.disabled = false;
             save.disabled = outcomeUnknown || updateDenied;
             auth.setDisabled(outcomeUnknown || savedAuthentication !== null || updateDenied);
+            describeUpdateDenial();
             syncUnsavedAuthentication();
           }
         }

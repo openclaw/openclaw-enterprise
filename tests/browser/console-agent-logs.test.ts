@@ -25,6 +25,7 @@ import {
   createRuntimeLogComputeDriver,
 } from "../helpers/runtime-logs.mjs";
 import {
+  accessibleDescription,
   apiRequests,
   detailUrl,
   fileBrowser,
@@ -1267,8 +1268,18 @@ test("an operator without administer sees status but no log text and is never re
   await page.locator(".runtime-pod").getByRole("heading", { name: "Gateway" }).waitFor();
   await page.getByText(LOG_TEXT_DENIED).waitFor();
   assert.equal(await page.getByText("operator must not see this").count(), 0);
-  assert.equal(await page.getByRole("button", { name: "Follow" }).isDisabled(), true);
-  assert.equal(await page.getByRole("button", { name: "Refresh logs" }).isDisabled(), true);
+  // Every log control is disabled and described by the refusal beside it (finding D749).
+  for (const control of [
+    page.locator("#runtime-log-source"),
+    page.getByLabel("Previous instance"),
+    page.getByLabel("Include debug"),
+    page.getByRole("button", { name: "Follow" }),
+    page.getByRole("button", { name: "Refresh logs" }),
+    page.getByRole("button", { name: "Download" }),
+  ]) {
+    assert.equal(await control.isDisabled(), true);
+    assert.equal(await accessibleDescription(control), LOG_TEXT_DENIED);
+  }
   const denied = logRequests(requests, revisionId).length;
   assert.equal(denied, 1);
   // Log text was never allowed, so the refusal revokes nothing: status is not asked again at

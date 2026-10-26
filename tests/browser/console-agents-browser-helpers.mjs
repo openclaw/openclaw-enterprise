@@ -1074,6 +1074,19 @@ export function statusTone(locator, { text = false } = {}) {
   );
 }
 
+// A control's accessible description from aria-describedby: the text of each element it names,
+// in order (finding D749). A referenced ID that renders nothing adds nothing.
+export function accessibleDescription(locator) {
+  return locator.evaluate((node) =>
+    (node.getAttribute("aria-describedby") ?? "")
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((id) => globalThis.document.getElementById(id)?.textContent?.trim() ?? "")
+      .filter(Boolean)
+      .join(" "),
+  );
+}
+
 // Whether a reload or tab close would ask first: the console cancels beforeunload.
 export function asksBeforeUnload(page) {
   return page.evaluate(() => {
