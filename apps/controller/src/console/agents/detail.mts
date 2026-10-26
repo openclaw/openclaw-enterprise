@@ -43,6 +43,7 @@ import {
   askAdministratorTo,
   askForGrant,
   CONFIGURATION_UPDATE_DENIED,
+  credentialCheckedAtDeploy,
   NEW_VERSIONS_READ,
   VERSION_READ_DENIED,
 } from "./access-reasons.mjs";
@@ -2695,12 +2696,10 @@ export async function renderAgentDetail(
     let authenticationForm: HTMLElement | undefined;
     const retainedAuthentication = context.drafts.get("authentication") as
       AuthenticationDraft | undefined;
-    // A member's save that this session could not verify is finished: it holds nothing
-    // (finding 2547).
+    // A member's save is finished when it saves and is never retained, so it holds nothing
+    // (findings 2547, D748).
     let authenticationPending = Boolean(
-      retainedAuthentication?.outcomeUnknown ||
-      (retainedAuthentication?.savedAuthentication &&
-        retainedAuthentication.grantProblem !== "unverified"),
+      retainedAuthentication?.outcomeUnknown || retainedAuthentication?.savedAuthentication,
     );
     // Authentication edits staged in Credentials but not yet saved.
     let authenticationUnsaved = false;
@@ -4201,6 +4200,9 @@ export async function renderAgentDetail(
         },
       );
       const feedback = element("p", { role: "status", className: "hint" }, savedNotice);
+      // The saved notice describes the saved source. Once the selection differs, the picker's
+      // "staged" hint is the card's one status, not both at once (finding D748).
+      const shownSavedNotice = savedNotice;
       // Progress stays a quiet hint; a refusal is a danger block that takes focus, and a save
       // whose Secret access is unconfirmed a warning (finding 1966).
       const say = (text: string, tone: "danger" | "warning" | null = null) => {
@@ -4303,13 +4305,14 @@ export async function renderAgentDetail(
       }: AuthenticationFields) =>
         JSON.stringify({ method, secretSource, credentialSource, account });
       syncUnsavedAuthentication = () => {
+        const changed = bindingFields(auth.capture()) !== bindingFields(originalFields);
         // Pending and saved states already gate deployment with their own messages.
         data.setAuthenticationUnsaved(
-          !pending &&
-            !outcomeUnknown &&
-            !savedAuthentication &&
-            bindingFields(auth.capture()) !== bindingFields(originalFields),
+          !pending && !outcomeUnknown && !savedAuthentication && changed,
         );
+        if (changed && shownSavedNotice && feedback.textContent === shownSavedNotice) {
+          feedback.textContent = "";
+        }
         applySavedGrantWarning();
       };
       // The IAM answer is about the saved Secret. A later selection is what Save would grant,
@@ -4383,8 +4386,6 @@ export async function renderAgentDetail(
       });
       if (savedAuthentication) {
         save.textContent = "Retry credential access";
-        // This session sent no grant because it cannot make one, so a Retry would be refused too.
-        save.hidden = grantProblem === "unverified";
         auth.setDisabled(true);
         setStatusTone(feedback, "warning");
         feedback.textContent = grantProblem
@@ -4491,15 +4492,18 @@ export async function renderAgentDetail(
           if (credential && context.installationAdmin === false) {
             // Granting writes IAM policy, which needs Installation administration. The session
             // already knows this member lacks it, so it sends no grant that would be refused, and
-            // no IAM read either. Nothing verified the Agent's access, which an administrator may
-            // already have granted. It names who grants it, as Create Agent does (findings 2109,
-            // 2259).
-            grantProblem = "unverified";
+            // no IAM read either (findings 2109, 2259). The save is finished: the card rebuilds
+            // editable, with one status that says the deploy checks the Agent's access and who
+            // gives it, and Deploy is not held (findings 2547, D748).
             if (context.isCurrent()) {
-              say(grantText(grantProblem), "warning");
-              // The binding saved and nothing in this session can confirm the grant, so Deploy
-              // is not held: the API checks the Agent's access when it deploys (finding 2547).
-              data.setAuthenticationPending(false);
+              context.drafts.forget("authentication");
+              await refreshDraftInPlace({
+                agent: savedAgent,
+                saved: `Authentication source saved. ${credentialCheckedAtDeploy(
+                  credential.kind === "credential_source" ? "credential source" : "Secret",
+                )}`,
+                focus: "Save authentication source",
+              });
             }
             return;
           }
@@ -4580,7 +4584,6 @@ export async function renderAgentDetail(
             save.textContent = savedAuthentication
               ? "Retry credential access"
               : "Save authentication source";
-            save.hidden = savedAuthentication !== null && grantProblem === "unverified";
             pending = false;
             reload.disabled = false;
             save.disabled = outcomeUnknown || updateDenied;

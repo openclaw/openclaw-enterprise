@@ -7469,7 +7469,7 @@ export const scenarios = {
   },
   authSecretGrantMemberUnverified: {
     group: "Components/Credentials",
-    name: "Member authentication saved, access not verified",
+    name: "Member authentication saved, access checked at deploy",
     path: `${draft}&tab=credentials`,
     observabilityDenied: true,
     extraSecrets: [{ id: "sec_demo_replacement", name: "Replacement model token" }],
@@ -7479,10 +7479,11 @@ export const scenarios = {
       click("Save authentication source"),
     ],
     description:
-      "A member saves a new model Secret. The session already knows this member does not administer the Installation, so the form sends no IAM request for the Agent's grant. The warning says this session did not verify the Agent's access, names the Installation administrator and the step that grants it, and offers no Retry credential access.",
+      "A member saves a new model Secret. The session already knows this member does not administer the Installation, so the form sends no IAM request for the Agent's grant. The card settles to one saved status: deploying checks that the Agent can use the selected Secret, and an Installation administrator gives the Agent Secret operate on it if it cannot. It offers no Retry credential access.",
     steps: [
-      "Read the warning: this session did not verify access, and an Installation administrator opens this Agent's Credentials and selects Save authentication source.",
-      "Only Reload authentication source remains. Deploy new version stays available, since the API checks the Agent's access when it deploys. The request log shows the Agent PATCH and no /iam/ request.",
+      "Read the status: the source saved, the deploy checks the Agent's access, and an Installation administrator gives it.",
+      "The method select, the Secret picker and Save authentication source stay enabled. Pick another Secret: the staged hint replaces the saved status.",
+      "Deploy new version stays available, since the API checks the Agent's access when it deploys. The request log shows the Agent PATCH and no /iam/ request.",
     ],
     gap: "The member browser test uses a member account and the real Installation permission check.",
   },

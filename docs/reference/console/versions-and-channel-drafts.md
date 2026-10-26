@@ -58,8 +58,8 @@ history, repeat the startup model probe, or prove message delivery.
 `secret:operate` access for the Agent principal on an API-key or Service Accounts
 Secret. Grant changes require Installation `administer`; issued ChatGPT accounts
 and operator-managed authentication skip the grant. A member's save sends no
-grant, reports that access was not verified, and names the Installation
-administrator. Opening Credentials as an administrator reads Namespace IAM and blocks
+grant: the form stays editable and says that deploying checks the Agent's access
+and that an Installation administrator gives it. Opening Credentials as an administrator reads Namespace IAM and blocks
 deployment while that grant is missing. A refused or failed grant request offers **Retry credential access**
 without repeating the Agent update. Partial saves survive navigation. Grants do not prove runtime or
 provider readiness.

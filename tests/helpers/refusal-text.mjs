@@ -58,6 +58,11 @@ export const CONSOLE_NAMESPACE_CREATE_DENIED =
 export const askForGrant = (grant) => `Ask an Installation administrator for ${grant}.`;
 export const notIncluded = (task, grant) =>
   `Your access does not include ${task}. ${askForGrant(grant)}`;
+// A member's console sends no credential grant, so a saved authentication source says the deploy
+// checks the Agent's own access, and who gives it (finding D748). `noun` is "Secret" or
+// "credential source".
+export const credentialCheckedAtDeploy = (noun) =>
+  `Deploying checks that this Agent can use the selected ${noun}. If it cannot, ask an Installation administrator to give the Agent ${noun} operate on it.`;
 export const AGENT_STOP_DENIED = notIncluded("stopping this Agent", "Agent operate on it");
 export const AGENT_DELETE_DENIED = notIncluded("deleting this Agent", "Agent delete on it");
 export const AGENT_STOP_AND_DELETE_DENIED = notIncluded(
