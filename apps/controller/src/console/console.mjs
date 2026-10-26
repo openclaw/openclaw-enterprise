@@ -7,7 +7,7 @@ import {
   renderCreateAgent,
   renderAgentDetail,
 } from "./agents.mjs";
-import { clearRuntimeDenials } from "./agents/logs.mjs";
+import { clearRuntimeDenials, forgetRuntimeDenials } from "./agents/logs.mjs";
 import { createApiClient } from "./api-client.mjs";
 import { createViewLifetime } from "./view-lifetime.mjs";
 import { createNavigation, pages } from "./navigation.mjs";
@@ -21,6 +21,15 @@ const app = document.querySelector("#app");
 const lifetime = createViewLifetime();
 let session = null;
 let namespaces = [];
+// Namespaces a list read in this sign-in returned: only those can be ones the reader "no
+// longer" has access to (finding 2550).
+const listedNamespaceIds = new Set();
+function setNamespaces(readable) {
+  namespaces = sorted(readable);
+  for (const item of namespaces) {
+    listedNamespaceIds.add(item.id);
+  }
+}
 let namespaceId = null;
 let observabilityUrl = null;
 // Set while the last Backends read was denied, so Retry and Refresh do not show the Namespace
@@ -532,12 +541,15 @@ const { publicPanel, renderRows, switchNamespace } = shellUI;
 // selector, which is disabled when no Namespace is readable (a member whose only grant was
 // revoked, on a bookmarked link), so the panel then points at the header's Refresh, as the
 // no-readable-Namespace panel does (findings 2371, 2393).
-function namespaceUnavailablePanel(view) {
+function namespaceUnavailablePanel(view, unavailableId) {
+  const why = listedNamespaceIds.has(unavailableId)
+    ? "This Namespace is missing or you no longer have access"
+    : "This Namespace is missing or not shared with you";
   if (namespaces.length) {
     panel(
       view,
       "Namespace unavailable",
-      "This Namespace is missing or you no longer have access. Choose another Namespace.",
+      `${why}. Choose another Namespace.`,
       "Switch Namespace",
       () => switchNamespace(),
     );
@@ -546,7 +558,7 @@ function namespaceUnavailablePanel(view) {
   panel(
     view,
     "Namespace unavailable",
-    "This Namespace is missing or you no longer have access, and you cannot read any other Namespace. Ask an administrator to grant you access to one, then Refresh.",
+    `${why}, and you cannot read any other Namespace. Ask an administrator to grant you access to one, then Refresh.`,
   );
 }
 const request = createApiClient({
@@ -913,6 +925,7 @@ function clearPrivate() {
   session = null;
   backendsDenied = false;
   namespaces = [];
+  listedNamespaceIds.clear();
   namespaceId = null;
   observabilityUrl = null;
   observabilityOwner = null;
@@ -1256,6 +1269,11 @@ async function loadPage({
     reuseView = false;
   }
   namespaceId = current.namespace;
+  if (fromRefresh && current.agentId && current.namespace) {
+    // Refresh checks access again: an Agent's Logs view asks again instead of reusing a denial
+    // remembered earlier in this sign-in (finding 2566).
+    forgetRuntimeDenials(current.namespace, current.agentId);
+  }
   const active = resetReads({
     retainView: knownPrivateState,
     // A Namespaces row link marks itself too, so Back returns focus to that row.
@@ -1593,7 +1611,7 @@ async function loadPage({
       throw new Error("Invalid collection response");
     }
     clearRetainedViewsOutsideNamespaces(readable);
-    namespaces = sorted(readable);
+    setNamespaces(readable);
     accessResolved = true;
     if (observability) {
       observabilityUrl = observability.url;
@@ -1899,7 +1917,7 @@ async function loadPage({
           "Ask an administrator to create a Namespace or grant you access to one, then Refresh.",
         );
       } else {
-        namespaceUnavailablePanel(shell.view);
+        namespaceUnavailablePanel(shell.view, namespaceId);
       }
       return;
     }
@@ -2452,11 +2470,14 @@ async function revalidateMountedAgent(current) {
     }
     clearRetainedViewsOutsideNamespaces(readable);
     session = resolvedSession;
-    namespaces = sorted(readable);
+    setNamespaces(readable);
     if (!namespaces.some((item) => item.id === selectedNamespace)) {
       clearRetainedViewsForNamespace(selectedNamespace);
       resetReads();
-      namespaceUnavailablePanel(renderShell(current.feature, false, { page: null }).view);
+      namespaceUnavailablePanel(
+        renderShell(current.feature, false, { page: null }).view,
+        selectedNamespace,
+      );
       return;
     }
     checking = "detail";

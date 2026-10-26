@@ -690,9 +690,11 @@ function completedWithoutActivation(work: Readonly<ControllerWork>): boolean {
   );
 }
 
-// Each message names the cause and, where the caller can act, the next step. Every client
-// (console, occ, HTTP API) shows this text as is, so the guidance lives here only; the console
-// adds just a link to the page that holds the setting (finding 1393).
+// Each message names the cause and the next step. Every client (console, occ, HTTP API) shows
+// this text as is, so the guidance lives here only; the console adds just a link to the page
+// that holds the setting (finding 1393). `deployment-failure-steps.ts` records which kind of
+// step each code leads to, so clients choose their actions without parsing this text: keep the
+// two in step.
 function deploymentErrorMessage(code: string): string {
   switch (code) {
     case "CONVERGENCE_DEADLINE_EXCEEDED":
@@ -726,7 +728,7 @@ function deploymentErrorMessage(code: string): string {
     case "REPOSITORY_REVISION_SUPERSEDED":
       return "Deployment was superseded by a newer revision.";
     case "REPOSITORY_REVISION_STOPPED":
-      return "Deployment ended because the Agent was stopped or its Namespace is no longer ready.";
+      return "Deployment ended because the Agent was stopped or its Namespace is no longer ready. To run the Agent, deploy again once its Namespace is ready.";
     // Repository credential refusals (finding 1045). Like the refusals below, the status never
     // names a repository, grant or Driver.
     case "REPOSITORY_RUNTIME_UNSUPPORTED":
@@ -770,19 +772,19 @@ function deploymentErrorMessage(code: string): string {
     case "LEASE_EXPIRED":
       return "The controller worker stopped or lost its claim during this deployment's last attempt. Deploy again.";
     case "AGENT_GATEWAY_UNAVAILABLE":
-      return "The Agent Gateway was still not reachable through its route at the deployment deadline.";
+      return "The Agent Gateway was still not reachable through its route at the deployment deadline. Deploy again; if it keeps failing, ask an operator to check the gateway route and the Agent's Pods.";
     case "AGENT_GATEWAY_UNAUTHORIZED":
       return "The Agent Gateway refused its own CLI as unauthorized. Check that the Agent's Configuration sets gateway.auth.password to OPENCLAW_GATEWAY_PASSWORD (Enable gateway password access), then deploy again.";
     case "KUBERNETES_API_UNAVAILABLE":
-      return "The Kubernetes API was still unavailable at the deployment deadline.";
+      return "The Kubernetes API was still unavailable at the deployment deadline. Deploy again; if it keeps failing, ask an operator to check the cluster's API server.";
     case "KUBERNETES_SECRET_WRITE_FORBIDDEN":
       return "Kubernetes refused access to a Secret this version needs (HTTP 403 Forbidden), so the controller did not retry. Ask a platform operator to check that the worker's tenant RoleBindings grant get, create and update on secrets in the Agent's Kubernetes namespaces (with an execution cluster, also the control cluster's Gateway namespace), and that no admission policy or ResourceQuota refuses Secrets there, then deploy again.";
     case "SANDBOX_REPOSITORY_RECIPIENT_UNVERIFIED":
       return SandboxRepositoryRecipientUnverifiedError.description;
     case "SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED":
-      return "The Sandbox Driver cannot deliver Secret-backed environment variables to the Harness.";
+      return "The Sandbox Driver cannot deliver Secret-backed environment variables to the Harness. Use credential sources instead of Secret bindings, or ask an Installation administrator for a Sandbox Driver that supports them, then deploy again.";
     case "SANDBOX_HARNESS_UNSUPPORTED":
-      return "The Sandbox Driver does not support this revision's Harness.";
+      return "The Sandbox Driver does not support this revision's Harness settings, such as plugins, network policy additions or ServiceAccount credentials. Change them, or ask an Installation administrator for a Driver that supports them, then deploy again.";
     case "SANDBOX_GATEWAY_UNAUTHORIZED":
       return "The Sandbox gateway refused the controller's identity in this revision's Workspace, so the Driver could not confirm the revision's Sandbox removed, its Harness exposure withdrawn or its credentials detached. A Workspace removed outside the controller presents the same way. For an authentication failure, check the controller gateway identity's token file and the gateway's signing-key refresh; for a permission denial, restore that identity's Workspace role (or recreate the Workspace with a deploy). Then deploy, stop, delete or withdraw again.";
     case "CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT":
@@ -806,10 +808,51 @@ function deploymentErrorMessage(code: string): string {
     case "SERVICE_ACCOUNT_BACKEND_MISMATCH":
       return "The ServiceAccount's Backend binding no longer matches the Agent's Backend, or its credential is no longer issued. Bind a ServiceAccount created and issued under the Agent's current Backend, then deploy again.";
     case "SANDBOX_ADMISSION_LIMIT_REACHED":
-      return "The Sandbox gateway still refused new requests from the controller (request admission limit reached) at the deployment deadline.";
+      return "The Sandbox gateway still refused new controller requests (request admission limit reached) at the deployment deadline. Deploy again once other Sandbox work has finished; if it keeps failing, ask an operator to check the gateway's request limit.";
     case "SANDBOX_GATEWAY_UNAVAILABLE":
-      return "The Sandbox gateway still did not answer the controller at the deployment deadline.";
+      return "The Sandbox gateway still did not answer the controller at the deployment deadline. Deploy again; if it keeps failing, ask an operator to check the Sandbox gateway.";
+    // These codes used to fall through to the fallback below, which named no step (finding 2537).
+    case "INVALID_HARNESS_AUTH":
+      return "This version's Harness authentication cannot be used: its Secret or ServiceAccount is outside the Agent's Namespace, or its method is not supported. Choose the Harness authentication again in the Agent's Credentials, then deploy a new version.";
+    case "INVALID_AGENT_PRINCIPAL":
+      return "The Agent's own identity, which this version runs as, is missing from the Installation, so the controller did not start the version. Ask an Installation administrator to check the Agent and the controller worker log.";
+    case "INVALID_SECRET_BINDINGS":
+      return "The Secret bindings stored with this version are not valid, so the controller did not start it. Deploy again to admit a version with the Agent's current Secret bindings; if the deploy is refused, bind the Agent's Secrets again first.";
+    case "EXECUTION_ADMISSION_UNAVAILABLE":
+      return "This version was admitted for protected execution that the Installation can no longer provide, for example after its Credential Proxy changed. Deploy again; if the deploy is refused, ask an Installation administrator to check the Credential Proxy.";
+    case "INVALID_TARGET":
+    case "INVALID_REVISION_OWNER":
+    case "INVALID_ADMITTED_REVISION":
+    case "INVALID_ACTIVE_REVISION":
+      return "The stored records for this version are inconsistent with its Agent or Namespace, so the controller did not start it and it has no runtime logs. Ask an Installation administrator to check the controller worker log for this deployment.";
+    case "INVALID_DRIVER_OBSERVATION":
+      return "The Compute Driver reported this version's state in a form the controller rejects, so it stopped the deployment. Check this version's logs, then deploy a new version; if it fails again, ask an operator whether the Compute Driver matches this controller.";
+    case "INVALID_REPOSITORY_DRIVER_OBSERVATION":
+      return "The repository credential Driver reported a session in a form the controller rejects, so it stopped the deployment. Check this version's logs, then deploy a new version; if it fails again, ask an operator to check the repository credential Driver.";
+    case "INVALID_REPOSITORY_ATTEMPT_OWNER":
+      return "A repository session stored for this version does not match the repository access it binds, so the controller stopped the deployment. Its runtime logs cannot show why: ask an Installation administrator to check the controller worker log.";
+    case "REPOSITORY_PROXY_ADMISSION_MISMATCH":
+      return "This version's repository access no longer matches the Credential Proxy delivery it was admitted with. Deploy again to admit a version with the current repository access.";
+    case "REPOSITORY_PREPARED_ADMISSION_UNAVAILABLE":
+      return "The Installation's repository credential Driver cannot keep the session records this version's repository access needs. Ask an Installation administrator for a Driver that supports them, or remove the Agent's repository access, then deploy again.";
+    case "REPOSITORY_EXECUTION_CLOSED":
+      return "This version's standing repository access was closed, and the controller does not reopen it for the same version. Deploy again to restore repository access.";
+    case "REPOSITORY_EXECUTION_CHANGED":
+    case "REPOSITORY_EXECUTION_REPLACED":
+      return "This version's runtime was replaced after the controller checked it for repository access, so the controller closed that access. Deploy again to restore repository access.";
+    case "REPOSITORY_EXECUTION_UNVERIFIED":
+      return "The controller could not confirm that the runtime holding this version's standing repository access is the one it recorded, so it did not grant that access. Deploy again to restore repository access.";
+    case "REPOSITORY_SESSION_RECOVERY_UNSAFE":
+      return "A repository session this version opened ended in an unknown state and may still hold a credential, so the controller opens no other for it. Deploy again; if repository access still fails, ask an Installation administrator to check for open sessions.";
+    case "REPOSITORY_SESSION_NO_LONGER_CURRENT":
+      return "This version's repository session ended or expired before the controller confirmed it. Deploy again to open a new session.";
+    case "REPOSITORY_STANDING_APPROVAL_REMOVED":
+      return "The standing repository approval this version was admitted with was removed or replaced. Approve the repository access again, or remove the Agent's repository access, then deploy again.";
+    case "REPOSITORY_STANDING_POLICY_CHANGED":
+      return "The Namespace's repository policy changed since this version's standing repository approval, so the approval no longer covers it. Approve the repository access again under the current policy, or remove the Agent's repository access, then deploy again.";
+    case "UNKNOWN_FAILURE":
+      return "The deployment failed without a recorded reason. Check this version's logs; if they show nothing, ask an Installation administrator to check the controller worker log, then deploy a new version.";
     default:
-      return "Deployment reconciliation failed.";
+      return "Deployment failed. Check this version's logs; if they show nothing, ask an Installation administrator to check the controller worker log for this code.";
   }
 }

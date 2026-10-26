@@ -1592,6 +1592,82 @@ test("Agent detail refocus checks access once without reloading an unfinished re
   assert.equal(pathRequests(requests, "PATCH", configurationPath).length, 1);
 });
 
+// A link to a tab this version or this reader does not have silently showed Configuration and
+// kept tab=… in the address (finding 2552). The page now names the tab and why, shows
+// Configuration, and drops the note once another tab is chosen. The address then names
+// Configuration, so a reload or a shared link does not repeat the note (finding 2567).
+test("a link to an unavailable Agent tab names it and shows Configuration", async (t) => {
+  const fixture = await detailApp(t);
+  const namespace = await fixture.createNamespace("Unavailable tab links", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Tab link Agent", nativeValues("tabs"));
+  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const reader = await fixture.createNamespaceMember("tab-reader", namespace.id, AGENT_READ);
+  const notice = (page) => page.locator(".agent-tab-notice");
+  for (const [revisionId, tab, text] of [
+    [
+      revision.id,
+      "credentials",
+      "The Credentials tab is on the version draft only. Showing Configuration.",
+    ],
+    [
+      revision.id,
+      "repositories",
+      "The Repositories tab is on the version draft only. Showing Configuration.",
+    ],
+    ["draft", "logs", "The Logs tab is on deployed versions only. Showing Configuration."],
+    [
+      "draft",
+      "access",
+      "The Access tab needs Installation administration, which your access does not include. Showing Configuration.",
+    ],
+    ["draft", "bogus", "This Agent has no “bogus” tab. Showing Configuration."],
+  ]) {
+    const { page } = await newPage(t, fixture);
+    await trackSettledFetches(page);
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, revisionId, tab),
+      reader.credentials,
+    );
+    await page.getByRole("tab", { name: "Configuration", selected: true }).waitFor();
+    await notice(page).getByText(text, { exact: true }).waitFor();
+    assert.equal(await notice(page).getAttribute("role"), "status");
+    // The address names the tab shown, in place: the page and its note stay.
+    await page.waitForURL((url) => url.searchParams.get("tab") === "configuration");
+    assert.equal(new URL(page.url()).searchParams.get("revision"), revisionId);
+    await notice(page).getByText(text, { exact: true }).waitFor();
+    if (tab === "bogus") {
+      // A reload opens Configuration from the corrected address, without the note.
+      await page.reload();
+      await page.getByRole("tab", { name: "Configuration", selected: true }).waitFor();
+      await waitForIdleFetches(page);
+      assert.equal(await notice(page).isHidden(), true);
+      continue;
+    }
+    // Choosing a tab answers the note.
+    await page.getByRole("tab", { name: "Plugins", exact: true }).click();
+    await page.getByRole("tab", { name: "Plugins", selected: true }).waitFor();
+    assert.equal(await notice(page).isHidden(), true);
+  }
+  // A tab the reader has, or an empty tab, shows no note.
+  for (const tab of ["plugins", ""]) {
+    const { page } = await newPage(t, fixture);
+    await trackSettledFetches(page);
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, "draft", tab),
+      reader.credentials,
+    );
+    await page
+      .getByRole("tab", { name: tab ? "Plugins" : "Configuration", selected: true })
+      .waitFor();
+    await waitForIdleFetches(page);
+    assert.equal(await notice(page).isHidden(), true);
+  }
+});
+
 for (const kind of ["agent", "configuration", "namespace"]) {
   test(`Agent detail refocus removes a revision when ${kind} access is revoked`, async (t) => {
     const fixture = await detailApp(t);
@@ -1622,6 +1698,10 @@ for (const kind of ["agent", "configuration", "namespace"]) {
         exact: true,
       })
       .waitFor();
+    if (kind === "namespace") {
+      // The page listed this Namespace earlier in the sign-in, so access was lost (finding 2550).
+      await page.getByText(/^This Namespace is missing or you no longer have access/).waitFor();
+    }
     await expectNoText(page, /Configuration draft|Create new version|Revoked revision Agent/, () =>
       waitForIdleFetches(page),
     );

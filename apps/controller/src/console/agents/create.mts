@@ -3071,7 +3071,9 @@ function renderAgentForm(
         // A Stop keeps the name, so do not only point at a new Agent.
         detail = `${error.message} If the Agent still exists, open it and deploy a version; otherwise select Create Agent to submit a new request.`;
       } else if (terminal?.job.revisionId) {
-        detail = `${error.message} Open this Agent, correct the cause and deploy a new version.`;
+        // The deployment's message names its own next step, which is not always a new version
+        // (finding 2537); the Agent page shows it with the failed version's recovery actions.
+        detail = `${error.message} Open this Agent to see the failed version and its recovery actions.`;
       } else if (terminal?.failed) {
         detail = `${error.message} Select Create Agent to submit a new request.`;
       } else if (retryRefused) {

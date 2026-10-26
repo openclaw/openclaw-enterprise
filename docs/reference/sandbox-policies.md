@@ -102,7 +102,26 @@ version to match. `failed` includes an unconfirmed outcome: the provider may hav
 accepted a request before a connection or worker was lost. Exhausted stale work,
 its failed application, and audit evidence commit in one transaction; interruption
 rolls back all three so a later worker can retry recovery. Refresh, inspect, and
-retry explicitly. Failure never triggers automatic redeployment. The last
+retry explicitly. Failure never triggers automatic redeployment.
+
+A `failed` application carries a `reason` code. The console shows its meaning
+and next step. The worker repeats its checks on every pass, including passes
+after it sent the policy. A failure after a send can leave the Sandbox running
+that policy, and the worker does not send it again:
+
+| `reason`                               | Cause and next step                                                                                    |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `SANDBOX_POLICY_REVISION_CHANGED`      | The current version changed or the Agent stopped. Apply again.                                         |
+| `AUTHORIZATION_DENIED`                 | The requester lost Agent `manage_policy` or SandboxPolicy `update`. Ask an Installation administrator. |
+| `SANDBOX_POLICY_CEILING_CHANGED`       | The delegation ceiling no longer covers every rule. Remove those rules and save.                       |
+| `SANDBOX_POLICY_UNSUPPORTED`           | The version's Sandbox Driver cannot apply or refused the rules. Deploy instead.                        |
+| `SANDBOX_POLICY_PROTECTED_EXECUTION`   | The version runs under protected execution. Remove the saved rules.                                    |
+| `SANDBOX_POLICY_VALIDATION_FAILED`     | The Driver settings refused the rules. Review, correct and save them.                                  |
+| `SANDBOX_POLICY_PLACEMENT_UNAVAILABLE` | The Compute Driver changed since the version deployed. Deploy a new version.                           |
+| `SANDBOX_POLICY_PROVIDER_FAILED`       | The provider reported failure. Refresh and apply again.                                                |
+| `SANDBOX_POLICY_UNCONFIRMED`           | No confirmation in time; the provider may have applied part. Refresh and retry.                        |
+
+The last
 confirmed live version remains recorded separately when desired additions change.
 Revision snapshots and attributable audit evidence preserve the original admission.
 The console shows read-only defaults from the running revision, or the selected

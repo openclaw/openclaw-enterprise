@@ -552,6 +552,8 @@ export {
 export { resolveConfiguredHarnessId } from "./configured-harness.ts";
 export { imageReferenceProblem } from "./image-reference.ts";
 export type { ImageReferenceProblem } from "./image-reference.ts";
+export { DEPLOYMENT_FAILURE_STEPS, deploymentFailureStep } from "./deployment-failure-steps.ts";
+export type { DeploymentFailureStep } from "./deployment-failure-steps.ts";
 export {
   environmentReference,
   environmentReferenceNames,

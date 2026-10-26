@@ -1147,7 +1147,7 @@ const neutralDeployments = [
     failure: {
       code: "REPOSITORY_REVISION_STOPPED",
       message:
-        "Deployment ended because the Agent was stopped or its Namespace is no longer ready.",
+        "Deployment ended because the Agent was stopped or its Namespace is no longer ready. To run the Agent, deploy again once its Namespace is ready.",
     },
   },
 ];
