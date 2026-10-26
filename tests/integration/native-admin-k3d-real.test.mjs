@@ -841,15 +841,7 @@ async function assertSharedNativeSessions(context, { topology, browser, ingress,
   assert.equal(agentId, topology.agent.id);
   assert.equal(namespaceId, topology.agent.namespaceId);
 
-  // Check the link before opening it. The native UI can replace "/" with its
-  // chat route before Playwright observes the popup, especially with warm assets.
-  const launch = nativePage.getByRole("link", { name: "Open admin console", exact: true });
-  await launch.waitFor();
-  assert.equal(await launch.getAttribute("href"), status.url);
-  const [reopened] = await Promise.all([nativePage.waitForEvent("popup"), launch.click()]);
-  await waitForStockUi(reopened);
-  assert.equal(await reopened.evaluate(() => globalThis.window.opener === null), true);
-  assert.equal(new URL(reopened.url()).origin, status.origin);
+  const reopened = await openNativeAdminConsole(nativePage, status.origin);
   await waitFor("a live Gateway hello on the page opened after signing back in", () =>
     unaffected.frames.find(
       (frame) =>
