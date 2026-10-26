@@ -42,7 +42,14 @@ import { createTestConfigurationDriver } from "../helpers/configuration-driver.m
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { grantRole } from "../helpers/iam-grants.mjs";
-import { DEPENDENCY_UNAVAILABLE } from "../helpers/refusal-text.mjs";
+import {
+  COMPUTE_REPOSITORY_UNSUPPORTED,
+  DEPENDENCY_UNAVAILABLE,
+  REPOSITORY_ACCESS_OR_BINDINGS,
+  REPOSITORY_SELECTION_NOT_APPROVED,
+  SERVICE_ACCOUNT_CROSS_NAMESPACE,
+  sentIdHidden,
+} from "../helpers/refusal-text.mjs";
 
 const driverId = "repository-credentials";
 const backendId = "repository-provider";
@@ -301,7 +308,7 @@ async function fixture(
     });
     t.after(() => app.close());
     const request = await createAuthenticatedControllerRequest(app, auth);
-    return { controller, request };
+    return { controller, request, app };
   }
 
   const initial = await compose();
@@ -368,9 +375,22 @@ async function fixture(
     assert.equal(updated.status, 200, JSON.stringify(updated));
   }
 
+  // A signed-in person with no grant at all, for answers that must not depend on existence.
+  async function requestWithoutGrants(app) {
+    const credentials = {
+      email: `outsider-${randomUUID()}@example.com`,
+      password: `outsider-password-${randomUUID()}`,
+      name: "Outsider",
+    };
+    const account = await auth.auth.createAccount(credentials);
+    iamState.identities.push(auth.auth.principalSeed(account, { grant: "none" }).principal);
+    return createAuthenticatedControllerRequest(app, credentials);
+  }
+
   return {
     ...composed,
     actorId: auth.seed.principal.id,
+    requestWithoutGrants,
     iamState,
     failIAMAfterReads(count) {
       remainingIAMReads = count;
@@ -692,13 +712,16 @@ test("Repository policy rejects invalid create and PATCH before changing stored 
   for (const scenario of cases) {
     await t.test(scenario.name, async () => {
       const body = { configurationId: f.configuration.id, repositoryBindings: scenario.bindings };
+      // The caller may edit the Agent, so the refusal names the rules instead of a 404 (finding
+      // 2536). It reads the same for every cause and names no repository.
       for (const [method, target, fields] of [
         ["POST", f.collection, { ...body, name: "Refused Agent" }],
         ["PATCH", path, body],
       ]) {
         const response = await f.request(method, target, fields);
-        assert.equal(response.status, 404, JSON.stringify(response));
-        assert.equal(response.error.code, "NOT_FOUND");
+        assert.equal(response.status, 400, JSON.stringify(response));
+        assert.equal(response.error.code, "INVALID_REQUEST");
+        assert.equal(response.error.message, REPOSITORY_SELECTION_NOT_APPROVED);
       }
       assert.deepEqual((await f.request("GET", f.collection)).data, before);
     });
@@ -800,14 +823,16 @@ test("Agent repository access preserves inheritance intent and admits only resol
     ...patch,
     repositoryAccess: { ...reset, defaultProfile: "unapproved" },
   });
-  assert.notEqual(denied.status, 200);
+  assert.equal(denied.status, 400, JSON.stringify(denied));
+  assert.equal(denied.error.message, REPOSITORY_SELECTION_NOT_APPROVED);
   assert.deepEqual((await f.request("GET", path)).data.repositoryAccess, reset);
   const ambiguous = await f.request("PATCH", path, {
     ...patch,
     repositoryAccess: reset,
     repositoryBindings: selection,
   });
-  assert.notEqual(ambiguous.status, 200);
+  assert.equal(ambiguous.status, 400, JSON.stringify(ambiguous));
+  assert.equal(ambiguous.error.message, REPOSITORY_ACCESS_OR_BINDINGS);
   const legacy = await f.request("PATCH", path, { ...patch, repositoryBindings: selection });
   assert.equal(legacy.status, 200);
   assert.equal(Object.hasOwn(legacy.data, "repositoryAccess"), false);
@@ -968,12 +993,51 @@ test("Deploy rechecks repository policy after a draft was accepted", async (t) =
   const reconfigured = await f.compose(replacement);
   const path = `${f.collection}/${agent.id}`;
   const deployed = await reconfigured.request("POST", `${path}/deploy`);
-  assert.equal(deployed.status, 404, JSON.stringify(deployed));
-  assert.equal(deployed.error.code, "NOT_FOUND");
+  assert.equal(deployed.status, 400, JSON.stringify(deployed));
+  assert.equal(deployed.error.code, "INVALID_REQUEST");
+  assert.equal(deployed.error.message, REPOSITORY_SELECTION_NOT_APPROVED);
   assert.deepEqual((await reconfigured.request("GET", `${path}/revisions`)).data, []);
   const unchanged = (await reconfigured.request("GET", path)).data;
   assert.deepEqual(unchanged.repositoryBindings, selection);
   assert.equal(unchanged.desiredRuntimeState, "stopped");
+});
+
+test("Repository refusals wait for the Agent grant: a missing and an unreadable Agent answer alike", async (t) => {
+  // Finding 2536 names repository refusals at save and deploy. They run only after the caller's
+  // grant on the Agent, so a caller without it learns nothing from them: the same request gets
+  // the same answer for an Agent that exists and one that does not, each request's ID hidden.
+  const f = await fixture(t);
+  const agent = await f.createAgent({ repositoryBindings: selection });
+  await f.prepareDeployment(agent);
+  const narrowed = structuredClone(f.registry);
+  narrowed.repositories[0].namespaces[0].profiles = ["git-read"];
+  const reconfigured = await f.compose(narrowed);
+  const outsider = await f.requestWithoutGrants(reconfigured.app);
+  const missing = `agt_${randomUUID()}`;
+  const refusedSave = {
+    configurationId: f.configuration.id,
+    repositoryBindings: [{ repositoryRef: "missing" }],
+  };
+  for (const [method, suffix, body] of [
+    ["PATCH", "", refusedSave],
+    ["POST", "/deploy", undefined],
+  ]) {
+    // The same request from the administrator meets the named refusal.
+    const named = await reconfigured.request(method, `${f.collection}/${agent.id}${suffix}`, body);
+    assert.equal(named.status, 400, JSON.stringify(named));
+    assert.equal(named.error.message, REPOSITORY_SELECTION_NOT_APPROVED);
+    const answers = [];
+    for (const id of [agent.id, missing]) {
+      const response = await outsider(method, `${f.collection}/${id}${suffix}`, body);
+      answers.push({
+        status: response.status,
+        code: response.error.code,
+        message: sentIdHidden(response.error.message, id),
+      });
+    }
+    assert.equal(answers[0].status, 403, JSON.stringify(answers[0]));
+    assert.deepEqual(answers[1], answers[0], `${method} ${suffix}`);
+  }
 });
 
 test("Unsupported Compute refuses repository deployment while ordinary deployment remains optional", async (t) => {
@@ -987,9 +1051,11 @@ test("Unsupported Compute refuses repository deployment while ordinary deploymen
   });
   await f.prepareDeployment(agent);
   const path = `${f.collection}/${agent.id}`;
+  // A permanent Installation property, not an outage to retry (finding 2536).
   const denied = await f.request("POST", `${path}/deploy`);
-  assert.equal(denied.status, 503, JSON.stringify(denied));
-  assert.equal(denied.error.code, "DEPENDENCY_UNAVAILABLE");
+  assert.equal(denied.status, 409, JSON.stringify(denied));
+  assert.equal(denied.error.code, "RESOURCE_CONFLICT");
+  assert.equal(denied.error.message, COMPUTE_REPOSITORY_UNSUPPORTED);
   assert.deepEqual((await f.request("GET", `${path}/revisions`)).data, []);
   const cleared = await f.request("PATCH", path, {
     configurationId: f.configuration.id,
@@ -1203,12 +1269,40 @@ test("Provisioning rejects a forbidden repository profile before queueing or cre
     repositoryBindings: [{ repositoryRef: "foreign-project", profile: "git-write" }],
   };
   const response = await f.request("POST", `${f.collection}/provision`, body);
-  assert.equal(response.status, 404, JSON.stringify(response));
-  assert.equal(response.error.code, "NOT_FOUND");
-  await assert.rejects(
-    f.controller.provisionAgent(f.actorId, { ...body, namespaceId: f.namespace.id }),
-    /repository selections are not approved/,
+  assert.equal(response.status, 400, JSON.stringify(response));
+  assert.equal(response.error.code, "INVALID_REQUEST");
+  assert.equal(response.error.message, REPOSITORY_SELECTION_NOT_APPROVED);
+  assert.deepEqual((await f.request("GET", f.collection)).data, []);
+});
+
+test("Provisioning names a ServiceAccount from another Namespace before any lookup", async (t) => {
+  // The rule reads only the request, so a 400 that names it says nothing about whether the
+  // account exists (finding 2536; occ-api.test.mjs compares an existing and a missing account on
+  // Agent create). Nothing is queued or created.
+  const configurationDriver = createTestConfigurationDriver();
+  configurationDriver.createExact = async () => assert.fail("The request created Configuration");
+  configurationDriver.inspectExact = async () => assert.fail("The request inspected Configuration");
+  const f = await fixture(t, { harness: "codex", configurationDriver });
+  await f.state.transact((unit) =>
+    unit.namespaces.transitionNamespaceStatus(f.namespace.id, "provisioning", "ready"),
   );
+  const response = await f.request("POST", `${f.collection}/provision`, {
+    requestId: `req_${randomUUID()}`,
+    name: "Foreign account provisioning",
+    executionMode: "dedicated",
+    configuration: { kind: "agent", values: f.configuration.values },
+    harnessAuth: {
+      method: "codex_pat",
+      source: {
+        kind: "service_account",
+        namespaceId: `ns_${randomUUID()}`,
+        id: `sa_${randomUUID()}`,
+      },
+    },
+  });
+  assert.equal(response.status, 400, JSON.stringify(response));
+  assert.equal(response.error.code, "INVALID_REQUEST");
+  assert.equal(response.error.message, SERVICE_ACCOUNT_CROSS_NAMESPACE);
   assert.deepEqual((await f.request("GET", f.collection)).data, []);
 });
 

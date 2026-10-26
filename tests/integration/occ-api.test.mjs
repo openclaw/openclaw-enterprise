@@ -44,6 +44,7 @@ import {
   AGENT_NAME_CONFLICT,
   callerDenied,
   referenceFormRefusal,
+  SERVICE_ACCOUNT_CROSS_NAMESPACE,
   sentIdHidden,
   unboundReferenceRefusal,
   unsubstitutedReferenceRefusal,
@@ -4982,23 +4983,26 @@ test("native ServiceAccounts reject invalid references and enforce exact Namespa
       },
     },
   );
-  assert.equal(foreignSourceAssociation.status, 404, JSON.stringify(foreignSourceAssociation.body));
-  // The API hides the reason; the controller names the Namespace boundary, not a later store check.
-  await assert.rejects(
-    controller.fixture.controller.createAgent(controller.fixture.principal.id, {
-      namespaceId: namespaceA.id,
-      name: "foreign-source-agent",
-      configurationId: configurationA.id,
-      harnessAuth: {
-        method: "codex_pat",
-        source: { kind: "service_account", namespaceId: namespaceB.id, id: accountA.id },
-      },
-    }),
+  // The rule reads only the request, before any account lookup, so the API names it as a request
+  // error instead of a 404 (finding 2536): the text is the same whether the account exists.
+  assert.equal(foreignSourceAssociation.status, 400, JSON.stringify(foreignSourceAssociation.body));
+  assert.equal(foreignSourceAssociation.body.error.code, "INVALID_REQUEST");
+  assert.equal(foreignSourceAssociation.body.error.message, SERVICE_ACCOUNT_CROSS_NAMESPACE);
+  const missingForeignSource = await controller.request(
+    "POST",
+    `/namespaces/${namespaceA.id}/agents`,
     {
-      name: "ScopeViolationError",
-      message: "Harness authentication sources cannot cross Namespaces.",
+      body: {
+        name: "foreign-source-agent",
+        configurationId: configurationA.id,
+        harnessAuth: {
+          method: "codex_pat",
+          source: { kind: "service_account", namespaceId: namespaceB.id, id: `sa_${randomUUID()}` },
+        },
+      },
     },
   );
+  assert.deepEqual(missingForeignSource.body.error, foreignSourceAssociation.body.error);
 
   // Namespace-wide Agent authority never substitutes for an exact ServiceAccount binding.
   controller.fixture.state.roles.push(
