@@ -59,6 +59,18 @@ function controller(audit, extra = {}) {
 }
 
 async function signIn(auth, body, headers = {}) {
+  return send(auth.signInEmail, {
+    id: "req_audit",
+    ip: "127.0.0.1",
+    method: "POST",
+    url: "/api/auth/sign-in/email",
+    headers: { origin: baseURL, ...headers },
+    body,
+  });
+}
+
+// Calls one auth endpoint handler and records what it sends.
+async function send(handler, request) {
   const sent = { status: 200, headers: {} };
   const reply = {
     header(name, value) {
@@ -74,17 +86,7 @@ async function signIn(auth, body, headers = {}) {
       return reply;
     },
   };
-  await auth.signInEmail(
-    {
-      id: "req_audit",
-      ip: "127.0.0.1",
-      method: "POST",
-      url: "/api/auth/sign-in/email",
-      headers: { origin: baseURL, ...headers },
-      body,
-    },
-    reply,
-  );
+  await handler(request, reply);
   return sent;
 }
 
@@ -280,6 +282,60 @@ test("guarded profile: a wrong password whose denial audit fails is 503 and stil
     events.map(({ event, lane }) => [event, lane]),
     [["authentication.sign-in-limited", "email"]],
   );
+});
+
+// The external sign-in budgets refill each minute and set no Retry-After, so the answer says to
+// wait a minute; only the password limiter names a wait (findings 2535, 2555). The console shows
+// this text's meaning from the status alone, so the API text is pinned here.
+test("guarded profile: a spent provider result budget says to wait a minute, with no Retry-After", async () => {
+  const humanLogin = createHumanLogin(
+    {
+      createAttempt: async () => {
+        throw new Error("not used");
+      },
+      consumeAttempt: async () => undefined,
+      snapshotExternal: async () => undefined,
+      snapshotPassword: async () => undefined,
+      recordDenied: async () => {},
+    },
+    {
+      recoveryUserId: "guarded-recovery",
+      github: { clientId: "guarded-client", clientSecret: "guarded-client-secret" },
+    },
+    baseURL,
+  );
+  const auth = createControllerAuth({
+    mode: "development",
+    installationId: "ins_sign_in_audit_provider_limit",
+    baseURL,
+    secret,
+    secureCookies: false,
+    database: memoryAdapter({ user: [], session: [], account: [], verification: [], apikey: [] }),
+    humanLogin,
+  });
+  const result = () =>
+    send(auth.githubResult, {
+      id: "req_provider_limit",
+      ip: "127.0.0.1",
+      method: "POST",
+      url: "/api/auth/providers/github/result",
+      headers: { origin: baseURL },
+      body: { attemptId: "a".repeat(43) },
+    });
+  // Without a receipt every exchange is refused, and each one spends the browser's budget of
+  // 30 a minute.
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    const refused = await result();
+    assert.equal(refused.status, 401, JSON.stringify(refused.payload));
+    assert.equal(refused.payload.error.message, "GitHub sign-in could not be confirmed.");
+  }
+  const limited = await result();
+  assert.equal(limited.status, 429, JSON.stringify(limited.payload));
+  assert.equal(limited.headers["retry-after"], undefined);
+  assert.deepEqual(limited.payload.error, {
+    code: "RATE_LIMITED",
+    message: "Too many attempts. Wait a minute, then try again.",
+  });
 });
 
 test("a password reset during a sign-in revokes the known-device entry that sign-in sets", async () => {
