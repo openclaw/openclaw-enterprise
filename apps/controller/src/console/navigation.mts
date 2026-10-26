@@ -6,6 +6,9 @@ export const pages = Object.freeze({
   settings: "Settings",
 });
 
+/** The workspace launcher's route, outside the administration shell's pages. */
+export const LAUNCHER_FEATURE = "launch";
+
 interface LoginIntent {
   kind: "console";
   feature: string;
@@ -95,7 +98,10 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: Nav
     }
     const detail = intent.feature.startsWith("agents/") && agentId.test(intent.feature.slice(7));
     return (
-      (Object.hasOwn(pages, intent.feature) || intent.feature === "agents/new" || detail) &&
+      (Object.hasOwn(pages, intent.feature) ||
+        intent.feature === LAUNCHER_FEATURE ||
+        intent.feature === "agents/new" ||
+        detail) &&
       (intent.namespaceId === null ||
         (typeof intent.namespaceId === "string" && namespaceId.test(intent.namespaceId))) &&
       (intent.revision === null ||

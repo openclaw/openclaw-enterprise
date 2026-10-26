@@ -10,6 +10,7 @@
     "tests/browser/console-namespace-create.test.mjs",
     "tests/browser/console-create-agent-member.test.ts",
     "tests/browser/console-shell.test.ts",
+    "tests/browser/console-launcher.test.mjs",
     "tests/browser/console-json-error-feedback.test.ts",
     "tests/browser/console-agent-detail-2.test.mjs",
     "tests/browser/console-agent-detail.test.mjs",
@@ -71,6 +72,9 @@
     },
     {
       "path": "tests/browser/console-shell.test.ts"
+    },
+    {
+      "path": "tests/browser/console-launcher.test.mjs"
     },
     {
       "path": "tests/browser/console-namespace-not-ready.test.mjs"

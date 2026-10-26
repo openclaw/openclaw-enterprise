@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
-updated: 2026-10-25
-last_updated_session: fix-2505
+updated: 2026-10-26
+last_updated_session: authoring-run/59e116e9-8a97-44aa-a937-ca6ce42b9668
 ---
 
 # Platform console request flow
@@ -38,6 +38,7 @@ graph TD
     NR -->|allowed| D
     NR -->|unavailable| D
     C1 -->|callback redirect| B1
+    B1 -->|launcher| LA["Discover permitted destinations; open one or choose"]
     B1 -->|authenticated| D["Read readable Namespaces and validate selection"]
     D -->|debug=true| DBG["Read accessible Agents and runtime image metadata"]
     DBG --> F
@@ -174,6 +175,8 @@ A changed user or session key clears retained views and drafts before further
 private reads. Missing sessions open login; failed reads offer Retry.
 The [console sign-in flow](platform-console/sign-in-return.md) covers provider
 discovery, one-use session binding, and requested destination recovery.
+`/console/launch` renders outside the shell; the
+[workspace launcher flow](platform-console/workspace-launcher.md) traces it.
 
 After authentication, `loadPage` reads `GET /namespaces`, preserving URL
 selection or choosing the first ready/readable Namespace. Unreadable IDs stay
@@ -358,6 +361,8 @@ gateway startup and file availability.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-26 10:52: Link the workspace launcher outside the shell. (authoring-run/59e116e9-8a97-44aa-a937-ca6ce42b9668 - 7f338874d20460c6eacb63e8c559ae92c09c2703)
 
 - 2026-10-21 22:22: Connect console themes to API startup and the shared shell. (authoring-run/634a754f-a79e-4aac-94fe-0646caf6a287 - 2c9e7f6c4)
 

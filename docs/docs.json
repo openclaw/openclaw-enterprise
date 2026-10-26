@@ -135,6 +135,10 @@
                     "label": "Share Agents"
                   },
                   {
+                    "page": "reference/console/launcher",
+                    "label": "Workspace Launcher"
+                  },
+                  {
                     "page": "reference/console/create-and-deploy",
                     "label": "Create and Deploy in the Console"
                   },
@@ -1059,6 +1063,7 @@
               "flows/platform-console/agent-stop-and-deletion",
               "flows/platform-console/agent-sharing",
               "flows/platform-console/sign-in-return",
+              "flows/platform-console/workspace-launcher",
               "flows/platform-console/observability-link",
               "flows/configuration-driver",
               "flows/configuration-driver/persistence-and-revisions",

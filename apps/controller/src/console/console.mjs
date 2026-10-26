@@ -12,7 +12,8 @@ import { clearRuntimeDenials, forgetRuntimeDenials } from "./agents/logs.mjs";
 import { ASK_INSTALLATION_ADMINISTRATOR, askForGrant } from "./agents/access-reasons.mjs";
 import { createApiClient } from "./api-client.mjs";
 import { createViewLifetime } from "./view-lifetime.mjs";
-import { createNavigation, pages } from "./navigation.mjs";
+import { createNavigation, LAUNCHER_FEATURE, pages } from "./navigation.mjs";
+import { renderLauncher } from "./launcher.mjs";
 import {
   brandContents,
   createShell,
@@ -650,6 +651,14 @@ const navigation = createNavigation({
   loadPage,
 });
 const { route, pageUrl, captureIntent, validIntent, intentUrl, navigate, replaceUrl } = navigation;
+// Sign-in without a supported destination, including after Sign out, opens the workspace launcher.
+const launcherIntent = Object.freeze({
+  kind: "console",
+  feature: LAUNCHER_FEATURE,
+  namespaceId: null,
+  revision: null,
+  tab: null,
+});
 function forgetLoginIntent() {
   try {
     sessionStorage.removeItem(loginIntentStorageKey);
@@ -1171,7 +1180,8 @@ function showExpiredLogin() {
   showLogin("Your session has expired.", destination);
 }
 
-function showLogin(message = "", destination = null) {
+function showLogin(message = "", requested = null) {
+  const destination = requested ?? launcherIntent;
   // A message may depend on whether ordinary accounts can use a password.
   const describe = typeof message === "function" ? message : () => message;
   clearDrafts();
@@ -1560,7 +1570,10 @@ async function loadPage({
   let loadingShownAt = null;
   let sessionResolved = false;
   let accessResolved = false;
-  if (!Object.hasOwn(pages, current.feature) && current.feature !== "login") {
+  if (
+    !Object.hasOwn(pages, current.feature) &&
+    !["login", LAUNCHER_FEATURE].includes(current.feature)
+  ) {
     publicPanel("Page not found", "This console page is unavailable.", "Go to Agents", () =>
       navigate("agents", current.namespace),
     );
@@ -1807,8 +1820,22 @@ async function loadPage({
     }
     if (destination || current.feature === "login") {
       pendingIntent = null;
-      replaceUrl(intentUrl(destination) ?? "/console/agents");
+      replaceUrl(intentUrl(destination ?? launcherIntent));
       void loadPage();
+      return;
+    }
+    if (current.feature === LAUNCHER_FEATURE) {
+      // The launcher replaces the startup status itself; no administration shell loads behind it.
+      stopLoadingTimer();
+      await renderLauncher({
+        app,
+        request,
+        session,
+        choose: current.url.searchParams.get("choose") === "1",
+        isCurrent: () => lifetime.isCurrent(active),
+        logout,
+        openAdministration: (replace) => navigate("namespaces", null, replace),
+      });
       return;
     }
     if (loadingTimer === null) {
