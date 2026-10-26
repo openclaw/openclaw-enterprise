@@ -258,11 +258,9 @@ Namespace-scoped); without one the account has no grants. It cannot create Roles
 or infer grants. Audit records `principalId` and `roleId` or `grant: "none"`.
 Creation issues no session.
 
-The only Installation Role is the built-in Installation administrator
-(`role_admin_<uuid>`). The API cannot create other Installation Roles, and the
-Namespace policy API does not list this one. Omit `roleId` for everyone except
-another Installation administrator, then grant Namespace access with the
-returned `principalId`; see [Add a person](../guides/topics/iam.md#add-a-person).
+The built-in Installation administrator (`role_admin_<uuid>`) is the only Installation Role.
+An Installation-scoped binding grants account and service key administration; bootstrap's
+binding is unscoped. Omit `roleId` for Namespace users and [bind their Principal](../guides/topics/iam.md#add-a-person).
 A representative provisioning body is:
 
 ```json
