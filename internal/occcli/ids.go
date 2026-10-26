@@ -33,6 +33,13 @@ var (
 	revisionIDArg         = idArg{kind: "deployment", prefix: "rev_", lookup: "occ agent revisions AGENT_ID"}
 )
 
+// typedIDArgs lists every typed ID kind, to name the kind of an ID passed
+// where another kind is expected.
+var typedIDArgs = []idArg{
+	namespaceIDArg, configurationIDArg, secretIDArg, presetIDArg, credentialSourceIDArg,
+	serviceAccountIDArg, agentIDArg, revisionIDArg,
+}
+
 func optionalID(arg idArg) idArg {
 	arg.optional = true
 	return arg
@@ -42,13 +49,66 @@ func optionalID(arg idArg) idArg {
 // (the path parameter patterns in the OpenAPI contract): a lowercase version 4 UUID.
 var uuidV4 = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 
+// typedIDShape matches a value that is plainly some typed ID, such as
+// "crs_<uuid>", so a wrong prefix is not called a name (finding D765).
+var typedIDShape = regexp.MustCompile(`^(?i)([a-z]+_)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+// lookupFor is the command that lists the IDs. For a Namespace-scoped resource
+// it carries the selected Namespace when that is a Namespace ID, so a stale
+// OCC_NAMESPACE cannot redirect the lookup.
+func (arg idArg) lookupFor(namespace string) string {
+	if arg.prefix != namespaceIDArg.prefix && namespaceIDArg.check(namespace, "") == nil {
+		return "occ --namespace " + namespace + strings.TrimPrefix(arg.lookup, "occ")
+	}
+	return arg.lookup
+}
+
+// phrase names the argument with an article, such as "an Agent ID".
+func (arg idArg) phrase() string {
+	if strings.ContainsRune("AEIOUaeiou", rune(arg.kind[0])) {
+		return "an " + arg.kind + " ID"
+	}
+	return "a " + arg.kind + " ID"
+}
+
+// argCountError replaces cobra's "accepts between 1 and 1 arg(s), received 2"
+// with the IDs the command takes and the next step (finding D765).
+func argCountError(command *cobra.Command, got int, args []idArg, namespace string) error {
+	expected := make([]string, 0, len(args))
+	for _, arg := range args {
+		if arg.optional {
+			expected = append(expected, "an optional "+arg.kind+" ID")
+		} else {
+			expected = append(expected, arg.phrase())
+		}
+	}
+	if len(args) == 1 {
+		expected[0] = "one " + args[0].kind + " ID"
+	}
+	received := fmt.Sprintf("%d arguments", got)
+	switch got {
+	case 0:
+		received = "none"
+	case 1:
+		received = "1 argument"
+	}
+	message := fmt.Sprintf("%s takes %s but got %s", command.CommandPath(), strings.Join(expected, " and "), received)
+	if got < len(args) && args[got].lookup != "" {
+		missing := args[got]
+		return fmt.Errorf("%s; run %q to find the %s ID", message, missing.lookupFor(namespace), missing.kind)
+	}
+	if got > len(args) && command.Flags().Lookup("revision") != nil {
+		return fmt.Errorf("%s; pass the revision with --revision", message)
+	}
+	return errors.New(message)
+}
+
 // check accepts a value with the ID prefix followed by the UUID shape the API
 // accepts, so a value such as "agt_../../namespaces" is never sent: a gateway
 // can normalize it into another path and answer with a redirect (finding D744).
-// A value without the prefix is plainly a name; the refusal names the lookup
-// command, and for a Namespace-scoped resource it carries the selected
-// Namespace when that is a Namespace ID, so a stale OCC_NAMESPACE cannot
-// redirect the lookup.
+// An ID of another kind is named as one and gets the expected prefix. Any other
+// value without the prefix is plainly a name; the refusal names the lookup
+// command (see lookupFor).
 func (arg idArg) check(value, namespace string) error {
 	if suffix, ok := strings.CutPrefix(value, arg.prefix); ok && uuidV4.MatchString(suffix) {
 		return nil
@@ -56,9 +116,20 @@ func (arg idArg) check(value, namespace string) error {
 	if strings.HasPrefix(strings.ToLower(value), arg.prefix) {
 		return fmt.Errorf("%q is not a valid %s ID: expected %s followed by a UUID", value, arg.kind, arg.prefix)
 	}
-	lookup := arg.lookup
-	if arg.prefix != namespaceIDArg.prefix && namespaceIDArg.check(namespace, "") == nil {
-		lookup = "occ --namespace " + namespace + strings.TrimPrefix(lookup, "occ")
+	lookup := arg.lookupFor(namespace)
+	if match := typedIDShape.FindStringSubmatch(value); match != nil {
+		for _, other := range typedIDArgs {
+			if other.prefix == strings.ToLower(match[1]) {
+				return fmt.Errorf(
+					"%q is %s, not %s: %s IDs start with %q; run %q to find the ID",
+					value, other.phrase(), arg.phrase(), arg.kind, arg.prefix, lookup,
+				)
+			}
+		}
+		return fmt.Errorf(
+			"%q is not %s: %s IDs start with %q; run %q to find the ID",
+			value, arg.phrase(), arg.kind, arg.prefix, lookup,
+		)
 	}
 	return fmt.Errorf(
 		"%q is not a valid %s ID: OCC accepts IDs that start with %q, not names; run %q to find the ID",
@@ -75,8 +146,8 @@ func (arg idArg) check(value, namespace string) error {
 // not reach the API as one path segment, so it is refused locally.
 func opaqueIDArgs(kind string) cobra.PositionalArgs {
 	return func(command *cobra.Command, values []string) error {
-		if err := cobra.ExactArgs(1)(command, values); err != nil {
-			return err
+		if len(values) != 1 {
+			return argCountError(command, len(values), []idArg{{kind: kind}}, "")
 		}
 		value := values[0]
 		if strings.Contains(value, "/") || strings.Trim(value, ".") == "" {
@@ -95,13 +166,13 @@ func idArgs(args ...idArg) cobra.PositionalArgs {
 		}
 	}
 	return func(command *cobra.Command, values []string) error {
-		if err := cobra.RangeArgs(required, len(args))(command, values); err != nil {
-			return err
-		}
 		// Flags are parsed before positional arguments are checked.
 		namespace := ""
 		if flag := command.Flag("namespace"); flag != nil {
 			namespace = flag.Value.String()
+		}
+		if len(values) < required || len(values) > len(args) {
+			return argCountError(command, len(values), args, namespace)
 		}
 		for index, value := range values {
 			if err := args[index].check(value, namespace); err != nil {

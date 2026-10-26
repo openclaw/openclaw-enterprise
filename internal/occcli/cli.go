@@ -308,9 +308,10 @@ func (app *application) configurationCommand() *cobra.Command {
 
 	var updateFile string
 	update := &cobra.Command{
-		Use:   "update ID",
-		Short: "Update a Configuration from a JSON document",
-		Args:  idArgs(configurationIDArg),
+		Use:     "update ID",
+		Short:   "Update a Configuration from a JSON document",
+		Example: configurationUpdateExample,
+		Args:    idArgs(configurationIDArg),
 		RunE: func(_ *cobra.Command, args []string) error {
 			namespace, body, client, err := app.namespaceJSONClient(updateFile)
 			if err != nil {
@@ -760,9 +761,10 @@ func (app *application) agentCommand() *cobra.Command {
 
 	var updateFile string
 	update := &cobra.Command{
-		Use:   "update ID",
-		Short: "Update an Agent from a JSON document",
-		Args:  idArgs(agentIDArg),
+		Use:     "update ID",
+		Short:   "Update an Agent's draft from a JSON document",
+		Example: agentUpdateExample,
+		Args:    idArgs(agentIDArg),
 		RunE: func(_ *cobra.Command, args []string) error {
 			namespace, body, client, err := app.namespaceJSONClient(updateFile)
 			if err != nil {
@@ -887,12 +889,15 @@ func (app *application) agentCommand() *cobra.Command {
 			}
 			// Only an Agent the caller can already read tells whether anything ran:
 			// stopped with no active revision is a never-deployed or already
-			// stopped Agent (finding D746). A failed read keeps the plain notice.
-			idle := false
+			// stopped Agent (finding D746); stopped with an active revision is a
+			// stop still shutting down (finding D765). A failed read keeps the
+			// plain notice.
+			idle, stopping := false, false
 			if before, readErr := client.GetAgent(namespace, args[0]); readErr == nil {
 				resource, _ := before.(map[string]any)
 				active, _ := resource["activeRevisionId"].(string)
 				idle = resource["desiredRuntimeState"] == "stopped" && active == ""
+				stopping = resource["desiredRuntimeState"] == "stopped" && active != ""
 			}
 			agent, err := client.StopAgent(namespace, args[0])
 			if err != nil {
@@ -903,6 +908,10 @@ func (app *application) agentCommand() *cobra.Command {
 			}
 			if idle {
 				fmt.Fprintf(command.ErrOrStderr(), "notice: No version is running, so there is nothing to stop. Run \"occ --namespace %s agent deploy %s\" to start the Agent.\n", namespace, args[0])
+				return nil
+			}
+			if stopping {
+				fmt.Fprintf(command.ErrOrStderr(), "notice: Agent %s is already stopping; its runtime shuts down in the background. Run \"occ --namespace %s agent deploy %s\" to start the Agent again.\n", args[0], namespace, args[0])
 				return nil
 			}
 			fmt.Fprintf(command.ErrOrStderr(), "notice: stop requested; run \"occ --namespace %s agent deploy %s\" to start the Agent again\n", namespace, args[0])
@@ -1114,7 +1123,7 @@ func commandGroup(use, short string) *cobra.Command {
 	return &cobra.Command{
 		Use:         use,
 		Short:       short,
-		Args:        cobra.NoArgs,
+		Args:        missingCommandArgs(nil),
 		Annotations: map[string]string{helpOnlyAnnotation: "true"},
 		RunE: func(command *cobra.Command, _ []string) error {
 			return command.Help()
@@ -1130,12 +1139,18 @@ var signInCommands = func() map[string]string {
 }()
 
 // missingCommandArgs refuses positional arguments like cobra.NoArgs, but a
-// command name in missing gets its own explanation after cobra's text.
+// command name in missing gets its own explanation after cobra's text, and a
+// one-letter typo of a subcommand gets a suggestion (finding D765).
 func missingCommandArgs(missing map[string]string) cobra.PositionalArgs {
 	return func(command *cobra.Command, args []string) error {
 		if len(args) > 0 {
 			if explanation, ok := missing[args[0]]; ok {
 				return fmt.Errorf("unknown command %q for %q. %s", args[0], command.CommandPath(), explanation)
+			}
+			// Distance 1 (or a prefix) only: "lst" suggests "list", never "get".
+			command.SuggestionsMinimumDistance = 1
+			if suggestions := command.SuggestionsFor(args[0]); len(suggestions) > 0 {
+				return fmt.Errorf("unknown command %q for %q; did you mean %q?", args[0], command.CommandPath(), command.CommandPath()+" "+suggestions[0])
 			}
 		}
 		return cobra.NoArgs(command, args)
@@ -1308,6 +1323,15 @@ func (app *application) client() (*occclient.Client, error) {
 
 func (app *application) requiredNamespace() (string, error) {
 	if app.namespace == "" {
+		// A Namespace-scoped key file records its one Namespace; offer it
+		// without a request (finding D765).
+		namespace := ""
+		if app.serviceKeyFile != "" {
+			namespace = occclient.ServiceKeyNamespace(app.serviceKeyFile)
+		}
+		if namespaceIDArg.check(namespace, "") == nil {
+			return "", fmt.Errorf("set OCC_NAMESPACE or pass --namespace; this service key works only in Namespace %s, so pass --namespace %s", namespace, namespace)
+		}
 		return "", fmt.Errorf("set OCC_NAMESPACE or pass --namespace")
 	}
 	if err := namespaceIDArg.check(app.namespace, ""); err != nil {
