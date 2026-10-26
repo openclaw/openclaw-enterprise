@@ -16,6 +16,7 @@ SSH Compute, and Drivers that own their runtime logging (`runtimeLogging:
    lists every main and init container's state and recent warning Events, prefixed
    with their container. Last termination
    shows the current exit for a terminated container, otherwise its prior exit.
+   If a refresh fails, the cards stay and the strip says when they were last observed.
 3. Choose a **Source**: **Gateway** (the OpenClaw Gateway container),
    **Agent (Harness)** (the dedicated Codex or OpenClaw Harness container, only
    for dedicated execution) or **Sandbox (policy decisions)** (see
