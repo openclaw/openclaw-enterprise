@@ -29,6 +29,7 @@ import {
   nonAuthWriteRequests,
   pathRequests,
   revealNativeConfiguration,
+  revokeMemberGrant,
   secretOptionLabel,
   selectSecret,
   settlePageRequests,
@@ -1721,6 +1722,69 @@ test("a link to an unavailable Agent tab names it and shows Configuration", asyn
     await waitForIdleFetches(page);
     assert.equal(await notice(page).isHidden(), true);
   }
+});
+
+// Only Logs noticed a revoke mid-session: a member whose Agent grant was removed was refused on
+// Workspace files, then went back to Configuration and saw the Configuration read before the
+// revoke, with no notice (finding 2568). A refusal on any tab of a read the page had the grant
+// for now makes the next tab change read the page again, which the API refuses.
+test("a tab refused after a revoke makes the next tab change read the page again", async (t) => {
+  // Workspace files served from memory: this checks the console and API authorization, not a
+  // live Agent gateway.
+  const fixture = await createConsoleAppFixture(t, {
+    publicOrigin: true,
+    workspaceFilesAccess: {
+      async read({ filename }) {
+        return { status: "ok", file: { name: filename, content: `${filename} contents` } };
+      },
+    },
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Revoked tab reads", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Revoked tabs Agent", nativeValues("rt"));
+  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const member = await fixture.createNamespaceMember("revoked-tabs", namespace.id, AGENT_READ);
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  const requests = apiRequests(page, fixture.origin);
+  const agentReads = () =>
+    pathRequests(requests, "GET", `/namespaces/${namespace.id}/agents/${agent.id}`).length;
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration"),
+    member.credentials,
+  );
+  await page.getByRole("tab", { name: "Configuration", selected: true }).waitFor();
+  await page.locator(".version-selection-notice").waitFor();
+  await waitForIdleFetches(page);
+
+  // Configuration's read of the bound Secret, which an Agent reader may not read, is refused.
+  // The page never had that grant, so tab changes still reuse the tabs read before.
+  const readsBefore = agentReads();
+  for (const name of ["Plugins", "Configuration"]) {
+    await page.getByRole("tab", { name, exact: true }).click();
+    await page.getByRole("tab", { name, selected: true }).waitFor();
+  }
+  await waitForIdleFetches(page);
+  assert.equal(agentReads(), readsBefore, "tab changes do not read the page again");
+
+  // An administrator removes the member's Agent read. The Workspace files read is refused.
+  revokeMemberGrant(fixture, "revoked-tabs", ["read", "agent"]);
+  const refused = page.waitForResponse(
+    (response) =>
+      response.url().includes(`/agents/${agent.id}/workspace/files/`) && response.status() === 403,
+  );
+  await page.getByRole("tab", { name: "Workspace files", exact: true }).click();
+  await refused;
+  await waitForIdleFetches(page);
+
+  // Back on Configuration, the page reads the Agent again and shows the refusal, not the
+  // Configuration it read before the revoke.
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await page.getByRole("heading", { name: "Access denied", exact: true }).waitFor();
+  assert.equal(await page.locator(".agent-tabs").count(), 0);
+  assert.equal(await page.locator(".version-selection-notice").count(), 0);
 });
 
 for (const kind of ["agent", "configuration", "namespace"]) {
