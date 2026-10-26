@@ -83,8 +83,7 @@ function stateMount(container: EmbeddedContainerInspect, volume: string) {
         ) ||
         path === stateDir ||
         (path.startsWith(stateDir + "/") && path !== stateDir + "/workspace") ||
-        path === "/home" ||
-        (path === "/home/node" && mount.Destination === "/home/node"),
+        path === "/home",
     )
   ) {
     return;
