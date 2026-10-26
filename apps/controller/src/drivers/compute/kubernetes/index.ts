@@ -2,6 +2,8 @@ import type { CredentialPolicyWithdrawalOptions } from "@openclaw-enterprise/con
 import { networkPolicySpecToJson } from "../../kubernetes/network-policy.ts";
 import {
   assertExecutionAdmission,
+  codexProxiesRepositoryBroker,
+  codexRepositoryBrokerNetworkProxy,
   type PreparedTokenService,
 } from "@openclaw-enterprise/contracts";
 import {
@@ -1629,18 +1631,6 @@ function normalizedNetworkHost(value: string, description: string): string {
     throw new ConfigurationFailure(`${description} must be nonempty.`);
   }
   return host;
-}
-
-function mergeDomainDecision(
-  domains: Record<string, "allow" | "deny">,
-  host: string,
-  decision: "allow" | "deny",
-): void {
-  if (domains[host] === "deny" || decision === "deny") {
-    domains[host] = "deny";
-    return;
-  }
-  domains[host] = "allow";
 }
 
 function validateResources(value: V1ResourceRequirements, description: string, path: string): void {
@@ -13788,16 +13778,13 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     repositoryConsumer: { readonly role: "gateway" | "agent" } | undefined,
     repositoryMaterial: ResolvedRepositoryMaterialSpec | undefined,
   ): CodexRepositoryBrokerNetworkPolicy | undefined {
-    const dedicatedCodex =
-      revision.harness.id === "codex" &&
-      revision.harness.mode === "dedicated" &&
-      repositoryConsumer?.role === "agent";
-    const embeddedCodex =
-      revision.harness.id === "openclaw" &&
-      revision.harness.mode === "embedded" &&
-      repositoryConsumer?.role === "gateway" &&
-      revision.plugins?.driver.implementation === "occ/codex-plugin";
-    if (!dedicatedCodex && !embeddedCodex) {
+    // OCC applies the same rule at Agent save, provisioning and deployment, without the broker
+    // host, which only the prepared material names. This check stays as the backstop for a deny
+    // of that host and for revisions admitted before OCC checked.
+    if (
+      repositoryConsumer === undefined ||
+      !codexProxiesRepositoryBroker(revision.harness, revision.plugins?.driver.implementation)
+    ) {
       return undefined;
     }
     if (this.options.network.repositoryCredentials === undefined) {
@@ -13811,54 +13798,12 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       );
     }
     const origin = repositoryCredentialBrokerOriginFromMaterial(repositoryMaterial);
-    const brokerHost = normalizedNetworkHost(origin.hostname, "Repository credential broker host");
-    const networkProxy = asRecord(
-      asRecord(asRecord(asRecord(revision.configuration.plugins)?.entries)?.codex)?.config,
-    )?.appServer;
-    const policy = asRecord(asRecord(networkProxy)?.networkProxy);
-    if (policy?.enabled === false) {
-      throw new ConfigurationFailure(
-        "Repository credential broker host is blocked by an explicitly disabled Codex network proxy.",
-      );
+    const host = normalizedNetworkHost(origin.hostname, "Repository credential broker host");
+    const proxy = codexRepositoryBrokerNetworkProxy(revision.configuration, host);
+    if ("refusal" in proxy) {
+      throw new ConfigurationFailure(proxy.refusal);
     }
-    if (policy?.mode !== undefined && policy.mode !== "limited" && policy.mode !== "full") {
-      throw new ConfigurationFailure(
-        "Repository credential broker network policy has an unsupported Codex network mode.",
-      );
-    }
-    if (policy?.allowLocalBinding !== undefined && typeof policy.allowLocalBinding !== "boolean") {
-      throw new ConfigurationFailure(
-        "Repository credential broker network policy has an unsupported local binding policy.",
-      );
-    }
-    const domainsInput = policy?.domains === undefined ? undefined : asRecord(policy.domains);
-    if (policy?.domains !== undefined && domainsInput === undefined) {
-      throw new ConfigurationFailure(
-        "Repository credential broker network policy domains must be an object.",
-      );
-    }
-    const domains: Record<string, "allow" | "deny"> = {};
-    for (const [host, decision] of Object.entries(domainsInput ?? {})) {
-      if (decision !== "allow" && decision !== "deny") {
-        throw new ConfigurationFailure(
-          "Repository credential broker network policy has an unsupported domain decision.",
-        );
-      }
-      mergeDomainDecision(
-        domains,
-        normalizedNetworkHost(host, "Repository credential broker network domain"),
-        decision,
-      );
-    }
-    if (domains[brokerHost] === "deny") {
-      throw new ConfigurationFailure(
-        "Repository credential broker host is explicitly denied by Codex network proxy policy.",
-      );
-    }
-    return {
-      host: brokerHost,
-      domains,
-    };
+    return { host, domains: proxy.domains };
   }
 
   private publicGithubReadCandidate(revision: AgentRevision) {

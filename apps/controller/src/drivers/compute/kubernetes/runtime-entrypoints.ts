@@ -2077,6 +2077,10 @@ function probeExitFailure({ error, status, signal }) {
 // The turn allows 256 output tokens. A reasoning model spends output tokens on
 // thinking before any text; at 16 it returned none and the probe failed.
 // The Gateway times its model-probe phase from wrapper start: it is the first step.
+// At the cap only the probe's own process is killed; its children can still
+// write into the probe directory, so removing it can fail (ENOTEMPTY). Removal
+// retries briefly, then the event reports only the error code as cleanupError
+// and the probe result stands: a failed cleanup must not lose it (finding 2610).
 // Generated code stays compact: the Gateway program is near the exec limit.
 const OPENCLAW_AUTH_PROBE_HELPERS = String.raw`
 ${AUTH_PROBE_FAILURE_HELPER}
@@ -2087,13 +2091,14 @@ function probeOpenClawAuthenticationFailure() {
   const capMs = Math.min(600000, 20000 + Math.ceil(45000 / Math.min(1, quota / period || 1)));
   const sample = () => { const stat = cgroup("cpu.stat"); return [/^some .*total=(\d+)/m.exec(cgroup("cpu.pressure")), /throttled_usec (\d+)/.exec(stat), /nr_throttled (\d+)/.exec(stat)].map((m, i) => (m?.[1] * (i === 2 ? period : 1)) / 1000); };
   const startedAt = Date.now(), before = sample();
-  let code = runOpenClawAuthenticationProbe(fs, capMs), cause, provider;
+  const cleanup = {};
+  let code = runOpenClawAuthenticationProbe(fs, capMs, cleanup), cause, provider;
   if (typeof code === "object") ({ code, cause, ...provider } = code);
   const elapsedMs = Date.now() - startedAt, [pressure, throttled, periods] = sample().map((total, i) => { const wait = total - before[i]; return Number.isFinite(wait) && wait >= 0 ? wait : NaN; });
   const pressureWaitMs = Math.round(pressure), throttledWaitMs = Math.round(Math.min(throttled, periods));
   const waits = [pressureWaitMs, throttledWaitMs].filter(Number.isFinite), cpuWaitMs = waits.length ? Math.max(...waits) : NaN;
   if (code === "CAP") code = cpuWaitMs > elapsedMs / 4 ? "MODEL_PROBE_CPU_STARVED" : "MODEL_PROBE_TIMEOUT";
-  console.error(JSON.stringify({ event: "openclaw.model_probe", elapsedMs, capMs, cpuWaitMs, pressureWaitMs, throttledWaitMs, code: code ?? "READY", cause, ...provider }));
+  console.error(JSON.stringify({ event: "openclaw.model_probe", elapsedMs, capMs, cpuWaitMs, pressureWaitMs, throttledWaitMs, code: code ?? "READY", cause, ...provider, ...cleanup }));
   return code === undefined ? undefined : { code, cause };
 }
 
@@ -2168,7 +2173,7 @@ function credentialRejectedUpfront(provider, fragment, key, stage) {
     ...upfrontToken("bodyShape", bodyShape, UPFRONT_BODY_SHAPES), ...upfrontToken("providerErrorCode", errorCode, [...UPFRONT_ERROR_CODES, "other"]), ...upfrontToken("providerErrorType", errorType, [...UPFRONT_ERROR_TYPES, "other"]) };
 }
 
-function runOpenClawAuthenticationProbe(fs, capMs) {
+function runOpenClawAuthenticationProbe(fs, capMs, cleanup) {
   const stageStartedAt = Date.now();
   const stage = (stage) => console.error(JSON.stringify({ event: "openclaw.model_probe_stage", stage, elapsedMs: Date.now() - stageStartedAt, capMs }));
   stage("prepare");
@@ -2229,7 +2234,8 @@ function runOpenClawAuthenticationProbe(fs, capMs) {
     return probeFailure("WRAPPER_ERROR");
   } finally {
     stage("cleanup");
-    fs.rmSync(directory, { recursive: true, force: true });
+    try { fs.rmSync(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }); }
+    catch (error) { cleanup.cleanupError = /^E[A-Z0-9]{1,15}$/.test(error?.code) ? error.code : "other"; }
     stage("complete");
   }
 }

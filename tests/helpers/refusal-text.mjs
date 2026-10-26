@@ -322,3 +322,44 @@ export const CHANNEL_BINDING_CONSOLE_REMEDY =
   "This editor does not save Secret bindings: bind SLACK_APP_TOKEN and SLACK_BOT_TOKEN on the Credentials tab or in the Slack editor on the Channels tab, and other names through the Configuration API.";
 export const CHANNEL_BINDING_FORM_REMEDY =
   "On this form, the Slack channel settings bind SLACK_APP_TOKEN and SLACK_BOT_TOKEN to the Secrets you select there; bind other names through the Configuration API after the Agent exists.";
+// A Codex network proxy setting that blocks the repository credential broker for an Agent with
+// repository bindings (finding 2350): Agent save, provisioning and deployment refuse it, and
+// Compute preparation refuses it too, with a deny of the broker host it learns from the prepared
+// material (packages/contracts/src/index.ts codexRepositoryBrokerNetworkProxy).
+const brokerProxyRefusal = (setting, problem, change) =>
+  `Configuration setting plugins.entries.codex.config.appServer.networkProxy.${setting} ${problem}, so Codex cannot reach the repository credential broker. ${change}, or remove the repository bindings.`;
+export const BROKER_PROXY_DISABLED = brokerProxyRefusal(
+  "enabled",
+  "is false",
+  "Set it to true or delete it",
+);
+export const BROKER_PROXY_MODE = brokerProxyRefusal(
+  "mode",
+  'is not "limited" or "full"',
+  "Set it to one of those or delete it",
+);
+export const BROKER_PROXY_LOCAL_BINDING = brokerProxyRefusal(
+  "allowLocalBinding",
+  "is not true or false",
+  "Set it to true or false or delete it",
+);
+export const BROKER_PROXY_DOMAINS = brokerProxyRefusal(
+  "domains",
+  "is not an object",
+  'Map each host to "allow" or "deny"',
+);
+export const BROKER_PROXY_DOMAIN_DECISION = brokerProxyRefusal(
+  "domains",
+  'maps a host to neither "allow" nor "deny"',
+  'Set each host to "allow" or "deny"',
+);
+export const BROKER_PROXY_EMPTY_HOST = brokerProxyRefusal(
+  "domains",
+  "has an empty host",
+  "Delete that entry",
+);
+export const BROKER_HOST_DENIED = brokerProxyRefusal(
+  "domains",
+  "denies the repository credential broker's host",
+  "Delete that deny",
+);

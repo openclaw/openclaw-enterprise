@@ -5,7 +5,10 @@ import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { SshComputeDriver } from "../../apps/controller/src/drivers/compute/ssh/index.ts";
-import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
+import {
+  CodexPluginDriver,
+  OCCPluginDriver,
+} from "../../apps/controller/src/drivers/plugin/index.ts";
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
@@ -43,6 +46,12 @@ import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { grantRole } from "../helpers/iam-grants.mjs";
 import {
+  BROKER_PROXY_DISABLED,
+  BROKER_PROXY_DOMAIN_DECISION,
+  BROKER_PROXY_DOMAINS,
+  BROKER_PROXY_EMPTY_HOST,
+  BROKER_PROXY_LOCAL_BINDING,
+  BROKER_PROXY_MODE,
   COMPUTE_REPOSITORY_UNSUPPORTED,
   CREDENTIAL_PROXY_INSTALLATION_ACCESS,
   DEPENDENCY_UNAVAILABLE,
@@ -1211,6 +1220,166 @@ test("Kubernetes admission supports dedicated Codex repositories for every profi
       assert.deepEqual(historical.data.repositoryCredentials, deployed.data.repositoryCredentials);
     });
   }
+});
+
+// Kubernetes Compute sends a Codex Harness's repository traffic through its Codex network proxy
+// and refused a proxy setting that blocks the broker only in preparation, after a dedicated
+// deployment had stopped the running revision (finding 2350). Configuration save does not know
+// which Agents use the Configuration, so Agent save, provisioning and deployment refuse it, with
+// the text preparation uses. A deny of the broker host itself stays with preparation, the only
+// step that knows the host (tests/conformance/repository-runtime-material.test.mjs).
+const brokerProxyRefusals = [
+  ["disabled", { enabled: false }, BROKER_PROXY_DISABLED],
+  ["unknown mode", { enabled: true, mode: "offline" }, BROKER_PROXY_MODE],
+  ["local binding", { enabled: true, allowLocalBinding: "yes" }, BROKER_PROXY_LOCAL_BINDING],
+  ["domains list", { enabled: true, domains: ["github.com"] }, BROKER_PROXY_DOMAINS],
+  [
+    "domain decision",
+    { enabled: true, domains: { "github.com": "block" } },
+    BROKER_PROXY_DOMAIN_DECISION,
+  ],
+  ["empty host", { enabled: true, domains: { " ": "allow" } }, BROKER_PROXY_EMPTY_HOST],
+];
+
+function codexProxyValues(harness, networkProxy) {
+  const values = createHarnessConfiguration(harness, "gpt-5.1");
+  delete values.gateway.auth;
+  values.plugins ??= {};
+  values.plugins.entries ??= {};
+  values.plugins.entries.codex ??= { enabled: true, config: {} };
+  values.plugins.entries.codex.config.appServer ??= {};
+  values.plugins.entries.codex.config.appServer.networkProxy = networkProxy;
+  return values;
+}
+
+function assertBrokerProxyRefused(response, message, label) {
+  assert.equal(response.status, 400, `${label}: ${JSON.stringify(response)}`);
+  assert.equal(response.error.code, "INVALID_REQUEST", label);
+  assert.equal(response.error.message, message, label);
+}
+
+test("Agent save and deployment refuse a Codex network proxy that blocks the repository broker", async (t) => {
+  const f = await fixture(t, { harness: "codex" });
+  const configurationPath = `/namespaces/${f.namespace.id}/configurations/${f.configuration.id}`;
+  // A limited proxy with its own allowlist lets Compute add the broker host: it deploys.
+  const allowing = await f.request("PATCH", configurationPath, {
+    values: codexProxyValues("codex", {
+      enabled: true,
+      mode: "limited",
+      domains: { "github.com": "allow" },
+    }),
+  });
+  assert.equal(allowing.status, 200, JSON.stringify(allowing));
+  const agent = await f.createAgent({ executionMode: "dedicated", repositoryBindings: selection });
+  await f.prepareDeployment(agent);
+  const path = `${f.collection}/${agent.id}`;
+  const running = await f.request("POST", `${path}/deploy`);
+  assert.equal(running.status, 202, JSON.stringify(running));
+
+  for (const [label, networkProxy, message] of brokerProxyRefusals) {
+    // An edit of the Configuration the running Agent uses is accepted.
+    const edited = await f.request("PATCH", configurationPath, {
+      values: codexProxyValues("codex", networkProxy),
+    });
+    assert.equal(edited.status, 200, `${label}: ${JSON.stringify(edited)}`);
+    assertBrokerProxyRefused(
+      await f.request("POST", f.collection, {
+        name: `Repository Agent ${randomUUID()}`,
+        configurationId: f.configuration.id,
+        executionMode: "dedicated",
+        repositoryBindings: selection,
+      }),
+      message,
+      `${label} create`,
+    );
+    assertBrokerProxyRefused(
+      await f.request("PATCH", path, {
+        configurationId: f.configuration.id,
+        repositoryBindings: selection,
+      }),
+      message,
+      `${label} update`,
+    );
+    assertBrokerProxyRefused(await f.request("POST", `${path}/deploy`), message, `${label} deploy`);
+    // Deployment admitted no revision, so the worker has nothing to stop the running one for:
+    // it stays the Agent's only revision, and the Agent stays running.
+    const revisions = (await f.request("GET", `${path}/revisions`)).data;
+    assert.deepEqual(
+      revisions.map(({ id }) => id),
+      [running.data.id],
+      label,
+    );
+    assert.equal((await f.request("GET", path)).data.desiredRuntimeState, "running", label);
+  }
+
+  // Without repository bindings the proxy carries no broker traffic, and the same setting saves
+  // and deploys: the refusal's other remedy works.
+  const cleared = await f.request("PATCH", path, {
+    configurationId: f.configuration.id,
+    repositoryBindings: [],
+  });
+  assert.equal(cleared.status, 200, JSON.stringify(cleared));
+  const unbound = await f.request("POST", `${path}/deploy`);
+  assert.equal(unbound.status, 202, JSON.stringify(unbound));
+});
+
+test("Embedded OpenClaw refuses a broker-blocking Codex proxy only with the Codex Plugin Driver", async (t) => {
+  const f = await fixture(t);
+  const configuration = await f.request("POST", `/namespaces/${f.namespace.id}/configurations`, {
+    kind: "agent",
+    values: codexProxyValues("openclaw", { enabled: false }),
+  });
+  assert.equal(configuration.status, 201, JSON.stringify(configuration));
+  const create = (plugins) =>
+    f.request("POST", f.collection, {
+      name: `Repository Agent ${randomUUID()}`,
+      configurationId: configuration.data.id,
+      repositoryBindings: selection,
+      ...(plugins === undefined ? {} : { plugins }),
+    });
+  // Without plugins no Plugin Driver runs Codex in the Gateway, so nothing reads the proxy.
+  const plain = await create();
+  assert.equal(plain.status, 201, JSON.stringify(plain));
+  // With the Codex Plugin Driver, the Gateway's Codex carries the broker traffic.
+  const driver = new CodexPluginDriver();
+  f.controller.registerDriver(driver);
+  f.controller.selectDriver("plugin", driver.id);
+  assertBrokerProxyRefused(
+    await create({ "codex-plugin:linear@openai-curated-remote": { enabled: true } }),
+    BROKER_PROXY_DISABLED,
+    "embedded Codex plugins",
+  );
+});
+
+test("Provisioning refuses a Codex network proxy that blocks the repository broker before queueing", async (t) => {
+  const configurationDriver = createTestConfigurationDriver();
+  // Refusing the request creates no Configuration; only the worker would.
+  configurationDriver.createExact = async () => assert.fail("The request created Configuration");
+  configurationDriver.inspectExact = async () => assert.fail("The request inspected Configuration");
+  const f = await fixture(t, { harness: "codex", configurationDriver });
+  await f.state.transact((unit) =>
+    unit.namespaces.transitionNamespaceStatus(f.namespace.id, "provisioning", "ready"),
+  );
+  const secret = await f.request("POST", `/namespaces/${f.namespace.id}/secrets`, {
+    name: "Provisioning model",
+    value: "synthetic-model-key",
+  });
+  assert.equal(secret.status, 201, JSON.stringify(secret));
+  for (const [label, networkProxy, message] of brokerProxyRefusals) {
+    assertBrokerProxyRefused(
+      await f.request("POST", `${f.collection}/provision`, {
+        requestId: `req_${randomUUID()}`,
+        name: `Provisioned ${label}`,
+        executionMode: "dedicated",
+        configuration: { kind: "agent", values: codexProxyValues("codex", networkProxy) },
+        harnessAuth: { method: "api_key", source: secret.data.ref },
+        repositoryBindings: selection,
+      }),
+      message,
+      `${label} provision`,
+    );
+  }
+  assert.deepEqual((await f.request("GET", f.collection)).data, []);
 });
 
 test("Repository capability remains optional when no repository Backend or Driver is configured", async (t) => {

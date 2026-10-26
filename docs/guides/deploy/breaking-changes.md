@@ -21,6 +21,31 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-26: a Codex network proxy that blocks the repository broker is refused at save
+
+**What breaks.** For an Agent with repository bindings on a dedicated Codex
+Harness, or on embedded OpenClaw with the Codex Plugin Driver and plugins,
+Agent create and update, provisioning and deployment answer `400
+INVALID_REQUEST` when `plugins.entries.codex.config.appServer.networkProxy`
+has `enabled: false`, a `mode` other than `limited` or `full`, a non-boolean
+`allowLocalBinding`, `domains` that is not an object mapping each host to
+`allow` or `deny`, or a `domains` entry with an empty host. Earlier builds saved
+and admitted it, and Kubernetes preparation refused it; a dedicated deploy had
+stopped the running version first. A deny of the broker host is still refused
+only in preparation, which alone knows the host. Configuration save still
+accepts these settings, because a Configuration does not know which Agents use
+it. A stored such Agent still reads, but each update or deploy is refused.
+
+**Who is affected.** Agents with repository bindings whose Configuration has
+such a setting. They could not deploy before either.
+
+**How to tell.** The `400` reads `Configuration setting
+plugins.entries.codex.config.appServer.networkProxy.<setting> ..., so Codex
+cannot reach the repository credential broker`.
+
+**Steps.** Fix or delete the named setting in the Configuration, or remove the
+Agent's repository bindings, then save or deploy again.
+
 ## 2026-10-26: some refusals name their reason instead of 404, 409 or 503
 
 **What breaks.** These refusals no longer answer the generic `404 NOT_FOUND`,
@@ -297,24 +322,3 @@ longer offers Dedicated for OpenClaw.
 
 **Steps.** Keep one ServiceAccount in `gateway.operatorWorkspaceResources` and
 restart the controller, or switch the Agent to Codex.
-
-## 2026-10-24: chart container resources are checked at render
-
-**What breaks.** `helm install` and `helm upgrade` refuse a `resources`,
-`slackProxy.resources` or `logging.collector.resources` entry with a negative
-quantity or a resource name other than `cpu`, `memory`,
-`ephemeral-storage`, `hugepages-<size>` or a domain-prefixed extended resource
-such as `example.com/gpu`. They also refuse a negative
-`logging.collector.state.sizeLimit` or `tmp.sizeLimit`. Earlier builds rendered
-these and Kubernetes refused the Deployment or Pod when Helm applied it, after
-other objects of the release had changed. With `gatewayRouting.enabled`, a
-release name whose first 34 characters end in `.` now renders a valid Envoy
-NetworkPolicy name; earlier builds failed to create it.
-
-**Who is affected.** Releases that set one of these values by hand.
-
-**How to tell.** Helm fails before applying anything, naming the value, for
-example `resources.limits.cpu must not be negative`. A request above its limit
-is still left to Kubernetes, which refuses it when Helm applies the release.
-
-**Steps.** Remove the negative or unknown entry, and run the upgrade again.

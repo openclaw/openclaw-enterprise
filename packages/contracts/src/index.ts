@@ -926,6 +926,84 @@ export function pluginRuntimeHarnessRequirement(
   return undefined;
 }
 
+/**
+ * Whether this Harness reaches the repository credential broker through the Codex network
+ * proxy when Compute delivers repository material to it: a dedicated Codex Harness, or an
+ * embedded OpenClaw Harness whose plugins run in the Codex Plugin Driver.
+ */
+export function codexProxiesRepositoryBroker(
+  harness: Readonly<Pick<RevisionHarnessDescriptor, "id" | "mode">>,
+  pluginDriverImplementation: string | undefined,
+): boolean {
+  return (
+    (harness.id === "codex" && harness.mode === "dedicated") ||
+    (harness.id === "openclaw" &&
+      harness.mode === "embedded" &&
+      pluginDriverImplementation === CODEX_PLUGIN_DRIVER_IMPLEMENTATION)
+  );
+}
+
+const CODEX_NETWORK_PROXY_SETTING = "plugins.entries.codex.config.appServer.networkProxy";
+
+/**
+ * The Codex network proxy domain decisions of a Configuration whose Harness reaches the
+ * repository credential broker through that proxy, or the refusal of a setting that blocks the
+ * broker. Compute applies it when it prepares a revision, with the broker host from the prepared
+ * material. OCC applies it without the host at Agent save, provisioning and deployment, before a
+ * dedicated deployment stops the running revision (finding 2350).
+ */
+export function codexRepositoryBrokerNetworkProxy(
+  configuration: unknown,
+  brokerHost?: string,
+): { readonly domains: Readonly<Record<string, "allow" | "deny">> } | { readonly refusal: string } {
+  const refuse = (setting: string, problem: string, change: string) => ({
+    refusal: `Configuration setting ${CODEX_NETWORK_PROXY_SETTING}.${setting} ${problem}, so Codex cannot reach the repository credential broker. ${change}, or remove the repository bindings.`,
+  });
+  const appServer = asRecord(
+    asRecord(asRecord(asRecord(asRecord(configuration)?.plugins)?.entries)?.codex)?.config,
+  )?.appServer;
+  const policy = asRecord(asRecord(appServer)?.networkProxy);
+  if (policy?.enabled === false) {
+    return refuse("enabled", "is false", "Set it to true or delete it");
+  }
+  if (policy?.mode !== undefined && policy.mode !== "limited" && policy.mode !== "full") {
+    return refuse("mode", 'is not "limited" or "full"', "Set it to one of those or delete it");
+  }
+  if (policy?.allowLocalBinding !== undefined && typeof policy.allowLocalBinding !== "boolean") {
+    return refuse(
+      "allowLocalBinding",
+      "is not true or false",
+      "Set it to true or false or delete it",
+    );
+  }
+  const domainsInput = policy?.domains === undefined ? undefined : asRecord(policy.domains);
+  if (policy?.domains !== undefined && domainsInput === undefined) {
+    return refuse("domains", "is not an object", 'Map each host to "allow" or "deny"');
+  }
+  const domains: Record<string, "allow" | "deny"> = {};
+  for (const [entry, decision] of Object.entries(domainsInput ?? {})) {
+    if (decision !== "allow" && decision !== "deny") {
+      return refuse(
+        "domains",
+        'maps a host to neither "allow" nor "deny"',
+        'Set each host to "allow" or "deny"',
+      );
+    }
+    const host = entry.trim().toLowerCase();
+    if (host.length === 0) {
+      return refuse("domains", "has an empty host", "Delete that entry");
+    }
+    // A deny of a host wins over an allow of the same host in another spelling.
+    domains[host] = domains[host] === "deny" || decision === "deny" ? "deny" : "allow";
+  }
+  if (brokerHost !== undefined && domains[brokerHost] === "deny") {
+    // The text leaves out the host: the worker drops a preparation failure message over 256
+    // characters, and a Namespace name can make the host long.
+    return refuse("domains", "denies the repository credential broker's host", "Delete that deny");
+  }
+  return { domains };
+}
+
 export interface Configuration extends Scope {
   readonly id: string;
   readonly namespaceId: string;

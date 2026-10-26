@@ -12613,6 +12613,9 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
         undefined,
         "MODEL_PROBE_CPU_STARVED",
       ],
+      // Children of the killed probe can still write into its directory, so its
+      // removal fails; the classified result must still be logged and published.
+      ["cap exceeded while waiting for CPU, cleanup fails", undefined, "MODEL_PROBE_CPU_STARVED"],
     ]) {
       const accepted = failureCode === undefined;
       const upfront = variant === "credentials rejected upfront";
@@ -12637,6 +12640,7 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
         const childSignals = [];
         const exits = [];
         const timers = [];
+        const removals = [];
         let probeTemplate;
         let pressureReads = 0;
         let throttledReads = 0;
@@ -12698,7 +12702,14 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
                 writeFileSync(path, value) {
                   files.set(path, value);
                 },
-                rmSync() {},
+                rmSync(path, options) {
+                  removals.push([path, { ...options }]);
+                  if (variant.endsWith("cleanup fails")) {
+                    throw Object.assign(new Error("directory not empty /isolated-probe"), {
+                      code: "ENOTEMPTY",
+                    });
+                  }
+                },
                 // A 500m CPU limit; each wait counter grows 100 s across a starved probe.
                 readFileSync(path) {
                   const starved =
@@ -12909,6 +12920,16 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
           }
         }
         assert.deepEqual([probeLog.code, probeLog.capMs], [failureCode ?? "READY", 110_000]);
+        // The probe directory removal retries briefly; a failure that remains is
+        // logged as its error code only, never its message or path.
+        assert.deepEqual(removals, [
+          ["/isolated-probe", { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }],
+        ]);
+        assert.equal(
+          probeLog.cleanupError,
+          variant.endsWith("cleanup fails") ? "ENOTEMPTY" : undefined,
+        );
+        assert.doesNotMatch(probeLines[0], /isolated-probe|not empty/);
         const waitMs =
           variant.includes("waiting for CPU") || variant.includes("throttled") ? 100_000 : 0;
         assert.equal(probeLog.cpuWaitMs, waitMs);

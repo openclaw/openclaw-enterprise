@@ -137,6 +137,8 @@ preserves them and an empty array clears them.
 `packages/occ/src/index.ts:OpenClawController.admitRepositoryCredentials`
 re-resolves the draft, validates Compute topology and freezes Driver identity,
 grants and an absolute deadline unaffected by renewal or recovery.
+`validateRepositoryBrokerNetworkProxy` then refuses a Codex proxy setting that
+blocks the broker, as Agent save does.
 
 `apps/controller/src/composition/repository-credentials/platform.ts:composeRepositoryAccess`
 constructs `GitHubRepositoryPolicy`, with its ID pinned by the GitHub Backend's `repo`
