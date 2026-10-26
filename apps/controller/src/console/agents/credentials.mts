@@ -525,6 +525,10 @@ function renderSlackBindings(state: ChannelState) {
 // Why the channel Secrets are read-only: the caller may not update the Configuration, or may not
 // operate a Secret that a save keeps bound, which each Configuration save also needs (finding
 // 2437). A save is checked on the Secrets it submits, not on those it replaces (finding 2444).
+// The deploy status while a grant read runs; the page shows it only after 250 ms (finding 2576).
+export const CHECKING_CREDENTIAL_ACCESS =
+  "Checking this Agent's credential access before deploying.";
+
 export const CHANNEL_SECRETS_CONFIGURATION_READ_ONLY =
   "Your access does not include editing this Configuration, so its channel Secrets are read-only.";
 export const CHANNEL_SECRETS_OPERATE_READ_ONLY =
@@ -820,7 +824,7 @@ export function createChannelSecretsPanel({
       return "Version history is required before deploying this new version.";
     }
     if (state.checkingGrants) {
-      return "Checking this Agent's credential access before deploying.";
+      return CHECKING_CREDENTIAL_ACCESS;
     }
     if (grantHoldsDeploy()) {
       return "Resolve the saved Secret access grant before deploying.";
@@ -854,6 +858,11 @@ export function createChannelSecretsPanel({
   } = {};
   // Saves started, so a grant check that a save overtook drops its answer.
   let saveCount = 0;
+  // Grant reads started: only the latest one clears the Deploy hold or changes the panel.
+  let grantRead = 0;
+  // A save or Retry overtook a grant read, so the panel reads the grants again once it ends:
+  // the dropped answer may have shown a bound Secret the save left ungranted (finding 2575).
+  let grantRecheck = false;
 
   function renderChannelForm(error: HTMLElement) {
     shown.save = null;
@@ -1164,6 +1173,11 @@ export function createChannelSecretsPanel({
       } finally {
         if (context.isCurrent()) {
           state.saving = false;
+          if (grantRecheck || state.checkingGrants) {
+            // Deploy stays held until the new read lands.
+            grantRecheck = false;
+            void checkBoundSecretGrants();
+          }
           updateControls();
           render();
           onChange();
@@ -1261,27 +1275,33 @@ export function createChannelSecretsPanel({
   // for Retry Secret access as an outstanding grant does, and one granted since is no longer
   // outstanding. A failed or undecided read changes nothing (finding 1920).
   async function checkBoundSecretGrants() {
+    grantRead += 1;
+    const read = grantRead;
     const bound = boundSecrets(state.configuration.secretBindings).filter(
       (secret) => secret.namespaceId === context.namespaceId,
     );
     if (!bound.length || servicePrincipalId(state.agent) === null) {
+      // Nothing left to read: an earlier read still in flight no longer holds Deploy.
+      state.checkingGrants = false;
       return;
     }
     const started = saveCount;
     state.checkingGrants = true;
     try {
-      await applyBoundSecretGrants(bound, started);
+      await applyBoundSecretGrants(bound, started, read);
     } finally {
-      state.checkingGrants = false;
-      // Deploy waited for this read, whatever its outcome.
-      if (context.isCurrent() && isCurrent()) {
-        shown.updateControls?.();
-        onChange();
+      // Deploy waited for this read, whatever its outcome, unless a newer read replaced it.
+      if (read === grantRead) {
+        state.checkingGrants = false;
+        if (context.isCurrent() && isCurrent()) {
+          shown.updateControls?.();
+          onChange();
+        }
       }
     }
   }
 
-  async function applyBoundSecretGrants(bound: SecretReference[], started: number) {
+  async function applyBoundSecretGrants(bound: SecretReference[], started: number, read: number) {
     let grants;
     try {
       grants = await credentialOperateGrants(
@@ -1293,9 +1313,14 @@ export function createChannelSecretsPanel({
     } catch {
       return;
     }
-    // A save since the read began may have granted or replaced these Secrets, and a rebuilt
-    // panel no longer speaks for the page.
-    if (!context.isCurrent() || state.saving || saveCount !== started || !isCurrent()) {
+    // A newer read replaced this one, and a rebuilt panel no longer speaks for the page.
+    if (!context.isCurrent() || read !== grantRead || !isCurrent()) {
+      return;
+    }
+    // A save since the read began may have granted or replaced these Secrets. The save reads
+    // the grants again when it ends.
+    if (state.saving || saveCount !== started) {
+      grantRecheck = true;
       return;
     }
     let changed = false;

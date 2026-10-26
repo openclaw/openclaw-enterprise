@@ -865,6 +865,17 @@ test("Deploy waits for the Agent's Secret grant read and sends no deploy it woul
   assert.ok(heldReads > 0, "the grant read is in flight");
   assert.equal(await deploy.isDisabled(), true);
   await page.getByText("Checking this Agent's credential access before deploying.").waitFor();
+  // The checking text sits in the 250 ms delayed-status span, in the deploy status and the
+  // checklist, so a read that settles sooner never flashes it (finding 2576).
+  const actions = page.locator("section.agent-draft-actions");
+  assert.equal(
+    await actions.locator("p.muted[role=status] > .delayed-status").textContent(),
+    "Checking this Agent's credential access before deploying.",
+  );
+  assert.equal(
+    await actions.locator(".checklist-detail > .delayed-status").textContent(),
+    "Checking credential access…",
+  );
   releaseReads();
   await page.getByText("Resolve the saved Secret access grant before deploying.").waitFor();
   assert.equal(await deploy.isDisabled(), true);
@@ -880,6 +891,119 @@ test("Deploy waits for the Agent's Secret grant read and sends no deploy it woul
   await waitForEnabled(deploy);
   assert.equal(deployRequests, 0);
 });
+
+// A channel Secrets save that overtakes the grant read must not drop what that read would show.
+// The app token Secret stays bound without the Agent's grant while the administrator replaces only
+// the bot token, so the save grants only the new bot Secret. The panel reads the grants again
+// after the save: the app row is flagged and Deploy stays held, as the worker would refuse the
+// deploy with AUTHORIZATION_DENIED (finding 2575). `readLandsDuringSave` releases the held read
+// while the save's Configuration write is held instead of after the save ends.
+async function saveOvertakesGrantRead(t, { readLandsDuringSave }) {
+  const { fixture, namespace, agent, secrets } = await agentWithoutGrant(t, {
+    name: readLandsDuringSave ? "Read during save" : "Read after save",
+    slackValues: {},
+    bindings: ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"],
+    ungranted: "SLACK_APP_TOKEN",
+  });
+  const replacement = await fixture.createSecret(namespace.id, "Replacement bot token", "xoxb-new");
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  // Hold only the panel's first policy read; the save's own grant reads pass.
+  let releaseRead;
+  const readReleased = new Promise((resolve) => {
+    releaseRead = resolve;
+  });
+  let heldRead = null;
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/iam/access-bindings`,
+    async (route, request) => {
+      if (request.method() === "GET" && heldRead === null) {
+        heldRead = request;
+        await readReleased;
+      }
+      await route.fallback();
+    },
+  );
+  let releaseWrite = () => {};
+  const writeReleased = new Promise((resolve) => {
+    releaseWrite = resolve;
+  });
+  let writeHeld;
+  const writeStarted = new Promise((resolve) => {
+    writeHeld = resolve;
+  });
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+    async (route, request) => {
+      if (readLandsDuringSave && request.method() === "PATCH") {
+        writeHeld();
+        await writeReleased;
+      }
+      await route.fallback();
+    },
+  );
+  let deployRequests = 0;
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
+    async (route) => {
+      deployRequests += 1;
+      await route.fallback();
+    },
+  );
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  const deploy = page.getByRole("button", { name: "Deploy new version" });
+  const deployStatus = page.locator("section.agent-draft-actions p.muted[role=status]");
+  await deployStatus.filter({ hasText: /\S/ }).waitFor();
+  assert.ok(heldRead, "the grant read is in flight");
+  await page.getByRole("tab", { name: "Credentials", exact: true }).click();
+  await selectSecret(page, "Slack bot token", replacement);
+  await page.getByRole("button", { name: "Save channel Secrets" }).click();
+  if (readLandsDuringSave) {
+    await writeStarted;
+    releaseRead();
+    await heldRead.response();
+    // Let the page take the read's answer before the save ends.
+    await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 100)));
+    releaseWrite();
+  }
+  await page
+    .getByText("Channel Secret bindings saved. Deploy the new version to deliver them.")
+    .waitFor();
+  if (!readLandsDuringSave) {
+    releaseRead();
+    await heldRead.response();
+  }
+  await deployStatus
+    .filter({ hasText: /Resolve the saved Secret access grant|Ready to deploy/ })
+    .waitFor();
+  assert.equal(
+    await deployStatus.textContent(),
+    "Resolve the saved Secret access grant before deploying.",
+  );
+  assert.equal(await deploy.isDisabled(), true);
+  const list = page.locator("section.channel-secrets .credential-status-list");
+  assert.equal(await list.getByText(/· Agent access not confirmed$/).count(), 1);
+  assert.equal(deployRequests, 0);
+  // Positive control: Retry Secret access grants the app Secret, and Deploy becomes available.
+  await page.getByRole("button", { name: "Retry Secret access" }).click();
+  await page
+    .getByText(
+      "This Agent can use its saved Slack Secrets. Deploy the new version to deliver them.",
+    )
+    .waitFor();
+  assert.deepEqual(await secretGrants(fixture, requests, namespace.id, agent), [
+    replacement.id,
+    secrets.SLACK_APP_TOKEN.id,
+  ]);
+  await waitForEnabled(deploy);
+  assert.equal(deployRequests, 0);
+}
+
+test("a channel Secrets save that ends before the grant read lands reads the grants again", (t) =>
+  saveOvertakesGrantRead(t, { readLandsDuringSave: false }));
+
+test("a grant read that lands during a channel Secrets save is read again after it", (t) =>
+  saveOvertakesGrantRead(t, { readLandsDuringSave: true }));
 
 // Save and deployment admission refuse a signing secret, user token or relay token reference
 // without a binding, as they refuse a token's (finding 2554). The tab listed only the tokens, so

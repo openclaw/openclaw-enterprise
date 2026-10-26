@@ -79,6 +79,7 @@ import {
   harnessGrantSubject,
   createChannelSecretsPanel,
   CHANNEL_SECRETS_CONFIGURATION_READ_ONLY,
+  CHECKING_CREDENTIAL_ACCESS,
   channelBindingsToReplace,
   channelReplaceHint,
   channelReplaceRefusal,
@@ -363,6 +364,7 @@ function nativeDocument(values: OpenClawConfigurationDocument, label: string) {
 // A draft the caller can read but neither change nor save (finding 2421).
 const READ_ONLY_DRAFT_NOTICE =
   "Version draft · read-only with your access. The next deployment uses it as saved.";
+const CHECKING_CREDENTIAL_ACCESS_STEP = "Checking credential access…";
 const CONFIGURATION_READ_ONLY = "Your access does not include editing this Configuration.";
 // Saving a Configuration also needs Secret operate on every Secret it binds (finding 2437).
 const CONFIGURATION_SECRETS_READ_ONLY =
@@ -2936,7 +2938,8 @@ export async function renderAgentDetail(
           deployStatus.textContent =
             "Authentication may have been saved. Reload this draft before deploying.";
         } else if (harnessGrantChecking) {
-          deployStatus.textContent = "Checking this Agent's credential access before deploying.";
+          // A read that settles within 250 ms never shows this text (finding 2576).
+          setDelayedText(deployStatus, "", CHECKING_CREDENTIAL_ACCESS);
         } else if (authenticationPending || harnessGrantMissing) {
           deployStatus.textContent =
             "Confirm authentication and Secret access in Credentials before deploying.";
@@ -2990,10 +2993,14 @@ export async function renderAgentDetail(
             : gate === "Ready to deploy."
               ? rejected
               : `${gate} ${rejected}`;
-          deployStatus.textContent =
-            draftReadOnly() && status !== "Ready to deploy."
-              ? `${status} Your access does not include changing this version draft.`
-              : status;
+          if (status === CHECKING_CREDENTIAL_ACCESS) {
+            setDelayedText(deployStatus, "", status);
+          } else {
+            deployStatus.textContent =
+              draftReadOnly() && status !== "Ready to deploy."
+                ? `${status} Your access does not include changing this version draft.`
+                : status;
+          }
         }
       }
       updateChecklist();
@@ -3045,7 +3052,12 @@ export async function renderAgentDetail(
         step.item.dataset.state = value;
         step.state.textContent = done ? "Done: " : "Not done: ";
       }
-      setText(step.detail, detail);
+      if (detail === CHECKING_CREDENTIAL_ACCESS_STEP) {
+        // Shown only if the grant read outlasts 250 ms (finding 2576).
+        setDelayedText(step.detail, "", detail);
+      } else {
+        setText(step.detail, detail);
+      }
     }
     function updateChecklist() {
       // A caller who can change nothing here and cannot deploy gets no editor's checklist
@@ -3091,7 +3103,7 @@ export async function renderAgentDetail(
                 : authenticationSaveState === "uncertain"
                   ? "Reload this draft"
                   : credentials?.checkingGrants()
-                    ? "Checking credential access…"
+                    ? CHECKING_CREDENTIAL_ACCESS_STEP
                     : "Finish in Credentials",
       );
       setStep(checklistSteps[2], false, "Creates an immutable version from the saved draft");
