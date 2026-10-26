@@ -24,7 +24,7 @@ import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { registerAndSelectDrivers } from "../helpers/development.mjs";
 import { bindRole, permissionsFor } from "../helpers/iam-grants.mjs";
 import { requestFailure } from "../../apps/controller/src/http/errors.ts";
-import { GENERIC_DENIAL } from "../helpers/refusal-text.mjs";
+import { agentPrincipalDenied, GENERIC_DENIAL } from "../helpers/refusal-text.mjs";
 
 const installation = {
   id: "installation-a",
@@ -1263,12 +1263,14 @@ test("deploy names the Agent service principal and the permission it lacks", asy
     action: "operate",
     resource: { kind: "secret", id: secret.id, namespaceId: namespace.id },
   });
+  // This caller holds Secret operate but not Secret read, so the answer names no Secret; without
+  // the request's Agent ID it names no Agent, and it never names the principal (finding 2592).
+  assert.equal(refusal.agentId, agent.id);
+  assert.equal(refusal.callerMayReadResource, false);
   const failure = requestFailure(refusal);
   assert.equal(failure.status, 403);
   assert.equal(failure.code, "FORBIDDEN");
-  assert.match(failure.message, new RegExp(agent.servicePrincipalId));
-  assert.match(failure.message, /operate/);
-  assert.match(failure.message, new RegExp(`secret ${secret.id}`));
+  assert.equal(failure.message, agentPrincipalDenied("This Agent", "one of its bound Secrets"));
 
   // Caller denials keep the generic message so they do not disclose resource details.
   assert.equal(requestFailure(new AuthorizationDeniedError("denied")).message, GENERIC_DENIAL);

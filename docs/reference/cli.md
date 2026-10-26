@@ -117,6 +117,8 @@ explicit zero is refused before output-file creation or API issuance.
 
 Commands take IDs, not names. The CLI rejects a value without the expected
 prefix, such as `ns_` or `agt_`, and names the list command that shows the ID.
+It also rejects a prefixed value that is not the prefix plus a UUID, such as
+`agt_../x`, before sending anything.
 
 The `installation get`, `installation deployment-inventory`, and `namespace
 list` commands require an Installation-scoped service key. With a

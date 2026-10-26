@@ -11,6 +11,11 @@ export const GENERIC_DENIAL = "The exact platform operation was not authorized."
 // carried, otherwise "a <Kind> this request uses".
 export const callerDenied = (grant, target) =>
   `Not authorized: this needs ${grant} on ${target}. Ask an Installation administrator to grant it.`;
+// An Agent's own service principal lacks a grant deployment needs (finding 2592). `agent` is
+// "Agent <id>" when the request carried its ID, otherwise "This Agent"; `target` is "Secret <id>"
+// when the caller sent or may read it, otherwise "one of its bound Secrets".
+export const agentPrincipalDenied = (agent, target, grant = "Secret operate") =>
+  `${agent} cannot use ${target}: the Agent itself needs ${grant} on it. Ask an Installation administrator to give the Agent access, then deploy again.`;
 // A denial echoes the ID its request sent, so a real and an unknown ID get answers that match once
 // each answer's own ID is hidden: the text never says whether the resource exists.
 export const sentIdHidden = (text, id) => text.replaceAll(id, "<id>");

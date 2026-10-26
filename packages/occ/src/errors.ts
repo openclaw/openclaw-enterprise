@@ -53,12 +53,17 @@ export class AuthorizationDeniedError extends Error {
 export class CallerStateDeniedError extends AuthorizationDeniedError {}
 
 /**
- * The Agent's own service principal, not the caller, lacks a grant that deployment needs.
- * The caller is already authorized for the Agent, so naming the principal and the missing
- * grant tells an operator exactly what to bind without disclosing anything new.
+ * The Agent's own service principal, not the caller, lacks a grant that deployment needs. The
+ * message names that principal for audit. HTTP answers with its own text instead, which names
+ * the resource only when the caller sent its ID or may read it (`callerMayReadResource`), since the
+ * resource comes from the Agent's stored bindings (finding 2592).
  */
 export class AgentPrincipalAuthorizationError extends AuthorizationDeniedError {
   readonly principalId: string;
+  /** The Agent whose principal was denied, when the check knew it. */
+  readonly agentId?: string;
+  /** Whether the caller may read the denied resource, checked when the denial was raised. */
+  readonly callerMayReadResource: boolean;
   declare readonly authorization: {
     readonly action: AuthorizationRequest["action"];
     readonly resource: ResourceRef;
@@ -69,6 +74,7 @@ export class AgentPrincipalAuthorizationError extends AuthorizationDeniedError {
     action: AuthorizationRequest["action"],
     resource: ResourceRef,
     evidence?: AuthorizationEvidence,
+    context: { readonly agentId?: string; readonly callerMayReadResource?: boolean } = {},
   ) {
     super(
       `The Agent service principal ${principalId} is not authorized to ${action} ${resource.kind} ${resource.id}. Grant that principal ${action} on the ${resource.kind}, then deploy again.`,
@@ -77,6 +83,10 @@ export class AgentPrincipalAuthorizationError extends AuthorizationDeniedError {
     );
     this.name = "AgentPrincipalAuthorizationError";
     this.principalId = principalId;
+    if (context.agentId !== undefined) {
+      this.agentId = context.agentId;
+    }
+    this.callerMayReadResource = context.callerMayReadResource === true;
   }
 }
 

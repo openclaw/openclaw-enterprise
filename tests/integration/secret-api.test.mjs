@@ -20,6 +20,7 @@ import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { grantRole } from "../helpers/iam-grants.mjs";
+import { agentPrincipalDenied } from "../helpers/refusal-text.mjs";
 
 const uuidV4 = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
 const identifier = (prefix) => new RegExp(`^${prefix}_${uuidV4}$`);
@@ -900,10 +901,21 @@ for (const [model, method, executionMode] of [
       (event) => event.kind === "authorization_denial",
     );
     assert.equal(agentDenial.reasonCode, "AGENT_PRINCIPAL_NOT_AUTHORIZED");
+    // The caller may read the key, so the answer names it; it never names the principal, which
+    // the audit event records (finding 2592).
+    assert.equal(
+      denied.body.error.message,
+      agentPrincipalDenied(`Agent ${agent.id}`, `Secret ${key.data.id}`),
+    );
     // The route's reason passes through the audit factory like any other: redacted and capped
     // at 120 characters. The details below still name the principal, action and resource.
-    assert.ok(denied.body.error.message.length > 120);
-    assert.equal(agentDenial.decisionReason, denied.body.error.message.slice(0, 120));
+    assert.equal(
+      agentDenial.decisionReason,
+      `The Agent service principal ${servicePrincipalId} is not authorized to operate secret ${key.data.id}. Grant that principal operate on the secret, then deploy again.`.slice(
+        0,
+        120,
+      ),
+    );
     assert.deepEqual(agentDenial.authorization, {
       principalId: fixture.principal.id,
       action: "deploy",

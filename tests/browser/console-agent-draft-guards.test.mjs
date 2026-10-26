@@ -44,6 +44,7 @@ import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.
 import { createPolicyConsole } from "./console-sandbox-policy-fixture.ts";
 import {
   AGENT_SAVE_DENIED,
+  agentPrincipalDenied,
   askForGrant,
   callerDenied,
   CHANNEL_SECRETS_CONFIGURATION_CHANGED,
@@ -1572,12 +1573,10 @@ test("Agent deployment shows the API's typed 403 and 409 refusals", async (t) =>
   }
 
   // The caller may operate the model Secret, but the Agent's own service principal may not.
-  // The API names that principal and the grant to add; the console shows the same sentence.
+  // The API names the grant the Agent lacks and who gives it, never the principal; the console
+  // shows the same sentence (finding 2592).
   const denied = await refusal(403);
-  assert.match(
-    denied,
-    new RegExp(`^The Agent service principal ${agent.servicePrincipalId} is not authorized`),
-  );
+  assert.equal(denied, agentPrincipalDenied(`Agent ${agent.id}`, `Secret ${modelSecret.id}`));
   await page.getByText(denied, { exact: true }).waitFor();
   await waitForEnabled(deploy);
 
