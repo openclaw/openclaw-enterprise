@@ -281,11 +281,11 @@ test("an Agent principal's deploy refusal names its bound Secret only to a calle
 test("a stored binding's denial names its Secret only to a caller who may read the record that binds it", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  // The Credential Gateway is a recording double: HTTP, IAM and OCC admission stay real.
+  // The Credential Gateway is a test double; HTTP, IAM and OCC admission stay real.
   const gateway = {
     id: "caller-denial-gateway",
     capability: "credential_gateway",
-    implementation: "test-recording-gateway",
+    implementation: "test-ready-gateway",
     validateSourceConfig() {},
     async listSourceTypes() {
       return [
