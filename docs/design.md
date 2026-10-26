@@ -39,9 +39,10 @@ The planned Tool Gateway and Agent Identity components are distinct from the
 per-Agent OpenClaw gateways, ServicePrincipals, and Kubernetes identities that
 exist today. The Sandbox boundary depends on the selected Compute and Sandbox
 Drivers. The shared context layer will cover knowledge retrieval and grounding,
-session history, and long-term memory. Observability and audit span the control
-plane and Agents today; coverage of planned services will depend on their
-implementation.
+session history, and long-term memory. Metrics, logs, and audit evidence cover
+implemented paths today; application tracing remains planned. See
+[observability](guides/observability.md) for current signal coverage. Coverage of
+planned services will depend on their implementation.
 
 <a id="system-model"></a>
 
