@@ -12714,8 +12714,9 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
                     return `some avg10=0.00 avg60=0.00 avg300=0.00 total=${total}\nfull total=0\n`;
                   }
                   if (path === "/sys/fs/cgroup/cpu.stat") {
-                    const throttled = starved ? throttledReads++ * 1e8 : 0;
-                    return `usage_usec 1\nnr_throttled 1\nthrottled_usec ${throttled}\n`;
+                    // 1000 throttled 100 ms periods bound the 100 s of throttled time.
+                    const reads = starved ? throttledReads++ : 0;
+                    return `usage_usec 1\nnr_throttled ${reads * 1000}\nthrottled_usec ${reads * 1e8}\n`;
                   }
                   throw Object.assign(new Error("unexpected read"), { code: "ENOENT" });
                 },

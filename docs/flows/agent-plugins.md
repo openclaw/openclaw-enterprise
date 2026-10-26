@@ -313,7 +313,8 @@ shutdown, or permanent failure latch exists. Warnings describe deployment comple
 ## Debugging and Verification
 
 The OpenClaw model probe's CPU-based deadline cannot exceed 600 seconds. It samples two cumulative CPU-wait counters,
-PSI and throttled time, and uses the larger delta, so one counter that reads low cannot hide starvation. A counter
+PSI and throttled time, and uses the larger delta, so one counter that reads low cannot hide starvation. Throttled
+time adds up every CPU's time, so it is capped at the wall time of the throttled periods. A counter
 with a missing, nonfinite or reset sample gives no delta; with no delta, wait is unavailable, without establishing
 starvation or changing the deadline. The `openclaw.model_probe` event records both deltas.
 

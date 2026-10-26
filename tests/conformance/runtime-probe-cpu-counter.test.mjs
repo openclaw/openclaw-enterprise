@@ -36,7 +36,10 @@ function probe(pressure, throttling, options = {}) {
         if (value === null) {
           throw new Error("throttling unavailable");
         }
-        return `usage_usec 1\nthrottled_usec ${value}\n`;
+        // Throttled periods bound throttled time by wall time: 1000 periods of
+        // 100 ms allow 100 s unless a case sets fewer.
+        const periods = phase === 0 ? 0 : (options.periods ?? 1000);
+        return `usage_usec 1\nnr_throttled ${periods}\nthrottled_usec ${value}\n`;
       }
       throw new Error(`unexpected cgroup path ${path}`);
     },
@@ -72,9 +75,11 @@ const TIMEOUT = "MODEL_PROBE_TIMEOUT";
 const STARVED = "MODEL_PROBE_CPU_STARVED";
 
 // run: [PSI totals, throttling totals, expected code, expected cpuWaitMs,
-// expected [PSI delta, throttling delta]]; each totals pair is the reading before
-// and after the probe. The wait is the larger valid delta, so one counter that
-// under-reads cannot hide starvation the other one saw (finding 2271).
+// expected [PSI delta, throttling delta], optional throttled periods]; each
+// totals pair is the reading before and after the probe. The wait is the larger
+// valid delta, so one counter that under-reads cannot hide starvation the other
+// one saw (finding 2271). Throttled time, a sum over CPUs, is capped by the wall
+// time of the throttled periods.
 for (const { name, run } of [
   {
     name: "a low PSI delta with a high throttling delta is CPU starvation",
@@ -83,6 +88,14 @@ for (const { name, run } of [
   {
     name: "a high PSI delta without throttling is CPU starvation",
     run: [[1_000_000, 31_000_000], [0, 0], STARVED, 30_000, [30_000, 0]],
+  },
+  {
+    name: "throttled time summed over CPUs is capped by the throttled periods",
+    run: [[1_000_000, 3_000_000], [0, 900_000_000], TIMEOUT, 10_000, [2_000, 10_000], 100],
+  },
+  {
+    name: "throttled periods covering most of the probe are CPU starvation",
+    run: [[1_000_000, 3_000_000], [0, 900_000_000], STARVED, 60_000, [2_000, 60_000], 600],
   },
   {
     name: "two low deltas leave the timeout classification",
@@ -128,10 +141,14 @@ for (const { name, run } of [
     name: "a nonfinite final counter cannot classify a probe as CPU-starved",
     run: [[1_000_000, "9".repeat(400)], [null, null], TIMEOUT, null, [null, null]],
   },
+  {
+    name: "a nonfinite throttled total is not capped into a wait",
+    run: [[1_000_000, 3_000_000], [0, "9".repeat(400)], TIMEOUT, 2_000, [2_000, null]],
+  },
 ]) {
   test(name, () => {
-    const [pressure, throttling, code, cpuWaitMs, readings] = run;
-    assert.deepEqual(probe(pressure, throttling), { code, cpuWaitMs, readings });
+    const [pressure, throttling, code, cpuWaitMs, readings, periods] = run;
+    assert.deepEqual(probe(pressure, throttling, { periods }), { code, cpuWaitMs, readings });
   });
 }
 
