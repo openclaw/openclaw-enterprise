@@ -360,7 +360,7 @@ function credentialRemovalFailure(cause: unknown) {
       next: "Select Check credential registration, then try again.",
     })}`;
   }
-  return `${message(cause, true)} Retry removal when the Credential Gateway is available.`;
+  return "The failed credential registration could not be removed: the Credential Gateway did not confirm it. Retry removal when the Credential Gateway is available.";
 }
 
 function createClientRequestId() {

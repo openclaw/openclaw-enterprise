@@ -113,6 +113,15 @@ test("Agent policy ceiling rejection is announced in view and preserves unsaved 
   );
   assert.equal(displayed.role, "alert");
   assert.equal(displayed.focused, true);
+  // The list names the setting as a dotted path, as the API's refusals do, never a JSON pointer
+  // (finding 2538).
+  await page
+    .getByText(
+      "Configuration setting additions[0]: The grant exceeds the Installation delegation ceiling.",
+      { exact: true },
+    )
+    .waitFor();
+  assert.equal(await page.getByText(/^\/additions/).count(), 0);
   assert.equal(
     await page.getByRole("textbox", { name: "Destination hostname", exact: true }).inputValue(),
     "outside.example.org",

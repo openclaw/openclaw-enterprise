@@ -146,7 +146,10 @@ test("draft Agent offers deployment without a generated-credential step", async 
   await deploy.click();
   await page
     .getByRole("alert")
-    .filter({ hasText: /cluster denied OCC access.*tenant RoleBindings/ })
+    .filter({
+      hasText:
+        "Deployment refused: the cluster denied the control plane access to this Agent's connection credentials. Ask an operator to grant the control plane the Kubernetes RoleBindings this Namespace needs, then deploy again.",
+    })
     .waitFor();
   await waitForEnabled(deploy);
   await page.unroute(deployUrl);
@@ -902,7 +905,9 @@ test("operator-managed console binding saves and deploys without a managed crede
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
   await page.getByLabel("Authentication source").selectOption("runtime");
   await page
-    .getByText("Configured on the runtime host; not validated by OCC.", { exact: true })
+    .getByText("Configured on the runtime host; OpenClaw Enterprise does not check it.", {
+      exact: true,
+    })
     .waitFor();
   assert.equal(await page.getByLabel("API key Secret").isVisible(), false);
   const save = page.waitForResponse(
