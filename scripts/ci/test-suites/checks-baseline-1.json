@@ -9,6 +9,7 @@
     "tests/integration/occ-api.test.mjs",
     "tests/integration/stored-document-serialization.test.mjs",
     "tests/integration/precompiled-route-compilers.test.mjs",
+    "tests/integration/route-header-names.test.ts",
     "tests/integration/list-summaries.test.mjs",
     "tests/conformance/plugin-compute.test.mjs",
     "tests/conformance/codex-native-startup.test.mjs",
@@ -367,6 +368,9 @@
     },
     {
       "path": "tests/integration/precompiled-route-compilers.test.mjs"
+    },
+    {
+      "path": "tests/integration/route-header-names.test.ts"
     },
     {
       "path": "tests/integration/list-summaries.test.mjs"
