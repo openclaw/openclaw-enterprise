@@ -57,8 +57,9 @@ export const VERSION_READ_DENIED = notIncluded(
   "AgentRevision read on it",
 );
 export const NEW_VERSIONS_READ = `Each new version needs its own AgentRevision read: ${ASK_INSTALLATION_ADMINISTRATOR} to grant it after each deployment.`;
-// A version link names a version the page cannot list: the API answers an unknown version as it
-// answers one the caller may not read, so the text says either may be true (finding D750).
+// A version link names a version the page cannot list. A reader granted read per version gets
+// the same answer for an unknown version as for one they may not read, so the text says either
+// may be true (finding D750).
 const IF_NEEDED_VERSION_READ = `If you need it, ${ASK_INSTALLATION_ADMINISTRATOR} for AgentRevision read on it.`;
 export const VERSION_UNAVAILABLE = `This version does not exist or your access does not include it. ${IF_NEEDED_VERSION_READ}`;
 export const requestedVersionUnavailable = (version: string) =>
