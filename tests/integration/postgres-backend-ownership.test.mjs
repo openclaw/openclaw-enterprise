@@ -722,7 +722,7 @@ test(
         label: "api-key-credential",
         credential: { kind: "api_key", secretRef: { name: "provider-api-key", key: "api-key" } },
         binding: {},
-        message: /requires an issued account access-token credential/,
+        message: /needs an issued access-token credential/,
         expectedErrorName: "ResourceStateConflictError",
       },
       {

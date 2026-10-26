@@ -4767,7 +4767,7 @@ test("native ServiceAccounts keep private credential references and cannot admit
   // A PAT source admits only an access-token credential, never an API key in its place.
   assert.match(
     nativeDeployment.body.error.message,
-    /requires an issued account access-token credential/,
+    /needs an issued access-token credential/,
   );
 
   // OAuth references are representable, but no refresh or OAuth execution exists yet.
@@ -4783,7 +4783,7 @@ test("native ServiceAccounts keep private credential references and cannot admit
   assertApiError(oauthDeployment, 409, "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED");
   assert.match(
     oauthDeployment.body.error.message,
-    /requires an issued account access-token credential/,
+    /needs an issued access-token credential/,
   );
 
   const replacementCredential = {
