@@ -73,6 +73,7 @@ import {
   WORKSPACE_FILES_UNAVAILABLE,
   WORKSPACE_UNREACHABLE,
   askForGrant,
+  BOUND_SECRET_UNLISTED,
   notIncluded,
   deleteRefused,
   tooManyRequestsIn,
@@ -4197,16 +4198,15 @@ test("Secret summaries retain revision bindings and distinguish unreadable metad
   await page.screenshot({ path: join(artifacts, "bound-harness-revision.png"), fullPage: true });
   await page.getByRole("tab", { name: "Channels", exact: true }).click();
   await page.getByRole("link", { name: "Revision Slack app", exact: true }).waitFor();
-  const hiddenSecret = page.getByText(
-    `A Secret is bound. Its name is hidden because your access does not include reading it. ${askForGrant("Secret read on it")}`,
-    { exact: true },
-  );
+  // The readable Secret list leaves the bot token's Secret out, so it is not read: its refusal
+  // would be an audited denial (finding 2619).
+  const hiddenSecret = page.getByText(BOUND_SECRET_UNLISTED, { exact: true });
   await hiddenSecret.waitFor();
   assert.equal(await hiddenSecret.getAttribute("title"), bot.id);
   assert.equal(await page.getByRole("button", { name: /Configure Slack|Edit Slack/ }).count(), 0);
   await page.screenshot({ path: join(artifacts, "bound-channels-restricted.png"), fullPage: true });
   assert.equal(
-    requests.some((request) => request.path === `/namespaces/${namespace.id}/secrets`),
+    requests.some((request) => request.path === `/namespaces/${namespace.id}/secrets/${bot.id}`),
     false,
   );
   assert.deepEqual(nonAuthWriteRequests(requests), []);
@@ -4217,7 +4217,8 @@ test("Secret summaries retain revision bindings and distinguish unreadable metad
   const secretPath = `/namespaces/${namespace.id}/secrets/${app.id}`;
   assert.equal((await fixture.request("DELETE", secretPath)).status, 409);
   // Admit and select the replacement draft, leaving the viewed revision historical.
-  // With no live references, a real deletion makes its bound metadata unavailable.
+  // With no live references, a real deletion makes its bound metadata unavailable. The readable
+  // list leaves a deleted Secret out too, so the summary says either may be why.
   await fixture.seedActiveAgentRevision(namespace.id, agent.id, active.revision.id);
   const deleted = await fixture.rawRequest("DELETE", secretPath, {
     headers: authenticatedHeaders(await fixture.signIn()),
@@ -4226,7 +4227,8 @@ test("Secret summaries retain revision bindings and distinguish unreadable metad
   assert.equal((await fixture.request("GET", secretPath)).status, 404);
   await page.reload();
   await page
-    .getByText(`Bound Secret · ${app.id} · Metadata unavailable`, { exact: true })
+    .locator(`.secret-reference[title="${app.id}"]`)
+    .filter({ hasText: BOUND_SECRET_UNLISTED })
     .waitFor();
   await page.getByRole("button", { name: "Open version draft", exact: true }).last().click();
   await page.getByRole("tab", { name: "Channels", exact: true }).click();

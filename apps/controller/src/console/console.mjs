@@ -1728,6 +1728,23 @@ async function loadPage({
           `/namespaces/${encodeURIComponent(namespaceId)}/agents/${encodeURIComponent(current.agentId)}`,
         );
       } else {
+        if (current.feature === "backends") {
+          // Backends need Installation administration, like the probe. A caller this load knows
+          // is no administrator gets the refusal without the read, which the API would audit as
+          // a denial nobody attempted (finding 2619). Gating only: an unknown answer reads.
+          if (accessRead) {
+            const access = await accessRead;
+            if (!lifetime.isCurrent(active)) {
+              return;
+            }
+            observabilityUrl = access.url;
+            installationAdmin = access.admin;
+            observabilityOwner = access.settled ? owner : null;
+          }
+          if (installationAdmin === false) {
+            throw Object.assign(new Error("Access denied."), { status: 403, code: "FORBIDDEN" });
+          }
+        }
         firstItems =
           current.feature === "namespaces"
             ? namespaces

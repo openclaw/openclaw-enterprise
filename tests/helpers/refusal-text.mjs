@@ -479,3 +479,8 @@ export const SERVICE_ACCOUNT_NO_BACKEND_BINDING =
   "ChatGPT service-account authentication needs the Agent's Backend set to the Installation's ChatGPT Backend and an account credential issued there. Set the Agent's backendId, or bind a service account with an issued credential.";
 export const SERVICE_ACCOUNT_BACKEND_MISMATCH =
   "This service account's credential was not issued by the Agent's ChatGPT Backend, Driver and workspace, or was never issued. Bind a service account with a credential issued there, or ask an Installation administrator to restore that Backend.";
+
+// Finding 2619. A bound Secret the caller's readable Secret list leaves out, shown without the
+// audited metadata read; and the Backends refusal a non-administrator gets without the read.
+export const BOUND_SECRET_UNLISTED = `A Secret is bound. Its name is unavailable: your access does not include reading it, or it was deleted. ${askForGrant("Secret read on it")}`;
+export const BACKENDS_DENIED = `Your account does not have access to Backends. Backends apply to the whole Installation, so choosing another Namespace would not change this. ${askForGrant("access")}`;
