@@ -263,6 +263,7 @@
               "reference/configuration/secrets",
               "reference/security/runtime-isolation",
               "reference/agents",
+              "reference/agents/workspace-files",
               "reference/agent-plugins",
               "reference/presets"
             ]
@@ -313,8 +314,16 @@
                             "label": "Storage and Credentials"
                           },
                           {
+                            "page": "reference/drivers/kubernetes-compute/managed-native-configuration",
+                            "label": "Managed Native Configuration"
+                          },
+                          {
                             "page": "reference/drivers/kubernetes-compute/codex-oauth-storage",
                             "label": "Codex OAuth Storage"
+                          },
+                          {
+                            "page": "reference/drivers/kubernetes-compute/split-layout-installations",
+                            "label": "Split-Layout Installations"
                           }
                         ]
                       },
@@ -347,6 +356,10 @@
                       {
                         "page": "reference/drivers/openshell-credential-gateway",
                         "label": "OpenShell"
+                      },
+                      {
+                        "page": "reference/drivers/openshell-credential-gateway/codex-oauth-poc",
+                        "label": "OpenShell Codex OAuth PoC"
                       }
                     ]
                   },
@@ -503,6 +516,10 @@
                   {
                     "page": "guides/deploy/breaking-changes",
                     "label": "Breaking Changes"
+                  },
+                  {
+                    "page": "guides/deploy/breaking-changes-later-2026-10-24",
+                    "label": "Later Breaking Changes 2026-10-24"
                   },
                   {
                     "page": "guides/deploy/breaking-changes-earlier-2026-10-24",
@@ -777,7 +794,7 @@
                 ]
               }
             ],
-            "hidden": ["reference/postgres-auth-binding"]
+            "hidden": ["reference/postgres-auth-binding", "reference/cli/local-development"]
           },
           {
             "tab": "Contribute",
@@ -1038,6 +1055,7 @@
               "flows/platform-console",
               "flows/platform-console/agent-creation",
               "flows/platform-console/agent-editing",
+              "flows/platform-console/agent-workspace-files",
               "flows/platform-console/agent-stop-and-deletion",
               "flows/platform-console/agent-sharing",
               "flows/platform-console/sign-in-return",

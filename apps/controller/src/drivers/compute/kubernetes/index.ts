@@ -2,6 +2,8 @@ import type { CredentialPolicyWithdrawalOptions } from "@openclaw-enterprise/con
 import { networkPolicySpecToJson } from "../../kubernetes/network-policy.ts";
 import {
   assertExecutionAdmission,
+  codexProxiesRepositoryBroker,
+  codexRepositoryBrokerNetworkProxy,
   type PreparedTokenService,
 } from "@openclaw-enterprise/contracts";
 import {
@@ -157,6 +159,7 @@ import {
   keyedSettingPath,
   KubernetesSecretWriteForbiddenError,
   provisionsDedicatedOpenClaw,
+  requireChannelSecretBindings,
   requireOpenClawRoster,
   resolveConfiguredHarnessId,
   ResourceConflictError,
@@ -1630,18 +1633,6 @@ function normalizedNetworkHost(value: string, description: string): string {
   return host;
 }
 
-function mergeDomainDecision(
-  domains: Record<string, "allow" | "deny">,
-  host: string,
-  decision: "allow" | "deny",
-): void {
-  if (domains[host] === "deny" || decision === "deny") {
-    domains[host] = "deny";
-    return;
-  }
-  domains[host] = "allow";
-}
-
 function validateResources(value: V1ResourceRequirements, description: string, path: string): void {
   const resources = asRecord(value);
   const requests = asRecord(resources?.requests);
@@ -3002,6 +2993,7 @@ function requireComputeNativeHookRelay(
 function nativeRuntimeConfiguration(
   configuration: OpenClawConfigurationDocument,
   createError: (setting: string, requirement: string) => Error,
+  authMethod: HarnessAuthSnapshot["method"],
 ): object {
   const defaults = asRecord(asRecord(configuration.agents)?.defaults);
   if (asRecord(defaults?.embeddedAgent)?.runtimeServer !== undefined) {
@@ -3068,26 +3060,21 @@ function nativeRuntimeConfiguration(
         "must set api, baseUrl, positive integer contextWindow and maxTokens, and non-negative cost input, output, cacheRead and cacheWrite (here or on models.providers.openai) on Dedicated OpenClaw",
       );
     }
-    let endpoint: URL | undefined;
-    try {
-      endpoint = new URL(baseUrl as string);
-    } catch {
-      endpoint = undefined;
-    }
+    const endpoint = normalizeOpenAiBaseUrl(baseUrl as string);
     if (
       endpoint === undefined ||
-      endpoint.protocol !== "https:" ||
-      endpoint.hostname !== "api.openai.com" ||
-      endpoint.port !== "" ||
-      endpoint.username !== "" ||
-      endpoint.password !== "" ||
-      endpoint.search !== "" ||
-      endpoint.hash !== "" ||
-      endpoint.pathname.replace(/\/$/u, "") !== "/v1"
+      openAiBaseUrlRewritesIpv4(baseUrl as string) ||
+      new URL(endpoint).port !== ""
     ) {
       throw createError(
         `${setting}.baseUrl`,
-        "(or models.providers.openai.baseUrl) must be https://api.openai.com/v1 on Dedicated OpenClaw",
+        "(or models.providers.openai.baseUrl) must be an HTTPS endpoint on port 443 ending in /v1 without credentials, query, fragment, or wildcard on Dedicated OpenClaw",
+      );
+    }
+    if (authMethod !== "credential_source" && endpoint !== "https://api.openai.com/v1") {
+      throw createError(
+        `${setting}.baseUrl`,
+        "(or models.providers.openai.baseUrl) must be https://api.openai.com/v1 unless harnessAuth.method is credential_source",
       );
     }
     if (entry.reasoning !== undefined && typeof entry.reasoning !== "boolean") {
@@ -3118,6 +3105,7 @@ function nativeRuntimeConfiguration(
     return {
       id,
       api,
+      baseUrl: endpoint,
       name: isNonEmptyString(entry.name) ? entry.name : id,
       contextWindow,
       maxTokens,
@@ -3136,7 +3124,7 @@ function nativeRuntimeConfiguration(
     models: {
       providers: {
         openai: {
-          baseUrl: "https://api.openai.com/v1",
+          baseUrl: runtimeModels[0]!.baseUrl,
           apiKey: { source: "env", provider: "model", id: MODEL_API_KEY },
           models: runtimeModels,
         },
@@ -3152,7 +3140,11 @@ function nativeRuntimeSnapshot(revision: AgentRevision): NativeRuntimeSnapshot |
   }
   return {
     configuration: JSON.stringify(
-      nativeRuntimeConfiguration(revision.configuration, preparationSettingError),
+      nativeRuntimeConfiguration(
+        revision.configuration,
+        preparationSettingError,
+        revision.harnessAuth.method,
+      ),
     ),
   };
 }
@@ -4493,9 +4485,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
     credentialSourceType?: CredentialSourceType,
   ): void {
     // Agent save passes null bindings and checks only what depends on the Agent. What the
-    // Installation provides (a Sandbox Driver for dedicated OpenClaw, the channel runtime) and
-    // the Configuration's channel bindings, which it may stage after its values, wait for
-    // deployment.
+    // Installation provides (a Sandbox Driver for dedicated OpenClaw, the channel runtime) waits
+    // for deployment, and so do the Configuration's channel bindings: OCC's Configuration save
+    // runs the same rule (requireChannelSecretBindings), and deployment repeats it for a row
+    // stored before that.
     const agentSave = secretBindings === null;
     if (!agentSave) {
       requireNativeWorkerSandbox(harness, this.sandboxDriver);
@@ -4613,7 +4606,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       harnessProbeConfiguration(configuration);
     }
     if (native) {
-      nativeRuntimeConfiguration(configuration, callerSettingError);
+      nativeRuntimeConfiguration(configuration, callerSettingError, auth.method);
     }
     if (codex) {
       requireCodexGatewayConfigurationShape(configuration);
@@ -13785,16 +13778,13 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     repositoryConsumer: { readonly role: "gateway" | "agent" } | undefined,
     repositoryMaterial: ResolvedRepositoryMaterialSpec | undefined,
   ): CodexRepositoryBrokerNetworkPolicy | undefined {
-    const dedicatedCodex =
-      revision.harness.id === "codex" &&
-      revision.harness.mode === "dedicated" &&
-      repositoryConsumer?.role === "agent";
-    const embeddedCodex =
-      revision.harness.id === "openclaw" &&
-      revision.harness.mode === "embedded" &&
-      repositoryConsumer?.role === "gateway" &&
-      revision.plugins?.driver.implementation === "occ/codex-plugin";
-    if (!dedicatedCodex && !embeddedCodex) {
+    // OCC applies the same rule at Agent save, provisioning and deployment, without the broker
+    // host, which only the prepared material names. This check stays as the backstop for a deny
+    // of that host and for revisions admitted before OCC checked.
+    if (
+      repositoryConsumer === undefined ||
+      !codexProxiesRepositoryBroker(revision.harness, revision.plugins?.driver.implementation)
+    ) {
       return undefined;
     }
     if (this.options.network.repositoryCredentials === undefined) {
@@ -13808,54 +13798,12 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       );
     }
     const origin = repositoryCredentialBrokerOriginFromMaterial(repositoryMaterial);
-    const brokerHost = normalizedNetworkHost(origin.hostname, "Repository credential broker host");
-    const networkProxy = asRecord(
-      asRecord(asRecord(asRecord(revision.configuration.plugins)?.entries)?.codex)?.config,
-    )?.appServer;
-    const policy = asRecord(asRecord(networkProxy)?.networkProxy);
-    if (policy?.enabled === false) {
-      throw new ConfigurationFailure(
-        "Repository credential broker host is blocked by an explicitly disabled Codex network proxy.",
-      );
+    const host = normalizedNetworkHost(origin.hostname, "Repository credential broker host");
+    const proxy = codexRepositoryBrokerNetworkProxy(revision.configuration, host);
+    if ("refusal" in proxy) {
+      throw new ConfigurationFailure(proxy.refusal);
     }
-    if (policy?.mode !== undefined && policy.mode !== "limited" && policy.mode !== "full") {
-      throw new ConfigurationFailure(
-        "Repository credential broker network policy has an unsupported Codex network mode.",
-      );
-    }
-    if (policy?.allowLocalBinding !== undefined && typeof policy.allowLocalBinding !== "boolean") {
-      throw new ConfigurationFailure(
-        "Repository credential broker network policy has an unsupported local binding policy.",
-      );
-    }
-    const domainsInput = policy?.domains === undefined ? undefined : asRecord(policy.domains);
-    if (policy?.domains !== undefined && domainsInput === undefined) {
-      throw new ConfigurationFailure(
-        "Repository credential broker network policy domains must be an object.",
-      );
-    }
-    const domains: Record<string, "allow" | "deny"> = {};
-    for (const [host, decision] of Object.entries(domainsInput ?? {})) {
-      if (decision !== "allow" && decision !== "deny") {
-        throw new ConfigurationFailure(
-          "Repository credential broker network policy has an unsupported domain decision.",
-        );
-      }
-      mergeDomainDecision(
-        domains,
-        normalizedNetworkHost(host, "Repository credential broker network domain"),
-        decision,
-      );
-    }
-    if (domains[brokerHost] === "deny") {
-      throw new ConfigurationFailure(
-        "Repository credential broker host is explicitly denied by Codex network proxy policy.",
-      );
-    }
-    return {
-      host: brokerHost,
-      domains,
-    };
+    return { host, domains: proxy.domains };
   }
 
   private publicGithubReadCandidate(revision: AgentRevision) {
@@ -14470,64 +14418,28 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     );
   }
 
-  // Each enabled channel's credential references (`${NAME}` or an env SecretRef) need a
-  // Configuration Secret binding of that name. The error names the channel, not the reference.
+  // Deployment admission: requireChannelSecretBindings, the rule OCC's Configuration save runs,
+  // against the Configuration's bindings, read only once a channel holds a reference.
   private validateChannelSecretBindings(
-    configuration: OpenClawConfigurationDocument,
+    configuration: Readonly<OpenClawConfigurationDocument>,
     secretBindings: SecretBindings | undefined,
   ): void {
-    const channels = asRecord(configuration.channels) ?? {};
     let bindings: ReturnType<typeof normalizeSecretBindings> | undefined;
-    for (const provider of enabledChannelProviders(
+    requireChannelSecretBindings(
       configuration,
-      CHANNEL_PROVIDERS,
-      callerSettingError,
-    )) {
-      const required = new Set<string>();
-      this.collectChannelSecretBindingIds(channels[provider], required);
-      if (required.size === 0) {
-        continue;
-      }
-      if (bindings === undefined) {
-        try {
-          bindings = normalizeSecretBindings(secretBindings);
-        } catch {
-          throw new ConfigurationFailure("AgentRevision Secret bindings are invalid.");
+      enabledChannelProviders(configuration, CHANNEL_PROVIDERS, callerSettingError),
+      (name) => {
+        if (bindings === undefined) {
+          try {
+            bindings = normalizeSecretBindings(secretBindings);
+          } catch {
+            throw new ConfigurationFailure("AgentRevision Secret bindings are invalid.");
+          }
         }
-      }
-      if ([...required].some((id) => bindings![id] === undefined)) {
-        throw callerSettingError(
-          keyedSettingPath("channels", provider),
-          "uses a credential reference without a matching Configuration Secret binding: bind each referenced name in secretBindings",
-        );
-      }
-    }
-  }
-
-  private collectChannelSecretBindingIds(value: unknown, ids: Set<string>): void {
-    if (typeof value === "string") {
-      const match = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/.exec(value);
-      if (match !== null) {
-        ids.add(match[1]!);
-      }
-      return;
-    }
-    if (Array.isArray(value)) {
-      for (const item of value) {
-        this.collectChannelSecretBindingIds(item, ids);
-      }
-      return;
-    }
-    const record = asRecord(value);
-    if (record === undefined) {
-      return;
-    }
-    if (record.source === "env" && typeof record.id === "string" && record.id.length > 0) {
-      ids.add(record.id);
-    }
-    for (const item of Object.values(record)) {
-      this.collectChannelSecretBindingIds(item, ids);
-    }
+        return Object.hasOwn(bindings, name);
+      },
+      callerSettingError,
+    );
   }
 
   private channelNetworkPolicy(

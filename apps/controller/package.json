@@ -16,7 +16,7 @@
     "typecheck": "tsc --build tsconfig.json --pretty false"
   },
   "dependencies": {
-    "@better-auth/api-key": "1.7.7",
+    "@better-auth/api-key": "1.7.11",
     "@fastify/ajv-compiler": "4.0.6",
     "@fastify/fast-json-stringify-compiler": "5.1.1",
     "@fastify/swagger": "9.9.2",
@@ -32,7 +32,7 @@
     "@openclaw/gateway-client": "2026.9.3",
     "@prometheus-io/client": "0.16.1",
     "ajv-formats": "3.0.1",
-    "better-auth": "1.7.7",
+    "better-auth": "1.7.11",
     "fastify": "5.12.5",
     "pg": "8.23.1",
     "pino": "10.4.0",

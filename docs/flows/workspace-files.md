@@ -1,6 +1,6 @@
 ---
 created: 2026-08-31
-updated: 2026-10-16
+updated: 2026-10-26
 last_updated_session: Codex/01a13654-be66-7741-b54f-f8ae80f2d496
 ---
 
@@ -140,10 +140,8 @@ metadata; subsequent startup verifies the durable workspace marker.
 
 Failed or never-deployed Agents retain pending inputs. Agent deletion removes
 the setup record through `packages/occ/src/index.ts:deleteAgent`; Driver
-cleanup owns runtime storage. There is no public setup read
-or update endpoint.
-Live edits after activation follow the independent path below and do not
-update the setup record.
+cleanup owns runtime storage. No public endpoint reads or updates setup, and
+live edits after activation do not update it.
 
 ### 4. Composition configures private access
 
@@ -167,7 +165,9 @@ without endpoint support cannot serve workspace files.
 session or scoped service API key. Native Agent credentials cannot invoke this
 administration surface. `GET` needs Agent `read`; `PUT` needs Agent `operate`
 and, for session callers, passes the browser CSRF boundary. OCC resolves the
-selected AgentRevision before Compute endpoint resolution.
+selected AgentRevision before Compute endpoint resolution. After that grant, an
+Agent with no running version (stopped, never deployed, or still activating)
+gets `409 RESOURCE_CONFLICT` naming the Agent and the next step.
 
 Names, the `PUT` body, and content and body limits follow the
 [live file contract](../reference/agents.md#live-file-access). The deadline and
@@ -276,9 +276,9 @@ owns RWO, downtime and recovery limits. These contracts require matching runtime
 images; local checks do not prove deployed acceptance.
 
 The API reads the mounted key per operation, so new connections pick up
-Secret rotation without a restart. Missing routing, missing or invalid
-keys, expired deadlines, and unavailable targets fail closed. No URL
-or credential comes from caller JSON or headers.
+Secret rotation without a restart. Missing routing or keys, invalid keys,
+expired deadlines, and unavailable targets fail closed. No URL or credential
+comes from the caller.
 
 ### 7. Envoy authenticates and routes the native connection
 
@@ -345,9 +345,9 @@ replays it. Cleanup closes the native client.
 - An authenticated native upgrade failure can indicate missing trusted-proxy
   configuration, a simultaneous token, a loopback real IP, or absent native
   identity scopes. Do not fix it by inventing a forwarded address.
-- [Testing](../testing/README.md) distinguishes fixture and runtime proof. A
-  calculated URL, ready proxy, or rendered chart does not establish file writes
-  or model consumption.
+- [Testing](../testing/README.md) distinguishes fixture and runtime proof: a
+  calculated URL, ready proxy or rendered chart does not prove file writes or
+  model use.
 
 ## Related docs
 
@@ -363,6 +363,8 @@ replays it. Cleanup closes the native client.
 
 ## Changelog
 
+- 2026-10-26: An Agent with no running version answers `409` instead of `503`. (fix-dogfood-r51)
+
 - 2026-10-14: Merge current contracts with native provisioning and retained-workspace preparation. (Codex/01a13654-be66-7741-b54f-f8ae80f2d496)
 
 - 2026-10-13 09:37: Reconcile current admission and lifecycle behavior with external OAuth custody in the accompanying merge. (authoring-run/fd902939-ed58-4508-8d33-95a863d966af - e8d39978d801e7a5a8ac7242f32035f426da94e1)
@@ -371,18 +373,6 @@ replays it. Cleanup closes the native client.
 
 - 2026-10-10 12:04: Preserve SDK initializer timestamps. (authoring-run/0e9aadda-36b5-4f99-af17-ffde7a3cd26d - f8a837e33b5c03bc0c92065e979485ee06960150)
 
-- 2026-10-09 20:28: Keep private workspace repair while removing retired native OAuth storage. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - ece639c78)
-
-- 2026-10-09 19:20: Dedicated Codex deployment requires `main`. (fix-969)
-
 - 2026-10-10 01:26: Follow embedded sole-roster Hello metadata while retaining explicit and dedicated targets. (authoring-run/20e38f57-7665-4641-bd09-f3a162733d69 - 5d3c6ac0ca3dc5ab3a6ffc46de8f054da3f7df2d)
-
-- 2026-10-08 23:20: Initialize the approved Harness PVC before Sandbox provisioning, retain exact completion guards after relocation, and remove private writers during shutdown. (01a0e8ec-d02f-7b93-a59b-5b7fccf2ebaa)
-
-- 2026-10-08 14:42: Initialize OpenShell workspaces privately before Harness startup. (authoring-run/91f18132-f597-42a4-b024-036a23b5313d - ece639c78765727a67753639f6ab225a243e064d)
-
-- 2026-10-07 17:36: Remove the persistent OAuth exception from Harness credential storage. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - da984340ae4aafb03bb0c66bfd94ba40252625a5)
-
-- 2026-10-06 18:40: Say that OCC's model check refuses malformed provider rows before the Codex Gateway shape check, without naming the path. (dogfood-r38)
 
 [Agent workspace files documentation history](workspace-files/history.md) preserves the older dated entries.

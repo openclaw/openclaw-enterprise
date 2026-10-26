@@ -10,7 +10,7 @@ runs:
       id: engine
       uses: docker/setup-docker-action@2bf61fb9464cc67f0cbdeabed6aa0380accd1c70 # v5.5.0
       with:
-        version: v29.4.0
+        version: v29.9.2
         set-host: true
     - name: Expose the daemon at the production socket path
       shell: bash
@@ -21,7 +21,7 @@ runs:
         test -S "$docker_socket_path"
         # Production Compose mounts this socket; CLI and controller must use one daemon.
         sudo ln -sfn "$docker_socket_path" /var/run/docker.sock
-        test "$(docker version --format '{{.Server.Version}}')" = "29.4.0"
+        test "$(docker version --format '{{.Server.Version}}')" = "29.9.2"
     # GitHub-hosted and Blacksmith runners are per-job VMs, so skip the builder
     # removal (it ran before Docker stopped, 8-33 s); a persistent runner would
     # accumulate buildx_buildkit_* containers.

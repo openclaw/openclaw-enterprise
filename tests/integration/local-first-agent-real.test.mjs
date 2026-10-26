@@ -1442,6 +1442,25 @@ test(
           const request = (method, path, body, signal) =>
             requestLocalApi(first.origin, serviceKey, method, path, body, signal);
           const configuration = createHarnessConfiguration("openclaw", expectedModel);
+          const providerFile = process.env.OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE;
+          if (providerFile) {
+            const provider = await readPrivateJson(
+              providerFile,
+              "the native model provider catalog",
+            );
+            const model = provider.models?.[0]?.id;
+            assert.ok(typeof model === "string" && model.length > 0);
+            configuration.models.providers.openai = {
+              baseUrl: provider.baseUrl,
+              api: provider.api,
+              models: provider.models,
+              apiKey: { source: "env", provider: "default", id: "OPENAI_API_KEY" },
+            };
+            configuration.agents.defaults.model = `openai/${model}`;
+            configuration.agents.defaults.models = {
+              [`openai/${model}`]: { agentRuntime: { id: "openclaw" } },
+            };
+          }
           const installation = await request("GET", "/installation");
           assert.equal(installation.capabilities?.nativeWorkers?.support, "pinned-runtime");
           assert.ok(
@@ -1460,10 +1479,15 @@ test(
           const nativeSource = await request("POST", `${base}/credential-sources`, {
             name: `first-agent-native-${suffix}`,
             type: "openai",
+            config: { base_url: configuration.models.providers.openai.baseUrl },
             secrets: { api_key: nativeSecret.ref },
           });
           assert.equal(nativeSource.type, "openai");
           assert.equal(nativeSource.state, "ready");
+          assert.equal(
+            nativeSource.config.base_url,
+            new URL(configuration.models.providers.openai.baseUrl).href.replace(/\/$/u, ""),
+          );
           assert.deepEqual(nativeSource.secrets.api_key, nativeSecret.ref);
           // The regular Console API creates the Configuration, Agent, source
           // grant, transport and revision; the Agent receives no Secret grant.

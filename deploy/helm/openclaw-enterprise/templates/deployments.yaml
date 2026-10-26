@@ -468,6 +468,8 @@ spec:
             - name: OCC_CHANNEL_DIRECTORY_PROXY_URL
               value: {{ $.Values.api.channelDirectoryProxyUrl | quote }}
             {{- end }}
+            - name: OCC_API_HTTPS_EGRESS_OPEN
+              value: {{ include "openclaw.api.httpsEgressOpen" $ | quote }}
             - name: OCC_AGENT_NATIVE_ADMIN_ENABLED
               value: {{ ternary "true" "false" $.Values.agentNativeAdmin.enabled | quote }}
             - name: OCC_AGENT_RUNTIME_LOGS_ENABLED

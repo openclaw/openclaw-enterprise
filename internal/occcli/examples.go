@@ -1,8 +1,8 @@
 package occcli
 
-// Help examples for the create commands that read a JSON document. Each shows
-// the smallest body the API accepts; TestCreateCommandsShowAJSONExample keeps
-// every body parseable.
+// Help examples for the create and update commands that read a JSON document.
+// Each shows the smallest body the API accepts;
+// TestCreateCommandsShowAJSONExample keeps every body parseable.
 
 const iamRoleCreateExample = `  cat > role.json <<'JSON'
   {"name": "Read Agents", "permissions": [{"action": "read", "resourceKind": "agent"}]}
@@ -69,3 +69,28 @@ const serviceKeyCreateExample = `  occ service-key create --namespace <namespace
   Pass --namespace for a Namespace ServicePrincipal; for an Installation one, omit
   it and unset OCC_NAMESPACE. You must already hold every grant of the ServicePrincipal. The key file is
   the only copy of the key: hand it over privately and revoke it when unused.`
+
+const configurationUpdateExample = `  cat > configuration.json <<'JSON'
+  {"values": {"agents": {"defaults": {"model": "<provider>/<model>"}}},
+   "expectedGeneration": 1}
+JSON
+  occ configuration update <configuration-id> --file configuration.json
+
+  values replaces the whole native document, so send all of it (start from
+  occ configuration get <configuration-id> -o json). expectedGeneration is
+  optional: the generation you last read. Omitted secretBindings keep the saved
+  bindings; send "secretBindings": {} to clear them. See
+  https://docs-enterprise.openclaw.org/reference/configuration/`
+
+const agentUpdateExample = `  cat > agent.json <<'JSON'
+  {"configurationId": "<configuration-id>",
+   "harnessAuth": {"method": "api_key",
+     "source": {"kind": "secret", "namespaceId": "<namespace-id>", "id": "<secret-id>"}}}
+JSON
+  occ agent update <agent-id> --file agent.json
+
+  configurationId is required in every update, also when you change only
+  harnessAuth: copy it from occ agent get <agent-id>. Omitted harnessAuth,
+  executionMode, backendId and plugins keep their saved values; "harnessAuth": null
+  clears the binding. The update changes the draft only; deploy to use it. See
+  https://docs-enterprise.openclaw.org/reference/agents/`

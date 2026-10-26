@@ -5,6 +5,7 @@ import test from "node:test";
 import { deriveNativeAdminHost } from "../../apps/controller/src/gateway/native-admin.ts";
 import { createNativeAdminAccess } from "../../apps/controller/src/http/native-admin.ts";
 import { waitUntil } from "../helpers/wait-for.mjs";
+import { GENERIC_DENIAL } from "../helpers/refusal-text.mjs";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
 const Fastify = require("fastify");
@@ -179,7 +180,7 @@ test("a client reset during a pending native-admin denial still records the deni
         setTimeout(waitForAdmission, 20);
       });
     });
-    const denied = new Error("The exact platform operation was not authorized.");
+    const denied = new Error(GENERIC_DENIAL);
     denied.name = "AuthorizationDeniedError";
     denied.authorization = {
       action: "openclaw.agents.native_admin.proxy.authorize",

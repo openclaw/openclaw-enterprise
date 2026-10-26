@@ -38,6 +38,20 @@ die() {
   exit "${2:-1}"
 }
 
+# Record only fixed operation/component labels and the native exit status.
+# This is a client failure observation, not evidence of whether a write committed.
+# Append so a later resume cannot erase an earlier unknown outcome.
+native_command_failed() {
+  local status=$1 operation=$2 component=$3
+  # The operation has returned; failed pipe or file writes must not replace its status.
+  trap '' PIPE XFSZ
+  printf '%s\t%s\t%s\n' "$operation" "$component" "$status" \
+    >>"$evidence_dir/native-command-failures.tsv" ||
+    warn "could not append native-command-failures.tsv in the evidence directory." || true
+  warn "$operation for $component exited $status; inspect native-command-failures.tsv and reconcile live state before resuming." || true
+  exit "$status"
+}
+
 require_command() {
   command -v "$1" >/dev/null 2>&1 || die "required command $1 is unavailable."
 }
@@ -325,13 +339,75 @@ kube=(kubectl --kubeconfig "$kubeconfig" --context "$context")
 helm_args=(--kubeconfig "$kubeconfig" --kube-context "$context" --namespace "$namespace")
 occ_json=("$occ" --output json)
 
-# Best-effort cleanup of the startup preflight's temporary Secret, NetworkPolicy and Pods.
+# Only a successful create acknowledgement establishes cleanup ownership.
+# kubectl's error output stays off the terminal but is kept in the private
+# evidence directory, so the operator can tell a refusal (quota, admission,
+# RBAC, a failed Secret build) from a create whose acknowledgement was lost.
 preflight_resources=()
+unconfirmed_preflight() {
+  local resource=$1 errors=$2 status=$3 reason
+  if ((status == 2)); then
+    reason="The create returned no usable UID; kubectl's error output, if any, is in $errors in the evidence directory."
+  else
+    reason="kubectl reported an error for the create; see $errors in the evidence directory."
+  fi
+  die "ownership unconfirmed for ${resource:0:300}; no cleanup was attempted for this name. $reason Check whether this object remains in the selected namespace. Correct the failure and use a fresh evidence directory. This run stopped no OCC writer."
+}
+# create_preflight FILE ERRORS [scrub] prints guarded DeleteOptions for the
+# created object. It returns 1 when kubectl failed and 2 when kubectl succeeded
+# without a usable UID.
+create_preflight() {
+  local errors="$evidence_dir/$2"
+  local statuses
+  # Validate the opaque UID before Bash can strip newlines or NULs, and build
+  # the complete guarded request before cleanup can start a DELETE.
+  "${kube[@]}" --request-timeout=30s --namespace "$namespace" create \
+    --filename "$1" -o 'jsonpath={.metadata.uid}' 2>"$errors" |
+    python3 -c '
+import json, sys
+uid = sys.stdin.buffer.read().decode("utf-8")
+if not uid or not uid.isprintable() or any(c.isspace() for c in uid):
+    sys.exit(1)
+print(json.dumps({"apiVersion": "v1", "kind": "DeleteOptions", "propagationPolicy": "Background", "preconditions": {"uid": uid}}, separators=(",", ":")))
+' 2>/dev/null && statuses=(0 0) || statuses=("${PIPESTATUS[@]}")
+  # kubectl echoes a manifest it cannot decode. The Secret's only data is the
+  # candidate Installation, already saved here, base64-encoded; drop long
+  # base64 runs so this file never holds a second copy.
+  if [[ "${3:-}" == scrub && -s "$errors" ]]; then
+    python3 - "$errors" <<'PYTHON' || : >"$errors"
+import re, sys
+with open(sys.argv[1], encoding="utf-8", errors="replace") as source:
+    text = source.read()
+with open(sys.argv[1], "w", encoding="utf-8") as target:
+    target.write(re.sub(r"[A-Za-z0-9+/]{32,}={0,2}", "[redacted]", text))
+PYTHON
+  fi
+  ((statuses[0] == 0)) || return 1
+  ((statuses[1] == 0)) || return 2
+}
 cleanup_preflight() {
-  local resource
-  for resource in ${preflight_resources[@]+"${preflight_resources[@]}"}; do
-    "${kube[@]}" --request-timeout=15s --namespace "$namespace" delete "$resource" \
-      --ignore-not-found --wait=false >/dev/null 2>&1 || true
+  local entry resource name uri delete_options errors
+  for entry in ${preflight_resources[@]+"${preflight_resources[@]}"}; do
+    resource=${entry%% *}
+    delete_options=${entry#* }
+    name=${resource#*/}
+    case "$resource" in
+      pod/*) uri="/api/v1/namespaces/$namespace/pods/$name" ;;
+      secret/*) uri="/api/v1/namespaces/$namespace/secrets/$name" ;;
+      networkpolicy.networking.k8s.io/*)
+        uri="/apis/networking.k8s.io/v1/namespaces/$namespace/networkpolicies/$name" ;;
+    esac
+    # The server must compare the UID atomically with deletion, including if a
+    # different object has taken this name since the create acknowledgement.
+    if ! errors=$("${kube[@]}" --request-timeout=15s delete --raw="$uri" -f - \
+      <<<"$delete_options" 2>&1 >/dev/null); then
+      printf '%s\n%s\n' "${resource:0:300}:" "$errors" >>"$evidence_dir/preflight-cleanup.err"
+      if [[ "$errors" == *"Precondition failed: UID in precondition"* ]]; then
+        warn "could not confirm cleanup of ${resource:0:300}: an object with a different UID now holds this name, so it was left in place; see preflight-cleanup.err in the evidence directory."
+      else
+        warn "could not confirm cleanup of ${resource:0:300}: the delete request failed; see preflight-cleanup.err in the evidence directory."
+      fi
+    fi
   done
   preflight_resources=()
 }
@@ -345,7 +421,7 @@ trap 'cleanup_preflight; rmdir "$evidence_dir/.upgrade-lock" 2>/dev/null || true
 # such as split-layout Gateway storage, would otherwise crash-loop both after the
 # migration.
 preflight_startup() {
-  local suffix secret component pod phase waiting deadline remaining_seconds message failures refusal name_refusal
+  local suffix secret component pod phase waiting deadline remaining_seconds message failures refusal name_refusal delete_options
   suffix=$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')
   secret="$release-upgrade-preflight-$suffix"
   yq -p=yaml -o=json -I=0 '.' "$rendered" >"$evidence_dir/preflight-rendered.jsonl" ||
@@ -354,16 +430,16 @@ preflight_startup() {
     "$secret" "$namespace" "$release" >"$evidence_dir/preflight-networkpolicy.json" ||
     die "cannot build the startup preflight NetworkPolicy from the rendered chart; no OCC writer was stopped."
   if [[ "$(cat "$evidence_dir/preflight-networkpolicy.json")" != null ]]; then
-    preflight_resources+=("networkpolicy.networking.k8s.io/$secret")
-    "${kube[@]}" --request-timeout=30s --namespace "$namespace" create \
-      --filename "$evidence_dir/preflight-networkpolicy.json" >/dev/null ||
-      die "cannot create the startup preflight NetworkPolicy $secret; no OCC writer was stopped."
+    delete_options=$(create_preflight "$evidence_dir/preflight-networkpolicy.json" \
+      preflight-networkpolicy-create.err) ||
+      unconfirmed_preflight "networkpolicy.networking.k8s.io/$secret" preflight-networkpolicy-create.err $?
+    preflight_resources+=("networkpolicy.networking.k8s.io/$secret $delete_options")
   fi
-  preflight_resources+=("secret/$secret")
-  node scripts/upgrade-startup-preflight.mjs secret "$candidate_installation" \
+  delete_options=$(node scripts/upgrade-startup-preflight.mjs secret "$candidate_installation" \
     "$installation_key" "$secret" "$namespace" "$release" |
-    "${kube[@]}" --request-timeout=30s --namespace "$namespace" create --filename - >/dev/null ||
-    die "cannot create the startup preflight Secret $secret; no OCC writer was stopped."
+    create_preflight - preflight-secret-create.err scrub) ||
+    unconfirmed_preflight "secret/$secret" preflight-secret-create.err $?
+  preflight_resources+=("secret/$secret $delete_options")
   for component in api worker; do
     pod="$release-upgrade-preflight-$component-$suffix"
     node scripts/upgrade-startup-preflight.mjs pod "$evidence_dir/preflight-rendered.jsonl" \
@@ -371,10 +447,10 @@ preflight_startup() {
       "$selected_controller" "$timeout_seconds" "$evidence_dir/installation.json" \
       >"$evidence_dir/preflight-$component-pod.json" ||
       die "cannot build the $component startup preflight Pod from the rendered chart; no OCC writer was stopped."
-    preflight_resources+=("pod/$pod")
-    "${kube[@]}" --request-timeout=30s --namespace "$namespace" create \
-      --filename "$evidence_dir/preflight-$component-pod.json" >/dev/null ||
-      die "cannot create the $component startup preflight Pod; no OCC writer was stopped."
+    delete_options=$(create_preflight "$evidence_dir/preflight-$component-pod.json" \
+      "preflight-$component-pod-create.err") ||
+      unconfirmed_preflight "pod/$pod" "preflight-$component-pod-create.err" $?
+    preflight_resources+=("pod/$pod $delete_options")
   done
   # Wait for every Pod and save each one's status and log before reporting, so a
   # refusal shows every component that failed, not only the first.
@@ -892,7 +968,8 @@ if ((helm_complete == 0)); then
       (.spec.replicas == 0 or .spec.replicas == 1)
     ' "$evidence_dir/current-$component-deployment.json" >/dev/null || die "$deployment has unexpected ownership or replicas."
     quiescence_remaining
-    "${kube[@]}" --request-timeout="${remaining_seconds}s" --namespace "$namespace" scale "deployment/$deployment" --replicas=0
+    "${kube[@]}" --request-timeout="${remaining_seconds}s" --namespace "$namespace" scale "deployment/$deployment" --replicas=0 ||
+      native_command_failed "$?" quiescence-scale "$component"
   done
   while true; do
     quiescence_remaining
@@ -937,14 +1014,19 @@ PYTHON
     verify_pair_nodes
   fi
   touch "$evidence_dir/helm-started"
-  helm upgrade --install "$release" deploy/helm/openclaw-enterprise "${helm_args[@]}" \
-    --values "$values" --wait --timeout 5m >"$evidence_dir/helm-upgrade.txt"
+  # Open stdout before entering the native failure handler.
+  {
+    helm upgrade --install "$release" deploy/helm/openclaw-enterprise "${helm_args[@]}" \
+      --values "$values" --wait --timeout 5m ||
+      native_command_failed "$?" helm-upgrade release
+  } >"$evidence_dir/helm-upgrade.txt"
 fi
 
 repository_enabled=$(yq -r '.repositoryCredentials.enabled // false' "$candidate_values")
 for component in api worker; do
   deployment="openclaw-enterprise-$component"
-  "${kube[@]}" --namespace "$namespace" rollout status "deployment/$deployment" --timeout=180s
+  "${kube[@]}" --namespace "$namespace" rollout status "deployment/$deployment" --timeout=180s ||
+    native_command_failed "$?" rollout-status "$component"
   "${kube[@]}" --namespace "$namespace" get "deployment/$deployment" --output json \
     >"$evidence_dir/after-$component-deployment.json"
   # The broker-enabled worker may be an ordinary container on the existing

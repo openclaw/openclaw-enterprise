@@ -9,6 +9,7 @@ import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 import type { Pool } from "pg";
 import { startPreparedGitHubGitOwner } from "../../apps/controller/src/backends/repository-credentials/prepared-git-owner.ts";
+import type { Clock } from "../../apps/controller/src/drivers/repo/credentials/backend-contracts.ts";
 import { createSystemClock } from "../../apps/controller/src/drivers/repo/credentials/clock.ts";
 import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import { temporaryDirectory } from "../fixtures/repository-credentials/process.mjs";
@@ -20,6 +21,15 @@ import {
   fixtureAppId,
   fixtureInstallationId,
 } from "../fixtures/repository-credentials/github.mjs";
+
+/**
+ * The system clock with its wall time `behindMs` early: a worker host whose clock runs behind
+ * GitHub's and PostgreSQL's. Monotonic time and timers stay the system's.
+ */
+export function clockBehind(behindMs: number): Clock {
+  const system = createSystemClock();
+  return Object.freeze({ ...system, wallNow: () => system.wallNow() - behindMs });
+}
 
 export async function standingGitOrigin(
   t: TestContext,
@@ -108,6 +118,10 @@ export async function preparedStandingGitPeer(
     beforeIssue?: () => Promise<void>;
     driver?: DriverRegistrationRef;
     installationAccess?: boolean;
+    /** GitHub's token lifetime, by the system clock. */
+    tokenLifetimeMs?: number;
+    /** Only the prepared owner's clock. GitHub, PostgreSQL and the runtime keep real time. */
+    ownerClock?: Clock;
   } = {},
 ) {
   const {
@@ -124,7 +138,7 @@ export async function preparedStandingGitPeer(
   } = await standingGitOrigin(
     t,
     namespaceId,
-    undefined,
+    options.tokenLifetimeMs,
     options.beforeIssue,
     options.installationAccess,
   );
@@ -143,21 +157,24 @@ export async function preparedStandingGitPeer(
     transport.mock.restore();
     syncBuiltinESMExports();
   });
-  const prepared = await startPreparedGitHubGitOwner({
-    registry,
-    pool,
-    driverId: backendId,
-    implementation: "github",
-    backendId,
-    privateKeyPath,
-    custodyKeyPath,
-    ca: tls.ca,
-    startWorker: false,
-    ...(options.driver && {
-      protectedGitDriver: options.driver,
-      protectedGitEvidence: openShellGitRecipientEvidence,
-    }),
-  });
+  const prepared = await startPreparedGitHubGitOwner(
+    {
+      registry,
+      pool,
+      driverId: backendId,
+      implementation: "github",
+      backendId,
+      privateKeyPath,
+      custodyKeyPath,
+      ca: tls.ca,
+      startWorker: false,
+      ...(options.driver && {
+        protectedGitDriver: options.driver,
+        protectedGitEvidence: openShellGitRecipientEvidence,
+      }),
+    },
+    options.ownerClock,
+  );
   // The directory is private to this case. No receipt service, broker, session bearer, or
   // prepared-use socket exists before, during, or after either Git transfer.
   const noBroker = async () => {

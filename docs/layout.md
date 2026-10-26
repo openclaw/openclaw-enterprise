@@ -122,6 +122,8 @@ selected emitted modules and minimal manifests in
 the standalone service/client images do not include the controller dependency
 graph. The full `deploy/runtime/Dockerfile` uses the repository root as its build
 context to include the emitted client router in the Agent image.
+`deploy/runtime/openclaw-source.json` owns the OpenClaw source commit, archive
+checksum, and fixed build timestamp used by that runtime recipe and its callers.
 
 Chart-owned startup scripts live under `deploy/helm/openclaw-enterprise/files/`
 and are embedded in rendered container commands; they ship with the chart.

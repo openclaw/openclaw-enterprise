@@ -212,6 +212,22 @@ test("an Agent's page leads with ← Agents and keeps its ID and Namespace under
       }
     }
 
+    // The Versions card pads like the card above it at every width; on a phone it kept 24 px
+    // while the other cards narrowed to 16 px (finding 2423).
+    const cards = [".agent-stat-card", ".revision-selector"];
+    for (const selector of cards) {
+      await page.locator(selector).waitFor();
+    }
+    const paddings = await page.evaluate(
+      (selectors) =>
+        selectors.map(
+          (selector) =>
+            globalThis.getComputedStyle(globalThis.document.querySelector(selector)!).padding,
+        ),
+      cards,
+    );
+    assert.equal(paddings[0], paddings[1], `${size}: ${paddings.join(" vs ")}`);
+
     // The copy button puts the ID on the clipboard and says so.
     await header.getByRole("button", { name: "Copy Agent ID" }).click();
     await header.getByRole("status").filter({ hasText: "Copied" }).waitFor();

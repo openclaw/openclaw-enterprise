@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import test from "node:test";
 
+import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
@@ -14,12 +15,21 @@ import {
   nativeValues,
   newPage,
   nonAuthWriteRequests,
+  pathRequests,
   secretOptionLabel,
   selectSecret,
   waitForEnabled,
   waitForInputValue,
 } from "./console-agents-browser-helpers.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
+import {
+  agentPrincipalDenied,
+  CONFIGURATION_EDITS_PENDING,
+  DEPENDENCY_UNAVAILABLE,
+  DEPLOY_CLUSTER_RBAC_REFUSED,
+  READ_UNAVAILABLE,
+  namespaceListDenied,
+} from "../helpers/refusal-text.mjs";
 
 const slack = {
   enabled: true,
@@ -112,11 +122,12 @@ test("draft Agent offers deployment without a generated-credential step", async 
   );
   await deploy.click();
   assert.equal((await deniedDeployment).status(), 403);
-  // The API names the Agent's own principal and the grant it lacks; the console shows that.
+  // The API names the grant the Agent's own principal lacks and who gives it; the console shows
+  // that. The administrator may read the model Secret, so it is named (finding 2592).
   await page
     .getByRole("alert")
     .filter({
-      hasText: `The Agent service principal ${agent.servicePrincipalId} is not authorized to operate`,
+      hasText: agentPrincipalDenied(`Agent ${agent.id}`, `Secret ${agent.harnessAuth.source.id}`),
     })
     .waitFor();
   await waitForEnabled(deploy);
@@ -125,22 +136,20 @@ test("draft Agent offers deployment without a generated-credential step", async 
   // A missing tenant RoleBinding refuses the credential check before admission (D396).
   const deployUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deploy`;
   await page.route(deployUrl, (route) =>
-    route.fulfill({
-      status: 503,
-      contentType: "application/json",
-      body: JSON.stringify({
-        error: {
-          code: "RUNTIME_CREDENTIALS_CLUSTER_RBAC",
-          message: "The cluster denied OCC access needed for this Agent's runtime credentials.",
-        },
-        meta: { requestId: `req_${randomUUID()}` },
-      }),
-    }),
+    route.fulfill(
+      apiErrorResponse(
+        503,
+        "RUNTIME_CREDENTIALS_CLUSTER_RBAC",
+        "The cluster denied OCC access needed for this Agent's runtime credentials.",
+      ),
+    ),
   );
   await deploy.click();
   await page
     .getByRole("alert")
-    .filter({ hasText: /cluster denied OCC access.*tenant RoleBindings/ })
+    .filter({
+      hasText: DEPLOY_CLUSTER_RBAC_REFUSED,
+    })
     .waitFor();
   await waitForEnabled(deploy);
   await page.unroute(deployUrl);
@@ -189,21 +198,13 @@ test("Deploy names a 503 refused before admission and keeps Deploy available", a
   await page.route(
     `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`,
     (route) =>
-      route.fulfill({
-        status: 503,
-        contentType: "application/json",
-        body: JSON.stringify({
-          error: { code: "DEPENDENCY_UNAVAILABLE", message: "The Agent store is unavailable." },
-          meta: { requestId: `req_${randomUUID()}` },
-        }),
-      }),
+      route.fulfill(
+        apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "The Agent store is unavailable."),
+      ),
     { times: 1 },
   );
   await deploy.click();
-  await page
-    .getByRole("alert")
-    .filter({ hasText: "Service unavailable. The read could not be completed. Try again." })
-    .waitFor();
+  await page.getByRole("alert").filter({ hasText: READ_UNAVAILABLE }).waitFor();
   assert.equal(await page.getByText("The Agent store is unavailable.").count(), 0);
   assert.equal(deployRequests, 0);
   for (const { status = 503, error, text, available } of [
@@ -233,7 +234,7 @@ test("Deploy names a 503 refused before admission and keeps Deploy available", a
       // The catch-all outage names no reason.
       error: {
         code: "DEPENDENCY_UNAVAILABLE",
-        message: "A required platform dependency is unavailable.",
+        message: DEPENDENCY_UNAVAILABLE,
       },
       text: "Outcome unknown.",
       available: false,
@@ -304,15 +305,9 @@ test("active Agent can deploy the current saved draft as a new version", async (
     nativeValues("current-draft", { harnessId: "codex", channels: { slack } }),
   );
   const { page, artifacts } = await newPage(t, fixture);
-  const deploymentRequests = [];
-  page.on("request", (request) => {
-    if (
-      request.method() === "POST" &&
-      request.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deploy`
-    ) {
-      deploymentRequests.push(request.url());
-    }
-  });
+  const requests = apiRequests(page, fixture.origin);
+  const deploymentRequests = () =>
+    pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/${agent.id}/deploy`);
 
   await login(
     page,
@@ -328,7 +323,7 @@ test("active Agent can deploy the current saved draft as a new version", async (
   await page
     .getByText(/Complete these in Credentials before deploying: Slack Secret bindings/)
     .waitFor();
-  assert.deepEqual(deploymentRequests, []);
+  assert.deepEqual(deploymentRequests(), []);
 
   const secretBindings = {};
   for (const key of ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"]) {
@@ -351,7 +346,7 @@ test("active Agent can deploy the current saved draft as a new version", async (
   await page.getByRole("button", { name: "Deploy new version" }).click();
   const response = await deployResponse;
   assert.equal(response.status(), 202);
-  assert.equal(deploymentRequests.length, 1);
+  assert.equal(deploymentRequests().length, 1);
   const deployed = (await response.json()).data;
   await page.waitForURL(
     (url) =>
@@ -402,12 +397,8 @@ test("unsaved Configuration blocks deployment from an admitted revision", async 
   );
   await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const { page } = await newPage(t, fixture);
-  let deploymentRequests = 0;
-  page.on("request", (request) => {
-    if (request.method() === "POST" && request.url().endsWith(`/agents/${agent.id}/deploy`)) {
-      deploymentRequests += 1;
-    }
-  });
+  const requests = apiRequests(page, fixture.origin);
+  const deployPath = `/namespaces/${namespace.id}/agents/${agent.id}/deploy`;
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
   await page.getByRole("button", { name: "Edit Configuration" }).click();
   const advanced = page.locator(".launch-advanced:not([open]) > summary");
@@ -417,9 +408,9 @@ test("unsaved Configuration blocks deployment from an admitted revision", async 
   await page
     .getByLabel("Configuration JSON")
     .fill(JSON.stringify(nativeValues("unsaved", { harnessId: "codex" }), null, 2));
-  await page.getByText("Save or cancel Configuration edits before deploying.").waitFor();
+  await page.getByText(CONFIGURATION_EDITS_PENDING).waitFor();
   assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
-  assert.equal(deploymentRequests, 0);
+  assert.equal(pathRequests(requests, "POST", deployPath).length, 0);
 });
 
 test("revision deployment blocks unavailable reads and does not replay a lost response", async (t) => {
@@ -439,14 +430,7 @@ test("revision deployment blocks unavailable reads and does not replay a lost re
     `${fixture.origin}/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
     async (route) => {
       if (configurationUnavailable) {
-        await route.fulfill({
-          status: 503,
-          contentType: "application/json",
-          body: JSON.stringify({
-            error: { code: "DEPENDENCY_UNAVAILABLE", message: "Unavailable" },
-            meta: { requestId: `req_${randomUUID()}` },
-          }),
-        });
+        await route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Unavailable"));
         return;
       }
       await route.fallback();
@@ -466,11 +450,7 @@ test("revision deployment blocks unavailable reads and does not replay a lost re
   await login(page, fixture, `/console/agents/${agent.id}?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Create new version" }).first().click();
   const deploy = page.getByRole("button", { name: "Deploy new version" });
-  await page
-    .getByRole("alert")
-    .filter({ hasText: "Service unavailable. The read could not be completed. Try again." })
-    .first()
-    .waitFor();
+  await page.getByRole("alert").filter({ hasText: READ_UNAVAILABLE }).first().waitFor();
   assert.equal(deploymentRequests, 0);
   assert.equal(await deploy.count(), 0);
   configurationUnavailable = false;
@@ -511,6 +491,64 @@ test("Slack credential gate treats omitted enabled as enabled", async (t) => {
     .waitFor();
   assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
   assert.equal(await page.getByRole("button", { name: "Save channel Secrets" }).isDisabled(), true);
+});
+
+// OpenClaw and the Slack Channel Driver read a token that is exactly one `${NAME}` as the env
+// SecretRef to NAME (finding 2511). Where Compute skips OCC's binding rule, as this fixture's does,
+// the Credentials tab is the only check before Deploy: it must list those keys, for a named account
+// and for the top-level account beside one, and hold Deploy until they are bound, or OCC refuses
+// the deploy with binding_required (finding 2513).
+test("Slack credential gate reads whole ${NAME} tokens beside named accounts", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Named Slack token gate", { ready: true });
+  const [appSecret] = await existingSlackSecrets(fixture, namespace.id);
+  const { appToken, botToken, ...shared } = slack;
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Named Slack Token Agent",
+    nativeValues("named-slack-tokens", {
+      harnessId: "codex",
+      channels: {
+        slack: {
+          ...shared,
+          appToken: "${SLACK_MAIN_APP_TOKEN}",
+          botToken: "${SLACK_MAIN_BOT_TOKEN}",
+          accounts: {
+            work: {
+              appToken: { source: "env", provider: "default", id: "SLACK_WORK_APP_TOKEN" },
+              botToken: "${SLACK_WORK_BOT_TOKEN}",
+            },
+          },
+        },
+      },
+    }),
+    {
+      executionMode: "dedicated",
+      secretBindings: { SLACK_WORK_APP_TOKEN: envBinding(appSecret) },
+    },
+  );
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
+  await page
+    .getByText(
+      "Complete these in Credentials before deploying: Slack Secret bindings (SLACK_MAIN_APP_TOKEN, SLACK_MAIN_BOT_TOKEN, SLACK_WORK_BOT_TOKEN).",
+    )
+    .waitFor();
+  const rows = page.locator("section.channel-secrets .credential-status-list");
+  assert.deepEqual(await rows.locator("dt").allTextContents(), [
+    "SLACK_MAIN_APP_TOKEN",
+    "SLACK_MAIN_BOT_TOKEN",
+    "SLACK_WORK_APP_TOKEN",
+    "SLACK_WORK_BOT_TOKEN",
+  ]);
+  assert.deepEqual(await rows.locator("dd").allTextContents(), [
+    "Missing",
+    "Missing",
+    "Bound",
+    "Missing",
+  ]);
+  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
 });
 
 test("Teams-enabled drafts keep console deploy blocked", async (t) => {
@@ -832,7 +870,11 @@ test("Credentials shows issued-account denial only while that source is selected
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
   assert.equal((await deniedList).status(), 403);
   fixture.policy.restrictions.splice(fixture.policy.restrictions.indexOf(restriction), 1);
-  const feedback = page.getByText(/Service accounts unavailable\. Access denied/);
+  // The refusal names the grant the list checks and who can grant it.
+  const feedback = page.getByText(
+    `Service Accounts unavailable. ${namespaceListDenied("Service Accounts")}`,
+    { exact: true },
+  );
   const issuedAccount = page.getByLabel("Issued ChatGPT service account", { exact: true });
   await feedback.waitFor();
   assert.equal(await issuedAccount.inputValue(), account.id);
@@ -863,7 +905,9 @@ test("operator-managed console binding saves and deploys without a managed crede
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
   await page.getByLabel("Authentication source").selectOption("runtime");
   await page
-    .getByText("Configured on the runtime host; not validated by OCC.", { exact: true })
+    .getByText("Configured on the runtime host; OpenClaw Enterprise does not check it.", {
+      exact: true,
+    })
     .waitFor();
   assert.equal(await page.getByLabel("API key Secret").isVisible(), false);
   const save = page.waitForResponse(
@@ -876,11 +920,7 @@ test("operator-managed console binding saves and deploys without a managed crede
   // Runtime removes only the credential gate, not failed-history protection.
   const revisionsPath = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/revisions`;
   await page.route(revisionsPath, (route) =>
-    route.fulfill({
-      status: 503,
-      contentType: "application/json",
-      body: JSON.stringify({ error: { code: "DEPENDENCY_UNAVAILABLE" } }),
-    }),
+    route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", DEPENDENCY_UNAVAILABLE)),
   );
   await page.reload();
   await page
@@ -894,12 +934,7 @@ test("operator-managed console binding saves and deploys without a managed crede
   await page.unroute(revisionsPath);
   await page.reload();
   await page.getByText(/Gateway readiness does not confirm model access/).waitFor();
-  const credentialRequests = [];
-  page.on("request", (request) => {
-    if (request.url().includes("/runtime-credentials")) {
-      credentialRequests.push(request.method());
-    }
-  });
+  const afterReload = apiRequests(page, fixture.origin);
   const deployed = page.waitForResponse(
     (r) => r.url().endsWith(`/agents/${agent.id}/deploy`) && r.request().method() === "POST",
   );
@@ -908,7 +943,7 @@ test("operator-managed console binding saves and deploys without a managed crede
   assert.equal(response.status(), 202);
   assert.deepEqual((await response.json()).data.harnessAuth, { method: "runtime" });
   assert.deepEqual(
-    credentialRequests,
+    afterReload.filter(({ path }) => path.includes("/runtime-credentials")),
     [],
     "operator auth must not wait on a managed-credential endpoint",
   );

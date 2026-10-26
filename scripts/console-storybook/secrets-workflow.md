@@ -19,7 +19,8 @@ Kubernetes storage, credential delivery, or runtime consumption.
    outcome**, and **Concurrent reference conflict**. Uncertain submissions must
    remain disabled. Close, then refresh or inspect current state as instructed.
 7. Inspect **Empty**, **Loading**, **Read unavailable**, **No readable Namespace**,
-   and **Namespace provisioning**.
+   and **Namespace provisioning**. In **Create not permitted**, Create Secret is
+   disabled and the access note under the toolbar is its description.
 8. In **Mobile** (390 × 844), open the single search result, then **Replace value**.
    The header and sheet reach the right edge without an empty strip. Press Escape,
    clear **Search Secrets**, scroll to the last Secret, and open it. A classic

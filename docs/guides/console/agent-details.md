@@ -40,11 +40,11 @@ folded and **Latest visible deployment** shows its outcome. Open **Deployment de
 to read it.
 Milestones show the saved record:
 
-| Milestone               | Evidence                                                                          |
-| ----------------------- | --------------------------------------------------------------------------------- |
-| **Admitted**            | OCC saved an immutable AgentRevision and queued its work.                         |
-| **Deployment work**     | `queued` awaits an initial or subsequent claim; `running` records a worker claim. |
-| **Completion recorded** | `succeeded` means the original work completed activation or was already active.   |
+| Milestone               | Evidence                                                                                         |
+| ----------------------- | ------------------------------------------------------------------------------------------------ |
+| **Admitted**            | OCC saved an immutable AgentRevision and queued its work.                                        |
+| **Deployment work**     | `queued` awaits the first claim; `running` means work started, including waits between attempts. |
+| **Completion recorded** | `succeeded` means the original work completed activation or was already active.                  |
 
 Work ended by a newer version (`REVISION_SUPERSEDED` or
 `REPOSITORY_REVISION_SUPERSEDED`) or a Stop (`REVISION_STOPPED`) shows as a
@@ -95,7 +95,8 @@ so the page does not offer diagnostics for it. Checks include a time and `succee
 `unknown` state; unavailable requests show retryable errors. On Kubernetes
 Compute the gateway checks cover only the Slack channel. A version without
 Slack reports configuration `failed` with `NOT_CONFIGURED` and leaves
-authentication and connectivity `unknown`; the page says this is expected. A
+authentication and connectivity `unknown`; the page shows these as `not set up`
+and `not checked` and says this is expected. A
 version deployed by an earlier controller release still shows three `unknown`
 checks with `PROBE_FAILED` until you deploy a new version. If every check is
 `unknown` with `UNAVAILABLE`, the runtime did not answer. Either way, a recorded deployment failure such as `RUNTIME_AUTHENTICATION_FAILED`
@@ -136,8 +137,12 @@ prove successful authentication or a working channel.
 The **Configuration**, **Plugins**, **Channels**, **Repositories**, **Credentials**,
 **Workspace files**, **Policy denials**, **Logs**, and **Access** tabs change the panel below.
 Repositories and Credentials are available only on the new version draft; Logs only on a
-version; Access only to Installation administrators.
-**Repositories** edits the draft's repository selections and access levels; see
+version; Access only to Installation administrators. A link to a tab that you cannot use
+shows Configuration and a note that names the tab and the reason. When a tab finds that your
+access changed, the next tab change reloads the page, as **Refresh** does. **Refresh** also
+reads refused logs again, so a restored grant shows them.
+**Repositories** edits the draft's repository selections and access levels; without the grants
+an Agent save needs, it lists them read-only. See
 [repository access](../../reference/console/repository-access.md).
 Browser Back and Forward restore the selected tab. Leaving a tab clears entered
 token values. The workspace remains live regardless of the viewed version.
@@ -211,8 +216,10 @@ An accepted stop shows **Runtime: Stop requested** in the overview; it does not
 prove the runtime finished. **Refresh stop status** reads desired state and
 selected version. If another operator has started deletion, the page shows deletion recovery.
 An uncertain result blocks another stop until a refresh.
-With no selected or readable version, as before a first deploy, there is no Stop
-row. To resume,
+With no selected version, there is no Stop row before a first deploy or after a
+failed first deployment. While a first deployment is queued or in progress,
+**Stop Agent** cancels it. If you cannot read the deploying version, Stop stays
+and its confirmation says it cancels the deployment or stops a started version. To resume,
 open **Create new version** and select **Deploy new version**, which creates a new
 version. See [Stop and resume](../../reference/agents/deployment.md#stop-and-resume).
 

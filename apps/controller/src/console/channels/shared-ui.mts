@@ -5,15 +5,18 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { responseFields } from "../api-client.mjs";
 import type { createDraftStore } from "../drafts.mjs";
+import type { SecretsOperateDenied } from "../agents/credential-access.mjs";
 import type { SlackDirectoryContext } from "../agents/slack-directory.mjs";
 import {
   element,
   button,
+  describeDisabled,
   dismissOnBackdrop,
   field as formField,
   focusSaveOutcome,
   statusBlock,
   validateOnSubmit,
+  withRequestId,
 } from "../dom.mjs";
 import { renderSecretReference } from "../agents/secret-picker.mjs";
 import { carryList, carryValue } from "../carry.mjs";
@@ -41,6 +44,8 @@ interface ChannelDraft {
 export interface ChannelDrawerContext extends SlackDirectoryContext {
   drafts?: Drafts;
   baseline?: string;
+  // The selected Namespace when readable: bound Secret summaries check its Secret list first.
+  namespace?: { id: string } | undefined;
   operatorId?: string;
   installationAdmin?: boolean;
   agentName?: string | (() => string);
@@ -51,6 +56,10 @@ export interface ChannelDrawerContext extends SlackDirectoryContext {
   secretBindings?: SecretBindings | undefined;
   draftSecretBindings?: SecretBindings | undefined;
   draftChangedSecrets?: Record<string, SecretMetadata> | undefined;
+  // The Namespace permission answer's secrets.create, for the token fields' inline Create Secret.
+  secretsCreateAllowed?: (() => Promise<boolean | undefined>) | undefined;
+  // Readable Secrets the caller may not operate, which the token fields refuse (finding 2453).
+  secretsOperateDenied?: SecretsOperateDenied | undefined;
 }
 
 type BindingUpdate = { secretBindings?: SecretBindings; changedSecrets?: SecretMetadata[] };
@@ -73,6 +82,8 @@ export interface ChannelSectionOptions {
   readOnly: boolean;
   drawerContext: ChannelDrawerContext;
   copy?: SectionCopy;
+  // Why Disable would be refused before any request; the button is shown disabled with it.
+  disableRefusal?: string | null;
   savedNotice?: string;
   onSave(values: ChannelValues, secrets: BindingUpdate): Promise<void>;
   onStateChange?(status: SaveState): void;
@@ -231,7 +242,7 @@ function withPlugin(values: ChannelValues, provider: ChannelProvider) {
 function errorText(error: Record<string, unknown>) {
   const message =
     typeof error.message === "string" ? error.message : "Channel settings could not be saved.";
-  return message + (typeof error.requestId === "string" ? ` Request ID: ${error.requestId}` : "");
+  return withRequestId(message, typeof error.requestId === "string" ? error.requestId : undefined);
 }
 
 function renderCard(section: HTMLElement, state: ChannelState, provider: ChannelProvider) {
@@ -254,7 +265,48 @@ function renderCard(section: HTMLElement, state: ChannelState, provider: Channel
     isRecord(providerConfig(state.values, provider.id));
   const action =
     status.label === "Not configured" ? `Configure ${provider.name}` : `Edit ${provider.name}`;
-  const actionAttrs = canOpen ? {} : { disabled: "" };
+  // The setup step asks for Secret bindings; once each one is bound it is done (finding 2438).
+  // A read-only view (a version snapshot, or a draft the caller cannot edit) offers no setup
+  // step, so it shows none (finding 2455). An Embedded Agent cannot have channels, so it has no
+  // setup step either: the card says why instead (finding D708).
+  const setupShown =
+    !state.readOnly &&
+    !disabledByMode &&
+    (provider.secretBindings.length === 0 ||
+      provider.secretBindings.some(
+        (binding) => !state.drawerContext.secretBindings?.[binding.key]?.source,
+      ));
+  // A disabled action is described by the reason shown on the card (findings 2495, D749).
+  const reasonId = `channel-${provider.id}-unavailable`;
+  let reason: HTMLElement | null = null;
+  if (state.readOnly) {
+    // A read-only view offers no action, so it has nothing to describe.
+  } else if (disabledByMode) {
+    // Informational: Embedded Agents simply do not offer channels; nothing is wrong yet.
+    reason = element(
+      "p",
+      { className: "hint", id: reasonId },
+      "Channels require Dedicated execution. Embedded Agents can only keep channels disabled.",
+    );
+  } else if (blockReason) {
+    reason = element(
+      "p",
+      { className: "status", "data-tone": "danger", id: reasonId },
+      blockReason,
+    );
+  } else if (!support.supported) {
+    reason = element(
+      "p",
+      { className: "status", "data-tone": "danger", id: reasonId },
+      support.reason,
+    );
+  }
+  const actionButton = state.readOnly
+    ? null
+    : button(action, () => openDrawer(section, state, provider), canOpen ? {} : { disabled: "" });
+  if (actionButton) {
+    describeDisabled(actionButton, reason);
+  }
   const card = element(
     "section",
     { className: "agent-card channel-card" },
@@ -270,21 +322,23 @@ function renderCard(section: HTMLElement, state: ChannelState, provider: Channel
           {},
           support.supported ? provider.summary(support.config, status) : provider.description,
         ),
-        element("p", { className: "hint" }, provider.setup),
+        setupShown ? element("p", { className: "hint" }, provider.setup) : null,
       ),
       element(
         "div",
         { className: "channel-actions" },
-        state.readOnly
-          ? null
-          : button(action, () => openDrawer(section, state, provider), actionAttrs),
+        actionButton,
         canDisable
           ? button(`Disable ${provider.name}`, () => void disableProvider(state, provider), {
               tone: "danger",
+              ...(state.disableRefusal ? { disabled: "" } : {}),
             })
           : null,
       ),
     ),
+    canDisable && state.disableRefusal
+      ? element("p", { className: "hint" }, state.disableRefusal)
+      : null,
   );
   const credentials = element("dl", { className: "configuration-summary" });
   for (const binding of provider.secretBindings ?? []) {
@@ -309,22 +363,11 @@ function renderCard(section: HTMLElement, state: ChannelState, provider: Channel
         state.copy.readOnlyCardMessage ?? "Values in a deployed version cannot be edited.",
       ),
     );
-  } else if (disabledByMode) {
-    card.append(
-      // Informational: Embedded Agents simply do not offer channels; nothing is wrong yet.
-      element(
-        "p",
-        { className: "hint" },
-        "Channels require Dedicated execution. Embedded Agents can only keep channels disabled.",
-      ),
-    );
-  } else if (blockReason) {
-    card.append(element("p", { className: "status", "data-tone": "danger" }, blockReason));
-  } else if (!support.supported) {
-    card.append(
-      element("p", { className: "status", "data-tone": "danger" }, support.reason),
-      nativeDocument(`${provider.name} native configuration`, support.config),
-    );
+  } else if (reason) {
+    card.append(reason);
+    if (!disabledByMode && !blockReason && !support.supported) {
+      card.append(nativeDocument(`${provider.name} native configuration`, support.config));
+    }
   }
   return card;
 }
@@ -805,12 +848,22 @@ function openDrawer(
     changedSecrets: structuredClone(drawerContext.draftChangedSecrets),
     unresolved: unresolved || state.pending || state.outcomeUnknown,
   });
+  // A save that changes nothing still writes a new Configuration generation and says it saved
+  // (finding 2482), so Save waits for a change, as Channel Secrets does. A provider not yet
+  // configured saves the settings shown, and Create Agent's drawer only stages its settings.
+  const unchanged = () =>
+    !drawerContext.creating && drawerContext.isConfigured && !unsavedChannelDraft(captureDraft());
+  const updateSubmit = () => {
+    submit.disabled = Boolean(stale || unresolved || unchanged());
+  };
+  body.addEventListener("input", updateSubmit);
+  body.addEventListener("change", updateSubmit);
   state.captureDraft = captureDraft;
   state.carriedDraft = null;
   state.drawerContext.drafts?.track("channels", captureDraft);
   state.drawerContext.drafts?.unsavedWhen("channels", unsavedChannelDraft);
+  updateSubmit();
   if (stale || unresolved) {
-    submit.disabled = true;
     feedback.append(
       statusBlock(
         "danger",
@@ -827,7 +880,7 @@ function openDrawer(
   body.append(feedback, element("div", { className: "dialog-actions" }, cancel, submit));
   body.addEventListener("submit", (event) => {
     event.preventDefault();
-    if (state.pending || stale || unresolved) {
+    if (state.pending || stale || unresolved || unchanged()) {
       return;
     }
     if (
@@ -889,6 +942,7 @@ export function renderChannelSection(
     onSaved,
     savedNotice = "",
     copy = {},
+    disableRefusal = null,
     drawerContext,
   }: ChannelSectionOptions,
   providers: readonly ChannelProvider[],
@@ -905,6 +959,7 @@ export function renderChannelSection(
     savedNotice,
     section,
     copy,
+    disableRefusal,
     drawerContext,
     pending: false,
     outcomeUnknown: false,

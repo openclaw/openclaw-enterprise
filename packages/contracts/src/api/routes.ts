@@ -87,7 +87,9 @@ import {
   AgentRuntimeImagesResponse,
   AgentHarnessStatusResponse,
   AgentCallerPermissionsResponse,
+  AgentSecretPermissionsResponse,
   NamespaceCallerPermissionsResponse,
+  NamespaceSecretPermissionsResponse,
   AgentResponse,
   AgentReadResponse,
   AgentRevisionListResponse,
@@ -504,6 +506,23 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: NamespaceParams,
       response: { 200: NamespaceCallerPermissionsResponse, ...readErrors },
+    },
+  },
+  {
+    operationId: "getNamespaceSecretPermissions",
+    method: "GET",
+    path: "/namespaces/:namespaceId/permissions/secrets",
+    action: "openclaw.namespaces.permissions.read",
+    iamAction: "read",
+    resourceKind: "namespace",
+    authorizationTarget: "namespace",
+    summary:
+      "Report the readable Secrets that the caller may not bind to a new Agent, not authorization for a later operation",
+    tags: ["Namespaces"],
+    schema: {
+      querystring: EmptyQuery,
+      params: NamespaceParams,
+      response: { 200: NamespaceSecretPermissionsResponse, ...readErrors },
     },
   },
   {
@@ -1390,6 +1409,8 @@ export const occApiRoutes = [
           meta: Type.Object({ requestId: Type.String() }),
         }),
         ...readErrors,
+        // The Agent's saved repository selections are no longer approved.
+        409: ErrorResponseRef,
       },
     },
   },
@@ -1723,6 +1744,23 @@ export const occApiRoutes = [
     },
   },
   {
+    operationId: "getAgentSecretPermissions",
+    method: "GET",
+    path: "/namespaces/:namespaceId/agents/:agentId/permissions/secrets",
+    action: "openclaw.agents.permissions.read",
+    iamAction: "read",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary:
+      "Report the readable Secrets that the caller may not bind to a readable Agent, not authorization for a later operation",
+    tags: ["Agents"],
+    schema: {
+      querystring: EmptyQuery,
+      params: AgentParams,
+      response: { 200: AgentSecretPermissionsResponse, ...readErrors },
+    },
+  },
+  {
     operationId: "provisionAgentRuntimeCredentials",
     method: "POST",
     path: "/namespaces/:namespaceId/agents/:agentId/runtime-credentials",
@@ -1784,7 +1822,14 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: WorkspaceFileParams,
-      response: { 200: WorkspaceFileResponse, ...readErrors },
+      response: {
+        200: WorkspaceFileResponse,
+        ...readErrors,
+        409: Type.Ref("ErrorResponse", {
+          description:
+            "Conflict. The Agent has no running version: deploy it, or wait until its deployment finishes.",
+        }),
+      },
     },
   },
   {

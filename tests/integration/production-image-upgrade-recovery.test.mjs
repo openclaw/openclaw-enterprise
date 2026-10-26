@@ -1,17 +1,20 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   appendFileSync,
   chmodSync,
+  constants,
   copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, open, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -60,13 +63,13 @@ const shimTools = {
 
 // A started process's status and output, like spawnSync's, without blocking the other
 // fixtures' commands while it runs.
-function spawnResult(command, args, options) {
+function spawnResult(command, args, options, stderrFd = "pipe") {
   return new Promise((resolve) => {
-    const child = spawn(command, args, { ...options, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(command, args, { ...options, stdio: ["ignore", "pipe", stderrFd] });
     let stdout = "";
     let stderr = "";
     child.stdout.setEncoding("utf8").on("data", (chunk) => (stdout += chunk));
-    child.stderr.setEncoding("utf8").on("data", (chunk) => (stderr += chunk));
+    child.stderr?.setEncoding("utf8").on("data", (chunk) => (stderr += chunk));
     child.on("error", (error) => resolve({ status: null, stdout, stderr: stderr + error.message }));
     child.on("close", (status) => resolve({ status, stdout, stderr }));
   });
@@ -83,7 +86,7 @@ const yqOr = (value, alternative) =>
 
 // Unless a case selects the real chart, a stand-in renders only what the startup
 // preflight reads: each controller container's image and Installation mount.
-async function standInChart(file) {
+async function standInChart(file, policy) {
   const values = await yamlFile(file);
   const secretName = yqRaw(yqOr(values?.installation?.secretName, "occ-installation-startup"));
   const key = yqRaw(yqOr(values?.installation?.key, "installation.yaml"));
@@ -125,6 +128,16 @@ async function standInChart(file) {
   return [
     deployment("api", "containers"),
     deployment("worker", repository ? "initContainers" : "containers"),
+    ...(policy
+      ? [
+          {
+            apiVersion: "networking.k8s.io/v1",
+            kind: "NetworkPolicy",
+            metadata: { name: "openclaw-enterprise-dependency-egress" },
+            spec: { egress: [] },
+          },
+        ]
+      : []),
   ]
     .map((document) => "---\n" + JSON.stringify(document) + "\n")
     .join("");
@@ -278,7 +291,7 @@ async function fakeCommand(root, { command: tool, args, cwd }, io) {
       }
       out(rendered.stdout);
     } else if (args[0] === "template") {
-      out(await standInChart(fileArg("--values")));
+      out(await standInChart(fileArg("--values"), state.preflightPolicy));
     } else if (args[0] === "upgrade" && !args.includes("--dry-run=server")) {
       if (state.api !== 0 || state.worker !== 0) {
         return fail(2, "old writers were not stopped");
@@ -303,7 +316,12 @@ async function fakeCommand(root, { command: tool, args, cwd }, io) {
       }
     }
   } else if (tool === "kubectl") {
-    state.preflight ??= { secrets: {}, pods: {}, networkpolicies: {}, deleted: [] };
+    state.preflight ??= {
+      secrets: {},
+      pods: {},
+      networkpolicies: {},
+      deleted: [],
+    };
     const resource = args.find((a) => /^(pod|secret|networkpolicy\.networking\.k8s\.io)\//.test(a));
     const collection = {
       pod: "pods",
@@ -312,25 +330,134 @@ async function fakeCommand(root, { command: tool, args, cwd }, io) {
     };
     if (args.includes("create") && args.includes("--filename")) {
       const source = fileArg("--filename");
-      const object = JSON.parse(
-        source === "-" ? await io.readInput() : readFileSync(source, "utf8"),
-      );
-      if (object.kind === "Secret") {
-        state.preflight.secrets[object.metadata.name] = object;
-      } else if (object.kind === "NetworkPolicy") {
-        state.preflight.networkpolicies[object.metadata.name] = object;
-      } else {
-        state.preflight.pods[object.metadata.name] = {
-          ...(await runPreflight(root, cwd, state, object)),
-          spec: object.spec,
+      const manifest = source === "-" ? await io.readInput() : readFileSync(source, "utf8");
+      const object = JSON.parse(manifest);
+      const kind = {
+        Secret: "secret",
+        NetworkPolicy: "networkpolicy.networking.k8s.io",
+        Pod: "pod",
+      }[object.kind];
+      assert.ok(kind, "supported preflight resource kind");
+      const name = object.metadata.name;
+      const resourceName = `${kind}/${name}`;
+      const target = object.kind === "Pod" ? object.spec.containers[0].name : kind;
+      const inventory = state.preflight[collection[kind]];
+      const fault = state.preflightFault?.target === target ? state.preflightFault.mode : null;
+      // Stock kubectl quotes a manifest it cannot decode in its error, before any request.
+      if (fault === "decode") {
+        return fail(
+          1,
+          `error: unable to decode "STDIN": Object 'Kind' is missing in '${manifest}'`,
+        );
+      }
+      // A competing creator wins the name before this request reaches the API.
+      if (fault === "conflict") {
+        inventory[name] = {
+          metadata: { name, uid: randomUUID() },
+          foreign: true,
         };
       }
+      if (inventory[name]) {
+        save();
+        // Even stdout from a failed create must not establish ownership.
+        out(inventory[name].metadata.uid);
+        return fail(
+          1,
+          `Error from server (AlreadyExists): ${collection[kind]} "${name}" already exists`,
+        );
+      }
+      object.metadata.uid = randomUUID();
+      inventory[name] =
+        object.kind === "Pod"
+          ? {
+              ...(await runPreflight(root, cwd, state, object)),
+              spec: object.spec,
+              metadata: object.metadata,
+            }
+          : object;
       save();
-    } else if (resource && args.includes("delete")) {
-      const [kind, name] = resource.split("/");
-      delete state.preflight[collection[kind]][name];
-      state.preflight.deleted.push(resource);
+      if (fault === "lost") {
+        out(object.metadata.uid);
+        return fail(9, "create acknowledgement lost: private-response-marker");
+      }
+      if (fault === "empty") {
+        out("");
+      } else if (fault === "newline") {
+        out(object.metadata.uid + "\n");
+      } else if (fileArg("-o") === "jsonpath={.metadata.uid}") {
+        // Stock kubectl's jsonpath output has no terminator.
+        out(object.metadata.uid);
+      } else {
+        out(`${resourceName} created`);
+      }
+    } else if (args.includes("delete")) {
+      const raw = args.find((arg) => arg.startsWith("--raw="));
+      let named = resource;
+      let uid;
+      if (raw) {
+        const match =
+          /^--raw=\/(api\/v1|apis\/networking\.k8s\.io\/v1)\/namespaces\/system\/(pods|secrets|networkpolicies)\/([a-z0-9-]+)$/.exec(
+            raw,
+          );
+        assert.ok(match, "DELETE addresses a named core or networking API resource");
+        assert.equal(
+          match[1],
+          match[2] === "networkpolicies" ? "apis/networking.k8s.io/v1" : "api/v1",
+        );
+        assert.equal(fileArg("-f"), "-");
+        // An empty raw body is a real unguarded DELETE, not a fixture rejection.
+        const body = await io.readInput();
+        const options = body ? JSON.parse(body) : {};
+        uid = options.preconditions?.uid;
+        if (uid) {
+          assert.equal(options.apiVersion, "v1");
+          assert.equal(options.kind, "DeleteOptions");
+          assert.equal(options.propagationPolicy, "Background");
+        }
+        named = `${{ pods: "pod", secrets: "secret", networkpolicies: "networkpolicy.networking.k8s.io" }[match[2]]}/${match[3]}`;
+      }
+      assert.ok(named, "delete must identify a preflight resource");
+      const [kind, name] = named.split("/");
+      const inventory = state.preflight[collection[kind]];
+      // Replacement occurs at DELETE, after all client reads, to model the race.
+      if (
+        state.preflightFault?.mode === "replacement" &&
+        state.preflightFault.target === inventory[name]?.spec?.containers?.[0]?.name
+      ) {
+        inventory[name] = {
+          metadata: { name, uid: randomUUID() },
+          foreign: true,
+        };
+      }
+      const current = inventory[name];
+      if (!current) {
+        return raw ? fail(1, "NotFound: private-response-marker") : undefined;
+      }
+      if (uid && current.metadata.uid !== uid) {
+        save();
+        // The API server's wording for a failed UID precondition (HTTP 409).
+        return fail(
+          1,
+          `Error from server (Conflict): Operation cannot be fulfilled on ${collection[kind]} "${name}": Precondition failed: UID in precondition: ${uid}, UID in object meta: ${current.metadata.uid}\nprivate-response-marker`,
+        );
+      }
+      if (state.preflightFault?.mode === "delete-refused" && state.preflightFault.target === kind) {
+        return fail(
+          1,
+          `Error from server (Forbidden): ${collection[kind]} "${name}" is forbidden: private-response-marker`,
+        );
+      }
+      // Keep unsafe name-only deletion functional: baseline failures must show
+      // the foreign object actually removed, not an unsupported-command error.
+      delete inventory[name];
+      state.preflight.deleted.push(named);
       save();
+      out({
+        apiVersion: "v1",
+        kind: "Status",
+        status: "Success",
+        message: "private-delete-response-marker",
+      });
     } else if (resource && (args.includes("get") || args.includes("logs"))) {
       const pod = state.preflight.pods[resource.slice("pod/".length)];
       if (!pod) {
@@ -342,12 +469,23 @@ async function fakeCommand(root, { command: tool, args, cwd }, io) {
       out(args.includes("logs") ? pod.log : { status: pod.status ?? { phase: pod.phase } });
     } else if (args.includes("--raw=/readyz")) {
       out("ok");
+    } else if (args.includes("rollout")) {
+      const component = args
+        .find((arg) => arg.startsWith("deployment/"))
+        .split("-")
+        .at(-1);
+      if (take("fail-rollout-" + component)) {
+        return fail(9);
+      }
     } else if (args.includes("scale")) {
       const component = args
         .find((a) => a.startsWith("deployment/"))
         .split("-")
         .at(-1);
       if (component === "worker" && take("fail-scale-worker")) {
+        if (take("block-failure-receipt")) {
+          mkdirSync(join(root, "evidence", "native-command-failures.tsv"));
+        }
         return fail(9);
       }
       state[component] = 0;
@@ -806,6 +944,8 @@ async function fixture(
     collector = null,
     chart = null,
     preflightResults = null,
+    preflightPolicy = false,
+    preflightFault = null,
     kubernetesNamespaces = [],
     kubernetesDenied = false,
     executionCluster = null,
@@ -963,6 +1103,8 @@ async function fixture(
     startupCheck: Boolean(chart),
     kubeconfig: api?.kubeconfig ?? null,
     preflightResults,
+    preflightPolicy,
+    preflightFault,
     installationName,
     inventoryNamespaces,
     names,
@@ -1064,6 +1206,20 @@ async function fixture(
     executionReads: api?.executionReads ?? [],
     accessReviews: api?.reviews ?? [],
     run: (...extra) => execute(script, [...args, ...extra], { cwd: repository, env }),
+    runWithStderr: (fd) =>
+      spawnResult("/bin/bash", ["--", script, ...args], { cwd: repository, env }, fd),
+    // Close the read end before launch; subprocess restores the CLI's default SIGPIPE.
+    runWithBrokenPipe: () =>
+      execute(
+        "python3",
+        [
+          "-c",
+          "import os, subprocess, sys; r, w = os.pipe(); os.close(r); p = subprocess.run(sys.argv[1:], stderr=w); sys.exit(p.returncode if p.returncode >= 0 else 128 - p.returncode)",
+          script,
+          ...args,
+        ],
+        { cwd: repository, env },
+      ),
     state: async () => JSON.parse(await readFile(join(directory, "state.json"), "utf8")),
     events: async () =>
       (await readFile(join(directory, "events"), "utf8")).trim().split("\n").filter(Boolean),
@@ -1096,23 +1252,117 @@ test("resume reads an accepted Secret write before Helm and preserves its other 
   assert.equal(state.worker, 1);
 });
 
+// Open again after resume so a replaced receipt is checked at its published path.
+async function assertPrivateReceipt(path, expected) {
+  const file = await open(path, "r");
+  try {
+    assert.equal((await file.stat()).mode & 0o777, 0o600);
+    assert.equal(await file.readFile("utf8"), expected);
+  } finally {
+    await file.close();
+  }
+}
+
 test("resume recognizes a committed Helm release without rerunning its migration", async (t) => {
-  const f = await fixture(t);
-  await f.failNext("lost-helm-response");
-  await assert.rejects(f.run(), injectedFault);
-  await f.run("--resume");
-  assert.equal((await f.events()).filter((event) => event === "migration").length, 1);
+  for (const [fault, operation, component] of [
+    ["lost-helm-response", "helm-upgrade", "release"],
+    ["fail-rollout-api", "rollout-status", "api"],
+    ["fail-rollout-worker", "rollout-status", "worker"],
+  ]) {
+    await t.test(fault, async (subtest) => {
+      const f = await fixture(subtest);
+      await f.failNext(fault);
+      await assert.rejects(f.run(), (error) => {
+        assert.equal(error.code, 9);
+        assert.match(error.stderr, new RegExp(`${operation}.*${component}.*9`));
+        return true;
+      });
+      const receipt = `${operation}\t${component}\t9\n`;
+      const path = join(f.evidence, "native-command-failures.tsv");
+      await assertPrivateReceipt(path, receipt);
+      // The native failure says nothing about acceptance: Helm committed in
+      // every case, and a readback must recover without another migration.
+      const state = await f.state();
+      assert.equal(state.version, 2);
+      assert.equal(state.helmStatus, "deployed");
+      assert.equal(state.api, 1);
+      assert.equal(state.worker, 1);
+      assert.equal(await readFile(join(f.evidence, "helm-started"), "utf8"), "");
+      await f.run("--resume");
+      await assertPrivateReceipt(path, receipt);
+      assert.equal((await f.events()).filter((event) => event === "migration").length, 1);
+    });
+  }
 });
 
 test("an interrupted quiescence never starts migration while the worker still runs", async (t) => {
   const f = await fixture(t);
   await f.failNext("fail-scale-worker");
   await assert.rejects(f.run(), injectedFault);
+  const path = join(f.evidence, "native-command-failures.tsv");
+  const receipt = "quiescence-scale\tworker\t9\n";
+  assert.equal(await readFile(path, "utf8"), receipt);
   assert.equal((await f.state()).api, 0);
   assert.equal((await f.state()).worker, 1);
+  assert.equal(existsSync(join(f.evidence, "helm-started")), false);
   assert.deepEqual(await f.events(), ["scale-api"]);
+  // A later failed attempt appends its observation instead of erasing the first.
+  await f.failNext("fail-scale-worker");
+  await assert.rejects(f.run("--resume"), injectedFault);
+  assert.equal(await readFile(path, "utf8"), receipt + receipt);
   await f.run("--resume");
+  assert.equal(await readFile(path, "utf8"), receipt + receipt);
   assert.equal((await f.events()).filter((event) => event === "migration").length, 1);
+});
+
+test("native failure status survives failed diagnostics and receipt writes", async (t) => {
+  for (const [stderr, blockedReceipt] of [
+    ["/dev/full", false],
+    [null, true],
+    ["/dev/full", true],
+    ["pipe", true],
+  ]) {
+    await t.test(`${stderr ?? "normal stderr"}, blocked receipt: ${blockedReceipt}`, async (t) => {
+      let sink;
+      if (stderr === "/dev/full") {
+        try {
+          sink = await open("/dev/full", constants.O_WRONLY);
+        } catch (error) {
+          if (error.code !== "ENOENT") {
+            throw error;
+          }
+          t.skip("requires /dev/full (Linux)");
+          return;
+        }
+        t.after(() => sink.close());
+      }
+      const f = await fixture(t);
+      await f.failNext("fail-scale-worker");
+      // A directory denies receipt append even when the test runs as root.
+      if (blockedReceipt) {
+        await f.failNext("block-failure-receipt");
+      }
+      const status = sink
+        ? (await f.runWithStderr(sink.fd)).status
+        : await (stderr === "pipe" ? f.runWithBrokenPipe() : f.run()).then(
+            () => assert.fail("worker scale must fail"),
+            (error) => error.code,
+          );
+      const path = join(f.evidence, "native-command-failures.tsv");
+      const events = await f.events();
+      t.diagnostic(JSON.stringify({ status, events }));
+      assert.equal(status, 9);
+      assert.equal((await f.state()).api, 0);
+      assert.equal((await f.state()).worker, 1);
+      assert.equal(existsSync(join(f.evidence, "helm-started")), false);
+      assert.deepEqual(events, ["scale-api"]);
+      if (blockedReceipt) {
+        assert.deepEqual(await readdir(path), []);
+      } else {
+        await assertPrivateReceipt(path, "quiescence-scale\tworker\t9\n");
+      }
+    });
+  }
 });
 
 test("failed Helm migration keeps old writers stopped and requires checked history and a terminal Job", async (t) => {
@@ -2331,4 +2581,200 @@ test("preflight-only checks the candidate without preparing or deploying it", as
   assert.equal(existsSync(join(f.evidence, "prepared")), false);
   await assert.rejects(f.run("--resume"), /not a prepared deployment/);
   await assertStoppedBeforeWriters(f);
+});
+
+// The command fixture models API inventory and conditional deletion; it is not a live cluster.
+// kubectl's create output stays off the terminal but is kept in the private evidence
+// directory, so an operator can tell a refusal from a lost or unusable acknowledgement.
+for (const [target, mode, acknowledged, errors, reason, kubectlOutput] of [
+  [
+    "networkpolicy.networking.k8s.io",
+    "conflict",
+    0,
+    "preflight-networkpolicy-create.err",
+    "kubectl reported an error for the create; see preflight-networkpolicy-create.err in the evidence directory.",
+    /^Error from server \(AlreadyExists\): networkpolicies "[^"]+" already exists$/m,
+  ],
+  [
+    "secret",
+    "lost",
+    1,
+    "preflight-secret-create.err",
+    "kubectl reported an error for the create; see preflight-secret-create.err in the evidence directory.",
+    /^create acknowledgement lost: private-response-marker$/m,
+  ],
+  // The Secret's create ends a pipeline, so its status reaches the message as that pipeline's.
+  [
+    "secret",
+    "empty",
+    1,
+    "preflight-secret-create.err",
+    "The create returned no usable UID; kubectl's error output, if any, is in preflight-secret-create.err in the evidence directory.",
+    /^$/,
+  ],
+  [
+    "api",
+    "empty",
+    2,
+    "preflight-api-pod-create.err",
+    "The create returned no usable UID; kubectl's error output, if any, is in preflight-api-pod-create.err in the evidence directory.",
+    /^$/,
+  ],
+  // Bash command substitution would otherwise strip this invalid receipt's newline.
+  [
+    "worker",
+    "newline",
+    3,
+    "preflight-worker-pod-create.err",
+    "The create returned no usable UID; kubectl's error output, if any, is in preflight-worker-pod-create.err in the evidence directory.",
+    /^$/,
+  ],
+]) {
+  test(`cleanup ownership: ${target} ${mode} preserves unconfirmed inventory`, async (t) => {
+    const f = await fixture(t, {
+      controllerOnly: true,
+      preflightPolicy: true,
+      preflightFault: { target, mode },
+    });
+    const failure = await f.run().catch((error) => error);
+    const state = await f.state();
+    const remaining = ["secrets", "pods", "networkpolicies"].flatMap((kind) =>
+      Object.values(state.preflight[kind]),
+    );
+    assert.equal(remaining.length, 1, "only the unconfirmed object survives");
+    assert.equal(state.preflight.deleted.length, acknowledged, "acknowledged objects are cleaned");
+    assert.equal(failure.code, 1);
+    assert.ok(
+      failure.stderr.includes(
+        `/${remaining[0].metadata.name}; no cleanup was attempted for this name. ${reason} Check whether`,
+      ),
+    );
+    assert.match(
+      failure.stderr,
+      /Check whether this object remains in the selected namespace\. Correct the failure and use a fresh evidence directory\. This run stopped no OCC writer\./,
+    );
+    assert.match(await readFile(join(f.evidence, errors), "utf8"), kubectlOutput);
+    assert.equal(statSync(join(f.evidence, errors)).mode & 0o777, 0o600);
+    assert.ok(!failure.stderr.includes(remaining[0].metadata.uid), "create response stays private");
+    assert.doesNotMatch(failure.stdout + failure.stderr, /private-(?:delete-)?response-marker/);
+    assert.deepEqual(await f.events(), [], "no writer stops or migration");
+  });
+}
+
+test("cleanup ownership: a Secret manifest kubectl quotes stays out of the evidence", async (t) => {
+  const f = await fixture(t, {
+    controllerOnly: true,
+    preflightPolicy: true,
+    preflightFault: { target: "secret", mode: "decode" },
+  });
+  const failure = await f.run().catch((error) => error);
+  const state = await f.state();
+  assert.equal(failure.code, 1);
+  assert.match(
+    failure.stderr,
+    /ownership unconfirmed for secret\/[^;]+; no cleanup was attempted for this name\. kubectl reported an error for the create; see preflight-secret-create\.err in the evidence directory\./,
+  );
+  // kubectl refused before any request; only the NetworkPolicy existed and is cleaned.
+  assert.deepEqual(state.preflight.secrets, {});
+  assert.equal(state.preflight.deleted.length, 1);
+  // The diagnosis survives, but not the Installation bytes the Secret carried.
+  const errors = await readFile(join(f.evidence, "preflight-secret-create.err"), "utf8");
+  assert.match(errors, /^error: unable to decode "STDIN": Object 'Kind' is missing in '/);
+  const installation = await readFile(join(f.evidence, "candidate-installation.yaml"));
+  assert.ok(installation.length > 24, "the fixture Installation is long enough to redact");
+  assert.ok(!errors.includes(installation.toString("base64")), "Secret data stays out");
+  assert.match(errors, /\[redacted\]/);
+  assert.deepEqual(await f.events(), []);
+});
+
+test("cleanup ownership: same-name replacement survives EXIT cleanup", async (t) => {
+  const f = await fixture(t, {
+    controllerOnly: true,
+    preflightPolicy: true,
+    preflightFault: { target: "api", mode: "replacement" },
+    preflightResults: {
+      worker: { phase: "Failed", log: "primary startup failure\n" },
+    },
+  });
+  const failure = await f.run().catch((error) => error);
+  const state = await f.state();
+  assert.equal(Object.values(state.preflight.pods).length, 1);
+  assert.equal(Object.values(state.preflight.pods)[0].foreign, true);
+  assert.equal(state.preflight.deleted.length, 3, "cleanup continues for other owned objects");
+  assert.equal(failure.code, 1);
+  assert.match(failure.stderr, /primary startup failure/);
+  // The warning says the identity did not match, and the API's answer stays private.
+  assert.match(
+    failure.stderr,
+    /could not confirm cleanup of pod\/[^:]+: an object with a different UID now holds this name, so it was left in place; see preflight-cleanup\.err in the evidence directory\./,
+  );
+  assert.match(
+    await readFile(join(f.evidence, "preflight-cleanup.err"), "utf8"),
+    /^pod\/[^\n]+-api-[^\n]+:\nError from server \(Conflict\): .*Precondition failed: UID in precondition: /m,
+  );
+  assert.doesNotMatch(failure.stdout + failure.stderr, /private-(?:delete-)?response-marker/);
+  assert.deepEqual(await f.events(), []);
+});
+
+test("cleanup ownership: a refused DELETE is reported as a failed request", async (t) => {
+  const f = await fixture(t, {
+    controllerOnly: true,
+    preflightPolicy: true,
+    preflightFault: { target: "secret", mode: "delete-refused" },
+    preflightResults: {
+      worker: { phase: "Failed", log: "primary startup failure\n" },
+    },
+  });
+  const failure = await f.run().catch((error) => error);
+  const state = await f.state();
+  assert.equal(failure.code, 1);
+  assert.match(failure.stderr, /primary startup failure/);
+  assert.equal(Object.values(state.preflight.secrets).length, 1);
+  assert.equal(state.preflight.deleted.length, 3, "cleanup continues for other owned objects");
+  assert.match(
+    failure.stderr,
+    /could not confirm cleanup of secret\/[^:]+: the delete request failed; see preflight-cleanup\.err in the evidence directory\./,
+  );
+  assert.doesNotMatch(failure.stderr, /different UID/);
+  const errors = await readFile(join(f.evidence, "preflight-cleanup.err"), "utf8");
+  assert.match(
+    errors,
+    /^secret\/[^\n]+:\nError from server \(Forbidden\): secrets "[^"]+" is forbidden: /m,
+  );
+  assert.equal(statSync(join(f.evidence, "preflight-cleanup.err")).mode & 0o777, 0o600);
+  assert.doesNotMatch(failure.stdout + failure.stderr, /private-(?:delete-)?response-marker/);
+  assert.deepEqual(await f.events(), []);
+});
+
+// Each refused DELETE appends its answer, so the first one is still there to read.
+test("cleanup ownership: every refused DELETE keeps its answer in the evidence", async (t) => {
+  const f = await fixture(t, {
+    controllerOnly: true,
+    preflightPolicy: true,
+    preflightFault: { target: "pod", mode: "delete-refused" },
+    preflightResults: {
+      worker: { phase: "Failed", log: "primary startup failure\n" },
+    },
+  });
+  const failure = await f.run().catch((error) => error);
+  const state = await f.state();
+  assert.equal(failure.code, 1);
+  assert.equal(Object.values(state.preflight.pods).length, 2);
+  const errors = await readFile(join(f.evidence, "preflight-cleanup.err"), "utf8");
+  for (const component of ["api", "worker"]) {
+    assert.match(
+      failure.stderr,
+      new RegExp(
+        `could not confirm cleanup of pod/[^:]+-${component}-[^:]+: the delete request failed;`,
+      ),
+    );
+    assert.match(
+      errors,
+      new RegExp(
+        `^pod/[^\\n]+-${component}-[^\\n]+:\\nError from server \\(Forbidden\\): pods "`,
+        "m",
+      ),
+    );
+  }
+  assert.doesNotMatch(failure.stdout + failure.stderr, /private-(?:delete-)?response-marker/);
 });

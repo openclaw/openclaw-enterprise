@@ -73,6 +73,12 @@ import { createOccLogger, emitOccLogEvent } from "../../apps/controller/src/logg
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
 import { conformanceKubeconfig } from "../helpers/kubernetes-compute.mjs";
 import {
+  unboundReferenceRefusal,
+  unreadableSlackTokenRefusal,
+  unsubstitutedFallbackRefusal,
+  unsubstitutedReferenceRefusal,
+} from "../helpers/refusal-text.mjs";
+import {
   tenant,
   apiKeyAuth,
   authContext,
@@ -1000,6 +1006,8 @@ function dedicatedFirstDeployFixture({
   modelEndpoint,
   sandboxDriver,
   openShellGit,
+  credentialGatewayDriver,
+  context,
   revision: revisionOverrides = {},
 } = {}) {
   const state = {
@@ -1038,6 +1046,7 @@ function dedicatedFirstDeployFixture({
     {
       sandboxDriver,
       ...(openShellGit === undefined ? {} : { openShellGit }),
+      credentialGatewayDriver,
       nodeEnrollment: {
         async createSetup() {
           state.setupCalls++;
@@ -1409,7 +1418,7 @@ function dedicatedFirstDeployFixture({
     };
   };
   driver.apiClients = Promise.resolve(clients);
-  const prepare = () => driver.prepareRevision(revision, authContext(revision));
+  const prepare = () => driver.prepareRevision(revision, context ?? authContext(revision));
   const markReady = (name) => {
     const object = read(
       "Deployment",
@@ -1428,6 +1437,7 @@ function dedicatedFirstDeployFixture({
     state,
     driver,
     revision,
+    context,
     namespace,
     gatewayName,
     agentName,
@@ -1613,21 +1623,72 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
   };
   const withdrawals = [];
   let withdrawalFailure;
+  const nativeConfiguration = createHarnessConfiguration("openclaw", "team/model");
+  nativeConfiguration.models.providers.openai.baseUrl = "https://provider.example.test/v1";
+  nativeConfiguration.models.providers.openai.models[0].baseUrl =
+    "https://models.example.test:443/inference/v1/";
+  nativeConfiguration.models.providers.openai.api = "openai-completions";
+  const sourceType = {
+    type: "openai",
+    config: [],
+    secrets: [{ name: "api_key", required: true }],
+    rotation: "none",
+    harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
+  };
+  const snapshot = {
+    method: "credential_source",
+    sourceId: "cs_native_custom",
+    credentialGatewayId: "native-credentials",
+    sourceType: "openai",
+    loginMode: "api_key",
+  };
+  const source = {
+    id: snapshot.sourceId,
+    name: "Native model",
+    createdAt: tenant.createdAt,
+    namespaceId: tenant.id,
+    ownerCapability: "credential_gateway",
+    driverId: snapshot.credentialGatewayId,
+    type: "openai",
+    config: { base_url: "https://models.example.test/inference/v1" },
+    secrets: {},
+    state: "ready",
+  };
   const fixture = dedicatedFirstDeployFixture({
     sandboxDriver,
+    credentialGatewayDriver: {
+      id: snapshot.credentialGatewayId,
+      capability: "credential_gateway",
+      async listSourceTypes() {
+        return [sourceType];
+      },
+      async attachForRevision() {
+        return [{ sourceId: source.id, ref: "native-provider" }];
+      },
+      async attachmentStatus() {
+        return [{ sourceId: source.id, state: "ready" }];
+      },
+    },
+    context: { harnessAuth: { ...snapshot, source }, credentialSources: [source] },
     revision: {
       harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" },
       sandboxDriverId: sandboxDriver.id,
-      configuration: admitLoggingConfiguration(
-        createHarnessConfiguration("openclaw", "gpt-5"),
-        "info",
-      ),
+      harnessAuth: snapshot,
+      credentialSources: [
+        {
+          sourceId: source.id,
+          credentialGatewayId: snapshot.credentialGatewayId,
+          sourceType: source.type,
+        },
+      ],
+      configuration: admitLoggingConfiguration(nativeConfiguration, "info"),
       plugins: undefined,
     },
   });
   const {
     driver,
     revision,
+    context,
     state,
     namespace,
     gatewayName,
@@ -1682,6 +1743,15 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
       ({ name }) => name === "OPENCLAW_NATIVE_INFERENCE_CONFIG",
     ).value,
   );
+  assert.equal(
+    nativeConfig.models.providers.openai.baseUrl,
+    "https://models.example.test/inference/v1",
+  );
+  assert.equal(
+    nativeConfig.models.providers.openai.models[0].baseUrl,
+    "https://models.example.test/inference/v1",
+  );
+  assert.equal(nativeConfig.models.providers.openai.models[0].api, "openai-completions");
   assert.deepEqual(nativeConfig.models.providers.openai.apiKey, {
     source: "env",
     provider: "model",
@@ -1689,7 +1759,7 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
   });
   assert.deepEqual(
     nativeConfig.models.providers.openai.models.map(({ id }) => id),
-    ["gpt-5"],
+    ["team/model"],
   );
   // The provider's observed Pod readiness and enrolled node are independent of provisioning.
   // Until the provider's Pod is Ready, the wait has no named reason.
@@ -1741,12 +1811,9 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
   assert.equal(withdrawals.length, 1);
   assert.deepEqual(read("NetworkPolicy", stale.metadata.name), stale);
   assert.deepEqual(deleted, []);
-  await assert.rejects(
-    driver.activateRevision(revision, authContext(revision)),
-    /gateway is not ready/,
-  );
+  await assert.rejects(driver.activateRevision(revision, context), /gateway is not ready/);
   markReady(gatewayName);
-  await driver.activateRevision(revision, authContext(revision));
+  await driver.activateRevision(revision, context);
 
   assert.deepEqual(deleted, [stale.metadata.name]);
   assert.equal(objects.has(key("NetworkPolicy", `allow-gateway-agent-${suffix}`)), false);
@@ -8953,8 +9020,11 @@ test("credential-source authentication renders no model Secret and requires the 
   const nativeRevision = {
     ...revision,
     harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" },
-    configuration: createHarnessConfiguration("openclaw", "gpt-4o-mini"),
+    configuration: createHarnessConfiguration("openclaw", "team/model"),
   };
+  nativeRevision.configuration.models.providers.openai.baseUrl =
+    "https://models.example.test/inference/v1";
+  nativeRevision.configuration.models.providers.openai.api = "openai-completions";
   driver.validateHarnessAuth(
     nativeRevision.harness,
     snapshot,
@@ -10193,14 +10263,14 @@ test("native channel providers require Secret bindings and project them only to 
         },
         { SLACK_APP_TOKEN: secretBindings.SLACK_APP_TOKEN },
       ),
-    // The caller fixes its own Configuration, so admission names the channel, not the reference.
+    // A row stored before Configuration save checked it: admission names the setting and the
+    // missing binding, as save does.
     {
       name: "ConfigurationHarnessError",
-      message:
-        "Configuration setting channels.slack uses a credential reference without a matching Configuration Secret binding: bind each referenced name in secretBindings.",
+      message: unboundReferenceRefusal("channels.slack.botToken", "SLACK_BOT_TOKEN"),
     },
   );
-  // Agent save passes null bindings: a Configuration may stage its bindings after its values.
+  // Agent save passes null bindings: OCC's Configuration save runs the channel binding rule.
   driver.validateHarnessAuth(
     revision.harness,
     revision.harnessAuth,
@@ -10215,6 +10285,171 @@ test("native channel providers require Secret bindings and project them only to 
     },
     null,
   );
+  // A binding name is an own key (an inherited one such as "constructor" binds nothing), and an
+  // env SecretRef id that is not a plain name, or is longer than 32 characters, is quoted and
+  // shortened, so the message keeps its 256-character cap.
+  const unboundId = `constructor ${"x".repeat(300)}`;
+  for (const [id, shown] of [
+    ["constructor", "constructor"],
+    [unboundId, `"constructor ${"x".repeat(19)}…"`],
+    ["slack-bot", '"slack-bot"'],
+    ["SLACK_BOT_TOKEN_FOR_THE_WORKSPACE_ACCOUNT", '"SLACK_BOT_TOKEN_FOR_THE_WORKSPA…"'],
+  ]) {
+    const values = {
+      agents: { defaults: { model: "codex/gpt-5" } },
+      channels: {
+        msteams: { accounts: [{ appPassword: { source: "env", provider: "default", id } }] },
+      },
+    };
+    driver.validateHarnessAuth(revision.harness, revision.harnessAuth, values, null);
+    assert.throws(
+      () => driver.validateHarnessAuth(revision.harness, revision.harnessAuth, values, {}),
+      (error) => {
+        assert.equal(error.name, "ConfigurationHarnessError");
+        // A long name shortens the setting path to fit the cap.
+        assert.match(error.message, /^Configuration setting channels\.msteams\.accounts/);
+        assert.ok(
+          error.message.endsWith(
+            ` references ${shown} without a Configuration Secret binding: bind ${shown} in secretBindings to an environment-backed Secret, or remove the reference.`,
+          ),
+          error.message,
+        );
+        assert.ok(error.message.length <= 256, error.message);
+        return true;
+      },
+    );
+  }
+  // Admission reads a string as the runtime substitutes it (finding 2475): a reference anywhere
+  // in the text, or with a `:-fallback`, still needs a binding, since the fallback would replace
+  // the unset name. The `$${NAME}` escape is literal text.
+  const slackToken = (botToken) => ({
+    agents: { defaults: { model: "codex/gpt-5" } },
+    channels: {
+      slack: {
+        appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+        botToken,
+      },
+    },
+  });
+  const appBinding = { SLACK_APP_TOKEN: secretBindings.SLACK_APP_TOKEN };
+  // In a secret-input field such as botToken, a whole `$NAME` is an environment SecretRef too
+  // (finding 2476).
+  for (const botToken of [
+    "xoxb-${SLACK_BOT_TOKEN}",
+    "${SLACK_BOT_TOKEN:-}",
+    "${SLACK_APP_TOKEN}${SLACK_BOT_TOKEN:-xoxb-fallback}",
+    " $SLACK_BOT_TOKEN ",
+  ]) {
+    assert.throws(
+      () =>
+        driver.validateHarnessAuth(
+          revision.harness,
+          revision.harnessAuth,
+          slackToken(botToken),
+          appBinding,
+        ),
+      {
+        name: "ConfigurationHarnessError",
+        message: unboundReferenceRefusal("channels.slack.botToken", "SLACK_BOT_TOKEN"),
+      },
+      botToken,
+    );
+  }
+  for (const botToken of ["xoxb-$${SLACK_BOT_TOKEN}", "$SLACK_APP_TOKEN"]) {
+    driver.validateHarnessAuth(
+      revision.harness,
+      revision.harnessAuth,
+      slackToken(botToken),
+      appBinding,
+    );
+  }
+  // A `${` the runtime does not substitute would reach Slack as written: a secret-input field
+  // refuses it whatever the bindings hold (finding 2477). That text may be the token itself, so
+  // the message shows it only as a plain `${name}`, or only the name of `${NAME-text}`; the
+  // message is also the deployment diagnostic.
+  const token = "xoxb-1234567890-0987654321-AbCdEfGhIjKl";
+  const tokenForm = unsubstitutedReferenceRefusal("channels.slack.botToken");
+  for (const [botToken, message] of [
+    ["${slack_bot}", unsubstitutedReferenceRefusal("channels.slack.botToken", "${slack_bot}")],
+    [
+      "${SLACK_BOT_TOKEN-xoxb-fallback}",
+      unsubstitutedFallbackRefusal("channels.slack.botToken", "SLACK_BOT_TOKEN"),
+    ],
+    [`\${${token}}`, tokenForm],
+    [`\${${token}`, tokenForm],
+    // An identifier-shaped token: only a lowercase name is shown (finding 2485).
+    ["${Zr9kq2LmP4xT7vB1nW3c}", tokenForm],
+    ["${Zr9kq2LmP4xT7vB1n1234567890}", tokenForm],
+  ]) {
+    assert.throws(
+      () =>
+        driver.validateHarnessAuth(revision.harness, revision.harnessAuth, slackToken(botToken), {
+          ...appBinding,
+          slack_bot: secretBindings.SLACK_BOT_TOKEN,
+          SLACK_BOT_TOKEN: secretBindings.SLACK_BOT_TOKEN,
+        }),
+      (error) => {
+        assert.equal(error.name, "ConfigurationHarnessError");
+        assert.equal(error.message, message, botToken);
+        assert.equal(error.message.includes("1234567890"), false, botToken);
+        return true;
+      },
+    );
+  }
+  // Named Slack accounts have the same secret-input fields, nested `relay.authToken` included.
+  const slackAccount = (account) => ({
+    agents: { defaults: { model: "codex/gpt-5" } },
+    channels: { slack: { accounts: { ops: account } } },
+  });
+  assert.throws(
+    () =>
+      driver.validateHarnessAuth(
+        revision.harness,
+        revision.harnessAuth,
+        slackAccount({ botToken: "$OPS_BOT" }),
+        {},
+      ),
+    {
+      name: "ConfigurationHarnessError",
+      message: unboundReferenceRefusal("channels.slack.accounts.ops.botToken", "OPS_BOT"),
+    },
+  );
+  assert.throws(
+    () =>
+      driver.validateHarnessAuth(
+        revision.harness,
+        revision.harnessAuth,
+        slackAccount({ relay: { authToken: "${relay}" } }),
+        {},
+      ),
+    {
+      name: "ConfigurationHarnessError",
+      message: unsubstitutedReferenceRefusal(
+        "channels.slack.accounts.ops.relay.authToken",
+        "${relay}",
+      ),
+    },
+  );
+  // Admission refuses a Slack token SecretRef the Slack Channel Driver cannot read, as save does
+  // (finding 2514).
+  assert.throws(
+    () =>
+      driver.validateHarnessAuth(
+        revision.harness,
+        revision.harnessAuth,
+        slackAccount({ botToken: { source: "file", provider: "default", id: "/run/slack/bot" } }),
+        {},
+      ),
+    {
+      name: "ConfigurationHarnessError",
+      message: unreadableSlackTokenRefusal("channels.slack.accounts.ops.botToken", "secretRef"),
+    },
+  );
+  // Outside a secret-input field the runtime keeps `$NAME` and other `${` text as written, and a
+  // `:-fallback` fills an unset name, so none of them needs a binding.
+  for (const name of ["$OPS", "${x}", "${OPS_NAME:-ops}"]) {
+    driver.validateHarnessAuth(revision.harness, revision.harnessAuth, slackAccount({ name }), {});
+  }
 
   const ipv6 = createKubernetesComputeDriver(
     options({
@@ -12378,6 +12613,9 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
         undefined,
         "MODEL_PROBE_CPU_STARVED",
       ],
+      // Children of the killed probe can still write into its directory, so its
+      // removal fails; the classified result must still be logged and published.
+      ["cap exceeded while waiting for CPU, cleanup fails", undefined, "MODEL_PROBE_CPU_STARVED"],
     ]) {
       const accepted = failureCode === undefined;
       const upfront = variant === "credentials rejected upfront";
@@ -12402,8 +12640,10 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
         const childSignals = [];
         const exits = [];
         const timers = [];
+        const removals = [];
         let probeTemplate;
         let pressureReads = 0;
+        let throttledReads = 0;
         let started = false;
         let held = false;
         let statusHandler;
@@ -12462,8 +12702,15 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
                 writeFileSync(path, value) {
                   files.set(path, value);
                 },
-                rmSync() {},
-                // A 500m CPU limit; waiting grows 100 s across a starved probe.
+                rmSync(path, options) {
+                  removals.push([path, { ...options }]);
+                  if (variant.endsWith("cleanup fails")) {
+                    throw Object.assign(new Error("directory not empty /isolated-probe"), {
+                      code: "ENOTEMPTY",
+                    });
+                  }
+                },
+                // A 500m CPU limit; each wait counter grows 100 s across a starved probe.
                 readFileSync(path) {
                   const starved =
                     variant.includes("waiting for CPU") || variant.includes("throttled");
@@ -12478,8 +12725,9 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
                     return `some avg10=0.00 avg60=0.00 avg300=0.00 total=${total}\nfull total=0\n`;
                   }
                   if (path === "/sys/fs/cgroup/cpu.stat") {
-                    const throttled = starved ? pressureReads++ * 1e8 : 0;
-                    return `usage_usec 1\nnr_throttled 1\nthrottled_usec ${throttled}\n`;
+                    // 1000 throttled 100 ms periods bound the 100 s of throttled time.
+                    const reads = starved ? throttledReads++ : 0;
+                    return `usage_usec 1\nnr_throttled ${reads * 1000}\nthrottled_usec ${reads * 1e8}\n`;
                   }
                   throw Object.assign(new Error("unexpected read"), { code: "ENOENT" });
                 },
@@ -12672,9 +12920,23 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
           }
         }
         assert.deepEqual([probeLog.code, probeLog.capMs], [failureCode ?? "READY", 110_000]);
+        // The probe directory removal retries briefly; a failure that remains is
+        // logged as its error code only, never its message or path.
+        assert.deepEqual(removals, [
+          ["/isolated-probe", { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }],
+        ]);
         assert.equal(
-          probeLog.cpuWaitMs,
-          variant.includes("waiting for CPU") || variant.includes("throttled") ? 100_000 : 0,
+          probeLog.cleanupError,
+          variant.endsWith("cleanup fails") ? "ENOTEMPTY" : undefined,
+        );
+        assert.doesNotMatch(probeLines[0], /isolated-probe|not empty/);
+        const waitMs =
+          variant.includes("waiting for CPU") || variant.includes("throttled") ? 100_000 : 0;
+        assert.equal(probeLog.cpuWaitMs, waitMs);
+        // The event records each counter's delta; without pressure accounting PSI has none.
+        assert.deepEqual(
+          [probeLog.pressureWaitMs, probeLog.throttledWaitMs],
+          [variant.includes("pressure accounting") ? null : waitMs, waitMs],
         );
         assert.doesNotMatch(
           probeLines[0],
@@ -13999,6 +14261,7 @@ test("revision lifecycle rejects another driver or missing identity before clust
         "Configuration setting models.providers.openai.models.0 must set api, baseUrl, positive integer contextWindow and maxTokens, and non-negative cost input, output, cacheRead and cacheWrite (here or on models.providers.openai) on Dedicated OpenClaw.",
     },
   );
+  // A Secret grant must not let an Agent editor choose where the raw key is sent.
   assert.throws(
     () =>
       production.validateHarnessAuth(
@@ -14010,7 +14273,8 @@ test("revision lifecycle rejects another driver or missing identity before clust
             providers: {
               openai: {
                 ...dedicatedNativeConfiguration.models.providers.openai,
-                baseUrl: "https://models.example.test/v1",
+                baseUrl: "https://models.example.test/inference/v1",
+                api: "openai-completions",
               },
             },
           },
@@ -14019,7 +14283,7 @@ test("revision lifecycle rejects another driver or missing identity before clust
     {
       name: "ConfigurationHarnessError",
       message:
-        "Configuration setting models.providers.openai.models.0.baseUrl (or models.providers.openai.baseUrl) must be https://api.openai.com/v1 on Dedicated OpenClaw.",
+        "Configuration setting models.providers.openai.models.0.baseUrl (or models.providers.openai.baseUrl) must be https://api.openai.com/v1 unless harnessAuth.method is credential_source.",
     },
   );
   // Each dedicated OpenClaw catalog refusal names the setting the caller fixes (finding 1116);
@@ -14055,8 +14319,20 @@ test("revision lifecycle rejects another driver or missing identity before clust
     [
       withEntry({ baseUrl: "not a url" }),
       "models.providers.openai.models.0.baseUrl",
-      "(or models.providers.openai.baseUrl) must be https://api.openai.com/v1 on Dedicated OpenClaw",
+      "(or models.providers.openai.baseUrl) must be an HTTPS endpoint on port 443 ending in /v1 without credentials, query, fragment, or wildcard on Dedicated OpenClaw",
     ],
+    ...[
+      "http://models.example.test/v1",
+      "https://models.example.test:8443/v1",
+      "https://models.example.test/v1?key=forbidden",
+      "https://models.example.test/v1#fragment",
+      "https://*.example.test/v1",
+      "https://models.example.test/other",
+    ].map((baseUrl) => [
+      withEntry({ baseUrl }),
+      "models.providers.openai.models.0.baseUrl",
+      "(or models.providers.openai.baseUrl) must be an HTTPS endpoint on port 443 ending in /v1 without credentials, query, fragment, or wildcard on Dedicated OpenClaw",
+    ]),
     [
       withEntry({ reasoning: "yes" }),
       "models.providers.openai.models.0.reasoning",
