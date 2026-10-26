@@ -53,13 +53,14 @@ import {
   BROKER_PROXY_LOCAL_BINDING,
   BROKER_PROXY_MODE,
   COMPUTE_REPOSITORY_UNSUPPORTED,
+  COMPUTE_TOPOLOGY_REPOSITORY_UNSUPPORTED,
   CREDENTIAL_PROXY_INSTALLATION_ACCESS,
   DEPENDENCY_UNAVAILABLE,
   REPOSITORY_ACCESS_OR_BINDINGS,
   REPOSITORY_SELECTION_NOT_APPROVED,
   SAVED_REPOSITORY_SELECTION_NOT_APPROVED,
-  sentIdHidden,
 } from "../helpers/refusal-text.mjs";
+import { assertSameAnswer } from "../helpers/refusal-answers.mjs";
 
 const driverId = "repository-credentials";
 const backendId = "repository-provider";
@@ -584,10 +585,7 @@ test("Repository discovery supports a dedicated-only Compute Driver without admi
       });
       assert.equal(refused.status, 409, JSON.stringify(refused));
       assert.equal(refused.error.code, "RESOURCE_CONFLICT");
-      assert.equal(
-        refused.error.message,
-        "The selected Compute Driver cannot deliver repository credentials to this Harness topology.",
-      );
+      assert.equal(refused.error.message, COMPUTE_TOPOLOGY_REPOSITORY_UNSUPPORTED);
       assert.deepEqual((await f.request("GET", f.collection)).data, []);
       continue;
     }
@@ -1051,17 +1049,11 @@ test("Repository refusals wait for the Agent grant: a missing and an unreadable 
     const named = await reconfigured.request(method, `${f.collection}/${agent.id}${suffix}`, body);
     assert.equal(named.status, status, JSON.stringify(named));
     assert.equal(named.error.message, message);
-    const answers = [];
-    for (const id of [agent.id, missing]) {
-      const response = await outsider(method, `${f.collection}/${id}${suffix}`, body);
-      answers.push({
-        status: response.status,
-        code: response.error.code,
-        message: sentIdHidden(response.error.message, id),
-      });
-    }
-    assert.equal(answers[0].status, 403, JSON.stringify(answers[0]));
-    assert.deepEqual(answers[1], answers[0], `${method} ${suffix}`);
+    await assertSameAnswer(
+      (id) => outsider(method, `${f.collection}/${id}${suffix}`, body),
+      [agent.id, missing],
+      { label: `${method} ${suffix}` },
+    );
   }
   // Agent create names the refusal only after the Namespace grant: an outsider gets the same
   // answer for this Namespace and for one that does not exist.
@@ -1069,24 +1061,12 @@ test("Repository refusals wait for the Agent grant: a missing and an unreadable 
   const named = await reconfigured.request("POST", f.collection, refusedCreate);
   assert.equal(named.status, 400, JSON.stringify(named));
   assert.equal(named.error.message, REPOSITORY_SELECTION_NOT_APPROVED);
-  await assertNamespaceAnswersAlike(outsider, f.namespace.id, "", refusedCreate);
+  await assertSameAnswer(
+    (id) => outsider("POST", `/namespaces/${id}/agents`, refusedCreate),
+    [f.namespace.id, `ns_${randomUUID()}`],
+    { label: "POST agents" },
+  );
 });
-
-// An outsider's request to an existing Namespace and to a missing one gets the same answer, each
-// answer's own Namespace ID hidden: a refusal after the grant says nothing about existence.
-async function assertNamespaceAnswersAlike(outsider, namespaceId, suffix, body) {
-  const answers = [];
-  for (const id of [namespaceId, `ns_${randomUUID()}`]) {
-    const response = await outsider("POST", `/namespaces/${id}/agents${suffix}`, body);
-    answers.push({
-      status: response.status,
-      code: response.error.code,
-      message: sentIdHidden(response.error.message, id),
-    });
-  }
-  assert.equal(answers[0].status, 403, JSON.stringify(answers[0]));
-  assert.deepEqual(answers[1], answers[0], `POST agents${suffix}`);
-}
 
 test("Unsupported Compute refuses repository deployment while ordinary deployment remains optional", async (t) => {
   const f = await fixture(t, { compute: sshCompute() });
@@ -1482,14 +1462,12 @@ test("Provisioning rejects a forbidden repository profile before queueing or cre
   assert.equal(response.error.message, REPOSITORY_SELECTION_NOT_APPROVED);
   assert.deepEqual((await f.request("GET", f.collection)).data, []);
   // The refusal follows the Namespace's provisioning grants (finding 2536).
-  await assertNamespaceAnswersAlike(
-    await f.requestWithoutGrants(f.app),
-    f.namespace.id,
-    "/provision",
-    {
-      ...body,
-      requestId: `req_${randomUUID()}`,
-    },
+  const outsider = await f.requestWithoutGrants(f.app);
+  const outsiderBody = { ...body, requestId: `req_${randomUUID()}` };
+  await assertSameAnswer(
+    (id) => outsider("POST", `/namespaces/${id}/agents/provision`, outsiderBody),
+    [f.namespace.id, `ns_${randomUUID()}`],
+    { label: "POST agents/provision" },
   );
 });
 

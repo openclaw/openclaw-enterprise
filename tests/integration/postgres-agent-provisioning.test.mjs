@@ -50,7 +50,9 @@ import {
   AGENT_NAME_CONFLICT,
   BROKER_PROXY_DISABLED,
   COMPUTE_REPOSITORY_UNSUPPORTED,
+  COMPUTE_TOPOLOGY_REPOSITORY_UNSUPPORTED,
   DEPENDENCY_UNAVAILABLE,
+  PROVISIONING_NOT_COMPLETED,
   SAVED_REPOSITORY_SELECTION_NOT_APPROVED,
 } from "../helpers/refusal-text.mjs";
 
@@ -958,41 +960,82 @@ function provisioningRepositoryPolicy(namespaceId, profiles) {
   );
 }
 
-test(
-  "provisioning worker creates Configuration and Agent from existing Secrets, then hands off one revision",
-  { ...requiresPostgres, timeout: 60_000 },
-  async (context) => {
-    const initial = await createFixture(context);
-    const namespace = await initial.bootstrapNamespace();
-    const repositoryBindings = [{ repositoryRef: "project", profile: "git-read" }];
-    const repositoryAccess = {
-      defaultProfile: "git-read",
-      repositories: [{ repositoryRef: "project" }],
-    };
-    const repoDriver = provisioningRepositoryPolicy(namespace.id, ["git-read", "git-write"]);
-    // Reuse the established runtime fixture, but exercise real repository policy and
-    // Kubernetes topology admission without contacting either external system.
-    const topology = createTestKubernetesComputeDriver("provisioning-topology", {
-      repositoryCredentials: true,
-    });
-    const computeDriver = initial.computeDriver;
-    computeDriver.validateRepositoryCredentials =
-      topology.validateRepositoryCredentials.bind(topology);
-    const fixture = await createFixture(context, {
+// A fresh Namespace with its provisioning Secrets, and a fixture that exercises real repository
+// policy for `project` (approved for `profiles`) and Kubernetes topology admission (`topologyId`,
+// with the Sandbox Driver in `options`, if any) without contacting either external system.
+// `compose` opens another app on the same Drivers, as after a change of the Installation's
+// selection.
+async function repositoryProvisioningFixture(
+  context,
+  topologyId,
+  { profiles = ["git-read"], ...options } = {},
+) {
+  const initial = await createFixture(context);
+  const namespace = await initial.bootstrapNamespace();
+  const repoDriver = provisioningRepositoryPolicy(namespace.id, profiles);
+  const topology = createTestKubernetesComputeDriver(topologyId, {
+    repositoryCredentials: true,
+    ...(options.sandboxDriver === undefined ? {} : { sandboxDriver: options.sandboxDriver }),
+  });
+  // Reuse the established runtime fixture with the topology's repository admission.
+  const computeDriver = initial.computeDriver;
+  computeDriver.validateRepositoryCredentials =
+    topology.validateRepositoryCredentials.bind(topology);
+  const compose = (composeOptions) =>
+    createFixture(context, {
       computeDriver,
       configurationDriver: initial.configurationDriver,
       secretDriver: initial.secretDriver,
       repoDriver,
-      stopAfterProvisioning: true,
+      ...composeOptions,
     });
-    const secrets = await createProvisioningSecrets(fixture, namespace.id);
+  const fixture = await compose(options);
+  const secrets = await createProvisioningSecrets(fixture, namespace.id);
+  return { namespace, repoDriver, computeDriver, fixture, secrets, compose };
+}
+
+// A provisioning request for `project` at git-read, with no Plugin approvers.
+function repositoryProvisioningBody(namespaceId, secrets, overrides = {}) {
+  return {
+    ...provisioningBody(namespaceId, secrets, {
+      repositoryAccess: {
+        defaultProfile: "git-read",
+        repositories: [{ repositoryRef: "project" }],
+      },
+      ...overrides,
+    }),
+    pluginApprovers: [],
+  };
+}
+
+// Runs the worker until the provisioning job records an error, then returns its row.
+async function workerFailure(fixture, namespaceId, requestId, change) {
+  await fixture.startWorker();
+  try {
+    return await waitFor(`the worker to refuse the provisioning job (${change})`, async () => {
+      const row = await provisioningRow(fixture.pool, namespaceId, requestId);
+      return row.progress.error === undefined ? undefined : row;
+    });
+  } finally {
+    await fixture.stopWorker();
+  }
+}
+
+test(
+  "provisioning worker creates Configuration and Agent from existing Secrets, then hands off one revision",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    const { namespace, fixture, secrets } = await repositoryProvisioningFixture(
+      context,
+      "provisioning-topology",
+      { profiles: ["git-read", "git-write"], stopAfterProvisioning: true },
+    );
+    const repositoryBindings = [{ repositoryRef: "project", profile: "git-read" }];
     const secretCreateCallCount = fixture.secretDriver.calls.filter(
       ({ operation }) => operation === "create",
     ).length;
-    const body = {
-      ...provisioningBody(namespace.id, secrets, { repositoryAccess }),
-      pluginApprovers: [],
-    };
+    const body = repositoryProvisioningBody(namespace.id, secrets);
+    const { repositoryAccess } = body;
     const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
       body,
     });
@@ -1122,138 +1165,74 @@ test(
   },
 );
 
-// Finding 2536: accepted work whose repository access the Installation can no longer deliver
-// fails permanently, and its status names why instead of "could not complete". Both refusals
-// have fixed text that names no repository: the Compute Driver lost repository credentials, or
-// the repository policy no longer approves the saved selection (a 409 about saved state, not
-// the request's 400).
+// Accepted work whose repository access the Installation can no longer deliver fails before it
+// creates its Agent: the worker rechecks what the request checked. Each case changes one thing
+// after admission. Finding 2536: when the Compute Driver lost repository credentials, or the
+// repository policy no longer approves the saved selection (a 409 about saved state, not the
+// request's 400), the status names the refusal in fixed text that names no repository. Finding
+// 1145: a Compute topology refusal keeps the fixed status text, and retry answers Agent create's
+// 409.
 test(
-  "a provisioning job whose saved repository access can no longer be delivered names the refusal in its status",
+  "a provisioning job whose saved repository access can no longer be delivered fails before its Agent",
   { ...requiresPostgres, timeout: 60_000 },
   async (context) => {
-    for (const [change, message] of [
-      ["compute", COMPUTE_REPOSITORY_UNSUPPORTED],
-      ["policy", SAVED_REPOSITORY_SELECTION_NOT_APPROVED],
+    const { namespace, repoDriver, computeDriver, fixture, secrets } =
+      await repositoryProvisioningFixture(context, "provisioning-saved-access");
+    const validateRepositoryCredentials = computeDriver.validateRepositoryCredentials;
+    for (const { change, refuse, message, retry } of [
+      {
+        change: "compute",
+        // The Installation now selects a Compute Driver without repository credentials.
+        refuse: () => delete computeDriver.validateRepositoryCredentials,
+        message: COMPUTE_REPOSITORY_UNSUPPORTED,
+      },
+      {
+        change: "policy",
+        // An Installation administrator withdrew the approval after the request was accepted.
+        // The policy refuses the selection as the Driver contract allows: without a reason.
+        refuse: () => {
+          repoDriver.resolve = () => {
+            throw new Error("synthetic withdrawn approval");
+          };
+        },
+        message: SAVED_REPOSITORY_SELECTION_NOT_APPROVED,
+      },
+      {
+        change: "topology",
+        // The topology now cannot deliver repository credentials (as with a Sandbox selected).
+        refuse: () => {
+          computeDriver.validateRepositoryCredentials = () => {
+            throw new Error("synthetic topology refusal");
+          };
+        },
+        message: PROVISIONING_NOT_COMPLETED,
+        retry: COMPUTE_TOPOLOGY_REPOSITORY_UNSUPPORTED,
+      },
     ]) {
-      const initial = await createFixture(context);
-      const namespace = await initial.bootstrapNamespace();
-      const repoDriver = provisioningRepositoryPolicy(namespace.id, ["git-read"]);
-      const topology = createTestKubernetesComputeDriver(`provisioning-saved-${change}`, {
-        repositoryCredentials: true,
-      });
-      const computeDriver = initial.computeDriver;
-      computeDriver.validateRepositoryCredentials =
-        topology.validateRepositoryCredentials.bind(topology);
-      const fixture = await createFixture(context, {
-        computeDriver,
-        configurationDriver: initial.configurationDriver,
-        secretDriver: initial.secretDriver,
-        repoDriver,
-      });
-      const secrets = await createProvisioningSecrets(fixture, namespace.id);
-      const body = {
-        ...provisioningBody(namespace.id, secrets, {
-          repositoryAccess: {
-            defaultProfile: "git-read",
-            repositories: [{ repositoryRef: "project" }],
-          },
-        }),
-        pluginApprovers: [],
-      };
+      // Each case starts from an Installation that delivers the access.
+      computeDriver.validateRepositoryCredentials = validateRepositoryCredentials;
+      delete repoDriver.resolve;
+      const body = repositoryProvisioningBody(namespace.id, secrets);
       const admitted = await fixture.request(
         "POST",
         `/namespaces/${namespace.id}/agents/provision`,
         { body },
       );
       assert.equal(admitted.status, 202, `${change}: ${JSON.stringify(admitted.body)}`);
-      if (change === "compute") {
-        // The Installation now selects a Compute Driver without repository credentials.
-        delete computeDriver.validateRepositoryCredentials;
-      } else {
-        // An Installation administrator withdrew the approval after the request was accepted.
-        // The policy refuses the selection as the Driver contract allows: without a reason.
-        repoDriver.resolve = () => {
-          throw new Error("synthetic withdrawn approval");
-        };
-      }
-      await fixture.startWorker();
-      const failed = await waitFor(
-        `the worker to refuse the saved access (${change})`,
-        async () => {
-          const row = await provisioningRow(fixture.pool, namespace.id, body.requestId);
-          return row.progress.error === undefined ? undefined : row;
-        },
-      );
-      await fixture.stopWorker();
+      refuse();
+      const failed = await workerFailure(fixture, namespace.id, body.requestId, change);
       assert.equal(failed.status, "failed", change);
       assert.deepEqual(failed.progress.error, { code: "PROVISIONING_REJECTED", message }, change);
       assert.equal(failed.agent_id, null, `${change}: refused before the work creates its Agent`);
       const status = await fixture.request("GET", admitted.data.provisioning.url);
       assert.equal(status.status, 200, `${change}: ${JSON.stringify(status.body)}`);
       assert.deepEqual(status.data.error, { code: "PROVISIONING_REJECTED", message }, change);
+      if (retry !== undefined) {
+        const retried = await fixture.request("POST", `${admitted.data.provisioning.url}/retry`);
+        assertApiError(retried, 409, "RESOURCE_CONFLICT");
+        assert.equal(retried.body.error.message, retry);
+      }
     }
-  },
-);
-
-// Finding 1145: the request refuses repository bindings the Compute topology cannot deliver.
-// Work it already accepted is rechecked by the worker and retry until the Agent exists, so a
-// topology change after admission fails the work before it creates the Agent.
-test(
-  "a repository topology change before the worker runs fails the provisioning work before its Agent",
-  { ...requiresPostgres, timeout: 60_000 },
-  async (context) => {
-    const initial = await createFixture(context);
-    const namespace = await initial.bootstrapNamespace();
-    const repoDriver = provisioningRepositoryPolicy(namespace.id, ["git-read"]);
-    const topology = createTestKubernetesComputeDriver("provisioning-topology-change", {
-      repositoryCredentials: true,
-    });
-    const computeDriver = initial.computeDriver;
-    computeDriver.validateRepositoryCredentials =
-      topology.validateRepositoryCredentials.bind(topology);
-    const fixture = await createFixture(context, {
-      computeDriver,
-      configurationDriver: initial.configurationDriver,
-      secretDriver: initial.secretDriver,
-      repoDriver,
-    });
-    const secrets = await createProvisioningSecrets(fixture, namespace.id);
-    const body = {
-      ...provisioningBody(namespace.id, secrets, {
-        repositoryAccess: {
-          defaultProfile: "git-read",
-          repositories: [{ repositoryRef: "project" }],
-        },
-      }),
-      pluginApprovers: [],
-    };
-    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
-      body,
-    });
-    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
-
-    // The topology now cannot deliver repository credentials (as with a Sandbox selected).
-    computeDriver.validateRepositoryCredentials = () => {
-      throw new Error("synthetic topology refusal");
-    };
-    await fixture.startWorker();
-    const failed = await waitFor("the worker to refuse the repository topology", async () => {
-      const row = await provisioningRow(fixture.pool, namespace.id, body.requestId);
-      return row.progress.error === undefined ? undefined : row;
-    });
-    await fixture.stopWorker();
-    // The status keeps the fixed text; retry answers Agent create's 409.
-    assert.equal(failed.status, "failed");
-    assert.deepEqual(failed.progress.error, {
-      code: "PROVISIONING_REJECTED",
-      message: "Agent provisioning could not complete.",
-    });
-    assert.equal(failed.agent_id, null, "the refusal comes before the work creates its Agent");
-    const message =
-      "The selected Compute Driver cannot deliver repository credentials to this Harness topology.";
-    const retried = await fixture.request("POST", `${admitted.data.provisioning.url}/retry`);
-    assertApiError(retried, 409, "RESOURCE_CONFLICT");
-    assert.equal(retried.body.error.message, message);
   },
 );
 
@@ -1266,9 +1245,6 @@ test(
   "a stored provisioning record whose Codex proxy blocks the repository broker is refused after its Sandbox repository path goes away",
   { ...requiresPostgres, timeout: 60_000 },
   async (context) => {
-    const initial = await createFixture(context);
-    const namespace = await initial.bootstrapNamespace();
-    const repoDriver = provisioningRepositoryPolicy(namespace.id, ["git-read"]);
     // This case ends before the worker reaches the Sandbox: only that it has a repository path
     // matters, so every Sandbox operation fails the test.
     const sandboxDriver = {
@@ -1290,32 +1266,15 @@ test(
       },
       async cleanup() {},
     };
-    const withSandbox = createTestKubernetesComputeDriver("provisioning-sandbox-repositories", {
-      repositoryCredentials: true,
-      sandboxDriver,
-    });
+    const { namespace, computeDriver, fixture, secrets, compose } =
+      await repositoryProvisioningFixture(context, "provisioning-sandbox-repositories", {
+        sandboxDriver,
+      });
     const withoutSandbox = createTestKubernetesComputeDriver("provisioning-proxy-repositories", {
       repositoryCredentials: true,
     });
-    const computeDriver = initial.computeDriver;
-    computeDriver.validateRepositoryCredentials =
-      withSandbox.validateRepositoryCredentials.bind(withSandbox);
-    const fixture = await createFixture(context, {
-      computeDriver,
-      configurationDriver: initial.configurationDriver,
-      secretDriver: initial.secretDriver,
-      repoDriver,
-      sandboxDriver,
-    });
-    const secrets = await createProvisioningSecrets(fixture, namespace.id);
     const { agents, models } = createHarnessConfiguration("codex", "gpt-6-astra");
-    const body = {
-      ...provisioningBody(namespace.id, secrets, {
-        repositoryAccess: {
-          defaultProfile: "git-read",
-          repositories: [{ repositoryRef: "project" }],
-        },
-      }),
+    const body = repositoryProvisioningBody(namespace.id, secrets, {
       configuration: {
         kind: "agent",
         values: {
@@ -1328,8 +1287,7 @@ test(
           },
         },
       },
-      pluginApprovers: [],
-    };
+    });
     const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
       body,
     });
@@ -1339,18 +1297,8 @@ test(
     // traffic, and the stored setting blocks it.
     computeDriver.validateRepositoryCredentials =
       withoutSandbox.validateRepositoryCredentials.bind(withoutSandbox);
-    const switched = await createFixture(context, {
-      computeDriver,
-      configurationDriver: initial.configurationDriver,
-      secretDriver: initial.secretDriver,
-      repoDriver,
-    });
-    await switched.startWorker();
-    const failed = await waitFor("the worker to refuse the Codex network proxy", async () => {
-      const row = await provisioningRow(switched.pool, namespace.id, body.requestId);
-      return row.progress.error === undefined ? undefined : row;
-    });
-    await switched.stopWorker();
+    const switched = await compose();
+    const failed = await workerFailure(switched, namespace.id, body.requestId, "Codex proxy");
     assert.equal(failed.status, "failed");
     assert.equal(failed.agent_id, null, "the refusal comes before the work creates its Agent");
     // Retry names the setting, as Agent save and the request do.
@@ -1702,7 +1650,7 @@ test(
     const claim = await claimProvisioningWork(fixture.pool, workId);
     const failure = {
       code: "PROVISIONING_REJECTED",
-      message: "Agent provisioning could not complete.",
+      message: PROVISIONING_NOT_COMPLETED,
     };
 
     // Stage the worker's permanent failure the way the worker writes it (job and queue row in
@@ -1799,7 +1747,7 @@ test(
     const claim = await claimProvisioningWork(fixture.pool, workId);
     const failure = {
       code: "PROVISIONING_REJECTED",
-      message: "Agent provisioning could not complete.",
+      message: PROVISIONING_NOT_COMPLETED,
     };
 
     // Stopping or deleting a provisioned Agent locks the Namespace, then the Agent, then this
@@ -1986,7 +1934,7 @@ for (const harnessAuth of ["api_key", "credential_source"]) {
         {
           error: {
             code: "PROVISIONING_REJECTED",
-            message: "Agent provisioning could not complete.",
+            message: PROVISIONING_NOT_COMPLETED,
           },
         },
       ]);
@@ -3535,7 +3483,7 @@ test(
     assert.equal(row.progress.pendingEffect, undefined);
     assert.deepEqual(row.progress.error, {
       code: "PROVISIONING_DEPENDENCY_UNAVAILABLE",
-      message: "Agent provisioning could not complete.",
+      message: PROVISIONING_NOT_COMPLETED,
     });
     const work = await switched.pool.query(
       "SELECT state, reason_code, attempt_count FROM occ.controller_work WHERE idempotency_key = $1",
@@ -3733,7 +3681,7 @@ test(
     const row = await provisioningRow(fixture.pool, namespace.id, body.requestId);
     assert.deepEqual(row.progress.error, {
       code: "PROVISIONING_DEPENDENCY_UNAVAILABLE",
-      message: "Agent provisioning could not complete.",
+      message: PROVISIONING_NOT_COMPLETED,
     });
   },
 );

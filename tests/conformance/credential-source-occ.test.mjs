@@ -27,9 +27,9 @@ import {
   credentialSourceFieldUnknown,
   registrationFenceRetry,
   RESOURCE_NOT_FOUND,
-  sentIdHidden,
   WITHDRAWAL_SOURCE_NOT_USED,
 } from "../helpers/refusal-text.mjs";
+import { assertSameAnswer, refusedAnswer } from "../helpers/refusal-answers.mjs";
 
 const administrator = "principal-source-administrator";
 const deployer = "principal-source-deployer";
@@ -1075,9 +1075,9 @@ test("registration validates the catalog and hands the gateway values OCC never 
         () => assert.fail(`${message}: expected a rejection`),
         (error) => error,
       );
-    const { status, code, details } = requestFailure(rejection);
+    const { status, code, message: sent, details } = requestFailure(rejection);
     assert.deepEqual(
-      { status, code, message: requestFailure(rejection).message, details },
+      { status, code, message: sent, details },
       { status: 400, code: "INVALID_REQUEST", message, details: [{ path, code: "INVALID_VALUE" }] },
     );
   }
@@ -1654,16 +1654,19 @@ test("an update re-sends current or replacement Secret values and keeps config i
   await controller.deleteSecret(administrator, namespace.id, original.id);
 
   // Replacements must keep the catalog's exact fields.
-  await assert.rejects(
-    controller.updateCredentialSource(administrator, {
-      namespaceId: namespace.id,
-      credentialSourceId: source.id,
-      secrets: { api_key: replacement.ref, extra: replacement.ref },
-    }),
-    (error) =>
-      requestFailure(error).status === 400 &&
-      requestFailure(error).message ===
-        credentialSourceFieldUnknown("openai", "secrets.extra", "secrets", "api_key"),
+  assert.deepEqual(
+    await refusedAnswer(() =>
+      controller.updateCredentialSource(administrator, {
+        namespaceId: namespace.id,
+        credentialSourceId: source.id,
+        secrets: { api_key: replacement.ref, extra: replacement.ref },
+      }),
+    ),
+    {
+      status: 400,
+      code: "INVALID_REQUEST",
+      message: credentialSourceFieldUnknown("openai", "secrets.extra", "secrets", "api_key"),
+    },
   );
 });
 
@@ -1876,16 +1879,11 @@ test("withdrawal is recorded for the active revision and queued once, and the re
     secrets: { api_key: secret.ref },
   });
   for (const credentialSourceId of [other.id, `cs_${crypto.randomUUID()}`]) {
-    await assert.rejects(
-      controller.withdrawAgentCredentialSource(administrator, { ...request, credentialSourceId }),
-      (error) => {
-        const { status, code, message } = requestFailure(error);
-        assert.deepEqual(
-          { status, code, message },
-          { status: 409, code: "RESOURCE_CONFLICT", message: WITHDRAWAL_SOURCE_NOT_USED },
-        );
-        return true;
-      },
+    assert.deepEqual(
+      await refusedAnswer(() =>
+        controller.withdrawAgentCredentialSource(administrator, { ...request, credentialSourceId }),
+      ),
+      { status: 409, code: "RESOURCE_CONFLICT", message: WITHDRAWAL_SOURCE_NOT_USED },
     );
   }
   // A withdrawn source stays referenced by the active revision until a redeploy replaces it,
@@ -3531,17 +3529,9 @@ test("named source refusals follow the source grant: a missing and an unreadable
   const missingSource = "cs_00000000-0000-4000-8000-00000000aaaa";
   const missingNamespace = "ns_00000000-0000-4000-8000-00000000aaaa";
   const secrets = { api_key: secret.ref, extra: secret.ref };
-  const answer = async (call, id) => {
-    const error = await call().then(
-      () => assert.fail("expected a rejection"),
-      (rejection) => rejection,
-    );
-    const { status, code, message } = requestFailure(error, {
-      requested: (value) => value === id,
-      actorId: zeroGrant,
-    });
-    return { status, code, message: sentIdHidden(message, id) };
-  };
+  // The zero-grant caller's own denial names the ID its request sent.
+  const answer = (call) => (id) =>
+    refusedAnswer(call(id), { requested: (value) => value === id, actorId: zeroGrant });
   const update = (id) => () =>
     controller.updateCredentialSource(zeroGrant, {
       namespaceId: namespace.id,
@@ -3554,10 +3544,8 @@ test("named source refusals follow the source grant: a missing and an unreadable
       credentialSourceId: id,
     });
   const remove = (id) => () => controller.deleteCredentialSource(zeroGrant, namespace.id, id);
-  for (const call of [update, rotate, remove]) {
-    const existing = await answer(call(source.id), source.id);
-    assert.equal(existing.status, 403);
-    assert.deepEqual(await answer(call(missingSource), missingSource), existing);
+  for (const [label, call] of Object.entries({ update, rotate, remove })) {
+    await assertSameAnswer(answer(call), [source.id, missingSource], { label });
   }
   const create = (namespaceId) => () =>
     controller.createCredentialSource(zeroGrant, {
@@ -3566,7 +3554,5 @@ test("named source refusals follow the source grant: a missing and an unreadable
       type: "openai",
       secrets,
     });
-  const existingCreate = await answer(create(namespace.id), namespace.id);
-  assert.equal(existingCreate.status, 403);
-  assert.deepEqual(await answer(create(missingNamespace), missingNamespace), existingCreate);
+  await assertSameAnswer(answer(create), [namespace.id, missingNamespace], { label: "create" });
 });

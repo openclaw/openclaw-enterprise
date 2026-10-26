@@ -441,3 +441,9 @@ export const BROKER_HOST_DENIED = brokerProxyRefusal(
   "denies the repository credential broker's host",
   "Delete that deny",
 );
+// Repository credentials the selected Compute topology cannot deliver (Agent save and deploy 409,
+// packages/occ/src/index.ts), and the fixed status text of provisioning work that failed for a
+// reason it does not name.
+export const COMPUTE_TOPOLOGY_REPOSITORY_UNSUPPORTED =
+  "The selected Compute Driver cannot deliver repository credentials to this Harness topology.";
+export const PROVISIONING_NOT_COMPLETED = "Agent provisioning could not complete.";
