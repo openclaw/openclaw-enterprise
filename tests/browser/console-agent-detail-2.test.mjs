@@ -507,6 +507,60 @@ test("Repeat deletion preserves bounded retry ownership feedback and ordinary de
   assert.equal((await fixture.request("GET", path)).data.status, "deleting");
 });
 
+// The API's 400 and 409 answers for Stop (contractMessage and occ's stopAgent). Stop has no form,
+// so a schema refusal does not ask to check entered values; a typed 409 shows the API's sentence;
+// a conflict the API does not explain keeps the page's own sentence (findings 2538, 2561).
+test("Agent page Stop shows the API's 400 and 409 reasons", async (t) => {
+  for (const [label, status, serverMessage, text] of [
+    ["schema", 400, "The request does not match the operation contract.", MALFORMED_REQUEST],
+    [
+      "typed conflict",
+      409,
+      "The Agent lifecycle changed during stop.",
+      "The Agent lifecycle changed during stop. Refresh stop status before trying again.",
+    ],
+    [
+      "generic conflict",
+      409,
+      "The requested platform resource already exists.",
+      "This Agent lifecycle changed while stopping. Refresh stop status before trying again.",
+    ],
+  ]) {
+    await t.test(label, async (t) => {
+      const fixture = await detailApp(t);
+      const namespace = await fixture.createNamespace(`Refused stop ${label}`, { ready: true });
+      const agent = await fixture.createAgent(namespace.id, "Refused stop", nativeValues("stop"));
+      const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+      const { page } = await newPage(t, fixture);
+      await trackSettledFetches(page);
+      await page.route(
+        `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/stop`,
+        (route) =>
+          route.fulfill(
+            apiErrorResponse(
+              status,
+              status === 400 ? "INVALID_REQUEST" : "RESOURCE_CONFLICT",
+              serverMessage,
+            ),
+          ),
+      );
+      await login(
+        page,
+        fixture,
+        detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration"),
+      );
+      const stopRegion = page.getByRole("region", { name: "Stop Agent", exact: true });
+      await stopRegion.getByRole("button", { name: "Stop Agent", exact: true }).click();
+      await page
+        .getByRole("dialog", { name: "Stop this Agent?" })
+        .getByRole("button", { name: "Stop Agent" })
+        .click();
+      await stopRegion.getByText(text, { exact: false }).waitFor();
+      await expectNoText(page, /entered values/, () => waitForIdleFetches(page));
+    });
+  }
+});
+
 test("failed repeat deletion preserves feedback when a poll was rearmed during its request", async (t) => {
   // The API's 400 and 409 answers for this route (contractMessage and occ's deleteAgent). Delete
   // has no form, so a schema refusal does not ask to check entered values, and the API's typed

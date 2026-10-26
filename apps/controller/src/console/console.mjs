@@ -216,6 +216,48 @@ function signInUnavailableFailure(label) {
   return `Could not finish signing in with ${label}. Sign-in is unavailable right now; try again later.`;
 }
 
+// The API refused a sign-in request because the browser did not send the console's
+// configured Origin: the page was opened at another address, or a proxy changed the
+// request. It says nothing about the account, so it never reads as a wrong password.
+function untrustedOrigin(error) {
+  return (
+    error?.status === 403 &&
+    error.code === "FORBIDDEN" &&
+    typeof error.serverMessage === "string" &&
+    error.serverMessage.startsWith("A trusted browser origin is required")
+  );
+}
+const untrustedOriginFailure =
+  "Sign-in was refused because this page was not opened from the console's configured address. Open the console from its configured URL and sign in there. If you did, ask an operator to check the console address setting (OCC_AUTH_BASE_URL) and any proxy in front of it.";
+
+// A sign-in limit is not a refusal: an Installation administrator's correct password still
+// signs in while the limit applies, so the form stays usable and only says how long to wait.
+function rateLimitedFailure(error) {
+  const seconds = error.retryAfterSeconds;
+  return seconds === undefined
+    ? "Too many sign-in attempts. Wait a minute, then try again."
+    : `Too many sign-in attempts. Wait ${seconds} ${seconds === 1 ? "second" : "seconds"}, then try again.`;
+}
+
+const signInOutage =
+  "Sign-in is temporarily unavailable because a service it depends on did not answer. Try again shortly. If it continues, ask an operator.";
+
+// The confirmation after the provider's callback failed. The callback already settled the
+// identity (a refused one returns with authError and never reaches this exchange), so a
+// failure here says why this tab could not adopt the session, never that the identity failed.
+function providerExchangeFailure(error, label) {
+  if (error?.status === 429) {
+    return rateLimitedFailure(error);
+  }
+  if (untrustedOrigin(error)) {
+    return untrustedOriginFailure;
+  }
+  if (error?.status === undefined || error.status >= 500) {
+    return signInUnavailableFailure(label);
+  }
+  return `Could not finish signing in with ${label}. The sign-in in this tab did not complete in time, or another sign-in replaced it. Select Continue with ${label} to start again.`;
+}
+
 // The provider authenticated an identity attached to a disabled account. Retrying, a
 // password or an attach cannot help, so only an administrator is named.
 function accountDisabledFailure(label) {
@@ -980,10 +1022,12 @@ function showLogin(message = "", destination = null) {
         }
         feedback.textContent =
           error.status === 429
-            ? "Too many attempts. Try again later."
-            : recoveryOnly
-              ? `${label} sign-in is unavailable. Try again later.`
-              : `${label} sign-in is unavailable. Try again or use your password.`;
+            ? rateLimitedFailure(error)
+            : untrustedOrigin(error)
+              ? untrustedOriginFailure
+              : recoveryOnly
+                ? `${label} sign-in is unavailable. Try again later.`
+                : `${label} sign-in is unavailable. Try again or use your password.`;
         pending = false;
         setDisabled(false);
       }
@@ -1047,14 +1091,22 @@ function showLogin(message = "", destination = null) {
       if (!lifetime.isCurrent(active)) {
         return;
       }
+      // Every credential refusal keeps one text, so it never says whether the account exists,
+      // is disabled, or which factor failed.
       feedback.textContent =
         error.status === 429
-          ? "Too many attempts. Try again later."
-          : error.status === 400 || error.status === 401 || error.status === 403
-            ? recoveryOnly
-              ? "Could not sign in. Only the recovery account can use a password; other accounts continue with their external sign-in."
-              : "Could not sign in. Check your email and password."
-            : "Sign-in is unavailable. Try again.";
+          ? rateLimitedFailure(error)
+          : untrustedOrigin(error)
+            ? untrustedOriginFailure
+            : error.status === 400 || error.status === 401 || error.status === 403
+              ? recoveryOnly
+                ? "Could not sign in. Only the recovery account can use a password; other accounts continue with their external sign-in."
+                : "Could not sign in. Check your email and password."
+              : error.status === undefined
+                ? "Could not reach the sign-in service. Check your connection, then try again."
+                : error.status >= 500
+                  ? signInOutage
+                  : "Sign-in is unavailable. Try again.";
     } finally {
       if (lifetime.isCurrent(active)) {
         pending = false;
@@ -1410,9 +1462,11 @@ async function loadPage({
       }
       pinSessionKey(confirmed.sessionKey);
       pendingIntent = externalIntent;
-    } catch {
+    } catch (error) {
       if (lifetime.isCurrent(active)) {
-        showLogin(providerFailure(externalProviders[externalAttempt.provider].label));
+        showLogin(
+          providerExchangeFailure(error, externalProviders[externalAttempt.provider].label),
+        );
       }
       return;
     }

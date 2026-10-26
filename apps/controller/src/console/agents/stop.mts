@@ -325,6 +325,7 @@ export function createAgentStop(
         state.needsRefresh = error.status === 409;
         text = describeFailure(cause, {
           mutation: true,
+          conflict: "This Agent lifecycle changed while stopping.",
           next: "Refresh stop status before trying again.",
         });
       } else {

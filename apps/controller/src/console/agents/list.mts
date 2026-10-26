@@ -379,12 +379,27 @@ export function rejectionMessage(cause: unknown, mutation = false): string {
 // helps where the reader typed the value, but the console sent everything else itself.
 const CONTRACT_MISMATCH = "The request does not match the operation contract";
 
+// When to try again after the API's Retry-After: seconds up to two minutes, then whole minutes.
+export function retryAfterText(seconds: number) {
+  if (seconds < 120) {
+    return `Try again in ${seconds} ${seconds === 1 ? "second" : "seconds"}.`;
+  }
+  return `Try again in about ${Math.ceil(seconds / 60)} minutes.`;
+}
+
 // How long a rate-limited reader waits: the API's Retry-After when it sent one.
-export function tooManyRequests(cause: unknown) {
+function tooManyRequests(cause: unknown) {
   const seconds = requestFailure(cause).retryAfterSeconds;
-  return seconds === undefined
-    ? "Too many requests. Wait before trying again."
-    : `Too many requests. Try again in ${seconds} ${seconds === 1 ? "second" : "seconds"}.`;
+  return `Too many requests. ${seconds === undefined ? "Wait before trying again." : retryAfterText(seconds)}`;
+}
+
+// The API's sentence for a 409 that explains itself, or undefined for a conflict it does not
+// explain (no message, or the generic "already exists" text), where the view says its own.
+export function explainedConflict(cause: unknown): string | undefined {
+  const { status, serverMessage } = requestFailure(cause);
+  return status === 409 && serverMessage !== undefined && serverMessage !== GENERIC_CONFLICT
+    ? serverMessage
+    : undefined;
 }
 
 // One description of a failed request for the views that once showed a bare message()
@@ -394,9 +409,8 @@ export function tooManyRequests(cause: unknown) {
 // such as a refresh ("" when the view adds its own); `conflict` replaces the generic sentence
 // for a 409 the API does not explain.
 // `form` says the reader entered the values sent, so a 400 the API does not explain asks to check
-// them; without a form it never mentions entered values. A denial names `need`'s grant, or
-// nobody to ask when the view knows the reader is an Installation administrator
-// (administratorMessage). Missing resources and unanswered requests keep message()'s text.
+// them; without a form it never mentions entered values. Denials, missing resources and
+// unanswered requests keep message()'s text.
 export function describeFailure(
   cause: unknown,
   {
@@ -404,15 +418,11 @@ export function describeFailure(
     form = false,
     next,
     conflict = "The request conflicts with the current state.",
-    need,
-    administrator = false,
   }: {
     mutation?: boolean;
     form?: boolean;
     next?: string;
     conflict?: string;
-    need?: AccessNeed;
-    administrator?: boolean;
   } = {},
 ): string {
   const error = requestFailure(cause);
@@ -426,20 +436,21 @@ export function describeFailure(
     }
     return form
       ? message(cause, mutation)
-      : "The API refused this request as malformed. Refresh the page and try again. If it happens again, report it with the request ID.";
+      : "The API refused this request as malformed. Refresh the page and try again.";
   }
   if (error.status === 409) {
     if (error.code === "NAMESPACE_NOT_READY") {
       return NAMESPACE_NOT_READY_MESSAGE;
     }
-    return error.serverMessage !== undefined && error.serverMessage !== GENERIC_CONFLICT
-      ? `${error.serverMessage}${then}`
+    const explained = explainedConflict(cause);
+    return explained !== undefined
+      ? `${explained}${then}`
       : `${conflict}${next === undefined ? " Refresh, then try again." : then}`;
   }
   if (error.status === 429) {
     return tooManyRequests(cause);
   }
-  return administrator ? administratorMessage(cause) : message(cause, mutation, need);
+  return message(cause, mutation);
 }
 
 // A channel credential value that Configuration save or provisioning refuses: a reference without

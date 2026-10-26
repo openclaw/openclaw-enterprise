@@ -2,7 +2,7 @@ import type { Namespace } from "@openclaw-enterprise/contracts";
 import { type createApiClient, requestFailure, responseFields } from "./api-client.mjs";
 import { button, dismissOnBackdrop, element, field, statusBlock, validateFields } from "./dom.mjs";
 import type { createNavigation } from "./navigation.mjs";
-import { GENERIC_CONFLICT, describeFailure } from "./agents/list.mjs";
+import { describeFailure, explainedConflict } from "./agents/list.mjs";
 
 /** The part of the mounted page context used by Namespaces and Secrets. */
 export interface NamespacePageContext {
@@ -326,10 +326,7 @@ export function renderNamespaces(
         } else if (forbidden) {
           message =
             "You do not have permission to create Namespaces in this Installation. Only an Installation administrator can create them: ask one to create a Namespace or to give you access to an existing one.";
-        } else if (
-          error.status === 409 &&
-          (error.serverMessage === undefined || error.serverMessage === GENERIC_CONFLICT)
-        ) {
+        } else if (error.status === 409 && explainedConflict(cause) === undefined) {
           message =
             "This Namespace name is already in use or reserved by a deleted Namespace. Choose a different name.";
         } else if (error.status === 409 || error.status === 429) {

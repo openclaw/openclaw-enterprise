@@ -345,6 +345,7 @@ export function createAgentDeletion(
         state.needsRefresh = error.status === 409;
         text = describeFailure(cause, {
           mutation: true,
+          conflict: "This Agent could not be deleted in its current state.",
           next: "Refresh deletion status before trying again.",
         });
       } else {
