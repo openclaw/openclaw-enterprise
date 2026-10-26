@@ -324,6 +324,13 @@ test("Allow this opens the editor at its new rule and a covered suggestion adds 
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revision.id, "policy"));
   const tab = page.locator(".sandbox-policy");
   await tab.getByText("2 in loaded window", { exact: true }).waitFor();
+  // Policy v2 was saved before the deploy, so the running version enforces it: nothing is saved
+  // for later (D773).
+  await page
+    .locator(".sandbox-policy-rule-status")
+    .getByText("Deployed", { exact: true })
+    .waitFor();
+  assert.equal(await page.locator(".sandbox-application-feedback").count(), 0);
 
   // A denial on a second port of an allowed host is not covered: Allow this opens the editor
   // at the new rule (index 1, port 8443), not at the saved rule for the same host.
