@@ -118,6 +118,10 @@ export const UnreadableAgentConfiguration = story("unreadableAgentConfiguration"
 export const UnreadableRevisionConfiguration = story("unreadableRevisionConfiguration");
 export const RevisionError = { ...story("revisionError"), name: "Revision history unavailable" };
 export const DeployDenied = { ...story("deployDenied"), name: "Deployment denied" };
+export const DeploySecretOperateDenied = {
+  ...story("deploySecretOperateDenied"),
+  name: "Deployment needs Secret operate",
+};
 export const DeployInProgress = { ...story("deployInProgress"), name: "Deployment in progress" };
 export const DeployHoldsNavigation = {
   ...story("deployHoldsNavigation"),

@@ -22,8 +22,9 @@ Configure GitHub Actions variables, secrets, environments, and setting overrides
 ### Special Cases
 
 - **First Agent Smoke:** skips docs-only and recognized test-only PRs.
-- **QA Matrix Advisory:** runs after each push to `main`. To qualify a change before merge,
-  a maintainer can [request full QA on a trusted pull request](#qa-matrix).
+- **QA Matrix Advisory:** runs every 6 hours on `main`. Runs after each push to `main` are
+  [paused](#qa-matrix). To qualify a change before merge, a maintainer can
+  [request full QA on a trusted pull request](#qa-matrix).
 - **Observability Demo:** runs only when the changed files match its workflow path filters.
 
 Docs-only PRs run static checks in CI. Recognized test-only PRs select affected
@@ -192,6 +193,8 @@ Every push to `main` runs the marked Codex scenarios on Compose and Kubernetes, 
 complete OpenShell lane. Each push has its own concurrency group so a later
 merge cannot cancel the result. The author of the change that first breaks a lane owns triage;
 use the failed run's commit and retained results. These jobs do not block merge or publication.
+Push runs are paused until the `integration-qa-pr` credentials work again. To start them again,
+set the repository variable `QA_ADVISORY_ON_PUSH` to `true`.
 
 For changes to OpenShell, image pins, Helm installation or another live integration, a maintainer
 can add the `full-qa` label to a reviewed, same-repository pull request. Create that repository
