@@ -182,7 +182,7 @@ function candidateDeploymentError(scenario, checkedAt) {
     return {
       code: "DEPENDENCY_UNAVAILABLE",
       message:
-        "A dependency the controller needs stayed unavailable through every attempt. Deploy again; if it keeps failing, ask an admin to check the controller worker log.",
+        "A dependency the controller needs stayed unavailable through every attempt. Deploy again; if it keeps failing, ask an Installation administrator to check the controller worker log.",
     };
   }
   if (scenario.candidateSelected) {
@@ -1364,7 +1364,7 @@ export function installFixture(scenario, evidence) {
                   : {
                       code: "DEPENDENCY_UNAVAILABLE",
                       message:
-                        "A dependency the controller needs stayed unavailable through every attempt. Deploy again; if it keeps failing, ask an admin to check the controller worker log.",
+                        "A dependency the controller needs stayed unavailable through every attempt. Deploy again; if it keeps failing, ask an Installation administrator to check the controller worker log.",
                     },
             warnings: [],
           });

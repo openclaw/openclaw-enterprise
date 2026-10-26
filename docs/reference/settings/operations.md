@@ -356,8 +356,7 @@ NODE_ENV=development node apps/controller/src/server.mjs
 
 Installation, Namespace, Agent, native IAM, audit, and controller-work state
 survive restart in both Compose and database-only modes. The full Compose path
-also starts the worker and selects Docker Compute-backed Namespace and
-AgentRevision execution by default.
+also starts the worker and selects Docker Compute by default.
 
 Compose keeps relational OCC metadata in the `occ_postgres_data` named volume
 and native development Configuration documents in the `occ_configuration_data`

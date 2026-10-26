@@ -670,7 +670,7 @@ export class RepositoryGitSenderUnqualifiedError extends ResourceStateConflictEr
  */
 export class CredentialProxyRepositoryOnlyError extends ResourceStateConflictError {
   static readonly description =
-    "With repository.openShell the Credential Proxy serves only repository Git, not a Proxy-owned credential source or an Agent without a repository binding. An admin can drop repository.openShell and drivers.credential_proxy, losing protected Git.";
+    "With repository.openShell the Credential Proxy serves only repository Git, not Proxy-owned credential sources or Agents without repository access. Installation administrators can drop repository.openShell and drivers.credential_proxy, losing protected Git.";
 
   constructor() {
     super(CredentialProxyRepositoryOnlyError.description);

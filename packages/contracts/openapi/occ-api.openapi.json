@@ -1783,7 +1783,7 @@
           }
         },
         "security": [{ "sessionCookie": [] }],
-        "summary": "Create an administrator-controlled local auth account",
+        "summary": "Create a local auth account as an Installation administrator",
         "tags": ["Authentication"],
         "x-openclaw-permissions": [
           { "action": "administer", "resourceKind": "installation", "scope": "requested" }
@@ -9435,7 +9435,7 @@
           }
         },
         "security": [{ "sessionCookie": [] }],
-        "summary": "Move the recovery designation to another administrator",
+        "summary": "Move the recovery designation to another Installation administrator",
         "tags": ["Authentication"],
         "x-openclaw-permissions": [
           { "action": "administer", "resourceKind": "installation", "scope": "requested" }
@@ -32148,7 +32148,7 @@
         "operationId": "deleteServiceAccount",
         "parameters": [
           {
-            "description": "`true` deletes an account whose issued access token no ChatGPT Backend can revoke, and leaves the token for an administrator to revoke at the provider. With a ChatGPT Backend configured it is ignored and the token is revoked as usual.",
+            "description": "`true` deletes an account whose issued access token no ChatGPT Backend can revoke, and leaves the token for a ChatGPT workspace administrator to revoke at the provider. With a ChatGPT Backend configured it is ignored and the token is revoked as usual.",
             "in": "query",
             "name": "force",
             "required": false,

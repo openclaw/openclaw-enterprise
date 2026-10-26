@@ -286,6 +286,30 @@ export const POD_QUOTA_FULL =
   "The Namespace's Pod quota is full. Stop or delete an Agent, or ask an Installation administrator to raise the quota.";
 export const IMAGE_PULL_FAILING =
   "Kubernetes cannot pull a container image for this Agent and keeps retrying. Ask an Installation administrator to check the runtime image reference and that the cluster's nodes can pull from its registry.";
+export const WORKSPACE_SETUP_RETRYING =
+  "Workspace setup failed; Kubernetes is retrying it. If it keeps failing, ask an Installation administrator to check the Agent's workspace storage and runtime image.";
+// Failed deployments whose next step needs an Installation administrator, or an operator for the
+// cluster's own capacity, keyed by error code (deploymentErrorMessage in controller-work.ts).
+export const DEPLOYMENT_FAILED = {
+  AUTHORIZATION_DENIED:
+    "The deploying account, or the Agent's own identity, lost a permission the revision needs: Agent deploy, Configuration read, or use of a bound Secret, credential source or ServiceAccount. Ask an Installation administrator to grant it, then deploy again.",
+  BACKEND_UNAVAILABLE:
+    "The Backend this revision was admitted with is no longer configured on the Installation. Ask an Installation administrator to restore it, or move the Agent to a configured Backend, then deploy again.",
+  DEPENDENCY_UNAVAILABLE:
+    "A dependency the controller needs stayed unavailable through every attempt. Deploy again; if it keeps failing, ask an Installation administrator to check the controller worker log.",
+  REPOSITORY_BINDING_UNAVAILABLE:
+    "A repository this revision binds, or its access level, is no longer approved for the Agent's Namespace. Choose approved repository access on the Agent, or ask an Installation administrator to approve it again, then deploy again.",
+  REPOSITORY_DRIVER_MISMATCH:
+    "The Installation no longer selects the repository credential Driver admitted with this revision. Deploy again, choosing approved repository access if refused. If it selects none, remove repository access or ask an Installation administrator to select one.",
+  REPOSITORY_RUNTIME_UNSUPPORTED:
+    "This revision lost repository credentials: they need an embedded OpenClaw or dedicated Codex runtime, no Sandbox Driver, and a Compute Driver set up for them. Ask an Installation administrator to restore that or remove repository access, then deploy again.",
+  RUNTIME_CPU_STARVED:
+    "Deployment runtime did not get enough CPU to finish its startup model check, because of a CPU limit below one core or a busy node. Ask an Installation administrator to raise the limit, or an operator to free node capacity, then deploy a new version.",
+  WORKSPACE_SETUP_REFUSED:
+    "Initial workspace setup refused this version, and retries would too: its files, setup record or runtime defaults differ from the Agent's originals. Ask an Installation administrator to check workspace storage and the runtime image; keep the setup record.",
+  WORKSPACE_SETUP_UNSUPPORTED:
+    "The Agent was created with initial workspace files, which the Installation's Compute Driver cannot set up. Ask an Installation administrator to select a Compute Driver that supports them, then deploy again, or create the Agent without them.",
+};
 
 // Console refusals for a save the caller may not make, when the API names no grant.
 export const AGENT_SAVE_DENIED =

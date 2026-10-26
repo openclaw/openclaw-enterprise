@@ -31,7 +31,7 @@ The GitHub Backend's `drivers.repo` member pins its ID. Protected composition se
 `repository` and the installed Sandbox/Credential Proxy Driver.
 `repository.nativeSender` selects native sessions with prepared custody, without
 protected fallback. Controller startup rejects the legacy Installation `drivers.repo`
-selection in every mode. Drain accepted work on its original owner before cutover;
+selection in every mode. Stop new admissions and drain accepted work on its original owner before cutover;
 then select `repository.nativeSender` with `repository.preparedGitHub`.
 The [shared policy contract](../../packages/contracts/src/repo.ts) exposes:
 
@@ -55,8 +55,9 @@ snapshots after private validation. Cleanup counters and configuration
 decoding stay private. Status cannot regenerate the closed-schema Git/gh files.
 
 `maintenanceIntervalMs` schedules worker reconciliation and retries of incomplete
-repository cleanup; it is not a measured withdrawal bound. Configured IDs, `AgentRevision.repositoryCredentials` and
-persisted `admitted_spec.repository_credentials` retain their meaning.
+repository cleanup; it is not a measured withdrawal bound. Configured IDs,
+`AgentRevision.repositoryCredentials` and persisted
+`admitted_spec.repository_credentials` retain their meaning.
 
 State derives immutable Driver, Backend, profile and grant context from the
 saved version. After Agent deletion it retains Namespace, Agent,
@@ -159,17 +160,12 @@ worker's private socket; it cannot read an App key, sign a JWT, or issue a token
 The worker Token Service owns issuance and token cleanup.
 
 `github-app` and `github-app-registry` fail startup with transition guidance.
-Stop new admissions and drain accepted work on its original owner before switching.
 Do not move an App key into a replacement sender, widen an approval, or replay an
 uncertain issuance or PR creation. Unresolved work stays with its original owner;
-a new installation or revision does not settle it. With no outstanding work,
-configure prepared delivery directly.
+a new installation or revision does not settle it.
 
 Kubernetes projects only configuration, registry and TLS into the native sender.
-The worker alone mounts the App key and custody key. Select native delivery with
-`repository.nativeSender`; protected Git uses the installed Credential Proxy and
-needs neither a native sender nor an Installation `drivers.repo` selection.
-See [sender selection](drivers/selection.md#select-a-protected-sender).
+The worker alone mounts the App key and custody key. See [sender selection](drivers/selection.md#select-a-protected-sender).
 
 The explicit development-only `github-token` profile remains available with both
 its configuration opt-in and `--development-authority`. See
@@ -352,8 +348,8 @@ Unsettled actions retain capacity until exit; grace expiry does not establish
 `DISPOSED` or confirmed revocation. Restart cannot recover the lost provider
 cleanup inventory. Overrides remain positive and finite.
 
-The [testing guide](../testing/repository-credentials.md) separates source,
-artifact, container and live-provider proof; local fixtures establish neither
-live GitHub compatibility nor release readiness. The
+The [testing guide](../testing/repository-credentials.md) separates fixture
+from live-provider proof; local fixtures establish neither live GitHub
+compatibility nor release readiness. The
 [service flow](../flows/repository-credentials.md) and
 [Agent flow](../flows/agent-repository-credentials.md) own implementation.
