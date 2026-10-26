@@ -1201,6 +1201,19 @@ test("Installation-administration reads after a revoke are refused and audited o
   await waitForIdleFetches(page);
   assert.equal(await observability.count(), 0);
   assert.equal(adminDenials().length, 4);
+  // Opened on the Access tab, her Secret read waits behind the sharing reads and is refused
+  // unsent when the first one settles her answer. It then takes the member path, which lists
+  // the Secret, so she still sees its name.
+  revoke = grantInstallationAdministration(fixture, account.principal);
+  await page.goto(settingsUrl);
+  await driverSchemas.waitFor();
+  revoke();
+  await page.goto(String(detailUrl(fixture, namespace.id, agent.id, "draft", "access")));
+  await page.getByText(ACCESS_TAB_UNAVAILABLE, { exact: true }).waitFor();
+  await named.waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(await observability.count(), 0);
+  assert.equal(adminDenials().length, 5);
 
   grantInstallationAdministration(fixture, account.principal);
   await page.goto(agentUrl);
@@ -1220,7 +1233,7 @@ test("Installation-administration reads after a revoke are refused and audited o
   assert.equal(await page.getByRole("tab", { name: "Access", exact: true }).count(), 1);
   assert.deepEqual(
     adminDenials()
-      .slice(4)
+      .slice(5)
       .map((event) => event.action),
     ["openclaw.secrets.read"],
   );
