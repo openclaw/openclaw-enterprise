@@ -185,12 +185,12 @@ export function createDeploymentRecovery(
       !("harnessAuth" in agent && agent.harnessAuth?.method === "runtime") &&
       permissions !== null &&
       !(permissions.update === true && agentSaveDenial(permissions) === undefined);
-    const failure = credentialFixDenied ? MODEL_CREDENTIAL_REJECTED_ASK : errorMessage;
-    let impact = failure || generic;
+    const failureText = credentialFixDenied ? MODEL_CREDENTIAL_REJECTED_ASK : errorMessage;
+    let impact = failureText || generic;
     if (servingImpact === "replacement-failed") {
-      impact = `${currentLabel} is still selected, but its runtime was probably stopped for this deployment.${failure ? ` ${failure}` : ""}`;
+      impact = `${currentLabel} is still selected, but its runtime was probably stopped for this deployment.${failureText ? ` ${failureText}` : ""}`;
     } else if (servingImpact === "selected-failed") {
-      impact = `${currentLabel} is still selected, but its runtime replaced the previous version before deployment finished.${failure ? ` ${failure}` : ""}`;
+      impact = `${currentLabel} is still selected, but its runtime replaced the previous version before deployment finished.${failureText ? ` ${failureText}` : ""}`;
     }
     if ((servingImpact || (errorMessage && step === "logs")) && !logsAllowed) {
       // Without the Logs link this is the reader's only way to the logs (finding 1484).
