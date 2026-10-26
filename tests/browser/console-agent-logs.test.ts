@@ -2503,6 +2503,8 @@ test("a refused follow poll clears the shown output, Back rebuilds the view, and
   // The message says Refresh checks access again: with the grant restored, the console Refresh
   // reads the logs instead of reusing the remembered refusal (finding 2566).
   changeGrant(role, "read_logs", true);
+  // The rebuilt page enables Refresh once its first reads' bounded wait has run on the paused clock.
+  await page.clock.runFor(2_000);
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
   await pane.getByText("read before revoke").waitFor();
   await waitForIdleFetches(page);
