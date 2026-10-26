@@ -180,6 +180,7 @@ func TestExternalOpenShellInstallationAuthenticatesWithOidc(t *testing.T) {
 		"tokenUrl":         "https://idp.example.com/realms/openshell/protocol/openid-connect/token",
 		"clientId":         "occ-openshell",
 		"clientSecretPath": openShellClientSecretContainerPath,
+		"tokenAuth":        "client_secret_basic",
 	}) {
 		t.Fatalf("unexpected external Backend auth: %#v", installation.Backend)
 	}
