@@ -55,14 +55,15 @@ export class CallerStateDeniedError extends AuthorizationDeniedError {}
 /**
  * The Agent's own service principal, not the caller, lacks a grant that deployment needs. The
  * message names that principal for audit. HTTP answers with its own text instead, which names
- * the resource only when the caller sent its ID or may read it (`callerMayReadResource`), since the
- * resource comes from the Agent's stored bindings (finding 2592).
+ * the resource only when the caller sent its ID or may read both it and the Agent
+ * (`callerMayReadResource`), since the resource comes from the Agent's stored bindings
+ * (finding 2592).
  */
 export class AgentPrincipalAuthorizationError extends AuthorizationDeniedError {
   readonly principalId: string;
   /** The Agent whose principal was denied, when the check knew it. */
   readonly agentId?: string;
-  /** Whether the caller may read the denied resource, checked when the denial was raised. */
+  /** Whether the caller may read both the denied resource and the Agent, checked on denial. */
   readonly callerMayReadResource: boolean;
   declare readonly authorization: {
     readonly action: AuthorizationRequest["action"];
