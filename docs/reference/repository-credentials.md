@@ -55,8 +55,7 @@ snapshots after private validation. Cleanup counters and configuration
 decoding stay private. Status cannot regenerate the closed-schema Git/gh files.
 
 `maintenanceIntervalMs` schedules worker reconciliation and retries of incomplete
-repository cleanup; it is not a measured withdrawal bound. Configured IDs, `AgentRevision.repositoryCredentials` and
-persisted `admitted_spec.repository_credentials` retain their meaning.
+repository cleanup; it is not a measured withdrawal bound.
 
 State derives immutable Driver, Backend, profile and grant context from the
 saved version. After Agent deletion it retains Namespace, Agent,
@@ -159,17 +158,12 @@ worker's private socket; it cannot read an App key, sign a JWT, or issue a token
 The worker Token Service owns issuance and token cleanup.
 
 `github-app` and `github-app-registry` fail startup with transition guidance.
-Stop new admissions and drain accepted work on its original owner before switching.
 Do not move an App key into a replacement sender, widen an approval, or replay an
 uncertain issuance or PR creation. Unresolved work stays with its original owner;
-a new installation or revision does not settle it. With no outstanding work,
-configure prepared delivery directly.
+a new installation or revision does not settle it.
 
 Kubernetes projects only configuration, registry and TLS into the native sender.
-The worker alone mounts the App key and custody key. Select native delivery with
-`repository.nativeSender`; protected Git uses the installed Credential Proxy and
-needs neither a native sender nor an Installation `drivers.repo` selection.
-See [sender selection](drivers/selection.md#select-a-protected-sender).
+The worker alone mounts the App key and custody key. See [sender selection](drivers/selection.md#select-a-protected-sender).
 
 The explicit development-only `github-token` profile remains available with both
 its configuration opt-in and `--development-authority`. See
@@ -314,8 +308,7 @@ so they continue after expiry or with stale pins. Generation
 pinning does not promise a command-wide snapshot across arbitrary subprocesses.
 
 Native settings override these defaults; other helpers can retain credentials.
-Our helper ignores `store` and `erase`. There is no command-wide preflight or
-automatic retry of an uncertain mutation.
+Our helper ignores `store` and `erase`. There is no command-wide preflight.
 
 The API launcher requires GitHub CLI **2.100.0**, `GH_HOST=github.com`, a gateway
 hostname with verified TLS, and HTTPS port 443. Its private `hosts.yml` uses the
@@ -352,8 +345,7 @@ Unsettled actions retain capacity until exit; grace expiry does not establish
 `DISPOSED` or confirmed revocation. Restart cannot recover the lost provider
 cleanup inventory. Overrides remain positive and finite.
 
-The [testing guide](../testing/repository-credentials.md) separates source,
-artifact, container and live-provider proof; local fixtures establish neither
-live GitHub compatibility nor release readiness. The
+The [testing guide](../testing/repository-credentials.md) separates fixture
+from live-provider proof. The
 [service flow](../flows/repository-credentials.md) and
 [Agent flow](../flows/agent-repository-credentials.md) own implementation.

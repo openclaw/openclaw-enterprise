@@ -84,8 +84,7 @@ fi
 ```
 
 Before installation, [check each digest](../../testing/docker.md#check-published-images)
-on native hosts for every target architecture, without skips. Configure pull credentials only when the selected registry requires
-them.
+on native hosts for every target architecture, without skips.
 
 ## Configure the Installation
 
@@ -201,11 +200,11 @@ before running the checks:
   password claim. Keep `bootstrap.password.mountPath` absolute; the bootstrap Job
   refuses relative paths. Keep native admin enabled for the password profile, and gateway
   routing enabled with the reviewed GatewayClass and Secret names. Helm refuses an
-  `auth.baseUrl` that is not an `https` origin (`http` only for `localhost` or
-  `127.0.0.1`), has a path other than `/`, a query, fragment or user info (even
-  bare `?` or `#`), an IPv4 host other than four decimal octets without leading
-  zeros, Unicode spaces or invisible characters (outer ASCII spaces are ignored)
-  or compatibility forms the API's URL parser refuses, such as full-width `？`.
+  `auth.baseUrl` that breaks the
+  [`OCC_AUTH_BASE_URL` rules](../../reference/settings/production.md#required-production-controller-environment)
+  (`http` only for `localhost` or `127.0.0.1`), even a bare `?` or `#`, Unicode
+  spaces or invisible characters (outer ASCII spaces are ignored), or forms the
+  API's URL parser refuses, such as full-width `？`.
   IDNA-invalid joiners (U+200C, U+200D) pass Helm but fail the bootstrap Job. With
   native admin, it must be `https` and its host inside
   `agentNativeAdmin.sharedCookieDomain`.
@@ -368,10 +367,9 @@ federation and database grants for separate application and migrator
 identities, confining migrator privileges to migration. Use
 `node scripts/migrate-production.mjs` for this authentication mode.
 
-The chart configures none of these deployment-owned inputs. Its migration and
-bootstrap containers share an initialization Pod and service account, so
-changing database URL Secrets alone neither configures their distinct identity
-inputs nor enables Azure mode.
+The chart configures none of these inputs. Its migration and bootstrap
+containers share an initialization Pod and service account, so changing the
+database URL Secrets alone does not enable Azure mode.
 
 ### Optional operational log export
 
@@ -472,8 +470,6 @@ including its [model-response check](production-agents.md#verify-production-work
 
 ## Enable GitHub browser sign-in
 
-Use a controller image that includes GitHub sign-in: a [published image](#use-published-images)
-from a commit that includes it, or [your own build](#build-and-publish-production-images).
 Follow the [single-controller profile](../../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts)
 during stopped maintenance, after first installing without GitHub as above.
 
@@ -518,7 +514,6 @@ intended GitHub user; verify ownership through your identity process, not
 email or usernames. Follow the reference's attachment and unknown-outcome handling.
 Once every ordinary account has an identity, set `auth.passwordSignIn: recovery-only`
 ([recovery-only sign-in](../../reference/authentication/external-sign-in.md#recovery-only-password-sign-in)).
-Loopback tests do not qualify production stop/drain, cookies, logging, or GitHub registration.
 
 ## Related
 

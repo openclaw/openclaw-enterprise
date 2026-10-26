@@ -67,8 +67,8 @@ gateway is restricted by NetworkPolicy.
 
 The route and Service stay stable when a version is activated or a gateway Pod
 is replaced. Retiring an older version preserves the newer gateway's route;
-final gateway cleanup removes it. Compute repairs the route while reconciling
-a version. There is no separate periodic repair.
+final gateway cleanup removes it. Compute repairs the route only while
+reconciling a version.
 
 ### Native node endpoint
 
@@ -108,8 +108,7 @@ and file-transfer roots. This directory is Harness runtime state (on OpenShell, 
 version's runtime PVC subpath). Each Codex start replaces it with an empty private
 directory. It is not an isolation boundary against compromised Harness code running as
 the same user. Gateway checks bind each
-capability to this Agent's live provider/relay and exact generation; it grants
-neither another Agent's callbacks nor node or operator access. Native hooks use the installation's public CA bundle
+capability to this Agent's live provider/relay and exact generation. Native hooks use the installation's public CA bundle
 (the node's CA) with normal HTTPS certificate verification.
 
 Preparation creates or repairs these resources under the serving Gateway's
@@ -121,10 +120,9 @@ The Compute enrollment path also admits Harness egress to this installation's
 Envoy Pods on the configured HTTPS target port. File, Memory and Skills access
 use the enrolled node. Dedicated Gateway does not mount the Harness workspace
 or generated-image directories; sessions stay in Gateway private storage.
-Native runtime and Envoy integration verification remain incomplete. See the
-[enrollment trace](../flows/workspace-files.md#6-compute-resolves-a-route-and-occ-loads-the-current-key).
-Real Envoy node-authentication verification is described in
-[routing tests](../testing/kubernetes.md#private-gateway-routing).
+Native runtime and Envoy integration verification remain incomplete; see the
+[enrollment trace](../flows/workspace-files.md#6-compute-resolves-a-route-and-occ-loads-the-current-key)
+and [routing tests](../testing/kubernetes.md#private-gateway-routing).
 
 ## Service key and native identity
 
@@ -160,8 +158,7 @@ This password is separate from the Envoy service key. See the complete
 
 This key grants native administrative access across the Installation's routed
 gateways. OCC separately checks the caller's exact Agent permission. Keep the
-key separate from Better Auth, provider, and native Agent credentials. The trusted
-OCC API and worker receive it; Agent Gateway and Harness Pods do not.
+key separate from Better Auth, provider, and native Agent credentials.
 
 ## TLS and certificate lifecycle
 
@@ -284,10 +281,8 @@ wss://<private-host>/namespaces/<namespaceId>/agents/<agentId>
 
 OCC converts that endpoint to `https:` for native UI HTTP traffic while keeping
 the same private authority and exact Agent base path. Workspace-file traffic
-continues to use the original WSS endpoint. Native-host requests are
-intercepted before the normal API not-found path, resolved to the exact Agent
-represented by the host, and checked against the selected version before
-the API proxies HTTP or WebSocket traffic through the private route.
+continues to use the original WSS endpoint. Native-host requests resolve to the
+host's exact Agent and its selected version before the API proxies HTTP or WebSocket traffic through the private route.
 
 ## Public preview routing
 
@@ -296,8 +291,8 @@ HTTPS origin for dedicated execution under the operator's preview domain.
 Sandbox DNS suffixes refuse numeric or `0x` final labels, including canonical IPv4.
 Embedded OpenClaw retains its native preview configuration. Compute owns the native
 `sandboxOrigin` and `sandboxPort` values and rejects conflicting Agent settings.
-The sandbox backend port is `network.gatewayPort + 1`, so the main port must be
-below 65535. Neither port may be TCP/18791. The selected runtime must support
+The sandbox backend port is `network.gatewayPort + 1` (see the
+[port rules](#routing-configuration)). The selected runtime must support
 the dedicated sandbox listener.
 
 The Agent's `-sandbox` HTTPRoute attaches only to the shared Gateway's separate

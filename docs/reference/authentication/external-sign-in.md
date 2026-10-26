@@ -60,9 +60,8 @@ then discards tokens, expiry, and scope data. It performs no refresh, creates no
 repository grants, and gives no provider credentials to repository consumers or Agents.
 
 A new client ID requires reattachment under a new provider instance; then detach
-old methods by `methodId`. Sessions from the old instance end
-([session controls](#session-and-recovery-controls)). Secret rotation preserves enrollment
-and invalidates pending attempts.
+old methods by `methodId`. Secret rotation preserves enrollment and invalidates pending
+attempts.
 
 A human Installation administrator reads `GET /api/auth/accounts/:userId`
 ([requirements](#session-and-recovery-controls)). Its no-store response
@@ -80,10 +79,9 @@ transfer, and self-service linking are rejected. For unknown identities, follow 
 [enrollment procedure](../../guides/deploy/production-installation.md#enable-github-browser-sign-in).
 
 Without an [allowlist](#organization-and-team-allowlist), OCE does not check GitHub
-organization or team membership: any attached GitHub user ID signs in. Either way, OCE
-does not learn when someone leaves the organization or GitHub suspends them: without
-an allowlist someone who left can still sign in, and live sessions continue until they
-expire (at most 8 hours). Offboarding also means acting in OCE
+organization or team membership: any attached GitHub user ID signs in, including someone
+who left. Either way, OCE does not learn when someone leaves or GitHub suspends them, and
+live sessions continue until they expire (at most 8 hours). Offboarding also means acting in OCE
 ([account controls](#session-and-recovery-controls)): disable the account to end all
 access and its sessions, or detach its GitHub method to end GitHub sign-in and all its
 sessions; revoke ends sessions but allows a fresh sign-in. None of these ends a
@@ -158,8 +156,7 @@ deadline and refuse redirects.
 
 The GitHub App needs the organization permission **Members: read**, accepted by the owner of
 each listed organization, and an installation on each one. Members: read is read-only, and
-also lets the App's installation token list those organizations' members and teams. No OAuth
-scope is requested.
+also lets the App's installation token list those organizations' members and teams.
 
 | Outcome                                     | Audit `reasonCode`       | Console (`authReason`)   |
 | ------------------------------------------- | ------------------------ | ------------------------ |
@@ -171,7 +168,7 @@ numeric GitHub `subject`, a valid login returned by GitHub when available, and t
 Successful GitHub sign-ins and refusals after profile verification record the same identity
 fields. The login is diagnostic only; authorization uses the immutable subject. See
 [sign-in audit troubleshooting](../../guides/topics/audit-log.md#investigate-a-github-sign-in). The callback returns to
-`/console/?authError=github&authReason=<reason>`, and the Console explains the refusal.
+`/console/?authError=github&authReason=<reason>`.
 `MEMBERSHIP_UNAVAILABLE` covers a transport failure, the deadline, a redirect, an oversized or
 malformed answer, and any status other than `200` or `404`. It fails closed and logs
 `authentication.provider-unavailable-warning` with `step: membership`. A `403` there usually
@@ -186,8 +183,7 @@ owner accepted Members: read. [Issue #3300](https://github.com/openclaw/openclaw
 
 Membership is checked only at sign-in. Turning the list on applies from the next sign-in
 after the API restarts; existing sessions run until they expire (at most 8 hours), so revoke
-them to apply it at once. Removing someone from the organization or team stops their next
-GitHub sign-in but not a live session; disable or detach in OCE to end it.
+them to apply it at once.
 
 ## Recovery-only password sign-in
 
@@ -196,8 +192,7 @@ provider is enabled, so strangers who know an email can spend that account's
 password sign-in budget. `OCC_AUTH_PASSWORD_SIGN_IN=recovery-only` (Helm
 `auth.passwordSignIn: recovery-only`; default `all`) removes that surface:
 only the recovery account signs in with a password, and every other account uses
-its attached GitHub, Google or OIDC identity. It is the target posture once every
-ordinary account has an external identity. It requires a configured provider;
+its attached GitHub, Google or OIDC identity. It requires a configured provider;
 startup and Helm refuse it otherwise, and any other value.
 
 Every other email, existing or not, receives the ordinary `401` bad-credential
@@ -284,9 +279,8 @@ Password reset and deletion remain deferred.
 
 These account and recovery routes need GitHub, Google or OIDC sign-in. In the
 password-only profile an authorized administrator receives
-`409 RESOURCE_CONFLICT` naming that requirement; the profile has no account
-version, disabled state, or session binding, so it cannot disable an account or
-revoke its sessions online. Enable an external provider to use these controls.
+`409 RESOURCE_CONFLICT` naming that requirement: that profile cannot disable an
+account or revoke its sessions online.
 
 Password sign-in has the password-only profile's
 [failure-counting limit](../authentication.md#session-lifecycle): only failed sign-ins

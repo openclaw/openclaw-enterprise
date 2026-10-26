@@ -70,13 +70,11 @@ catalog searches its bundled entries.
 The console preloads the first page when a PAT is entered or selected in Create
 Agent, or an editable Agent's Plugins tab opens with a bound PAT Secret;
 **Configure plugins** reuses that page or its pending request. Replacing the PAT
-clears results and preloads a fresh first page; selections remain. Search runs
-300 ms after the last keystroke and resets pagination when the query changes;
-Enter, page navigation, and explicit loads run immediately. Loading feedback
-covers that delay and lasts until the response, even with no earlier entries;
-tool lookups show it until details arrive. Configured-plugin and tool filters
-stay instant and local. Closing the picker or changing its credential cancels
-pending searches. Requests have a 15-second deadline and 4 MiB response limit.
+clears results and preloads a fresh first page; selections remain. Search waits
+300 ms after the last keystroke (Enter and page navigation run at once), resets
+pagination for a new query, and shows loading feedback until the response;
+closing the picker or changing its credential cancels it. Configured-plugin and
+tool filters stay local. Requests have a 15-second deadline and 4 MiB response limit.
 Discovery does not read Codex home, install plugins, or return download URLs.
 Plugin details show available website, privacy-policy, and terms-of-service
 links; invalid or non-HTTPS URLs are omitted.
@@ -90,15 +88,13 @@ gate deployment on them. Configure access before deployment:
    select that workspace and service account, and configure its app connections.
    Workspace enablement and service-account credentials are separate requirements.
 3. Return to Create Agent and reload plugins to refresh catalog availability.
-   OCE plugin policies do not grant workspace access or configure external
-   credentials.
 
 Unavailable entries show the reported cause and a recovery link:
 
 | Cause                                              | Next step                                                                                           |
 | -------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
 | Disabled by administrator                          | Ask a workspace administrator to review access for the token's identity.                            |
-| Plan not eligible                                  | Ask the administrator to review workspace plan availability.                                        |
+| Plan not eligible                                  | Ask a workspace administrator to review plan availability.                                          |
 | Required app unavailable                           | Review app access and setup; credentials alone may not resolve this.                                |
 | No recognized reason                               | Review workspace plugin access without assuming a specific cause.                                   |
 | Unsupported native components or no apps or skills | Check [native limits](#native-mappings-and-limits); changing ChatGPT access cannot add OCE support. |
@@ -308,7 +304,7 @@ Credentials use the existing Harness/ServiceAccount path at runtime.
 Agent plugin approval is separate from platform IAM and workload containment.
 The runtime overlay grants read-only access to packaged Codex binaries even with
 no selected plugins; selected plugins also receive their skill-directory reads.
-Existing workload and managed policies remain mandatory. Package preparation
+Package preparation
 preserves other Agents' state.
 
 ## Source and verification
@@ -319,9 +315,8 @@ preserves other Agents' state.
 - [Deployment guide](../../guides/deploy.md), [testing guide](../../testing/plugins.md), and [implementation proof requirements](../../../specs/plans/16-plugin-driver.md#verification).
 
 Source and contract tests, direct MCP calls, package listings, and rendered
-bridge configuration do not prove native Agent behavior or compatibility with
-every runtime image. Native proof requires the opt-in real-runtime lane; the
-testing guide also covers contributor fixture setup and proof notes.
+bridge configuration do not prove native Agent behavior; native proof needs the
+testing guide's opt-in real-runtime lane.
 
 Disabling a selection does not uninstall it. Native remote installation can enable
 the plugin on the credential's account. Agent-local plugin/app policy and the

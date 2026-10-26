@@ -257,10 +257,7 @@ NODE_ENV=production node apps/controller/src/server.mjs
 NODE_ENV=production node apps/controller/src/worker.mjs
 ```
 
-The worker never handles controller API sessions. In production it claims,
-recovers, and counts Namespace work plus embedded OpenClaw and dedicated Codex
-AgentRevision work. Each Agent has its own selected version; the worker does not
-impose a Namespace-wide Agent limit.
+The worker does not impose a Namespace-wide Agent limit.
 
 ## Local Compose and PostgreSQL configuration
 
@@ -355,9 +352,7 @@ NODE_ENV=development node apps/controller/src/server.mjs
 ```
 
 Installation, Namespace, Agent, native IAM, audit, and controller-work state
-survive restart in both Compose and database-only modes. The full Compose path
-also starts the worker and selects Docker Compute-backed Namespace and
-AgentRevision execution by default.
+survive restart in both Compose and database-only modes.
 
 Compose keeps relational OCC metadata in the `occ_postgres_data` named volume
 and native development Configuration documents in the `occ_configuration_data`

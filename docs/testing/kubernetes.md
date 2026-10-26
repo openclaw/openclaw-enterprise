@@ -56,12 +56,9 @@ sequentially: they share a database. The suite checks API, worker, Driver, RBAC,
 storage, lifecycle and network isolation, not live OAuth/models, cloud volume
 detach or node fencing.
 
-External OAuth credentials use OpenShell rather than Kubernetes bootstrap Jobs or a
-native OAuth store. The [OpenShell OAuth proof](openshell-oauth.md) exercises real
-Gateway refresh and operator-mTLS access-token reads with a controlled issuer.
-The credentialed [OpenShell runtime lane](openshell.md) covers provider delivery,
-Codex exposure, model execution, and withdrawal. Neither lane runs in ordinary
-credential-free CI; a green fixture result does not prove live OAuth refresh.
+A green fixture result does not prove live OAuth refresh: the
+[OpenShell OAuth proof](openshell-oauth.md) and the credentialed
+[OpenShell runtime lane](openshell.md) cover it, outside ordinary CI.
 
 When finished, delete only the cluster you created:
 
@@ -104,7 +101,7 @@ builds the images and prepares its own cluster and database:
 
 The demo completes a model turn and serves Control UI at
 `http://127.0.0.1:18888` and OCC at `http://127.0.0.1:18889`. It prints a
-password-copy command. Keep the process running to use the interfaces. Without
+password-copy command. Without
 `OPENAI_API_KEY`, the interactive demo prompts without echo; `test` requires
 the variable. For a custom Codex Responses endpoint, use:
 

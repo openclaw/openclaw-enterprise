@@ -68,8 +68,7 @@ provisioning check the same fields and answer `409 RESOURCE_CONFLICT` naming the
 provisioning returns fixed `409` text with the reason in the API log; deployment
 is admitted, then fails with `DEPENDENCY_UNAVAILABLE` and the reason in the
 worker's `worker.compute-prepare-failed` line. `trustedProxy.allowLoopback` must be omitted or false:
-loopback access uses the separate password, not proxy identity headers. Native
-required-header and device auto-approval settings serve separate purposes.
+loopback access uses the separate password, not proxy identity headers.
 
 Compute renders `gateway.bind: lan` when it is omitted or `auto`, as native
 container detection misses containerd on cgroup v2. Deployment/provisioning
@@ -88,7 +87,6 @@ Configured CIDRs must contain the proxy's
 source addresses and exclude untrusted sources. CIDRs do not authenticate a
 proxy: retain the exact Envoy NetworkPolicy peer, TLS verification, service-key
 authentication, and identity/header sanitization.
-Direct access still requires a trusted proxy or the operator loopback password.
 
 For Agent revisions with repository bindings, Compute grants credential-service egress to
 the embedded gateway/Harness or dedicated Codex Pod. The separate dedicated
@@ -252,8 +250,7 @@ the existing same-namespace gateway Service:
 - A prefix rule below that Agent path rewrites the prefix to `/` and retains
   the suffix for native UI assets, deep links, and WebSocket paths.
 
-OCC bounds proxy requests to the selected Agent base. Public native UI browser
-traffic enters through OCC; Envoy and gateway Services remain private. See
+OCC bounds proxy requests to the selected Agent base. See
 [Agent native admin UI](../../agent-native-admin.md#agent-host-identity).
 Namespaces receive the Gateway membership label used by `allowedRoutes`.
 Runtime-enabled dedicated versions receive a `/node` route and a
@@ -261,8 +258,7 @@ route-specific SecurityPolicy for native device authentication. The
 [routing reference](../../gateway-routing.md#native-node-endpoint) owns its
 credential boundary and the remaining Harness lifecycle requirements.
 
-The Service and route stay stable across version changes and are repaired only
-during deployment reconciliation; see
+The Service and route stay stable across versions; see
 [endpoint and route](../../gateway-routing.md#endpoint-and-route). Missing CRDs
 or denied worker permissions fail reconciliation rather than disabling routing
 silently.
@@ -270,8 +266,7 @@ silently.
 Envoy authenticates the OCC service key and the route rewrites identity headers
 ([service key and native identity](../../gateway-routing.md#service-key-and-native-identity)).
 Native `allowRealIpFallback` accepts Envoy's direct downstream address when OCC
-and Envoy share a Pod CIDR. That address must be nonloopback; a loopback
-port-forward alone is not a working native attribution path.
+and Envoy share a Pod CIDR.
 
 ## Namespaces and isolation
 

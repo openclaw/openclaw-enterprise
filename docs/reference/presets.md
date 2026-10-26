@@ -132,8 +132,7 @@ limits. A saved template does not prove live Codex policy enforcement.
 and adds Slack Socket Mode and workspace instructions for software engineering.
 It uses the Codex harness with **Service Accounts** authentication (`codex_pat`).
 The `model` variable defaults to `gpt-6-astra` and remains editable; its rendered
-model reference is `codex/gpt-6-astra`. The preset exposes only `name` and `model`
-variables. After **Use Preset**, choose an existing service account Secret or
+model reference is `codex/gpt-6-astra`. After **Use Preset**, choose an existing service account Secret or
 **Create new Secret...** before creating the Agent.
 
 List the shipped container file as above; `includeDefaults` alone does not add it.
@@ -147,8 +146,7 @@ The preset includes the supplied instructions in
 It uses `{{vars.name}}` in the heading, opening sentence, and other self-references,
 filled from the entered `name` when applying the Preset. Later name edits do not
 re-render the copied file. To revise the instructions, update that content and the
-existing Namespace Preset through the API. Restarting with a changed JSON file
-preserves already-installed same-name copies.
+existing Namespace Preset through the API.
 
 ## Contents
 
@@ -177,8 +175,7 @@ with it. Omitted settings use the form's normal defaults.
 
 `agent.pluginApprovers` uses the Agent default plugin approver semantics from
 [Agent Plugins](agent-plugins.md#slack-approver-users). Omit it to inherit
-the form default. Use an empty array to select no Slack approvers, or a
-list of channel user identities to prefill selected approvers. Variable tokens
+the form default; `[]` selects no Slack approvers. Variable tokens
 can appear inside those identity strings; the completed Agent request still
 validates the rendered approvers with the selected Plugin Driver.
 
@@ -329,7 +326,7 @@ cannot edit an Installation Role or grant collection-wide `create`.
 Preset access grants no permission to create Agents or use referenced Secrets.
 After rendering, Configuration and Agent creation enforce their existing schemas,
 credential rules, and authorization before saving. Deployment rechecks admission.
-Console checks do not replace server validation. Audit records omit templates and
+Audit records omit templates and
 variable values.
 
 Invalid inputs return `400`; denied access returns `403`; a missing exact target
@@ -348,11 +345,9 @@ and an Agent separately. Follow [partial-save recovery](console/create-and-deplo
 if the second save fails or a response is lost.
 
 A Preset is read once when selected. **Use Preset** renders its variables and
-opens an ordinary editable Agent form. The chooser closes; changing the draft
-does not update or reread the Preset. **Start over** discards the unsaved draft
+opens an ordinary editable Agent form; changing the draft does not update or
+reread the Preset. **Start over** discards the unsaved draft
 and returns to the chooser, but is disabled once a Configuration has saved or a
 save outcome is uncertain.
 
-A valid Preset is not necessarily a valid Agent configuration. A later Agent
-validation error can leave a saved Configuration; follow the recovery steps
-above. Later deployments read the Agent's own draft.
+A valid Preset is not necessarily a valid Agent configuration.
