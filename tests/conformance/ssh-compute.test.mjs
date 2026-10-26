@@ -218,8 +218,14 @@ function closeServer(server) {
   return new Promise((resolve) => server.close(resolve));
 }
 
+// Startup refuses a runtime.root (and Node or OpenClaw path) under /tmp or /var/tmp, which the
+// unit's PrivateTmp hides, and tmpdir() is /tmp on CI runners. Fixture hosts live in the
+// gitignored test-results directory instead.
+const fixtureHosts = fileURLToPath(new URL("../../test-results/ssh-compute/", import.meta.url));
+
 async function fixture(t, selection = {}) {
-  const base = await mkdtemp(join(tmpdir(), "occ-ssh-"));
+  await mkdir(fixtureHosts, { recursive: true });
+  const base = await mkdtemp(join(fixtureHosts, "occ-ssh-"));
   const root = join(base, "root");
   const units = join(base, "units");
   const state = join(base, "fixture");
@@ -414,6 +420,93 @@ function setOption(object, keys, value) {
   target[keys.at(-1)] = value;
 }
 
+// The unit's PrivateTmp hides /tmp and /var/tmp, so a state root there timed out every deploy;
+// docs already forbade it (finding 2358).
+test("SSH startup refuses a runtime.root and Node or OpenClaw paths the unit cannot use", () => {
+  const dedicated =
+    "Use a dedicated absolute directory without . or .. segments, such as /var/lib/openclaw-enterprise.";
+  const privateTmp =
+    "Use a path outside /tmp and /var/tmp, such as /var/lib/openclaw-enterprise: the unit's PrivateTmp hides those.";
+  for (const [root, message] of [
+    ["/", dedicated],
+    ["//", dedicated],
+    ["/var/lib/../../tmp/oce", dedicated],
+    ["/var/lib/./oce", dedicated],
+    ["/tmp", privateTmp],
+    ["/tmp/openclaw-enterprise", privateTmp],
+    ["//var/tmp/oce", privateTmp],
+  ]) {
+    const candidate = options();
+    candidate.runtime.root = root;
+    assert.throws(
+      () => requireConfiguration(SshComputeDriver, candidate),
+      (error) => {
+        assert.ok(error instanceof SharedConfigurationValidationError, root);
+        assert.deepEqual(error.error.details, [
+          { path: "/runtime/root", code: "INVALID_VALUE", message },
+        ]);
+        return true;
+      },
+    );
+  }
+  for (const root of [
+    "/var/lib/openclaw-enterprise",
+    "/srv/tmp/oce",
+    "/tmpdata",
+    "/var/tmpfiles",
+  ]) {
+    const candidate = options();
+    candidate.runtime.root = root;
+    requireConfiguration(SshComputeDriver, candidate);
+  }
+  // The unit's ExecStart and ExecStartPre run the Node and OpenClaw paths, which PrivateTmp
+  // hides just the same.
+  for (const [edit, path, prefix] of [
+    [(candidate) => (candidate.runtime.nodePath = "/tmp/node"), "/runtime/nodePath", ""],
+    [
+      (candidate) => (candidate.runtime.openclawPath = "/var/tmp/oc.js"),
+      "/runtime/openclawPath",
+      "",
+    ],
+    [
+      (candidate) => (candidate.hosts.stable.nodePath = "/tmp/node"),
+      "/hosts",
+      "hosts.stable.nodePath: ",
+    ],
+    [
+      (candidate) => (candidate.hosts.stable.openclawPath = "//tmp/oc.js"),
+      "/hosts",
+      "hosts.stable.openclawPath: ",
+    ],
+    [
+      (candidate) => (candidate.runtime.openclawPath = "/var/./tmp/oc.js"),
+      "/runtime/openclawPath",
+      "",
+    ],
+    [
+      (candidate) => (candidate.hosts.stable.nodePath = "/usr/../tmp/node"),
+      "/hosts",
+      "hosts.stable.nodePath: ",
+    ],
+  ]) {
+    const candidate = options();
+    edit(candidate);
+    assert.throws(
+      () => requireConfiguration(SshComputeDriver, candidate),
+      (error) => {
+        assert.ok(error instanceof SharedConfigurationValidationError, path);
+        assert.deepEqual(error.error.details, [
+          { path, code: "INVALID_VALUE", message: `${prefix}${privateTmp}` },
+        ]);
+        return true;
+      },
+    );
+  }
+  const elsewhere = options();
+  elsewhere.hosts.stable.openclawPath = "/srv/tmp/oc.js";
+  requireConfiguration(SshComputeDriver, elsewhere);
+});
+
 test("SSH closed schema and semantic validation reject every invalid option", () => {
   const schema = SshComputeDriver.configurationSchema;
   assert.equal(schema.additionalProperties, false);
@@ -439,6 +532,8 @@ test("SSH closed schema and semantic validation reject every invalid option", ()
       Number.MAX_SAFE_INTEGER + 1,
       /connectTimeoutSeconds must be a positive safe/,
     ],
+    // OpenSSH refuses a longer ConnectTimeout, so every probe would fail and blame the host.
+    [["ssh", "connectTimeoutSeconds"], 2_147_483_648, /connectTimeoutSeconds must be at most/],
     [["hosts", "stable", "address"], "", /Host address is required/],
     [["hosts", "stable", "address"], "-oProxyCommand=bad", /Host address must be a hostname or IP/],
     [["hosts", "stable", "address"], "host;false", /Host address must be a hostname or IP/],
@@ -968,7 +1063,7 @@ test("SSH activation invokes lifecycle start hooks and cleans them up after acti
   bind(f.driver, invalidAuth);
   await assert.rejects(
     f.driver.activateRevision(invalidAuth),
-    /unsupported field unsupportedField/,
+    /gateway\.auth\.unsupportedField is not a supported native gateway authentication field/,
   );
   assert.deepEqual(hooks, beforeInvalidAuth);
 });
@@ -1346,6 +1441,81 @@ test("SSH setup failures withhold activation, preserve private input, and reject
       assert.equal(snapshot.includes(content), false);
       const marker = await readFile(join(f.revisionDir(first), "revision.json"), "utf8");
       assert.equal(marker.includes(content), false);
+    });
+  }
+});
+
+test("SSH setup reads the main roster entry under any letter case, like Kubernetes and Docker", async (t) => {
+  // The fixture has no runuser, so a stand-in records the workspace the helper chose.
+  const bin = await mkdtemp(join(tmpdir(), "occ-ssh-runuser-"));
+  const runuser = join(bin, "runuser");
+  await writeFile(
+    runuser,
+    `#!/bin/sh\nprintf '%s' "$OPENCLAW_WORKSPACE_DIR" > "$OCC_SSH_FIXTURE_STATE/setup-workspace"\n`,
+  );
+  await chmod(runuser, 0o755);
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${bin}:${previousPath}`;
+  t.after(async () => {
+    process.env.PATH = previousPath;
+    await rm(bin, { recursive: true, force: true });
+  });
+  for (const key of ["Main", " MAIN "]) {
+    await t.test(JSON.stringify(key), async (t) => {
+      const f = await fixture(t);
+      assert.equal((await f.driver.ensureNamespace(tenant)).namespaceReady, true);
+      const agentId = "agent-ssh-roster";
+      const workspace = join(f.agentDir({ agentId }), "state", "roster");
+      // The entry's workspace wins over the defaults, as for the literal main key.
+      const configuration = {
+        agents: {
+          defaults: { workspace: "/tmp/foreign-workspace" },
+          entries: { [key]: { workspace } },
+        },
+      };
+      const first = revision(f.driver, 1, agentId, configuration);
+      bind(f.driver, first);
+      const prepared = await f.driver.prepareRevision(first, {
+        secretEnvironment: [],
+        harnessAuth: { method: "runtime" },
+        workspaceSetup: {
+          id: "setup-ssh-roster",
+          namespaceId: tenant.id,
+          agentId,
+          files: { "AGENTS.md": "roster" },
+          completed: false,
+        },
+      });
+      assert.equal(prepared.ready, true);
+      assert.equal(await readFile(join(f.state, "setup-workspace"), "utf8"), workspace);
+      assert.equal((await json(join(f.agentDir(first), "workspace-setup.json"))).completed, true);
+    });
+  }
+  // As in the shared rule, the roster holds exactly one main entry: two keys that both name
+  // main, an empty roster and a null entry are refused before setup runs.
+  for (const entries of [{ main: {}, Main: {} }, {}, { Main: null }]) {
+    await t.test(`refuses ${JSON.stringify(entries)}`, async (t) => {
+      const f = await fixture(t);
+      assert.equal((await f.driver.ensureNamespace(tenant)).namespaceReady, true);
+      const refused = revision(f.driver, 1, "agent-ssh-refused", { agents: { entries } });
+      bind(f.driver, refused);
+      await assert.rejects(
+        f.driver.prepareRevision(refused, {
+          secretEnvironment: [],
+          harnessAuth: { method: "runtime" },
+          workspaceSetup: {
+            id: "setup-ssh-refused",
+            namespaceId: tenant.id,
+            agentId: refused.agentId,
+            files: { "AGENTS.md": "roster" },
+            completed: false,
+          },
+        }),
+        /SSH helper rejected host or revision configuration/,
+      );
+      // The helper withholds its reason; the stand-in never ran, so the roster refused it.
+      await missing(join(f.state, "setup-workspace"));
+      await missing(join(f.agentDir(refused), "workspace-setup.json"));
     });
   }
 });

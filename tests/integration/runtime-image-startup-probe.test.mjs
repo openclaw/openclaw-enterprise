@@ -6,7 +6,7 @@
 // runtime-image-native-worker.test.mjs.
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import test from "node:test";
+import { describe, test } from "node:test";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
 import { GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { recordModelProbeMeasurement } from "../helpers/runtime-model-probe-observation.mjs";
@@ -159,63 +159,69 @@ async function assertRejectedCredentialFailsFast(t, kind) {
   });
 }
 
-test(
-  "runtime image Codex Harness stays unready until its model probe passes",
-  { ...imageTestOptions, timeout: 600_000 },
-  async (t) => {
-    // A model turn slower than app-server startup, but far inside the probe's
-    // 30-second attempt cap, so it does not retry.
-    await assertProbeGatesStartup(t, "codex", 8_000);
-  },
-);
+// Each case starts its own wrapper and stand-in provider: random container
+// names, its own certificate directory and network namespace, no shared volume
+// or port. Two run at a time, so the CPU-limited probes keep most of the
+// headroom their recorded measurements report.
+describe("runtime image startup model probes", { concurrency: 2 }, () => {
+  test(
+    "runtime image Codex Harness stays unready until its model probe passes",
+    { ...imageTestOptions, timeout: 600_000 },
+    async (t) => {
+      // A model turn slower than app-server startup, but far inside the probe's
+      // 30-second attempt cap, so it does not retry.
+      await assertProbeGatesStartup(t, "codex", 8_000);
+    },
+  );
 
-test(
-  "runtime image Codex Harness fails fast when the provider rejects its credential",
-  { ...imageTestOptions, timeout: 600_000 },
-  async (t) => {
-    await assertRejectedCredentialFailsFast(t, "codex");
-  },
-);
+  test(
+    "runtime image Codex Harness fails fast when the provider rejects its credential",
+    { ...imageTestOptions, timeout: 600_000 },
+    async (t) => {
+      await assertRejectedCredentialFailsFast(t, "codex");
+    },
+  );
 
-test(
-  "runtime image embedded Gateway probes its model before it starts OpenClaw",
-  { ...imageTestOptions, timeout: 600_000 },
-  async (t) => {
-    // A short turn keeps the probe well inside its attempt cap.
-    await assertProbeGatesStartup(t, "gateway", 2_000);
-  },
-);
+  test(
+    "runtime image embedded Gateway probes its model before it starts OpenClaw",
+    { ...imageTestOptions, timeout: 600_000 },
+    async (t) => {
+      // A short turn keeps the probe well inside its attempt cap.
+      await assertProbeGatesStartup(t, "gateway", 2_000);
+    },
+  );
 
-test(
-  "runtime image embedded Gateway fails fast when the provider rejects its credential",
-  { ...imageTestOptions, timeout: 600_000 },
-  async (t) => {
-    await assertRejectedCredentialFailsFast(t, "gateway");
-  },
-);
+  test(
+    "runtime image embedded Gateway fails fast when the provider rejects its credential",
+    { ...imageTestOptions, timeout: 600_000 },
+    async (t) => {
+      await assertRejectedCredentialFailsFast(t, "gateway");
+    },
+  );
 
-test(
-  "runtime image reconnects an ephemeral native worker from an expired replayed setup code",
-  imageTestOptions,
-  async (t) => {
-    // Pod restarts replay the enrollment Secret's setup code after its expiry.
-    const configurationPath = await temporaryGatewayConfiguration(t, "codex");
-    const { containerName } = await runGatewaySmoke(t, "codex", {
-      configurationPath: "/etc/openclaw/openclaw.json",
-      entrypoint: KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
-      volumes: [`${configurationPath}:/etc/openclaw/openclaw.json:ro`],
-    });
-    const source = await readFile(
-      new URL("../fixtures/runtime-native-worker-restart.mjs", import.meta.url),
-      "utf8",
-    );
-    const { stdout } = await runDocker(
-      ["exec", containerName, "node", "--input-type=module", "-e", source],
-      { timeout: 300_000 * imageSmokeTimeoutMultiplier },
-    );
-    const result = JSON.parse(stdout);
-    assert.equal(result.sameIdentityAfterExpiredReplay, true);
-    assert.equal(result.singleBootstrapCompletion, true);
-    assert.equal(result.unpairedExpiredRejected, true);
-  },
-);
+  test(
+    "runtime image reconnects an ephemeral native worker from an expired replayed setup code",
+    imageTestOptions,
+    async (t) => {
+      // Pod restarts replay the enrollment Secret's setup code after its expiry.
+      const configurationPath = await temporaryGatewayConfiguration(t, "codex");
+      const { containerName } = await runGatewaySmoke(t, "codex", {
+        configurationPath: "/etc/openclaw/openclaw.json",
+        entrypoint: KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
+        volumes: [`${configurationPath}:/etc/openclaw/openclaw.json:ro`],
+      });
+      const source = await readFile(
+        new URL("../fixtures/runtime-native-worker-restart.mjs", import.meta.url),
+        "utf8",
+      );
+      const { stdout } = await runDocker(
+        ["exec", containerName, "node", "--input-type=module", "-e", source],
+        { timeout: 300_000 * imageSmokeTimeoutMultiplier },
+      );
+      const result = JSON.parse(stdout);
+      assert.equal(result.sameIdentityAfterExpiredReplay, true);
+      assert.equal(result.singleBootstrapCompletion, true);
+      assert.equal(result.unpairedExpiredRejected, true);
+    },
+  );
+});

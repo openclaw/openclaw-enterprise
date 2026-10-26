@@ -63,7 +63,11 @@ version's Compute Driver again, with the same ID and implementation.
 
 When someone opens the Agent root `/` or a copied `/chat/main` link without a valid session, OCC sends a temporary `302` redirect to the configured console. This also works for links ending in a 32-character lowercase hexadecimal session segment. The redirect carries only the opaque key from the Agent host, in a URL fragment. It drops the chat session segment and query, sets `Cache-Control: no-store` and `Referrer-Policy: no-referrer`, and does not check whether the Agent exists.
 
-The console checks the browser session and offers sign-in if needed. Its authenticated `GET /native-admin/return/<key>` operation then checks exact Agent `administer` access and returns the Namespace and Agent IDs even if the Agent is stopped. Unknown and unauthorized keys receive the same `404`. Recovery ends at Agent detail; opening native chat is a separate action. Only a user-activated, top-level HTML navigation qualifies for the redirect. Link previews, API requests, WebSocket upgrades, and actual authorization denials keep their ordinary refusal behavior.
+The console checks the browser session and offers sign-in if needed. Its authenticated `GET /native-admin/return/<key>` operation then checks exact Agent `administer` access and returns the Namespace and Agent IDs even if the Agent is stopped. Unknown and unauthorized keys receive the same `404`. Recovery ends at Agent detail; opening native chat is a separate action. Only a user-activated, top-level HTML navigation qualifies for the redirect. Link previews, API requests, and WebSocket upgrades keep their ordinary refusal behavior. A signed-in authorization denial does not redirect and does not start sign-in.
+
+When that signed-in person cannot administer the Agent, a user-activated top-level HTML navigation to `/` or `/chat/main` stays HTTP 403. The page does not name the Agent. Its only link is **Go to your Agents**, which points at `/console/agents` on the configured public console origin. The response sets `Cache-Control: no-store` and `Referrer-Policy: no-referrer`. A JSON `Accept` header still receives the JSON `403`. WebSocket upgrades still close without that page.
+
+In an already-open Gateway tab, the Control UI offers **Reconnect in browser** if a reconnect fails and its same-origin health request receives `401` or `403`. Following the link opens `/` on the current Agent host. The UI does not navigate automatically or carry forward the chat path or query. The response is a reason to check access, not proof that a session expired. OCC decides whether that navigation reaches sign-in or is refused.
 
 ## Agent host identity
 
@@ -93,31 +97,11 @@ Native chat or other activity in the Agent tab does not renew the console sessio
 
 ## Gateway managed mode
 
-OCE enables managed mode by default for each Agent, independently of this UI pilot.
-On a supporting runtime, it prevents Gateway administrators from changing
-configuration through OpenClaw, opening Gateway-local terminals, and running
-Gateway-hosted command jobs. OCE supplies `OPENCLAW_CONFIG_READONLY=1`,
-`OPENCLAW_DISABLE_GATEWAY_LOCAL_TERMINALS=1`, and
-`OPENCLAW_DISABLE_CRON_HOST_EXECUTION=1`; the config watcher stays enabled.
-Node-relayed terminals, scheduled Agent turns, and Harness shell access are separate.
-Harness Gateway policies apply in either mode.
-
-Creating an Agent with `gatewayManagedMode=false` or changing the saved setting
-requires Installation `administer` in addition to the operation's normal permissions.
-In the Console, use the version draft's **Configuration** tab. Anyone authorized
-to deploy can apply the saved setting. Gateway administrators cannot change it
-through OpenClaw. The Agent revision records the requested mode, not live
-enforcement: OCC can select the revision before the replacement Gateway starts.
-A successful deployment and a supporting runtime are required to confirm enforcement.
-
-The [default runtime source pin](../../deploy/runtime/Dockerfile) includes these
-controls. The deployed runtime must be built from a supporting source and qualified
-for the selected Compute Driver. Compute Drivers must declare managed-mode support.
-Kubernetes requires a configured Gateway runtime; SSH rejects managed revisions.
-See [Docker deployment limits](drivers/docker-compute.md).
-Re-enabling managed mode restores OCE configuration and can discard Gateway-local
-changes; replacement can interrupt service. Filesystem protection is additional
-hardening when actors with direct write access to Gateway configuration files are in scope.
+Managed mode defaults on. It prevents Gateway administrators from editing native
+configuration, opening Gateway-local terminals, and running Gateway-hosted command
+jobs. An Installation administrator can change the setting in OCE for the next
+deployment. See [Gateway managed mode](agents/gateway-managed-mode.md) for runtime
+requirements and behavior when managed mode is off.
 
 ## Native authority and drift
 

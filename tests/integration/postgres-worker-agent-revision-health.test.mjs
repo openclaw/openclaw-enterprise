@@ -115,6 +115,25 @@ test(
   },
 );
 
+// Finding 2379: pg's pool.end() resolves before its idle sessions close, so the database drop
+// right after can end one of them. The server's 57P01 reached the pool's idle listener, which
+// re-emitted it on the pool, and with no listener that failed the test in its teardown.
+test(
+  "worker fixture teardown ignores the error of an ended pool's session the drop ends",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    const fixture = await setup(context);
+    const idle = await fixture.observerPool.connect();
+    idle.release();
+    await fixture.database.dispose();
+    // What that idle client receives when the drop ends its session before it closed.
+    const ended = Object.assign(new Error("terminating connection due to administrator command"), {
+      code: "57P01",
+    });
+    assert.doesNotThrow(() => idle.emit("error", ended));
+  },
+);
+
 // Runs `body` as a test file of its own under the revision fixture (created with `fixtureOptions`),
 // needing no PostgreSQL, and returns its output once its process exits with `status`, or fails
 // after 30 s naming the file as still running.

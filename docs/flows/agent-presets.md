@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
-updated: 2026-10-15
-last_updated_session: authoring-run/23d60562-6525-4593-ad0c-29ce57483c38
+updated: 2026-10-24
+last_updated_session: authoring-run/f070add2-5557-42f3-a399-1af757d219cd
 ---
 
 # Agent Presets flow
@@ -132,8 +132,8 @@ Namespace. Explicit scopes remain unchanged for same-Namespace validation.
 Template structure, variable declarations, default types, and credential
 references are checked without requiring unfilled variables. Password definitions
 have no defaults and can appear only as whole tokens at `agent.harnessAuth.secret`;
-literal credentials and substitution into ordinary settings are rejected. Ordinary Agent
-field validation is deferred to the creation APIs. When native values exist,
+literal credentials and substitution into ordinary settings are rejected. Literal Agent
+launch fields get create's rules (`validatePresetLaunchFields`); tokens wait. When native values exist,
 the selected Configuration Driver's
 `validateValues` checks their native credential rules; missing capability fails
 closed. Core owns no native configuration interpretation.
@@ -185,8 +185,8 @@ and uses ordinary creation recovery.
 
 `apps/controller/src/console/console.mjs:loadPage`
 
-Before resetting views, `loadPage` captures unsaved JSON, model controls, workspace
-files, repositories and staged Secret references per user and Namespace. Explicit
+`loadPage` captures JSON, model controls, workspace files, repositories and staged
+Secret references per user/Namespace before resetting views. Explicit
 Preset, default-shortcut and bare forms all return from this copy with fresh
 capability and repository discovery. A confirmed **Cancel** removes creation and
 channel snapshots and the retained view; re-entry opens the chooser and preserves
@@ -196,11 +196,10 @@ page exit clears captures, not a failed `/namespaces` read. A known Create refus
 the capture and its saved resources, unless repository policy refused it or an Agent,
 provisioning job or credential registration exists.
 
-`agents/create.mts:updateModelConfiguration` retains ordered fallbacks and
-model metadata referenced by defaults or entries. Only an unreferenced replaced
-primary is retired. Temporary clearing retains fallback entries and transport.
-The saved Configuration goes through the existing configured-Harness resolver;
-model execution remains a later boundary.
+`agents/create.mts:updateModelConfiguration` synchronizes qualified shared primaries
+and existing local policies. Empty maps and inherited selections remain. Invalid
+rosters stay for admission validation. JSON selection edits update controls and clear pending
+state. Clearing/navigation retain policies, fallbacks and referenced metadata.
 
 ### 4. Save an independent draft
 
@@ -287,6 +286,8 @@ or an immutable saved version.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-10-24 14:11: Align Console roster model selections and local policies. (authoring-run/f070add2-5557-42f3-a399-1af757d219cd - de058b77e4f996c848520d8bee2e9c6122d3e2e1)
 
 - 2026-10-15 18:50: Allow search-only Slack Secret selection during Agent creation. (authoring-run/23d60562-6525-4593-ad0c-29ce57483c38 - aad21c63837ef24f9f9bae152877812abe9b1abd)
 

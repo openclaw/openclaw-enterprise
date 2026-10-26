@@ -23,7 +23,9 @@ Experimental Dedicated OpenClaw requires [native worker support](../harness-exec
 and full-facet Sandbox provisioning. The pinned runtime enables it. Compute
 initializes private workspace files before Sandbox handoff; the Harness verifies
 their completion marker. [Sandbox limits](../../flows/openshell-sandbox-provisioning.md#3-validate-and-serialize-the-sandbox)
-block direct Secret-backed model and environment projection.
+block direct Secret-backed model and environment projection. An Installation that
+lists only Embedded OpenClaw selects no Sandbox Driver, so Create Agent names that
+as the reason Dedicated OpenClaw is disabled.
 
 1. Sign in, select the intended Namespace, open **Agents**, and select
    **Create Agent**.
@@ -106,7 +108,9 @@ or outbound access on failure, then retry. Editing follows installation capabili
 and the [policy contract](../agent-plugins.md); browsing proves no runtime permission.
 
 Credentials are masked Namespace Secrets, excluded from Configuration JSON, Agent
-responses, and browser storage. With a selected Credential Gateway, supported
+responses, and browser storage. Binding a Secret needs Secret `operate` on it, so each Secret
+menu lists a readable Secret without it disabled, with the reason. A new Secret has no `operate`
+grant, so where a readable Secret is denied, a Preset's **Create new Secret** is disabled too. With a selected Credential Gateway, supported
 Dedicated creation registers the selected Secret as a model
 [Credential Source](../credential-sources.md), then provisions with that source.
 The Harness receives only a placeholder. The caller also needs source `create`, `read`, and `operate`.
@@ -118,7 +122,9 @@ Presets fix the provider, including JSON edits; saved service account tokens als
 OpenClaw Presets retain their configured Harness independently of execution mode.
 Without model runtime policy, Presets keep the default Harness.
 Mode changes preserve provider transport settings.
-Operator-managed credentials fix OpenClaw across provider changes. Start with
+Operator-managed credentials fix OpenClaw across provider changes. Where the Compute Driver
+does not supply them (Kubernetes Compute), the form refuses the Preset when it opens and names
+what an administrator changes. Start with
 `default-codex` to change these choices, or edit authentication later in **Credentials**.
 
 Provider changes reset Harness, credential, and model; authentication changes
@@ -158,6 +164,8 @@ principal. It checks the saved Agent before granting access, without creating an
 A member without Installation administration gets no retry: open the saved Agent and
 ask an Installation administrator to grant it. If your permissions could not be checked,
 select **Retry permission check**.
+If the configuration check times out, your entries stay in the form. Select
+**Create Agent** again to repeat the check and continue.
 If a create response is missing or identifies a different resource, the write may still
 have succeeded. Check the displayed IDs and the Agents list before starting again.
 For an uncertain Credential Source, select **Check credential registration** to look up

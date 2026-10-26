@@ -98,6 +98,7 @@ function clientRevision(revision: Readonly<AgentRevisionRead>): Record<string, u
     configuration: revision.configuration,
     harness: revision.harness,
     compute: { id: revision.compute.id, implementation: revision.compute.implementation },
+    sandboxDriverId: revision.sandboxDriverId,
     secretDriverId: revision.secretDriverId,
     secretBindings: revision.secretBindings,
     plugins: revision.plugins,
@@ -149,7 +150,7 @@ async function listRepositoryOptions({
       allowedProfiles,
       ...(description === undefined ? {} : { description }),
     })),
-    meta: { requestId: request.id },
+    meta: { requestId: request.id, ...(result.notConfigured ? { notConfigured: true } : {}) },
   });
 }
 
@@ -503,6 +504,8 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
           configurationGeneration: summary.configurationGeneration,
           harness: summary.harness,
           createdAt: summary.createdAt,
+          deploymentStatus: summary.deploymentStatus,
+          deploymentErrorCode: summary.deploymentErrorCode,
         })),
         meta: {
           requestId: request.id,

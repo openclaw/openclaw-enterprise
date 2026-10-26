@@ -1,5 +1,6 @@
-// The startup model probe scenario shared by runtime-image-startup-probe.test.mjs
-// and runtime-image-startup-termination.test.mjs, which CI runs side by side in
+// The startup model probe scenario shared by runtime-image-startup-probe.test.mjs,
+// runtime-image-startup-termination.test.mjs and
+// runtime-image-gateway-unclean-restart.test.mjs, which CI runs side by side in
 // Image Runtime Startup 2: one runtime wrapper started with the container command
 // the Compute driver renders, beside a stand-in model provider sidecar.
 import assert from "node:assert/strict";
@@ -243,15 +244,29 @@ async function startupProbeEvidence(scenario, snapshot, loop) {
   return {
     probe: entries
       .filter(({ event }) => probeEvents.has(event))
-      .map(({ event, attempt, code, elapsedMs, capMs, cpuWaitMs, cause }) => ({
-        event,
-        attempt,
-        code,
-        elapsedMs,
-        capMs,
-        cpuWaitMs,
-        cause,
-      })),
+      .map(
+        ({
+          event,
+          attempt,
+          code,
+          elapsedMs,
+          capMs,
+          cpuWaitMs,
+          pressureWaitMs,
+          throttledWaitMs,
+          cause,
+        }) => ({
+          event,
+          attempt,
+          code,
+          elapsedMs,
+          capMs,
+          cpuWaitMs,
+          pressureWaitMs,
+          throttledWaitMs,
+          cause,
+        }),
+      ),
     stages: Object.fromEntries(
       entries
         .filter(({ event }) => event === "openclaw.model_probe_stage")

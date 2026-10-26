@@ -152,7 +152,8 @@ node uses when it restarts. Native workers and SandboxDriver Harnesses receive t
 their environment, keep it for restarts, and are replaced to attach the node.
 Installations that enrolled one node for each Agent revision enroll a new Agent device once,
 at the first replacement; retiring each earlier Agent revision deletes its node Secret.
-Sessions stay on the private Gateway claim, inaccessible to the Harness.
+Gateway conversation history stays on its private claim. Resuming the original Codex thread
+also requires the Harness claim’s `codex-sessions`.
 Selected generated-image bytes use the Codex remote-media reader; no image mount
 is shared. Each image initializes its bundled/plugin assets without shared Skill-tree mounts.
 Embedded Agents use the private claim without creating this Harness claim.
@@ -196,32 +197,9 @@ for retry and preserves the Agent's database identity.
 
 ## Managed native configuration
 
-Gateway versions with [managed mode](../../agent-native-admin.md#gateway-managed-mode) off use a writable native
-configuration copy. With managed mode on, Kubernetes creates a copy only when runtime
-Gateway images and private `gatewayRouting` are configured and the saved native
-Configuration explicitly enables the pilot shape:
-
-- Trusted-proxy authentication accepts `x-occ-identity: occ-workspace-files`
-  with `operator.admin` identity scopes.
-- Trusted-proxy device auto-approval is enabled with `operator.admin` scope.
-- `controlUi.enabled` is true and `controlUi.allowedOrigins` is nonempty.
-- Dangerous device-auth disabling and host-header origin fallback are disabled.
-
-For those Gateways, the managed ConfigMap remains read-only at
-`/etc/openclaw-managed/openclaw.json`. The nonroot init container copies it to
-`/home/node/.openclaw/openclaw.json` on the Pod-local `emptyDir`, and
-`OPENCLAW_CONFIG_PATH` points to that writable copy. All other Gateways read the
-managed ConfigMap directly at `/etc/openclaw/openclaw.json`.
-
-Native edits change only the copy; Pod replacement or Agent redeployment
-restores the managed snapshot, while the persistent gateway and workspace claims
-retain their data. Pod-local provenance records Agent revision ID, snapshot hash and
-generated bridges; only matches with the managed baseline are rebuilt.
-Peer recovery and same-Pod restarts retain unrelated edits; conflicting bridge
-edits remain refused. Pod replacement clears copy/provenance.
-Edits stay outside OCE Configuration and AgentRevisions; see
-the [native admin feature boundary](../../agent-native-admin.md#native-authority-and-drift)
-and [deployment procedure](../../../guides/deploy/native-admin.md).
+How runtime gateways read the managed native configuration, and when native
+admin editing uses a writable copy, is in
+[Managed native configuration](managed-native-configuration.md).
 
 ## Runtime credentials
 

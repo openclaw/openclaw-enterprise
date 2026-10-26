@@ -168,14 +168,14 @@ if printf '%s' "$*" | grep -q 'scripts/ci/prepare.mjs'; then
   if [ -n "$OCC_K3D_OPENCLAW_COMMIT" ]; then
     printf 'OCC_K3D_OPENCLAW_COMMIT=%s\n' "$OCC_K3D_OPENCLAW_COMMIT" >> '${join(state, "env")}'
   fi
-  printf '%s\n' '${preparedModel === undefined ? "" : `OCC_TEST_OPENAI_MODEL=${preparedModel}`}' '${preparedBaseUrl === undefined ? "" : `OCC_TEST_CODEX_OPENAI_BASE_URL=${preparedBaseUrl}`}' >> '${join(state, "env")}'
+  printf '%s\n' '${preparedModel === undefined ? "" : `OCC_TEST_OPENAI_MODEL=${preparedModel}`}' '${preparedBaseUrl === undefined ? "" : `${selectedHarness === "openclaw" ? "OCC_TEST_OPENSHELL_MODEL_BASE_URL" : "OCC_TEST_CODEX_OPENAI_BASE_URL"}=${preparedBaseUrl}`}' >> '${join(state, "env")}'
   exit 0
 fi
 if printf '%s' "$*" | grep -q 'scripts/ci/reset-k3d-model.mjs'; then exit 0; fi
 if printf '%s' "$*" | grep -q 'scripts/ci/cleanup.mjs'; then rm -f '${join(state, "state.json")}'; exit 0; fi
 node_args="$*"
 /usr/bin/env -i PATH=/usr/bin:/bin INVOCATION='${invocation}' NODE_ARGS="$node_args" DOCKER_HOST="\${DOCKER_HOST:-}" OCC_DOCKER_BIN="$OCC_DOCKER_BIN" PODMAN_COMPOSE_PROVIDER="\${PODMAN_COMPOSE_PROVIDER:-}" OCC_K3D_DEMO_STATE="\${OCC_K3D_DEMO_STATE:-}" OCC_K3D_HARNESS="\${OCC_K3D_HARNESS:-}" OPENSHELL_HARNESS="\${OCC_TEST_OPENSHELL_HARNESS:-}" /bin/sh -c 'printf "{\\"args\\":\\"%s\\",\\"dockerHost\\":\\"%s\\",\\"containerBin\\":\\"%s\\",\\"composeProvider\\":\\"%s\\",\\"demoState\\":\\"%s\\",\\"harness\\":\\"%s\\",\\"openShellHarness\\":\\"%s\\"}\\n" "$NODE_ARGS" "$DOCKER_HOST" "$OCC_DOCKER_BIN" "$PODMAN_COMPOSE_PROVIDER" "$OCC_K3D_DEMO_STATE" "$OCC_K3D_HARNESS" "$OPENSHELL_HARNESS" > "$INVOCATION"'
-INVOCATION='${invocation}' MODEL="$OCC_TEST_OPENAI_MODEL" BASE_URL="\${OCC_TEST_CODEX_OPENAI_BASE_URL:-}" KEY_PRESENT="$(test -n "$OPENAI_API_KEY" && printf true || printf false)" '${process.execPath}' -e '
+INVOCATION='${invocation}' MODEL="$OCC_TEST_OPENAI_MODEL" BASE_URL="\${${selectedHarness === "openclaw" ? "OCC_TEST_OPENSHELL_MODEL_BASE_URL" : "OCC_TEST_CODEX_OPENAI_BASE_URL"}:-}" KEY_PRESENT="$(test -n "$OPENAI_API_KEY" && printf true || printf false)" '${process.execPath}' -e '
   const fs = require("node:fs");
   const record = JSON.parse(fs.readFileSync(process.env.INVOCATION, "utf8"));
   record.model = process.env.MODEL;
@@ -265,6 +265,7 @@ INVOCATION='${invocation}' MODEL="$OCC_TEST_OPENAI_MODEL" BASE_URL="\${OCC_TEST_
       OPENAI_API_KEY: apiKey,
       OCC_TEST_OPENAI_MODEL: inheritedModel,
       OCC_TEST_CODEX_OPENAI_BASE_URL: inheritedBaseUrl,
+      OCC_TEST_OPENSHELL_MODEL_BASE_URL: selectedHarness === "openclaw" ? inheritedBaseUrl : "",
       OCC_K3D_STATE_DIR: "",
       OCC_TEST_KUBERNETES_GATEWAY_IMAGE: "localhost/stale-gateway@sha256:" + "a".repeat(64),
       OCC_TEST_KUBERNETES_AGENT_IMAGE: "localhost/stale-agent@sha256:" + "b".repeat(64),
@@ -355,13 +356,20 @@ INVOCATION='${invocation}' MODEL="$OCC_TEST_OPENAI_MODEL" BASE_URL="\${OCC_TEST_
 test("k3d defaults to the foreground OpenClaw and OCC console demo", (context) =>
   runLauncher(context, "docker"));
 
-test("k3d Codex model flags override inherited and prepared settings for test and default demo", async (context) => {
-  for (const command of [["test"], []]) {
+test("k3d model flags override inherited and prepared settings for both Harnesses", async (context) => {
+  for (const [harness, command] of [
+    ["codex", ["test"]],
+    ["codex", []],
+    ["openclaw", ["test"]],
+    ["openclaw", ["demo"]],
+  ]) {
     const recorded = await runLauncher(
       context,
       "podman",
       [
         ...command,
+        "--harness",
+        harness,
         "--base-url",
         "https://models.example.test/api/v1",
         "--model-id",
@@ -376,7 +384,7 @@ test("k3d Codex model flags override inherited and prepared settings for test an
     );
     // The explicit outer provider protects a native ID whose namespace itself
     // is codex/ from the consumer's existing provider-ref normalization.
-    assert.equal(recorded.model, "codex/codex/vendor/model");
+    assert.equal(recorded.model, `${harness === "codex" ? "codex" : "openai"}/codex/vendor/model`);
     assert.equal(recorded.baseUrl, "https://models.example.test/api/v1");
     assert.equal(recorded.apiKeySet, true);
     assert.doesNotMatch(recorded.args, /test-only-value/);
@@ -384,19 +392,23 @@ test("k3d Codex model flags override inherited and prepared settings for test an
 });
 
 test("k3d model options retain environment-only use and accept equals syntax", async (context) => {
-  const inherited = await runLauncher(context, "podman", ["test"], {
-    inheritedModel: "vendor/model",
-    inheritedBaseUrl: "https://models.example.test/v1",
-  });
-  assert.equal(inherited.model, "vendor/model");
-  assert.equal(inherited.baseUrl, "https://models.example.test/v1");
-  const flagged = await runLauncher(context, "podman", [
-    "demo",
-    "--model-id=vendor/model",
-    "--base-url=https://models.example.test/v1",
-  ]);
-  assert.equal(flagged.model, "codex/vendor/model");
-  assert.equal(flagged.baseUrl, "https://models.example.test/v1");
+  for (const harness of ["codex", "openclaw"]) {
+    const inherited = await runLauncher(context, "podman", ["test", "--harness", harness], {
+      inheritedModel: "vendor/model",
+      inheritedBaseUrl: "https://models.example.test/v1",
+    });
+    assert.equal(inherited.model, "vendor/model");
+    assert.equal(inherited.baseUrl, "https://models.example.test/v1");
+    const flagged = await runLauncher(context, "podman", [
+      "demo",
+      "--harness",
+      harness,
+      "--model-id=vendor/model",
+      "--base-url=https://models.example.test/v1",
+    ]);
+    assert.equal(flagged.model, `${harness === "codex" ? "codex" : "openai"}/vendor/model`);
+    assert.equal(flagged.baseUrl, "https://models.example.test/v1");
+  }
 });
 
 test("k3d rejects missing model option values and unsupported actions before preparation", async (context) => {
@@ -407,14 +419,8 @@ test("k3d rejects missing model option values and unsupported actions before pre
   ]) {
     await assert.rejects(runLauncher(context, "podman", args), /requires a nonempty/);
   }
-  for (const args of [
-    ["info", "--model-id", "vendor/model"],
-    ["test", "--harness", "openclaw", "--base-url", "https://models.example.test/v1"],
-  ]) {
-    await assert.rejects(
-      runLauncher(context, "podman", args),
-      /supported only for Codex demo and test/,
-    );
+  for (const args of [["info", "--model-id", "vendor/model"]]) {
+    await assert.rejects(runLauncher(context, "podman", args), /supported only for demo and test/);
   }
 });
 
@@ -595,3 +601,92 @@ test("k3d rejects an unsupported Harness option", async (context) => {
 
 test("Linux Podman uses its native API socket", (context) =>
   runLauncher(context, "podman", ["test"], { platform: "Linux" }));
+
+test("native OpenClaw preparation requires its API key instead of a Codex token", async (context) => {
+  const root = await temporaryDirectory(context, "oce-k3d-native-inputs-");
+  const nativeFile = "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs";
+  const firstAgentFile = "tests/integration/local-first-agent-openshell-k3d-real.test.mjs";
+  for (const [harness, apiKey, file, helperHarness, expected] of [
+    ["openclaw", "test-only-value", nativeFile, "", /requires a prior prepareLane/],
+    ["openclaw", "", nativeFile, "", /Missing required CI input\(s\): OPENAI_API_KEY/],
+    ["", "test-only-value", nativeFile, "", /Missing required CI input\(s\): CODEX_ACCESS_TOKEN/],
+    [
+      "openclaw",
+      "test-only-value",
+      firstAgentFile,
+      "",
+      /Missing required CI input\(s\): CODEX_ACCESS_TOKEN/,
+    ],
+    [
+      "openclaw",
+      "test-only-value",
+      firstAgentFile,
+      "openclaw",
+      /Missing required CI input\(s\): CODEX_ACCESS_TOKEN/,
+    ],
+  ]) {
+    // Only the native file may reach its owned-state check without Codex credentials.
+    // The first-Agent workflow still creates a Codex Agent, even under a native selector.
+    await assert.rejects(
+      execute(
+        process.execPath,
+        [
+          "scripts/ci/prepare.mjs",
+          "--lane",
+          "openshell",
+          "--file",
+          file,
+          "--state",
+          join(root, "missing-state.json"),
+        ],
+        {
+          env: {
+            ...process.env,
+            GITHUB_ENV: "",
+            GITHUB_OUTPUT: "",
+            CODEX_ACCESS_TOKEN: "",
+            OPENAI_API_KEY: apiKey,
+            OCC_TEST_OPENAI_MODEL: "vendor/model",
+            OCC_TEST_OPENSHELL_HARNESS: harness,
+            OCC_K3D_HARNESS: helperHarness,
+          },
+        },
+      ),
+      expected,
+    );
+  }
+
+  const existingState = join(root, "existing-state.json");
+  await writeFile(
+    existingState,
+    JSON.stringify(preparedState(repositoryRoot, 1, undefined, "openshell")),
+    { mode: 0o600 },
+  );
+  for (const [helperHarness, apiKey, expected] of [
+    ["", "test-only-value", /Missing required CI input\(s\): CODEX_ACCESS_TOKEN/],
+    ["openclaw", "test-only-value", /CI state already exists/],
+    ["openclaw", "", /Missing required CI input\(s\): OPENAI_API_KEY/],
+  ]) {
+    // An existing owned state stops bootstrap before infrastructure effects. Only the
+    // native helper's explicit selection may pass credential admission without Codex.
+    await assert.rejects(
+      execute(
+        process.execPath,
+        ["scripts/ci/prepare.mjs", "--lane", "openshell", "--state", existingState],
+        {
+          env: {
+            ...process.env,
+            GITHUB_ENV: "",
+            GITHUB_OUTPUT: "",
+            CODEX_ACCESS_TOKEN: "",
+            OPENAI_API_KEY: apiKey,
+            OCC_TEST_OPENAI_MODEL: "vendor/model",
+            OCC_TEST_OPENSHELL_HARNESS: "openclaw",
+            OCC_K3D_HARNESS: helperHarness,
+          },
+        },
+      ),
+      expected,
+    );
+  }
+});

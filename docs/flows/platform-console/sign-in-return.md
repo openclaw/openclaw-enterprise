@@ -55,6 +55,16 @@ provider-error advice from "use your password" to asking an administrator. Pendi
 all; generations reject late redirects. With `sessionBinding`, `loadPage`
 exchanges the button's stored `attemptId` once for its key. Tabs then send
 their pinned `x-occ-session-key`, so a replaced cookie yields login.
+A refused callback returns with `authError` and makes no exchange, so a failed
+exchange (`providerExchangeFailure`) reports a rate limit, an outage, the
+browser-origin check, a provider that the API no longer configures (`403`), or
+an attempt that expired or was replaced (`401`), never a refused identity.
+Password sign-in reports `429` with the `Retry-After` wait. The provider
+budgets send no `Retry-After`, so provider start and the exchange say to wait a
+minute. Each reports the origin check with its own text; every other password
+`400`, `401` or `403` keeps one message. On the API side, `sendAuthEndpoint`
+answers `429` with the wait and `503` with an outage message; every refusal
+keeps the endpoint's one message.
 When login interrupts a recognized console route, `navigation.mts` records its
 page, validated Namespace ID, and recognized Agent version and tab without unrelated
 query parameters. Password

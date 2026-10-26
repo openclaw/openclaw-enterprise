@@ -16,13 +16,16 @@ import type {
   PermissionAction,
   SandboxLogLine,
 } from "../../packages/contracts/src/index.ts";
+import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture, fileConsoleApp } from "../helpers/console-app.mjs";
 import { grantRole } from "../helpers/iam-grants.mjs";
+import { LOG_TEXT_DENIED, RUNTIME_STATUS_DENIED } from "../helpers/refusal-text.mjs";
 import {
   createProviderSandboxDriver,
   createRuntimeLogComputeDriver,
 } from "../helpers/runtime-logs.mjs";
 import {
+  accessibleDescription,
   apiRequests,
   detailUrl,
   fileBrowser,
@@ -36,6 +39,7 @@ import {
   waitForEnabled,
   waitForIdleFetches,
 } from "./console-agents-browser-helpers.mjs";
+import { withholdPermissionSummary } from "./console-agents-test-support.mjs";
 
 type ConsoleFixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
 type LogLine = AgentRuntimeLogChunk["lines"][number];
@@ -93,6 +97,16 @@ function resetComputeDriver() {
   Object.assign(computeDriver.state, structuredClone(initialDriver.state));
   computeDriver.calls.length = 0;
 }
+
+// What Logs says when a read is refused after the same read succeeded: the caller's access
+// changed, so it does not restate the rule (finding 2550).
+const LOGS_ACCESS_CHANGED =
+  "Your access to this Agent changed, so its logs are no longer shown. Refresh to check your access, or ask an Installation administrator.";
+const STATUS_ACCESS_CHANGED =
+  "Your access to this Agent changed, so its runtime status is no longer shown. Refresh to check your access, or ask an Installation administrator.";
+const LOGS_CHANGED = /^Your access to this Agent changed, so its logs are no longer shown\./;
+const STATUS_CHANGED =
+  /^Your access to this Agent changed, so its runtime status is no longer shown\./;
 
 async function logsFixture(t: TestContext) {
   const fixture: ConsoleFixture = await logsApp(t);
@@ -1244,19 +1258,34 @@ test("an operator without administer sees status but no log text and is never re
     "operate",
   ]);
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   const requests = apiRequests(page, fixture.origin);
+  // A fake clock, so the 10 s status poll below runs without waiting it out in real time.
+  await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
   const url = detailUrl(fixture, namespace.id, agent.id, revisionId, "logs");
   await login(page, fixture, url, operator.credentials);
 
   await page.locator(".runtime-pod").getByRole("heading", { name: "Gateway" }).waitFor();
-  await page
-    .getByText("Log text requires Agent read_logs (or administer) and read access.")
-    .waitFor();
+  await page.getByText(LOG_TEXT_DENIED).waitFor();
   assert.equal(await page.getByText("operator must not see this").count(), 0);
-  assert.equal(await page.getByRole("button", { name: "Follow" }).isDisabled(), true);
-  assert.equal(await page.getByRole("button", { name: "Refresh logs" }).isDisabled(), true);
+  // Every log control is disabled and described by the refusal beside it (finding D749).
+  const refusal = await page.locator(".log-error").textContent();
+  assert.ok(refusal?.startsWith(LOG_TEXT_DENIED));
+  for (const control of [
+    page.locator("#runtime-log-source"),
+    page.getByLabel("Previous instance"),
+    page.getByLabel("Include debug"),
+    page.getByRole("button", { name: "Follow" }),
+    page.getByRole("button", { name: "Refresh logs" }),
+    page.getByRole("button", { name: "Download" }),
+  ]) {
+    assert.equal(await control.isDisabled(), true);
+    assert.equal(await accessibleDescription(control), refusal);
+  }
+  // The permission answer says log text is denied, so the read the API would refuse and audit
+  // is never sent (finding D758).
   const denied = logRequests(requests, revisionId).length;
-  assert.equal(denied, 1);
+  assert.equal(denied, 0);
   // Log text was never allowed, so the refusal revokes nothing: status is not asked again at
   // once (finding 1597's re-ask is for a revocation).
   await settlePageRequests(page);
@@ -1265,13 +1294,14 @@ test("an operator without administer sees status but no log text and is never re
     1,
   );
   // Status keeps polling every 10 s; the denied log view is not requested again.
+  await page.clock.runFor(10_000);
   await waitForCondition(
     () =>
       requests.filter(({ path }) => path.endsWith(`/deployments/${revisionId}/runtime`)).length >=
       2,
     "the runtime strip refreshes",
-    15_000,
   );
+  await waitForIdleFetches(page);
   assert.equal(logRequests(requests, revisionId).length, denied);
 });
 
@@ -1290,11 +1320,7 @@ test("a log reader without operate reads log text in the Logs tab without runtim
   await login(page, fixture, url, reader.credentials);
 
   // Runtime status needs operate; log text needs only read_logs, so the tab still reads it.
-  await page
-    .getByText(
-      "Runtime status requires Agent operate and read access plus read access to this version.",
-    )
-    .waitFor();
+  await page.getByText(RUNTIME_STATUS_DENIED).waitFor();
   const pane = page.getByRole("log", { name: "Runtime log output" });
   await pane.getByText("log reader can see this").waitFor();
   const pod = computeDriver.podName({ id: revisionId });
@@ -1675,6 +1701,44 @@ test("a source picked while a refresh reads clears the kept lines at once", asyn
   assert.match((await outputStatus.textContent()) ?? "", /^Showing gateway in /u);
 });
 
+test("a status refresh keeps Download disabled while a download is pending", async (t) => {
+  const logs = await logsFixture(t);
+  logs.computeDriver.state.lines = [line(1, "download stays pending")];
+  const { page, requests } = await openRetainedLogs(t, logs);
+  const log = page.getByRole("log", { name: "Runtime log output" });
+  await log.getByText("download stays pending").waitFor();
+  await waitForIdleFetches(page);
+  const download = page.getByRole("button", { name: "Download", exact: true });
+  const held = await holdRequests(
+    t,
+    page,
+    `**/deployments/${logs.revisionId}/runtime/logs?*download=true*`,
+    { once: true },
+  );
+  const statusPath = `/deployments/${logs.revisionId}/runtime`;
+  const statusReads = () => requests.filter(({ path }) => path.endsWith(statusPath)).length;
+  const before = statusReads();
+  await download.click();
+  try {
+    await held.requested;
+    assert.equal(await download.isDisabled(), true);
+    await page.clock.runFor(10_000);
+    await waitForCondition(() => statusReads() > before, "the runtime status refreshes");
+    assert.equal(await download.isDisabled(), true);
+    assert.equal(
+      requests.filter(({ path }) => path.includes("download=true")).length,
+      1,
+      "a second click must not start while the first download is pending",
+    );
+    await download.click({ force: true });
+    assert.equal(requests.filter(({ path }) => path.includes("download=true")).length, 1);
+  } finally {
+    held.release();
+  }
+  await waitForEnabled(download);
+  await waitForIdleFetches(page);
+});
+
 test("the Sandbox source shows redacted policy decisions without a Pod picker", async (t) => {
   const computeDriver = createRuntimeLogComputeDriver({ sandboxNamespace: "tenant-console" });
   const secret = `Zq9${randomUUID().replaceAll("-", "")}`;
@@ -1779,6 +1843,52 @@ test("the Sandbox source shows redacted policy decisions without a Pod picker", 
     .waitFor();
 });
 
+// Policy denials learns from the viewed version's snapshot whether it ran in a Sandbox. When the
+// snapshot read fails, the tab reads the Sandbox log once and lets the answer decide: this version
+// runs without a Sandbox, so RUNTIME_LOGS_SOURCE_UNAVAILABLE shows the reason the snapshot would
+// have given, not a read error (finding 2484).
+test("Policy denials says a version runs without a Sandbox when only the log answer can tell", async (t) => {
+  const { fixture, namespace, agent, revisionId } = await logsFixture(t);
+  const { account: reader } = await logsMember(fixture, namespace, "policy-log-reader", [
+    "read",
+    "read_logs",
+  ]);
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const logsPath = `${agentPath}/deployments/${revisionId}/runtime/logs`;
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await trackSettledFetches(page);
+  // The version's snapshot read fails, so the page cannot tell whether it ran in a Sandbox.
+  await page.route(`${fixture.origin}${agentPath}/revisions/${revisionId}`, (route) =>
+    route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Revision unavailable.")),
+  );
+  const logAnswer = page.waitForResponse((response) =>
+    response.url().startsWith(`${fixture.origin}${logsPath}?`),
+  );
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, revisionId, "policy"),
+    reader.credentials,
+  );
+  const answered = await logAnswer;
+  assert.equal(answered.status(), 400);
+  assert.equal((await answered.json()).error.code, "RUNTIME_LOGS_SOURCE_UNAVAILABLE");
+  const noSandbox = page.getByText(
+    "This Agent version runs without a Sandbox, so no policy denials are recorded for it.",
+    { exact: true },
+  );
+  await noSandbox.waitFor();
+  await settlePageRequests(page);
+  await waitForIdleFetches(page);
+  assert.equal(await page.getByText(/no such runtime log source|window: unavailable/).count(), 0);
+  assert.equal(
+    requests.filter(({ path }) => path.startsWith(`${logsPath}?`)).length,
+    1,
+    "one Sandbox log read",
+  );
+});
+
 test("a Gateway view points at an unready Harness Pod instead of reading as a network fault", async (t) => {
   const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
   computeDriver.state.harnessPod = { ready: false };
@@ -1847,7 +1957,10 @@ test("the Gateway hint skips a rollout's old Harness Pod and covers a Harness wi
   assert.match((await missing.textContent()) ?? "", /see Deployment activity/);
 });
 
-test("a reader without operate learns what log text needs and is asked for status once per page", async (t) => {
+// The permission answer already says the reader lacks operate and log text, so neither the status
+// read nor the log text read, each an audited denial, is sent (findings 2454, D758); the strip and
+// the log pane still say what each needs.
+test("a reader without operate learns what log text needs and is not asked for status", async (t) => {
   const { fixture, namespace, agent, revisionId } = await logsFixture(t);
   const { account: reader } = await logsMember(fixture, namespace, "runtime-reader", ["read"]);
   const { page } = await newPage(t, fixture);
@@ -1855,22 +1968,27 @@ test("a reader without operate learns what log text needs and is asked for statu
   const url = detailUrl(fixture, namespace.id, agent.id, revisionId, "logs");
   await login(page, fixture, url, reader.credentials);
 
-  await page
-    .getByText(
-      /Runtime status requires Agent operate .* Log text needs Agent read_logs \(or administer\) and read access\./,
-    )
-    .waitFor();
+  await page.getByText(RUNTIME_STATUS_DENIED).waitFor();
+  await page.locator(".log-error").getByText(LOG_TEXT_DENIED, { exact: true }).waitFor();
   const statusReads = () =>
     requests.filter(({ path }) => path.endsWith(`/deployments/${revisionId}/runtime`)).length;
-  assert.equal(statusReads(), 1);
+  await settlePageRequests(page);
+  assert.equal(statusReads(), 0);
+  assert.equal(logRequests(requests, revisionId).length, 0);
+  // Neither refusal shows a Request ID: nothing was sent.
+  assert.doesNotMatch(
+    (await page.getByText(/^Runtime status requires Agent operate/).textContent()) ?? "",
+    /Request ID/,
+  );
 
-  // Every denied read is an audited authorization denial: reopening the tab does not ask again.
+  // Reopening the tab does not ask either.
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await page.getByRole("tab", { name: "Logs", exact: true }).click();
-  // The reopened tab shows this text only after its status decision, so a repeat read has started.
+  // The reopened tab shows this text only after its status decision, so a read would have started.
   await page.getByText(/Log text needs Agent read_logs/).waitFor();
   await settlePageRequests(page);
-  assert.equal(statusReads(), 1);
+  assert.equal(statusReads(), 0);
+  assert.equal(logRequests(requests, revisionId).length, 0);
 });
 
 test("a status denial for one operator does not carry over to the next sign-in on the tab", async (t) => {
@@ -2114,7 +2232,8 @@ test("a member's Back reuses a followed Logs view, and not once log access is re
   );
   const pane = page.getByRole("log", { name: "Runtime log output" });
   await pane.getByText("member before leaving").waitFor();
-  // The member is refused runtime status and native administration, and the view says so.
+  // The member is refused runtime status, and the view says so. The permission answer already
+  // says the member lacks Agent administer, so native administration is never asked.
   await page.getByText(/Runtime status requires Agent operate/).waitFor();
   await page.getByRole("button", { name: "Follow" }).click();
   computeDriver.state.lines = [...computeDriver.state.lines, line(2, "member first poll")];
@@ -2124,7 +2243,7 @@ test("a member's Back reuses a followed Logs view, and not once log access is re
   const panel = await pane.elementHandle();
   const nativeAdminReads = () =>
     requests.filter(({ path }) => path.endsWith(`/agents/${agent.id}/native-admin`)).length;
-  assert.equal(nativeAdminReads(), 1);
+  assert.equal(nativeAdminReads(), 0);
   const logPaths = () =>
     requests.filter(({ path }) => path.includes("/runtime/logs")).map(({ path }) => path);
 
@@ -2150,8 +2269,8 @@ test("a member's Back reuses a followed Logs view, and not once log access is re
     readAfterBack.filter((path) => readBeforeLeaving.has(path) || path.includes("tailLines")),
     [],
   );
-  // The remembered refusal is not asked again (each one is an audited denial).
-  assert.equal(nativeAdminReads(), 1);
+  // Back does not ask native administration either (each refusal would be an audited denial).
+  assert.equal(nativeAdminReads(), 0);
 
   // Log access is revoked while the member is away: Back must not paint the cached output.
   await leave();
@@ -2160,7 +2279,7 @@ test("a member's Back reuses a followed Logs view, and not once log access is re
   );
   const wasPainted = await watchPainted(page, { text: "member before leaving" });
   await page.goBack();
-  await page.getByText(/Log text requires Agent read_logs/).waitFor();
+  await page.getByText(LOGS_CHANGED).waitFor();
   assert.equal(await wasPainted(), false);
   assert.equal(await panel.evaluate((node) => node.isConnected), false);
   assert.equal(await pane.getByText("member before leaving").count(), 0);
@@ -2235,7 +2354,7 @@ test("Back rebuilds an Agent view whose runtime status or version read was refus
   revoke("agent", "operate");
   const wasPainted = await watchPainted(page, { selector: ".runtime-pod" });
   await page.goBack();
-  await page.getByText(/Runtime status requires Agent operate/).waitFor();
+  await page.getByText(STATUS_CHANGED).waitFor();
   await pane.getByText("operator output").waitFor();
   assert.equal(await viewKept(page), false);
   assert.equal(await wasPainted(), false);
@@ -2357,8 +2476,9 @@ const refusedRoute = (status: number) => ({
 });
 
 // A follow poll refused on the page drops the output read before the refusal, and Back
-// rebuilds the view rather than mount it again (findings 1562, 1565).
-test("a refused follow poll clears the shown output, and Back rebuilds the view", async (t) => {
+// rebuilds the view rather than mount it again (findings 1562, 1565). Refresh asks again
+// (finding 2566).
+test("a refused follow poll clears the shown output, Back rebuilds the view, and Refresh reads again", async (t) => {
   const logs = await logsFixture(t);
   logs.computeDriver.state.lines = [line(1, "read before revoke")];
   const { account, role } = await logsMember(logs.fixture, logs.namespace, "refused-poll", [
@@ -2372,7 +2492,7 @@ test("a refused follow poll clears the shown output, and Back rebuilds the view"
   await page.getByRole("button", { name: "Follow" }).click();
   changeGrant(role, "read_logs", false);
   await page.clock.runFor(2_000);
-  await page.getByText(/Log text requires Agent read_logs/).waitFor();
+  await page.getByText(LOGS_CHANGED).waitFor();
   assert.equal(await page.getByText("read before revoke").count(), 0);
   assert.equal(await pane.locator(":scope > *").count(), 0);
   assert.equal(await page.getByText(/Showing gateway in/).count(), 0);
@@ -2383,12 +2503,23 @@ test("a refused follow poll clears the shown output, and Back rebuilds the view"
   await leave();
   const wasPainted = await watchPainted(page, { text: "read before revoke" });
   await page.goBack();
-  await page.getByText(/Log text requires Agent read_logs/).waitFor();
+  await page.getByText(LOGS_CHANGED).waitFor();
   await waitForIdleFetches(page);
   assert.equal(await viewKept(page), false);
   assert.equal(await wasPainted(), false);
   // The refusal is remembered: neither Back's check nor the rebuilt view asks again.
   assert.equal(logReads(), readsAfterRefusal);
+
+  // The message says Refresh checks access again: with the grant restored, the console Refresh
+  // reads the logs instead of reusing the remembered refusal (finding 2566).
+  changeGrant(role, "read_logs", true);
+  // The rebuilt page enables Refresh once its first reads' bounded wait has run on the paused clock.
+  await page.clock.runFor(2_000);
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await pane.getByText("read before revoke").waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(await page.getByText(LOGS_CHANGED).count(), 0);
+  assert.ok(logReads() > readsAfterRefusal, "Refresh reads the logs again");
 });
 
 // Hold a real, authorized response in transit. The other read then gets a real 403 after
@@ -2448,7 +2579,7 @@ for (const delayed of ["follow", "download"]) {
       await startFollow();
     }
     await refusal;
-    const denied = page.getByText(/Log text requires Agent read_logs/);
+    const denied = page.getByText(LOGS_CHANGED);
     await denied.waitFor();
     const arriving = page.waitForResponse(url);
     held.release();
@@ -2503,7 +2634,7 @@ test("Back rebuilds a Logs view whose status read alone is refused since", async
   );
   const wasPainted = await watchPainted(page, { selector: ".runtime-pod" });
   await page.goBack();
-  await page.getByText(/Runtime status requires Agent operate/).waitFor();
+  await page.getByText(STATUS_CHANGED).waitFor();
   await waitForIdleFetches(page);
   assert.equal(await viewKept(page), false);
   assert.equal(await wasPainted(), false);
@@ -2511,7 +2642,7 @@ test("Back rebuilds a Logs view whose status read alone is refused since", async
   assert.equal(refusals, 1);
   await leave();
   await page.goBack();
-  await page.getByText(/Runtime status requires Agent operate/).waitFor();
+  await page.getByText(STATUS_CHANGED).waitFor();
   await waitForIdleFetches(page);
   await page.clock.runFor(10_000);
   await waitForIdleFetches(page);
@@ -2547,9 +2678,9 @@ test("a follow poll refused with operate revoked too clears the Pod cards at onc
   );
   // Only the follow poll's timer runs, well short of the 10 s status poll.
   await page.clock.runFor(2_000);
-  await page.getByText(/Log text requires Agent read_logs/).waitFor();
+  await page.getByText(LOGS_CHANGED).waitFor();
   await statusRefused;
-  await page.getByText(/Runtime status requires Agent operate/).waitFor();
+  await page.getByText(STATUS_CHANGED).waitFor();
   await waitForIdleFetches(page);
   assert.equal(await pods.count(), 0, "the Pod cards clear with the log refusal");
   assert.equal(await pane.locator(":scope > *").count(), 0);
@@ -2558,6 +2689,42 @@ test("a follow poll refused with operate revoked too clears the Pod cards at onc
   await page.clock.runFor(20_000);
   await waitForIdleFetches(page);
   assert.equal(statusReads(), before + 1);
+});
+
+// After an administrator removed a member's Agent grant mid-session, Logs restated the rule
+// ("Log text requires Agent read_logs ...") to a member who had it, and switching tabs showed the
+// Configuration read before the revoke (finding 2550). A refusal after the same read succeeded
+// now says the access changed, and the next tab reads the page again, as Refresh does.
+test("a revoke seen by Logs says access changed, and a tab change reads the page again", async (t) => {
+  const logs = await logsFixture(t);
+  logs.computeDriver.state.lines = [line(1, "read before the revoke")];
+  const { account, role } = await logsMember(logs.fixture, logs.namespace, "revoked-agent", [
+    "read",
+    "operate",
+    "read_logs",
+  ]);
+  const { page } = await openRetainedLogs(t, logs, account.credentials);
+  const pane = page.getByRole("log", { name: "Runtime log output" });
+  await pane.getByText("read before the revoke").waitFor();
+  await page.locator(".runtime-pod").first().waitFor();
+  await page.getByRole("button", { name: "Follow" }).click();
+
+  for (const permission of ["read", "operate", "read_logs"] satisfies PermissionAction[]) {
+    changeGrant(role, permission, false);
+  }
+  await page.clock.runFor(2_000);
+  await page.getByText(LOGS_ACCESS_CHANGED, { exact: true }).waitFor();
+  await page.getByText(STATUS_ACCESS_CHANGED, { exact: true }).waitFor();
+  assert.equal(await page.getByText(/Log text requires|Runtime status requires/).count(), 0);
+  assert.equal(await pane.locator(":scope > *").count(), 0);
+
+  // The page read the Configuration before the revoke. The tab change reads the Agent again
+  // and is refused, instead of showing that Configuration.
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await page.waitForURL((url) => url.searchParams.get("tab") === "configuration");
+  await page.clock.runFor(1_000);
+  await page.getByRole("heading", { name: "Access denied", exact: true }).waitFor();
+  assert.equal(await page.locator(".agent-tabs").count(), 0);
 });
 
 // A status read authorized before the revoke can answer after the log refusal. The refusal's
@@ -2629,7 +2796,7 @@ for (const { name, revoked, podsKept, staleFails = false } of [
         response.url().endsWith(statusPath) && response.status() === (podsKept ? 200 : 403),
     );
     await page.clock.runFor(2_000);
-    await page.getByText(/Log text requires Agent read_logs/).waitFor();
+    await page.getByText(LOGS_CHANGED).waitFor();
     await fresh;
     const arriving = page.waitForResponse(
       (response) =>
@@ -2642,11 +2809,16 @@ for (const { name, revoked, podsKept, staleFails = false } of [
     assert.equal(statusReads(), before + 1);
     if (podsKept) {
       assert.ok((await pods.count()) > 0, "a fresh status answer keeps the Pod cards");
-      assert.equal(await page.getByText(/Runtime status requires Agent operate/).count(), 0);
+      assert.equal(
+        await page
+          .getByText(/Runtime status requires Agent operate|runtime status is no longer shown/)
+          .count(),
+        0,
+      );
       assert.equal(await page.getByText("The read timed out. Try again.").count(), 0);
     } else {
       assert.equal(await pods.count(), 0, "the stale answer does not bring the Pod cards back");
-      await page.getByText(/Runtime status requires Agent operate/).waitFor();
+      await page.getByText(STATUS_CHANGED).waitFor();
     }
     // The fresh read alone schedules the next poll, one interval on; a refused status stops.
     await page.clock.runFor(9_000);
@@ -2681,7 +2853,7 @@ test("a refused status poll clears the Pod details and keeps authorized log read
   );
   await page.clock.runFor(10_000);
   await denied;
-  await page.getByText(/Runtime status requires Agent operate/).waitFor();
+  await page.getByText(STATUS_CHANGED).waitFor();
   await waitForIdleFetches(page);
   assert.equal(await pods.count(), 0, "do not keep showing the last authorized Pod status");
   assert.equal(await page.locator("#runtime-log-pod option").count(), 0);
@@ -2751,8 +2923,9 @@ test("a restored operate grant shows status on Back, and a new sign-in asks for 
   const logReads = () => logRequests(requests, logs.revisionId).length;
   const permissionReads = () =>
     requests.filter(({ path }) => path.endsWith(`/agents/${logs.agent.id}/permissions`)).length;
-  assert.equal(statusReads(), 1);
-  assert.equal(logReads(), 1);
+  // The answer says no operate and no log text, so neither is asked (findings 2454, D758).
+  assert.equal(statusReads(), 0);
+  assert.equal(logReads(), 0);
 
   // Each Back that rebuilds the page reads the answer twice: Back's check and the page's own
   // read, which the rebuilt Logs view reuses while it is in flight.
@@ -2762,28 +2935,29 @@ test("a restored operate grant shows status on Back, and a new sign-in asks for 
   await page.goBack();
   await page.locator(".runtime-pod").first().waitFor();
   await waitForIdleFetches(page);
-  assert.equal(statusReads(), 2);
+  assert.equal(statusReads(), 1);
   assert.equal(permissionReads() - permissionsBefore, 2);
-  // The permission answer has no read_logs bit, so the log text denial stands for this sign-in.
-  assert.equal(logReads(), 1);
+  // The log text denial stands for this sign-in, still without a read.
+  assert.equal(logReads(), 0);
   await page.getByText(/Log text requires Agent read_logs/).waitFor();
 
-  // Operate revoked: the status read is refused once, then remembered across Backs.
+  // Operate revoked: Back's check of the shown status is refused once; the rebuilt view takes
+  // that refusal and the page's answer, and does not ask again across Backs.
   await leave();
   changeGrant(role, "operate", false);
   permissionsBefore = permissionReads();
   await page.goBack();
-  await page.getByText(/Runtime status requires Agent operate/).waitFor();
+  await page.getByText(STATUS_CHANGED).waitFor();
   await waitForIdleFetches(page);
-  assert.equal(statusReads(), 3);
+  assert.equal(statusReads(), 2);
   assert.equal(permissionReads() - permissionsBefore, 2);
   // A kept view takes the answer Back's check read; it does not ask again.
   await leave();
   permissionsBefore = permissionReads();
   await page.goBack();
-  await page.getByText(/Runtime status requires Agent operate/).waitFor();
+  await page.getByText(STATUS_CHANGED).waitFor();
   await waitForIdleFetches(page);
-  assert.equal(statusReads(), 3);
+  assert.equal(statusReads(), 2);
   assert.equal(permissionReads() - permissionsBefore, 1);
 
   // Sign out and in again as the same member, without reloading the tab.
@@ -2823,21 +2997,68 @@ test("a Logs tab rebuilt after an operate grant reads status again without a pag
     await page.getByRole("tab", { name: "Configuration", exact: true }).click();
     await page.getByRole("tab", { name: "Logs", exact: true }).click();
   };
-  assert.equal(statusReads(), 1);
+  // The page's answer says no operate, so the first view does not ask (finding 2454). That
+  // answer was read as the view opened, so it is not read again.
+  assert.equal(statusReads(), 0);
+  assert.equal(permissionReads(), 1);
 
   changeGrant(role, "operate", true);
   await reopenLogs();
   await page.locator(".runtime-pod").first().waitFor();
   await waitForIdleFetches(page);
-  assert.equal(statusReads(), 2);
+  assert.equal(statusReads(), 1);
   assert.equal(await page.getByText(/Runtime status requires Agent operate/).count(), 0);
 
   const permissionsBefore = permissionReads();
   await reopenLogs();
   await page.locator(".runtime-pod").first().waitFor();
   await waitForIdleFetches(page);
-  assert.equal(statusReads(), 3);
+  assert.equal(statusReads(), 2);
   assert.equal(permissionReads(), permissionsBefore);
+});
+
+// The page read its answer before an operate grant, then the reader opened Logs for the first
+// time. A remembered denial is compared with a fresh answer, which is not audited, so status
+// shows on that first visit instead of the next one.
+test("an operate grant after the page loaded shows status on the first Logs visit", async (t) => {
+  const logs = await logsFixture(t);
+  const { account, role } = await logsMember(logs.fixture, logs.namespace, "granted-later", [
+    "read",
+    "read_logs",
+  ]);
+  const { page, requests } = await openRetainedLogs(t, logs, account.credentials, {
+    tab: "configuration",
+  });
+  await page.getByRole("tab", { name: "Logs", exact: true }).waitFor();
+  await waitForIdleFetches(page);
+  const permissionReads = () =>
+    requests.filter(({ path }) => path.endsWith(`/agents/${logs.agent.id}/permissions`)).length;
+  const permissionsBefore = permissionReads();
+
+  changeGrant(role, "operate", true);
+  await page.getByRole("tab", { name: "Logs", exact: true }).click();
+  await page.locator(".runtime-pod").first().waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(await page.getByText(/Runtime status requires Agent operate/).count(), 0);
+  assert.equal(permissionReads() - permissionsBefore, 1);
+});
+
+// An unknown permission answer keeps today's behaviour: the status and log text reads are still
+// sent, and an operator sees runtime status and log text (findings 2454, D758).
+test("an unknown permission answer still reads runtime status and log text", async (t) => {
+  const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
+  computeDriver.state.lines = [line(1, "read without a permission answer")];
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await withholdPermissionSummary(page, fixture, namespace.id, agent.id);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revisionId, "logs"));
+  await page.locator(".runtime-pod").first().waitFor();
+  assert.ok(requests.some(({ path }) => path.endsWith(`/deployments/${revisionId}/runtime`)));
+  assert.equal(await page.getByText(/Runtime status requires Agent operate/).count(), 0);
+  await page
+    .getByRole("log", { name: "Runtime log output" })
+    .getByText("read without a permission answer")
+    .waitFor();
 });
 
 // The page read its answer before operate was revoked. The refusal is compared with a fresh

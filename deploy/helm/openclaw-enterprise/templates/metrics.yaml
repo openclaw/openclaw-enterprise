@@ -13,6 +13,9 @@
 {{- if or (lt $port 1) (gt $port 65535) (eq $port (int .Values.api.port)) }}
 {{- fail "metrics.port must be a valid TCP port distinct from api.port" }}
 {{- end }}
+{{- if and .Values.repositoryCredentials.enabled (eq $port 8443) }}
+{{- fail "metrics.port must be distinct from the repository credentials listener on port 8443" }}
+{{- end }}
 {{- if not (empty .Values.metrics.scraperNamespaceLabels) }}
 {{- range $component := list "api" "worker" }}
 ---

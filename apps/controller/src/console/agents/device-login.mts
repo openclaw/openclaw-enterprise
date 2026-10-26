@@ -6,6 +6,7 @@ import type {
 import { requestFailure, responseFields } from "../api-client.mjs";
 import { button, element } from "../dom.mjs";
 import type { AgentAccessContext } from "./credential-access.mjs";
+import { askAdministratorTo, notIncluded } from "./access-reasons.mjs";
 import { message, namespacePath } from "./list.mjs";
 
 // The Console retains the public challenge and reference, never the provider's private state.
@@ -63,6 +64,31 @@ function readLogin(
     status,
     source: { kind: credential.kind, id: credential.id, namespaceId },
   };
+}
+
+// What each device-authorization request checks (packages/occ/src/index.ts), so a 403 names it
+// (finding 2577). Every start creates a Secret and a credential source, and Namespace Roles cannot
+// grant create, so only an Installation administrator can start one. Create Agent's requests also
+// check Agent create; Agent detail's check Agent read and update on that Agent. Poll and cancel
+// check Secret operate on the login's Secret, and poll operate on its credential source too.
+type DeviceLoginStep = "start" | "poll" | "cancel";
+const START_REMEDY =
+  "which only an Installation administrator holds: choose another authentication method, or ask one to set up this sign-in.";
+
+function deviceLoginDenied(step: DeviceLoginStep, agentScoped: boolean) {
+  if (step === "start") {
+    return agentScoped
+      ? `Your access does not include starting a device login for this Agent. It needs Agent read and update on it, plus Secret create and credential source create in this Namespace, ${START_REMEDY}`
+      : `Your access does not include starting a device login in this Namespace. It needs Agent create, Secret create and credential source create here, ${START_REMEDY}`;
+  }
+  const task = step === "poll" ? "finishing this device login" : "cancelling this device login";
+  const login =
+    step === "poll"
+      ? "Secret operate on the login's Secret and credential source operate on its credential source"
+      : "Secret operate on the login's Secret";
+  return agentScoped
+    ? notIncluded(task, `Agent read and update on this Agent, plus ${login}`)
+    : `Your access does not include ${task}. It needs Agent create in this Namespace, which only an Installation administrator holds, plus ${login}. ${askAdministratorTo("check your access")}`;
 }
 
 export function createDeviceLogin({
@@ -157,14 +183,14 @@ export function createDeviceLogin({
     onChange?.(login.status === "ready" ? login.source : null);
   }
 
-  function fail(cause: unknown) {
+  function fail(cause: unknown, step: DeviceLoginStep) {
     const failure = requestFailure(cause);
     if (failure.status === 401) {
       context.onExpired();
     } else {
       error =
         failure.status === 403
-          ? "Access denied. Ask an administrator for permission to manage this Agent's login."
+          ? deviceLoginDenied(step, agentId !== undefined)
           : failure.status === 410
             ? "This login expired. Cancel it and start a new login."
             : failure.status === 501
@@ -196,7 +222,7 @@ export function createDeviceLogin({
           login = { status: "start_unconfirmed" };
           onChange?.(null);
         } else {
-          fail(failure);
+          fail(failure, "start");
         }
       }
     } finally {
@@ -235,7 +261,7 @@ export function createDeviceLogin({
       }
     } catch (failure) {
       if (context.isCurrent()) {
-        fail(failure);
+        fail(failure, "poll");
       }
     } finally {
       busy = false;
@@ -262,7 +288,7 @@ export function createDeviceLogin({
     } catch (failure) {
       login = discarded;
       onChange?.(discarded.status === "ready" ? discarded.source : null);
-      fail(failure);
+      fail(failure, "cancel");
     } finally {
       busy = false;
       if (context.isCurrent()) {

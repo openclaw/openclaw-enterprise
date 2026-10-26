@@ -238,7 +238,8 @@ export function recordRow(record: RuntimeLogRecord) {
         {},
         record.reason === "stream_replaced" && record.stream?.source === "sandbox"
           ? "Sandbox recreated"
-          : (GAP_LABELS[record.reason] ?? record.reason),
+          : // A reason this console does not know gets a label, not its raw code (finding 2538).
+            (GAP_LABELS[record.reason] ?? "Lines missing"),
       ),
       element("span", {}, ` ${record.remedy}`),
     );

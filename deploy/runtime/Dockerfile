@@ -98,6 +98,8 @@ RUN --mount=type=secret,id=build-ca,required=false \
     echo '7ca145909cd262bec9c8e2575fc0951c9367da61691bbadc75871461a84d4752  /tmp/openclaw-source.tar.gz' | sha256sum --check --strict; \
     tar -xzf /tmp/openclaw-source.tar.gz --strip-components=1; \
     rm /tmp/openclaw-source.tar.gz
+# Record every patch applied here in appliedPatches in scripts/build-runtime-assets.mjs,
+# which writes provenance; runtime-assets.test.mjs compares the two.
 # TODO: Remove this bridge patch when OpenClaw supports networkProxy.readOnlyPaths.
 COPY deploy/runtime/openclaw-codex-read-only-paths.patch /tmp/openclaw-codex-read-only-paths.patch
 RUN echo '2e529593cb72c69be86cf7bb927aa555de50bc7ef923e80b37ba67df9bc1a624  /tmp/openclaw-codex-read-only-paths.patch' | sha256sum --check --strict \
@@ -165,6 +167,19 @@ RUN echo '0fda64033083d4db4ba13b823445ded303cdcd4d392ecf0d2413b19f7516bc66  /tmp
     && git apply /tmp/openclaw-required-worker-authority-regression.patch
 RUN --network=none OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
     node --import ./scripts/tsx.mjs scripts/test-projects.mts src/gateway/server.required-placement-scopes.test.ts
+# Remove this bridge when the pinned Control UI offers a browser navigation after access refusal.
+COPY deploy/runtime/openclaw-control-ui-browser-reconnect.patch /tmp/openclaw-control-ui-browser-reconnect.patch
+RUN echo '6a47120be7057dfbb0efad0096730fbad36db9739f8c9235afd3eed51be35e91  /tmp/openclaw-control-ui-browser-reconnect.patch' | sha256sum --check --strict \
+    && git apply /tmp/openclaw-control-ui-browser-reconnect.patch
+# Type-check the two UI test graphs touched by the bridge. The upstream runner
+# generates its database types and compiler cache under .artifacts.
+RUN --network=none --mount=type=tmpfs,target=/source/.artifacts \
+    node scripts/run-tsgo-core-test-shards.mjs --ci-graphs-json '["core-test-ui-chat","core-test-ui-app"]'
+# Select only the Node projects that own these files: the browser project starts a
+# Vite server on localhost, which Buildah's network-less RUN cannot resolve.
+RUN --network=none cd ui && node ../scripts/run-node-package-bin.mts vitest run --config vitest.config.ts \
+    --project unit --project unit-node \
+    src/api/gateway-reachability.node.test.ts src/app/gateway-store.observers.test.ts src/app/app-shell-view.test.ts
 # Follow the pinned upstream Docker assembly; plugin-local dependencies remain
 # separate when a plugin and core require different versions.
 RUN OPENCLAW_INTERNAL_DOCKER_BUILD_PLUGIN_IDS=codex,slack \

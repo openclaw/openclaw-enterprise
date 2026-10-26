@@ -33,6 +33,7 @@ output/playwright/
 !.agents/skills/spec/
 !.agents/skills/design-review/
 !.agents/skills/console-ui/
+!.agents/skills/pr-walkthrough/
 !.agents/skills/LICENSE.openclaw
 __pycache__/
 *.pyc

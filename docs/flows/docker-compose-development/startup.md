@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-10-15
-last_updated_session: authoring-run/c11897e0-33a6-4276-b620-aaec6d57ab00
+updated: 2026-10-24
+last_updated_session: authoring-run/bf58bf91-3fb2-4b62-9afe-c5cf1ce830dd
 ---
 
 # Compose development startup
@@ -68,28 +68,29 @@ graph TD
 [step 12](#12-select-kubernetes-development-and-preserve-cleanup-ownership).
 Without a Sandbox Driver, Compose Kubernetes startup requires Node before creating resources.
 
-Docker Compute probes Engine and Compose JSON support. Failure selects `podman`;
-a `docker` compatibility alias is neither required nor sufficient. For Podman, the helper requires
-`yq` major v4 and pins the selected standalone `podman-compose` provider path
-so status and stopped one-shot containers stay consistent.
+Engine and Compose JSON probes select Docker or Podman independently of a
+`docker` alias. Podman requires `yq` v4
+and pins standalone `podman-compose` for consistent status, including stopped
+one-shot containers. Explicit `-f FILE`, `-fFILE`, or `--file=FILE` overrides
+`COMPOSE_FILE` and the default file.
 
-Docker Compose supplies resolved JSON; `dev-up` converts Podman Compose YAML to
-JSON in a private temporary directory. `./bin/occ dev analyze-compose` enforces
-loopback controller and database publications and resolves Docker runtime image
-selection. The helper appends `compose.podman.yaml` last so the worker receives
-Podman's reported API socket at `/var/run/docker.sock`. The base Docker Compute
+Docker Compose renders JSON; Podman YAML is converted to JSON in private temporary
+storage. `./bin/occ dev analyze-compose` enforces loopback controller and database
+publications and resolves Docker runtime image selection. The final `compose.podman.yaml` override
+mounts Podman's reported API socket at `/var/run/docker.sock` in the worker.
+The base Docker Compute
 worker disables SELinux process labeling because relabeling a host engine socket
 is unsafe; other services retain SELinux confinement. One development image
 covers migration, bootstrap, API, and worker, so `dev-up` builds it once through
 migration and starts with `--no-build`; Docker uses `up --build`. Expanded
 configuration and credentials are never printed.
 
-Without selected runtime images, the helper builds missing
-`openclaw-enterprise-runtime:quickstart` from `deploy/runtime/Dockerfile` with
-repository-root context. Custom images must exist; incomplete selection fails.
-Existing tags survive recipe changes; [rebuild and verify](../../../deploy/runtime/README.md#rebuild-an-existing-image)
-after package changes. The recipe owns plugins and gateway/Codex compatibility;
-`dev-up` neither installs missing plugins nor verifies model turns.
+For unselected runtime images, `dev-up` builds missing
+`openclaw-enterprise-runtime:quickstart` from `deploy/runtime/Dockerfile` at
+repository root. Custom images must exist; partial selection fails.
+Tags survive recipe edits; [rebuild and verify](../../../deploy/runtime/README.md#rebuild-an-existing-image)
+after package changes. The recipe owns plugin and gateway/Codex compatibility;
+`dev-up` neither installs plugins nor proves model turns.
 
 ### 2. compose.yaml:services.postgres and services.migrate
 
@@ -384,6 +385,8 @@ DNS/TLS, both Helm passes, recovery and destructive teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-24 17:53: Preserve attached Compose file selection before environment defaults. (authoring-run/bf58bf91-3fb2-4b62-9afe-c5cf1ce830dd - fd5723d94aebbd96d93e85649eec908adbc6d58a)
 
 - 2026-10-15 01:49: Build enabled browser proxy before startup. (authoring-run/c11897e0-33a6-4276-b620-aaec6d57ab00 - c7468f5965686a75474d81ba0fd11b9a16ccff75)
 

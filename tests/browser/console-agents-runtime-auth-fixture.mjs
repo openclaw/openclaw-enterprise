@@ -10,7 +10,7 @@ export async function createRuntimeAuthFixture(t, namespaceName, fixtureOptions 
       nodePath: "/usr/bin/node",
       openclawPath: "/opt/openclaw/index.js",
       user: "openclaw",
-      root: "/tmp/ssh-runtime-test",
+      root: "/var/lib/ssh-runtime-test",
     },
     network: { gatewayPortRange: { start: 18800, end: 18899 } },
   });

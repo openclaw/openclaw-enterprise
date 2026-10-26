@@ -4,6 +4,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { asRecord, numericLastLabel } from "@openclaw-enterprise/utils";
 
+import { environmentReference, environmentReferenceNames } from "./environment-references.ts";
 import {
   ConfigurationHarnessError,
   configurationSettingMessage,
@@ -37,16 +38,8 @@ const pointer = (...segments: readonly (string | number)[]): string =>
     .map((segment) => `/${String(segment).replaceAll("~", "~0").replaceAll("/", "~1")}`)
     .join("");
 
-// The runtime resolves `${VAR}` and `${VAR:-fallback}` environment references (uppercase
-// names) before it validates its configuration, so a value that holds one is left to it. Its
-// `$${VAR}` escape renders a literal `${VAR}` and resolves nothing, so text that holds only
-// escapes is checked as written. This follows OpenClaw's `containsEnvVarReference`
-// (`src/config/env-substitution.ts`).
-export const environmentReference = /\$(\$)?\{[A-Z_][A-Z0-9_]*(?::-([^${}]*))?\}/g;
-
 const holdsEnvironmentReference = (value: unknown): boolean =>
-  typeof value === "string" &&
-  [...value.matchAll(environmentReference)].some(([, escaped]) => escaped === undefined);
+  typeof value === "string" && environmentReferenceNames(value).length > 0;
 
 // Text its writer fills in later: `unresolved` locates an unfilled Preset variable's text.
 type Unresolved = NonNullable<ConfigurationValidationOptions["unresolved"]>;

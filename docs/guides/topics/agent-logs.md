@@ -30,7 +30,7 @@ SSH Compute, and Drivers that own their runtime logging (`runtimeLogging:
 4. Select **Follow** to poll for new lines every 2 seconds. Following pauses while
    the browser tab is hidden or you scroll up, and stops after a permission denial.
 5. Select **Previous instance** after a restart to read the exited container's
-   output. Following is off for the previous instance.
+   output. Following is off for it.
 
 ### Filter the loaded output
 
@@ -60,7 +60,7 @@ GET /namespaces/{namespaceId}/agents/{agentId}/deployments/{revisionId}/runtime
 GET /namespaces/{namespaceId}/agents/{agentId}/deployments/{revisionId}/runtime/logs?source=gateway&tailLines=200
 ```
 
-Container timestamps are returned in UTC, preserving their available nanosecond precision.
+Container timestamps are in UTC, with their available nanosecond precision.
 
 `runtime/logs` accepts only `source` (`gateway`, `agent` or `sandbox`), `pod`, `container`, `previous`,
 `tailLines` (1 to 1000, default 200), `sinceSeconds` (1 to 86400), `cursor`,
@@ -101,18 +101,18 @@ selection, flags, output formats, retries and exit codes.
 | Log text                                                                   | Agent `read_logs` or `administer`, and Agent `read`          | Once per view as `openclaw.agents.runtime_logs.view`      |
 | Log download                                                               | Same as log text                                             | Every download as `openclaw.agents.runtime_logs.download` |
 
-Installation administrators hold Agent `administer`, which already reaches Gateway
+Installation administrators hold Agent `administer`, which also reaches Gateway
 log text in the [native admin UI](../../reference/agent-native-admin.md). To
 delegate log reading, bind a Namespace Role with Agent `read_logs` and `read` to
-the exact Agent; it covers every version, including later deployments. Opening
-the Agent in the console also needs Namespace `read` bound to that Namespace
-(otherwise it shows "Namespace unavailable"). Runtime status needs `read`
-bound to each Agent revision by ID. A `read_logs` Restriction blocks log text even for
-administrators. Without `operate`, the Logs tab has no runtime strip or Pod
-picker; it reads each source's current Pod and says when a source is missing.
-Service principals use the same grants. Every request and follow poll is
-authorized again, so revoking a grant stops the next poll. See
-[authorization](../../reference/authorization.md).
+the exact Agent; it covers every version. Opening the Agent in the console also
+needs Namespace `read` (otherwise it shows "Namespace unavailable"). Runtime
+status needs `read` bound to each Agent revision by ID. A `read_logs`
+Restriction blocks log text even for administrators. Without `operate`, the Logs
+tab has no runtime strip or Pod picker; it reads each source's current Pod and
+says when one is missing. If the Agent permission answer's `readLogs` is false,
+the tab skips the audited read. Service principals use the same grants. Every
+request and poll is authorized again, so revoking a grant stops the next poll.
+See [authorization](../../reference/authorization.md).
 
 ## What the output contains
 

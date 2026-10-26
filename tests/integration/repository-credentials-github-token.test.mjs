@@ -27,6 +27,7 @@ import {
   startServiceListeners,
 } from "../fixtures/repository-credentials/service-resources.mjs";
 import { fileCompileCache } from "../helpers/compile-cache.mjs";
+import { listen } from "../helpers/listen.mjs";
 
 // Each case starts its own service, Git and GitHub fixtures and spends most of
 // its time waiting on stock Git children. The cases register here and run two at
@@ -40,7 +41,6 @@ const missingRef = { message: "command failed (exit 128)" };
 // Stock Git must reach the gateway under its public HTTPS name. A CONNECT proxy
 // forwards only that name to the listener; TLS still terminates at the gateway.
 async function startGatewayProxy(resources, gatewayHost, gatewayPort) {
-  const sockets = new Set();
   const server = createServer((_, response) => response.writeHead(405).end());
   server.on("connect", (request, socket, head) => {
     if (request.url !== `${gatewayHost}:443`) {
@@ -58,22 +58,11 @@ async function startGatewayProxy(resources, gatewayHost, gatewayPort) {
       [socket, upstream],
       [upstream, socket],
     ]) {
-      sockets.add(one);
-      one.once("close", () => {
-        sockets.delete(one);
-        other.destroy();
-      });
+      one.once("close", () => other.destroy());
       one.on("error", () => other.destroy());
     }
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  resources.after(async () => {
-    for (const socket of sockets) {
-      socket.destroy();
-    }
-    await new Promise((resolve) => server.close(resolve));
-  });
-  return `http://127.0.0.1:${server.address().port}`;
+  return `http://127.0.0.1:${await listen(resources, server)}`;
 }
 
 async function startTokenService(t, limits = {}, configuration = {}) {

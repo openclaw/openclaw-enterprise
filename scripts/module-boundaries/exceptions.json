@@ -151,6 +151,30 @@
     },
     {
       "rule": "cross-package-source",
+      "from": "apps/controller/src/console-assets.ts",
+      "to": "packages/occ/src/environment-references.ts",
+      "specifier": "file:packages/occ/src/environment-references.ts",
+      "kind": "path",
+      "typeOnly": false,
+      "bindings": ["*"],
+      "owner": "Console asset delivery",
+      "reason": "The Console reads Slack channel tokens with OCC's dependency-free environment reference grammar, served type-stripped through an explicit same-origin asset route backed by its authored source.",
+      "removeWhen": "Replace the source asset mapping with a supported packaged browser entrypoint and update its consumers."
+    },
+    {
+      "rule": "cross-package-source",
+      "from": "apps/controller/src/console-assets.ts",
+      "to": "packages/occ/src/deployment-failure-steps.ts",
+      "specifier": "file:packages/occ/src/deployment-failure-steps.ts",
+      "kind": "path",
+      "typeOnly": false,
+      "bindings": ["*"],
+      "owner": "Console asset delivery",
+      "reason": "The Console chooses a failed deployment's recovery actions from OCC's dependency-free next-step table, served type-stripped through an explicit same-origin asset route backed by its authored source.",
+      "removeWhen": "Replace the source asset mapping with a supported packaged browser entrypoint and update its consumers."
+    },
+    {
+      "rule": "cross-package-source",
       "from": "apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts",
       "to": "packages/contracts/src/runtime-failure.mjs",
       "specifier": "../../../../../../packages/contracts/src/runtime-failure.mjs",
@@ -303,6 +327,7 @@
         "value:controllerWorkDeploymentStatus",
         "value:deploymentErrorForWork",
         "value:deploymentProgressForWork",
+        "value:deploymentStatusForWork",
         "value:deploymentWarningsForWork"
       ],
       "owner": "Work status projection",
