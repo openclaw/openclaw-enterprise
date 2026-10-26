@@ -71,6 +71,7 @@ import {
   AGENT_SAVE_DENIED,
   CONFIGURATION_EDITS_PENDING,
   CONFIGURATION_SAVE_DENIED,
+  CONSOLE_ACCESS_DENIED,
   NAMESPACE_NOT_READY,
   NEW_SECRET_OPERATE_DENIED,
   NEW_SECRET_OPERATE_REMEDY,
@@ -2543,6 +2544,9 @@ const HARNESS_GRANT_MISSING =
 const HARNESS_GRANT_UNVERIFIED =
   "Authentication source saved, but this session did not verify that this Agent can use the selected Secret. Granting access needs Installation administration access: ask an Installation administrator to open this Agent's Credentials and select Save authentication source.";
 
+// Matches a fixed sentence inside a pattern that also matches a random request ID.
+const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 test("Agent credentials report partial harness Secret grant failure", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -2620,9 +2624,12 @@ test("Agent credentials report partial harness Secret grant failure", async (t) 
   });
   requests.length = 0;
   await page.getByRole("button", { name: "Retry credential access" }).click();
+  // The read's own refusal, not grant advice such as "this write may have succeeded".
   await page
     .getByText(
-      /^Authentication source saved, but this Agent could not be read before retrying its credential access\. .+ Select Retry credential access once the Agent can be read\.$/,
+      new RegExp(
+        `^${escapeRegExp(`Authentication source saved, but this Agent could not be read before retrying its credential access. ${CONSOLE_ACCESS_DENIED}`)} Request ID: req_[0-9a-f-]{36} Select Retry credential access once the Agent can be read\\.$`,
+      ),
     )
     .waitFor();
   assert.deepEqual(accessBindingPostRequests(requests, namespace.id), []);
