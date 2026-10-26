@@ -3,6 +3,7 @@ import { cp, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
+import { UNTRUSTED_ORIGIN_MESSAGE } from "../../apps/controller/src/admission/admission-verifier.ts";
 import { loadConsoleTheme } from "../../apps/controller/src/composition/console-theme.ts";
 
 import {
@@ -1433,7 +1434,7 @@ test("an abandoned GitHub attempt does not turn password sign-in into a GitHub f
   await page.getByRole("button", { name: "Sign in" }).click();
   await page.waitForURL(/\/console\/agents/);
   assert.equal(requests.includes("/api/auth/providers/github/result"), false);
-  await expectNoText(page, /Could not sign in with GitHub/, async () => {
+  await expectNoText(page, /Could not (?:finish signing|sign) in with GitHub/, async () => {
     await page.locator(settledView).waitFor();
     await waitForIdleFetches(page);
   });
@@ -1477,13 +1478,130 @@ test("Google sign-in accepts only a Google authorization URL and confirms throug
   await google.click();
   const refused = await result;
   assert.equal(refused.request().postDataJSON().attemptId, attemptId);
-  // The unconfigured controller refuses the result, so this tab adopts no session.
+  // The unconfigured controller refuses the result, so this tab adopts no session. The
+  // callback already settled the identity, so the refusal does not read as an identity failure.
   assert.equal(refused.status(), 403);
-  await page.getByText("Could not sign in with Google. Try again or use your password.").waitFor();
+  await page.getByText(GOOGLE_EXCHANGE_REFUSED).waitFor();
   assert.equal(requests.includes("/api/auth/providers/github/result"), false);
 
   await page.goto(`${fixture.origin}/console/?authError=google`);
   await page.getByText("Could not sign in with Google. Try again or use your password.").waitFor();
+});
+
+const GOOGLE_EXCHANGE_REFUSED =
+  "Could not finish signing in with Google. The sign-in in this tab did not complete in time, or another sign-in replaced it. Select Continue with Google to start again.";
+const UNTRUSTED_ORIGIN_SIGN_IN =
+  "Sign-in was refused because this page was not opened from the console's configured address. Open the console from its configured URL and sign in there. If you did, ask an operator to check the console address setting (OCC_AUTH_BASE_URL) and any proxy in front of it.";
+
+// Each failure says what happened and what to do; a rate limit, an outage or the origin
+// check never reads as a wrong password or a refused identity (finding 2535).
+test("sign-in failures name a rate limit, an outage and the origin check", async (t) => {
+  const fixture = await signInApp(t);
+  const { page } = await newPage(t, fixture);
+  const failure = (status, code, message, headers = {}) => ({
+    status,
+    headers,
+    contentType: "application/json",
+    body: JSON.stringify({ error: { code, message }, meta: { requestId: "browser-sign-in" } }),
+  });
+  const limited = (seconds) =>
+    failure(429, "RATE_LIMITED", "Too many attempts.", { "retry-after": String(seconds) });
+  const outage = failure(503, "DEPENDENCY_UNAVAILABLE", "Sign-in is temporarily unavailable.");
+  const signIn = async (expected) => {
+    await page.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
+    // A wrong password: no step may sign in, whatever the API answers.
+    await page.getByLabel("Password").fill("not-the-password");
+    await page.getByRole("button", { name: "Sign in" }).click();
+    await page.getByText(expected, { exact: true }).waitFor();
+  };
+  await page.goto(`${fixture.origin}/console/login`);
+
+  // The real API refuses a sign-in sent from another Origin before it reads the password.
+  // The browser keeps its own Origin, so the request is resent from the test with another.
+  await page.route("**/api/auth/sign-in/email", async (route) =>
+    route.fulfill({
+      response: await route.fetch({
+        headers: { ...route.request().headers(), origin: "https://elsewhere.example.test" },
+      }),
+    }),
+  );
+  const refused = page.waitForResponse((response) =>
+    response.url().endsWith("/api/auth/sign-in/email"),
+  );
+  const signingIn = signIn(UNTRUSTED_ORIGIN_SIGN_IN);
+  const answer = await refused;
+  assert.equal(answer.status(), 403, await answer.text());
+  await signingIn;
+  await page.unroute("**/api/auth/sign-in/email");
+
+  for (const [response, expected] of [
+    [limited(37), "Too many sign-in attempts. Wait 37 seconds, then try again."],
+    [
+      failure(429, "RATE_LIMITED", "Too many attempts."),
+      "Too many sign-in attempts. Wait a minute, then try again.",
+    ],
+    [
+      outage,
+      "Sign-in is temporarily unavailable because a service it depends on did not answer. Try again shortly. If it continues, ask an operator.",
+    ],
+    [null, "Could not reach the sign-in service. Check your connection, then try again."],
+  ]) {
+    await page.route("**/api/auth/sign-in/email", (route) =>
+      response === null ? route.abort("connectionrefused") : route.fulfill(response),
+    );
+    await signIn(expected);
+    await page.unroute("**/api/auth/sign-in/email");
+  }
+
+  // Provider start: a limit waits, and the origin check is not a provider outage.
+  const envelope = (data) => ({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ data, meta: { requestId: "browser-sign-in" } }),
+  });
+  await page.route("**/api/auth/providers", (route) =>
+    route.fulfill(envelope({ github: false, google: true, sessionBinding: true })),
+  );
+  const starts = [limited(1), failure(403, "FORBIDDEN", UNTRUSTED_ORIGIN_MESSAGE)];
+  await page.route("**/api/auth/providers/google/start", (route) => {
+    const next = starts.shift();
+    return next === undefined
+      ? route.fulfill(
+          envelope({
+            url: "https://accounts.google.com/o/oauth2/v2/auth?client_id=fixture",
+            attemptId: "c".repeat(43),
+          }),
+        )
+      : route.fulfill(next);
+  });
+  await page.route("https://accounts.google.com/**", (route) =>
+    route.fulfill({ status: 302, headers: { location: `${fixture.origin}/console/` } }),
+  );
+  await page.goto(`${fixture.origin}/console/login`);
+  const google = page.getByRole("button", { name: "Continue with Google" });
+  await google.click();
+  await page.getByText("Too many sign-in attempts. Wait 1 second, then try again.").waitFor();
+  await google.click();
+  await page.getByText(UNTRUSTED_ORIGIN_SIGN_IN, { exact: true }).waitFor();
+
+  // The exchange after the provider's callback: the identity is already settled.
+  for (const [response, expected] of [
+    [limited(12), "Too many sign-in attempts. Wait 12 seconds, then try again."],
+    [
+      outage,
+      "Could not finish signing in with Google. Sign-in is unavailable right now; try again later.",
+    ],
+    [failure(403, "FORBIDDEN", UNTRUSTED_ORIGIN_MESSAGE), UNTRUSTED_ORIGIN_SIGN_IN],
+    [
+      failure(401, "UNAUTHENTICATED", "Google sign-in could not be confirmed."),
+      GOOGLE_EXCHANGE_REFUSED,
+    ],
+  ]) {
+    await page.route("**/api/auth/providers/google/result", (route) => route.fulfill(response));
+    await google.click();
+    await page.getByText(expected, { exact: true }).waitFor();
+    await page.unroute("**/api/auth/providers/google/result");
+  }
 });
 
 test("OIDC sign-in uses the discovered label and accepts only the discovered endpoint", async (t) => {
@@ -1535,7 +1653,9 @@ test("OIDC sign-in uses the discovered label and accepts only the discovered end
   assert.equal(refused.request().postDataJSON().attemptId, attemptId);
   assert.equal(refused.status(), 403);
   await page
-    .getByText("Could not sign in with Acme SSO. Try again or use your password.")
+    .getByText(
+      "Could not finish signing in with Acme SSO. The sign-in in this tab did not complete in time, or another sign-in replaced it. Select Continue with Acme SSO to start again.",
+    )
     .waitFor();
   assert.equal(requests.includes("/api/auth/providers/google/result"), false);
 
@@ -2634,7 +2754,11 @@ test("a refused provider exchange discards its pending login destination", async
   );
   await page.goto(`${fixture.origin}/console/agents/${agent.id}?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Continue with GitHub" }).click();
-  await page.getByText("Could not sign in with GitHub. Try again or use your password.").waitFor();
+  await page
+    .getByText(
+      "Could not finish signing in with GitHub. The sign-in in this tab did not complete in time, or another sign-in replaced it. Select Continue with GitHub to start again.",
+    )
+    .waitFor();
   assert.equal(await page.evaluate(() => sessionStorage.getItem("occ.console.loginIntent")), null);
   await page.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
   await page.getByLabel("Password").fill(fixture.credentials.password);
