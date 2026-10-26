@@ -16,7 +16,7 @@ import {
 } from "../configuration-fields.mjs";
 import { button, element } from "../dom.mjs";
 import type { NamespacePageContext } from "../namespaces.mjs";
-import { askForGrant, SANDBOX_POLICY_READ_DENIED } from "./access-reasons.mjs";
+import { askForGrant, LOG_TEXT_GRANT, SANDBOX_POLICY_READ_DENIED } from "./access-reasons.mjs";
 import { namespacePath, rejectionMessage } from "./list.mjs";
 import { recordRow, visibleText } from "./logs-view.mjs";
 
@@ -27,7 +27,7 @@ const POLICY_READ_DENIED = SANDBOX_POLICY_READ_DENIED;
 // Agent read, which admit every version of the Agent; the policy and suggestions need
 // SandboxPolicy read; validation, preview and save need Agent manage_policy and SandboxPolicy
 // update.
-const LOG_GRANT = "Agent read_logs on it";
+const LOG_GRANT = `${LOG_TEXT_GRANT} on it`;
 const POLICY_READ_GRANT = "SandboxPolicy read on it";
 const POLICY_CHANGE_GRANT = "Agent manage_policy and SandboxPolicy update on it";
 // The editing setting needs Installation administer and Agent administer, which no Namespace Role

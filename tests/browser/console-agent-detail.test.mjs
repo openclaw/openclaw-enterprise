@@ -3924,7 +3924,7 @@ for (const viewport of [
 
     // An empty Namespace does not invite creating under the note.
     await page.goto(`${fixture.origin}/console/agents?namespace=${empty.id}`);
-    await page.getByRole("heading", { name: "No Agents yet" }).waitFor();
+    await page.getByRole("heading", { name: "No Agents are shared with you" }).waitFor();
     await note.waitFor();
     await page
       .getByText("Agents in this Namespace that are shared with you appear here.")

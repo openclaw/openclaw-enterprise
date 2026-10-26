@@ -75,6 +75,13 @@ export const SANDBOX_POLICY_READ_DENIED = notIncluded(
   "SandboxPolicy read on it",
 );
 
+// Log text authorizes Agent read_logs, or Agent administer in its place, plus Agent read. The API
+// and the CLI name the grant in these words (finding 2599); the page is open, so Agent read is held.
+export const LOG_TEXT_GRANT = "Agent read_logs (or Agent administer)";
+export const LOG_TEXT_DENIED = `Log text requires ${LOG_TEXT_GRANT} on this Agent. ${askAdministratorTo("grant it")}`;
+// Runtime status authorizes Agent operate and read plus AgentRevision read on the version.
+export const RUNTIME_STATUS_DENIED = `Runtime status requires Agent operate on this Agent and AgentRevision read on this version. Log text needs ${LOG_TEXT_GRANT}. ${askForGrant("the access you need")}`;
+
 // Saving a workspace file and running diagnostics authorize Agent operate.
 export const WORKSPACE_SAVE_DENIED = notIncluded(
   "saving this Agent's workspace files",

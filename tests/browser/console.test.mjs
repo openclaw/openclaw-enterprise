@@ -671,13 +671,13 @@ test("Agents with no readable Namespace names it once and keeps one Refresh", as
     [
       "/console/agents",
       "No readable Namespaces",
-      "Ask an administrator to create a Namespace or grant you access to one, then Refresh.",
+      "Ask an Installation administrator to create a Namespace or to give you access to one, then Refresh.",
       "None",
     ],
     [
       `/console/agents?namespace=${granted.id}`,
       "Namespace unavailable",
-      "This Namespace is missing or not shared with you, and you cannot read any other Namespace. Ask an administrator to grant you access to one, then Refresh.",
+      "This Namespace is missing or not shared with you, and you cannot read any other Namespace. Ask an Installation administrator to give you access to one, then Refresh.",
       "Unavailable",
     ],
     // An Agent bookmark in that Namespace kept the Agent page's header above the panel: the
@@ -686,7 +686,7 @@ test("Agents with no readable Namespace names it once and keeps one Refresh", as
     [
       `/console/agents/${agent.id}?namespace=${granted.id}`,
       "Namespace unavailable",
-      "This Namespace is missing or not shared with you, and you cannot read any other Namespace. Ask an administrator to grant you access to one, then Refresh.",
+      "This Namespace is missing or not shared with you, and you cannot read any other Namespace. Ask an Installation administrator to give you access to one, then Refresh.",
       "Unavailable",
     ],
   ]) {
@@ -1285,6 +1285,8 @@ test("console retained views clear after session expiry and exact Agent denial",
       "You do not have access to this Agent or its settings, or it was deleted. Ask an Installation administrator for Agent read on it.",
     )
     .waitFor();
+  // Retry would repeat the refusal; the header's Refresh checks access again (finding 2549).
+  assert.equal(await page.locator(".state-panel").getByRole("button").count(), 0);
   await expectNoText(page, /Configuration draft|Selected revision/, () => waitForIdleFetches(page));
 });
 
@@ -1755,7 +1757,7 @@ test("a disabled account's provider sign-in says the account is disabled", async
       );
       await page
         .getByText(
-          `Your account is disabled, so you cannot sign in with ${label}. Ask an administrator to enable it.`,
+          `Your account is disabled, so you cannot sign in with ${label}. Ask an Installation administrator to enable it.`,
           { exact: true },
         )
         .waitFor();
@@ -2050,9 +2052,11 @@ test("a Backends denial names the Installation-wide page and hides the Namespace
     )
     .waitFor();
   assert.equal(await page.getByRole("combobox", { name: "Namespace", exact: true }).count(), 0);
-  // Retry rebuilds the page with the selector still hidden.
+  // A permission refusal offers no Retry that would repeat it (finding 2549); the header's
+  // Refresh rebuilds the page with the selector still hidden.
+  assert.equal(await denial.getByRole("button").count(), 0);
   const oldPanel = await denial.elementHandle();
-  await denial.getByRole("button", { name: "Retry", exact: true }).click();
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
   await page.waitForFunction((panel) => !panel.isConnected, oldPanel);
   await page.locator(".state-panel").getByRole("heading", { name: "Access denied" }).waitFor();
   assert.equal(await page.getByRole("combobox", { name: "Namespace", exact: true }).count(), 0);

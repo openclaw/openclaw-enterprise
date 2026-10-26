@@ -52,7 +52,7 @@ import {
 } from "./console-deployment-activity-helpers.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import { fileReadyNamespace } from "./console-ready-namespace.mjs";
-import { CONFIGURATION_EDITS_PENDING } from "../helpers/refusal-text.mjs";
+import { CONFIGURATION_EDITS_PENDING, LOG_TEXT_DENIED } from "../helpers/refusal-text.mjs";
 
 // The Agent page's first screen while its reads settle and its polls run: loading cues, quiet
 // polls, a steady layout, and failed-version recovery scoped to the caller.
@@ -1158,9 +1158,7 @@ test("Recovery stops offering a failed version's Logs once this page saw log tex
     )
     .waitFor();
   await recovery.getByRole("link", { name: "Open v2 Logs" }).click();
-  await page
-    .getByText("Log text requires Agent read_logs (or administer) and read access.")
-    .waitFor();
+  await page.getByText(LOG_TEXT_DENIED).waitFor();
 
   // The denial updates the recovery at once: it says who can check the logs instead of
   // steering the reader into another denied read.
@@ -1221,9 +1219,7 @@ test("A replaced current version still says who can check the logs once Logs is 
   assert.equal(await recovery.locator(".status-label").textContent(), "Deployment failed · v2");
   assert.equal(await recovery.locator(".status-label").isVisible(), true);
   await recovery.getByRole("link", { name: "Open v2 Logs" }).click();
-  await page
-    .getByText("Log text requires Agent read_logs (or administer) and read access.")
-    .waitFor();
+  await page.getByText(LOG_TEXT_DENIED).waitFor();
   await recovery
     .getByText(
       `v2 failed its startup model check (RUNTIME_MODEL_PROBE_FAILED). v1 is still selected, but its runtime was probably stopped for this deployment. ${PROBE_FAILED_MESSAGE} Ask someone with log access to check the failed version’s logs.`,

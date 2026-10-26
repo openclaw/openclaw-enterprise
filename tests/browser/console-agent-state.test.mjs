@@ -582,7 +582,16 @@ test("Diagnostics explain a missing Slack channel and keep the recorded failure 
   await observations.getByText(/gateway checks cover only the Slack channel/).waitFor();
   await observations.getByRole("button", { name: "Run diagnostics for this version" }).click();
   await observations.getByText("gateway / authentication").waitFor();
-  await observations.getByText(/NOT_CONFIGURED means this version has no Slack channel/).waitFor();
+  // A version without Slack has nothing to check: the rows say so in words, not as a failed code.
+  await observations
+    .getByText(/^Slack is not set up for this version, so there is nothing to check\./)
+    .waitFor();
+  const results = await observations.locator(".credential-status-list dd").allTextContents();
+  assert.deepEqual(
+    results.map((text) => text.split(" · ")[0]),
+    ["not set up", "not checked", "not checked"],
+  );
+  assert.equal(await observations.getByText(/NOT_CONFIGURED/).count(), 0);
   await observations
     .getByText(/recorded deployment failed with RUNTIME_AUTHENTICATION_FAILED/)
     .waitFor();

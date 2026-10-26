@@ -95,7 +95,8 @@ so the page does not offer diagnostics for it. Checks include a time and `succee
 `unknown` state; unavailable requests show retryable errors. On Kubernetes
 Compute the gateway checks cover only the Slack channel. A version without
 Slack reports configuration `failed` with `NOT_CONFIGURED` and leaves
-authentication and connectivity `unknown`; the page says this is expected. A
+authentication and connectivity `unknown`; the page shows these as `not set up`
+and `not checked` and says this is expected. A
 version deployed by an earlier controller release still shows three `unknown`
 checks with `PROBE_FAILED` until you deploy a new version. If every check is
 `unknown` with `UNAVAILABLE`, the runtime did not answer. Either way, a recorded deployment failure such as `RUNTIME_AUTHENTICATION_FAILED`

@@ -9,6 +9,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { type RequestOptions, requestFailure } from "../api-client.mjs";
 import { button, element, replaceChildrenIfChanged, setText, statusBlock } from "../dom.mjs";
+import { LOG_TEXT_DENIED, RUNTIME_STATUS_DENIED } from "./access-reasons.mjs";
 import { displayDate, namespacePath, retryAfterText } from "./list.mjs";
 import { fitLogTimeColumn, SOURCE_LABELS, podCard, recordRow, visibleText } from "./logs-view.mjs";
 
@@ -107,9 +108,7 @@ function runtimeErrorText(
 ) {
   if (error.status === 403) {
     // Name both grants: without status the Logs section never says what log text needs.
-    return tier === "logs"
-      ? "Log text requires Agent read_logs (or administer) and read access."
-      : "Runtime status requires Agent operate and read access plus read access to this version. Log text needs Agent read_logs (or administer) and read access.";
+    return tier === "logs" ? LOG_TEXT_DENIED : RUNTIME_STATUS_DENIED;
   }
   if (error.status === 501) {
     return "This Compute Driver does not expose runtime status or logs, or an operator turned them off.";

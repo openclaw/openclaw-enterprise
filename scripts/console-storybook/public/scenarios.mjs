@@ -1103,6 +1103,14 @@ export const scenarios = {
     emptyAgents: true,
     description: "A ready Namespace with no Agents offers creation.",
   },
+  agentsEmptyMember: {
+    group: "Pages/Agents",
+    name: "Empty for a member",
+    emptyAgents: true,
+    readOnlyPermissionSummary: true,
+    description:
+      "A member without Agent create sees no Agents. The heading says none are shared with them, not that the Namespace has none, and nothing invites creating.",
+  },
   agentsUnreadableConfiguration: {
     group: "Pages/Agents",
     name: "Unreadable saved configuration",
@@ -1302,7 +1310,8 @@ export const scenarios = {
     group: "Pages/Agents",
     name: "Access denied",
     rules: [{ path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents", status: 403 }],
-    description: "Collection authorization denial with a request ID and Retry.",
+    description:
+      "Collection authorization denial with a request ID. Retry would repeat the refusal, so the panel offers none; the header's Refresh checks access again.",
   },
   agentsError: {
     group: "Pages/Agents",
@@ -5681,6 +5690,17 @@ export const scenarios = {
     description:
       "Diagnostics that answer within 250 ms replace the panel's result directly, without painting the waiting line or moving focus.",
   },
+  diagnosticsNoSlack: {
+    group: "Pages/Agent detail",
+    name: "Current observations for a version without Slack",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "succeeded",
+    diagnosticsState: "noSlack",
+    actions: [click("Run diagnostics for this version")],
+    description:
+      "The gateway reports a version with no Slack channel as a failed configuration check with code NOT_CONFIGURED. The rows read not set up and not checked, and the note says there is nothing to check.",
+  },
   diagnosticsReader: {
     group: "Pages/Agent detail",
     name: "Current observations for a reader without operate",
@@ -5935,6 +5955,23 @@ export const scenarios = {
     steps: [
       "Wait for both the status access message and the log rows. Open Namespaces, then use browser Back; the Console asks for status once more and shows the Pod.",
     ],
+  },
+  runtimeLogTextDenied: {
+    group: "Pages/Agent detail",
+    name: "Runtime status and log text refused",
+    path: `${candidateVersion}&tab=logs`,
+    deployed: true,
+    candidateDeploymentStatus: "succeeded",
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/deployments/rev_00000000-0000-4000-8000-000000000007/runtime",
+        status: 403,
+        code: "FORBIDDEN",
+      },
+      refuseLogRead,
+    ],
+    description:
+      "A reader with neither Agent operate nor Agent read_logs. The status line names the grants runtime status and log text need, in the API's words, and that an Installation administrator gives them.",
   },
   runtimeLogsReaderDownload: {
     group: "Pages/Agent detail",
