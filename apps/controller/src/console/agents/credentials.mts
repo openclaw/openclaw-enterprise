@@ -522,13 +522,13 @@ function renderSlackBindings(state: ChannelState) {
   return list;
 }
 
-// Why the channel Secrets are read-only: the caller may not update the Configuration, or may not
-// operate a Secret that a save keeps bound, which each Configuration save also needs (finding
-// 2437). A save is checked on the Secrets it submits, not on those it replaces (finding 2444).
 // The deploy status while a grant read runs; the page shows it only after 250 ms (finding 2576).
 export const CHECKING_CREDENTIAL_ACCESS =
   "Checking this Agent's credential access before deploying.";
 
+// Why the channel Secrets are read-only: the caller may not update the Configuration, or may not
+// operate a Secret that a save keeps bound, which each Configuration save also needs (finding
+// 2437). A save is checked on the Secrets it submits, not on those it replaces (finding 2444).
 export const CHANNEL_SECRETS_CONFIGURATION_READ_ONLY =
   "Your access does not include editing this Configuration, so its channel Secrets are read-only.";
 export const CHANNEL_SECRETS_OPERATE_READ_ONLY =

@@ -2993,7 +2993,8 @@ export async function renderAgentDetail(
             : gate === "Ready to deploy."
               ? rejected
               : `${gate} ${rejected}`;
-          if (status === CHECKING_CREDENTIAL_ACCESS) {
+          if (status === CHECKING_CREDENTIAL_ACCESS && !draftReadOnly()) {
+            // A read that settles within 250 ms never shows this text (finding 2576).
             setDelayedText(deployStatus, "", status);
           } else {
             deployStatus.textContent =
