@@ -44,6 +44,6 @@ export const SECRET_OPERATE_NEEDED = askForGrant("Secret operate on it");
 // The network policy and its suggestions authorize Agent read and SandboxPolicy read on the
 // Agent's own policy; previews and saves authorize Agent manage_policy and SandboxPolicy update.
 export const SANDBOX_POLICY_READ_DENIED = notIncluded(
-  "reading this Agent's network policy or its suggestions",
+  "reading this Agent’s network policy or its suggestions",
   "SandboxPolicy read on it",
 );

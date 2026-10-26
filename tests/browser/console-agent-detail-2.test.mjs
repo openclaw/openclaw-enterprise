@@ -2514,7 +2514,7 @@ test("an Agent reader meets no refused read on Repositories, Policy denials or L
   await settle();
   await expectNoText(
     page,
-    /Deploy an Agent to load Sandbox policy decisions|permission to read|Suggestions come from/,
+    /Deploy an Agent to load Sandbox policy decisions|permission to read|Suggestions come from|No Driver configurations/,
   );
   // The sentence names the suggestions too, so it is said once, on the network policy card: no
   // suggestions card repeats it (finding 2522).

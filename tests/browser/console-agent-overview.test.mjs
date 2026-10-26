@@ -448,6 +448,20 @@ test("Stop is disabled with its reason when a failed first deployment left nothi
   );
 });
 
+// The Agents list follows the detail page: once the row's deployment read shows the failed first
+// deployment, the row offers no Stop, while Delete stays (catalog rows 49 and 58, finding 2548).
+test("the Agents list hides Stop when a failed first deployment left nothing running", async (t) => {
+  const { fixture, namespace, agent, page } = await agentPage(t, "Failed list", "Failed list");
+  const failed = await fixture.deployAgent(namespace.id, agent.id);
+  await routeFailedRecord(page, fixture, namespace, agent, failed);
+
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  const row = page.getByRole("row").filter({ hasText: "Failed list" });
+  await row.getByText("v1 · Failed", { exact: true }).waitFor();
+  await waitForEnabled(row.getByRole("button", { name: "Delete Failed list", exact: true }));
+  assert.equal(await row.getByRole("button", { name: "Stop Failed list", exact: true }).count(), 0);
+});
+
 // Only a failed first deployment leaves nothing to stop. While a first deployment is still queued
 // no version is current either, but Stop ends that deployment, so it stays enabled.
 test("Stop stays enabled while a first deployment is queued", async (t) => {
