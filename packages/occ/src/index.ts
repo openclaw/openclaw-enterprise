@@ -31,6 +31,8 @@ import {
   revisionCredentialSourceSnapshot,
   credentialFreeProviderRef,
   pluginRuntimeHarnessRequirement,
+  codexProxiesRepositoryBroker,
+  codexRepositoryBrokerNetworkProxy,
 } from "@openclaw-enterprise/contracts";
 import { EgressSendReceipts } from "./egress-send-receipts.ts";
 import type {
@@ -3049,6 +3051,16 @@ export class OpenClawController {
           id: resolveConfiguredHarnessId(configurationInput.values),
           mode: executionMode,
         });
+      }
+      // A Codex network proxy that blocks the repository credential broker, as Agent save refuses
+      // it; authorizeProvisioningRecord repeats this check for the stored record.
+      if (repositoryBindings !== undefined && repositoryBindings.length > 0) {
+        this.validateRepositoryBrokerNetworkProxy(
+          { id: resolveConfiguredHarnessId(configurationInput.values), mode: executionMode },
+          plugins,
+          configurationInput.values,
+          this.sandboxDriver(),
+        );
       }
       // The worker's Agent create refuses a taken name; refuse it here instead of accepting work
       // that can only fail (finding 2420). Under the Namespace lock that Agent create also takes.
@@ -9851,6 +9863,14 @@ export class OpenClawController {
         sandbox?.id,
         Date.parse(createdAt),
       );
+      if (repositoryCredentials !== undefined) {
+        this.validateRepositoryBrokerNetworkProxy(
+          revisionHarness,
+          pluginState?.plugins,
+          admittedConfiguration,
+          sandbox,
+        );
+      }
       if (
         repositoryCredentials?.bindings.length !== 1 &&
         (await state.repositorySessions.listStandingApprovals(namespace.id, lockedAgent.id)).some(
@@ -11658,6 +11678,10 @@ export class OpenClawController {
         "stored",
       );
       this.validatePluginHarness(plugins, harness);
+      const repositoryBindings = asRecord(record.plan)?.repositoryBindings;
+      if (Array.isArray(repositoryBindings) && repositoryBindings.length > 0) {
+        this.validateRepositoryBrokerNetworkProxy(harness, plugins, configuration, sandbox);
+      }
     }
     if (agent !== undefined) {
       this.admitRepositoryCredentials(
@@ -13661,6 +13685,35 @@ export class OpenClawController {
     }
   }
 
+  // An Agent with repository bindings reaches the repository credential broker through the
+  // Codex network proxy in its Harness. Compute preparation refused a proxy setting that blocks
+  // the broker only after a dedicated deployment stopped the running revision; Agent save,
+  // provisioning and deployment refuse it first, with the rule preparation applies (finding
+  // 2350). Preparation alone knows the broker host, from the prepared material, so it still
+  // refuses a deny of that host. A Sandbox with its own repository path receives the material
+  // from the worker instead and gets no broker policy.
+  private validateRepositoryBrokerNetworkProxy(
+    harness: Readonly<Pick<RevisionHarnessDescriptor, "id" | "mode">>,
+    plugins: PluginDesiredState | undefined,
+    configuration: Readonly<OpenClawConfigurationDocument>,
+    sandbox: SandboxDriver | undefined,
+  ): void {
+    const pluginDriver =
+      plugins === undefined || Object.keys(plugins).length === 0
+        ? undefined
+        : this.pluginDriver().implementation;
+    if (
+      sandbox?.repositoryAccess !== undefined ||
+      !codexProxiesRepositoryBroker(harness, pluginDriver)
+    ) {
+      return;
+    }
+    const proxy = codexRepositoryBrokerNetworkProxy(configuration);
+    if ("refusal" in proxy) {
+      throw new ConfigurationHarnessError(proxy.refusal);
+    }
+  }
+
   // An Agent save names both its plugins and its Configuration, so it refuses a pair the
   // Plugin Driver cannot run instead of leaving the refusal to deployment. The values live in
   // the Configuration Driver: read them only when there is something to check.
@@ -13760,6 +13813,7 @@ export class OpenClawController {
       compute.validateRepositoryCredentials !== undefined
     ) {
       validateRepositoryTopology(compute, harness, sandbox?.id);
+      this.validateRepositoryBrokerNetworkProxy(harness, agent.plugins, values, sandbox);
     }
     if (agent.workspaceSetup) {
       validateWorkspaceSetupTopology(compute, harness, values, sandbox?.id);

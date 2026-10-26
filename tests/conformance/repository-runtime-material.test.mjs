@@ -14,6 +14,11 @@ import { encodeRepositoryCredentialSessionFiles } from "../../apps/controller/sr
 import { openShellRepositoryAccess } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { runOpenClawRuntimeHelper } from "../helpers/plugin-runtime.mjs";
+import {
+  BROKER_PROXY_DISABLED,
+  BROKER_PROXY_DOMAINS,
+  brokerHostDenied,
+} from "../helpers/refusal-text.mjs";
 
 const deadlineWallMs = Date.now() + 86400000;
 function repositoryClient(gatewayOrigin = "https://git.credentials.svc.cluster.local") {
@@ -1403,10 +1408,9 @@ test("Dedicated Codex repository policy preserves compatible domain decisions", 
 test("Dedicated Codex repository policy preserves an explicitly disabled network proxy", async () => {
   const f = await fixture("dedicated");
   f.revision.configuration.plugins.entries.codex.config.appServer.networkProxy = { enabled: false };
-  await assert.rejects(
-    f.driver.prepareRevision(f.revision, f.context([runtimeBinding()])),
-    /explicitly disabled Codex network proxy/,
-  );
+  await assert.rejects(f.driver.prepareRevision(f.revision, f.context([runtimeBinding()])), {
+    message: BROKER_PROXY_DISABLED,
+  });
   assert.deepEqual(
     runtimeWrites(f.calls),
     [],
@@ -1421,10 +1425,9 @@ test("Dedicated Codex repository policy preserves explicit broker host denies", 
     " Git.Credentials.SVC.Cluster.Local ": "deny",
     "git.credentials.svc.cluster.local": "allow",
   };
-  await assert.rejects(
-    f.driver.prepareRevision(f.revision, f.context([runtimeBinding()])),
-    /broker host is explicitly denied/,
-  );
+  await assert.rejects(f.driver.prepareRevision(f.revision, f.context([runtimeBinding()])), {
+    message: brokerHostDenied("git.credentials.svc.cluster.local"),
+  });
   assert.deepEqual(
     runtimeWrites(f.calls),
     [],
@@ -1454,12 +1457,12 @@ test("Dedicated Codex repository policy rejects malformed domain policy containe
     [
       "domains array",
       { enabled: true, mode: "limited", domains: ["github.com"] },
-      /network policy domains must be an object/,
+      { message: BROKER_PROXY_DOMAINS },
     ],
     [
       "domains scalar",
       { enabled: true, mode: "limited", domains: "github.com" },
-      /network policy domains must be an object/,
+      { message: BROKER_PROXY_DOMAINS },
     ],
   ]) {
     await t.test(name, async () => {
