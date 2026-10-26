@@ -107,7 +107,8 @@ plain click on **Open administration** also stays in the console. One unavailabl
 destination shows its status card. No destinations show **No access assigned**
 with **Check again**. Otherwise cards list each Claw's status and Namespace, then
 **Fleet administration**. **Refresh availability**, **Try again**, and
-**Check again** repeat discovery; a newer run supersedes an older one. **Sign out**
+**Check again** repeat discovery; a newer run supersedes an older one. Returning
+to the tab keeps the shown result rather than rerunning discovery. **Sign out**
 uses the console's confirmed logout. Nothing is persisted.
 
 ## Debugging and Verification

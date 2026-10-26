@@ -213,8 +213,20 @@ test("launcher shows no access intentionally and ignores a return URL on the sig
   await login(s.page, s.fixture, empty.credentials);
   await s.page.getByRole("heading", { name: "No access assigned" }).waitFor();
   assert.equal(await s.page.getByText("Product Claw", { exact: true }).count(), 0);
+  // Refocus keeps the shown answer; only Check again repeats the audited Installation probe.
+  const probes = [];
+  s.page.on("request", (request) => {
+    if (new URL(request.url()).pathname === "/observability") {
+      probes.push(request.url());
+    }
+  });
+  await s.page.evaluate(() => {
+    globalThis.dispatchEvent(new Event("focus"));
+    globalThis.document.dispatchEvent(new Event("visibilitychange"));
+  });
   await s.page.getByRole("button", { name: "Check again" }).click();
   await s.page.getByRole("heading", { name: "No access assigned" }).waitFor();
+  assert.equal(probes.length, 1);
   await s.page.getByRole("button", { name: "Sign out" }).click();
   await s.page.getByRole("button", { name: "Sign in", exact: true }).waitFor();
   await login(

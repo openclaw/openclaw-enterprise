@@ -2892,6 +2892,11 @@ function resumePage() {
     return;
   }
   const current = route();
+  // The launcher rechecks only when asked: a reload would discard its chooser and repeat the
+  // whole discovery, including an audited Installation probe, on every refocus.
+  if (current.feature === LAUNCHER_FEATURE) {
+    return;
+  }
   // Agent detail rechecks in place and keeps its forms, so their input must not skip the
   // check. Other pages reload the view, which would discard an unfinished form.
   const inPlace = current.agentId && mountedRouteKey === routeKey(current);
