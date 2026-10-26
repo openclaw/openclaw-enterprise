@@ -58,23 +58,21 @@ test("dev-up builds the default runtime only when real Compose leaves runtime im
   const source = JSON.parse(
     await readFile(new URL("../../deploy/runtime/openclaw-source.json", import.meta.url), "utf8"),
   );
-  assert.deepEqual(
-    dockerLogs.find((entry) => entry.args[0] === "build")?.args,
-    [
-      "build",
-      "-f",
-      "deploy/runtime/Dockerfile",
-      "--build-arg",
-      `OPENCLAW_COMMIT=${source.commit}`,
-      "--build-arg",
-      `OPENCLAW_SOURCE_SHA256=${source.sourceArchiveSha256}`,
-      "--build-arg",
-      `OPENCLAW_BUILD_TIMESTAMP=${source.buildTimestamp}`,
-      "--tag",
-      defaultRuntimeImage,
-      ".",
-    ],
-  );
+  const runtimeBuild = dockerLogs.find((entry) => entry.args[0] === "build");
+  assert.deepEqual(runtimeBuild?.args, [
+    "build",
+    "-f",
+    "deploy/runtime/Dockerfile",
+    "--build-arg",
+    `OPENCLAW_COMMIT=${source.commit}`,
+    "--build-arg",
+    `OPENCLAW_SOURCE_SHA256=${source.sourceArchiveSha256}`,
+    "--build-arg",
+    `OPENCLAW_BUILD_TIMESTAMP=${source.buildTimestamp}`,
+    "--tag",
+    defaultRuntimeImage,
+    ".",
+  ]);
   assert.ok(
     dockerLogs.some(
       (entry) =>
@@ -140,8 +138,9 @@ test("dev-up refuses an invalid source identity before building or starting Comp
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /cannot read a valid deploy\/runtime\/openclaw-source.json/);
   const dockerLogs = await readJsonLines(fixture.dockerLog);
-  assert.equal(dockerLogs.some((entry) => entry.args[0] === "build"), false);
-  assert.equal(composeInvocations(dockerLogs).some((entry) => entry.args.includes("up")), false);
+  assert.ok(dockerLogs.every((entry) => entry.args[0] !== "build"));
+  const composeCommands = composeInvocations(dockerLogs);
+  assert.ok(composeCommands.every((entry) => !entry.args.includes("up")));
 });
 
 test("dev-up preserves a selected custom runtime image and skips the quickstart build", async (t) => {
