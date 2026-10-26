@@ -939,15 +939,23 @@ test("the Agent Secret answer names the readable Secrets a binding save would be
   blind.grant("operate-app", "operate", "secret", app.id);
   assert.deepEqual(await blind.data(), { operateDenied: [], unreadableOperateDenied: 1 });
   assert.equal(denials().length, deniedBeforeDeployer);
-  // The count matches the real deployment: refused while one is counted, admitted at 0.
+  // The count matches the real deployment: refused while one is counted, authorized at 0.
   const deployPath = `/namespaces/${namespace.id}/agents/${agent.id}/deploy`;
   const refused = await fixture.request("POST", deployPath, { session: blind.session });
   assertApiError(refused, 403, "FORBIDDEN");
   assert.equal(denials().at(-1).action, "openclaw.agents.deploy");
   blind.grant("operate-harness", "operate", "secret", harnessSecret.id);
   assert.deepEqual(await blind.data(), { operateDenied: [], unreadableOperateDenied: 0 });
+  // The deployment also checks the Agent's own access to the Secrets the editor rebound.
+  for (const secret of [app, spares[0]]) {
+    await fixture.grantAgentSecretOperate(agent, secret.ref);
+  }
+  // Every authorization check passes: this fixture's Compute Driver then refuses the topology,
+  // which is no authorization denial.
+  const deniedBeforeDeploy = denials().length;
   const admitted = await fixture.request("POST", deployPath, { session: blind.session });
-  assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+  assertApiError(admitted, 409, "RESOURCE_CONFLICT");
+  assert.equal(denials().length, deniedBeforeDeploy);
   const deniedAfterDeploy = denials().length;
   // A reader who may not deploy or update gets no count.
   const blindReader = await member("secret-answer-blind-reader", reads, []);
