@@ -2693,8 +2693,7 @@ test("an Agent reader meets no refused read on Repositories, Policy denials or L
       "The version draft selects no repositories. The Agent runs without repository access.",
     )
     .waitFor();
-  await settle();
-  await expectNoText(page, /Repository choices are denied/);
+  await expectNoText(page, /Repository choices are denied/, settle);
   assert.equal(await page.getByRole("button", { name: "Retry repository choices" }).count(), 0);
   assert.equal(await page.getByRole("button", { name: "Save repository access" }).count(), 0);
 
@@ -2707,10 +2706,10 @@ test("an Agent reader meets no refused read on Repositories, Policy denials or L
     .waitFor();
   const noPolicyAccess = page.getByText(SANDBOX_POLICY_READ_DENIED);
   await noPolicyAccess.first().waitFor();
-  await settle();
   await expectNoText(
     page,
     /Deploy an Agent to load Sandbox policy decisions|permission to read|Suggestions come from|No Driver configurations/,
+    settle,
   );
   // The sentence names the suggestions too, so it is said once, on the network policy card: no
   // suggestions card repeats it (finding 2522).
@@ -2734,10 +2733,10 @@ test("an Agent reader meets no refused read on Repositories, Policy denials or L
       { exact: true },
     )
     .waitFor();
-  await settle();
   await expectNoText(
     page,
     /permission to read|no such runtime log source|window: unavailable|Denials in the loaded window/,
+    settle,
   );
   await sayOnce();
   // With no denial log, the window's controls could only show nothing; only the reason stays

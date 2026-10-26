@@ -390,7 +390,9 @@ test("a bound Slack token reference that is not the whole value is refused under
     assert.equal(await page.locator("#configuration-editor-feedback").textContent(), "");
   }
   // No refusal shows the token value.
-  await expectNoText(page, /xoxb-object-token-value|xoxb-pasted-token-value/);
+  await expectNoText(page, /xoxb-object-token-value|xoxb-pasted-token-value/, () =>
+    waitForIdleFetches(page),
+  );
   assert.equal(await saveWith("${SLACK_BOT_TOKEN}"), 200);
   await page.getByText("Configuration saved.", { exact: true }).waitFor();
   const stored = (await fixture.request("GET", configurationPath(c))).data;

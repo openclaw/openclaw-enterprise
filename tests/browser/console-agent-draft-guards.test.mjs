@@ -1451,10 +1451,6 @@ test("Deploy names the bound Secrets an operator may not operate", async (t) => 
   const reason =
     "Deploying needs Secret operate on Demo model credential, which your access does not include. Ask an Installation administrator to grant it.";
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
-  const deployPosts = (requests) =>
-    requests.filter(
-      ({ method, path: requested }) => method === "POST" && requested === `${path}/deploy`,
-    );
 
   // Known answer: Deploy is disabled up front and nothing is sent.
   {
@@ -1465,7 +1461,7 @@ test("Deploy names the bound Secrets an operator may not operate", async (t) => 
     await page.getByText(reason, { exact: true }).waitFor();
     const deploy = page.getByRole("button", { name: "Deploy new version" });
     assert.equal(await deploy.isDisabled(), true);
-    assert.deepEqual(deployPosts(requests), []);
+    assert.deepEqual(pathRequests(requests, "POST", `${path}/deploy`), []);
   }
 
   // Unknown answer: the first Secret answer fails, so Deploy stays enabled and the API decides.
@@ -1514,8 +1510,7 @@ test("Deploy names the bound Secrets an operator may not operate", async (t) => 
     await login(page, fixture, url, operator.credentials);
     await page.getByRole("heading", { name: "Operator Secret Agent" }).waitFor();
     const deploy = page.getByRole("button", { name: "Deploy new version" });
-    await waitForEnabled(deploy);
-    await expectNoText(page, reason);
+    await expectNoText(page, reason, () => waitForEnabled(deploy));
     const admitted = page.waitForResponse(
       (response) =>
         response.url() === `${fixture.origin}${path}/deploy` &&

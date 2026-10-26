@@ -432,32 +432,11 @@ for (const [code, outcome] of [
 }
 
 // A first deployment that failed leaves the Agent requested to run with no version selected
-// (finding 2385). Stop would change nothing, so the danger zone disables it and says why,
-// instead of offering to stop "the running version".
-test("Stop is disabled with its reason when a failed first deployment left nothing running", async (t) => {
-  const { fixture, namespace, agent, page } = await agentPage(t, "Failed first", "Failed first");
-  const failed = await fixture.deployAgent(namespace.id, agent.id);
-  await routeFailedRecord(page, fixture, namespace, agent, failed);
-
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
-  const summary = page.locator(".agent-current-summary");
-  await summary.getByText("v1 · Failed", { exact: true }).waitFor();
-  const stopRegion = page.getByRole("region", { name: "Stop Agent", exact: true });
-  await stopRegion
-    .getByText(
-      "No version is running, so there is nothing to stop. Deploy a new version to start this Agent.",
-      { exact: true },
-    )
-    .waitFor();
-  assert.equal(
-    await stopRegion.getByRole("button", { name: "Stop Agent", exact: true }).isDisabled(),
-    true,
-  );
-});
-
-// The Agents list follows the detail page: once the row's deployment read shows the failed first
-// deployment, the row offers no Stop, while Delete stays (catalog rows 49 and 58, finding 2548).
-test("the Agents list hides Stop when a failed first deployment left nothing running", async (t) => {
+// (finding 2385). Stop would change nothing, so the Agent page's danger zone disables it and says
+// why, instead of offering to stop "the running version". The Agents list follows the detail
+// page: once the row's deployment read shows the failed first deployment, the row offers no Stop,
+// while Delete stays (catalog rows 49 and 58, finding 2548).
+test("Stop is disabled or hidden when a failed first deployment left nothing running", async (t) => {
   const { fixture, namespace, agent, page } = await agentPage(t, "Failed list", "Failed list");
   const failed = await fixture.deployAgent(namespace.id, agent.id);
   await routeFailedRecord(page, fixture, namespace, agent, failed);
@@ -472,6 +451,18 @@ test("the Agents list hides Stop when a failed first deployment left nothing run
   // and a retried first deployment that is queued keeps Stop, as on Agent detail (finding 2580).
   await row.getByRole("link", { name: "Failed list", exact: true }).click();
   await page.getByRole("region", { name: "Agent state at a glance" }).waitFor();
+  await page.locator(".agent-current-summary").getByText("v1 · Failed", { exact: true }).waitFor();
+  const stopRegion = page.getByRole("region", { name: "Stop Agent", exact: true });
+  await stopRegion
+    .getByText(
+      "No version is running, so there is nothing to stop. Deploy a new version to start this Agent.",
+      { exact: true },
+    )
+    .waitFor();
+  assert.equal(
+    await stopRegion.getByRole("button", { name: "Stop Agent", exact: true }).isDisabled(),
+    true,
+  );
   const retried = await fixture.deployAgent(namespace.id, agent.id);
   await page.route(deploymentRecordUrl(fixture, namespace.id, agent.id, retried.id), (route) =>
     route.fulfill(deploymentStatusResponse(retried, { status: "queued" })),

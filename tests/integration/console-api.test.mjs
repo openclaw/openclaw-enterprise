@@ -617,23 +617,8 @@ test("the per-binding Secret answer names the bindings a Configuration save must
   const operable = await answer();
   assert.equal(operable.configurationSecretsOperate, true);
   assert.deepEqual(operable.configurationSecretsOperateDeniedBindings, []);
-
-  // An IAM failure on a bound Secret's operate decision is not a denial: the whole answer is
-  // unavailable, so the console keeps its usual rule instead of listing or omitting a name.
-  const authorize = fixture.iamDriver.authorize;
-  fixture.iamDriver.authorize = async (request) => {
-    if (request.action === "operate" && request.resource.kind === "secret") {
-      throw new Error("IAM outage");
-    }
-    return authorize.call(fixture.iamDriver, request);
-  };
-  let outage;
-  try {
-    outage = await fixture.request("GET", permissionsPath, { session });
-  } finally {
-    fixture.iamDriver.authorize = authorize;
-  }
-  assertApiError(outage, 503, "DEPENDENCY_UNAVAILABLE");
+  // An IAM failure on a bound Secret's operate decision fails the whole answer: "an IAM failure
+  // on any caller permission decision ..." proves it for a Configuration editor like this one.
 });
 
 // Binding a Secret to an Agent's Configuration, or as its Harness authentication source,
@@ -823,19 +808,10 @@ test("the Agent Secret answer names the readable Secrets a binding save would be
 
   // An IAM failure on a Secret's operate decision is not a denial: the whole answer is
   // unavailable, so the console keeps every Secret choosable instead of marking some.
-  const authorize = fixture.iamDriver.authorize;
-  fixture.iamDriver.authorize = async (request) => {
-    if (request.action === "operate" && request.resource.kind === "secret") {
-      throw new Error("IAM outage");
-    }
-    return authorize.call(fixture.iamDriver, request);
-  };
-  let outage;
-  try {
-    outage = await fixture.request("GET", answerPath, { session: editor.session });
-  } finally {
-    fixture.iamDriver.authorize = authorize;
-  }
+  const outage = await fixture.withIamOutage(
+    (request) => request.action === "operate" && request.resource.kind === "secret",
+    () => fixture.request("GET", answerPath, { session: editor.session }),
+  );
   assertApiError(outage, 503, "DEPENDENCY_UNAVAILABLE");
   // The answer itself requires Agent read and an existing Agent.
   const missing = await fixture.request(
@@ -1075,19 +1051,10 @@ test("the Namespace Secret answer names the readable Secrets Agent creation woul
   // An IAM failure on a Secret's operate decision is not a denial: the whole answer is
   // unavailable, so the console keeps every Secret choosable instead of marking some.
   const deniedBefore = denials().length;
-  const authorize = fixture.iamDriver.authorize;
-  fixture.iamDriver.authorize = async (request) => {
-    if (request.action === "operate" && request.resource.kind === "secret") {
-      throw new Error("IAM outage");
-    }
-    return authorize.call(fixture.iamDriver, request);
-  };
-  let outage;
-  try {
-    outage = await fixture.request("GET", answerPath, { session: creator.session });
-  } finally {
-    fixture.iamDriver.authorize = authorize;
-  }
+  const outage = await fixture.withIamOutage(
+    (request) => request.action === "operate" && request.resource.kind === "secret",
+    () => fixture.request("GET", answerPath, { session: creator.session }),
+  );
   assertApiError(outage, 503, "DEPENDENCY_UNAVAILABLE");
   assert.equal(denials().length, deniedBefore);
 });
