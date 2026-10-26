@@ -1595,6 +1595,21 @@ test("only path parameters and reference fields count as IDs a request sent", ()
     assert.equal(sent(id), false, id);
   }
   assert.equal(requestedValues({})("anything"), false);
+  // A path Agent ID also carries that Agent's SandboxPolicy ID, which is derived from it; a body
+  // or query Agent ID does not (finding 2594).
+  const agentUuid = "00000000-0000-4000-8000-000000000001";
+  assert.equal(
+    requestedValues({ params: { agentId: `agt_${agentUuid}` } })(`sbp_${agentUuid}`),
+    true,
+  );
+  assert.equal(
+    requestedValues({ body: { agentId: `agt_${agentUuid}` } })(`sbp_${agentUuid}`),
+    false,
+  );
+  assert.equal(
+    requestedValues({ params: { configurationId: `cfg_${agentUuid}` } })(`sbp_${agentUuid}`),
+    false,
+  );
 });
 
 // The console shows the API's named denial where the view has no grant or refusal of its own,

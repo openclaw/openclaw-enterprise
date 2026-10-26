@@ -45,7 +45,8 @@ test("a caller's own denial names the missing grant without disclosing what the 
     return response.body.error;
   };
 
-  const logsGrant = "Agent read_logs (or Agent administer when no Restriction applies)";
+  // The console and the CLI name the log grant in the same words (finding 2599).
+  const logsGrant = "Agent read_logs (or Agent administer)";
   const exactCases: readonly [string, string, (id: string) => string, Body, string][] = [
     ["read", "GET", (id) => `${agents}/${id}`, undefined, "Agent read"],
     [
@@ -146,5 +147,49 @@ test("a caller's own denial names the missing grant without disclosing what the 
   assert.equal(
     stored.message,
     callerDenied("Configuration read", "a Configuration this request uses"),
+  );
+
+  // A stored resource the caller may already read is named (finding 2594). Deploying reads the
+  // Agent's model Secret from its stored Harness binding; a deployer without Secret operate learns
+  // its ID only when it holds Secret read, which already shows that ID.
+  const secretId = agent.harnessAuth.source.id;
+  const deployer: [string, string][] = [
+    ["read", "namespace"],
+    ["read", "agent"],
+    ["deploy", "agent"],
+    ["read", "configuration"],
+  ];
+  const deployRefusal = async (label: string, grants: [string, string][]) => {
+    const member = await fixture.createNamespaceMember(label, namespace.id, grants as never);
+    return refusal(
+      "POST",
+      `${agents}/${agent.id}/deploy`,
+      undefined,
+      await fixture.signIn(member.credentials),
+    );
+  };
+  assert.equal(
+    (await deployRefusal("deployer-unread-secret", deployer)).message,
+    callerDenied("Secret operate", "a Secret this request uses"),
+  );
+  assert.equal(
+    (await deployRefusal("deployer-read-secret", [...deployer, ["read", "secret"]])).message,
+    callerDenied("Secret operate", `Secret ${secretId}`),
+  );
+  // An Agent's SandboxPolicy ID derives from the Agent ID the path carries, so its denial names it.
+  const policyReader = await fixture.createNamespaceMember("policy-reader", namespace.id, [
+    ["read", "namespace"],
+    ["read", "agent"],
+  ]);
+  assert.equal(
+    (
+      await refusal(
+        "GET",
+        `${agents}/${agent.id}/sandbox-policy/networking`,
+        undefined,
+        await fixture.signIn(policyReader.credentials),
+      )
+    ).message,
+    callerDenied("SandboxPolicy read", `SandboxPolicy sbp_${agent.id.slice(4)}`),
   );
 });

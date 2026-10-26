@@ -35,8 +35,9 @@ export const NATIVE_ADMIN_DENIAL = `${NAMED_DENIAL_PREFIX} opening this Agent's 
 /**
  * The text for the caller's own denial of `action` on `resource` (finding 2534). It names the
  * grant the request checked and who grants it. The disclosure rules:
- * - It names a resource ID only when the request itself carried it (`requested`), so it never
- *   names an ID read from stored state, such as a Secret an Agent binds.
+ * - It names a resource ID only when `requested` accepts it: the request itself carried it, or the
+ *   caller may already read it (finding 2594). It never names any other ID read from stored state,
+ *   such as a Secret an Agent binds.
  * - It never names a binding, Role, Restriction or another principal, and it reads the same
  *   whether a Restriction denied the request or no grant allowed it.
  * - It depends only on the request and the checked grant, never on whether the resource exists,
@@ -70,12 +71,10 @@ export function callerDenialMessage(
   const id = named(resource.id);
   const article = /^[AEIOU]/.test(kind) ? "an" : "a";
   const target = id === undefined ? `${article} ${kind} this request uses` : `${kind} ${id}`;
-  // Log text also accepts administer, unless a Restriction denies read_logs; the text says so for
-  // every caller, so it never tells which case applied.
+  // Log text also accepts administer. The console and the CLI name the grant in the same words
+  // (finding 2599); the text never tells whether a Restriction applied.
   const grant =
-    action === "read_logs"
-      ? "Agent read_logs (or Agent administer when no Restriction applies)"
-      : `${kind} ${action}`;
+    action === "read_logs" ? "Agent read_logs (or Agent administer)" : `${kind} ${action}`;
   return `${NAMED_DENIAL_PREFIX} this needs ${grant} on ${target}. ${ASK}`;
 }
 
@@ -92,9 +91,10 @@ export interface DeniedRequest {
 const REFERENCE_FIELD = /^(?:id|.*Id|.*Ids)$/;
 
 /**
- * The resource IDs a request named, for `callerDenialMessage`: every path parameter, and the
- * values of reference fields (`REFERENCE_FIELD`) at any depth of the query and body. The walk is
- * bounded: a value past the bounds is simply not named.
+ * The resource IDs a request named, for `callerDenialMessage`: every path parameter (and the
+ * SandboxPolicy ID derived from a path Agent ID), and the values of reference fields
+ * (`REFERENCE_FIELD`) at any depth of the query and body. The walk is bounded: a value past the
+ * bounds is simply not named.
  */
 export function requestedValues(request: {
   readonly params?: unknown;
@@ -129,8 +129,13 @@ export function requestedValues(request: {
     }
   };
   if (request.params !== null && typeof request.params === "object") {
-    for (const value of Object.values(request.params)) {
+    for (const [key, value] of Object.entries(request.params)) {
       reference(value);
+      // An Agent's SandboxPolicy ID is derived from the Agent's (`sbp_` plus its UUID), so a path
+      // that carries the Agent ID carries its policy's too (finding 2594).
+      if (key === "agentId" && typeof value === "string" && value.startsWith("agt_")) {
+        found.add(`sbp_${value.slice(4)}`);
+      }
     }
   }
   visit(request.query, 0);
