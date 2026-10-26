@@ -5,10 +5,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import {
-  openclawBuildArguments,
-  readOpenclawSource,
-} from "../../scripts/lib/openclaw-source.mjs";
+import { openclawBuildArguments, readOpenclawSource } from "../../scripts/lib/openclaw-source.mjs";
 import { availablePort } from "./available-port.mjs";
 import {
   configureModelProviderDNS,

@@ -58,20 +58,23 @@ test("dev-up builds the default runtime only when real Compose leaves runtime im
   const source = JSON.parse(
     await readFile(new URL("../../deploy/runtime/openclaw-source.json", import.meta.url), "utf8"),
   );
-  assert.deepEqual(dockerLogs.find((entry) => entry.args[0] === "build")?.args, [
-    "build",
-    "-f",
-    "deploy/runtime/Dockerfile",
-    "--build-arg",
-    `OPENCLAW_COMMIT=${source.commit}`,
-    "--build-arg",
-    `OPENCLAW_SOURCE_SHA256=${source.sourceArchiveSha256}`,
-    "--build-arg",
-    `OPENCLAW_BUILD_TIMESTAMP=${source.buildTimestamp}`,
-    "--tag",
-    defaultRuntimeImage,
-    ".",
-  ]);
+  assert.deepEqual(
+    dockerLogs.find((entry) => entry.args[0] === "build")?.args,
+    [
+      "build",
+      "-f",
+      "deploy/runtime/Dockerfile",
+      "--build-arg",
+      `OPENCLAW_COMMIT=${source.commit}`,
+      "--build-arg",
+      `OPENCLAW_SOURCE_SHA256=${source.sourceArchiveSha256}`,
+      "--build-arg",
+      `OPENCLAW_BUILD_TIMESTAMP=${source.buildTimestamp}`,
+      "--tag",
+      defaultRuntimeImage,
+      ".",
+    ],
+  );
   assert.ok(
     dockerLogs.some(
       (entry) =>
