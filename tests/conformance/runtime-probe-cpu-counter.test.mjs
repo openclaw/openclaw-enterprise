@@ -9,7 +9,7 @@ const helperStart = GATEWAY_RUNTIME_ENTRYPOINT.indexOf(
   "function probeOpenClawAuthenticationFailure() {",
 );
 const helperEnd = GATEWAY_RUNTIME_ENTRYPOINT.indexOf(
-  "\nfunction runOpenClawAuthenticationProbe(fs, capMs) {",
+  "\nfunction runOpenClawAuthenticationProbe(fs, capMs, cleanup) {",
   helperStart,
 );
 assert.ok(helperStart >= 0 && helperEnd > helperStart);
