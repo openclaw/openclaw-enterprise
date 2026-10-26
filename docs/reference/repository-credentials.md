@@ -1,8 +1,7 @@
 # Repository credentials
 
-Repository bindings restrict Git HTTPS and GitHub API access by repository and operation.
-OCC saves grants; the worker prepares material. Credential owners retain App keys and
-GitHub tokens. Protected Agents receive neither; native Agents receive session files.
+Repository bindings select the Git HTTPS and GitHub API operations an Agent may use.
+OCC saves grants. The [Token Service](#token-service-lifecycle) prepares credentials.
 See the [operator guide](../guides/repository-credentials.md) and
 [native prepared Git](repository-credentials/prepared-native-git.md).
 
@@ -11,18 +10,17 @@ without a Sandbox Driver. Unsupported Sandbox
 combinations reject repository-bearing versions. Helm's `Recreate` strategy prevents overlapping
 worker/credential-service owners.
 
-Only the consumer receives repository and model credentials; dedicated Slack
-tokens stay in the gateway. Repository profiles and model authentication are
-independent. The [networking contract](drivers/kubernetes-compute/networking-and-isolation.md#networking)
+In a native session, the consumer receives a gateway bearer for repository access.
+Only the consumer receives model credentials. Dedicated Slack tokens stay in
+the gateway. Repository profiles and model authentication are independent. The [networking contract](drivers/kubernetes-compute/networking-and-isolation.md#networking)
 owns consumer access to the credential sidecar and the repository-bound Codex
 proxy policy, which allows the exact broker hostname with `allow_local_binding = true`
 and `mode = "full"`, disabling Codex's private-address guard and permitting every
 HTTP method at otherwise allowed destinations. Explicit denies, NetworkPolicy,
 TLS and broker authorization still apply. Operators can enable [anonymous public reads](public-github-reads.md).
 
-The separate service owns protected configuration, private sender callbacks and
-the `open`, `status`, `close` and `shutdown` controls; separate Git/gh artifacts
-exclude signing and service modules.
+The service owns protected configuration, sender callbacks and session controls.
+Git/gh artifacts exclude signing and service modules.
 
 ## Repo Driver contract
 
@@ -183,13 +181,19 @@ restrictions still apply; API paths and repository authority are unchanged.
 
 ## Token Service lifecycle
 
-Worker preparation and renewal precede requests; cold or expired reads cannot
-issue tokens. Renewal does not extend OCC grants or sessions. See the
-[preparation flow](../flows/credential-source-refresh.md#6-oce-prepared-github-core).
-Retain original custody through retirement. `PREPARED_GITHUB_RECOVERY_REQUIRED`
-(`quarantined` or `blocked`) requires owner recovery, never replay. Distinguish
-confirmed revocation, expiry and unknown outcomes. See
-[App key recovery](../guides/repository-credentials/team-runbook.md#replace-a-rejected-app-key).
+The worker signs a short-lived JSON Web Token (JWT) with the GitHub App private
+key. GitHub exchanges the JWT for an installation token. The trusted sender uses
+it for repository operations. Both the signing key and token stay outside the Agent.
+
+For a repository grant the worker requests one repository ID and the approved
+permissions. The opt-in [installation profile](repository-credentials/protected-openshell-git.md#grant-access-to-a-github-app-installation)
+inherits all repositories and permissions available to the App installation. OCE adds
+no repository or ref restriction to that profile.
+
+Renewal preserves scope and session deadlines. A cold request cannot mint a token.
+See the [preparation and retirement timeline](../flows/credential-source-refresh.md#6-oce-prepared-github-core).
+`PREPARED_GITHUB_RECOVERY_REQUIRED` (`quarantined` or `blocked`) requires
+[recovery by the issuing owner](../guides/repository-credentials/team-runbook.md#replace-a-rejected-app-key).
 
 ## Sessions and closure
 
@@ -232,10 +236,8 @@ correlations stop at twice the session limit and can return `overloaded`;
 unresolved cleanup survives that window. Restart loses standalone correlations.
 No correlation recovers a bearer.
 
-Session duration is independent of token lifetime. Replacement uses the original
-grant and must cover the remaining exchange budget plus safety margin. Idle
-sessions need no periodic mint. The bearer works while its session process and
-upstream authorization survive.
+The session bearer works while its process and upstream authorization survive.
+A replacement token must cover the remaining exchange budget plus the safety margin.
 
 Authentication eligibility and terminal cleanup expiry are separate deadlines,
 both in elapsed monotonic time from the original capture; delayed acquisition

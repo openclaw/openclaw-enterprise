@@ -1,25 +1,19 @@
 ---
 created: "2026-10-14"
-updated: "2026-10-24"
-last_updated_session: authoring-run/009b70d4-eb48-4ea6-97f0-25b0395d1e1a
+updated: "2026-10-26"
+last_updated_session: authoring-run/8a58b4b6-9e85-4789-b9e8-8e820a7c6d7c
 ---
 
 # Protected credential request flow
 
 ## Overview
 
-OCC checks current identity and IAM policy, selects a Secret version and protects responses.
-The selected Driver's authenticated OpenShell supervisor obtains send permission and
-injects credentials outside the Agent. Requests cannot choose another Driver.
-
-Kubernetes Compute signs a fresh installation challenge before release. The
-[release cutoff and supported configuration](../reference/credential-sources/protected-inference.md)
-exclude the bundled legacy supervisor.
-
-[Protected repository Git](../reference/drivers/selection.md#select-a-protected-sender)
-uses a separate worker binding for recipient observation, committed material and
-request authorization; release requires recipient proof. The Token Service owns
-issuance, renewal and retirement.
+A process in an Agent execution asks for repository metadata. Its authenticated
+supervisor captures the request and the connection that will receive the answer.
+OpenClaw Control Plane (OCC) decides whether the sender can obtain a credential, whether it can send
+this request and which response it can release. The bundled legacy supervisor
+cannot enforce this exchange. See the [release cutoff](../reference/credential-sources/protected-inference.md)
+and [Credential Proxy threat model](../reference/security/credential-proxy.md).
 
 ## Entry Points
 
@@ -32,49 +26,74 @@ issuance, renewal and retirement.
 
 ## Flow
 
+Suppose a dedicated Agent has a prepared `github-app-metadata` source for
+repository ID `12345`, name `acme/widgets`. A process requests
+`GET /repos/acme/widgets` at the admitted origin with an empty body.
+
+1. **Classify the request.** The GitHub adapter checks the captured method, origin,
+   path, headers and body against the execution's route. A second repository
+   or `POST /repos/acme/widgets/pulls` fails before credential access.
+2. **Authorize access.** OCC checks the authenticated installation, execution,
+   binding, withdrawal state and the Agent's current `credential_source:operate`.
+   The resolver selects a committed, usable token for this grant. Only the
+   trusted sender receives the injection header.
+3. **Authorize send.** On the same exchange, OCC checks current authority and
+   the selected material version as it authorizes the attempt. If the binding
+   was withdrawn after resolution, the sender receives no permit. An acknowledged
+   permit lets it start this exact request within the recorded deadline.
+4. **Release repository identity.** The sender holds GitHub's complete response.
+   The adapter requires a `200` JSON response of at most 64 KiB with the admitted numeric ID
+   and matching repository name (ASCII letter case may differ). It returns `{"id":12345,"full_name":"acme/widgets"}`
+   in the admitted spelling, with `Content-Type: application/json` and
+   `Cache-Control: no-store`. A mismatch withholds the response. Other upstream
+   fields and headers stay outside the workload.
+
+The credential-free metadata profile uses the same request and response rules.
+It records `no_material_required` and adds no credential header.
+[GitHub metadata adapter](https://github.com/openclaw/openclaw-enterprise/blob/e573b7de03bafa2e84ea072d8c10cef7320575d4/apps/controller/src/drivers/egress-proxy/github-metadata.ts)
+
 ```mermaid
 graph TD
-  A["Capture signed instance and Sandbox"] --> B{"Exact route and fresh access?"}
-  B -- "no" --> X["Refuse: no send"]
-  B -- "yes" --> C["Read material and persist possible send"]
-  C -- "duplicate or unknown" --> X
-  C -- "new attempt" --> D{"Fresh send check and commit"}
-  D -- "denied or uncertain" --> X
-  D -- "acknowledged and owned" --> E["Supervisor send: bounded start"]
-  E --> F{"Protect response and commit observation"}
-  F -- "safe and live" --> G["Return bytes; delivery unconfirmed"]
-  F -- "unsafe, late or failed" --> H["Withhold; effects may exist"]
+  A["Capture request and recipient"] --> B{"Exact route and current access?"}
+  B -- "denied" --> X["Refuse send"]
+  B -- "allowed" --> C["Resolve material or record none required"]
+  C --> D{"Commit fresh send authorization"}
+  D -- "withdrawn, duplicate or uncertain" --> X
+  D -- "acknowledged" --> E["Supervisor sends before deadline"]
+  E --> F{"Protect response on the same exchange"}
+  F -- "approved and live" --> G["Release approved bytes"]
+  F -- "unsafe, late or failed" --> H["Withhold response"]
 ```
 
-Wire fixtures do not qualify deployed supervisors or no-bypass networking.
+The diagram traces the source contract. Installed enforcement requires observing
+the actual transport, provider and workload.
 
 ## Execution Trace
 
 ### 1. Admit source and install the revision plan
 
-Source and Secret authorization precede live/static admission; existing sources require opt-in.
+OCC checks source and Secret permissions at admission. Existing sources need
+explicit opt-in. Version 3 binds Sandbox and Credential Proxy to one registered
+Driver. The plan identifies the Driver, configuration digest, execution, source
+generation, grant and routes. Empty routes deny all. The API checks registration.
+The worker compares the stored reference.
 
-Version 3 binds Sandbox and Credential Proxy to one registered Driver. The plan records
-its ID, implementation, configuration digest, execution, source generation, grant and
-routes; empty routes deny all. The API checks registration and workers compare its
-durable reference. Sandbox enforcement needs separate evidence.
+For credential-free metadata, `packages/occ/src/index.ts:admitProxyPlan` rejects
+a Driver grant that differs from the source. Equivalent grants have the same
+digest across property orders. Unprotected revisions remain v2. Only the bundled
+Driver recognizes historical protected plans by original capability IDs for stored
+release or custody settlement.
 
-For credential-free metadata, `packages/occ/src/index.ts:admitProxyPlan` rejects a Driver grant that differs from the source.
-Equivalent grants produce the same digest regardless of property order.
+Compute rechecks admission with the worker before launch. PostgreSQL rejects
+unknown decisions and mixed v2/v3 fields. Older workers refuse v3. Upgrade
+all writers before admitting it.
 
-Unprotected revisions remain v2. Only the bundled Driver recognizes historical protected
-plans by original capability IDs for stored release or custody settlement.
-
-Compute validates admission for OCC and rechecks it with the worker before launch.
-PostgreSQL rejects unknown decisions and mixed v2/v3 fields. Older workers refuse v3;
-upgrade all writers before admitting it. Qualify release and installed deny-all behavior.
-
-Deploy refuses with 409 what cannot start: Git without a delivery profile in `admitProxyPlan`
-(`REPOSITORY_GIT_PROFILE_UNSUPPORTED`), bundled `git-write` in
-`apps/controller/src/drivers/egress-proxy/openshell.ts:assertRepositoryGitProfileAvailable`
-(`REPOSITORY_GIT_SENDER_UNQUALIFIED`), bindings the Proxy did not admit, Agents without
-Git on a Git-only Proxy, and Installation limits (`CredentialProxyAdmissionError`).
-Preparation repeats both Git refusals.
+Deploy returns `409` for missing Git delivery profiles
+(`REPOSITORY_GIT_PROFILE_UNSUPPORTED`), bundled `git-write`
+(`REPOSITORY_GIT_SENDER_UNQUALIFIED`), unadmitted bindings, Agents without Git on
+a Git-only Proxy, and Installation limits. Preparation repeats both Git refusals.
+[Protected repository Git](../reference/drivers/selection.md#select-a-protected-sender)
+uses a separate worker binding and requires proof of the recipient before release.
 
 Compute passes Credential Proxy wiring to Sandbox provisioning. Protected sources
 require admission, API-key login, an exact plan source-key match and no Gateway
@@ -286,6 +305,8 @@ the origin and caller independently.
 
 ## Related docs
 
+- [Credential Proxy overview](../design/credential-proxy.md)
+- [Credential sources and bindings](../reference/credential-sources.md#bind-a-source-to-an-agent)
 - [Credential source lifecycle](credential-source-lifecycle.md)
 - [Protected static inference](../reference/credential-sources/protected-inference.md)
 - [OpenShell Sandbox provisioning](openshell-sandbox-provisioning.md)
@@ -296,6 +317,8 @@ the origin and caller independently.
 None.
 
 ## Changelog
+
+- 2026-10-26 21:57: Trace a protected repository metadata request through access, dispatch and response checks. (authoring-run/8a58b4b6-9e85-4789-b9e8-8e820a7c6d7c - e573b7de03bafa2e84ea072d8c10cef7320575d4)
 
 - 2026-10-24: Name Git-only Proxy refusals. (fix-2360)
 

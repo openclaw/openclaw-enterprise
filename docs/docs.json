@@ -197,6 +197,14 @@
                     "label": "Secrets"
                   },
                   {
+                    "page": "design/credential-proxy",
+                    "label": "Credential Proxy"
+                  },
+                  {
+                    "page": "reference/security/credential-proxy",
+                    "label": "Credential Proxy Threat Model"
+                  },
+                  {
                     "page": "reference/credential-sources",
                     "label": "Credential Sources"
                   },

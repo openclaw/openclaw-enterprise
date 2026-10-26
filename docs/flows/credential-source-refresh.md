@@ -1,32 +1,26 @@
 ---
 created: "2026-10-08"
-updated: 2026-10-22
-last_updated_session: 01a162e5-0e51-7b41-915c-00017912b787
+updated: 2026-10-26
+last_updated_session: authoring-run/c959c07b-2be2-482d-83ae-fe63be655940
 ---
 
 # Credential source refresh Flow
 
 ## Overview
 
-A `refresh`-type credential source, such as `oauth2-client-credentials`, holds
-issuer material instead of a static value. The API registers it with the
-selected Credential Gateway, then asks the paired Credential Refresh Driver to
-store the material and mint the first token. Afterwards the gateway re-mints
-tokens before expiry without OCC, and the Agent keeps one stable placeholder.
-OCC calls the refresh role again only to update material, force a rotation,
-read status, or delete the source. This flow covers those calls; the
-[credential source lifecycle flow](credential-source-lifecycle.md) owns
-binding, admission, dispatch, and withdrawal, which are the same for every type.
+For an OAuth2 source, the API registers an empty provider. The paired Refresh
+Driver configures the issuer and requests the first token. The gateway renews it
+before expiry while the Agent keeps one placeholder. See the
+[credential source lifecycle](credential-source-lifecycle.md) for binding and withdrawal.
 
-In the [Codex device flow](#device-authorization-and-configuration), OpenShell keeps the
-refresh grant and its successors. The Harness receives a stable placeholder and account
-metadata; a separate operator connection can retrieve an access token for authorized
-discovery. These [OAuth checks](../testing/openshell-oauth.md) do not qualify protected egress.
+In the [Codex device flow](#device-authorization-and-configuration), OpenShell keeps
+the refresh grant. The Harness receives a placeholder and account metadata. An
+operator connection can retrieve an access token for authorized discovery.
+These [OAuth checks](../testing/openshell-oauth.md) do not qualify protected egress.
 
-[OCE-prepared GitHub credentials](#6-oce-prepared-github-core) have a different owner.
-An OCE worker prepares a repository-scoped installation token in the background.
+For [GitHub access](#6-oce-prepared-github-core), the OCE worker owns issuance.
 [Git and draft pull requests](../reference/repository-credentials/prepared-native-git.md)
-can use an eligible, committed token but cannot trigger issuance.
+can use committed tokens but cannot trigger issuance.
 
 ## Entry Points
 
@@ -239,45 +233,53 @@ the record `deleting` for retry.
 
 `apps/controller/src/drivers/repo/github/credentials/prepared-owner.ts:createGitHubPreparationOwner`
 
-A background worker can prepare one admitted GitHub App grant without traffic
-from an Agent. The owner commits an `issuing` attempt before retrieving the exact
-signing key version, then checks the family, owner epoch and that attempt again
-before calling GitHub. It reuses the existing signer and installation-token
-exchange. This is the [OCE-owned GitHub preparation option](../../specs/rfcs/0023-egress-proxy-credential-lifecycle/protocol.md#prepare-and-renew-credentials).
+The worker records an `issuing` attempt, signs a short-lived JSON Web Token
+(JWT) with the admitted App key and rechecks ownership before sending it to
+`POST /app/installations/{installation_id}/access_tokens`. The Installation
+selects the HTTPS issuer and trust roots. PostgreSQL stores token bytes encrypted
+under a dedicated 32-byte custody key that must survive worker restarts.
 
-GitHub issuance cannot be atomic with local storage. The owner verifies the exact
-returned repository, rights and provider expiry. The publication transaction
-rechecks the fence and remaining validity, then commits the token with its own
-opaque material version. A late, invalid or ambiguous result stays quarantined
-across owner changes. If storage loses a token before commit, the recorded attempt
-still blocks replay. Recovery and cleanup need an explicit owner.
+For a single repository, the worker sends its numeric ID and requested
+permissions. It checks the returned repository ID, name, permissions and expiry.
+For the explicitly approved `github-installation` profile it sends `{}`.
+GitHub applies the App installation's selection and permissions. Both paths
+check the expiry and record a new material version before the token becomes usable.
 
-The shared response parser identifies custody separately from scope evidence
-(see [response capture](repository-credentials.md#4-reserve-acquire-and-dispatch)).
-Ambiguous fields quarantine a uniquely identified token for cleanup. Repeated
-root token keys leave no candidate to revoke automatically; the retained intent
-blocks replay and requires explicit recovery.
+| Limit                                 | What happens when it ends                                                                                                                                                                                                          |
+| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Repository approval                   | Expiry or removal stops new authorizations. A [standing approval](../guides/repository-credentials.md#keep-git-access-on-the-same-running-agent) allows another finite session for the same scope and running Agent until removal. |
+| Execution's repository session        | The current session stops authorizing requests. A new token cannot extend the session.                                                                                                                                             |
+| Local safe-use cutoff (`usableUntil`) | The trusted reader stops selecting the token 60 seconds before GitHub's reported expiry to allow for clock skew. A request can require more remaining time.                                                                        |
+| GitHub token expiry (`expires_at`)    | The token's provider lifetime ends. The worker tracks this separately from local denial and confirmed revocation.                                                                                                                  |
 
-The trusted Resolver gets only a read port. It can receive still-eligible
-committed material during renewal. Cold, expired or differently admitted material
-returns `not_ready`, including when validity runs out during the read. The
-Resolver must authorize both access and the actual send.
+**Cold use and renewal.** The Resolver can read only committed material matching
+the current admission. A cold or expired read returns `not_ready` and makes no
+issuance request. During renewal it can still read the current token while that
+version remains eligible. Committing the replacement retires the old version.
+On the protected exchange, OCC checks current authority and material again before
+allowing the send. [Protected request flow](credential-source-egress.md)
 
-The optional PostgreSQL lifecycle joins the family transaction, encrypted custody,
-and retained attempts. The worker retains the dedicated 32-byte custody
-key across restarts; the API does not receive it. Only the worker prepares material.
-The Installation owns the HTTPS issuer and its trust roots; a source cannot redirect the issuer. A cold or
-expired read cannot start an exchange, and uncertain issuance blocks another attempt.
+**Key rotation and withdrawal.** When the worker observes a changed signing-key
+version, it advances the owner epoch and retires the old material before it can
+publish a token signed with the new key. Withdrawal stops new authorizations.
+An already authorized send can finish. For an Agent-bound metadata source,
+Agent deletion also fences use and renewal immediately. The next worker pass
+disables its token family and retires the current token. Agent deletion can finish
+before GitHub revocation. Source deletion waits up to 25 seconds for an in-flight
+revocation and returns `409` if custody is still unsettled.
 
-The grant names one Agent. Once that Agent's deletion begins, the shared live predicate
-stops claims, renewal and use. The worker's next pass disables the family and retires its
-current token for revocation. Agent deletion never waits on GitHub. Deleting the source
-waits up to 25 seconds for a revocation in flight; other unsettled custody still returns `409`.
+**Uncertain outcomes.** If GitHub's answer or the local commit receipt is lost,
+the original attempt blocks replay. The [response parser](repository-credentials.md#4-reserve-acquire-and-dispatch)
+retains a uniquely identified token for cleanup even if its scope is ambiguous.
+Duplicate root token fields leave no unique candidate. The worker records possible
+revocation before calling `DELETE /installation/token`. HTTP 204 confirms revocation. A lost answer leaves
+revocation unconfirmed, without automatic replay. The store can settle an old
+attempt once no token from it can still be live, allowing for clock skew.
+Expiry does not confirm revocation. See [App key recovery](../guides/repository-credentials/team-runbook.md#replace-a-rejected-app-key).
 
 `apps/controller/src/drivers/repo/github/credentials/prepared-postgres.ts:store`
-clears the previous committed buffer and token buffers still on the publication
-draft in `finally`, even if the callback, sealing or SQL publication fails. Callers
-own their detached warm reads. Clearing a local buffer does not revoke a provider token.
+clears token buffers after publication, including on failure. Callers own their
+detached warm reads. Clearing a local buffer cannot revoke a provider token.
 
 ## Debugging and Verification
 
@@ -315,6 +317,8 @@ own their detached warm reads. Clearing a local buffer does not revoke a provide
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-26 21:46: Trace GitHub App issuance, separate deadlines, replacement and retirement. (authoring-run/c959c07b-2be2-482d-83ae-fe63be655940 - e573b7de03)
 
 - 2026-10-22 09:48: Distinguish a start the Console cannot confirm from an uncertain exchange on a known session. (01a162e5-0e51-7b41-915c-00017912b787 - 9a6b9c3e69a9fce4a859d70307257c0319fbdfda)
 
