@@ -1733,14 +1733,17 @@ test("Dedicated Agent creation keeps provisioning when optional repository disco
   assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
   assert.equal(agentPostRequests(requests, namespace.id).length, 0);
 
-  // A denial that names the missing grant (finding 2534) shows as the API wrote it.
+  // A denial that names the missing grant (finding 2534) shows as the API wrote it, then the
+  // request ID.
   const named = createDenied("Agent", namespace.id);
   await page.unroute(`**/namespaces/${namespace.id}/agents/provision`);
   await page.route(`**/namespaces/${namespace.id}/agents/provision`, (route) =>
     route.fulfill(apiErrorResponse(403, "FORBIDDEN", named)),
   );
   await page.getByRole("button", { name: "Create Agent" }).click();
-  await page.getByText(named, { exact: true }).waitFor();
+  const shown = page.getByText(named);
+  await shown.waitFor();
+  assert.ok((await shown.textContent())?.startsWith(`${named} Request ID: `));
   assert.equal(agentProvisionPostRequests(requests, namespace.id).length, 2);
 });
 

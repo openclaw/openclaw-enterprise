@@ -12,7 +12,7 @@ import type {
   SecretMetadata,
 } from "@openclaw-enterprise/contracts";
 import type { Static } from "typebox";
-import { requestFailure, responseFields } from "../api-client.mjs";
+import { namedDenial, requestFailure, responseFields } from "../api-client.mjs";
 import type { ConsolePageContext } from "../page-context.mjs";
 import { renderAgentDriverConfigurations } from "../driver-configurations.mjs";
 import {
@@ -3129,13 +3129,16 @@ export async function renderAgentDetail(
             return;
           }
           const failure = requestFailure(error);
-          // A plain denial does not say which grant failed. When the Secret operate answer, read
-          // again, names bound Secrets this caller may not operate, the alert names them and
-          // Deploy stays disabled until a grant is read (finding 2546).
+          // A caller's own denial names no bound Secret: an older API's says nothing, and a named
+          // one (finding 2534) names no ID the request did not send. When the Secret operate
+          // answer, read again, names bound Secrets this caller may not operate, the alert names
+          // them and Deploy stays disabled until a grant is read (finding 2546).
           const deniedSecrets =
             submitted &&
             failure.status === 403 &&
-            (failure.serverMessage === undefined || failure.serverMessage === GENERIC_DENIAL)
+            (failure.serverMessage === undefined ||
+              failure.serverMessage === GENERIC_DENIAL ||
+              namedDenial(error) !== undefined)
               ? await readDeploySecretsDenied({ fresh: true })
               : [];
           if (!context.isCurrent()) {

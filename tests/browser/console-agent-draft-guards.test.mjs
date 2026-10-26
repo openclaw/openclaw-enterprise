@@ -1407,7 +1407,8 @@ test("Deploy names the bound Secrets an operator may not operate", async (t) => 
   }
 
   // Unknown answer: the first Secret answer fails, so Deploy stays enabled and the API decides.
-  // Its plain 403 says nothing about which grant failed; the answer, read again, names it.
+  // Its 403 names the grant but no Secret the request did not send; the answer, read again,
+  // names the Secret.
   {
     const { page } = await newPage(t, fixture);
     let failed = false;
@@ -1431,7 +1432,10 @@ test("Deploy names the bound Secrets an operator may not operate", async (t) => 
     await deploy.click();
     const response = await refused;
     assert.equal(response.status(), 403);
-    assert.equal((await response.json()).error.message, GENERIC_DENIAL);
+    assert.equal(
+      (await response.json()).error.message,
+      callerDenied("Secret operate", "a Secret this request uses"),
+    );
     const alert = page.getByRole("alert").filter({ hasText: reason });
     await alert.waitFor();
     assert.equal(await alert.textContent(), reason);
