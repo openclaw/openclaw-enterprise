@@ -4583,9 +4583,7 @@ export async function renderAgentDetail(
               say(
                 grantText(grantProblem) +
                   // The grant request's own reason, never a form's "entered values".
-                  (grantProblem === "refused"
-                    ? ""
-                    : ` ${describeFailure(error)}`) +
+                  (grantProblem === "refused" ? "" : ` ${describeFailure(error)}`) +
                   requestNote,
                 "warning",
               );
