@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-10-25
-last_updated_session: 01a162e5-4303-7a21-81d4-bb51cec37c66
+updated: 2026-10-26
+last_updated_session: fix-dogfood-r48
 ---
 
 # Console Agent editing and runtime requests
@@ -94,7 +94,12 @@ result rows before the first attempt; the details keep their tallest height unti
 Its bodyless POST requires Agent `read`/`operate` and exact Agent revision `read`.
 **Create new version** opens the saved draft; **Deploy new version** admits its
 Configuration/plugins. **Edit current Configuration** never copies historical
-values.
+values. Deploy stays disabled while the Secret permission answer names a bound
+Secret the caller may not `operate`, or, for a caller who is not an Installation
+administrator, while the readable Secret list leaves a bound Secret out; that
+reason names no Secret (finding D756). After a deploy, a version that the
+newest page of versions leaves out is shown as unreadable without its read,
+which would be audited (finding D758).
 
 **Edit Configuration** rereads the Agent and Configuration, then PATCHes only
 `{ values, expectedGeneration }`, preserving `secretBindings`. A changed ID or stale
@@ -167,7 +172,10 @@ Namespace and reads exact Secret metadata. On Agent detail, unless the session
 is an Installation administrator, it first reads the readable Namespace's Secret
 list once per view: the list audits nothing it leaves out, while each refused
 exact read is an audited denial. A Secret it leaves out shows as unavailable
-without the exact read (finding 2619). Successful reads link names and IDs;
+without the exact read (finding 2619). Successful reads link names to
+`/console/secrets?secret=<id>`, which opens that Secret's metadata and consumers;
+Secret fields link only a Secret their list includes and give an unlisted one
+the same unavailable sentence (finding D757). Successful reads show names and IDs;
 absent, loading, and unavailable states remain distinct. Failures retain IDs;
 stale responses are ignored and current 401s expire the session. Summaries need
 neither collection permission nor Secret values.

@@ -110,6 +110,8 @@ the Agent in the console also needs Namespace `read` bound to that Namespace
 bound to each Agent revision by ID. A `read_logs` Restriction blocks log text even for
 administrators. Without `operate`, the Logs tab has no runtime strip or Pod
 picker; it reads each source's current Pod and says when a source is missing.
+The console checks the Agent's permission answer (`readLogs`) first: without log
+text access, the tab shows what it needs and sends no audited read.
 Service principals use the same grants. Every request and follow poll is
 authorized again, so revoking a grant stops the next poll. See
 [authorization](../../reference/authorization.md).

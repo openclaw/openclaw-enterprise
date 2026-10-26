@@ -1805,6 +1805,7 @@ export function installFixture(scenario, evidence) {
               configurationSecretsOperateDeniedBindings: [],
               agentSourcesOperate: allowed,
               sandboxPolicyRead: allowed,
+              readLogs: allowed,
             },
           );
         }
