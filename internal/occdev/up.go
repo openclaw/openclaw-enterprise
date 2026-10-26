@@ -36,6 +36,12 @@ func Up(ctx context.Context, opts Options) (result error) {
 	if controlPlane != "compose" && controlPlane != "kubernetes" {
 		return fmt.Errorf("OCC_DEVELOPMENT_CONTROL_PLANE must be compose or kubernetes")
 	}
+	if _, err := r.protectedEgressSelection(controlPlane, sandboxDriver); err != nil {
+		return err
+	}
+	if _, err := r.selectedDevelopmentDatabase(controlPlane); err != nil {
+		return err
+	}
 	networkPolicies, err := r.loadSandboxNetworkPolicies(ctx, sandboxDriver)
 	if err != nil {
 		return err
@@ -50,6 +56,10 @@ func Up(ctx context.Context, opts Options) (result error) {
 	if controlPlane == "kubernetes" {
 		return upK3d(ctx, opts, sandboxDriver, networkPolicies, ceiling)
 	}
+	openShellImages, err := r.selectOpenShellImages(sandboxDriver)
+	if err != nil {
+		return err
+	}
 	timeout, err := positiveSetting(r, "OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS", 300, 86400)
 	if err != nil {
 		return err
@@ -57,6 +67,17 @@ func Up(ctx context.Context, opts Options) (result error) {
 	port, err := positiveSetting(r, "OCC_DEVELOPMENT_KUBERNETES_API_PORT", 6443, 65535)
 	if err != nil {
 		return err
+	}
+	// A shell value wins over env files, so refuse its collision before any tool runs. Without
+	// one, .env or --env-file can still move the port: the rendered check below decides.
+	if r.env["OPENCLAW_DEV_PORT"] != "" {
+		apiPort, err := positiveSetting(r, "OPENCLAW_DEV_PORT", 3000, 65535)
+		if err != nil {
+			return err
+		}
+		if err := checkAPIKubernetesPorts(apiPort, port); err != nil {
+			return err
+		}
 	}
 	threshold, err := positiveSetting(r, "OCC_DEVELOPMENT_KUBERNETES_DISK_THRESHOLD_PERCENT", 5, 20)
 	if err != nil {
@@ -120,6 +141,9 @@ func Up(ctx context.Context, opts Options) (result error) {
 	if err := r.pinEndpoint(ctx); err != nil {
 		return err
 	}
+	if err := r.validateOpenShellImageRevisions(ctx, openShellImages); err != nil {
+		return err
+	}
 	if err := r.checkLegacyNATTable(ctx); err != nil {
 		return err
 	}
@@ -172,14 +196,20 @@ func Up(ctx context.Context, opts Options) (result error) {
 		return fmt.Errorf("Compose analysis returned no API URL")
 	}
 	apiURL := analysis[0]
-	if state.BrowserPort != 0 {
-		parsedAPI, err := url.Parse(apiURL)
-		if err != nil {
-			return fmt.Errorf("invalid analyzed API URL: %w", err)
-		}
-		if parsedAPI.Port() == strconv.Itoa(state.BrowserPort) {
-			return fmt.Errorf("browser and controller API ports must differ")
-		}
+	parsedAPI, err := url.Parse(apiURL)
+	if err != nil {
+		return fmt.Errorf("invalid analyzed API URL: %w", err)
+	}
+	// Compose files, .env and --env-file can move the published API port; this one binds.
+	renderedAPIPort, err := strconv.Atoi(parsedAPI.Port())
+	if err != nil {
+		return fmt.Errorf("invalid analyzed API URL port: %q", parsedAPI.Port())
+	}
+	if err := checkAPIKubernetesPorts(renderedAPIPort, port); err != nil {
+		return err
+	}
+	if state.BrowserPort != 0 && parsedAPI.Port() == strconv.Itoa(state.BrowserPort) {
+		return fmt.Errorf("browser and controller API ports must differ")
 	}
 	snapshot, err := yaml.Marshal(escapeInterpolation(rendered))
 	if err != nil {
@@ -382,6 +412,16 @@ func Up(ctx context.Context, opts Options) (result error) {
 	return nil
 }
 func shellQuote(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'" }
+
+// checkAPIKubernetesPorts refuses a controller API port equal to the host port
+// k3d publishes for the Kubernetes API; the second publish would fail late.
+func checkAPIKubernetesPorts(apiPort, kubernetesPort int) error {
+	if apiPort == kubernetesPort {
+		return fmt.Errorf("development API and Kubernetes API ports must differ")
+	}
+	return nil
+}
+
 func positiveSetting(r *runner, key string, fallback, max int) (int, error) {
 	n, err := strconv.Atoi(r.setting(key, strconv.Itoa(fallback)))
 	if err != nil || n < 1 || n > max {

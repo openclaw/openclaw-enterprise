@@ -1,3 +1,5 @@
+import { type ErrorDetail } from "@openclaw-enterprise/contracts";
+import { requireConfiguration } from "@openclaw-enterprise/contracts";
 import type {
   Backend,
   CredentialRefreshDriver,
@@ -8,7 +10,7 @@ import type {
   CredentialSourceDeviceAuthorizationResult,
 } from "@openclaw-enterprise/contracts";
 import { ScopeViolationError } from "@openclaw-enterprise/occ";
-import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
+import { isNonEmptyString } from "@openclaw-enterprise/utils";
 
 import {
   openShellProviderName,
@@ -88,13 +90,8 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
     properties: {},
   });
 
-  static validateConfiguration(configuration: unknown): void {
-    const record = asRecord(configuration);
-    if (record === undefined || Object.keys(record).length > 0) {
-      throw new OpenShellCredentialRefreshFailure(
-        "OpenShell Credential Refresh configuration must be an empty object.",
-      );
-    }
+  static validateConfiguration(): readonly ErrorDetail[] {
+    return [];
   }
 
   readonly id: string;
@@ -103,7 +100,7 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
   private readonly backend: Backend<OpenShellGateway>;
 
   constructor(configuration: unknown, selection: OpenShellCredentialRefreshSelection) {
-    OpenShellCredentialRefreshDriver.validateConfiguration(configuration);
+    requireConfiguration(OpenShellCredentialRefreshDriver, configuration);
     this.id = selection.id ?? "credential-refresh-openshell";
     this.implementation = selection.implementation ?? "openshell";
     if (this.implementation !== "openshell") {

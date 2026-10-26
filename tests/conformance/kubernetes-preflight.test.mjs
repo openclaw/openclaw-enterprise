@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { ConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,6 +16,9 @@ import {
   createTestKubernetesComputeDriver,
 } from "../helpers/kubernetes-compute.mjs";
 import { refusingPort } from "../helpers/available-port.mjs";
+import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { loadInstallationFile } from "../helpers/installation-file.mjs";
+import { jsonChunkDestination } from "../helpers/json-lines.mjs";
 
 function driverForVersion(gitVersion) {
   const driver = createTestKubernetesComputeDriver("compute-kubernetes-preflight");
@@ -156,12 +160,7 @@ test("Kubernetes preflight names the unreachable API server endpoint", async (t)
     const lines = [];
     const logger = createOccLogger({
       component: "occ-worker",
-      destination: {
-        write(chunk) {
-          lines.push(JSON.parse(String(chunk)));
-          return true;
-        },
-      },
+      destination: jsonChunkDestination(lines),
     });
     emitOccLogEvent(logger, { event: "worker.startup-error", ...startupDependencyFailure(error) });
     assert.deepEqual(
@@ -275,8 +274,115 @@ function executionOptions(network = {}) {
   return configured;
 }
 
+test("startup reports Kubernetes configuration errors at their original paths", async (t) => {
+  const config = createInstallationDriverConfiguration();
+  const { compute } = config.drivers;
+  const start = () => loadInstallationFile(t, config);
+  // Keep the startup settings production requires that the driver-level options don't carry.
+  const { images, servicePrincipalCredentials } = compute.configuration;
+  const twoClusters = { ...executionOptions(), images, servicePrincipalCredentials };
+
+  assert.equal((await start()).computeDriver.id, compute.id);
+  compute.configuration = twoClusters;
+  assert.equal((await start()).computeDriver.id, compute.id);
+
+  for (const [change, path, message, code = "INVALID_FORMAT"] of [
+    [
+      (c) => {
+        delete c.executionCluster.authentication.context;
+      },
+      "/executionCluster/authentication/context",
+      "Explicit Kubernetes context must be explicitly configured.",
+      "REQUIRED",
+    ],
+    [
+      (c) => {
+        c.gatewayRouting.gatewayName = "Bad_Name";
+      },
+      "/gatewayRouting/gatewayName",
+      "Gateway routing Gateway name must be a DNS-safe Kubernetes resource name.",
+    ],
+    [
+      (c) => {
+        c.network.gatewayTrustedProxyCidrs = ["0.0.0.0/0"];
+      },
+      "/network/gatewayTrustedProxyCidrs/0",
+      "Trusted proxy CIDRs cannot cover every address.",
+    ],
+    [
+      (c) => {
+        c.authentication.kubeconfigPath = "relative";
+      },
+      "/authentication/kubeconfigPath",
+      "Dedicated kubeconfig path must be absolute.",
+    ],
+    [
+      (c) => {
+        c.executionCluster.authentication.kubeconfigPath = "relative";
+      },
+      "/executionCluster/authentication/kubeconfigPath",
+      "Dedicated kubeconfig path must be absolute.",
+    ],
+    [
+      (c) => {
+        c.executionCluster.network.dns = { ...c.executionCluster.network.dns, namespace: "Bad_NS" };
+      },
+      "/executionCluster/network/dns/namespace",
+      "DNS peer namespace must be a Kubernetes namespace name: a DNS label of at most 63 characters.",
+    ],
+    [
+      (c) => {
+        c.executionCluster.harnessRouting.hostname = "Bad_Host";
+      },
+      "/executionCluster/harnessRouting/hostname",
+      "Harness routing hostname must be a DNS hostname without a port or path.",
+    ],
+    [
+      (c) => {
+        c.executionCluster.authentication = { mode: "inCluster" };
+      },
+      "/executionCluster/authentication",
+      "The execution cluster requires its own explicit kubeconfig.",
+    ],
+    [
+      (c) => {
+        c.executionCluster.network.dns = {
+          namespace: "kube-system",
+          podLabels: { "private/key/name": "dns" },
+        };
+      },
+      "/executionCluster/network/dns/podLabels",
+      "DNS peer label keys must be Kubernetes label keys.",
+    ],
+    [
+      (c) => {
+        c.network.gatewayClients = [c.network.dns];
+      },
+      "/network/gatewayClients",
+      "Gateway routing derives the Envoy gateway client peer; do not configure network.gatewayClients.",
+    ],
+  ]) {
+    compute.configuration = structuredClone(twoClusters);
+    change(compute.configuration);
+    await assert.rejects(start, (error) => {
+      assert.ok(error instanceof ConfigurationValidationError);
+      assert.deepEqual(error.error.details, [{ path, code, message }]);
+      assert.doesNotMatch(
+        JSON.stringify(error.error.details),
+        /relative|Bad_NS|Bad_Host|private\/key\/name/,
+      );
+      return true;
+    });
+  }
+});
+
 // Execution CIDR lists use the trusted proxy rule: no entry may cover every address.
 test("two-cluster CIDR lists refuse ranges that cover every address", () => {
+  const diagnostic = (path, code, message) => (error) => {
+    assert.ok(error instanceof ConfigurationValidationError);
+    assert.deepEqual(error.error.details, [{ path, code, message }]);
+    return true;
+  };
   for (const [key, description] of [
     ["harnessEndpointCidrs", "Harness endpoint CIDR"],
     ["gatewayEndpointCidrs", "Gateway endpoint CIDR"],
@@ -285,19 +391,29 @@ test("two-cluster CIDR lists refuse ranges that cover every address", () => {
     for (const cidr of ["0.0.0.0/0", "::/0", "::ffff:0:0/96"]) {
       assert.throws(
         () => createKubernetesComputeDriver(executionOptions({ [key]: ["192.0.2.9/32", cidr] })),
-        (error) =>
-          error.constructor.name === "ConfigurationFailure" &&
-          error.message === `${description}s cannot cover every address.`,
+        diagnostic(
+          `/executionCluster/network/${key}/1`,
+          "INVALID_FORMAT",
+          `${description}s cannot cover every address.`,
+        ),
         `${key} ${cidr}`,
       );
     }
     assert.throws(
       () => createKubernetesComputeDriver(executionOptions({ [key]: [] })),
-      new RegExp(`${description}s must be explicit and nonempty\\.$`),
+      diagnostic(
+        `/executionCluster/network/${key}`,
+        "INVALID_VALUE",
+        "Configuration does not satisfy minItems.",
+      ),
     );
     assert.throws(
       () => createKubernetesComputeDriver(executionOptions({ [key]: ["192.0.2.9/33"] })),
-      new RegExp(`${description} 0 must be a valid IPv4 or IPv6 CIDR\\.$`),
+      diagnostic(
+        `/executionCluster/network/${key}/0`,
+        "INVALID_FORMAT",
+        `${description} 0 must be a valid IPv4 or IPv6 CIDR.`,
+      ),
     );
     assert.doesNotThrow(() =>
       createKubernetesComputeDriver(executionOptions({ [key]: ["10.42.0.0/16", "::/96"] })),
@@ -346,12 +462,7 @@ test("Kubernetes preflight warns about status proxy sources wider than one addre
   const lines = [];
   const logger = createOccLogger({
     component: "occ-worker",
-    destination: {
-      write(chunk) {
-        lines.push(JSON.parse(String(chunk)));
-        return true;
-      },
-    },
+    destination: jsonChunkDestination(lines),
   });
   for (const entry of result.warnings) {
     emitOccLogEvent(logger, { event: "compute.preflight-warning", ...entry });

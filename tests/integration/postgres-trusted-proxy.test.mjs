@@ -1,10 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import pg from "pg";
-import {
-  clientAddressConfiguration,
-  createPostgresControllerAuth,
-} from "../../apps/controller/src/auth/index.ts";
+import { clientAddressConfiguration } from "../../apps/controller/src/auth/index.ts";
+import { createPostgresControllerAuth } from "../helpers/password-hasher.mjs";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { resolveApprovedProductionHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";

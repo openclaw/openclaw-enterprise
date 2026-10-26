@@ -8,7 +8,6 @@ import {
   ResourceConflictError,
   ServiceAccountDriverNotConfiguredError,
 } from "../../packages/occ/src/index.ts";
-import { PostgresWorkQueue } from "../../packages/occ/src/state/postgres-work-queue.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -22,6 +21,8 @@ import {
   serviceAccountDriverId,
   workspaceId,
 } from "../helpers/postgres-backend-state.mjs";
+import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
+import { claimIsolatedWork } from "../helpers/postgres-work-claim.mjs";
 
 test(
   "ServiceAccount deletion protects draft, queued, claimed, and active references before Driver effects",
@@ -110,27 +111,8 @@ test(
         { code },
       );
     }
-    async function claimRevision() {
-      const client = await pool.connect();
-      try {
-        await client.query("BEGIN");
-        // Other suites retain work in this database. Temporarily lock those rows so the
-        // real queue's SKIP LOCKED claim selects only this fixture without mutating peers.
-        await client.query(
-          "SELECT idempotency_key FROM occ.controller_work WHERE namespace_id <> $1 FOR UPDATE SKIP LOCKED",
-          [namespace.id],
-        );
-        // Claim on another connection: PostgreSQL does not skip a transaction's own locks.
-        const claim = await new PostgresWorkQueue(pool).claim();
-        await client.query("COMMIT");
-        return claim;
-      } catch (error) {
-        await client.query("ROLLBACK");
-        throw error;
-      } finally {
-        client.release();
-      }
-    }
+    // Other suites retain work in this database; claim only this fixture's.
+    const claimRevision = () => claimIsolatedWork(pool, { namespaceId: namespace.id });
     // A draft binding alone protects the source before any deployment exists.
     await assertProtected();
     const revision = await controller.deployAgent(actor.id, target, resolveApprovedHarness);
@@ -355,20 +337,10 @@ test(
         force: true,
       });
       forced.catch(() => {});
-      const deadline = Date.now() + 15_000;
-      for (;;) {
-        const [{ blocked }] = (
-          await pool.query(
-            "SELECT count(*)::int AS blocked FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))",
-            [pid],
-          )
-        ).rows;
-        if (blocked > 0) {
-          break;
-        }
-        assert.ok(Date.now() < deadline, "the forced delete never waited for the account lock");
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      }
+      await waitForLockWaiter(pool, pid, "the forced delete to wait for the account lock", {
+        timeoutMs: 15_000,
+        intervalMs: 50,
+      });
       await issuer.query("UPDATE occ.service_accounts SET credential = $2::jsonb WHERE id = $1", [
         racing.id,
         JSON.stringify({

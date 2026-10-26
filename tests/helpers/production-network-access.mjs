@@ -7,6 +7,7 @@ import {
   kubectlArguments,
   validateExplicitK3dLoopbackContext,
 } from "./kubernetes-real.mjs";
+import { kubectlGetJson } from "./kubernetes-api-read.mjs";
 import {
   parseProductionChart,
   productionCollectorValues,
@@ -58,6 +59,7 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
   const envoyNamespace = `${namespace}-envoy`;
   const ownedNamespaces = [];
   const kubectl = async (...args) =>
+    (await kubectlGetJson(selection, args, { timeoutMs: 30_000 })) ??
     (await execute("kubectl", kubectlArguments(selection, args), { timeout: 30_000 })).stdout;
   const { resource, waitFor } = createKubernetesClient({
     selection,
@@ -280,6 +282,7 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
           },
         },
         compute: { id: driver.id, implementation: driver.implementation },
+        executionAdmission: { version: 2, mode: "unprotected" },
       };
       const old = { ...structuredClone(common), id: `rev_${randomUUID()}` };
       const selected = { ...structuredClone(common), id: `rev_${randomUUID()}` };

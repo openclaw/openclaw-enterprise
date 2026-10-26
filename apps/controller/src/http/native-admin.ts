@@ -9,6 +9,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import {
   NoActiveAgentRevisionError,
+  QualifiedAuthorizationDeniedError,
   ResourceConflictError,
   type AuthorizationDeniedError,
   type OpenClawController,
@@ -48,6 +49,7 @@ import {
   isDependencyUnavailable,
   requestFailure,
 } from "./errors.ts";
+import { GENERIC_DENIAL, NATIVE_ADMIN_DENIAL } from "./caller-denial.ts";
 import { RequestRateLimiter } from "./request-rate-limiter.ts";
 import type { RequestContext } from "./types.ts";
 
@@ -90,6 +92,9 @@ interface NativeAdminProxyDenial {
   readonly revisionId?: string;
   readonly host?: string;
   readonly actualAuthorizationDenied?: true;
+  // The signed-in person has no platform identity, so no grant was checked: the JSON refusal
+  // stays generic. It is decided before the host, so it tells nothing about the Agent.
+  readonly unprovisioned?: true;
   readonly evidence?: AuthorizationEvidence;
   readonly authorization?: NonNullable<AuthorizationDeniedError["authorization"]>;
 }
@@ -214,8 +219,37 @@ export function limitNativeAdminReturn(
   }
 }
 
-function acceptsHtml(accept: string | undefined): boolean {
-  return (accept ?? "").split(",").some((entry) => {
+function escapeHtml(value: string): string {
+  return value.replaceAll(/[&<>"']/g, (character) => {
+    switch (character) {
+      case "&":
+        return "&amp;";
+      case "<":
+        return "&lt;";
+      case ">":
+        return "&gt;";
+      case '"':
+        return "&quot;";
+      default:
+        return "&#39;";
+    }
+  });
+}
+
+function browserDocumentNavigation(request: FastifyRequest, pathname: string): boolean {
+  return (
+    request.method === "GET" &&
+    /^\/(?:chat\/main(?:\/[0-9a-f]{32})?)?$/.test(pathname) &&
+    request.headers["sec-fetch-mode"] === "navigate" &&
+    request.headers["sec-fetch-dest"] === "document" &&
+    request.headers["sec-fetch-user"] === "?1" &&
+    acceptsHtml(request.headers.accept)
+  );
+}
+
+function acceptsHtml(accept: string | string[] | undefined): boolean {
+  const header = Array.isArray(accept) ? accept.join(",") : accept;
+  return (header ?? "").split(",").some((entry) => {
     const [mediaType, ...parameters] = entry.trim().toLowerCase().split(";");
     if (mediaType?.trim() !== "text/html") {
       return false;
@@ -726,11 +760,11 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
   }) {
     const controller = getController();
     if (!controller) {
-      throw failure(403, "FORBIDDEN", "The exact platform operation was not authorized.");
+      throw failure(403, "FORBIDDEN", GENERIC_DENIAL);
     }
     const availability = await resolveNativeAdminAvailability(input);
     if (availability.status === "disabled") {
-      throw failure(403, "FORBIDDEN", "The exact platform operation was not authorized.");
+      throw failure(403, "FORBIDDEN", GENERIC_DENIAL);
     }
     if (
       availability.status === "unsupported" &&
@@ -749,7 +783,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       throw failure(409, "RESOURCE_CONFLICT", "The active AgentRevision changed.");
     }
     if (input.expectedHost !== undefined && availability.target.host !== input.expectedHost) {
-      throw failure(403, "FORBIDDEN", "The exact platform operation was not authorized.");
+      throw failure(403, "FORBIDDEN", GENERIC_DENIAL);
     }
     return availability;
   }
@@ -844,6 +878,12 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       actorId: context.actorId,
       namespaceId,
       agentId,
+    }).catch((error: unknown) => {
+      // With native admin off, Agent administer alone would not open it, so the caller's denial
+      // says so (finding D762). The setting is the Installation's, the same for every Agent.
+      throw options.nativeAdmin?.enabled === true
+        ? error
+        : QualifiedAuthorizationDeniedError.qualify(error, "native_admin_off");
     });
     reply.send({
       data: nativeAdminAvailabilityData(availability),
@@ -946,7 +986,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
     const actorSubject = admitted.externalIdentity.subject;
     const currentActor = await resolveNativeAdminActor({ actorIssuer, actorSubject });
     if (currentActor === undefined) {
-      return nativeAdminProxyDenial("authorization_denied");
+      return nativeAdminProxyDenial("authorization_denied", { unprovisioned: true });
     }
     const agent = await resolveNativeAdminAgentHost(hostname);
     if (agent === undefined) {
@@ -1008,10 +1048,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       return false;
     }
     if (isNativeAdminReservedPrefix(request.url) || !isNativeAdminAgentHost(hostname)) {
-      canonicalFailure(
-        reply,
-        failure(403, "FORBIDDEN", "The exact platform operation was not authorized."),
-      );
+      canonicalFailure(reply, failure(403, "FORBIDDEN", GENERIC_DENIAL));
       return true;
     }
     const admission = await boundedNativeAdminAdmission(
@@ -1025,18 +1062,17 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
         return true;
       }
       const agentKey = /^agent-([0-9a-f]{32})\./.exec(hostname)?.[1];
+      const documentNavigation = browserDocumentNavigation(
+        request,
+        nativeAdminPathname(request.url),
+      );
       if (
         agentKey !== undefined &&
         hostname === `agent-${agentKey}.${nativeAdminDomain}` &&
         admission?.reason === "session_invalid" &&
         options.nativeAdmin?.enabled === true &&
         publicOrigin !== undefined &&
-        request.method === "GET" &&
-        /^\/(?:chat\/main(?:\/[0-9a-f]{32})?)?$/.test(nativeAdminPathname(request.url)) &&
-        request.headers["sec-fetch-mode"] === "navigate" &&
-        request.headers["sec-fetch-dest"] === "document" &&
-        request.headers["sec-fetch-user"] === "?1" &&
-        acceptsHtml(request.headers.accept)
+        documentNavigation
       ) {
         const consoleUrl = new URL("/console/", publicOrigin);
         consoleUrl.hash = `native-agent=${agentKey}`;
@@ -1047,11 +1083,42 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
           .redirect(consoleUrl.href, 302);
         return true;
       }
+      // A signed-in person who cannot open this Agent (for example after Back switches
+      // accounts) stays on 403. The page names no Agent and links to their Agents list.
+      // API reads keep the JSON refusal.
+      if (
+        admission?.reason === "authorization_denied" &&
+        publicOrigin !== undefined &&
+        documentNavigation
+      ) {
+        const agentsUrl = escapeHtml(new URL("/console/agents", publicOrigin).href);
+        reply
+          .header("cache-control", "no-store")
+          .header("content-type", "text/html; charset=utf-8")
+          .header("x-content-type-options", "nosniff")
+          .header("referrer-policy", "no-referrer")
+          .header("x-request-id", request.id)
+          .code(403)
+          .type("text/html; charset=utf-8")
+          .send(
+            `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Access denied</title></head><body><p>You do not have access to this gateway.</p><p><a href="${agentsUrl}">Go to your Agents</a></p></body></html>`,
+          );
+        return true;
+      }
+      // A denial names the grant but not the Agent: the Agent was resolved from the host, not
+      // named by the caller, and an unknown host is denied with the same text. A person with no
+      // platform identity had no grant checked and gets the generic text (finding 2589).
       canonicalFailure(
         reply,
         admission === undefined
           ? dependencyUnavailable()
-          : failure(403, "FORBIDDEN", "The exact platform operation was not authorized."),
+          : failure(
+              403,
+              "FORBIDDEN",
+              admission.reason === "authorization_denied" && admission.unprovisioned !== true
+                ? NATIVE_ADMIN_DENIAL
+                : GENERIC_DENIAL,
+            ),
       );
       return true;
     }

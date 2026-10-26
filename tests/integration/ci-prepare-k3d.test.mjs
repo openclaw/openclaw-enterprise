@@ -1,6 +1,7 @@
+import { spawnSync } from "node:child_process";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { readFile, stat } from "node:fs/promises";
+import { readFile, rename, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { describe, test } from "node:test";
 import { nodeLogExcerpt } from "../../scripts/ci/k3d-diagnostics.mjs";
@@ -13,8 +14,26 @@ import {
   fixturePreparationMetrics,
   immutableImage,
   nodeBaseImage,
+  writeFixtureCommand,
 } from "../helpers/ci-prepare-fixture.mjs";
 import { eachSettled } from "../helpers/child-processes.mjs";
+import { bashString, startCommandServer } from "../helpers/fixture-command-server.mjs";
+
+// Override selected external commands while the normal CLI and fixture handle the rest.
+async function interceptFixtureDocker(t, commands, scriptFor) {
+  const engine = join(dirname(commands.statePath), "bin", "docker.mjs");
+  const original = `${engine}.original`;
+  await rename(engine, original);
+  const server = await startCommandServer({
+    forwardedEnv: [],
+    handle: async ({ args, io }) => {
+      const script = await scriptFor(args);
+      io.script(script ?? `exec ${bashString(original)} ${args.map(bashString).join(" ")}`);
+    },
+  });
+  t.after(() => server.close());
+  await writeFixtureCommand(engine, "docker", server);
+}
 
 // Each case waits on its own fake k3d and container engine processes, mostly for
 // deliberate timeouts, so the cases run concurrently.
@@ -445,6 +464,80 @@ describe("CI k3d preparation", { concurrency: true }, () => {
       await assert.rejects(() => stat(commands.githubEnv), { code: "ENOENT" });
       const state = await commands.readState();
       assert.equal(state.env, undefined);
+      if (scenario === "storage-unready") {
+        // The initial rollout failed. Preparation settles the concurrent import for
+        // cleanup. It must not declare the cluster ready, pin the image or restart storage.
+        const resource = (kind) => state.resources.find((entry) => entry.kind === kind);
+        assert.equal(resource("k3d-image")?.status, "ready");
+        assert.equal(resource("k3d-cluster").status, "planned");
+        const calls = await commands.commands();
+        assert.ok(!calls.some(({ args }) => args.includes("restart") || args.includes("apply")));
+        const diagnostics = JSON.parse(
+          await readFile(`${commands.statePath}.diagnostics.json`, "utf8"),
+        );
+        assert.equal(diagnostics.lane, state.lane);
+      }
+      await commands.cleanupSuccessfully();
+    });
+  }
+
+  for (const [scenario, fault] of [
+    ["storage-unready", "host inspection"],
+    ["success", "host inspection"],
+    ["success", "missing manifest"],
+  ]) {
+    test(`fixture image diagnostics for ${fault} with ${scenario}`, async (t) => {
+      const commands = await fixtureImageCommands(t, scenario);
+      const detail = "synthetic host inspection detail";
+      let faults = 0;
+      await interceptFixtureDocker(t, commands, (args) => {
+        if (
+          fault === "host inspection" &&
+          args.length === 3 &&
+          args[0] === "image" &&
+          args[1] === "inspect"
+        ) {
+          faults += 1;
+          return `printf '%s\\n' ${bashString(detail)} >&2; exit 1`;
+        }
+        // Both nodes received the stream, but the server cannot find its manifest.
+        if (
+          fault === "missing manifest" &&
+          args[0] === "exec" &&
+          args.slice(2).join(" ") === "ctr -n k8s.io images list"
+        ) {
+          faults += 1;
+          return "exit 0";
+        }
+      });
+      const result = await commands.prepare();
+      assert.equal(result.status, 1);
+      assert.equal(faults, 1);
+      const storageFailed = scenario === "storage-unready";
+      const primary = result.stderr.trimEnd().split("\n").at(-1);
+      if (storageFailed) {
+        assert.match(primary, /CI fixture storage controller is not ready/);
+        assert.ok(!result.stderr.includes(detail));
+      } else if (fault === "host inspection") {
+        assert.ok(primary.includes(detail));
+      } else {
+        assert.match(primary, /Unable to find imported OCI manifest digest/);
+      }
+      const diagnostic = await readFile(`${commands.statePath}.diagnostics.json`, "utf8");
+      assert.equal(
+        JSON.parse(diagnostic).failure,
+        "Fixture image preparation failed during fixture-image-import.",
+      );
+      assert.ok(!diagnostic.includes(detail));
+      const state = await commands.readState();
+      const cluster = state.resources.find(({ kind }) => kind === "k3d-cluster");
+      assert.equal(cluster.status, storageFailed ? "planned" : "ready");
+      assert.equal(state.env, undefined);
+      await assert.rejects(stat(commands.githubEnv), { code: "ENOENT" });
+      const calls = await commands.commands();
+      const imports = calls.filter(({ args }) => args[0] === "exec" && args[1] === "-i");
+      assert.equal(imports.length, fault === "missing manifest" ? 2 : 0);
+      assert.ok(!calls.some(({ args }) => args.includes("apply") || args.includes("restart")));
       await commands.cleanupSuccessfully();
     });
   }
@@ -689,6 +782,46 @@ describe("CI k3d preparation", { concurrency: true }, () => {
     await commands.cleanupSuccessfully();
   });
 
+  test("fixture preparation drains the active sibling probe before collecting diagnostics", async (t) => {
+    const commands = await fixtureImageCommands(t, "success", undefined, {
+      OPENCLAW_CI_K3D_CONTAINERD_WAIT_MS: "1",
+      OPENCLAW_CI_K3D_IMAGE_CHECK_TIMEOUT_MS: "3000",
+    });
+    const pidFile = join(dirname(commands.statePath), "server-probe.pid");
+    const pidPath = bashString(pidFile);
+    const probes = [];
+    const siblingAliveAtDiagnostics = [];
+    await interceptFixtureDocker(t, commands, async (args) => {
+      if (args[0] === "exec" && args.slice(2).join(" ") === "ctr -n k8s.io version") {
+        probes.push(args[1]);
+        if (args[1].endsWith("-server-0")) {
+          // This probe outlives the worker's refusal and ends at the command timeout.
+          return `printf '%s\\n' "$$" > ${pidPath}; exec "$__sleep" 120`;
+        }
+        return (
+          `while [[ ! -s ${pidPath} ]]; do "$__sleep" 0.01; done; ` +
+          `read -r pid < ${pidPath}; kill -0 "$pid" || exit 2; ` +
+          "echo 'first probe refusal' >&2; exit 1"
+        );
+      }
+      if (args[0] === "inspect" && args[2] === "{{json .State}}") {
+        siblingAliveAtDiagnostics.push(processRunning(Number(await readFile(pidFile, "utf8"))));
+      }
+    });
+    const result = await commands.prepare();
+    assert.equal(result.status, 1);
+    assert.match(
+      result.stderr.trimEnd().split("\n").at(-1),
+      /containerd on \S+-agent-0.*first probe refusal/,
+    );
+    assert.equal(probes.length, 2);
+    assert.equal(new Set(probes).size, 2);
+    assert.deepEqual(siblingAliveAtDiagnostics, [false, false]);
+    assert.equal((await commands.readState()).env, undefined);
+    await assert.rejects(stat(commands.githubEnv), { code: "ENOENT" });
+    await commands.cleanupSuccessfully();
+  });
+
   test("fixture preparation fails on a hung containerd probe without polling again", async (t) => {
     const commands = await fixtureImageCommands(t, "hung-containerd-probe", undefined, {
       OPENCLAW_CI_K3D_IMAGE_CHECK_TIMEOUT_MS: "3000",
@@ -769,5 +902,84 @@ describe("CI k3d preparation", { concurrency: true }, () => {
       }
       await commands.cleanupSuccessfully();
     });
+  }
+});
+
+test("node log excerpts retain sub-millisecond order across Docker streams", () => {
+  const stdout = [
+    "2026-10-21T00:00:00.123900000Z later stdout",
+    "2026-10-21T00:00:00.123100002Z second nanosecond",
+    "2026-10-21T00:00:01.000000001Z after whole second",
+    "2026-10-21T00:00:02.1Z tied stdout",
+  ].join("\n");
+  const stderr = [
+    "2026-10-21T00:00:00.123100000Z earlier stderr",
+    "2026-10-21T00:00:00.123100001Z first nanosecond",
+    "2026-10-21T00:00:01Z whole second",
+    "2026-10-21T00:00:02.100000000Z tied stderr",
+  ].join("\n");
+  assert.deepEqual(nodeLogExcerpt(stdout, stderr).split("\n"), [
+    "2026-10-21T00:00:00.123100000Z earlier stderr",
+    "2026-10-21T00:00:00.123100001Z first nanosecond",
+    "2026-10-21T00:00:00.123100002Z second nanosecond",
+    "2026-10-21T00:00:00.123900000Z later stdout",
+    "2026-10-21T00:00:01Z whole second",
+    "2026-10-21T00:00:01.000000001Z after whole second",
+    "2026-10-21T00:00:02.1Z tied stdout",
+    "2026-10-21T00:00:02.100000000Z tied stderr",
+  ]);
+});
+
+test("node log retry summaries retain the latest kinds within one millisecond", () => {
+  const retries = Array.from(
+    { length: 13 },
+    (_, index) =>
+      `2026-10-21T00:00:00.123${String(index + 1).padStart(6, "0")}Z The connection to the server 127.0.0.1:${2000 + index} was refused`,
+  );
+  const excerpt = nodeLogExcerpt(retries.join("\n"), "");
+  assert.doesNotMatch(excerpt, /against 127\.0\.0\.1:2000 /u);
+  assert.match(excerpt, /against 127\.0\.0\.1:2012 /u);
+  assert.match(excerpt, /omitted 1 earlier kinds of kubectl retry lines/u);
+});
+
+test("node log chronology and retry retention do not depend on the process locale", () => {
+  const moduleUrl = new URL("../../scripts/ci/k3d-diagnostics.mjs", import.meta.url).href;
+  const script = `
+    import { nodeLogExcerpt } from ${JSON.stringify(moduleUrl)};
+    const early = "2026-10-21T00:00:00.020000000Z early stderr";
+    const later = "2026-10-21T00:00:00.100000000Z later stdout";
+    const tied = "2026-10-21T00:00:00.1Z tied stderr";
+    const retries = ["020000000", "100000000", ...Array.from({ length: 11 }, (_, i) => String(i + 20) + "0000000")]
+      .map((fraction, i) => "2026-10-21T00:00:00." + fraction + "Z The connection to the server 127.0.0.1:" + (2000 + i) + " was refused");
+    console.log(JSON.stringify({
+      numeric: new Intl.Collator().resolvedOptions().numeric,
+      events: nodeLogExcerpt(later, early + "\\n" + tied).split("\\n"),
+      retries: nodeLogExcerpt(retries.join("\\n"), ""),
+    }));
+  `;
+  for (const [locale, numeric] of [
+    ["en-US", false],
+    ["en-US-u-kn-true", true],
+  ]) {
+    const child = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
+      encoding: "utf8",
+      env: { ...process.env, LANG: locale, LC_ALL: locale },
+      timeout: 10_000,
+    });
+    assert.equal(child.status, 0, child.stderr);
+    const result = JSON.parse(child.stdout);
+    assert.equal(result.numeric, numeric, locale);
+    assert.deepEqual(
+      result.events,
+      [
+        "2026-10-21T00:00:00.020000000Z early stderr",
+        "2026-10-21T00:00:00.100000000Z later stdout",
+        "2026-10-21T00:00:00.1Z tied stderr",
+      ],
+      locale,
+    );
+    assert.doesNotMatch(result.retries, /against 127\.0\.0\.1:2000 /u, locale);
+    assert.match(result.retries, /against 127\.0\.0\.1:2001 /u, locale);
+    assert.match(result.retries, /omitted 1 earlier kinds of kubectl retry lines/u, locale);
   }
 });

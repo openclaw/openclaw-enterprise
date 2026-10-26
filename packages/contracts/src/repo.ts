@@ -1,3 +1,4 @@
+import type { RepositoryGitDeliveryProfile } from "./credential-proxy.ts";
 import type { Driver } from "./index.ts";
 
 /** Opaque, nonempty identities: at most 512 UTF-8 bytes each, without ASCII controls. */
@@ -12,6 +13,16 @@ export interface RepositoryCredentialSessionStatus {
   readonly state: "OPEN" | "CLOSED" | "DISPOSED";
   readonly deadlineWallMs: number;
   readonly binding: RepositoryCredentialGrantIdentity;
+}
+
+/** Installation-wide GitHub access must be explicitly selected, never inherited as a default. */
+export const githubInstallationProfile = "github-installation";
+
+/** An installation-scoped binding is always explicit, exclusive, and delivered by a protected sender. */
+export function isInstallationRepositoryProfile(
+  profile: unknown,
+): profile is typeof githubInstallationProfile {
+  return profile === githubInstallationProfile;
 }
 
 export interface RepositoryBindingRequest {
@@ -40,7 +51,6 @@ export interface RepositoryOption {
 
 export interface RepositoryOptions {
   readonly options: readonly RepositoryOption[];
-  readonly descriptionsPending: boolean;
 }
 
 export interface AdmittedRepositoryBinding extends RepositoryBindingSelection {
@@ -53,9 +63,20 @@ export interface RepositoryCredentialResolution {
   readonly sessionDurationSeconds: number;
 }
 
+/** Nonsecret identity obtained by a read-only verification of the already running execution. */
+export interface RepositoryExecutionIdentity {
+  readonly executionId: string;
+  readonly fingerprint: string;
+}
+
 export interface RepositoryRevisionState {
   /** Nonempty opaque values use the same 512-byte, no-control bound as grant identities. */
   readonly driver: { readonly id: string; readonly implementation: string };
+  /** Present only after an explicit, attributable standing approval. The retained
+   * deadline is the original finite admission boundary, not standing authority. */
+  readonly standingApprovalId?: string;
+  readonly standingApprovalGeneration?: number;
+  readonly standingApprovalScopeFingerprint?: string;
   readonly deadlineWallMs: number;
   readonly bindings: readonly AdmittedRepositoryBinding[];
 }
@@ -68,6 +89,8 @@ export interface OpenRepositorySessionInput {
   readonly deadlineWallMs: number;
   /** Restricts the operation to recovered/missing results, without creating authority. */
   readonly recoverOnly?: true;
+  /** Retain the original prepared authority during lookup-only recovery. Fresh opens require it. */
+  readonly preparedOnly?: true;
 }
 
 export type OpenRepositorySessionResult =
@@ -79,21 +102,43 @@ export type OpenRepositorySessionResult =
   | { readonly kind: "recovered"; readonly status: RepositoryCredentialSessionStatus }
   | { readonly kind: "missing" };
 
-export interface RepoDriver extends Driver {
+/** Canonical JSON-compatible provider scope; contains no credentials. */
+export type RepositoryApprovalValue =
+  | null
+  | boolean
+  | number
+  | string
+  | readonly RepositoryApprovalValue[]
+  | { readonly [key: string]: RepositoryApprovalValue };
+export type RepositoryApprovalScope = Readonly<Record<string, RepositoryApprovalValue>>;
+
+export interface RepositoryPolicyDriver extends Driver {
   readonly capability: "repo";
-  readonly maintenanceIntervalMs: number;
-  /** This Driver fences admission and retains confirmed terminal evidence durably. */
-  readonly durableBrokerReceipts?: true;
-  /** Check whether fresh credential admission is currently supported. */
-  checkAdmissionReady?(signal: AbortSignal): Promise<void>;
-  listOptions(input: {
+  listOptions(input: { readonly namespaceId: string }): Promise<RepositoryOptions>;
+  standingApprovalScope?(input: {
     readonly namespaceId: string;
-    readonly descriptionRefs?: readonly string[];
-  }): Promise<RepositoryOptions>;
+    readonly binding: AdmittedRepositoryBinding;
+  }): RepositoryApprovalScope | undefined;
+  /** Current policy permission only; persisted operator approval is checked by OCC. */
+  allowsStandingApproval?(input: {
+    readonly namespaceId: string;
+    readonly binding: AdmittedRepositoryBinding;
+  }): boolean;
   resolve(input: {
     readonly namespaceId: string;
     readonly bindings: readonly RepositoryBindingRequest[];
   }): RepositoryCredentialResolution;
+}
+
+/** Explicit native sender and retained-session cleanup owner; never a protected fallback. */
+export interface NativeRepositorySender {
+  readonly id: string;
+  readonly implementation: string;
+  readonly maintenanceIntervalMs: number;
+  /** This sender fences admission and retains confirmed terminal evidence durably. */
+  readonly durableBrokerReceipts?: true;
+  /** Check whether fresh credential admission is currently supported. */
+  checkAdmissionReady?(signal: AbortSignal): Promise<void>;
   open(
     input: OpenRepositorySessionInput,
     signal: AbortSignal,
@@ -131,3 +176,18 @@ export type RepositoryCredentialRuntimeBinding = RepositoryCredentialMaterialRef
     | { readonly kind: "new"; readonly files: RepositoryCredentialSessionFiles }
     | { readonly kind: "retained" }
   );
+
+/** The Repo contract owns the mapping from admitted profiles to sender requirements. */
+export function repositoryGitDeliveryProfile(
+  repository: RepositoryRevisionState | undefined,
+): RepositoryGitDeliveryProfile | undefined {
+  if (repository?.bindings?.length !== 1) {
+    return undefined;
+  }
+  const profile = repository.bindings[0]?.profile;
+  return isInstallationRepositoryProfile(profile)
+    ? "github_installation"
+    : profile === "git-write"
+      ? "repository_git"
+      : undefined;
+}

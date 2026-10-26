@@ -9,8 +9,8 @@ import {
   prepareLogging,
   readJsonlPayloads,
   selectedCollectorSmoke,
-  waitFor,
 } from "../helpers/ci-logging.mjs";
+import { waitUntil } from "../helpers/wait-for.mjs";
 
 test(
   "prepareLogging backend receives real OTLP/HTTP logs and writes JSONL",
@@ -60,9 +60,10 @@ test(
         }),
       });
       assert.equal(response.status, 200);
-      await waitFor(
-        async () => payloadContains(canary, await readJsonlPayloads(result.artifacts.logsJsonl)),
+      await waitUntil(
         "Collector file exporter JSONL output",
+        async () => payloadContains(canary, await readJsonlPayloads(result.artifacts.logsJsonl)),
+        { timeoutMs: 30_000, intervalMs: 250 },
       );
     } finally {
       if (resource) {

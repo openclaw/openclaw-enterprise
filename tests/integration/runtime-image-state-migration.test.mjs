@@ -3,15 +3,14 @@
 // on the released state migrates its agent database once with Doctor, through
 // both the Kubernetes and the Docker development entrypoints.
 import assert from "node:assert/strict";
-import { randomBytes } from "node:crypto";
-import test from "node:test";
+import { describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { OPENCLAW_AGENT_DATABASE_SCHEMA_VERSION } from "../../apps/controller/src/drivers/compute/runtime-startup.ts";
 import {
-  image,
   imageTestOptions,
   runDocker,
+  gatewayStateVolume,
   temporaryGatewayConfiguration,
   jsonLogEntries,
   runGatewaySmoke,
@@ -53,32 +52,12 @@ function stateMigrationPhases(logs) {
   );
 }
 
-// Copies the released state into a new volume, owned as the Gateway user, for
-// mounting at `mountPath` (the Gateway home or its ~/.openclaw).
-async function releasedGatewayStateVolume(t, mountPath) {
-  const volume = `oce-runtime-image-state-${randomBytes(6).toString("hex")}`;
-  await runDocker(["volume", "create", volume]);
-  t.after(() => runDocker(["volume", "rm", "-f", volume]).catch(() => {}));
-  // As root, like the Docker Driver's workspace setup: a new volume mounted
-  // below the image's home can be root-owned.
-  await runDocker([
-    "run",
-    "--rm",
-    "--user",
-    "0:0",
-    "--network",
-    "none",
-    "--volume",
-    `${volume}:${mountPath}`,
-    "--volume",
-    `${releasedGatewayState}:/released-gateway-state.tar.gz:ro`,
-    "--entrypoint",
-    "sh",
-    image,
-    "-c",
-    `tar -xzf /released-gateway-state.tar.gz -C /home/node && chown -R 1000:1000 ${mountPath}`,
-  ]);
-  return volume;
+// Copies the released state into a new volume for mounting at `mountPath`.
+function releasedGatewayStateVolume(t, mountPath) {
+  return gatewayStateVolume(t, mountPath, {
+    seed: "tar -xzf /released-gateway-state.tar.gz -C /home/node",
+    seedVolumes: [`${releasedGatewayState}:/released-gateway-state.tar.gz:ro`],
+  });
 }
 
 // startGateway(readinessAttempts) starts a Gateway on the released state volume.
@@ -110,38 +89,42 @@ async function assertReleasedGatewayMigratesOnce(startGateway) {
   assert.deepEqual(await agentDatabaseFacts(current.containerName), migrated);
 }
 
-test(
-  "runtime image migrates a released Gateway's agent database once before starting OpenClaw",
-  imageTestOptions,
-  async (t) => {
-    // The volume replaces the Gateway's /home/node tmpfs, as its PersistentVolume does.
-    const volume = await releasedGatewayStateVolume(t, "/home/node");
-    const configurationPath = await temporaryGatewayConfiguration(t, "openclaw");
-    await assertReleasedGatewayMigratesOnce((readinessAttempts) =>
-      runGatewaySmoke(t, "openclaw", {
-        configurationPath: "/etc/openclaw/openclaw.json",
-        entrypoint: KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
-        readinessAttempts,
-        tmpfs: [],
-        volumes: [`${configurationPath}:/etc/openclaw/openclaw.json:ro`, `${volume}:/home/node`],
-        withAppServer: false,
-      }),
-    );
-  },
-);
+// Each case seeds its own state volume and starts its own Gateway containers:
+// random volume and container names, no shared port. Both run at once.
+describe("runtime image released state migration", { concurrency: 2 }, () => {
+  test(
+    "runtime image migrates a released Gateway's agent database once before starting OpenClaw",
+    imageTestOptions,
+    async (t) => {
+      // The volume replaces the Gateway's /home/node tmpfs, as its PersistentVolume does.
+      const volume = await releasedGatewayStateVolume(t, "/home/node");
+      const configurationPath = await temporaryGatewayConfiguration(t, "openclaw");
+      await assertReleasedGatewayMigratesOnce((readinessAttempts) =>
+        runGatewaySmoke(t, "openclaw", {
+          configurationPath: "/etc/openclaw/openclaw.json",
+          entrypoint: KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
+          readinessAttempts,
+          tmpfs: [],
+          volumes: [`${configurationPath}:/etc/openclaw/openclaw.json:ro`, `${volume}:/home/node`],
+          withAppServer: false,
+        }),
+      );
+    },
+  );
 
-test(
-  "runtime image migrates a released agent database before the Docker development Gateway starts OpenClaw",
-  imageTestOptions,
-  async (t) => {
-    // The Docker Driver's Agent state volume, over the Gateway's /home/node tmpfs.
-    const volume = await releasedGatewayStateVolume(t, "/home/node/.openclaw");
-    await assertReleasedGatewayMigratesOnce((readinessAttempts) =>
-      runGatewaySmoke(t, "openclaw", {
-        readinessAttempts,
-        volumes: [`${volume}:/home/node/.openclaw`],
-        withAppServer: false,
-      }),
-    );
-  },
-);
+  test(
+    "runtime image migrates a released agent database before the Docker development Gateway starts OpenClaw",
+    imageTestOptions,
+    async (t) => {
+      // The Docker Driver's Agent state volume, over the Gateway's /home/node tmpfs.
+      const volume = await releasedGatewayStateVolume(t, "/home/node/.openclaw");
+      await assertReleasedGatewayMigratesOnce((readinessAttempts) =>
+        runGatewaySmoke(t, "openclaw", {
+          readinessAttempts,
+          volumes: [`${volume}:/home/node/.openclaw`],
+          withAppServer: false,
+        }),
+      );
+    },
+  );
+});

@@ -11,7 +11,8 @@ export async function seedSessionRevision(
   credentials = repositoryCredentials(),
   options = {},
 ) {
-  const createdAt = "2030-03-17T17:46:40.000Z";
+  const createdAt = options.createdAt ?? "2030-03-17T17:46:40.000Z";
+  const executionMode = options.executionMode ?? "embedded";
   const namespace = {
     id: options.namespaceId ?? `ns_${randomUUID()}`,
     name: `Repository session ${randomUUID()}`,
@@ -49,7 +50,7 @@ export async function seedSessionRevision(
     configurationId: configuration.id,
     backendId: null,
     harnessAuth,
-    executionMode: "embedded",
+    executionMode,
     servicePrincipalId: `service-agent-${randomUUID()}`,
     repositoryBindings: credentials.bindings.map(({ repositoryRef, profile }) => ({
       repositoryRef,
@@ -58,6 +59,7 @@ export async function seedSessionRevision(
     createdAt,
   };
   const revision = {
+    executionAdmission: { version: 2, mode: "unprotected" },
     id: `rev_${randomUUID()}`,
     namespaceId: namespace.id,
     agentId: agent.id,
@@ -68,7 +70,7 @@ export async function seedSessionRevision(
     backendId: null,
     harnessAuth: { ...harnessAuth, secretDriverId: secret.driverId },
     configuration: { agents: { defaults: { model: "openai/gpt-fixture" } } },
-    harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+    harness: { id: "openclaw", version: "1.0.0", mode: executionMode },
     compute: { id: "compute-test", implementation: "deterministic-test" },
     servicePrincipalId: agent.servicePrincipalId,
     repositoryCredentials: credentials,

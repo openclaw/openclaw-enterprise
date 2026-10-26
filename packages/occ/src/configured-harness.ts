@@ -4,6 +4,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { asRecord, isNonEmptyString, splitModelRef } from "@openclaw-enterprise/utils";
 
+import { canSpell } from "./configuration-settings.ts";
 import { agentEntryMessage, ConfigurationHarnessError, modelProviderMessage } from "./errors.ts";
 import { providerModelsListError } from "./model-provider-settings.ts";
 
@@ -62,32 +63,110 @@ function requirePrimaryProvider(models: readonly string[], setting: SelectionMes
   }
 }
 
-/**
- * The fallback rule of resolveConfiguredHarnessId alone, over every well-formed selection. Every
- * deployment refuses a fallback on another provider, so Configuration save (through
- * requireDeployableRoster), Preset save and Agent save refuse it too, even where another model
- * policy rule leaves the rest to deployment (finding 1298). OpenClaw's `openrouter:auto` and
- * `openrouter:free` count as openrouter references (finding 1320). On a Preset save
- * (`options.unresolved`), a reference whose provider waits on an unfilled variable (no `/` before
- * the first one, as in `openrouter:{{ vars.kind }}`) is checked once filled, on the Configuration
- * a launch creates (finding 1305).
- */
-export function requireFallbackProviders(
-  values: Readonly<OpenClawConfigurationDocument>,
-  { unresolved }: ConfigurationValidationOptions = {},
-): void {
+// A model selection's path in the document and the refusal that names it.
+type ModelSelection = [value: unknown, at: readonly (string | number)[], setting: SelectionMessage];
+
+// Every model selection deployment reads, in its order: agents.defaults.model, then each
+// agents.entries entry's own. An entry without its own model has nothing to check here; skipping
+// it keeps a large roster cheap (finding 1321).
+function modelSelections(values: Readonly<OpenClawConfigurationDocument>): ModelSelection[] {
   const agents = asRecord(values.agents);
-  const selections: [unknown, readonly string[], SelectionMessage][] = [
+  const selections: ModelSelection[] = [
     [asRecord(agents?.defaults)?.model, ["agents", "defaults", "model"], defaultModelMessage],
   ];
-  // An entry without its own model has nothing to check here; skipping it keeps a large roster
-  // cheap (finding 1321).
   for (const [key, entry] of Object.entries(asRecord(agents?.entries) ?? {})) {
     const model = asRecord(entry)?.model;
     if (model !== undefined) {
       selections.push([model, ["agents", "entries", key, "model"], entryModelMessage(key)]);
     }
   }
+  return selections;
+}
+
+/**
+ * The models a selection names, primary first: a string is the primary alone, an object its
+ * `primary` and `fallbacks`. Refuses fallbacks that are not a list and a model `accepts` refuses,
+ * given the model and its index. Deployment (configuredModels) and every save
+ * (requireModelSelections) read a selection through this one function, so both refuse the same
+ * selections with the same text (finding 1828).
+ */
+function selectedModels(
+  value: unknown,
+  setting: SelectionMessage,
+  accepts: (selected: unknown, index: number) => boolean,
+): readonly unknown[] {
+  const configured = asRecord(value);
+  const fallbacks = configured?.fallbacks;
+  if (fallbacks !== undefined && !Array.isArray(fallbacks)) {
+    throw new ConfigurationHarnessError(setting(".fallbacks must be an array."));
+  }
+  const models = [typeof value === "string" ? value : configured?.primary, ...(fallbacks ?? [])];
+  models.forEach((selected, index) => {
+    if (!accepts(selected, index)) {
+      throw new ConfigurationHarnessError(
+        setting(
+          " must name each model as <provider>/<model>, such as openai/gpt-5.1 or codex/gpt-5.1.",
+        ),
+      );
+    }
+  });
+  return models;
+}
+
+// The path of a selection's model `index`, 0 for the primary: the selection itself when it is a
+// string.
+function selectedModelPath(
+  value: unknown,
+  at: readonly (string | number)[],
+  index: number,
+): readonly (string | number)[] {
+  if (index > 0) {
+    return [...at, "fallbacks", index - 1];
+  }
+  return typeof value === "string" ? at : [...at, "primary"];
+}
+
+// On a Preset save, whether a key of the selection object waits on a variable that a filling can
+// make `primary`, as in {"{{ vars.key }}": "openai/gpt-5.1"}: its model is checked once filled.
+function primaryWaitsOnKey(
+  value: unknown,
+  at: readonly (string | number)[],
+  unresolved: NonNullable<ConfigurationValidationOptions["unresolved"]>,
+): boolean {
+  return Object.keys(asRecord(value) ?? {}).some((key) => {
+    const literals = unresolved([...at, key], true);
+    return literals !== undefined && canSpell(literals, "primary");
+  });
+}
+
+// On a Preset save, whether some filling of a model reference that waits on an unfilled variable
+// (`literals`, the text around each one) makes a <provider>/<model> reference: not when its
+// written text starts or ends with a slash, nor when a number or boolean variable is the whole
+// reference (`type`), which fills it with no string.
+function fillsAsModelReference(literals: readonly string[], type: string | undefined): boolean {
+  return (
+    (type === undefined || type === "string") &&
+    !literals[0]!.startsWith("/") &&
+    !literals[literals.length - 1]!.endsWith("/")
+  );
+}
+
+/**
+ * The fallback rule of resolveConfiguredHarnessId alone, for one well-formed selection. Every
+ * deployment refuses a fallback on another provider, so Configuration save (through
+ * requireDeployableRoster), Preset save and Agent save refuse it too, even where another model
+ * policy rule leaves the rest to deployment (finding 1298). OpenClaw's `openrouter:auto` and
+ * `openrouter:free` count as openrouter references (finding 1320): saves refuse them earlier, as
+ * models without a slash (finding 1828), so this reading names a fallback only for Agent save's
+ * check of a stored Configuration. On a Preset save
+ * (`options.unresolved`), a reference whose provider waits on an unfilled variable (no `/` before
+ * the first one, as in `openrouter:{{ vars.kind }}`) is checked once filled, on the Configuration
+ * a launch creates (finding 1305).
+ */
+function requireSelectionFallbackProviders(
+  [value, at, setting]: ModelSelection,
+  { unresolved }: ConfigurationValidationOptions,
+): void {
   // OpenClaw's `openrouter:auto` and `openrouter:free` selectors name the openrouter provider
   // without a slash (`splitModelRef`), so they are checked as the other references are (finding
   // 1320), as a fallback and as the primary.
@@ -101,22 +180,67 @@ export function requireFallbackProviders(
       (literals === undefined || literals[0]!.includes("/"))
     );
   };
-  for (const [value, at, setting] of selections) {
-    const selection = asRecord(value);
-    if (
-      writtenProvider(selection?.primary, [...at, "primary"]) &&
-      Array.isArray(selection.fallbacks)
-    ) {
-      requirePrimaryProvider(
-        [
-          selection.primary,
-          ...selection.fallbacks.filter((selected: unknown, index: number): selected is string =>
-            writtenProvider(selected, [...at, "fallbacks", index]),
-          ),
-        ],
-        setting,
-      );
+  const selection = asRecord(value);
+  if (
+    writtenProvider(selection?.primary, [...at, "primary"]) &&
+    Array.isArray(selection.fallbacks)
+  ) {
+    requirePrimaryProvider(
+      [
+        selection.primary,
+        ...selection.fallbacks.filter((selected: unknown, index: number): selected is string =>
+          writtenProvider(selected, [...at, "fallbacks", index]),
+        ),
+      ],
+      setting,
+    );
+  }
+}
+
+// requireSelectionFallbackProviders over every selection: Agent save's check of its Configuration.
+export function requireFallbackProviders(
+  values: Readonly<OpenClawConfigurationDocument>,
+  options: ConfigurationValidationOptions = {},
+): void {
+  for (const selection of modelSelections(values)) {
+    requireSelectionFallbackProviders(selection, options);
+  }
+}
+
+/**
+ * The model selection rules of resolveConfiguredHarnessId that hold for every topology, in its
+ * order within each selection: its fallbacks are a list, each model a <provider>/<model>
+ * reference, and each fallback on the primary model's provider. Every deployment refuses a
+ * selection that breaks one, so Configuration save, Agent provisioning, Agent create preflight
+ * and Preset save refuse it too, with the deployment's text (requireDeployableRoster; finding
+ * 1828). On a Preset save, a model that waits on an unfilled variable, or a primary that a
+ * variable key can supply, is checked as far as its written text goes, and in full on the
+ * Configuration a launch creates.
+ */
+export function requireModelSelections(
+  values: Readonly<OpenClawConfigurationDocument>,
+  options: ConfigurationValidationOptions = {},
+): void {
+  const { unresolved, unresolvedType } = options;
+  for (const selection of modelSelections(values)) {
+    const [value, at, setting] = selection;
+    if (value !== undefined) {
+      selectedModels(value, setting, (selected, index) => {
+        const path = selectedModelPath(value, at, index);
+        const literals = unresolved?.(path);
+        if (literals !== undefined) {
+          return fillsAsModelReference(literals, unresolvedType?.(path));
+        }
+        return (
+          isModelReference(selected) ||
+          (index === 0 &&
+            selected === undefined &&
+            unresolved !== undefined &&
+            primaryWaitsOnKey(value, at, unresolved))
+        );
+      });
     }
+    requireSelectionFallbackProviders(selection, options);
   }
 }
 
@@ -124,20 +248,7 @@ function configuredModels(value: unknown, setting: SelectionMessage): readonly s
   if (value === undefined) {
     return [];
   }
-  const configured = asRecord(value);
-  const fallbacks = configured?.fallbacks;
-  if (fallbacks !== undefined && !Array.isArray(fallbacks)) {
-    throw new ConfigurationHarnessError("Configured Agent model fallbacks must be an array.");
-  }
-  const model = typeof value === "string" ? value : configured?.primary;
-  const models = [model, ...(fallbacks ?? [])].map((selected) => {
-    if (!isModelReference(selected)) {
-      throw new ConfigurationHarnessError(
-        "The configured Agent model must identify its provider and model as <provider>/<model>, such as openai/gpt-5.1 or codex/gpt-5.1.",
-      );
-    }
-    return selected;
-  });
+  const models = selectedModels(value, setting, isModelReference) as readonly string[];
   requirePrimaryProvider(models, setting);
   return models;
 }

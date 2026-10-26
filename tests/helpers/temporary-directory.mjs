@@ -1,4 +1,5 @@
 import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after } from "node:test";
@@ -21,5 +22,13 @@ after(() => {
 export function fileTemporaryDirectory(prefix) {
   const directory = mkdtempSync(join(tmpdir(), prefix));
   fileDirectories.add(directory);
+  return directory;
+}
+
+// Returns a new directory under TMPDIR that is removed after the test that owns `t`
+// ends, passed or failed. Prefer it whenever a test context is at hand.
+export async function temporaryDirectory(t, prefix) {
+  const directory = await mkdtemp(join(tmpdir(), prefix));
+  t.after(() => rm(directory, { recursive: true, force: true }));
   return directory;
 }
