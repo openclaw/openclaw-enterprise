@@ -326,7 +326,7 @@ test("a refused workspace setup fails the deployment saying a retry cannot help"
     {
       code: "WORKSPACE_SETUP_REFUSED",
       message:
-        "Initial workspace setup refused this version's workspace, and every retry would refuse it again: the workspace files or setup record, or the runtime's default files, do not match what the Agent was created with. Ask an admin to check the Agent's workspace storage and runtime image; do not delete the setup record to force a replay.",
+        "Initial workspace setup refused this version, and retries would too: its files, setup record or runtime defaults differ from what the Agent was created with. Ask an admin to check workspace storage and the runtime image; do not delete the setup record.",
     },
   );
 });
