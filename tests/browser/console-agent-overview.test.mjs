@@ -34,6 +34,7 @@ import {
   persistedDeploymentError,
   recordLayoutShifts,
   routeFailedDeployment,
+  routeOneVersionPerPage,
   settledFetches,
   settledView,
   takeLayoutShifts,
@@ -994,31 +995,6 @@ test("Recovery's Open Configuration follows whether the caller may edit the Conf
   assert.equal(answer.deploy, false);
   assert.deepEqual(await links(), ["Open v1 Logs"]);
 });
-
-// One readable version per history page: the first page lists the newest readable version.
-// `olderRead`, when given, is told of each older-page request and answers when it resolves.
-function routeOneVersionPerPage(page, fixture, namespace, agent, olderRead) {
-  const revisionsPath = `/namespaces/${namespace.id}/agents/${agent.id}/revisions`;
-  return page.route(
-    (url) => url.origin === fixture.origin && url.pathname === revisionsPath,
-    async (route) => {
-      const cursor = new URL(route.request().url()).searchParams.get("cursor");
-      if (cursor === "older-page") {
-        await olderRead?.();
-      }
-      const response = await route.fetch({ url: `${fixture.origin}${revisionsPath}` });
-      const body = await response.json();
-      await route.fulfill({
-        response,
-        json: {
-          ...body,
-          data: cursor === "older-page" ? body.data.slice(1) : body.data.slice(0, 1),
-          meta: { ...body.meta, nextCursor: cursor === "older-page" ? null : "older-page" },
-        },
-      });
-    },
-  );
-}
 
 test("A failed version raises no recovery while the current version is on no loaded page", async (t) => {
   const { fixture, namespace, agent, page } = await agentPage(t, "Paged history", "Paged history");

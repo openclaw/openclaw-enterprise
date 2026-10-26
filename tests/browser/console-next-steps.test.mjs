@@ -18,6 +18,7 @@ import {
   nativeValues,
   newPage,
   routeFailedDeployment,
+  routeOneVersionPerPage,
   shortId,
 } from "./console-agents-browser-helpers.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
@@ -257,10 +258,10 @@ test("a member's own deploy of a version she cannot read is accepted, not possib
 // After a failed first deployment the member deploys again. The failure is the newest version she
 // can read, but the version she just deployed is newer: the page leads with the accepted
 // deployment instead of the old failure, and keeps Stop for it (findings D751, D691).
-test("a redeploy the member cannot read leads with the accepted deployment and keeps Stop", async (t) => {
+async function redeployUnreadable(t, name, { paged = false } = {}) {
   const { fixture, namespace, agent, deployer, page, deployed } = await deployWithoutVersionRead(
     t,
-    "Redeploy unreadable",
+    name,
   );
   const first = await fixture.deployAgent(namespace.id, agent.id);
   await routeFailedDeployment(page, fixture, {
@@ -268,6 +269,10 @@ test("a redeploy the member cannot read leads with the accepted deployment and k
     agentId: agent.id,
     deploymentId: first.id,
   });
+  if (paged) {
+    // The first page lists v1 and says older versions exist; nothing here loads the older page.
+    await routeOneVersionPerPage(page, fixture, namespace, agent);
+  }
   await login(
     page,
     fixture,
@@ -295,6 +300,11 @@ test("a redeploy the member cannot read leads with the accepted deployment and k
   await stopButton(page).waitFor();
   assert.equal(await recovery.count(), 0);
   assert.equal(await page.getByText(/does not exist/).count(), 0);
+  // The older page is still unread, so the list is incomplete.
+  assert.equal(
+    await page.getByRole("button", { name: "Show older versions", exact: true }).count(),
+    paged ? 1 : 0,
+  );
 
   // The draft entry says the same: the accepted deployment, not v1's failure, and Stop stays.
   await page.getByRole("button", { name: "Open version draft", exact: true }).click();
@@ -308,4 +318,13 @@ test("a redeploy the member cannot read leads with the accepted deployment and k
   await summary.getByText("Deployment accepted", { exact: true }).waitFor();
   await stopButton(page).waitFor();
   assert.equal(await recovery.count(), 0);
-});
+}
+
+test("a redeploy the member cannot read leads with the accepted deployment and keeps Stop", (t) =>
+  redeployUnreadable(t, "Redeploy unreadable"));
+
+// An Agent with more than one page of versions (the API lists 50 per page). The accepted version
+// is newer than every listed one, so it cannot be on an older page that is not loaded yet: the
+// page still leads with it and keeps Stop (finding 2615).
+test("a redeploy the member cannot read leads with the accepted deployment with an older page of versions", (t) =>
+  redeployUnreadable(t, "Redeploy unreadable paged", { paged: true }));
