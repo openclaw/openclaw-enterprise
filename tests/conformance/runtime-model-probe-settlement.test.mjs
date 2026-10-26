@@ -239,9 +239,7 @@ test("real generated probe marks spawn return and cleanup without changing CAP",
   const end =
     GATEWAY_RUNTIME_ENTRYPOINT.indexOf(
       "\n}\n",
-      GATEWAY_RUNTIME_ENTRYPOINT.indexOf(
-        "function runOpenClawAuthenticationProbe(fs, capMs, cleanup) {",
-      ),
+      GATEWAY_RUNTIME_ENTRYPOINT.indexOf("\nfunction runOpenClawAuthenticationProbe("),
     ) + 2;
   const helper = GATEWAY_RUNTIME_ENTRYPOINT.slice(begin, end);
   assert.ok(begin >= 0 && end > begin);

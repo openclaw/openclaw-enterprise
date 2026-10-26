@@ -15,6 +15,7 @@ import {
   fileConsoleApp,
 } from "../helpers/console-app.mjs";
 import {
+  accessibleDescription,
   apiRequests,
   expectNoText,
   expireSessions,
@@ -705,6 +706,8 @@ test("Agents with no readable Namespace names it once and keeps one Refresh", as
     }
     const selector = page.getByRole("combobox", { name: "Namespace", exact: true });
     assert.equal(await selector.isDisabled(), true);
+    // A screen reader hears the panel's sentence as the disabled selector's reason (finding D749).
+    assert.equal(await accessibleDescription(selector), text, path);
     assert.equal(await selector.locator("option:checked").textContent(), selected);
     // The compact selector shows its whole selection, not "Namespace una…" (finding 2423).
     assert.ok(
