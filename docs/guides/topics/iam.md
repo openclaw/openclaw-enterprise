@@ -67,6 +67,10 @@ A new account starts with no access. As a human Installation administrator:
    PRINCIPAL_ID="$(jq -r .data.principalId created.json)"
    ```
 
+   No API lists accounts. With GitHub, Google or OIDC sign-in enabled,
+   `GET /api/auth/accounts/$USER_ID` returns `principalId` again; a signed-in
+   person finds their `USER_ID` as `user.id` in `GET /api/auth/session`.
+
 3. If the person signs in only through GitHub, Google or OIDC (always, under
    `recovery-only`), attach their identity to `USER_ID` now unless step 2
    did: see [GitHub](../../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts),
@@ -198,10 +202,16 @@ and bind it to each target:
 | Each Preset the Configuration uses        | `read`                                                       |
 | Each AgentRevision                        | `read`                                                       |
 
-A binding applies only the Role's permissions for its target's kind. Omit
-`delete` to keep the Agent's removal with administrators. Bind each new Agent revision
+A binding applies only the Role's permissions for its target's kind. Deploying
+needs `operate` on each Secret and credential source the Agent binds, also for a
+person without `update`. Omit `delete` to keep the Agent's removal with administrators. Bind each new Agent revision
 after it is deployed, or the person cannot see its status; see
 [Agent revisions](agent-revisions.md). Secret reads return metadata, never values.
+
+The console has no form for these grants. **Share Agent** on the Agent's
+**Access** tab grants full [native administration](../console/agent-sharing.md)
+of the Agent, not this set, so use the CLI or HTTP API as in
+[Add a person](#add-a-person).
 
 The person still cannot create Agents, Secrets or Configurations. To message
 the Agent, the person needs a channel its Configuration sets up or

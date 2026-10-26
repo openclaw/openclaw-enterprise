@@ -6030,6 +6030,18 @@ export const scenarios = {
     steps: ["Read the note above the panel, then choose Plugins: the note goes away."],
     gap: "The link is simulated; a reader without Installation administration gets the same note for the Access tab.",
   },
+  deploySecretOperateDenied: {
+    group: "Pages/Agent detail",
+    name: "Deployment needs Secret operate",
+    path: draft,
+    secretOperateDenied: ["sec_demo_model"],
+    description:
+      "The Agent's Secret answer lists the draft's model Secret as readable but not operable for this caller. Deploying needs Secret operate on every Secret the draft binds, so Deploy new version is disabled and the note beside it names the Secret and who grants it.",
+    steps: [
+      "Read the note beside Deploy new version: it names Demo model API key (simulated) and asks an Installation administrator to grant Secret operate.",
+    ],
+    gap: "The Secret answer is simulated; the API still authorizes the deployment and every Secret it binds.",
+  },
   deployInProgress: {
     group: "Pages/Agent detail",
     name: "Deployment in progress",
@@ -6880,7 +6892,7 @@ export const scenarios = {
     description:
       "A member saves a Slack token from the editor. The session already knows this member does not administer the Installation, so it sends no IAM request for the Agent's grant. The warning says this session did not verify the Agent's access and names the Installation administrator step.",
     steps: [
-      "The editor closes. The warning above Channels says access was not verified; Prepare says to resolve the saved Secret access grant. The request log shows no /iam/ request.",
+      "The editor closes. The warning above Channels says access was not verified; Deploy new version stays available, since the API checks the Agent's access when it deploys. The request log shows no /iam/ request.",
       "Open Credentials: the app token reads Bound · Agent access not confirmed. There is no Retry Secret access; Reload draft clears the warning.",
     ],
     gap: "The member browser test uses a member account and the real Installation permission check.",
@@ -7389,7 +7401,7 @@ export const scenarios = {
       "A member saves a new model Secret. The session already knows this member does not administer the Installation, so the form sends no IAM request for the Agent's grant. The warning says this session did not verify the Agent's access, names the Installation administrator and the step that grants it, and offers no Retry credential access.",
     steps: [
       "Read the warning: this session did not verify access, and an Installation administrator opens this Agent's Credentials and selects Save authentication source.",
-      "Only Reload authentication source remains. Deploy new version stays blocked. The request log shows the Agent PATCH and no /iam/ request.",
+      "Only Reload authentication source remains. Deploy new version stays available, since the API checks the Agent's access when it deploys. The request log shows the Agent PATCH and no /iam/ request.",
     ],
     gap: "The member browser test uses a member account and the real Installation permission check.",
   },

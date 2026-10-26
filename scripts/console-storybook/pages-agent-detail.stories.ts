@@ -122,6 +122,10 @@ export const TabLinkUnavailable = {
   ...story("tabLinkUnavailable"),
   name: "Link to an unavailable tab",
 };
+export const DeploySecretOperateDenied = {
+  ...story("deploySecretOperateDenied"),
+  name: "Deployment needs Secret operate",
+};
 export const DeployInProgress = { ...story("deployInProgress"), name: "Deployment in progress" };
 export const DeployHoldsNavigation = {
   ...story("deployHoldsNavigation"),
