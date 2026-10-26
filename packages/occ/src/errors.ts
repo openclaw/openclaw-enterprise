@@ -1466,8 +1466,6 @@ const RETRY_LATER_MESSAGES = Object.freeze({
  * operator can fix (`proxyRegistration`, `previewGatewayVersion`) from its availability check.
  */
 export class RetryLaterError extends DependencyUnavailableError {
-  static readonly messages = RETRY_LATER_MESSAGES;
-
   constructor(reason: "deviceLoginFailed", cause: unknown);
   constructor(reason: "registrationFence", seconds: number);
   constructor(reason: "proxyRegistration" | "previewGatewayVersion");
@@ -1522,8 +1520,6 @@ const SERVICE_ACCOUNT_BACKEND_BINDING_MESSAGES = Object.freeze({
  * read grant on the account and its lookup; the texts name no account, Backend or workspace.
  */
 export class ServiceAccountBackendBindingError extends ResourceStateConflictError {
-  static readonly messages = SERVICE_ACCOUNT_BACKEND_BINDING_MESSAGES;
-
   constructor(reason: keyof typeof SERVICE_ACCOUNT_BACKEND_BINDING_MESSAGES) {
     super(SERVICE_ACCOUNT_BACKEND_BINDING_MESSAGES[reason]);
     this.name = "ServiceAccountBackendBindingError";

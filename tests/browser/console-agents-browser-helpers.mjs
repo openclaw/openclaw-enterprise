@@ -1020,6 +1020,35 @@ export function routeOneVersionPerPage(page, fixture, namespace, agent, olderRea
   );
 }
 
+// Denies AgentRevision read on one version, as an administrator's per-version restriction does.
+// State reads the policy on each request, so it applies from the next read on.
+export function denyRevisionRead(fixture, namespace, revision) {
+  fixture.policy.restrictions.push({
+    id: `deny-read-${revision.id}`,
+    namespaceId: namespace.id,
+    resourceKind: "agent_revision",
+    resourceId: revision.id,
+    action: "read",
+    effect: "deny",
+  });
+}
+
+// The Stop Agent button in its row on the Agent page.
+export const stopAgentButton = (page) =>
+  page
+    .getByRole("region", { name: "Stop Agent", exact: true })
+    .getByRole("button", { name: "Stop Agent", exact: true });
+
+// The authorization denials an InMemoryAuditSink recorded for `action`: an exact action name, or
+// a RegExp for a family of actions.
+export function authorizationDenials(auditSink, action) {
+  const matches =
+    typeof action === "string" ? (name) => name === action : (name) => action.test(name);
+  return auditSink
+    .list()
+    .filter((event) => event.kind === "authorization_denial" && matches(event.action));
+}
+
 // WCAG 2 contrast between two sRGB colours given as [r, g, b] in 0-255.
 function contrastRatio(a, b) {
   const luminance = (rgb) => {

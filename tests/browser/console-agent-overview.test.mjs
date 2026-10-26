@@ -22,6 +22,7 @@ import {
   apiRequests,
   asksBeforeUnload,
   consoleViewports,
+  denyRevisionRead,
   deploymentStatusResponse,
   detailUrl,
   fileBrowser,
@@ -63,6 +64,7 @@ import {
   STOP_REQUESTED_FIRST_DEPLOYMENT,
   STOP_RUNNING_VERSION,
   STOP_UNKNOWN_DEPLOYMENT_CONFIRMATION,
+  NO_TEST_REQUEST,
 } from "../helpers/refusal-text.mjs";
 
 // The Agent page's first screen while its reads settle and its polls run: loading cues, quiet
@@ -293,17 +295,6 @@ test("the Share Agent form shows disabled while the sharing policy loads", async
   const after = await grants.boundingBox();
   assert.ok(Math.abs(after.y - before.y) < 1, `the grants moved ${after.y - before.y}px`);
 });
-
-function denyRevisionRead(fixture, namespace, revision) {
-  fixture.policy.restrictions.push({
-    id: `deny-read-${revision.id}`,
-    namespaceId: namespace.id,
-    resourceKind: "agent_revision",
-    resourceId: revision.id,
-    action: "read",
-    effect: "deny",
-  });
-}
 
 // The overview's "Deployment needs attention" recovery speaks for the version that is current
 // for this caller, and offers only the links that caller may use (finding 1458).
@@ -765,9 +756,7 @@ test("Live serving shows a lost Sandbox and its next step without moving the pag
     delete sandboxDriver.observeHarness;
     try {
       const { page } = await openOverview(consoleViewports[0]);
-      await liveServing(page)
-        .getByText("OpenClaw Enterprise sends no test request.", { exact: true })
-        .waitFor();
+      await liveServing(page).getByText(NO_TEST_REQUEST, { exact: true }).waitFor();
       assert.equal(await liveServing(page).locator(".badge").textContent(), "Not verified");
     } finally {
       sandboxDriver.observeHarness = observeHarness;

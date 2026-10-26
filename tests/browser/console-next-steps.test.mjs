@@ -11,9 +11,12 @@ import {
   requestedVersionUnavailable,
   VERSION_READ_DENIED,
   VERSION_UNAVAILABLE,
+  VERSION_READ_DENIED_HEADING,
+  READ_ONLY_DRAFT_NOTICE,
 } from "../helpers/refusal-text.mjs";
 import {
   AGENT_READ,
+  denyRevisionRead,
   detailUrl,
   login,
   nativeValues,
@@ -21,6 +24,7 @@ import {
   routeFailedDeployment,
   routeOneVersionPerPage,
   shortId,
+  stopAgentButton,
 } from "./console-agents-browser-helpers.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 
@@ -54,7 +58,7 @@ test("a version link the page cannot list says the version may not exist", async
     .getByText(requestedVersionUnavailable(shortId(madeUp)), { exact: true })
     .waitFor();
   assert.equal(await page.getByText(/after each deployment/).count(), 0);
-  assert.equal(await page.getByText("You cannot read this version").count(), 0);
+  assert.equal(await page.getByText(VERSION_READ_DENIED_HEADING).count(), 0);
 });
 
 test("a version link stays hedged when the reader can read no version", async (t) => {
@@ -109,14 +113,7 @@ test("a listed version the reader can no longer read is not called possibly miss
       // The list has shown v2; the grant is revoked before v2's own read.
       await listed;
       if (!fixture.policy.restrictions.some((item) => item.id === `deny-read-${next.id}`)) {
-        fixture.policy.restrictions.push({
-          id: `deny-read-${next.id}`,
-          namespaceId: namespace.id,
-          resourceKind: "agent_revision",
-          resourceId: next.id,
-          action: "read",
-          effect: "deny",
-        });
+        denyRevisionRead(fixture, namespace, next);
       }
       await route.continue();
     },
@@ -128,7 +125,7 @@ test("a listed version the reader can no longer read is not called possibly miss
     detailUrl(fixture, namespace.id, agent.id, next.id, "configuration"),
     reader.credentials,
   );
-  await page.getByRole("heading", { name: "You cannot read this version" }).waitFor();
+  await page.getByRole("heading", { name: VERSION_READ_DENIED_HEADING, exact: true }).waitFor();
   assert.equal(await page.getByText("Version not found or not shared").count(), 0);
 });
 
@@ -195,24 +192,12 @@ async function deployWithoutVersionRead(t, name) {
       const body = await response.json();
       const id = body.data?.id ?? body.id;
       deployed.push(id);
-      fixture.policy.restrictions.push({
-        id: `deny-read-${id}`,
-        namespaceId: namespace.id,
-        resourceKind: "agent_revision",
-        resourceId: id,
-        action: "read",
-        effect: "deny",
-      });
+      denyRevisionRead(fixture, namespace, { id });
       await route.fulfill({ response });
     },
   );
   return { fixture, namespace, agent, deployer, page, deployed };
 }
-
-const stopButton = (page) =>
-  page
-    .getByRole("region", { name: "Stop Agent", exact: true })
-    .getByRole("button", { name: "Stop Agent", exact: true });
 
 // The version a member just deployed exists: the API accepted it. #3721's hedge for edited links
 // ("does not exist or your access does not include it", with Retry) told her otherwise (finding
@@ -243,23 +228,20 @@ test("a member's own deploy of a version she cannot read is accepted, not possib
   await summary.getByText(DEPLOYED_VERSION_UNREADABLE, { exact: true }).waitFor();
   assert.equal(await summary.getByText("No readable deployments.").count(), 0);
   const panel = page.locator(".state-panel");
-  await panel.getByRole("heading", { name: "You cannot read this version" }).waitFor();
+  await panel.getByRole("heading", { name: VERSION_READ_DENIED_HEADING, exact: true }).waitFor();
   await panel.getByText(VERSION_READ_DENIED, { exact: true }).waitFor();
   assert.equal(await panel.getByRole("button", { name: "Retry" }).count(), 0);
   assert.equal(await panel.getByText(/^Request ID/).count(), 0);
   assert.equal(await page.getByText(/does not exist/).count(), 0);
   assert.equal(await page.getByText("Viewed version unavailable").count(), 0);
   // Nothing readable says what runs, so Stop stays: the API answers if nothing does.
-  await stopButton(page).waitFor();
+  await stopAgentButton(page).waitFor();
 
   // Once read is granted, the page Refresh shows the version: the tab does not keep the denial.
   fixture.policy.restrictions.length = 0;
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
   await page.getByRole("heading", { name: "Version v1" }).waitFor();
-  assert.equal(
-    await page.getByRole("heading", { name: "You cannot read this version" }).count(),
-    0,
-  );
+  assert.equal(await page.getByRole("heading", { name: VERSION_READ_DENIED_HEADING }).count(), 0);
 });
 
 // After a failed first deployment the member deploys again. The failure is the newest version she
@@ -289,7 +271,7 @@ async function redeployUnreadable(t, name, { paged = false } = {}) {
   const recovery = page.getByRole("region", { name: "Deployment needs attention" });
   await recovery.waitFor();
   // A failed first deployment leaves nothing to stop (finding D691).
-  assert.equal(await stopButton(page).count(), 0);
+  assert.equal(await stopAgentButton(page).count(), 0);
 
   await page.getByRole("button", { name: "Deploy new version" }).click();
   await page.waitForURL(/revision=rev_/);
@@ -304,7 +286,7 @@ async function redeployUnreadable(t, name, { paged = false } = {}) {
   await summary
     .getByText(`${DEPLOYED_VERSION_UNREADABLE} v1 (Failed) is older.`, { exact: true })
     .waitFor();
-  await stopButton(page).waitFor();
+  await stopAgentButton(page).waitFor();
   assert.equal(await recovery.count(), 0);
   assert.equal(await page.getByText(/does not exist/).count(), 0);
   // The older page is still unread, so the list is incomplete.
@@ -317,13 +299,13 @@ async function redeployUnreadable(t, name, { paged = false } = {}) {
   await page.getByRole("button", { name: "Open version draft", exact: true }).click();
   await page.waitForURL(/revision=draft/);
   // The URL changes before the draft page replaces the version page.
-  await page.getByText(/^Version draft · read-only with your access/).waitFor();
+  await page.getByText(READ_ONLY_DRAFT_NOTICE, { exact: true }).waitFor();
   await page
     .locator(".agent-status-line")
     .getByText(deployAcceptedVersionUnreadable(shortId(id)), { exact: true })
     .waitFor();
   await summary.getByText("Deployment accepted", { exact: true }).waitFor();
-  await stopButton(page).waitFor();
+  await stopAgentButton(page).waitFor();
   assert.equal(await recovery.count(), 0);
 }
 

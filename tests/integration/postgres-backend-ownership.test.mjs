@@ -23,8 +23,8 @@ import {
 } from "../helpers/postgres-backend-state.mjs";
 import { reservePort } from "../helpers/available-port.mjs";
 import { stopProcess } from "../helpers/stop-process.mjs";
-import { PostgresWorkQueue } from "../../packages/occ/src/state/postgres-work-queue.ts";
 import { waitFor } from "../helpers/wait-for.mjs";
+import { claimIsolatedWork } from "../helpers/postgres-work-claim.mjs";
 import {
   SERVICE_ACCOUNT_BACKEND_MISMATCH,
   SERVICE_ACCOUNT_NO_BACKEND_BINDING,
@@ -87,29 +87,6 @@ async function assertNoAgentNamed(pool, namespaceId, name, label) {
     [namespaceId, name],
   );
   assert.equal(result.rows[0].count, 0, label);
-}
-
-// Claims exactly `workId`: other work in this database stays locked, so the real queue's
-// SKIP LOCKED claim selects only it.
-async function claimOnly(pool, workId) {
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
-    await client.query(
-      "SELECT idempotency_key FROM occ.controller_work WHERE idempotency_key <> $1 FOR UPDATE SKIP LOCKED",
-      [workId],
-    );
-    // Claim on another connection: PostgreSQL does not skip a transaction's own locks.
-    const claim = await new PostgresWorkQueue(pool).claim();
-    await client.query("COMMIT");
-    assert.equal(claim?.idempotencyKey, workId);
-    return claim;
-  } catch (error) {
-    await client.query("ROLLBACK");
-    throw error;
-  } finally {
-    client.release();
-  }
 }
 
 // `expected` is the exact message, or a pattern for messages this file does not own.
@@ -726,10 +703,9 @@ test(
       backends: [backendDefinition({ workspaceId: alternateWorkspaceId })],
     });
     const { workId } = accepted.provisioning;
-    const outcome = await moved.processAgentProvisioning(
-      await claimOnly(fixture.pool, workId),
-      resolveApprovedHarness,
-    );
+    const claim = await claimIsolatedWork(fixture.pool, { workId });
+    assert.equal(claim?.idempotencyKey, workId);
+    const outcome = await moved.processAgentProvisioning(claim, resolveApprovedHarness);
     assert.equal(outcome.outcome, "permanent", JSON.stringify(outcome));
     const job = await fixture.pool.query(
       "SELECT progress->'error' AS error FROM occ.agent_provisioning_work WHERE work_id = $1",

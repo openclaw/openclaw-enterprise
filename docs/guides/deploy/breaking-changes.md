@@ -28,7 +28,8 @@ real Installation.
 
 - Deploy of an Agent with `github-installation` access when the OpenShell
   Credential Proxy has no `observedHookPreviewWorkspace`: `409
-RESOURCE_CONFLICT` (was `503`).
+RESOURCE_CONFLICT` (was `503`). An Agent provisioning job for such an Agent
+  now fails at once with the same message (it was retried).
 - Credential source create whose `token_url` names the tenant's own OpenShell
   gateway: `400 INVALID_REQUEST` naming `/config/token_url` (was `404`).
 - Update of a stored source whose `host` or `base_url` breaks a later

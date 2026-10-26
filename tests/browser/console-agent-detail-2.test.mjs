@@ -77,6 +77,7 @@ import {
   notIncluded,
   deleteRefused,
   tooManyRequestsIn,
+  VERSION_READ_DENIED_HEADING,
 } from "../helpers/refusal-text.mjs";
 
 // The Console Browser lane runs the two Agent detail test files in parallel.
@@ -2368,7 +2369,9 @@ test("Agent sharing grants existing people exact discovery and native access, th
   const recipientRequests = apiRequests(recipient, fixture.origin);
   await login(recipient, fixture, detail, person.credentials);
   // Agent sharing does not include version read, so the version pane says so.
-  await recipient.getByRole("heading", { name: "You cannot read this version" }).waitFor();
+  await recipient
+    .getByRole("heading", { name: VERSION_READ_DENIED_HEADING, exact: true })
+    .waitFor();
   // The policy reads are denied, so the sharing card is hidden instead of showing an error.
   await recipient.locator(".agent-access").waitFor({ state: "hidden" });
   assert.equal(
@@ -2424,7 +2427,9 @@ test("Agent sharing grants existing people exact discovery and native access, th
   const advice = await refreshedAdvice;
   assert.equal(advice.status(), 200);
   assert.equal((await advice.json()).data.operate, true);
-  await recipient.getByRole("heading", { name: "You cannot read this version" }).waitFor();
+  await recipient
+    .getByRole("heading", { name: VERSION_READ_DENIED_HEADING, exact: true })
+    .waitFor();
   await recipient.getByRole("button", { name: "Stop Agent", exact: true }).click();
   await recipient
     .getByRole("dialog")
@@ -4011,7 +4016,9 @@ test("explicit missing-file readback settles an uncertain workspace create witho
   );
   await reload.click();
   // The API names the read grant its own denial checked (finding 2534).
-  await form.getByText(/^Not authorized: this needs Agent read on Agent /).waitFor();
+  await form
+    .getByText(new RegExp(`^${RegExp.escape(callerDenied("Agent read", `Agent ${agent.id}`))}`))
+    .waitFor();
   assert.equal(await save.isDisabled(), true);
   assert.equal(writeRequests().length, 1);
   administrator.permissions = permissions;
