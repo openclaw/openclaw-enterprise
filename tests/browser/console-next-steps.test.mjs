@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 
+import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   DEPLOYED_VERSION_UNREADABLE,
@@ -16,6 +17,7 @@ import {
 } from "../helpers/refusal-text.mjs";
 import {
   AGENT_READ,
+  authorizationDenials,
   denyRevisionRead,
   detailUrl,
   login,
@@ -25,6 +27,8 @@ import {
   routeOneVersionPerPage,
   shortId,
   stopAgentButton,
+  trackSettledFetches,
+  waitForIdleFetches,
 } from "./console-agents-browser-helpers.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 
@@ -174,7 +178,8 @@ test("a rejected model credential tells a member without Agent update which gran
 // version her read does not cover: the policy denies it before the console reads it, as when an
 // administrator grants read on each version after it exists (docs/guides/topics/iam.md).
 async function deployWithoutVersionRead(t, name) {
-  const { fixture, namespace } = await createRuntimeAuthFixture(t, name);
+  const auditSink = new InMemoryAuditSink();
+  const { fixture, namespace } = await createRuntimeAuthFixture(t, name, { auditSink });
   const agent = await fixture.createAgent(namespace.id, name, nativeValues("accepted"), {
     harnessAuth: { method: "runtime" },
   });
@@ -196,18 +201,20 @@ async function deployWithoutVersionRead(t, name) {
       await route.fulfill({ response });
     },
   );
-  return { fixture, namespace, agent, deployer, page, deployed };
+  // Each refused version read is audited as a denial the member never attempted (finding D758).
+  const versionReadDenials = () => authorizationDenials(auditSink, "openclaw.agent_revisions.read");
+  return { fixture, namespace, agent, deployer, page, deployed, versionReadDenials };
 }
 
 // The version a member just deployed exists: the API accepted it. #3721's hedge for edited links
 // ("does not exist or your access does not include it", with Retry) told her otherwise (finding
 // D751). A refused version is settled, so its panel offers no Retry or request ID; the page
-// Refresh checks access again (finding D753).
+// Refresh checks access again (finding D753). The version list, which audits nothing it leaves
+// out, already shows she cannot read it, so the page never reads it (finding D758).
 test("a member's own deploy of a version she cannot read is accepted, not possibly missing", async (t) => {
-  const { fixture, namespace, agent, deployer, page, deployed } = await deployWithoutVersionRead(
-    t,
-    "Accepted unreadable",
-  );
+  const { fixture, namespace, agent, deployer, page, deployed, versionReadDenials } =
+    await deployWithoutVersionRead(t, "Accepted unreadable");
+  await trackSettledFetches(page);
   await login(
     page,
     fixture,
@@ -236,6 +243,21 @@ test("a member's own deploy of a version she cannot read is accepted, not possib
   assert.equal(await page.getByText("Viewed version unavailable").count(), 0);
   // Nothing readable says what runs, so Stop stays: the API answers if nothing does.
   await stopAgentButton(page).waitFor();
+  await waitForIdleFetches(page);
+  assert.deepEqual(versionReadDenials(), []);
+
+  // The page Refresh checks the version list again, which still leaves the version out. The
+  // rebuilt page replaces the panel.
+  const shownPanel = await panel.elementHandle();
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await shownPanel.waitForElementState("hidden");
+  await panel.getByRole("heading", { name: VERSION_READ_DENIED_HEADING, exact: true }).waitFor();
+  await page
+    .locator(".agent-status-line")
+    .getByText(deployAcceptedVersionUnreadable(shortId(id)), { exact: true })
+    .waitFor();
+  await waitForIdleFetches(page);
+  assert.deepEqual(versionReadDenials(), []);
 
   // Once read is granted, the page Refresh shows the version: the tab does not keep the denial.
   fixture.policy.restrictions.length = 0;

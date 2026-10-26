@@ -192,8 +192,10 @@ describe("Agent channels", { concurrency: 3 }, () => {
       await statusTone(dialog.getByText(/^New version\. Changes affect future deployments/)),
       { className: "status", tone: "info", role: "status" },
     );
-    const appSecretPath = `/namespaces/${namespace.id}/secrets/${slackAppSecret.id}`;
-    const botSecretPath = `/namespaces/${namespace.id}/secrets/${slackBotSecret.id}`;
+    // Each link opens the console's Secrets page with that Secret, not the API's JSON (finding
+    // D757).
+    const appSecretPath = `/console/secrets?namespace=${namespace.id}&secret=${slackAppSecret.id}`;
+    const botSecretPath = `/console/secrets?namespace=${namespace.id}&secret=${slackBotSecret.id}`;
     const appSecretLink = dialog.getByRole("link", {
       name: "View app token Secret metadata (opens in new tab)",
     });

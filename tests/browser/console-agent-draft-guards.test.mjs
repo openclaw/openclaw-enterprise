@@ -13,6 +13,7 @@ import {
   apiRequests,
   detailUrl,
   expectNoText,
+  grantMember,
   grantSecretOperate,
   hasFocus,
   holdRequests,
@@ -49,6 +50,7 @@ import {
   CHANNEL_SECRETS_CONFIGURATION_CHANGED,
   CONFIGURATION_SAVE_DENIED,
   DEPENDENCY_UNAVAILABLE,
+  deployUnlistedSecrets,
   GENERIC_DENIAL,
   NAMESPACE_NOT_READY,
   READ_UNAVAILABLE,
@@ -1551,6 +1553,68 @@ test("Deploy names the bound Secrets an operator may not operate", async (t) => 
     await deploy.click();
     assert.equal((await admitted).status(), 202);
     await page.waitForURL(/revision=rev_/);
+  }
+});
+
+// Finding D756. A bound Secret the operator may not read is not in her readable Secret list, and
+// the Secret operate answer covers only Secrets she may read. Deploying still needs Secret
+// operate on it, so Deploy is disabled beside a reason that names no Secret, instead of "Ready to
+// deploy." and a 403 on click. With read and operate on it, the same operator deploys. An
+// Installation administrator reads no Secret list, so the gate never holds for one.
+test("Deploy says a bound Secret the operator cannot read needs read and operate", async (t) => {
+  const { fixture, namespace, agent, path } = await deployableRepositoryAgent(
+    t,
+    "Unlisted Secret Agent",
+  );
+  const operator = await fixture.createNamespaceMember("unlisted-operator", namespace.id, [
+    ...AGENT_READ,
+    ["deploy", "agent"],
+    ["operate", "agent"],
+  ]);
+  const reason = deployUnlistedSecrets(1);
+  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
+  const deployed = async (page) => {
+    const deploy = page.getByRole("button", { name: "Deploy new version" });
+    await expectNoText(page, reason, () => waitForEnabled(deploy));
+    const admitted = page.waitForResponse(
+      (response) =>
+        response.url() === `${fixture.origin}${path}/deploy` &&
+        response.request().method() === "POST",
+    );
+    await deploy.click();
+    assert.equal((await admitted).status(), 202);
+    await page.waitForURL(/revision=rev_/);
+  };
+
+  {
+    const { page } = await newPage(t, fixture);
+    const requests = apiRequests(page, fixture.origin);
+    await login(page, fixture, url, operator.credentials);
+    await page.getByRole("heading", { name: "Unlisted Secret Agent" }).waitFor();
+    await page.getByText(reason, { exact: true }).waitFor();
+    const deploy = page.getByRole("button", { name: "Deploy new version" });
+    assert.equal(await deploy.isDisabled(), true);
+    assert.equal(await page.getByText("Ready to deploy.").count(), 0);
+    assert.equal(await page.getByText("Demo model credential").count(), 0);
+    assert.deepEqual(pathRequests(requests, "POST", `${path}/deploy`), []);
+  }
+
+  {
+    const { page } = await newPage(t, fixture);
+    await login(page, fixture, url);
+    await page.getByRole("heading", { name: "Unlisted Secret Agent" }).waitFor();
+    await deployed(page);
+  }
+
+  grantMember(fixture, "unlisted-operator", [
+    ["read", "secret"],
+    ["operate", "secret"],
+  ]);
+  {
+    const { page } = await newPage(t, fixture);
+    await login(page, fixture, url, operator.credentials);
+    await page.getByRole("heading", { name: "Unlisted Secret Agent" }).waitFor();
+    await deployed(page);
   }
 });
 

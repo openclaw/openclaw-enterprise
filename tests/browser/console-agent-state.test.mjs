@@ -785,6 +785,57 @@ test("A member's Agent detail reads no bound Secret her Secret list leaves out",
   assert.deepEqual(secretDenials(), []);
 });
 
+// Finding D757. A bound Secret's links open the console's Secrets page with that Secret's metadata
+// and consumers, not the API path's raw JSON. A member whose Secret list leaves the Secret out
+// gets no link, which would only open a refusal the API audits; the Credentials field says why
+// its name is unavailable, as the Configuration tab does.
+test("Credentials links a readable bound Secret to the Secrets page and explains an unreadable one", async (t) => {
+  const auditSink = new InMemoryAuditSink();
+  const fixture = await createConsoleAppFixture(t, { auditSink });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Secret links", { ready: true });
+  const secret = await fixture.createSecret(namespace.id, "Linked model key", "hidden-model");
+  const agent = await fixture.createAgent(namespace.id, "Linked Agent", nativeValues("x"), {
+    harnessAuth: { method: "api_key", source: secret.ref },
+  });
+  const reader = await fixture.createNamespaceMember("link-reader", namespace.id, AGENT_READ);
+  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "credentials");
+  const secretPage = `/console/secrets?namespace=${namespace.id}&secret=${secret.id}`;
+  const metadataLink = (page) =>
+    page.getByRole("link", {
+      name: "View harness authentication Secret metadata (opens in new tab)",
+    });
+
+  const { page: member } = await newPage(t, fixture);
+  await trackSettledFetches(member);
+  await login(member, fixture, url, reader.credentials);
+  const hint = member.locator("#harness-auth-secret-status");
+  await hint.getByText(BOUND_SECRET_UNLISTED, { exact: true }).waitFor();
+  await waitForIdleFetches(member);
+  assert.equal(await metadataLink(member).count(), 0);
+  assert.equal(await member.getByText("Secret metadata is bound.").count(), 0);
+  assert.deepEqual(authorizationDenials(auditSink, /^openclaw\.secrets\./), []);
+
+  const { page: admin } = await newPage(t, fixture);
+  await login(admin, fixture, url);
+  await waitForEnabled(admin.getByLabel("API key Secret", { exact: true }));
+  const link = metadataLink(admin);
+  await link.waitFor();
+  assert.equal(await link.getAttribute("href"), secretPage);
+  assert.equal(await link.getAttribute("target"), "_blank");
+  // The Configuration tab's summary names the Secret with a link to the same page.
+  await admin.getByRole("tab", { name: "Configuration", exact: true }).click();
+  const named = admin.getByRole("link", { name: "Linked model key", exact: true });
+  await named.waitFor();
+  assert.equal(await named.getAttribute("href"), secretPage);
+  // The Secrets page opens that Secret's metadata and consumers, Agent included.
+  const [opened] = await Promise.all([admin.waitForEvent("popup"), named.click()]);
+  const dialog = opened.getByRole("dialog", { name: "Linked model key" });
+  await dialog.getByText(secret.id, { exact: true }).waitFor();
+  await dialog.getByRole("link", { name: agent.id, exact: true }).waitFor();
+  assert.equal(await opened.locator("pre").count(), 0);
+});
+
 // Finding 2619. Backends need Installation administration. A member's Backends page shows the
 // refusal without reading Backends, which the API audits as a denial nobody attempted, on each
 // page load; an administrator still reads them.

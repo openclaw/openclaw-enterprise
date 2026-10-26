@@ -1993,11 +1993,10 @@ test("Agent credentials choose existing Secrets for harness authentication", asy
   assert.equal(await unreadableSecret.inputValue(), "Bound Secret");
   await unreadableSecret.click();
   await page.getByRole("option", { name: "Bound Secret", exact: true }).waitFor();
+  // A Secret no list read shows gets no metadata link (finding D757).
   assert.equal(
-    await page
-      .getByRole("link", { name: /View harness authentication Secret metadata/ })
-      .getAttribute("href"),
-    `/namespaces/${namespace.id}/secrets/${replacementSecret.id}`,
+    await page.getByRole("link", { name: /View harness authentication Secret metadata/ }).count(),
+    0,
   );
 });
 
