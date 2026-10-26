@@ -858,13 +858,10 @@ test("Deploy waits for the Agent's Secret grant read and sends no deploy it woul
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
   const deploy = page.getByRole("button", { name: "Deploy new version" });
   // Once the deploy status has settled with the read still held, Deploy must be disabled.
-  await page.waitForFunction(
-    () =>
-      (
-        document.querySelector("section.agent-draft-actions p.muted[role=status]")?.textContent ??
-        ""
-      ).trim() !== "",
-  );
+  await page
+    .locator("section.agent-draft-actions p.muted[role=status]")
+    .filter({ hasText: /\S/ })
+    .waitFor();
   assert.ok(heldReads > 0, "the grant read is in flight");
   assert.equal(await deploy.isDisabled(), true);
   await page.getByText("Checking this Agent's credential access before deploying.").waitFor();
