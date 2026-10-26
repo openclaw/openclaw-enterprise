@@ -11,7 +11,7 @@ author: stevenlee-oai
 
 ## Decision for review
 
-An administrator should be able to authorize a Google connection once, then give each Agent a different set of actions on that connection. For the first release, the administrator selects a reviewed Google integration before deployment. The Gateway delivers its skill and the dedicated Harness worker runs [gog](https://github.com/openclaw/gogcli). Before injecting a credential, the proxy checks each request against the calling execution’s binding. A script that calls Google directly must pass the same check as gog.
+An administrator should be able to authorize a Google connection once, then give each Agent a different set of actions on that connection. The first release starts with one personal Agent. Its owner selects the reviewed Google integration and binds one Google connection before deployment. The Gateway delivers its skill and the dedicated Harness worker runs [gog](https://github.com/openclaw/gogcli). Before injecting a credential, the proxy checks each request against the calling execution’s binding. A script that calls Google directly must pass the same check as gog.
 
 **Two choices need maintainer agreement.** Suppose an administrator turns off Gmail writes for one Agent while a directly configured credential rule still allows the same operation. Which rule governs the next request? If the Agent is already running, when does that decision take effect? The [credential authorization policy](#credential-authorization-policy) defines what the Console must show and how other Agents sharing the connection stay isolated.
 
@@ -58,7 +58,7 @@ An operator can register multiple OAuth applications in one OCE Namespace, with 
 
 OCE plugin management initiates consent before Agent deployment. A trusted OCE connection handler completes the callback and code exchange, then hands the returned refresh grant and initial access token to the selected credential lifecycle. Only its admitted owner stores the grant and refreshes tokens. The initial token must pass admission and eligibility checks. OpenShell can be the selected owner for Google. OCC stores the source reference and requested versus observed granted scopes, and marks the connection ready after handoff succeeds. This extends the separation in the [Credential Refresh design](0016-sandbox-credential-injection/credential-refresh.md). The [personal Agent OAuth proposal](https://github.com/openclaw/openclaw-enterprise/pull/3068) addresses a related consent and custody flow; align the shared mechanics while keeping its personal-Agent policy distinct.
 
-OCC records the selected source and plugin settings in the Agent revision. Deployment admits a fresh execution-specific credential grant, binding, and routes derived from that selection. The worker receives a placeholder; the authorization path below controls credential use. Tokens, refresh grants, and client secrets stay out of model context, saved scripts, logs, and Agent configuration. Authorized Agents may share a connection; withdrawing one binding must not alter another Agent’s access.
+OCC records the selected source and plugin settings in the Agent revision. Deployment admits a fresh execution-specific credential grant, binding, and routes derived from that selection. The worker receives a placeholder; the authorization path below controls credential use. Tokens, refresh grants, and client secrets stay out of model context, saved scripts, logs, and Agent configuration. The [personal OAuth backend proposal](https://github.com/openclaw/openclaw-enterprise/blob/2c868396c394bd964ab320491d361b5ac5e6342b/docs/reference/connection-templates.md#L151-L164) restricts each connected source to its own Agent.
 
 ## Plugin limits and enforcement
 
@@ -94,14 +94,43 @@ No new managed remote MCP integration is required for native-plugin delivery. If
 
 [OpenShell network rules](https://github.com/NVIDIA/OpenShell/blob/20cb306d3ae864f82a91784c8cccb8d33b75b5f4/docs/how-it-works/policies/network-rules.mdx#L499-L542) document MCP tool-name matching without argument filtering. Its [HTTP request middleware](https://github.com/NVIDIA/OpenShell/blob/v0.1.4/docs/extensibility/supervisor-middleware/operations.mdx) documents body inspection and is a candidate for input enforcement; the deployed path still needs qualification.
 
-Other providers and multiple end-user Google accounts on one Agent are later work. Per-action approval, reviewer routing, OpenClaw elicitation, and general granular tool-permission parity are outside P0. Any future custom-code approval flow must enforce a bounded grant outside the code and remains separate from the P0 credential authorization rules. Existing [plugin approval policies](0014-plugin-policy-enforcement.md) remain a separate contract.
+Additional providers follow P0. Per-action approval, reviewer routing, OpenClaw elicitation, and general granular tool-permission parity are outside P0. Any future custom-code approval flow must enforce a bounded grant outside the code and remains separate from the P0 credential authorization rules. Existing [plugin approval policies](0014-plugin-policy-enforcement.md) remain a separate contract.
 
 ## Delivery and qualification
 
-A local proof of concept exercised Gmail reads with a temporary worker patch and custom image. The [implementation plan](../plans/0024-managed-native-openclaw-plugins.md) covers catalog admission, OAuth setup, worker packaging, policy translation and deployment. The first release must demonstrate the following on an ordinary dedicated deployment:
+A local proof of concept exercised Gmail reads with a custom image and worker patch. P0 requires these results on an ordinary dedicated OpenClaw deployment.
 
-- A reviewed Gmail read reaches Google through both gog and custom code. A denied operation through either caller produces no upstream request.
-- Two Agents share a saved connection with different access. Withdrawing one binding stops its subsequent credentialed requests while the other Agent retains its own access.
+- Gmail reads succeed through gog and custom code. With a send-capable Google grant and a read-only binding, the proxy blocks sends from both before forwarding.
+- After confirming withdrawal, the proxy denies fresh requests using that binding. OCC refuses to attach the personal source to another Agent.
 - After worker replacement, the Agent can reuse its indexed workspace with a newly admitted execution binding. Console distinguishes saved settings from the policy confirmed at the enforcement boundary.
 
-ClawHub discovery and release admission follow the first release. Investigate remote MCP support only if the existing path has a demonstrated gap. The plan also tracks credential visibility, additional providers and credential modes.
+### P0 delivery TODOs
+
+Each item maps to the [implementation plan](../plans/0024-managed-native-openclaw-plugins.md#delivery-steps).
+
+1. **Catalog.** Pin the reviewed release, placement, connection, destinations and actions in the Agent revision.
+2. **OAuth.** Support reusable clients per Namespace, consent, requested and granted scopes, one refresh owner and failure recovery. [Backend PR](https://github.com/openclaw/openclaw-enterprise/pull/3098)
+3. **Setup.** Let the owner choose connections, products and scopes, and see prerequisites and unavailable actions. [Console PR](https://github.com/openclaw/openclaw-enterprise/pull/3175)
+4. **Execution binding.** Compute configures the proxy. Sandbox applies and attests the wiring. Deliver the execution’s placeholder and CA trust.
+5. **Worker.** Pin gog, deliver the selected skill and preserve the workspace on replacement.
+6. **Google inventory.** Map actions to required scopes, credential modes and identity prerequisites.
+7. **Destinations.** Bind the initial Google endpoint. Enforce administrator-approved destinations, operations and inputs for custom scopes.
+8. **Credential policy.** Settle rule precedence and when each binding’s policy changes take effect.
+9. **Translation.** Generate request rules attributable to each Google action.
+10. **Policy Console.** Show editable rules and the policy the proxy has applied.
+11. **Authorization.** Qualify proxy and Sandbox enforcement for gog and custom code before injection.
+12. **Deployment.** Verify activation, replacement and withdrawal through the ordinary Console flow.
+
+### Follow-ups
+
+13. **ClawHub discovery.** Show release compatibility and admission status.
+14. **ClawHub delivery.** Review and pin each release and its dependencies, including updates.
+15. **MCP.** Investigate gaps in credentialed discovery and enforcement of tool names and arguments.
+16. **Credential visibility.** Investigate showing authorized administrators source references, placeholder names and applied injection rules. Exclude credential and placeholder values.
+
+Version the reviewed Google operation inventory independently of gog. Support multiple approved API hosts on one credential binding, with per-host operation limits and one refresh owner. Cache public schemas by API version if lookup costs warrant it. Discovery adds no operations to the catalog or policy automatically.
+
+### Google connection milestones
+
+- **Next, two accounts on one personal Agent.** Bind both to the same release. Read a distinct message from each inbox. Disconnect one, verify its calls fail, and read the other again.
+- **Separately, two Agents sharing one connection.** Authorize each Agent to use the source. Verify the same operation succeeds for one and is denied for the other. Withdraw one binding. Verify its requests fail while the other Agent retains its access.
