@@ -333,6 +333,14 @@ model turn.
 - **Agent configuration is rejected:** Confirm the selected Harness supports
   its execution mode; external channels and provider-issued access tokens
   require dedicated execution.
+- **An Agent with repository bindings is refused for its Codex proxy:** Agent
+  save, provisioning and deployment answer `400` when
+  `plugins.entries.codex.config.appServer.networkProxy` has `enabled: false`, a
+  `mode` other than `limited` or `full`, a non-boolean `allowLocalBinding`, or
+  `domains` that is not an object mapping each host to `allow` or `deny`.
+  Preparation also refuses a deny of the broker hostname, which only session
+  material names. Fix or delete the named setting, or remove the bindings; see
+  [repository broker policy](kubernetes-compute/networking-and-isolation.md#networking).
 - **Approved traffic fails or denied traffic succeeds:** Verify NetworkPolicy
   enforcement, configured DNS selectors, gateway-client selectors, and any
   configured channel proxy address.

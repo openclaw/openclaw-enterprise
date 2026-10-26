@@ -21,6 +21,29 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-26: a Codex network proxy that blocks the repository broker is refused at save
+
+**What breaks.** For an Agent with repository bindings on a dedicated Codex
+Harness, or on embedded OpenClaw with the Codex Plugin Driver and plugins,
+Agent create and update, provisioning and deployment answer `400
+INVALID_REQUEST` when `plugins.entries.codex.config.appServer.networkProxy`
+has `enabled: false`, a `mode` other than `limited` or `full`, a non-boolean
+`allowLocalBinding`, or `domains` that is not an object mapping each host to
+`allow` or `deny`. Earlier builds saved and admitted it, and Kubernetes
+preparation refused it; a dedicated deploy had stopped the running version
+first. Configuration save still accepts it, because a Configuration does not
+know which Agents use it.
+
+**Who is affected.** Agents with repository bindings whose Configuration has
+such a setting. They could not deploy before either.
+
+**How to tell.** The `400` reads `Configuration setting
+plugins.entries.codex.config.appServer.networkProxy.<setting> ..., so Codex
+cannot reach the repository credential broker`.
+
+**Steps.** Fix or delete the named setting in the Configuration, or remove the
+Agent's repository bindings, then save or deploy again.
+
 ## 2026-10-26: A denial of your own permission names the missing grant
 
 **What breaks.** A `403 FORBIDDEN` for a grant the caller lacks no longer says
@@ -288,54 +311,3 @@ example `resources.limits.cpu must not be negative`. A request above its limit
 is still left to Kubernetes, which refuses it when Helm applies the release.
 
 **Steps.** Remove the negative or unknown entry, and run the upgrade again.
-
-## 2026-10-24: SSH Compute refuses runtime paths under /tmp
-
-**What breaks.** Controller startup refuses an SSH Compute `runtime.root` that
-is `/`, has a `.` or `..` segment, or lies under `/tmp` or `/var/tmp`, as the
-[SSH Compute reference](../../reference/drivers/ssh-compute.md) already said,
-and a `nodePath` or `openclawPath` under `/tmp` or `/var/tmp`. Earlier builds
-started, but each Agent unit runs with `PrivateTmp`, so it could not reach paths
-under those and every deployment timed out. A root such as `/var/lib/./oce`
-worked and is now refused too.
-
-**Who is affected.** SSH Installations with such a path.
-
-**How to tell.** Startup fails with `INVALID_VALUE` at `/runtime/root`,
-`/runtime/nodePath`, `/runtime/openclawPath` or `/hosts`.
-
-**Steps.** Write a root with `.` or `..` segments in its resolved form (the same
-directory, so state is kept). Move a path under `/tmp` or `/var/tmp`, for example
-the state root to `/var/lib/openclaw-enterprise`. Then restart the controller
-and deploy again.
-
-## 2026-10-24: Kubernetes Compute checks dedicated placement and selector labels
-
-**What breaks.** Deployment admission refuses a dedicated Agent (Codex or
-OpenClaw) when the Kubernetes Compute configuration sets `runtime` without
-`runtime.gatewayNodeSelector` or `gatewayRouting`. Agent create and update
-refuse it too when the Configuration selects a model and the Agent binds a
-Secret or `runtime` authentication; a stored such Agent still reads, but each
-update is refused until the setting is fixed. Controller startup refuses
-`runtime.nodeSelector` or `runtime.gatewayNodeSelector` label keys or values
-that Kubernetes refuses, and `resources.namespace.quota` entries whose name is
-not a Kubernetes quota resource name or whose value is not a non-negative
-quantity. Earlier builds accepted all of these; each dedicated deployment then
-stopped the running revision and failed in preparation, or the API server
-refused the Deployment or ResourceQuota.
-
-**Who is affected.** Installations with such a setting. Embedded and
-channel-runtime Installations without dedicated Agents are not affected by the
-placement check.
-
-**How to tell.** Saving or deploying the Agent fails with 400 and `Dedicated Agents need
-runtime.gatewayNodeSelector` (or `gatewayRouting`) `in this Installation's
-Kubernetes Compute configuration`. Or startup fails at
-`/runtime/nodeSelector`, `/runtime/gatewayNodeSelector` or
-`/resources/namespace/quota`.
-
-**Steps.** Set `runtime.gatewayNodeSelector` to the trusted node pool's labels
-and configure `gatewayRouting`, as the
-[Kubernetes Compute reference](../../reference/drivers/kubernetes-compute.md)
-describes; fix the selector labels or quota entries; then restart the
-controller.
