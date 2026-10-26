@@ -834,6 +834,19 @@ test("Credentials links a readable bound Secret to the Secrets page and explains
   await dialog.getByText(secret.id, { exact: true }).waitFor();
   await dialog.getByRole("link", { name: agent.id, exact: true }).waitFor();
   assert.equal(await opened.locator("pre").count(), 0);
+  // The link opens the Secret once: the header's Refresh reloads the list without opening it
+  // again, because the page dropped the parameter from its URL.
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  await dialog.waitFor({ state: "detached" });
+  const oldRow = await opened
+    .getByRole("button", { name: "Linked model key", exact: true })
+    .elementHandle();
+  await opened.getByRole("button", { name: "Refresh", exact: true }).click();
+  await opened.waitForFunction((row) => !row.isConnected, oldRow);
+  await opened.getByRole("button", { name: "Linked model key", exact: true }).waitFor();
+  // The Secrets page opens a linked Secret in the same task that draws the list.
+  assert.equal(await opened.getByRole("dialog").count(), 0);
+  assert.equal(new URL(opened.url()).search, `?namespace=${namespace.id}`);
 });
 
 // Finding 2619. Backends need Installation administration. A member's Backends page shows the

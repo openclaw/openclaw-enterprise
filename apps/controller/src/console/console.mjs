@@ -598,6 +598,19 @@ function takeNativeFragment(current) {
   return match ? { kind: "native", key: match[1] } : null;
 }
 
+// An Agent page's Secret link (finding D757) opens that Secret on the Secrets page once. Drop the
+// parameter in place before the page loads, so the header's Refresh does not reopen it.
+function takeLinkedSecret() {
+  const { url } = route();
+  const secretId = url.searchParams.get("secret");
+  if (url.pathname !== "/console/secrets" || secretId === null) {
+    return null;
+  }
+  url.searchParams.delete("secret");
+  replaceUrl(url.pathname + url.search);
+  return secretId;
+}
+
 const shellUI = createShell({ app, pages, route, pageUrl, navigate, loadPage, logout });
 shellUI.setLeaveGuard((options) => Boolean(leaveGuard?.(options)));
 const { publicPanel, renderRows, switchNamespace } = shellUI;
@@ -1306,6 +1319,7 @@ async function loadPage({
   }
   // A refocus or visibility recheck of the shown page, as opposed to a navigation.
   const resumingView = reuseView && !fromNavigation;
+  const linkedSecretId = takeLinkedSecret();
   const current = route();
   const nativeIntent = takeNativeFragment(current);
   if (fromNavigation && nativeIntent === null) {
@@ -2300,7 +2314,7 @@ async function loadPage({
         items,
         sorted,
         permissions: firstPermissions,
-        openSecretId: current.url.searchParams.get("secret"),
+        openSecretId: linkedSecretId,
       });
     } else {
       if (current.feature === "backends" && backendsDenied) {

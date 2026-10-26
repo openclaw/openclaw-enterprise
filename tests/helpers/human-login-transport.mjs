@@ -99,8 +99,10 @@ export function createLoginFixture({
     onAPIError: { throw: true },
   });
   // The controller wrapper sets x-occ-client-ip from the socket peer or a trusted ingress.
-  // It also owns the thrown dependency error and answers it as 503; this boundary records
-  // the error so tests can prove the endpoint passed it on unchanged.
+  // It also owns a thrown dependency error and answers it as an outage; that mapping is
+  // proved through the real controller (postgres-github-outage, postgres-github-cookie-commit).
+  // This boundary records the error and rethrows it, as the handler does, so tests prove the
+  // endpoint passed it on unchanged without asserting an answer of the fixture's own.
   const call = async (path, init, ip = "10.0.0.1") => {
     try {
       return await auth.handler(
@@ -111,7 +113,7 @@ export function createLoginFixture({
       );
     } catch (error) {
       errors.push(error);
-      return Response.json({ message: "Authentication dependency unavailable." }, { status: 503 });
+      throw error;
     }
   };
   return {

@@ -961,6 +961,16 @@ test("the Agent Secret answer names the readable Secrets a binding save would be
   const blindReader = await member("secret-answer-blind-reader", reads, []);
   assert.deepEqual(await blindReader.data(), { operateDenied: [], unreadableOperateDenied: 0 });
   assert.equal(denials().length, deniedAfterDeploy);
+  // A caller who may bind gets both answers at once: every readable Secret she may not operate,
+  // bound or not, and a count of the bound ones she may neither read nor operate (app and the
+  // Harness authentication Secret). The unbound Secret nobody reads is in neither.
+  const blindEditor = await member("secret-answer-blind-editor", reads, [bot, ...spares]);
+  blindEditor.grant("configuration", "update", "configuration", agent.configurationId);
+  assert.deepEqual(await blindEditor.data(), {
+    operateDenied: [bot.id, ...spareIds].sort(),
+    unreadableOperateDenied: 2,
+  });
+  assert.equal(denials().length, deniedAfterDeploy);
   // Both updates without Configuration read: no save can bind a Secret, so it is not reported.
   const unreadConfiguration = await member(
     "secret-answer-no-configuration-read",

@@ -2614,9 +2614,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       // list.
       const mayBind = configurationUpdate || update;
       const reported = namespaceRead && configurationRead && (mayBind || deploy);
-      const listed = reported
-        ? await controller.listSecretsOperateDenied(context.actorId, namespaceId)
-        : [];
       // A deployment checks only the Secrets the draft binds now: its Configuration's Secret
       // bindings and a Secret Harness authentication source.
       const bound = new Set<string>();
@@ -2641,19 +2638,15 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           bound.add(agent.harnessAuth.source.id);
         }
       }
+      // One Secret scan answers both: the listed Secrets the caller may read but not operate, and
+      // how many bound ones it may neither read nor operate, a count, never their IDs, so a
+      // console can hold Deploy without naming them (finding D756).
+      const { readable: listed, unreadableCount: unreadableOperateDenied } = reported
+        ? await controller.secretsOperateDenied(context.actorId, namespaceId, bound)
+        : { readable: [], unreadableCount: 0 };
       // A caller who may deploy but bind nothing learns only those, which the Agent and
       // Configuration reads already name (finding 2565).
       const operateDenied = mayBind ? listed : listed.filter((id) => bound.has(id));
-      // The bound Secrets the caller may neither read nor operate: a count, never their IDs, so a
-      // console can hold Deploy without naming them (finding D756).
-      const unreadableOperateDenied =
-        bound.size > 0
-          ? await controller.countUnreadableSecretsOperateDenied(
-              context.actorId,
-              namespaceId,
-              bound,
-            )
-          : 0;
       reply.send({
         data: { operateDenied, unreadableOperateDenied },
         meta: { requestId: request.id },

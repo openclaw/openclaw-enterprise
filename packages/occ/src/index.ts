@@ -5287,50 +5287,42 @@ export class OpenClawController {
     principalId: string,
     namespaceId: string,
   ): Promise<readonly string[]> {
-    const namespace = await this.getNamespace(principalId, namespaceId);
-    return this.read(async (state) => {
-      const denied: string[] = [];
-      for (const secret of await state.secrets.listSecrets(namespace.id)) {
-        const resource: ResourceRef = { kind: "secret", id: secret.id, namespaceId: namespace.id };
-        if (
-          (await this.canRead(principalId, resource)) &&
-          !(await this.authorizationDecision(principalId, "operate", resource)).decision.allowed
-        ) {
-          denied.push(secret.id);
-        }
-      }
-      return Object.freeze(denied.sort());
-    });
+    return (await this.secretsOperateDenied(principalId, namespaceId, new Set())).readable;
   }
 
   /**
-   * How many of the Namespace's Secrets among `secretIds` the principal may neither read nor
-   * operate: an advisory count for a client that deploys a draft binding them, which needs operate
-   * on each (finding D756). It names none, since the principal may not read them. Decisions as in
-   * listSecretsOperateDenied: one read unit, and a false decision is an answer, not an audited
+   * The Namespace's Secrets the principal may read but not operate (`readable`, sorted IDs), and
+   * how many of those among `unreadableAmong` it may neither read nor operate
+   * (`unreadableCount`): an advisory count for a client that deploys a draft binding them, which
+   * needs operate on each (finding D756). The count names none, since the principal may not read
+   * them. One read unit and one Secret scan; a false decision is an answer, not an audited
    * attempt. The caller checks Namespace read first.
    */
-  async countUnreadableSecretsOperateDenied(
+  async secretsOperateDenied(
     principalId: string,
     namespaceId: string,
-    secretIds: ReadonlySet<string>,
-  ): Promise<number> {
+    unreadableAmong: ReadonlySet<string>,
+  ): Promise<{ readonly readable: readonly string[]; readonly unreadableCount: number }> {
     const namespace = await this.getNamespace(principalId, namespaceId);
     return this.read(async (state) => {
-      let count = 0;
+      const readable: string[] = [];
+      let unreadableCount = 0;
       for (const secret of await state.secrets.listSecrets(namespace.id)) {
-        if (!secretIds.has(secret.id)) {
+        const resource: ResourceRef = { kind: "secret", id: secret.id, namespaceId: namespace.id };
+        const read = await this.canRead(principalId, resource);
+        if (!read && !unreadableAmong.has(secret.id)) {
           continue;
         }
-        const resource: ResourceRef = { kind: "secret", id: secret.id, namespaceId: namespace.id };
-        if (
-          !(await this.canRead(principalId, resource)) &&
-          !(await this.authorizationDecision(principalId, "operate", resource)).decision.allowed
-        ) {
-          count += 1;
+        if ((await this.authorizationDecision(principalId, "operate", resource)).decision.allowed) {
+          continue;
+        }
+        if (read) {
+          readable.push(secret.id);
+        } else {
+          unreadableCount += 1;
         }
       }
-      return count;
+      return { readable: Object.freeze(readable.sort()), unreadableCount };
     });
   }
 

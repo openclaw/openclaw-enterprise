@@ -108,9 +108,11 @@ the exact Agent; it covers every version. Opening the Agent in the console also
 needs Namespace `read` (otherwise it shows "Namespace unavailable"). Runtime
 status needs `read` bound to each Agent revision by ID. A `read_logs`
 Restriction blocks log text even for administrators. Without `operate`, the Logs
-tab has no runtime strip or Pod picker. When the Agent permission answer's
-`readLogs` is false, the tab skips the audited read. Service principals use the
-same grants. Each request and follow poll is authorized again. See
+tab has no runtime strip or Pod picker; it reads each source's current Pod and
+says when a source is missing. When the Agent permission answer's `readLogs` is
+false, the tab skips the audited read. Service principals use the same grants.
+Each request and follow poll is authorized again, so revoking a grant stops the
+next poll. See
 [authorization](../../reference/authorization.md).
 
 ## What the output contains
