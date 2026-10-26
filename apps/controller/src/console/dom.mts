@@ -482,9 +482,11 @@ export function describeDisabled(
     (control as HTMLElement & { disabled?: boolean }).disabled === true ||
     control.getAttribute("aria-disabled") === "true";
   let id: string | undefined;
-  if (disabled && typeof reason === "string") {
+  if (!disabled || !reason) {
+    id = undefined;
+  } else if (typeof reason === "string") {
     id = reason;
-  } else if (disabled && reason && !reason.hidden && reason.textContent?.trim()) {
+  } else if (!reason.hidden && reason.textContent?.trim()) {
     id = reason.id ||= `disabled-reason-${++reasonIds}`;
   }
   const linked = control.dataset.disabledReason;

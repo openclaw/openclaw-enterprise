@@ -1268,7 +1268,10 @@ test("an operator without administer sees status but no log text and is never re
   await page.locator(".runtime-pod").getByRole("heading", { name: "Gateway" }).waitFor();
   await page.getByText(LOG_TEXT_DENIED).waitFor();
   assert.equal(await page.getByText("operator must not see this").count(), 0);
-  // Every log control is disabled and described by the refusal beside it (finding D749).
+  // Every log control is disabled and described by the refusal beside it, Request ID included
+  // (finding D749).
+  const refusal = await page.locator(".log-error").textContent();
+  assert.ok(refusal?.startsWith(LOG_TEXT_DENIED));
   for (const control of [
     page.locator("#runtime-log-source"),
     page.getByLabel("Previous instance"),
@@ -1278,7 +1281,7 @@ test("an operator without administer sees status but no log text and is never re
     page.getByRole("button", { name: "Download" }),
   ]) {
     assert.equal(await control.isDisabled(), true);
-    assert.equal(await accessibleDescription(control), LOG_TEXT_DENIED);
+    assert.equal(await accessibleDescription(control), refusal);
   }
   const denied = logRequests(requests, revisionId).length;
   assert.equal(denied, 1);
