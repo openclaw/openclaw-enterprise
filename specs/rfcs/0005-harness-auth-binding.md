@@ -215,8 +215,8 @@ through Responses and Messages adapters, and a tool call. Admission tests must
 reject missing/conflicting references and credential overrides, while dedicated
 custom-provider rejection remains covered. Independent selectable catalogs,
 runtime source-pin upgrades, new auth methods, and credential brokerage are
-separate work. This amendment is proposed; implementation and live proof remain
-pending.
+separate work. This amendment is proposed; the draft implementation still
+requires independent review and live qualification.
 
 ## Manual Notes
 

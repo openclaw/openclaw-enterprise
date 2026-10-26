@@ -129,7 +129,7 @@ const HARNESS_BINDING = "model credentials come from the Agent's Harness authent
 const PROVIDER_ENVIRONMENT =
   "the Agent's Harness authentication binding owns model provider environment";
 const MODEL_CREDENTIAL_ENVIRONMENT =
-  /^(?:OPENAI_|ANTHROPIC_|CODEX_(?:ACCESS_TOKEN|CHATGPT_WORKSPACE_ID|LOGIN_MODE)$)/i;
+  /^(?:OPENAI_|ANTHROPIC_|OCE_MODEL_API_KEY$|CODEX_(?:ACCESS_TOKEN|CHATGPT_WORKSPACE_ID|LOGIN_MODE)$)/i;
 // The refusal names the header, so it explains itself whatever word the rule matched; never its
 // value. A header name is not a secret. A long one is cut so the message fits its cap.
 const credentialHeaderRequirement = (name: string): string =>

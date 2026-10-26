@@ -1067,7 +1067,13 @@ function prepareHarnessAuth(
   const environment: V1EnvVar[] = [];
   if (resolvedAuth.method === "api_key") {
     environment.push(
-      secret(harnessModelAuthentication(configuration).environmentName, resolvedAuth.backendRef),
+      secret(
+        harnessModelAuthentication(
+          configuration,
+          harness.id === "openclaw" && harness.mode === "embedded",
+        ).environmentName,
+        resolvedAuth.backendRef,
+      ),
     );
   } else if (
     resolvedAuth.method === "credential_source" &&
@@ -1205,6 +1211,7 @@ const GATEWAY_PASSWORD_KEY = "gateway-password";
 const TRUSTED_PROXY_IDENTITY = "occ-workspace-files";
 const TRUSTED_PROXY_HEADER = "x-occ-identity";
 const MODEL_API_KEY = "OPENAI_API_KEY";
+const CUSTOM_MODEL_API_KEY = "OCE_MODEL_API_KEY";
 const SERVICE_ACCOUNT_TOKEN_KEY = "token";
 /** The provider credential whose token an account Secret holds, so a leftover can be revoked. */
 const SERVICE_ACCOUNT_CREDENTIAL_ID_ANNOTATION = "openclaw.dev/provider-credential-id";
@@ -2595,9 +2602,12 @@ function harnessPrimaryModel(configuration: OpenClawConfigurationDocument): stri
   return model;
 }
 
-function harnessProbeConfiguration(configuration: OpenClawConfigurationDocument): object {
+function harnessProbeConfiguration(
+  configuration: OpenClawConfigurationDocument,
+  embedded = false,
+): object {
   const model = harnessPrimaryModel(configuration);
-  const { providerId } = harnessModelAuthentication(configuration);
+  const { providerId, environmentName } = harnessModelAuthentication(configuration, embedded);
   const provider = asRecord(asRecord(asRecord(configuration.models)?.providers)?.[providerId]);
   const fragment = provider === undefined ? undefined : { ...provider };
   if (fragment !== undefined) {
@@ -2624,6 +2634,11 @@ function harnessProbeConfiguration(configuration: OpenClawConfigurationDocument)
       "Selected model provider transport configuration cannot require additional Secret or environment references.",
     );
   }
+  // A custom provider has no ambient native key name. Its isolated probe uses only
+  // the Compute-owned process environment, not caller Secret provider configuration.
+  if (fragment !== undefined && environmentName === CUSTOM_MODEL_API_KEY) {
+    fragment.apiKey = { source: "env", provider: "default", id: CUSTOM_MODEL_API_KEY };
+  }
   return {
     agents: {
       defaults: {
@@ -2636,13 +2651,26 @@ function harnessProbeConfiguration(configuration: OpenClawConfigurationDocument)
 }
 
 // The immutable model selection owns both native credential projection and probing.
-function harnessModelAuthentication(configuration: OpenClawConfigurationDocument) {
+function harnessModelAuthentication(
+  configuration: OpenClawConfigurationDocument,
+  embedded = false,
+) {
   const providerId = splitModelRef(harnessPrimaryModel(configuration)).provider;
   if (providerId === "openai" || providerId === "codex") {
     return { providerId, environmentName: MODEL_API_KEY };
   }
   if (providerId === "anthropic") {
     return { providerId, environmentName: "ANTHROPIC_API_KEY" };
+  }
+  const provider = asRecord(asRecord(asRecord(configuration.models)?.providers)?.[providerId]);
+  if (embedded && provider !== undefined) {
+    if (provider.apiKey === undefined) {
+      throw callerSettingError(
+        `${keyedSettingPath("models.providers", providerId)}.apiKey`,
+        `must reference ${CUSTOM_MODEL_API_KEY}, which the Agent's Harness authentication binding supplies`,
+      );
+    }
+    return { providerId, environmentName: CUSTOM_MODEL_API_KEY };
   }
   throw new ConfigurationFailure("Harness authentication requires a compatible model provider.");
 }
@@ -2866,7 +2894,7 @@ function requireConfiguredModelProviders(
   try {
     const resolvable = withoutVariableProviders(configuration, options);
     harnessId = resolveConfiguredHarnessId(resolvable);
-    authentication = harnessModelAuthentication(resolvable);
+    authentication = harnessModelAuthentication(resolvable, harnessId === "openclaw");
   } catch (error) {
     if (error instanceof ConfigurationHarnessError || error instanceof ConfigurationFailure) {
       return;
@@ -4572,7 +4600,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         ? [selection]
         : [value?.primary, ...(Array.isArray(value?.fallbacks) ? value.fallbacks : [])];
     });
-    const authentication = harnessModelAuthentication(configuration);
+    const authentication = harnessModelAuthentication(configuration, embedded);
     // Every model selection (fallbacks, subagents, image, PDF, per-channel, ...) and every Agent
     // entry uses the primary model's provider, named by the setting (finding 1291). Dedicated
     // Codex qualifies model policy selectors, so it refuses every bare one, a little more than
@@ -4603,7 +4631,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       );
     }
     if (openclaw) {
-      harnessProbeConfiguration(configuration);
+      harnessProbeConfiguration(configuration, embedded);
     }
     if (native) {
       nativeRuntimeConfiguration(configuration, callerSettingError, auth.method);
@@ -15034,7 +15062,8 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
             environment: [{ name: "CODEX_LOGIN_MODE", value: "protected-no-inference" }],
           }
         : prepareHarnessAuth(revision.harness, auth, revision.configuration);
-    const native = harnessModelAuthentication(revision.configuration);
+    const embedded = revision.harness.id === "openclaw" && revision.harness.mode === "embedded";
+    const native = harnessModelAuthentication(revision.configuration, embedded);
     return {
       ...prepared,
       environment: [
@@ -15046,7 +15075,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
               { name: "OPENCLAW_HARNESS_CREDENTIAL_ENV", value: native.environmentName },
               {
                 name: "OPENCLAW_HARNESS_PROBE_CONFIG",
-                value: JSON.stringify(harnessProbeConfiguration(revision.configuration)),
+                value: JSON.stringify(harnessProbeConfiguration(revision.configuration, embedded)),
               },
             ]
           : []),
