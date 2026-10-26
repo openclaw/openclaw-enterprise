@@ -19,7 +19,12 @@ import type {
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture, fileConsoleApp } from "../helpers/console-app.mjs";
 import { grantRole } from "../helpers/iam-grants.mjs";
-import { LOG_TEXT_DENIED, RUNTIME_STATUS_DENIED } from "../helpers/refusal-text.mjs";
+import {
+  LOG_TEXT_DENIED,
+  RUNTIME_STATUS_DENIED,
+  RUNTIME_STATUS_OPERATE_DENIED,
+  RUNTIME_STATUS_VERSION_DENIED,
+} from "../helpers/refusal-text.mjs";
 import {
   createProviderSandboxDriver,
   createRuntimeLogComputeDriver,
@@ -1389,8 +1394,9 @@ test("a log reader without operate reads log text in the Logs tab without runtim
   const url = detailUrl(fixture, namespace.id, agent.id, revisionId, "logs");
   await login(page, fixture, url, reader.credentials);
 
-  // Runtime status needs operate; log text needs only read_logs, so the tab still reads it.
-  await page.getByText(RUNTIME_STATUS_DENIED).waitFor();
+  // Runtime status needs operate; log text needs only read_logs, so the tab still reads it. The
+  // reader holds AgentRevision read, so the strip asks only for operate (finding D753).
+  await page.getByText(RUNTIME_STATUS_OPERATE_DENIED, { exact: true }).waitFor();
   const pane = page.getByRole("log", { name: "Runtime log output" });
   await pane.getByText("log reader can see this").waitFor();
   const pod = computeDriver.podName({ id: revisionId });
@@ -2140,7 +2146,7 @@ test("a reader without operate learns what log text needs and is not asked for s
   const url = detailUrl(fixture, namespace.id, agent.id, revisionId, "logs");
   await login(page, fixture, url, reader.credentials);
 
-  await page.getByText(RUNTIME_STATUS_DENIED).waitFor();
+  await page.getByText(RUNTIME_STATUS_OPERATE_DENIED, { exact: true }).waitFor();
   await page.locator(".log-error").getByText(LOG_TEXT_DENIED, { exact: true }).waitFor();
   // One refusal, one sentence: only the log pane says what log text needs (finding D763).
   assert.equal(await page.getByText(/read_logs/).count(), 1);
@@ -2159,10 +2165,62 @@ test("a reader without operate learns what log text needs and is not asked for s
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await page.getByRole("tab", { name: "Logs", exact: true }).click();
   // The reopened tab shows this text only after its status decision, so a read would have started.
-  await page.getByText(RUNTIME_STATUS_DENIED).waitFor();
+  await page.getByText(RUNTIME_STATUS_OPERATE_DENIED, { exact: true }).waitFor();
   await settlePageRequests(page);
   assert.equal(statusReads(), 0);
   assert.equal(logRequests(requests, revisionId).length, 0);
+});
+
+// The strip names only the status grant the caller's answers show missing (finding D753): the
+// permission answer says whether she holds Agent operate, and the version read whether she holds
+// AgentRevision read. A caller whose version read was refused and who lacks operate gets both.
+test("the runtime status refusal names AgentRevision read only when the version read is refused", async (t) => {
+  const { fixture, namespace, agent, revisionId } = await logsFixture(t);
+  const statusPath = `/deployments/${revisionId}/runtime`;
+  const cases = [
+    {
+      name: "runtime-operator-no-version",
+      permissions: ["read", "operate"] satisfies PermissionAction[],
+      text: RUNTIME_STATUS_VERSION_DENIED,
+      statusRead: true,
+    },
+    {
+      name: "runtime-reader-no-version",
+      permissions: ["read"] satisfies PermissionAction[],
+      text: RUNTIME_STATUS_DENIED,
+      statusRead: false,
+    },
+  ];
+  for (const { name, permissions, text, statusRead } of cases) {
+    const { account } = await logsMember(fixture, namespace, name, permissions, {
+      versionRead: false,
+    });
+    const { page } = await newPage(t, fixture);
+    const requests = apiRequests(page, fixture.origin);
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, revisionId, "logs"),
+      account.credentials,
+    );
+    // A refused read adds its Request ID after the sentence.
+    await page.getByText(text).waitFor();
+    await settlePageRequests(page);
+    // The operator holds operate, so the strip does not ask for it.
+    assert.equal(
+      await page.getByText(/Runtime status requires Agent operate/).count(),
+      statusRead ? 0 : 1,
+      name,
+    );
+    // An operator's status read is sent and refused for the version; a reader's answer already
+    // denies operate, so hers is not sent (finding 2454).
+    assert.equal(
+      requests.some(({ path }) => path.endsWith(statusPath)),
+      statusRead,
+      name,
+    );
+    await page.close();
+  }
 });
 
 test("a status denial for one operator does not carry over to the next sign-in on the tab", async (t) => {
@@ -2548,6 +2606,7 @@ async function logsMember(
   namespace: NamespaceWire,
   name: string,
   agentPermissions: PermissionAction[],
+  { versionRead = true } = {},
 ) {
   let role: FixtureRole | undefined;
   const account = await fixture.createAccountWithPolicy(name, (principal: { id: string }) => {
@@ -2560,7 +2619,7 @@ async function logsMember(
         namespace: ["read"],
         agent: agentPermissions,
         configuration: ["read"],
-        agent_revision: ["read"],
+        agent_revision: versionRead ? ["read"] : [],
       },
     }));
   });

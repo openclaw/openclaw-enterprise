@@ -17,7 +17,7 @@ import {
   statusBlock,
   withRequestId,
 } from "../dom.mjs";
-import { LOG_TEXT_DENIED, RUNTIME_STATUS_DENIED } from "./access-reasons.mjs";
+import { LOG_TEXT_DENIED, runtimeStatusDenied } from "./access-reasons.mjs";
 import { displayDate, namespacePath, retryAfterText } from "./list.mjs";
 import { fitLogTimeColumn, SOURCE_LABELS, podCard, recordRow, visibleText } from "./logs-view.mjs";
 
@@ -44,6 +44,8 @@ interface AgentLogsOptions {
   permissions?(options?: {
     fresh: boolean;
   }): Promise<{ operate: boolean; readLogs?: boolean } | null>;
+  // Whether the caller may read this version (AgentRevision read); undefined when unknown.
+  versionRead?: Promise<boolean | undefined>;
   onLogsDenied?(): void;
   // A read was refused after the same read succeeded: the caller's access changed.
   onAccessChanged?(): void;
@@ -119,7 +121,7 @@ function runtimeErrorText(
   if (error.status === 403) {
     // Each names its own grant: a status refusal still reads log text, whose pane names
     // read_logs if that is refused too.
-    return tier === "logs" ? LOG_TEXT_DENIED : RUNTIME_STATUS_DENIED;
+    return tier === "logs" ? LOG_TEXT_DENIED : runtimeStatusDenied({});
   }
   if (error.status === 501) {
     return "This Compute Driver does not expose runtime status or logs, or an operator turned them off.";
@@ -198,6 +200,7 @@ export function renderAgentLogs(
     shown = Promise.resolve(),
     // Returns the caller's newest permission answer; `{ fresh: true }` reads it again.
     permissions = () => Promise.resolve(null),
+    versionRead = Promise.resolve(undefined),
     onLogsDenied = () => {},
     onAccessChanged = () => {},
   }: AgentLogsOptions,
@@ -640,6 +643,11 @@ export function renderAgentLogs(
     }
   }
 
+  // A status refusal names only the grants the caller's answers show missing (finding D753).
+  async function statusDenial(operate: boolean | undefined) {
+    return runtimeStatusDenied({ operate, versionRead: await versionRead });
+  }
+
   async function loadStatus() {
     clearTimeout(statusTimer);
     if (!current()) {
@@ -669,7 +677,9 @@ export function renderAgentLogs(
       // retained view's answer; its resumed loads take the newest one.
       const fresh = !permissionsAsked;
       permissionsAsked = true;
-      const operate = (await permissions({ fresh }))?.operate === true;
+      const answer = (await permissions({ fresh }))?.operate;
+      const operate = answer === true;
+      const denial = await statusDenial(answer);
       // Another status load may have taken the denial while this one waited.
       if (!current() || !deniedStatusViews.has(statusKey)) {
         return;
@@ -679,11 +689,7 @@ export function renderAgentLogs(
         deniedStatusViews.delete(statusKey);
       } else {
         deniedStatusViews.set(statusKey, operate);
-        showStripStatus(
-          revokedStatusViews.has(statusKey)
-            ? STATUS_ACCESS_CHANGED
-            : runtimeErrorText({ status: 403 }, "status"),
-        );
+        showStripStatus(revokedStatusViews.has(statusKey) ? STATUS_ACCESS_CHANGED : denial);
         offerLogsWithoutStatus();
         return;
       }
@@ -722,6 +728,12 @@ export function renderAgentLogs(
         }
       } catch (cause) {
         const error = requestFailure(cause);
+        // A first refusal names the missing grants; a refusal of shown status is a revocation,
+        // which says so instead (below), so it waits for no answer.
+        const denial =
+          error.status === 403 && !description?.observedAt
+            ? await statusDenial((await permissions())?.operate)
+            : null;
         if (!current() || superseded()) {
           return;
         }
@@ -737,7 +749,7 @@ export function renderAgentLogs(
         // The Pod cards stay after a failed refresh: say when they were observed, so they do
         // not read as current. A refusal is not a stale view; its revocation path clears them.
         const lastObserved = error.status === 403 ? null : description?.observedAt;
-        const failure = runtimeErrorText(error, "status");
+        const failure = denial ?? runtimeErrorText(error, "status");
         showStripStatus(
           error.status === 403 && revokedStatusViews.has(statusKey)
             ? STATUS_ACCESS_CHANGED

@@ -210,9 +210,14 @@ export const SANDBOX_POLICY_READ_DENIED = notIncluded(
 // The Logs tab's refusals use the API's grant words for log text (finding 2599).
 export const LOG_TEXT_DENIED =
   "Log text requires Agent read_logs (or Agent administer) on this Agent. Ask an Installation administrator to grant it.";
-// The status refusal names only status: the log pane names read_logs itself (finding D763).
+// The status refusal names only status: the log pane names read_logs itself (finding D763). It
+// names only the grant the caller's answers show missing (finding D753); unknown answers, both.
 export const RUNTIME_STATUS_DENIED =
   "Runtime status requires Agent operate on this Agent and AgentRevision read on this version. Ask an Installation administrator to grant them.";
+export const RUNTIME_STATUS_OPERATE_DENIED =
+  "Runtime status requires Agent operate on this Agent. Ask an Installation administrator to grant it.";
+export const RUNTIME_STATUS_VERSION_DENIED =
+  "Runtime status requires AgentRevision read on this version. Ask an Installation administrator to grant it.";
 // A version link the page cannot list may name a version that does not exist: the API answers
 // both alike, so the console says either may be true (finding D750).
 export const VERSION_UNAVAILABLE =
