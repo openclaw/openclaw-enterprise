@@ -369,7 +369,7 @@ test("A taken-name refusal after an unknown provisioning outcome unlocks the nam
     (response) => response.url() === provisionUrl && response.request().method() === "POST",
   );
   await page.getByRole("button", { name: "Retry provisioning request" }).click();
-  assert.equal(refused.status(), 409);
+  assert.equal((await refused).status(), 409);
   await waitForEnabled(name);
   await assertAgentNameTaken(page);
   // The API admitted nothing under this request ID, so a new name is a plan it accepts. This
@@ -800,7 +800,7 @@ test("Credential registration removal preserves the safety fence and retries the
   );
   const refused = deleted();
   await remove.click();
-  assert.equal(refused.status(), 403);
+  assert.equal((await refused).status(), 403);
   await page
     .getByText(
       `${notIncluded("removing this credential registration", "credential source delete on it")} The model Secret remains saved.`,
