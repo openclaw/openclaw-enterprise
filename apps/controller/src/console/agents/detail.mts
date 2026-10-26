@@ -1101,20 +1101,24 @@ export async function renderAgentDetail(
   });
   // Revision read is granted per version, so someone who may deploy can still be
   // unable to read the version that is now current, or the one they just requested.
-  function revisionHidden(revisionId: string | undefined) {
-    // Until every page is loaded, an unlisted version may simply be older than those shown.
+  function unlisted(revisionId: string | undefined) {
     return (
       visibleRevisionsLoaded &&
-      olderCursor === null &&
       Boolean(revisionId) &&
       revisionId !== "draft" &&
       !visibleRevisions.some((revision) => revision.id === revisionId)
     );
   }
+  function revisionHidden(revisionId: string | undefined) {
+    // Until every page is loaded, an unlisted version may simply be older than those shown.
+    return unlisted(revisionId) && olderCursor === null;
+  }
   const deployedHere = (revisionId: string) =>
     deployedVersions.has(failedVersionKey(path, revisionId));
   // The newest version this tab deployed for this Agent that the caller cannot read and that is
   // newer than every version listed, whichever entry is viewed: the draft too (finding D751).
+  // Being newer than the first page, it cannot sit on an older one, so the list need not be
+  // fully loaded (finding 2615).
   function acceptedHiddenVersion(newestListed: number) {
     let accepted: { id: string; revision: number } | undefined;
     for (const [key, revision] of deployedVersions) {
@@ -1123,7 +1127,7 @@ export async function renderAgentDetail(
         agentPath === path &&
         revision > newestListed &&
         revision > (accepted?.revision ?? 0) &&
-        revisionHidden(id)
+        unlisted(id)
       ) {
         accepted = { id, revision };
       }
