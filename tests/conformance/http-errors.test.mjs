@@ -11,7 +11,6 @@ import {
   ConfigurationValidationError,
 } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
 import {
-  accessDenied,
   isStaleGeneration,
   message,
   namespaceListNeed,
@@ -82,6 +81,7 @@ import {
   DEPENDENCY_UNAVAILABLE,
   GENERIC_DENIAL,
   NAMESPACE_NOT_READY,
+  namespaceListDenied,
   RESOURCE_CONFLICT,
   RESOURCE_NOT_FOUND,
 } from "../helpers/refusal-text.mjs";
@@ -1606,6 +1606,6 @@ test("the console shows a named denial unless the view names the grant itself", 
   assert.equal(message(denial(GENERIC_DENIAL)), CONSOLE_ACCESS_DENIED);
   assert.equal(message(denial("The admitted Namespace does not match.")), CONSOLE_ACCESS_DENIED);
   const need = namespaceListNeed("Secrets");
-  assert.equal(message(denial(named), false, need), accessDenied(need));
+  assert.equal(message(denial(named), false, need), namespaceListDenied("Secrets"));
   assert.equal(message({ ...denial(named), refusal: "View refusal." }), "View refusal.");
 });
