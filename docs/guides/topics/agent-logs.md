@@ -107,7 +107,8 @@ needs Namespace `read` (otherwise it shows "Namespace unavailable"). Runtime
 status needs `read` bound to each Agent revision by ID. A `read_logs`
 Restriction blocks log text even for administrators. Without `operate`, the Logs
 tab has no runtime strip or Pod picker; it reads each source's current Pod and
-says when one is missing. Service principals use the same grants. Every
+says when one is missing. When the console knows which status grant is missing,
+the refusal names only that grant. Service principals use the same grants. Every
 request and poll is authorized again, so revoking a grant stops the next poll.
 See [authorization](../../reference/authorization.md).
 
