@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createRequire } from "node:module";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { createServer, isIPv4 } from "node:net";
 import {
@@ -21,6 +21,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { loadTestSuites } from "./test-suites.mjs";
 import { cleanupResourceIds, deleteOwnedK3dCluster } from "./cleanup.mjs";
 import { withStateLock } from "./state-lock.mjs";
+import { runPostgresAdmin } from "./postgres-admin.mjs";
 import {
   ANSI_COLOR,
   captureK3dDiagnostics,
@@ -29,6 +30,7 @@ import {
 } from "./k3d-diagnostics.mjs";
 import { prepareGatewayRouting } from "./routing.mjs";
 import { prepareLogging, readDefaultCollectorImage } from "./logging.mjs";
+import { ownedName, randomSuffix, slug } from "./resource-names.mjs";
 import { pullImage } from "./image-pull.mjs";
 import { keycloakResourceKind, prepareKeycloak, readKeycloakImage } from "./keycloak.mjs";
 import { imageInventory, laneImagesResourceKind } from "./lane-images.mjs";
@@ -70,7 +72,6 @@ const fixtureLanes = new Set([
 const lanesWithoutK3sAddons = new Set([
   ...fixtureLanes,
   "images-runtime-startup",
-  "repository-credentials-platform",
   "k3d-observability",
 ]);
 const disabledK3sAddons = Object.freeze(["traefik", "servicelb", "metrics-server"]);
@@ -126,29 +127,6 @@ function parseArgs(argv) {
     }
   }
   return args;
-}
-
-function randomSuffix(bytes = 6) {
-  return randomUUID()
-    .replaceAll("-", "")
-    .slice(0, bytes * 2);
-}
-
-function slug(value, separator = "-") {
-  return String(value)
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, separator)
-    .replace(new RegExp(`${separator}+`, "g"), separator)
-    .replace(new RegExp(`^${separator}|${separator}$`, "g"), "");
-}
-
-function ownedName(prefix, label, { maxLength = 63, separator = "-" } = {}) {
-  const suffix = randomSuffix();
-  const normalizedPrefix = slug(prefix, separator);
-  const normalizedLabel = slug(label, separator) || "resource";
-  const fixedLength = normalizedPrefix.length + suffix.length + 2;
-  const labelLength = Math.max(1, maxLength - fixedLength);
-  return [normalizedPrefix, normalizedLabel.slice(0, labelLength), suffix].join(separator);
 }
 
 function databaseName(kind, label) {
@@ -617,19 +595,37 @@ async function ensurePostgresServer(statePath, state) {
     dockerArgsForPostgres(resource, "up", "-d", "--wait"),
     { env: { OCC_POSTGRES_PORT: String(port) } },
   );
+  await postgresAdmin(resource, { statements: ciPostgresSettings, stage: "postgres-settings" });
   await markResourceReady(statePath, state, resource);
   return resource;
 }
 
-async function postgresExec(resource, args, stage) {
-  await execFile(
-    process.env.OCC_DOCKER_BIN ?? "docker",
-    dockerArgsForPostgres(resource, "exec", "-T", "postgres", ...args),
-    {
-      env: { OCC_POSTGRES_PORT: String(resource.port) },
-      stage,
-    },
-  );
+// The lane's server is disposable (cleanup removes it with its volume), so it gives up
+// durability: commits stop waiting for WAL flushes, and the checkpoint each test
+// database's DROP DATABASE waits for skips its fsyncs. PostgreSQL containers wrote most
+// of a loaded runner's IO. A host crash could now corrupt the data and a server crash
+// could lose the last few hundred milliseconds of acknowledged commits; nothing kills
+// this server or reads it after a crash. The reload is requested before any test
+// database exists. Developers' compose.postgres.yaml server keeps PostgreSQL's defaults.
+const ciPostgresSettings = Object.freeze([
+  "ALTER SYSTEM SET fsync = off",
+  "ALTER SYSTEM SET synchronous_commit = off",
+  "ALTER SYSTEM SET full_page_writes = off",
+  "SELECT pg_catalog.pg_reload_conf()",
+]);
+
+// Administrative SQL on the lane's server, over its published port (postgres-admin.mjs). A
+// failed database step carries the closed diagnostic contract run-tests.mjs reports.
+async function postgresAdmin(server, { database, statements, stage }) {
+  try {
+    await runPostgresAdmin({ port: server.port, database, statements });
+  } catch (error) {
+    if (["database-create", "database-schema"].includes(stage)) {
+      error.code = "CI_PREPARATION_COMMAND_FAILED";
+      error.stage = stage;
+    }
+    throw error;
+  }
 }
 
 // A template must be a ready database this state owns on the same server. Nothing may
@@ -714,44 +710,26 @@ async function createDatabase(statePath, state, server, { kind, label, source, l
   await writeState(statePath, state);
 
   const grant = `GRANT CREATE ON DATABASE ${quoteIdentifier(name)} TO occ_migrator;`;
-  await postgresExec(
-    server,
-    [
-      "psql",
-      "-v",
-      "ON_ERROR_STOP=1",
-      "-U",
-      "postgres",
-      "-d",
-      "postgres",
-      "-c",
+  await postgresAdmin(server, {
+    statements: [
       `CREATE DATABASE ${quoteIdentifier(name)}${source === undefined ? "" : ` TEMPLATE ${quoteIdentifier(source)}`}`,
       // A copy carries the template's schemas, their ACLs and every migration, but not
       // the database-level grant, which lives in pg_database, so it is granted from here.
-      // Each -c is its own request (CREATE DATABASE refuses a transaction block) and psql
-      // stops at the first error. Every test's copy runs this under the CI state lock,
-      // where each `docker compose exec` costs about 0.25 s (finding 2180).
-      ...(source === undefined ? [] : ["-c", grant]),
+      // Each statement is its own request (CREATE DATABASE refuses a transaction block)
+      // and the first error stops the rest. Every test's copy runs this.
+      ...(source === undefined ? [] : [grant]),
     ],
-    "database-create",
-  );
+    stage: "database-create",
+  });
   const migrationUrl = postgresUrl("occ_migrator", "occ-migrator-local", server.port, name);
   if (source === undefined) {
-    await postgresExec(
-      server,
-      [
-        "psql",
-        "-v",
-        "ON_ERROR_STOP=1",
-        "-U",
-        "postgres",
-        "-d",
-        name,
-        "-c",
+    await postgresAdmin(server, {
+      database: name,
+      statements: [
         `${grant} CREATE SCHEMA occ AUTHORIZATION occ_migrator; CREATE SCHEMA drizzle AUTHORIZATION occ_migrator; REVOKE CREATE ON SCHEMA public FROM PUBLIC;`,
       ],
-      "database-schema",
-    );
+      stage: "database-schema",
+    });
     await execFile(process.env.OPENCLAW_CI_COREPACK_BIN ?? "corepack", ["pnpm", "db:migrate"], {
       env: { OCC_MIGRATION_DATABASE_URL: migrationUrl },
       stage: "database-migrate",
@@ -803,7 +781,7 @@ function assertImmutableOptionalEnvImages(names, env = process.env) {
   }
 }
 
-async function validateLaneInputsBeforeSideEffects(lane, env = {}) {
+async function validateLaneInputsBeforeSideEffects(lane, { file } = {}) {
   const name = laneName(lane);
   // TODO: Remove this refusal once installed repository qualification can remove its
   // remote branch and pull request only while they still match what the run created.
@@ -815,11 +793,21 @@ async function validateLaneInputsBeforeSideEffects(lane, env = {}) {
     );
   }
   const prepare = lanePrepare(name);
-  const effectiveEnv = effectiveLaneEnv(name, env);
+  const effectiveEnv = effectiveLaneEnv(name);
   if (prepare.k3d && name !== "openshell" && effectiveEnv.OPENCLAW_CI_K3S_IMAGE) {
     assertImmutableImageReference(effectiveEnv.OPENCLAW_CI_K3S_IMAGE, "OPENCLAW_CI_K3S_IMAGE");
   }
-  requireEnv(prepare.requireEnv ?? [], effectiveEnv);
+  // Native-only file preparation and the k3d helper bootstrap need no Codex token.
+  // Other OpenShell files and full-lane preparation still include a Codex Agent.
+  const nativeOnly =
+    name === "openshell" &&
+    effectiveEnv.OCC_TEST_OPENSHELL_HARNESS === "openclaw" &&
+    (file === "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs" ||
+      (file === undefined && effectiveEnv.OCC_K3D_HARNESS === "openclaw"));
+  const requiredInputs = nativeOnly
+    ? ["OPENAI_API_KEY", "OCC_TEST_OPENAI_MODEL"]
+    : (prepare.requireEnv ?? []);
+  requireEnv(requiredInputs, effectiveEnv);
   if (prepare.nodeBaseImage) {
     assertNodeBaseImage(effectiveEnv.NODE_BASE_IMAGE);
   }
@@ -921,16 +909,12 @@ async function validateLaneInputsBeforeSideEffects(lane, env = {}) {
 }
 
 // Lanes that restore the hosted BuildKit cache. Only the main-only warm job
-// (ci-image-cache.yml) exports it, building with images-packaging's state. The
-// repository platform lane loads its runtime image into the Docker engine so a
-// default-builder fixture build can derive from it.
+// (ci-image-cache.yml) exports it, building with images-packaging's state.
 const imageCacheLanes = new Map([
   ["images-packaging", { localStore: false }],
-  ["images-model-probes", { localStore: false }],
   ["images-runtime-startup", { localStore: false }],
   ["images-runtime-startup-2", { localStore: false }],
   ["images-runtime-startup-3", { localStore: false }],
-  ["repository-credentials-platform", { localStore: true }],
 ]);
 
 function imageCache(role) {
@@ -1504,9 +1488,6 @@ async function ensureK3dCluster(statePath, state) {
         }
         return waitForPluginStatusProxySource(cluster, destination);
       });
-      await k3dStage(state, "k3d-storage", () => verifyFixtureStorage(resource));
-    }
-    if (crossNodePluginStatus) {
       await logK3dHost(state, directory, "k3d-host-after");
     }
   } catch (error) {
@@ -1520,7 +1501,10 @@ async function ensureK3dCluster(statePath, state) {
     }
     throw error;
   }
-  await markResourceReady(statePath, state, resource);
+  // The fixture lanes mark the cluster ready when its storage rollout succeeds.
+  if (!crossNodePluginStatus) {
+    await markResourceReady(statePath, state, resource);
+  }
   return resource;
 }
 
@@ -1886,6 +1870,34 @@ async function importFixtureImage(statePath, state, cluster, built) {
   return { image: registered.reference, resourceId: built.resourceId };
 }
 
+// The fixture import needs the ready nodes, not the storage provisioner. Settle
+// both before the lane pins the image, restarts storage, or hands off to cleanup.
+async function prepareFixtureStorageAndImage(statePath, state, cluster, built) {
+  const { lane } = state;
+  const [storage, fixture] = await Promise.allSettled([
+    k3dStage(state, "k3d-storage", () => verifyFixtureStorage(cluster)).then(() =>
+      markResourceReady(statePath, state, cluster),
+    ),
+    timedPreparation(lane, "fixture-image-import", () =>
+      importFixtureImage(statePath, state, cluster, built),
+    ),
+  ]);
+  if (storage.status === "fulfilled" && fixture.status === "fulfilled") {
+    return fixture.value;
+  }
+
+  // Record a bounded phase notice when the image failure has no transport summary.
+  const failure =
+    fixture.status === "rejected"
+      ? (fixture.reason?.k3dImageImportFailure ??
+        "Fixture image preparation failed during fixture-image-import.")
+      : undefined;
+  await captureK3dDiagnostics({ execFile, cluster, lane, statePath, failure }).catch(() =>
+    progress(lane, "k3d diagnostics unavailable"),
+  );
+  throw storage.status === "rejected" ? storage.reason : fixture.reason;
+}
+
 async function pinFixtureImageInK3d(cluster, image) {
   const name = "openclaw-ci-fixture-image-pin";
   const manifestPath = join(cluster.directory, `${name}.json`);
@@ -1953,53 +1965,6 @@ async function pinFixtureImageInK3d(cluster, image) {
     ],
     { timeoutMs: 130_000 },
   );
-}
-
-// The platform image needs no cluster, so the lane overlaps it with k3d creation.
-async function buildRepositoryPlatformImage(statePath, state) {
-  const runtime = await timedPreparation(state.lane, "runtime-image-build", () =>
-    buildRuntimeImages(statePath, state, { runtime: true, localStore: true }),
-  );
-  const image = `localhost/${ownedName("openclaw-ci-image", state.prefix, { maxLength: 48 })}/repository-platform:local`;
-  const resource = addResource(state, "image-tag", { name: image, owner: state.prefix });
-  await writeState(statePath, state);
-  // Derive the controlled Harness from the delivered runtime so its Git/gh
-  // clients and credential material entrypoint remain the production ones.
-  await timedPreparation(state.lane, "platform-fixture-build", () =>
-    execFile(process.env.OCC_DOCKER_BIN ?? "docker", [
-      "build",
-      "--builder",
-      "default",
-      "--load",
-      "--pull=false",
-      "--build-arg",
-      `RUNTIME_IMAGE=${runtime.env.OCC_TEST_RUNTIME_IMAGE}`,
-      "-f",
-      join(repositoryRoot, "tests/fixtures/repository-credentials/Dockerfile.platform-fixture"),
-      "-t",
-      image,
-      join(repositoryRoot, "tests/fixtures/repository-credentials"),
-    ]),
-  );
-  await markResourceReady(statePath, state, resource);
-  return image;
-}
-
-async function repositoryPlatformHostAddress(cluster) {
-  const result = await execFile(process.env.OCC_DOCKER_BIN ?? "docker", [
-    "inspect",
-    "--format",
-    "{{json .NetworkSettings.Networks}}",
-    `k3d-${cluster.name}-server-0`,
-  ]);
-  const address = JSON.parse(result.stdout)[`k3d-${cluster.name}`]?.Gateway;
-  if (
-    !isIPv4(address ?? "") ||
-    !/^(?:10\.|172\.(?:1[6-9]|2[0-9]|3[01])\.|192\.168\.)/.test(address)
-  ) {
-    throw new Error("The owned k3d network must expose a private IPv4 Docker host gateway.");
-  }
-  return address;
 }
 
 function immutableDigest(image) {
@@ -2182,38 +2147,42 @@ const k3dContainerdWaitMs =
     : 60_000;
 
 async function waitForK3dContainerd(lane, cluster) {
-  // The first failed node ends the wait; the others stop polling.
+  // The first failed node stops polling; drain already-started probes before returning.
   let failed = false;
-  await Promise.all(
-    cluster.nodes.map(async (node) => {
-      const deadline = performance.now() + k3dContainerdWaitMs;
-      for (let attempt = 1; !failed; attempt += 1) {
-        try {
-          await k3dNodeImageCheck(node, ["ctr", "-n", "k8s.io", "version"], "containerd");
-          return;
-        } catch (error) {
-          const remainingMs = deadline - performance.now();
-          if (error.cause?.timedOut === true || remainingMs <= 0) {
-            failed = true;
-            throw error.cause?.timedOut === true
-              ? error
-              : new Error(
-                  `containerd on ${node} did not answer within ${k3dContainerdWaitMs} ms: ${error.message}`,
-                  { cause: error },
-                );
-          }
-          if (failed) {
-            return;
-          }
-          progress(
-            lane,
-            `containerd on ${node} is not answering yet (attempt ${attempt}); retrying.`,
-          );
-          await delay(Math.min(250 * attempt, 2_000, remainingMs));
+  const probes = cluster.nodes.map(async (node) => {
+    const deadline = performance.now() + k3dContainerdWaitMs;
+    for (let attempt = 1; !failed; attempt += 1) {
+      try {
+        await k3dNodeImageCheck(node, ["ctr", "-n", "k8s.io", "version"], "containerd");
+        return;
+      } catch (error) {
+        const remainingMs = deadline - performance.now();
+        if (error.cause?.timedOut === true || remainingMs <= 0) {
+          failed = true;
+          throw error.cause?.timedOut === true
+            ? error
+            : new Error(
+                `containerd on ${node} did not answer within ${k3dContainerdWaitMs} ms: ${error.message}`,
+                { cause: error },
+              );
         }
+        if (failed) {
+          return;
+        }
+        progress(
+          lane,
+          `containerd on ${node} is not answering yet (attempt ${attempt}); retrying.`,
+        );
+        await delay(Math.min(250 * attempt, 2_000, remainingMs));
       }
-    }),
-  );
+    }
+  });
+  try {
+    await Promise.all(probes);
+  } catch (error) {
+    await Promise.allSettled(probes);
+    throw error;
+  }
 }
 
 const containerdSocketUnavailable =
@@ -2353,15 +2322,9 @@ async function registerImageInK3d(statePath, state, cluster, image, envName) {
       importReference,
     ]);
   } catch (error) {
-    // Keep node state and logs, so a containerd outage shows its cause (finding 1006).
     if (fixtureLanes.has(state.lane)) {
-      await captureK3dDiagnostics({
-        execFile,
-        cluster,
-        lane: state.lane,
-        statePath,
-        failure: `${envName} image import into k3d nodes failed: ${error.message.slice(0, 300)}`,
-      }).catch(() => progress(state.lane, "k3d diagnostics unavailable"));
+      // The fixture lane collects node diagnostics after its storage check has also settled.
+      error.k3dImageImportFailure = `${envName} image import into k3d nodes failed: ${error.message.slice(0, 300)}`;
     }
     throw error;
   }
@@ -2673,16 +2636,6 @@ async function prepareLane({ lane, statePath }) {
         "runtime-image-fixture-receipt.json",
       );
       break;
-    case "images-model-probes":
-      Object.assign(
-        env,
-        (
-          await timedPreparation(name, "runtime-image-build", () =>
-            buildRuntimeImages(resolvedStatePath, state, { runtime: true }),
-          )
-        ).env,
-      );
-      break;
     case "images-runtime-startup":
     case "images-runtime-startup-2":
     case "images-runtime-startup-3": {
@@ -2763,8 +2716,7 @@ async function prepareLane({ lane, statePath }) {
     case "k3d-fixture-configuration":
     case "k3d-fixture-state":
     case "k3d-fixture-plugins": {
-      // PostgreSQL, the cluster and the fixture build are independent; the
-      // fixture is imported only after the cluster passed its readiness gates.
+      // PostgreSQL, cluster creation and the fixture build are independent.
       const [, cluster, built] = await timedPreparation(
         name,
         "postgres-cluster-fixture-build",
@@ -2784,8 +2736,8 @@ async function prepareLane({ lane, statePath }) {
               ),
           ]),
       );
-      const fixture = await timedPreparation(name, "fixture-image-import", () =>
-        importFixtureImage(resolvedStatePath, state, cluster, built),
+      const fixture = await timedPreparation(name, "fixture-storage-image-import", () =>
+        prepareFixtureStorageAndImage(resolvedStatePath, state, cluster, built),
       );
       // The pin and the storage check are independent; both wait on rollouts.
       await timedPreparation(name, "fixture-pin-storage-verify", () =>
@@ -2941,44 +2893,6 @@ async function prepareLane({ lane, statePath }) {
           1,
         ),
       );
-      break;
-    }
-    case "repository-credentials-platform": {
-      // PostgreSQL, the cluster and the image builds are independent. The
-      // gateway check runs as soon as the cluster exists, and nothing is
-      // imported into a cluster that failed it.
-      const [, { cluster, hostAddress }, platformImage] = await timedPreparation(
-        name,
-        "postgres-cluster-image-build",
-        () =>
-          prepareTogether([
-            () =>
-              timedPreparation(name, "postgres-start", () =>
-                ensurePostgresServer(resolvedStatePath, state),
-              ),
-            async () => {
-              const cluster = await timedPreparation(name, "k3d-create", () =>
-                ensureK3dCluster(resolvedStatePath, state),
-              );
-              return { cluster, hostAddress: await repositoryPlatformHostAddress(cluster) };
-            },
-            () => buildRepositoryPlatformImage(resolvedStatePath, state),
-          ]),
-      );
-      env.OCC_TEST_KUBERNETES_KUBECONFIG = cluster.kubeconfig;
-      env.OCC_TEST_KUBERNETES_CONTEXT = cluster.context;
-      env.OCC_TEST_REPOSITORY_CREDENTIALS_HOST_ADDRESS = hostAddress;
-      env.OCC_TEST_REPOSITORY_CREDENTIALS_PLATFORM_IMAGE = (
-        await timedPreparation(name, "platform-image-import", () =>
-          registerImageInK3d(
-            resolvedStatePath,
-            state,
-            cluster,
-            platformImage,
-            "OCC_TEST_REPOSITORY_CREDENTIALS_PLATFORM_IMAGE",
-          ),
-        )
-      ).reference;
       break;
     }
     case "repository-credentials-installed": {
@@ -3235,8 +3149,8 @@ async function prepareFile({ lane, file, statePath, template }) {
   if (!file) {
     throw new Error("prepareFile requires a file.");
   }
-  await validateLaneInputsBeforeSideEffects(name);
   const relativeFile = toRepositoryRelative(filePath(file));
+  await validateLaneInputsBeforeSideEffects(name, { file: relativeFile });
   const resolvedStatePath = normalizeStatePath(statePath);
   // A test may prepare databases from its own process while the runner prepares and
   // cleans other files. The lock keeps either side from writing back a stale state.

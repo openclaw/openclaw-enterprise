@@ -167,7 +167,9 @@ export function registerCredentialFixtureRegressions() {
     }
     // Reconciliation uses the same admitted session and production sender as the
     // original write, including when the provider accepted it but lost its reply.
-    const serviceFixture = await startCredentialServiceFixture(t);
+    const serviceFixture = await startCredentialServiceFixture(t, {
+      gateway: { listen: "127.0.0.1:0" },
+    });
     const fixture = serviceFixture.github;
     const send = async ({ method, path, body }) => {
       const response = await gatewayRequest(serviceFixture, `/${path}`, { method, body });
@@ -196,7 +198,6 @@ export function registerCredentialFixtureRegressions() {
       ["issues", "issue"],
       ["comment", "comment"],
       ["pulls", "rest", "unique-rest"],
-      ["pulls", "native", "unique-native"],
     ]) {
       const marker = `<!-- regression-run:${label} -->`;
       registerResourceCleanup(cleanups, {
@@ -207,27 +208,8 @@ export function registerCredentialFixtureRegressions() {
         head,
         issueNumber: parent.number,
       });
-      const path =
-        label === "native"
-          ? "graphql"
-          : `${prefix}/${kind === "comment" ? `issues/${parent.number}/comments` : kind}`;
-      const input = { title: "Owned", body: marker, base: "main", head };
-      const body =
-        label === "native"
-          ? {
-              query:
-                "mutation CreatePullRequest($input: CreatePullRequestInput!) { createPullRequest(input: $input) { pullRequest { id number url } } }",
-              variables: {
-                input: {
-                  repositoryId: "R_fixture",
-                  title: input.title,
-                  body: marker,
-                  headRefName: head,
-                  baseRefName: "main",
-                },
-              },
-            }
-          : input;
+      const path = `${prefix}/${kind === "comment" ? `issues/${parent.number}/comments` : kind}`;
+      const body = { title: "Owned", body: marker, base: "main", head };
       const posts = () =>
         fixture.trace.filter((entry) => entry.method === "POST" && entry.target === `/${path}`)
           .length;
@@ -239,6 +221,10 @@ export function registerCredentialFixtureRegressions() {
       assert.equal(lost.status, 502, `${label} lost response status`);
       assert.deepEqual(JSON.parse(lost.body), { error: { code: "exchange-uncertain" } });
       assert.equal(posts() - postsBefore, 1, `${label} creation must dispatch exactly once`);
+      assert.ok(
+        fixture.trace.at(-1).tokenIndex,
+        `${label} creation must authenticate at the controlled origin`,
+      );
       const resources = kind === "comment" ? fixture.comments : fixture[kind];
       assert.equal(
         [...resources.values()].filter((resource) => resource.body === marker).length,
@@ -246,6 +232,27 @@ export function registerCredentialFixtureRegressions() {
         `${label} creation must be accepted exactly once before fixture cleanup`,
       );
     }
+    // A GraphQL create is unsupported here, not an uncertain write. Keep the
+    // refusal separate so it cannot stand in for the accepted/lost-response proof.
+    const beforeGraphql = fixture.trace.length;
+    const refused = await gatewayRequest(serviceFixture, "/graphql", {
+      method: "POST",
+      body: {
+        query:
+          "mutation CreatePullRequest($input: CreatePullRequestInput!) { createPullRequest(input: $input) { pullRequest { id number url } } }",
+        variables: {
+          input: {
+            repositoryId: "R_fixture",
+            title: "Unsupported mutation",
+            body: "<!-- regression-run:unsupported -->",
+            headRefName: "unique-unsupported",
+            baseRefName: "main",
+          },
+        },
+      },
+    });
+    assert.equal(refused.status, 400);
+    assert.equal(fixture.trace.length, beforeGraphql);
     for (const action of cleanups.reverse()) {
       await action(AbortSignal.timeout(5000));
     }
@@ -254,12 +261,12 @@ export function registerCredentialFixtureRegressions() {
     assert.equal(fixture.comments.size, 1);
     assert.equal([...fixture.comments.values()][0].body, "Unrelated comment");
     assert.equal([...fixture.issues.values()].filter((x) => x.state === "closed").length, 1);
-    assert.equal([...fixture.pulls.values()].filter((x) => x.state === "closed").length, 2);
+    assert.equal([...fixture.pulls.values()].filter((x) => x.state === "closed").length, 1);
     assert.equal(
       fixture.trace.filter(
         (x) => x.method === "POST" && x.target !== "/app/installations/41/access_tokens",
       ).length,
-      7,
+      6,
     );
     const missing = [];
     registerResourceCleanup(missing, {

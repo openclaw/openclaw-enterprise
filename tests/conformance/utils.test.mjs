@@ -4,15 +4,20 @@ import {
   asRecord,
   cookieHeaderFromSetCookie,
   deepFreeze,
+  freezeSnapshot,
   hasControlCharacter,
   immutableCopy,
+  immutableSnapshot,
+  isImmutableSnapshot,
   isNonEmptyString,
   isPositiveSafeInteger,
+  MAX_TIMER_DELAY_MS,
   numericErrorStatus,
   numericLastLabel,
   sha256Hex,
 } from "../../packages/utils/src/index.ts";
 import { hasControlCharacter as clientHasControlCharacter } from "../../apps/controller/src/drivers/repo/credentials/client-contracts.ts";
+import { MAX_TIMER_DELAY_MS as clockMaxTimerDelayMs } from "../../apps/controller/src/drivers/repo/credentials/clock.ts";
 
 test("immutableCopy detaches and deeply freezes resource snapshots", () => {
   const original = { identity: { namespaceId: "tenant-a" }, roles: ["reader"] };
@@ -29,6 +34,35 @@ test("immutableCopy detaches and deeply freezes resource snapshots", () => {
   assert.equal(Object.isFrozen(snapshot.identity), true);
   assert.equal(Object.isFrozen(snapshot.roles), true);
   assert.equal(Object.isFrozen(original), false);
+});
+
+test("freezeSnapshot freezes a new value in place and records it like immutableSnapshot", () => {
+  const permissions = Object.freeze([Object.freeze({ action: "read", resourceKind: "agent" })]);
+  const state = { roles: [{ id: "role-a", permissions }], groups: [{ id: "group-a" }] };
+  const snapshot = freezeSnapshot(state);
+
+  // No copy: the snapshot is the value, and its already frozen parts stay shared.
+  assert.equal(snapshot, state);
+  assert.equal(snapshot.roles[0].permissions, permissions);
+  assert.equal(isImmutableSnapshot(snapshot), true);
+  for (const part of [
+    snapshot,
+    snapshot.roles,
+    snapshot.roles[0],
+    snapshot.roles[0].permissions[0],
+    snapshot.groups[0],
+  ]) {
+    assert.equal(Object.isFrozen(part), true);
+  }
+  assert.throws(() => {
+    state.groups[0].id = "group-b";
+  }, TypeError);
+
+  // immutableSnapshot copies first; a plain or merely frozen object is not a snapshot.
+  const copied = { roles: [] };
+  assert.notEqual(immutableSnapshot(copied), copied);
+  assert.equal(isImmutableSnapshot(copied), false);
+  assert.equal(isImmutableSnapshot(deepFreeze({ roles: [] })), false);
 });
 
 test("asRecord preserves object identity without accepting null, arrays, or primitives", () => {
@@ -60,6 +94,12 @@ test("positive safe integers reject coercion, fractional values, and unsafe limi
   for (const value of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, NaN, Infinity, "1", null]) {
     assert.equal(isPositiveSafeInteger(value), false);
   }
+});
+
+test("the timer bound is the longest delay Node.js honours, and the clock copy agrees", () => {
+  assert.equal(MAX_TIMER_DELAY_MS, 2 ** 31 - 1);
+  // The repository-credentials clock keeps a reviewed-boundary copy.
+  assert.equal(clockMaxTimerDelayMs, MAX_TIMER_DELAY_MS);
 });
 
 test("SHA-256 output and resource-name prefixes match fixed digest vectors", () => {

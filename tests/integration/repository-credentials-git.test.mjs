@@ -8,11 +8,10 @@ import {
   startCredentialServiceFixture,
 } from "../fixtures/repository-credentials/service.mjs";
 import { run } from "../fixtures/repository-credentials/process.mjs";
-import { fixtureRepositoryId } from "../fixtures/repository-credentials/github.mjs";
 import { exerciseGit } from "../fixtures/repository-credentials/workflows.mjs";
 import { runInFixtureContainer } from "../fixtures/repository-credentials/container.mjs";
 
-test("real Git clones, fetches, switches and pushes using the cold gateway helper", async (t) => {
+test("real Git clones, fetches, switches and pushes using an explicit development token", async (t) => {
   if (await runInFixtureContainer(t, "tests/integration/repository-credentials-git.test.mjs")) {
     return;
   }
@@ -20,15 +19,7 @@ test("real Git clones, fetches, switches and pushes using the cold gateway helpe
   await exerciseGit(t, fixture);
   assert.ok(fixture.git.trace.some((entry) => entry.gitProtocol === "version=2"));
   assert.ok(fixture.git.trace.some((entry) => entry.path.endsWith("/git-receive-pack")));
-  assert.equal(fixture.github.issuesOfTokens.length, 1);
-  assert.deepEqual(fixture.github.issuesOfTokens[0].permissions, {
-    metadata: "read",
-    contents: "write",
-    issues: "read",
-    pull_requests: "write",
-    checks: "read",
-    statuses: "read",
-  });
+  assert.equal(fixture.github.issuesOfTokens.length, 0);
 });
 
 // The host case runs every acceptance and fault case in the container.
@@ -36,7 +27,6 @@ if (process.env.REPOSITORY_CREDENTIALS_CONTAINER_CHILD === "1") {
   test("git-read clones, fetches and checks out while denying pushes and REST writes", async (t) => {
     const fixture = await startCredentialServiceFixture(t, {
       profile: "git-read",
-      tokenLifetimeMs: 20 * 60 * 1000,
     });
     const gitPath = new URL(fixture.opened.client.gitRemote).pathname;
     const gitAuthorization = `Basic ${Buffer.from(
@@ -83,15 +73,7 @@ if (process.env.REPOSITORY_CREDENTIALS_CONTAINER_CHILD === "1") {
     );
     assert.ok(fixture.git.trace.some((entry) => entry.gitProtocol === "version=2"));
     assert.ok(fixture.git.trace.some((entry) => entry.path.endsWith("/git-upload-pack")));
-    assert.equal(fixture.github.issuesOfTokens.length, 1);
-    assert.deepEqual(fixture.github.issuesOfTokens[0].permissions, {
-      metadata: "read",
-      contents: "read",
-      issues: "read",
-      pull_requests: "read",
-      checks: "read",
-      statuses: "read",
-    });
+    assert.equal(fixture.github.issuesOfTokens.length, 0);
     assert.equal((await gatewayRequest(fixture, "/repos/fixture/repository")).status, 200);
     assert.equal(
       (
@@ -100,7 +82,7 @@ if (process.env.REPOSITORY_CREDENTIALS_CONTAINER_CHILD === "1") {
           body: { query: "query { viewer { login } }" },
         })
       ).status,
-      200,
+      400,
     );
     const beforeGit = fixture.git.trace.length;
     const beforeApi = fixture.github.trace.length;
@@ -114,7 +96,7 @@ if (process.env.REPOSITORY_CREDENTIALS_CONTAINER_CHILD === "1") {
     assert.equal(fixture.git.trace.length, beforeGit);
     assert.equal(fixture.github.trace.length, beforeApi);
     assert.equal(fixture.github.authenticationAttempts.length, beforeAuthentication);
-    assert.equal(fixture.github.issuesOfTokens.length, 1);
+    assert.equal(fixture.github.issuesOfTokens.length, 0);
     assert.equal((await remoteRefs()).stdout, beforeRefs);
     const deletion = await client.git(["push", "origin", "--delete", "existing-branch"], {
       cwd: checkout,
@@ -151,17 +133,7 @@ if (process.env.REPOSITORY_CREDENTIALS_CONTAINER_CHILD === "1") {
         .map(({ method, path }) => ({ method, path })),
       [{ method: "POST", path: "/fixture/repository.git/git-receive-pack" }],
     );
-    // Refusal must reuse the original exact grant, with no broader remint.
-    assert.equal(fixture.github.issuesOfTokens.length, 1);
-    assert.deepEqual(fixture.github.issuesOfTokens[0].repositoryIds, [Number(fixtureRepositoryId)]);
-    assert.deepEqual(fixture.github.issuesOfTokens[0].permissions, {
-      metadata: "read",
-      contents: "write",
-      issues: "read",
-      pull_requests: "write",
-      checks: "read",
-      statuses: "read",
-    });
+    assert.equal(fixture.github.issuesOfTokens.length, 0);
   });
 
   test("closed gateway sessions deny remote requests while native local work remains usable", async (t) => {
@@ -186,7 +158,11 @@ if (process.env.REPOSITORY_CREDENTIALS_CONTAINER_CHILD === "1") {
   });
 
   test("accepted push with a lost response is never replayed by the service", async (t) => {
-    const fixture = await startCredentialServiceFixture(t);
+    const fixture = await startCredentialServiceFixture(t, {
+      configuration: {
+        pushRefAllowlist: ["refs/heads/agent-feature", "refs/heads/uncertain-feature"],
+      },
+    });
     const { client, checkout } = await exerciseGit(t, fixture);
     await writeFile(join(checkout, "uncertain.txt"), "Accepted despite lost response\n");
     await client.git(["add", "uncertain.txt"], { cwd: checkout });

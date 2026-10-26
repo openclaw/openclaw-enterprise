@@ -127,7 +127,9 @@ The worker emits fixed operational event classes through the same logger:
   or for a transient dependency its closed failure code, with `dependency` naming
   the dependency. An HTTP failure adds `status`, and the Kubernetes Status `reason`
   when its cause keeps one, such as `403` and `Forbidden` for a refused Secret
-  write. A version pass that loses the race for the Agent's selected version logs
+  write. When a bundled Compute Driver's cleanup after the failed preparation or
+  activation failed too, the pass adds `cleanupCause`, the first cleanup failure's
+  class. A version pass that loses the race for the Agent's selected version logs
   outcome `retry` with code `ACTIVE_REVISION_CHANGED`; the work fails once its
   attempts are exhausted.
   A pass that could not stop a refused candidate stays pending with code
@@ -153,10 +155,16 @@ The worker emits fixed operational event classes through the same logger:
   stop work carry no deployment timing.
 - `worker.error`: reports `CLAIM_LOST` or `WORKER_UNAVAILABLE` without exposing
   credentials. A deployment pass that cannot read its stored refusal adds the work
-  identity and `cause`, then leaves its claim to lease recovery. A claim lost around
+  identity and `cause`, then leaves its claim to lease recovery. An unreadable
+  Namespace, Agent or candidate revision row cannot recover by itself, so that pass stays an
+  ordinary retry that the attempt limit ends. A claim lost around
   an external effect adds the work identity and `cause`: `CLAIM_RENEWAL_REFUSED`,
   `CLAIM_RENEWAL_LATE`, `CLAIM_RENEWAL_FAILED`, or `CLAIM_LEASE_LAPSED` (no renewal
-  was confirmed within the lease).
+  was confirmed within the lease). The repository
+  credential codes `OPENSHELL_GIT_RECONCILIATION_REQUIRED` and
+  `PREPARED_GITHUB_RECOVERY_REQUIRED` add a `reason` class and the affected
+  Namespace, revision and `repositoryRef` (see
+  [Git through OpenShell](repository-credentials/protected-openshell-git.md#route-state-restarts-and-recovery)).
 - `worker.claim-renewal-warning`: a lease renewal that succeeded but answered after
   the lease could have run out, at warn level with the work identity, code
   `CLAIM_RENEWAL_LATE` and the renewal's `durationMs`. The worker stops that work,
@@ -180,6 +188,8 @@ worker does not expose an HTTP health endpoint. Driver startup schema or semanti
 refusals emit `DRIVER_CONFIGURATION_INVALID` with `details`: schema-owned
 JSON Pointer paths, codes, and safe messages. This includes invalid StorageClass
 names and runtime image settings. Submitted values and exception text are omitted.
+A prepared repository App key that cannot sign stops the worker with
+`PREPARED_GITHUB_APP_KEY_INVALID` and a fixed `reason`.
 
 ## Failures and diagnostics
 
@@ -232,6 +242,9 @@ names and runtime image settings. Submitted values and exception text are omitte
   spaces (a trailing newline counts). Native admin without the path reports
   this code too. Helm mounts the file from `gatewayRouting.apiKeySecretName`;
   see [gateway routing](gateway-routing.md#service-key-and-native-identity).
+- **`WORKER_READINESS_PATH_INVALID` or `WORKER_LIVENESS_PATH_INVALID` at startup:**
+  The worker refuses an `OCC_WORKER_READINESS_PATH` or `OCC_WORKER_LIVENESS_PATH`
+  that is relative, names a directory, or cannot be written.
 - **`EXTERNAL_SIGN_IN_NATIVE_ADMIN_UNSUPPORTED` at startup:** GitHub, Google
   and OIDC sign-in support host-only cookies only, so the API refuses any of
   them with native admin enabled, before it connects to the database. Turn off

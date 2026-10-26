@@ -12,7 +12,7 @@ JavaScript at that URL. Run `pnpm typecheck` to check the browser code.
 
 ## Compose a page
 
-- **Structure.** Let the [shell](../../apps/controller/src/console/shell.mjs)
+- **Structure.** Let the [shell](../../apps/controller/src/console/shell.mts)
   supply the page title, Namespace, and navigation. Use a `.section` with an
   `h2` to group related content. Add a `.card` when the group needs its own surface.
 - **Collections.** Agents and Secrets put search and the primary action in a
@@ -32,6 +32,9 @@ JavaScript at that URL. Run `pnpm typecheck` to check the browser code.
   the intended resource and confirms the expected saved state. If the write may have
   committed but you cannot confirm it, say the outcome is unknown and read that same
   resource again. Do not repeat the write to find out.
+- **Disabled controls.** Show the reason next to a disabled control, and link it with
+  `describeDisabled(control, reason)` wherever the control's state changes, so a screen
+  reader reads the reason with the control.
 
 ## Extend the shared styles
 
@@ -41,6 +44,12 @@ font, pair type sizes with their line heights (for example, `--text-md` with
 `--text-md--line-height`), and use the spacing and radius scales.
 The [token checks](../../tests/conformance/console-design-tokens.test.mjs)
 cover these scales and the supported breakpoints.
+
+Navigation pairs the wordmark with a 48 × 38 px
+[mascot for dark surfaces](../../apps/controller/src/console/oce-mascot-inverse.png).
+The white contour is part of that artwork and dims with the header under a modal.
+On a phone the wordmark scales from 14 to 18 px, leaving room for both 44 px controls.
+Sign-in, forced colours, and operator-supplied logos use their original artwork.
 
 Keep a one-page layout with that page. When another page needs the same
 pattern, move the shared rule next to the component it extends and use it in
@@ -58,3 +67,5 @@ such as a refused save or a search with no matches. Use the
 [Console browser tests](../../tests/browser/) to load the page through the controller.
 Check that new assets load and the interaction works with the actual API. Follow the
 [visual review instructions](../../AGENTS.md#console-storybook) for screenshots and video.
+Record the interaction with [pr-walkthrough](../../.agents/skills/pr-walkthrough/SKILL.md)
+so reviewers can read the starting state, follow the action, and see the result.

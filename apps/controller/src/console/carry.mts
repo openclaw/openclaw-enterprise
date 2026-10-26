@@ -9,7 +9,7 @@ type Conflict = { path: string; saved: unknown };
 const isRecord = (value: unknown): value is RecordValue =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
-function sameValue(left: unknown, right: unknown): boolean {
+export function sameValue(left: unknown, right: unknown): boolean {
   if (Array.isArray(left) || Array.isArray(right)) {
     return (
       Array.isArray(left) &&

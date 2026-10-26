@@ -20,7 +20,10 @@ import type {
   OpenClawConfigurationDocument,
 } from "@openclaw-enterprise/contracts";
 import { ConfigurationValidationError, validateModelCredentialReferences } from "../model-auth.ts";
-import { resolveKubernetesControlNamespace } from "../../compute/kubernetes/index.ts";
+import {
+  type PreprovisionedKubernetesNamespace,
+  resolveKubernetesControlNamespace,
+} from "../../compute/kubernetes/index.ts";
 import {
   ConfigurationSizeError,
   DependencyUnavailableError,
@@ -39,6 +42,7 @@ export interface KubernetesConfigurationDriverOptions {
 }
 
 interface KubernetesConfigurationDriverSelection {
+  readonly preprovisionedNamespace?: PreprovisionedKubernetesNamespace | undefined;
   readonly id?: string;
   readonly implementation?: string;
 }
@@ -167,6 +171,7 @@ export class KubernetesConfigurationDriver implements ConfigurationDriver {
   readonly id: string;
   readonly capability = "configuration" as const;
   readonly implementation: string;
+  private readonly preprovisionedNamespace: PreprovisionedKubernetesNamespace | undefined;
   private readonly options: KubernetesConfigurationDriverOptions;
   private client: Promise<CoreV1Api> | undefined;
 
@@ -182,6 +187,7 @@ export class KubernetesConfigurationDriver implements ConfigurationDriver {
         "Unsupported Kubernetes configuration implementation.",
       );
     }
+    this.preprovisionedNamespace = selection.preprovisionedNamespace;
     this.options = Object.freeze({ authentication: Object.freeze({ ...options.authentication }) });
   }
 
@@ -480,7 +486,9 @@ export class KubernetesConfigurationDriver implements ConfigurationDriver {
 
   private async controlNamespace(client: CoreV1Api, namespaceId: string): Promise<string> {
     const { name } = await this.request(
-      () => resolveKubernetesControlNamespace(client, namespaceId),
+      () =>
+        this.preprovisionedNamespace?.read(client, namespaceId) ??
+        resolveKubernetesControlNamespace(client, namespaceId),
       "namespace verification",
     );
     return name;

@@ -4,8 +4,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { createServer } from "node:https";
 import { createConnection } from "node:net";
 import { once } from "node:events";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { getCACertificates, setDefaultCACertificates } from "node:tls";
 import { setTimeout as delay } from "node:timers/promises";
@@ -20,13 +19,15 @@ import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { OpenClawController, PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
-import { authenticatedHeaders, cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { injectJson as inject } from "../helpers/inject-json.mjs";
 import {
   ensureDevelopmentBootstrap,
   privateBootstrapDirectory,
 } from "../helpers/bootstrap-installation.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { grantAgentSecretOperate } from "../helpers/postgres-harness-auth.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { waitFor, waitUntil } from "../helpers/wait-for.mjs";
 
 const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
@@ -106,8 +107,7 @@ function nativeComputeDriver(upstreamPort) {
 }
 
 async function startNativeHttpsUpstream(t) {
-  const directory = await mkdtemp(join(tmpdir(), "openclaw-native-admin-pg-upstream-"));
-  t.after(async () => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "openclaw-native-admin-pg-upstream-");
   const keyPath = join(directory, "tls.key");
   const certPath = join(directory, "tls.crt");
   const generated = spawnSync(
@@ -265,20 +265,6 @@ async function createApi(t, label, upstreamPort, options = {}) {
     }
   });
   return { app, auth, controller, iamDriver, state, pool };
-}
-
-async function inject(app, method, url, { session, headers = {}, body } = {}) {
-  return app.inject({
-    method,
-    url,
-    headers: {
-      host: "127.0.0.1",
-      ...(session === undefined ? {} : authenticatedHeaders(session)),
-      ...headers,
-      ...(body === undefined ? {} : { "content-type": "application/json" }),
-    },
-    ...(body === undefined ? {} : { payload: JSON.stringify(body) }),
-  });
 }
 
 async function signIn(app, credentials = { email: adminEmail, password: adminPassword }) {

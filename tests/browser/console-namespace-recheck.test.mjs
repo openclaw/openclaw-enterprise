@@ -12,6 +12,7 @@ import {
   waitForIdleFetches,
   waitForSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
+import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { routeInstallationProvisioning } from "./console-agents-test-support.mjs";
 import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
 
@@ -63,10 +64,7 @@ async function routeNamespace(page, namespaceId) {
       await state.held;
       if (state.fail > 0) {
         state.fail -= 1;
-        await route.fulfill({
-          status: 503,
-          json: { error: { code: "DEPENDENCY_UNAVAILABLE", message: "Try again." } },
-        });
+        await route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Try again."));
         return;
       }
       const response = await route.fetch();

@@ -1,6 +1,6 @@
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
@@ -68,7 +68,12 @@ export async function renderProductionChart(overrides = {}, options = {}) {
   for (const file of options.valuesFiles ?? []) {
     args.push("--values", file);
   }
+  // `omit` drops a --set (a default or an override) so a values file can supply that key,
+  // such as an empty list.
   for (const [key, value] of Object.entries({ ...productionValues, ...overrides })) {
+    if (options.omit?.includes(key)) {
+      continue;
+    }
     args.push("--set", `${key}=${value}`);
   }
   for (const [key, value] of Object.entries(options.strings ?? {})) {
@@ -97,6 +102,35 @@ export async function renderProductionChart(overrides = {}, options = {}) {
   return render;
 }
 
+/**
+ * Synchronous `helm template` of the chart with a rendered Installation profile's
+ * `values.yaml` (`output.directory`), then `extraValueFiles`, then `extraArgs`. Returns the
+ * manifests; a refused render throws execFileSync's error, with Helm's stderr.
+ */
+export function helmTemplate(output, extraValueFiles = [], releaseName = "oce", extraArgs = []) {
+  return execFileSync(
+    helm,
+    [
+      "template",
+      releaseName,
+      "deploy/helm/openclaw-enterprise",
+      "--namespace",
+      "openclaw-system",
+      "--values",
+      join(output.directory, "values.yaml"),
+      ...extraValueFiles.flatMap((path) => ["--values", path]),
+      ...extraArgs,
+    ],
+    {
+      cwd: repository,
+      env: goToolEnvironment(),
+      encoding: "utf8",
+      maxBuffer: 2_000_000,
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
+}
+
 export async function parseProductionChart(manifests) {
   const parsed = await new Promise((resolve, reject) => {
     const child = execFile(
@@ -108,4 +142,29 @@ export async function parseProductionChart(manifests) {
     child.stdin.end(manifests);
   });
   return parsed.trim().split("\n").map(JSON.parse);
+}
+
+/**
+ * `helm template` of the openclaw-execution chart with the routing values it requires, then
+ * `extraArgs` (such as "--set", "dns.namespace=true"). A refused render rejects with Helm's stderr.
+ */
+export function renderExecutionChart(...extraArgs) {
+  return execute(
+    helm,
+    [
+      "template",
+      "oce",
+      "deploy/helm/openclaw-execution",
+      "--set",
+      "routing.hostname=agents.example.invalid",
+      "--set",
+      "routing.gatewayClassName=private-envoy-gateway",
+      "--set",
+      "routing.tlsSecretName=agents-tls",
+      "--set-json",
+      'routing.controlPlaneCidrs=["198.51.100.0/24"]',
+      ...extraArgs,
+    ],
+    { cwd: repository, env: goToolEnvironment(), maxBuffer: 2_000_000 },
+  );
 }

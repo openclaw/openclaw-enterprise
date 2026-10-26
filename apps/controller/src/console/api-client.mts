@@ -9,6 +9,27 @@ export interface RequestOptions {
   responseType?: "json" | "text";
   /** A session-scoped read that a later view joins instead of aborting it. */
   outlivesView?: boolean;
+  /**
+   * A read the console makes because it takes the caller for an Installation administrator:
+   * "required" when only that administration allows it, "path" when other grants may allow it too
+   * (a Secret's metadata by ID). The console sends these one at a time until a "required" one
+   * succeeds, and refuses them unsent once it knows the caller does not administer the
+   * Installation (finding D760).
+   */
+  installationAdministration?: "required" | "path";
+}
+
+/** Options for a read only Installation administration allows. */
+export const INSTALLATION_ADMINISTRATION = { installationAdministration: "required" } as const;
+/** Options for a read on the administrator path that other grants may also allow. */
+export const ADMINISTRATOR_PATH = { installationAdministration: "path" } as const;
+
+/**
+ * Whether a refusal settled that the caller does not administer the Installation: the console
+ * refused the read unsent, or the refusal itself settled it. The page then takes its member path.
+ */
+export function refusedAsNonAdministrator(cause: unknown) {
+  return responseFields(cause).notAdministrator === true;
 }
 
 interface ApiClientOptions {
@@ -51,6 +72,23 @@ export function requestFailure(cause: unknown) {
   };
 }
 
+// The API's denial of a caller's own request when it names no grant. An API from before finding
+// 2534 sends it for every such denial. It names nothing the caller can act on, so views keep their
+// own guidance instead of showing it.
+export const GENERIC_DENIAL = "The exact platform operation was not authorized.";
+
+/**
+ * The API's denial of a caller's own request that names the grant the request checked and who
+ * grants it (finding 2534), or undefined. The API words it from the request alone, never from
+ * whether the resource exists, so views show it as written.
+ */
+export function namedDenial(cause: unknown): string | undefined {
+  const { status, code, serverMessage } = requestFailure(cause);
+  return status === 403 && code === "FORBIDDEN" && serverMessage?.startsWith("Not authorized: ")
+    ? serverMessage
+    : undefined;
+}
+
 function validDetail(value: unknown): value is ErrorDetail {
   const { path, code, message } = responseFields(value);
   return (
@@ -60,6 +98,12 @@ function validDetail(value: unknown): value is ErrorDetail {
     typeof code === "string" &&
     (message === undefined || (typeof message === "string" && message.length <= 512))
   );
+}
+
+/** Field errors a view can show from an HTTP refusal; transport errors have none. */
+export function requestErrorDetails(cause: unknown): ErrorDetail[] {
+  const { details } = responseFields(cause);
+  return Array.isArray(details) ? details.slice(0, 32).filter(validDetail) : [];
 }
 
 export function createApiClient({
@@ -137,7 +181,7 @@ export function createApiClient({
       const details: unknown[] = Array.isArray(problem.details) ? problem.details : [];
       const error: ConsoleApiError = Object.assign(
         new Error("The request could not be completed."),
-        { status: response.status, details: details.slice(0, 32).filter(validDetail) },
+        { status: response.status, details: requestErrorDetails(problem) },
       );
       const code = problem.code;
       if (typeof code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(code)) {

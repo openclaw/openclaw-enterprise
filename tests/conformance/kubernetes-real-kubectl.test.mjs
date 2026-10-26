@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { once } from "node:events";
-import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
@@ -29,12 +28,16 @@ import {
   withinDiagnosticDeadline,
 } from "../helpers/kubernetes-real.mjs";
 import { refusingPort } from "../helpers/available-port.mjs";
+import { withEnvironment } from "../helpers/environment.mjs";
+import { commandPath, prependPath, writeCommand } from "../helpers/fake-commands.mjs";
+import { readJsonLines } from "../helpers/json-lines.mjs";
 import {
   createOpenShellKubernetesFixture,
   failedRecoveryDiagnostic,
   modelAtCapacityOutcome,
   retryModelAtCapacity,
 } from "../helpers/openshell-kubernetes-real.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const execute = promisify(execFile);
 const probeScript = fileURLToPath(new URL("../fixtures/kubernetes/probe.mjs", import.meta.url));
@@ -199,8 +202,7 @@ async function gatewayTurnWithFakeKubectl(
   atCapacity,
   failure = { stderr: modelAtCapacityStderr, stdout: retrySafeReceipt, code: retrySafeExitCode },
 ) {
-  const directory = await mkdtemp(join(tmpdir(), "occ-fake-kubectl-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "occ-fake-kubectl-");
   const calls = join(directory, "calls");
   await writeFile(calls, "");
   await writeFile(
@@ -224,27 +226,20 @@ if (readFileSync(${JSON.stringify(calls)}, "utf8").trim().split("\\n").length <=
     kubernetesContext: "fake",
     modelAtCapacityRetry: options,
   });
-  const path = process.env.PATH;
-  process.env.PATH = `${directory}${delimiter}${path}`;
-  let outcome;
-  try {
-    outcome = {
-      turn: await fixture.requestCodexTurnFromGatewayPod({
+  const outcome = await withEnvironment({ PATH: commandPath(directory) }, () =>
+    fixture
+      .requestCodexTurnFromGatewayPod({
         namespace: "oce-gateway",
         gatewayPod: "gateway-0",
         providerModel: "gpt-test",
         prompt: "Reply with exactly OCC-TURN-OK.",
-      }),
-    };
-  } catch (error) {
-    outcome = { error };
-  } finally {
-    process.env.PATH = path;
-  }
-  const kubectlCalls = (await readFile(calls, "utf8"))
-    .trim()
-    .split("\n")
-    .map((line) => JSON.parse(line));
+      })
+      .then(
+        (turn) => ({ turn }),
+        (error) => ({ error }),
+      ),
+  );
+  const kubectlCalls = await readJsonLines(calls);
   return { ...outcome, kubectlCalls, sleeps, logs };
 }
 
@@ -597,8 +592,7 @@ test("a Namespace listing past its deadline keeps the conditions it read", async
 // read and then the timeout. The stand-in kubectl on PATH runs through the real client, so the
 // stalled read is a real child process the deadline kills.
 test("a Namespace listing stopped at its deadline reports the timeout alone", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "occ-fake-kubectl-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "occ-fake-kubectl-");
   const namespaceJson = JSON.stringify({
     spec: { finalizers: ["kubernetes"] },
     status: {
@@ -608,10 +602,10 @@ test("a Namespace listing stopped at its deadline reports the timeout alone", as
       ],
     },
   });
-  await writeFile(
-    join(directory, "kubectl"),
-    `#!${process.execPath}
-const args = process.argv.slice(2);
+  await writeCommand(
+    directory,
+    "kubectl",
+    `const args = process.argv.slice(2);
 const verb = args.findIndex((arg) => ["delete", "get", "api-resources"].includes(arg));
 const command = args.slice(verb, verb + 2).join(" ");
 if (command === "delete namespace") {
@@ -626,13 +620,9 @@ if (command === "delete namespace") {
   setTimeout(() => {}, 30_000);
 }
 `,
-    { mode: 0o755 },
+    { interpreter: process.execPath },
   );
-  const path = process.env.PATH;
-  process.env.PATH = `${directory}${delimiter}${path}`;
-  t.after(() => {
-    process.env.PATH = path;
-  });
+  prependPath(t, directory);
   const client = createKubernetesClient({
     selection: { kubeconfigPath: join(directory, "kubeconfig"), kubernetesContext: "fake" },
   });
@@ -1241,8 +1231,7 @@ test(
     // The first test's abandoned cleanup arms the exit. The second times out mid-setup; its setup
     // then acquires a resource, waits past the grace for it, and registers its release. The exit
     // must wait for that release, and the setup must not go on to its second acquisition.
-    const directory = await mkdtemp(join(tmpdir(), "occ-teardown-acquisitions-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
+    const directory = await temporaryDirectory(t, "occ-teardown-acquisitions-");
     const first = join(directory, "first-resource");
     const second = join(directory, "second-resource");
     const exited = await runFailingTestScript(
@@ -1526,8 +1515,7 @@ test(
     // under a running worker, and skip the worker stop once the delete failed. Each file runs with
     // the helper replaced by a stand-in; a test that hands arrangeProductionTopology its own
     // node:test context records the delete first, and its file never exits.
-    const directory = await mkdtemp(join(tmpdir(), "occ-topology-teardown-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
+    const directory = await temporaryDirectory(t, "occ-topology-teardown-");
     const helper = new URL("../helpers/harness-topology-k3d-real.mjs", import.meta.url);
     const exportList = /^export \{([^}]+)\};$/m.exec(await readFile(helper, "utf8"));
     assert.ok(exportList, "the topology helper ends with one export { ... } list");
@@ -1564,7 +1552,6 @@ test(
         const env = {
           ...process.env,
           TOPOLOGY_TEARDOWN_RECORD: record,
-          OCC_TEST_SKILL_SOURCE_LIFECYCLE: "1",
           OCC_TEST_SLACK_PROXY_URL: "http://127.0.0.1:3128",
           OCC_TEST_SLACK_CHANNEL_ID: "C0",
           OCC_TEST_SLACK_SENDER_BOT_TOKEN: "xoxb-sender",
@@ -1622,19 +1609,10 @@ test(
   async (t) => {
     // A fake kubectl that records its pid and then stalls for 30 s, like a read on a stalled API
     // server (finding 1557). No cluster is involved.
-    const directory = await mkdtemp(join(tmpdir(), "occ-fake-kubectl-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
+    const directory = await temporaryDirectory(t, "occ-fake-kubectl-");
     const started = join(directory, "started");
-    await writeFile(
-      join(directory, "kubectl"),
-      `#!/bin/sh\necho "$$" >> '${started}'\nexec sleep 30\n`,
-      { mode: 0o755 },
-    );
-    const path = process.env.PATH;
-    process.env.PATH = `${directory}${delimiter}${path}`;
-    t.after(() => {
-      process.env.PATH = path;
-    });
+    await writeCommand(directory, "kubectl", `echo "$$" >> '${started}'\nexec sleep 30\n`);
+    prependPath(t, directory);
     const { kubectl } = createKubernetesClient({
       selection: { kubeconfigPath: join(directory, "kubeconfig"), kubernetesContext: "fake" },
     });

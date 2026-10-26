@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
-updated: 2026-10-21
-last_updated_session: authoring-run/634a754f-a79e-4aac-94fe-0646caf6a287
+updated: 2026-10-25
+last_updated_session: fix-2505
 ---
 
 # Platform console request flow
@@ -104,16 +104,12 @@ graph TD
 `apps/controller/src/api-startup.mjs:startApi` loads an optional
 [theme bundle](../reference/console/theming.md) once. Invalid bundles stop startup;
 ConfigMap links must resolve inside the bundle. `renderConsoleThemeShell` escapes
-branding and links the generated stylesheet. `console/shell.mjs:brandContents`
+branding and links the generated stylesheet. `console/shell.mts:brandContents`
 renders the name as text. `/console/theme/` serves only referenced images and
 generated CSS, returns a plain 404 for missing assets, and uses `no-store` so an
 API restart can replace the theme.
 
-`apps/controller/src/composition/production.ts:composeProduction`
-
-`apps/controller/src/composition/development-postgres.ts:composePostgresDevelopment`
-
-Startup passes safe Backend `{id,type}` summaries to `createFastifyApp`.
+Startup (see Entry Points) passes safe Backend `{id,type}` summaries to `createFastifyApp`.
 [Backend-managed delivery](service-account-driver-credential-delivery.md) owns
 Driver activation. Requests do not reread configuration or credentials.
 
@@ -125,10 +121,10 @@ paths return the shell with `404`; API routes retain JSON errors.
 encodings. The shell, which also answers sign-in, stays identity.
 
 `scripts/build-console-metadata.mjs` bakes the publisher's checked
-`OCC_BUILD_REVISION` into HTML. With `debug=true`, `shell.mjs:renderShell` displays
+`OCC_BUILD_REVISION` into HTML. With `debug=true`, `shell.mts:renderShell` displays
 the full commit; invalid or absent metadata remains unknown.
 
-`runtime-images.mjs:renderRuntimeImages` issues at most three concurrent reads for
+`runtime-images.mts:renderRuntimeImages` issues at most three concurrent reads for
 readable Agents in the selected Namespace.
 `packages/occ/src/index.ts:OpenClawController.getAgentRuntimeImages` authorizes
 exact Agent read, resolves its selected version, then calls its Compute Driver.
@@ -139,6 +135,10 @@ stops reads. Missing provenance stays explicit.
 ### 2. Resolve the session before private reads
 
 `apps/controller/src/console/console.mjs:loadPage`
+
+`agents/collection.mts:renderAgentList` sends plain clicks on row content to the
+Agent-name link, focused first to keep its return-focus target; links, buttons
+(even disabled), modified clicks and selected text are ignored.
 
 `loadPage` starts with `GET /api/auth/session`. Opening an Agent from the list
 immediately shows **Loading agent details…** and **Back to Agents**. Its name,
@@ -175,18 +175,16 @@ private reads. Missing sessions open login; failed reads offer Retry.
 The [console sign-in flow](platform-console/sign-in-return.md) covers provider
 discovery, one-use session binding, and requested destination recovery.
 
-`apps/controller/src/auth/index.ts:requireTrustedBrowserOrigin` checks Origin
-before sign-in/out, even for SDK calls bypassing Better Auth middleware; headerless
-CLI requests remain supported. The browser stores no credentials.
-
 After authentication, `loadPage` reads `GET /namespaces`, preserving URL
 selection or choosing the first ready/readable Namespace. Unreadable IDs stay
 unavailable; selection never becomes an API query selector.
 
-`shell.mjs:namespaceSelector` disables and hides choices through session and
+`shell.mts:namespaceSelector` disables and hides choices through session and
 Namespace checks, naming a known selection; retained-view reads do not extend this.
-`shell.mjs:createShell` listens for the 760px mobile breakpoint; widening closes
+`shell.mts:createShell` listens for the 760px mobile breakpoint; widening closes
 the drawer without focusing its hidden toggle and releases `main.inert`.
+Load renders replace the shell; `createShell` activates a control whose mouse
+press a render replaced before release.
 Empty lists show access guidance. `navigation.mts:navigate` returns Agent detail/creation
 to Agents; global pages remain open; recovered warnings disappear.
 
@@ -204,15 +202,16 @@ returning safe startup summaries. Empty configuration returns an empty list;
 missing wiring or failed dependencies return errors.
 
 `apps/controller/src/console/secrets.mts:renderSecrets` lists metadata and reads
-the exact Secret's `consumers` before showing actions. Agent IDs link to their
-pages; hidden counts and truncation remain visible. Known references disable
-Delete; the server rechecks references on submission. Create and replacement
-wait for Namespace readiness. Each mutation uses the tracked request client and
-the existing Secret API; no browser code calls a Driver directly.
+the exact Secret's `consumers` and advisory `callerPermissions` before showing
+actions, as the [Secrets guide](../guides/console/secrets.md) describes. Agent
+names come from the readable Agent list. Known references disable Delete; the
+server rechecks them. `console.mjs:takeLinkedSecret` keeps a `secret` link's ID
+until the page shows it. Create and replacement wait for Namespace readiness.
+Mutations use the tracked request client and Secret API, never a Driver.
 
-`secrets.mjs:editValue` masks new input, preserves whitespace, and clears it after
-the request or dismissal. `console.mjs:clearPasswordInputs` also clears marked
-Secret inputs before retaining a view. Pending requests block navigation and
+`secrets.mjs:editValue` masks new input, preserves whitespace (CRLF becomes LF),
+and clears it after the request, dismissal, or view retention
+(`console.mjs:clearPasswordInputs`). Pending requests block navigation and
 dismissal. A denied write disables submission; an unconfirmed write cannot be
 replayed from that dialog. `secrets.mjs:confirmDelete` offers an explicit exact
 status read after an uncertain delete; a denial never confirms removal.
@@ -226,7 +225,7 @@ relisted. Closing refocuses the opener; a 403 disables it per account, across
 navigation, until Refresh (`fromRefresh`). Pending writes block dismissal; 400s
 mark names; conflicts keep input; unconfirmed responses need inspection.
 
-Agents and Create Agent read permissions. False `agents.create` or an Agent-refusing
+Agents, Secrets and Create Agent read Namespace permissions. False `agents.create` or an Agent-refusing
 [Namespace status](../reference/namespaces.md#lifecycle) explains why, rechecking on return; failed reads keep creation open.
 Refused `GET /installation` saves only drafts. `agents/collection.mts` polls provisioning Namespaces;
 omission disables Create (`NAMESPACE_MISSING`) and stops; failures retry.
@@ -239,18 +238,16 @@ provisioning, ordinary drafts, Secret grants, and harness authentication.
 ### 4–6. Edit the Agent and access runtime files
 
 [Agent editing](platform-console/agent-editing.md) traces version rendering,
-channels, credentials, and workspace files;
-[stop and deletion](platform-console/agent-stop-and-deletion.md) have their own trace;
+channels and credentials; [workspace files](platform-console/agent-workspace-files.md) and
+[stop and deletion](platform-console/agent-stop-and-deletion.md) have their own traces;
 [Agent sharing](platform-console/agent-sharing.md) traces policy writes.
-Responses follow the ordering checks below.
 
-`channels/slack.mjs:supportSlack` rejects shapes the editor cannot preserve;
-`updatedSlack` preserves untouched policies and reply overrides. The
+`channels/slack.mjs:supportSlack` rejects shapes the editor cannot preserve. The
 [editing flow](platform-console/agent-editing.md#4-render-draft-revision-or-channels)
 owns DM policies and channel-only reply defaults. Admission snapshots native values;
 Kubernetes `prepareRevision` carries them into `openclaw.json` without adding defaults.
 
-`apps/controller/src/console/agents/detail.mjs:renderAgentDetail` registers tab
+`apps/controller/src/console/agents/detail.mts:renderAgentDetail` registers tab
 navigation with `console.mjs:loadPage`. For the same Agent, Namespace, and
 version, tab clicks/history replace only tab content; shell, native-admin panel,
 and version controls stay mounted. Configuration and Agent revision reads are shared;
@@ -260,7 +257,7 @@ read is an audited denial, so `console.mjs:deniedReadsFor` remembers that path i
 `sessionStorage` for the session owner; later views show **Configuration unavailable**
 without asking again, and **Retry** forgets the path and rereads. Logout clears it.
 
-`agents/detail.mjs:renderTab` brings a clipped selected tab into the horizontal
+`agents/detail.mts:renderTab` brings a clipped selected tab into the horizontal
 strip without moving page focus or vertical scroll. A strip ResizeObserver repeats
 this on viewport changes, disconnects for inactive or detached views, and re-arms
 through the retained view's resume hook.
@@ -277,7 +274,8 @@ Stop and Delete stay put. Direct navigation focuses and scrolls to the output; s
 the tab leaves visible output in place. Recovery links scroll their version tab into view
 and focus its tab control, smoothly unless the page rebuilds or motion is reduced.
 
-[Runtime logs](agent-runtime-logs.md) explains access. Status `403` hides Pod details, not
+[Runtime logs](agent-runtime-logs.md) explains access. A false `readLogs` in the Agent
+permission answer skips the audited log read. Status `403` hides Pod details, not
 separately authorized logs. Denials last until logout; newly granted `operate` permits another
 status read. Refused reads or downloads clear the rows; late successes cannot restore them or
 download. Refusing allowed log text rereads status at once, superseding stale reads. Back
@@ -302,16 +300,14 @@ remains and the reader hasn’t moved on. Draft save baselines and Namespace sco
 Authorization and dependency failures clear affected content and expose recovery;
 a current protected `401` clears all private state. `pagehide` clears
 private DOM, previews, and drafts even for BFCache; persisted `pageshow` performs
-a fresh load. Failure views show local reasons and `req_<UUID>` request IDs, never
-backend error text. Backend authorization denial clears every retained preview,
+a fresh load. Failure views show local reasons and `req_<UUID>` request IDs. The
+only backend text they show is a refusal the API explains (a 400 naming the field or
+rule, a typed 409 naming the state), set as text. Backend authorization denial clears every retained preview,
 including other Namespace selections, because the permission is Installation-wide.
 
 The [detail action flow](platform-console/agent-stop-and-deletion.md#stop-agent) traces
-confirmed Stop and Delete requests and permissions. Acceptance
-is not completed shutdown or deletion. Uncertain outcomes block replay until
-readback; only confirmed absence returns to Agents. Deployment resumes
-a stopped Agent through a new Agent revision. The [Agent reference](../reference/agents.md#deletion)
-owns asynchronous cleanup.
+Stop and Delete: acceptance is not completion, and uncertain outcomes block replay until
+readback. The [Agent reference](../reference/agents.md#deletion) owns asynchronous cleanup.
 
 Logout first hides private state, then calls the sign-out endpoint.
 Confirmed success or session inspection proving absence replaces history with
@@ -325,16 +321,13 @@ this client never infers it from a network error.
 
 ## Deploy the new version
 
-The **Create new version** draft exposes **Deploy new version**.
-**Operator-managed credentials** persist `{ "method": "runtime" }` and bypass
-managed credential setup in Console; OCC does not validate host credentials.
-Deployment checks the Agent, Configuration association, and generation, then sends
-bodyless
-`POST /namespaces/:namespaceId/agents/:agentId/deploy`. The server authorizes
-and saves the version. Its read-only details open while **Deployment
-activity** follows the latest visible deployment. Workspace reads check gateway
-startup and file availability. An uncertain response disables replay until
-refresh and inspection.
+**Deploy new version** on the **Create new version** draft sends bodyless
+`POST /namespaces/:namespaceId/agents/:agentId/deploy` after the checks and
+uncertain-response handling that [Agent editing](platform-console/agent-editing.md#4-render-draft-revision-or-channels) traces.
+**Operator-managed credentials** (`{ "method": "runtime" }`) skip managed setup; OCC
+does not validate host credentials. The server saves the version; its read-only
+details open while **Deployment activity** follows it. Workspace reads check
+gateway startup and file availability.
 
 ## Debugging and Verification
 
@@ -345,7 +338,7 @@ refresh and inspection.
   They verify navigation, isolation, creation, draft/history/channel editing, and
   authentication, not PostgreSQL persistence, Backend health, runtime dispatch,
   worker leases, or Compute effects.
-- `node --test tests/browser/console-secrets.test.mjs` exercises Secret mutation,
+- `node --test tests/browser/console-secrets.test.ts` exercises Secret mutation,
   Agent references, denials, and lost replies with passive test Secret storage.
   The `console-secrets` [QA scenario](../testing/ci.md#qa-matrix) selects real
   shipped storage; it requires the documented runtime and credential setup.
@@ -355,11 +348,7 @@ refresh and inspection.
 
 ## Related docs
 
-- [Console reference](../reference/console.md)
-- [Console Agent creation](platform-console/agent-creation.md)
-- [Console Agent stop and deletion](platform-console/agent-stop-and-deletion.md)
 - [Authentication](../reference/authentication.md)
-- [Backend-managed credential delivery](service-account-driver-credential-delivery.md)
 - [Configuration and Agent revision](configuration-driver.md)
 - [Docker development](docker-compose-development.md)
 - [Production startup](production-startup.md)
@@ -371,10 +360,5 @@ refresh and inspection.
 ## Changelog
 
 - 2026-10-21 22:22: Connect console themes to API startup and the shared shell. (authoring-run/634a754f-a79e-4aac-94fe-0646caf6a287 - 2c9e7f6c4)
-- 2026-10-20 15:53: Add Namespace Secret management and uncertain-write recovery in the accompanying console change. (authoring-run/9b10a6df-a6ce-4d38-859d-480a59d95cf0 - e8185dac8)
-- 2026-10-20 14:55: Add startup-loaded console themes and public asset confinement with accompanying source changes. (authoring-run/485ab8a9-4293-44df-a85f-f8f051b74bf8 - e8185dac805b737363c7178d3068b310a53a7c24)
-
-- 2026-10-20 05:00: Move the Create Agent form trace to [Agent creation](platform-console/agent-creation.md). (docs-split-1020)
-- 2026-10-19 15:16: Namespace creation and recovery. (authoring-run/e988d724-dd95-4e63-a711-5fd44393f211 - 141515257737cccdb75137fabbeec707915856af)
 
 [Platform console request documentation history](platform-console/history.md) preserves the older dated entries.

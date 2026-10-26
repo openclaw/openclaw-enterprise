@@ -19,7 +19,7 @@ See the [parent flow](../platform-console.md) and the
 
 - `apps/controller/src/console/agents/access.mjs:renderAgentAccess` renders the
   sharing panel on Agent detail's Access tab.
-- `apps/controller/src/console/agents/detail.mjs:renderAgentDetail` mounts it when
+- `apps/controller/src/console/agents/detail.mts:renderAgentDetail` mounts it when
   that tab first opens.
 - Assumptions: a signed-in Installation administrator, an existing Principal ID,
   and the Namespace IAM policy endpoints.
@@ -49,8 +49,8 @@ graph TD
 `apps/controller/src/console/agents/access.mjs:renderAgentAccess`
 
 The Access tab mounts sharing independently of version/configuration reads and
-native admission. Agent detail leaves the tab out when the console's observability
-probe already showed the person lacks Installation administration: the policy
+native admission. Agent detail leaves the tab out when the console's Installation-access
+answer already showed the person lacks Installation administration: the policy
 endpoints require it and the API audits each denial. The panel reads the selected Namespace's existing
 `/iam/roles` and `/iam/access-bindings` endpoints. A policy `403` hides the
 panel and the tab, opens Configuration, and leaves the other panels usable; a current `401` retains global
@@ -72,7 +72,7 @@ configuration evidence, not a historical receipt, and never triggers a write.
 
 ### 3. Hold the page while writes run
 
-`apps/controller/src/console/agents/detail.mjs:renderAgentDetail`
+`apps/controller/src/console/agents/detail.mts:renderAgentDetail`
 
 Each request belongs to the page and stops when the page goes. So while a share or
 removal runs, the panel's `onWriting` callback has Agent detail hold version and

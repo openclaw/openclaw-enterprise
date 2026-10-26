@@ -268,10 +268,9 @@ func initializationEvidence(data []byte, namespace, name, release, expectedUID s
 	hook := "install"
 	// Match the chart's Node invocation and the exact contents of
 	// deploy/helm/openclaw-enterprise/files/check-installation.mjs.
-	const checkScriptSHA256 = "6cc45ae3561aa466170d10379ef39b68e2aba1cc417710f29bbbaa2d8b964890"
 	if len(init) == 2 && init[0].Name == "installation-check" && slices.Equal(init[0].Command, []string{"node"}) &&
 		len(init[0].Args) == 3 && init[0].Args[0] == "--input-type=module" && init[0].Args[1] == "-e" &&
-		fmt.Sprintf("%x", sha256.Sum256([]byte(init[0].Args[2]))) == checkScriptSHA256 {
+		supportedInstallationCheck(init[0].Args[2]) {
 		init, hook = init[1:], "upgrade"
 	}
 	is := func(cs []container, name string, args ...string) bool {
@@ -301,6 +300,20 @@ func initializationEvidence(data []byte, namespace, name, release, expectedUID s
 		message += " (compare with the installation record)."
 	}
 	return initializationResult{state: state, message: message, original: original}
+}
+
+// A retained upgrade Job may embed an earlier version of the chart program.
+func supportedInstallationCheck(script string) bool {
+	switch fmt.Sprintf("%x", sha256.Sum256([]byte(script))) {
+	case "6cc45ae3561aa466170d10379ef39b68e2aba1cc417710f29bbbaa2d8b964890", // before Console themes
+		"86c4e7d2709d7260beb7315ffa2e9c60be1eb25be6de56503ff5bbcaa4bf6cc5", // Console themes
+		"6f17136aba76c16472dfd4259e3dfe2d837f15909c8dc33af70c00d3c1f685dd", // prepared Git issuer CA
+		"f4b6322b65e434193c773c95e4ca67d1e2abe7ed713826e8eb4c0469907f5888", // Installation listener
+		"973aebfcce22a6518dfcdfca56e3d0683c349f6b365e6dfbd46518f8c087f0ad": // authority file mounts
+		return true
+	default:
+		return false
+	}
 }
 
 func (status initializationJobStatus) state() initializationState {

@@ -53,7 +53,9 @@ case "$development_compute_driver" in
 esac
 
 usage() {
-  echo "usage: scripts/dev-up [--key-output PATH] [--sandbox-network-policy-file PATH] [--sandbox-network-policy-ceiling-file PATH] [-- COMPOSE_GLOBAL_OPTIONS...]" >&2
+  # Docker Compute only; Kubernetes Compute execs occ dev up above, whose --help lists the Sandbox policy file flags.
+  echo "usage: scripts/dev-up [--key-output PATH] [-- COMPOSE_GLOBAL_OPTIONS...]" >&2
+  echo "Sandbox policy files require Kubernetes Compute and a Sandbox Driver: see OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell scripts/dev-up --help" >&2
 }
 
 quote_command() {
@@ -100,6 +102,9 @@ while [ "$#" -gt 0 ]; do
       key_output="$2"
       shift 2
       ;;
+    --sandbox-network-policy-file | --sandbox-network-policy-ceiling-file | --sandbox-network-policy-file=* | --sandbox-network-policy-ceiling-file=*)
+      usage_error "arguments" "Sandbox policy input requires Kubernetes Compute and a Sandbox Driver"
+      ;;
     --)
       shift
       compose_args=("$@")
@@ -124,6 +129,9 @@ require_command() {
 require_command python3
 if [ ! -x "$occ_cli" ]; then
   fail "prerequisite" "OCC CLI is required at $occ_cli; run pnpm cli:build"
+fi
+if ! "$occ_cli" dev check-profile; then
+  exit 2
 fi
 
 temporary_directory="$(mktemp -d "${TMPDIR:-/tmp}/openclaw-dev-up.XXXXXXXXXX")"
@@ -254,7 +262,7 @@ if [ -z "$container_engine" ] && [ "$requested_container_engine" != docker ] && 
     if [ "${#compose_args[@]}" -gt 0 ]; then
       for arg in "${compose_args[@]}"; do
         case "$arg" in
-          -f | --file | --file=*) compose_file_selected=1 ;;
+          -f | -f?* | --file | --file=*) compose_file_selected=1 ;;
         esac
       done
     fi

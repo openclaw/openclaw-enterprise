@@ -94,7 +94,7 @@ var permissionKinds = map[string]string{
 	"installation":      "Installation",
 	"namespace":         "Namespace",
 	"agent":             "Agent",
-	"agent_revision":    "revision",
+	"agent_revision":    "AgentRevision",
 	"configuration":     "Configuration",
 	"secret":            "Secret",
 	"preset":            "Preset",
@@ -103,12 +103,28 @@ var permissionKinds = map[string]string{
 	"sandbox_policy":    "SandboxPolicy",
 }
 
-// OCC's two caller-scope refusals. Other 403 messages name their own cause
-// (for example an Agent principal's missing grant) and get no hint.
+// OCC's two caller-scope refusals that get a hint: the generic one, which names
+// no cause, and a Namespace-scoped key's refusal outside its Namespace, which
+// starts with admittedNamespacePrefix and names the key's Namespace (finding
+// D763). Other 403 messages name their own cause and get no hint: an Agent
+// principal's missing grant, or the caller's own missing grant, which OCC names
+// after "Not authorized:" (finding 2534). Only an older OCC sends
+// genericRefusal for every caller denial.
 const (
-	genericRefusal           = "The exact platform operation was not authorized."
-	admittedNamespaceRefusal = "The admitted Namespace does not match."
+	genericRefusal          = "The exact platform operation was not authorized."
+	admittedNamespacePrefix = "This service key works only in Namespace "
 )
+
+// installationCommands reach no Namespace, so a Namespace-scoped key is
+// refused whichever Namespace is selected.
+var installationCommands = map[string]bool{
+	"installation get":                  true,
+	"installation deployment-inventory": true,
+	"namespace list":                    true,
+	"namespace create":                  true,
+	"service-key create":                true,
+	"service-key revoke":                true,
+}
 
 // keyNamespacePattern accepts a plain Namespace ID from the key file; anything
 // else, such as a hand-edited value with control characters, is not printed.
@@ -123,17 +139,30 @@ func (app *application) refusalHint(command *cobra.Command, path string, err err
 	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusForbidden || apiErr.Code != "FORBIDDEN" {
 		return ""
 	}
-	switch apiErr.Message {
-	case admittedNamespaceRefusal:
+	switch {
+	case strings.HasPrefix(apiErr.Message, admittedNamespacePrefix):
+		// OCC's message already says which Namespace the key works in and to ask an
+		// Installation administrator, so the hint adds only what to change here
+		// (finding D770).
 		namespace := apiErr.ServiceKeyNamespace
+		if installationCommands[path] {
+			// No --namespace helps here: the command reaches no Namespace (finding D740).
+			if !keyNamespacePattern.MatchString(namespace) {
+				return fmt.Sprintf("hint: \"occ %s\" needs an Installation-scoped key; no --namespace value helps.", path)
+			}
+			return fmt.Sprintf(
+				"hint: \"occ %s\" needs an Installation-scoped key; no --namespace value helps. Read this key's Namespace with \"occ namespace get %s\".",
+				path, namespace,
+			)
+		}
 		if !keyNamespacePattern.MatchString(namespace) {
-			return "hint: this service key is scoped to one Namespace; it cannot reach another Namespace or Installation-level commands such as \"occ namespace list\". Pass that Namespace's ID with --namespace (or OCC_NAMESPACE), read it with \"occ namespace get ID\", or use an Installation-scoped key."
+			return "hint: pass this key's Namespace ID with --namespace (or OCC_NAMESPACE) and read it with \"occ namespace get ID\"; other Namespaces and Installation-level commands such as \"occ namespace list\" need an Installation-scoped key."
 		}
 		return fmt.Sprintf(
-			"hint: this service key is scoped to Namespace %s; it cannot reach another Namespace or Installation-level commands such as \"occ namespace list\". Pass --namespace %s (or set OCC_NAMESPACE), read it with \"occ namespace get %s\", or use an Installation-scoped key.",
-			namespace, namespace, namespace,
+			"hint: pass --namespace %s (or set OCC_NAMESPACE) and read it with \"occ namespace get %s\"; other Namespaces and Installation-level commands such as \"occ namespace list\" need an Installation-scoped key.",
+			namespace, namespace,
 		)
-	case genericRefusal:
+	case apiErr.Message == genericRefusal:
 	default:
 		return ""
 	}
@@ -142,9 +171,13 @@ func (app *application) refusalHint(command *cobra.Command, path string, err err
 		return ""
 	}
 	parts := make([]string, 0, len(permission.needs))
+	created := ""
 	for _, need := range permission.needs {
 		kind, action, _ := strings.Cut(need, ".")
 		parts = append(parts, permissionKinds[kind]+" "+action)
+		if action == "create" {
+			created = permissionKinds[kind]
+		}
 	}
 	also := permission.also
 	if strings.HasPrefix(also, "(") && len(parts) > 0 {
@@ -163,7 +196,12 @@ func (app *application) refusalHint(command *cobra.Command, path string, err err
 	case also != "":
 		needs += ", plus " + also
 	}
-	hint := fmt.Sprintf("hint: \"occ %s\" needs %s; ask an administrator to grant what is missing.", path, needs)
+	hint := fmt.Sprintf("hint: \"occ %s\" needs %s; ask an Installation administrator to grant what is missing.", path, needs)
+	if created != "" {
+		// No Role can hold create, so a create asks for the resource, as OCC and
+		// the console do, instead of a grant nobody can give (finding 2607).
+		hint = fmt.Sprintf("hint: \"occ %s\" needs %s. Only an Installation administrator can create %ss: ask one to create it.", path, needs, created)
+	}
 	if strings.Contains(command.Use, "ID") {
 		hint += " OCC refuses an ID that does not exist the same way."
 	}
@@ -190,6 +228,7 @@ func (app *application) addRefusalHints(root *cobra.Command) {
 		}
 		path := strings.TrimPrefix(command.CommandPath(), root.Root().Name()+" ")
 		command.RunE = func(command *cobra.Command, args []string) error {
+			app.commandPath = path
 			err := run(command, args)
 			if hint := app.refusalHint(command, path, err); hint != "" {
 				return &refusalHintError{err: err, hint: hint}

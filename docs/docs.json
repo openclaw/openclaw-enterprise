@@ -201,8 +201,16 @@
                     "label": "Credential Sources"
                   },
                   {
+                    "page": "guides/credential-proxy",
+                    "label": "Set Up Credential Proxy"
+                  },
+                  {
                     "page": "reference/credential-sources/withdrawal",
                     "label": "Credential Withdrawal"
+                  },
+                  {
+                    "page": "reference/credential-sources/protected-inference",
+                    "label": "Protected Inference"
                   },
                   {
                     "page": "guides/topics/audit-log",
@@ -255,6 +263,7 @@
               "reference/configuration/secrets",
               "reference/security/runtime-isolation",
               "reference/agents",
+              "reference/agents/workspace-files",
               "reference/agent-plugins",
               "reference/presets"
             ]
@@ -305,8 +314,16 @@
                             "label": "Storage and Credentials"
                           },
                           {
+                            "page": "reference/drivers/kubernetes-compute/managed-native-configuration",
+                            "label": "Managed Native Configuration"
+                          },
+                          {
                             "page": "reference/drivers/kubernetes-compute/codex-oauth-storage",
                             "label": "Codex OAuth Storage"
+                          },
+                          {
+                            "page": "reference/drivers/kubernetes-compute/split-layout-installations",
+                            "label": "Split-Layout Installations"
                           }
                         ]
                       },
@@ -326,6 +343,10 @@
                       {
                         "page": "reference/drivers/openshell-sandbox",
                         "label": "OpenShell"
+                      },
+                      {
+                        "page": "reference/drivers/openshell-sandbox/harness-providers",
+                        "label": "OpenShell Harness Providers"
                       }
                     ]
                   },
@@ -335,6 +356,10 @@
                       {
                         "page": "reference/drivers/openshell-credential-gateway",
                         "label": "OpenShell"
+                      },
+                      {
+                        "page": "reference/drivers/openshell-credential-gateway/codex-oauth-poc",
+                        "label": "OpenShell Codex OAuth PoC"
                       }
                     ]
                   },
@@ -406,6 +431,14 @@
                         "label": "Push Guardrail"
                       },
                       {
+                        "page": "reference/repository-credentials/prepared-native-git",
+                        "label": "Native Git with a Prepared Credential"
+                      },
+                      {
+                        "page": "reference/repository-credentials/protected-openshell-git",
+                        "label": "Protected Git with OpenShell"
+                      },
+                      {
                         "page": "reference/public-github-reads",
                         "label": "Public GitHub Reads"
                       }
@@ -439,7 +472,10 @@
             "hidden": [
               "guides/repository-credentials/standalone-service",
               "guides/repository-credentials/development-token",
-              "reference/repository-credentials/development-token"
+              "reference/repository-credentials/development-token",
+              "reference/repository-credentials/openshell-git",
+              "reference/repository-credentials/openshell-git-refusals",
+              "reference/repository-credentials/openshell-git-restarts"
             ]
           },
           {
@@ -480,6 +516,26 @@
                   {
                     "page": "guides/deploy/breaking-changes",
                     "label": "Breaking Changes"
+                  },
+                  {
+                    "page": "guides/deploy/breaking-changes-later-2026-10-24",
+                    "label": "Later Breaking Changes 2026-10-24"
+                  },
+                  {
+                    "page": "guides/deploy/breaking-changes-earlier-2026-10-24",
+                    "label": "Earlier Breaking Changes 2026-10-24"
+                  },
+                  {
+                    "page": "guides/deploy/breaking-changes-before-2026-10-24",
+                    "label": "Breaking Changes Before 2026-10-24"
+                  },
+                  {
+                    "page": "guides/deploy/breaking-changes-before-2026-10-23",
+                    "label": "Breaking Changes Before 2026-10-23"
+                  },
+                  {
+                    "page": "guides/deploy/breaking-changes-before-2026-10-15",
+                    "label": "Breaking Changes Before 2026-10-15"
                   },
                   {
                     "page": "guides/deploy/breaking-changes-archive",
@@ -657,6 +713,10 @@
                   {
                     "page": "guides/deploy/credential-lifecycle",
                     "label": "Credential Rotation"
+                  },
+                  {
+                    "page": "guides/deploy/credential-proxy-upgrade",
+                    "label": "Migrate to Credential Proxy"
                   }
                 ]
               }
@@ -734,7 +794,7 @@
                 ]
               }
             ],
-            "hidden": ["reference/postgres-auth-binding"]
+            "hidden": ["reference/postgres-auth-binding", "reference/cli/local-development"]
           },
           {
             "tab": "Contribute",
@@ -796,6 +856,10 @@
                     "label": "Driver Development"
                   },
                   {
+                    "page": "contributing/credential-proxy-driver",
+                    "label": "Implement a Credential Proxy Driver"
+                  },
+                  {
                     "group": "Driver Contracts",
                     "pages": [
                       {
@@ -817,6 +881,10 @@
                       {
                         "page": "reference/drivers/credential-gateway",
                         "label": "Credential Gateway"
+                      },
+                      {
+                        "page": "reference/drivers/credential-proxy",
+                        "label": "Credential Proxy"
                       },
                       {
                         "page": "reference/drivers/credential-refresh",
@@ -964,6 +1032,8 @@
               "guides/deploy/local-compose-kubernetes",
               "guides/deploy/local-sandbox-network-policy",
               "guides/deploy/openshell-credential-sources",
+              "guides/deploy/local-openshell-images",
+              "guides/deploy/protected-egress-development",
               "reference/settings/development",
               "design/resources",
               "design/access",
@@ -985,6 +1055,7 @@
               "flows/platform-console",
               "flows/platform-console/agent-creation",
               "flows/platform-console/agent-editing",
+              "flows/platform-console/agent-workspace-files",
               "flows/platform-console/agent-stop-and-deletion",
               "flows/platform-console/agent-sharing",
               "flows/platform-console/sign-in-return",
@@ -1035,6 +1106,9 @@
               "flows/repository-credential-configuration",
               "testing/repository-credentials",
               "flows/agent-presets",
+              "flows/credential-source-egress",
+              "testing/static-egress",
+              "testing/protected-repository-custody",
               "reference/sandbox-policies",
               "guides/topics/agent-sandbox-policy",
               "flows/agent-sandbox-policy"

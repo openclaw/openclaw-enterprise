@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { readFile, stat, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -20,6 +19,7 @@ import { createTestConfigurationDriver } from "../helpers/configuration-driver.m
 import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { jsonLineDestination } from "../helpers/json-lines.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { normalizePresetTemplate } from "../../packages/contracts/src/index.ts";
 import {
@@ -27,6 +27,7 @@ import {
   PostgresPlatformState,
 } from "../../packages/occ/src/index.ts";
 import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { waitFor, waitUntil } from "../helpers/wait-for.mjs";
 import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
 
@@ -78,16 +79,7 @@ function memoryLog() {
     lines,
     logger: createOccLogger({
       component: "occ-api-production-wireup",
-      destination: {
-        write(chunk) {
-          for (const line of String(chunk).split("\n")) {
-            if (line.length > 0) {
-              lines.push(JSON.parse(line));
-            }
-          }
-          return true;
-        },
-      },
+      destination: jsonLineDestination(lines),
     }),
   };
 }
@@ -152,7 +144,7 @@ test(
       OCC_AUTH_BASE_URL: authBaseURL,
       OCC_BOOTSTRAP_ADMIN_EMAIL: adminEmail,
       OCC_BOOTSTRAP_PASSWORD_FILE: join(
-        await mkdtemp(join(tmpdir(), "openclaw-enterprise-bootstrap-password-")),
+        await temporaryDirectory(t, "openclaw-enterprise-bootstrap-password-"),
         "admin-password",
       ),
       OCC_BOOTSTRAP_SERVICE_KEY_FILE: "",
@@ -1483,7 +1475,6 @@ test(
       if (pool !== undefined) {
         await pool.end();
       }
-      await rm(passwordDirectory, { recursive: true, force: true });
     }
   },
 );

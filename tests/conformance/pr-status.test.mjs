@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { test } from "node:test";
+import { commandPath } from "../helpers/fake-commands.mjs";
+import { readJsonLinesSync } from "../helpers/json-lines.mjs";
 
 const script = resolve("scripts/pr-status.mjs");
 
@@ -40,7 +42,7 @@ else process.exit(1);
     log,
     env: {
       ...process.env,
-      PATH: `${directory}${delimiter}${process.env.PATH}`,
+      PATH: commandPath(directory),
       PR_STATUS_CALLS: log,
     },
   };
@@ -58,7 +60,7 @@ test("reports observed PR and target separately without asserting merge readines
   assert.match(result.stdout, /PR-reported base: old-base/);
   assert.match(result.stdout, /Native: SKIPPED/);
   assert.match(result.stdout, /does not decide merge readiness/);
-  const calls = readFileSync(log, "utf8").trim().split("\n").map(JSON.parse);
+  const calls = readJsonLinesSync(log);
   assert.deepEqual(
     calls.map((call) => call[0]),
     ["api", "pr", "api"],

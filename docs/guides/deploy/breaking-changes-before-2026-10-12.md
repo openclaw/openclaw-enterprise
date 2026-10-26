@@ -2,7 +2,12 @@
 
 These [breaking-change notices](breaking-changes.md) are dated 2026-10-11;
 newer ones are on that page, in the
-[earlier notices](breaking-changes-archive.md) and in the
+[later notices from 2026-10-24](breaking-changes-later-2026-10-24.md), in the
+[earlier notices from 2026-10-24](breaking-changes-earlier-2026-10-24.md), in the
+[notices before 2026-10-24](breaking-changes-before-2026-10-24.md), in the
+[notices before 2026-10-23](breaking-changes-before-2026-10-23.md), in the
+[notices before 2026-10-15](breaking-changes-before-2026-10-15.md), in the
+[notices from 2026-10-13](breaking-changes-archive.md) and in the
 [notices before 2026-10-13](breaking-changes-before-2026-10-13.md), and older ones are in the
 [notices before 2026-10-11](breaking-changes-before-2026-10-11.md). They still
 apply when you upgrade from a source commit older than their date. Entries are

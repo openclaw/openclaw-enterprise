@@ -13,13 +13,16 @@ calls those methods, what each implementation must enforce, and which failures
 must stop the operation:
 
 - [Compute](../reference/drivers/compute.md), [Configuration](../reference/drivers/configuration.md), and [IAM](../reference/drivers/iam.md)
-- [Sandbox](../reference/drivers/sandbox.md) and [Secret](../reference/drivers/secret.md)
+- [Sandbox](../reference/drivers/sandbox.md), [Credential Proxy](../reference/drivers/credential-proxy.md), and [Secret](../reference/drivers/secret.md)
 - [Plugin](../reference/drivers/plugin.md) and [ServiceAccount](../reference/drivers/service-account.md)
 
 Installed npm packages can implement **Compute, Configuration, IAM, or Sandbox**.
-Secret, Plugin, and ServiceAccount have bundled selections only. If you need one
-of those capabilities, change the existing platform implementation; adding an npm
-package alone will not make it selectable. Use the [supported selections](../reference/drivers/selection.md#supported-selections)
+A Sandbox package can also provide Credential Proxy through one registration;
+follow the [Credential Proxy walkthrough](credential-proxy-driver.md) for that
+paired capability and its profile limits. Secret, Plugin, and ServiceAccount
+have bundled selections only. If you need one of those capabilities, change the
+existing platform implementation; adding an npm package alone will not make it
+selectable. Use the [supported selections](../reference/drivers/selection.md#supported-selections)
 and [repository layout](../layout.md#source-ownership) to find its owner. Bundled
 infrastructure implementations live under `apps/controller/src/drivers/`; native
 IAM lives in `packages/iam/`. Composition lives in `apps/controller/src/composition/`.
@@ -36,7 +39,9 @@ frozen copy and cannot replace configuration values. Declare runtime contributio
 resource-owner binding supplies their authorization and lifecycle. A Sandbox
 advertising `networkPolicy` must contribute `(agent, sandbox-network-policy)`.
 Return the selected `id` and `implementation`, the expected
-`capability`, and its required methods. The controller must declare the package
+`capability`, and its required methods on each capability object. For paired
+capabilities, return one `DriverRegistration` with shared lifecycle hooks
+instead of independent instances. The controller must declare the package
 as a direct production dependency at an exact version; update the lockfile with
 it. For a bundled implementation, follow the existing capability directory and
 wire it into controller composition. Consult the [package and factory contract](../reference/drivers/selection.md#package-identity-and-factory-exports)

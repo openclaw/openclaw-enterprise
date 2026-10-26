@@ -5,7 +5,12 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: [namespaces]
+    {{- with .Values.preprovisionedNamespace }}
+    resourceNames: [{{ printf "oce-%s" (.namespaceId | sha256sum | trunc 15) | quote }}]
+    verbs: [get]
+    {{- else }}
     verbs: [get, list]
+    {{- end }}
   - nonResourceURLs: [/version]
     verbs: [get]
 ---
@@ -16,7 +21,12 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: [namespaces]
+    {{- with .Values.preprovisionedNamespace }}
+    resourceNames: [{{ printf "oce-%s" (.namespaceId | sha256sum | trunc 15) | quote }}]
+    verbs: [get]
+    {{- else }}
     verbs: [get, list, create, patch, delete]
+    {{- end }}
   - nonResourceURLs: [/version]
     verbs: [get]
 ---

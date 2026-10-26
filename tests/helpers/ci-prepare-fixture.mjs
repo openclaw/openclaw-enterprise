@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { accessSync, constants } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
-import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { commandShim, startFixtureCommandServer } from "./ci-prepare-fixture-command.mjs";
+import { readJsonLines } from "./json-lines.mjs";
+import { socketDirectory } from "./socket-directory.mjs";
+import { temporaryDirectory } from "./temporary-directory.mjs";
 
 export { forwardedEnv } from "./ci-prepare-fixture-command.mjs";
 
@@ -19,8 +21,7 @@ export const nodeBaseImage = `docker.io/library/node:24-bookworm@sha256:${digest
 export const mutableImage = "registry.example/openclaw/runtime:latest";
 
 export async function fixture(t) {
-  const root = await mkdtemp(join(tmpdir(), "ci-prepare-test-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await temporaryDirectory(t, "ci-prepare-test-");
   await mkdir(root, { recursive: true });
   return root;
 }
@@ -141,6 +142,10 @@ export async function fixtureImageCommands(
   }
   const statePath = join(root, "state.json");
   const githubEnv = join(root, "github.env");
+  // The fake PostgreSQL server's Unix socket (ci-prepare-fixture-command.mjs).
+  const postgresSockets = await socketDirectory(t, "ci-prepare-pg-", {
+    longest: ".s.PGSQL.65535",
+  });
   // No inherited credentials, infrastructure selectors, or real command fallback.
   const env = {
     HOME: home,
@@ -157,6 +162,7 @@ export async function fixtureImageCommands(
     ),
     OPENCLAW_CI_K3D_BIN: join(bin, "k3d.mjs"),
     OCC_KUBECTL_BIN: join(bin, "kubectl.mjs"),
+    OPENCLAW_CI_POSTGRES_SOCKET_DIR: postgresSockets,
     ...extraEnv,
   };
   const run = (script, args) =>
@@ -177,7 +183,6 @@ export async function fixtureImageCommands(
       assert.equal(result.status, 0, result.stderr);
     },
     readState: async () => JSON.parse(await readFile(statePath, "utf8")),
-    commands: async () =>
-      (await readFile(join(root, "commands.jsonl"), "utf8")).trim().split("\n").map(JSON.parse),
+    commands: () => readJsonLines(join(root, "commands.jsonl")),
   };
 }

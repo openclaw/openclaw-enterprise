@@ -18,7 +18,11 @@ import { composeProduction } from "./composition/production.ts";
 import { validateWorkspaceFilesApiKeyPath } from "./composition/workspace-files.ts";
 import { createOccLogger, emitOccLogEvent } from "./logging.ts";
 import { createOccMetrics } from "./metrics/index.ts";
-import { startupDependencyFailure, startupConfigurationFailure } from "./startup-failure.ts";
+import {
+  startupDependencyFailure,
+  startupConfigurationFailure,
+  startupListenerFailure,
+} from "./startup-failure.ts";
 import { metricsConfiguration, startMetricsListener } from "./metrics/listener.ts";
 
 const developmentBindHosts = new Set(["127.0.0.1", "::1", "0.0.0.0"]);
@@ -97,7 +101,8 @@ function startupFailureCode(error) {
 export function startupFailureFields(error) {
   return (
     startupDependencyFailure(error) ??
-    startupConfigurationFailure(error) ?? { code: startupFailureCode(error) }
+    startupConfigurationFailure(error) ??
+    startupListenerFailure(error) ?? { code: startupFailureCode(error) }
   );
 }
 
@@ -272,6 +277,8 @@ function configuration(env) {
         : { channelDirectoryManagedProxyHost }),
       ...(nativeAdmin === undefined ? {} : { nativeAdmin }),
       agentRuntimeLogsEnabled,
+      // The chart sets it when a sign-in egress rule opens HTTPS to any address (finding 2533).
+      apiHttpsEgressOpen: optionalBooleanEnvironment(env, "OCC_API_HTTPS_EGRESS_OPEN"),
     });
   }
 

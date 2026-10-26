@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 
 export default {
   framework: "@storybook/html-vite",
-  stories: ["../*.stories.@(mjs|ts)"],
+  stories: ["../*.stories.ts"],
   staticDirs: [{ from: "../dist/assets", to: "/" }],
   async viteFinal(config) {
     return {

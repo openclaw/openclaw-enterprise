@@ -6,11 +6,12 @@ import {
   composePostgresDevelopment,
   createPostgresControllerAuth,
 } from "../helpers/password-hasher.mjs";
-import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
+import { signInWithEmailPassword } from "../helpers/auth-session.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { injectJson } from "../helpers/inject-json.mjs";
 
 // Storage/admission integration only: the HTTP suite separately proves IAM
 // authorization. These server-only operations model an already authorized key
@@ -173,20 +174,8 @@ test(
       email,
       password,
     });
-    const admin = (method, url, payload) =>
-      app.inject({
-        method,
-        url,
-        headers: authenticatedHeaders(session, { host: "127.0.0.1" }),
-        ...(payload === undefined ? {} : { payload }),
-      });
-    const withKey = (key, method, url, payload) =>
-      app.inject({
-        method,
-        url,
-        headers: { host: "127.0.0.1", "x-api-key": key },
-        ...(payload === undefined ? {} : { payload }),
-      });
+    const admin = (method, url, body) => injectJson(app, method, url, { session, body });
+    const withKey = (key, method, url, body) => injectJson(app, method, url, { key, body });
     const namespaceIds = [];
     for (const name of [
       `sp-team-${randomUUID().slice(0, 8)}`,

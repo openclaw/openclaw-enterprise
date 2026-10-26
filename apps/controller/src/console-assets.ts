@@ -31,49 +31,59 @@ const CONSOLE_ROOT = new URL("./console/", import.meta.url);
 const CONSOLE_SHELL = new URL("index.html", CONSOLE_ROOT);
 const CONSOLE_ASSETS = new Map([
   ...Object.entries({
-    "image/png": ["oce-mascot.png", "favicon-16.png", "favicon-32.png", "apple-touch-icon.png"],
+    "image/png": [
+      "oce-mascot.png",
+      "oce-mascot-inverse.png",
+      "favicon-16.png",
+      "favicon-32.png",
+      "apple-touch-icon.png",
+    ],
     "image/vnd.microsoft.icon": ["favicon.ico"],
     "text/javascript; charset=utf-8": [
       "api-client.mts",
-      "configuration-fields.mjs",
-      "driver-configurations.mjs",
+      "configuration-fields.mts",
+      "driver-configurations.mts",
       "view-lifetime.mts",
       "navigation.mts",
-      "shell.mjs",
+      "shell.mts",
       "namespaces.mts",
       "secrets.mts",
-      "runtime-images.mjs",
+      "runtime-images.mts",
       "agents/list.mts",
+      "agents/access-reasons.mts",
       "agents/collection.mts",
       "agents/lifecycle-confirmation.mts",
       "agents/logs.mts",
-      "agents/sandbox-policy.mjs",
+      "agents/sandbox-policy.mts",
       "agents/logs-view.mts",
-      "agents/presets.mjs",
-      "agents/create.mjs",
+      "agents/presets.mts",
+      "agents/create.mts",
       "agents/provisioning-job.mts",
-      "agents/plugin-discovery.mjs",
-      "agents/slack-directory.mjs",
-      "agents/slack-approvers.mjs",
-      "agents/plugin-fields.mjs",
-      "agents/plugins.mjs",
-      "agents/repositories.mjs",
-      "agents/repository-profiles.mjs",
+      "agents/plugin-discovery.mts",
+      "agents/slack-directory.mts",
+      "agents/slack-approvers.mts",
+      "agents/plugin-fields.mts",
+      "agents/plugins.mts",
+      "agents/repositories.mts",
+      "agents/repository-profiles.mts",
       "agents/starter-model.mjs",
-      "agents/workspace.mjs",
-      "agents/access.mjs",
-      "agents/detail.mjs",
-      "agents/deletion.mjs",
-      "agents/stop.mjs",
-      "agents/native-admin.mjs",
-      "agents/harness-auth.mjs",
-      "agents/device-login.mjs",
-      "agents/credential-access.mjs",
-      "agents/secret-picker.mjs",
-      "agents/credentials.mjs",
-      "channels/slack.mjs",
-      "channels/shared-ui.mjs",
-      "channels.mjs",
+      "agents/workspace.mts",
+      "agents/access.mts",
+      "agents/detail.mts",
+      "agents/deployment-evidence.mts",
+      "agents/deployment-diagnostics.mts",
+      "agents/deployment-recovery.mts",
+      "agents/deletion.mts",
+      "agents/stop.mts",
+      "agents/native-admin.mts",
+      "agents/harness-auth.mts",
+      "agents/device-login.mts",
+      "agents/credential-access.mts",
+      "agents/secret-picker.mts",
+      "agents/credentials.mts",
+      "channels/slack.mts",
+      "channels/shared-ui.mts",
+      "channels.mts",
       "agents.mjs",
       "carry.mts",
       "drafts.mts",
@@ -100,6 +110,22 @@ const CONSOLE_ASSETS = new Map([
     "/console/preset-variables.mjs",
     {
       path: new URL("../../../packages/contracts/src/preset-variables.mjs", import.meta.url),
+      contentType: "text/javascript; charset=utf-8",
+    },
+  ],
+  // The Console reads Slack tokens with OCC's environment reference grammar.
+  [
+    "/console/environment-references.mjs",
+    {
+      path: new URL("../../../packages/occ/src/environment-references.ts", import.meta.url),
+      contentType: "text/javascript; charset=utf-8",
+    },
+  ],
+  // The Console offers each failed deployment's next step from OCC's own table.
+  [
+    "/console/deployment-failure-steps.mjs",
+    {
+      path: new URL("../../../packages/occ/src/deployment-failure-steps.ts", import.meta.url),
       contentType: "text/javascript; charset=utf-8",
     },
   ],
@@ -197,9 +223,7 @@ export async function readConsoleAsset(
     if (!asset.contentType.startsWith("text/")) {
       return { body: source, contentType: asset.contentType, statusCode: 200 };
     }
-    const body = asset.path.pathname.endsWith(".mts")
-      ? browserJavaScript(pathname, source)
-      : source;
+    const body = /\.m?ts$/.test(asset.path.pathname) ? browserJavaScript(pathname, source) : source;
     return encodedAsset(pathname, body, asset.contentType, acceptEncoding);
   }
   const shell = await readFile(CONSOLE_SHELL);

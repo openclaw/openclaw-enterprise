@@ -161,8 +161,21 @@ function unionMembersOf(
   return entries.filter((entry) => unionMemberPrefix(union, entry) !== undefined);
 }
 
-function unionBranch(union: ValidationEntry, member: ValidationEntry): string {
-  return unionBranchPath(union, member)[0] ?? "";
+function groupUnionMembersByBranch(
+  union: ValidationEntry,
+  members: readonly ValidationEntry[],
+): ReadonlyMap<string, readonly ValidationEntry[]> {
+  const branches = new Map<string, ValidationEntry[]>();
+  for (const member of members) {
+    const branch = unionBranchPath(union, member)[0] ?? "";
+    const failures = branches.get(branch);
+    if (failures === undefined) {
+      branches.set(branch, [member]);
+    } else {
+      failures.push(member);
+    }
+  }
+  return branches;
 }
 
 // Inner unions first: a union that is another union's member comes before it. A union inside
@@ -282,12 +295,8 @@ function mismatchedUnionShapes(entries: readonly ValidationEntry[]): {
     if (unions.some((other) => other !== union && other.schemaPath === union.schemaPath)) {
       continue;
     }
-    const branches = new Map<string, ValidationEntry[]>();
     const remaining = entries.filter((entry) => !dropped.has(entry));
-    for (const member of unionMembersOf(union, remaining)) {
-      const branch = unionBranch(union, member);
-      branches.set(branch, [...(branches.get(branch) ?? []), member]);
-    }
+    const branches = groupUnionMembersByBranch(union, unionMembersOf(union, remaining));
     const chosen = discriminatedBranch(union);
     if (chosen !== undefined && branches.has(chosen)) {
       dropped.add(union);
@@ -366,11 +375,7 @@ export function collapseScalarUnions(
     ) {
       continue;
     }
-    const branches = new Map<string, ValidationEntry[]>();
-    for (const member of members) {
-      const branch = unionBranch(union, member);
-      branches.set(branch, [...(branches.get(branch) ?? []), member]);
-    }
+    const branches = groupUnionMembersByBranch(union, members);
     const values = [...branches.values()].flatMap((failures) => {
       const inner = failures.find((entry) => acceptedBy.has(entry));
       if (inner !== undefined) {

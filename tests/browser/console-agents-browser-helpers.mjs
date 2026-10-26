@@ -9,10 +9,159 @@ import { chromium, request as playwrightRequest } from "playwright";
 import { watchBrowserContext } from "../helpers/browser-failure-diagnostics.mjs";
 import { keepRequestInterceptionEnabled } from "../helpers/browser-request-interception.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { SECRET_OPERATE_DENIED } from "../helpers/refusal-text.mjs";
+import { waitUntil } from "../helpers/wait-for.mjs";
 import {
   deploymentErrorForWork,
   deploymentProgressForWork,
 } from "../../packages/occ/src/state/controller-work.ts";
+
+// What a member who writes Agents holds in one Namespace (the ux-audit-1018 member-write
+// persona), for fixture.createNamespaceMember. It has no Installation access, so it cannot read
+// or write IAM policy.
+/** @type {readonly (readonly [import("../../packages/contracts/src/index.ts").Permission["action"], import("../../packages/contracts/src/index.ts").Permission["resourceKind"]])[]} */
+export const MEMBER_WRITE = [
+  ["read", "namespace"],
+  ["read", "agent"],
+  ["update", "agent"],
+  ["deploy", "agent"],
+  ["operate", "agent"],
+  ["read", "agent_revision"],
+  ["read", "configuration"],
+  ["update", "configuration"],
+  ["read", "secret"],
+  ["operate", "secret"],
+  ["create", "agent"],
+  ["create", "configuration"],
+  ["create", "secret"],
+  ["read", "preset"],
+];
+
+/**
+ * MEMBER_WRITE without each [action, resourceKind] grant in `grants`, which it must hold: the
+ * member-write persona missing exactly those grants.
+ * @param {...(typeof MEMBER_WRITE)[number]} grants
+ * @returns {typeof MEMBER_WRITE}
+ */
+export function memberWriteWithout(...grants) {
+  const held = ([action, resourceKind]) =>
+    grants.some((grant) => grant[0] === action && grant[1] === resourceKind);
+  const kept = MEMBER_WRITE.filter((grant) => !held(grant));
+  assert.equal(kept.length, MEMBER_WRITE.length - grants.length, "MEMBER_WRITE holds each grant");
+  return kept;
+}
+
+// What a member who reads an Agent holds in one Namespace: the Namespace, the Agent, its
+// versions and its Configuration. Tests add the grants their persona needs to it.
+/** @type {typeof MEMBER_WRITE} */
+export const AGENT_READ = [
+  ["read", "namespace"],
+  ["read", "agent"],
+  ["read", "agent_revision"],
+  ["read", "configuration"],
+];
+
+// The Role that fixture.createNamespaceMember made for `label`. Tests change it in place to
+// grant or revoke after sign-in: State reads the policy on each request.
+function memberRole(fixture, label) {
+  const role = fixture.policy.roles.find(({ id }) => id === `role-${label}`);
+  assert.ok(role, `member ${label} has a Role`);
+  return role;
+}
+
+/** Adds `grants`, as [action, resourceKind] pairs, to member `label`'s Role. */
+export function grantMember(fixture, label, grants) {
+  memberRole(fixture, label).permissions.push(
+    ...grants.map(([action, resourceKind]) => ({ action, resourceKind })),
+  );
+}
+
+/**
+ * Removes one [action, resourceKind] grant from member `label`'s Role, which must hold it.
+ * Returns a function that restores the grants the Role held before.
+ */
+export function revokeMemberGrant(fixture, label, grant) {
+  return revokeRoleGrant(memberRole(fixture, label), label, grant);
+}
+
+/**
+ * Removes one [action, resourceKind] grant from the Installation administrator Role the fixture
+ * seeds for its administrator account, which `login` signs in by default. Returns a restore
+ * function, as revokeMemberGrant does.
+ */
+export function revokeAdministratorGrant(fixture, grant) {
+  const role = fixture.policy.roles.find(({ name }) => name === "Installation administrator");
+  assert.ok(role, "the fixture's administrator has a Role");
+  return revokeRoleGrant(role, "the administrator", grant);
+}
+
+/**
+ * Binds the Installation administrator Role the fixture seeds to `principal`, as another
+ * administrator grants Installation administration while that account is signed in. Returns a
+ * function that removes that binding again, as another administrator revokes it.
+ */
+export function grantInstallationAdministration(fixture, principal) {
+  const role = fixture.policy.roles.find(({ name }) => name === "Installation administrator");
+  assert.ok(role, "the fixture's administrator has a Role");
+  const binding = fixture.policy.bindings.find(({ roleId }) => roleId === role.id);
+  assert.ok(binding, "the fixture's administrator holds the Role through a binding");
+  const granted = {
+    ...binding,
+    id: `installation-administrator-${principal.id}`,
+    subjectId: principal.id,
+  };
+  fixture.policy.bindings.push(granted);
+  return () => {
+    fixture.policy.bindings.splice(fixture.policy.bindings.indexOf(granted), 1);
+  };
+}
+
+function revokeRoleGrant(role, holder, [action, resourceKind]) {
+  const before = role.permissions;
+  role.permissions = before.filter(
+    (grant) => grant.action !== action || grant.resourceKind !== resourceKind,
+  );
+  assert.notEqual(
+    role.permissions.length,
+    before.length,
+    `${holder} holds ${action} ${resourceKind}`,
+  );
+  return () => {
+    role.permissions = before;
+  };
+}
+
+// Secret operate on exactly `secretIds`, as an administrator grants it per Secret: one Role
+// holding Secret operate, bound to `principal` once for each Secret. `revoke(secretId)` removes
+// that Secret's binding.
+export function grantSecretOperate(fixture, namespaceId, principal, secretIds) {
+  const roleId = `secret-operate-${principal.id}`;
+  if (!fixture.policy.roles.some(({ id }) => id === roleId)) {
+    fixture.policy.roles.push({
+      id: roleId,
+      namespaceId,
+      permissions: [{ action: "operate", resourceKind: "secret" }],
+    });
+  }
+  for (const secretId of secretIds) {
+    fixture.policy.bindings.push({
+      id: `${roleId}-${secretId}`,
+      namespaceId,
+      subjectKind: "identity",
+      subjectId: principal.id,
+      roleId,
+      resourceKind: "secret",
+      resourceId: secretId,
+    });
+  }
+  return {
+    revoke(secretId) {
+      const index = fixture.policy.bindings.findIndex(({ id }) => id === `${roleId}-${secretId}`);
+      assert.notEqual(index, -1, `Secret operate on ${secretId} is granted`);
+      fixture.policy.bindings.splice(index, 1);
+    },
+  };
+}
 
 // The in-memory fixture has no worker records. A test that supplies a failed deployment
 // record builds its error with the API's own code, so the console shows the exact code,
@@ -25,7 +174,30 @@ export function persistedDeploymentError(code, data) {
   });
 }
 
+// The caller-permissions answer is advisory. Report Configuration update as granted, as a page
+// that read the answer before a revocation would, so the Configuration editor opens and what a
+// test sees is the API's refusal (finding 2421).
+export async function grantStaleConfigurationUpdate(page) {
+  await page.route(/\/agents\/[^/]+\/permissions$/, async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    await route.fulfill({
+      response,
+      json: {
+        ...body,
+        data: {
+          ...body.data,
+          configurationUpdate: true,
+          configurationSecretsOperate: true,
+          configurationSecretsOperateDeniedBindings: [],
+        },
+      },
+    });
+  });
+}
+
 export function apiRequests(page, origin) {
+  /** @type {{ method: string, path: string, body: unknown }[]} */
   const requests = [];
   page.on("request", (request) => {
     const url = new URL(request.url());
@@ -119,6 +291,7 @@ export function fileBrowser() {
   return sharedBrowser;
 }
 
+/** @returns {Promise<{ page: import("playwright").Page, artifacts: string }>} */
 export async function newPage(t, fixture, options = {}) {
   const artifacts = await artifactDirectory(t);
   assert.ok(
@@ -175,6 +348,7 @@ const signedInPath = /\/console\/(agents|backends|namespaces|settings|secrets)/;
 // keeps that tab's session storage and history across the sign-in. So does a fixture served
 // over TLS or under another host name, whose cookies are what such a test checks. Tests about
 // the sign-in page itself use the form directly or loginThroughForm.
+/** @param {string | URL} [path] */
 export async function login(
   page,
   fixture,
@@ -260,20 +434,26 @@ export async function loginThroughForm(
   await page.waitForURL(signedInPath);
 }
 
-// Browser storage the console wrote, except the tab-scoped Installation-access probe answer
-// (session owner key, admin flag and observability URL), which never holds drafts or
-// credentials.
-export async function consoleStorage(page) {
-  return page.evaluate(() => {
-    const session = { ...sessionStorage };
-    delete session["occ.console.installationAccess"];
-    return { local: { ...localStorage }, session };
-  });
+// Every request that is not a GET: the writes a "nothing was written" check expects none of.
+// The console's CSP limits fetches to its own origin, so apiRequests sees every API write.
+/** @param {ReturnType<typeof apiRequests>} requests */
+export function writeRequests(requests) {
+  return requests.filter((request) => request.method !== "GET");
 }
 
+// writeRequests without the sign-in and sign-out requests (/api/auth/sign-*).
+/** @param {ReturnType<typeof apiRequests>} requests */
 export function nonAuthWriteRequests(requests) {
-  return requests.filter(
-    (request) => request.method !== "GET" && !request.path.startsWith("/api/auth/sign-"),
+  return writeRequests(requests).filter((request) => !request.path.startsWith("/api/auth/sign-"));
+}
+
+// Whether a Secret value control hides what is typed: a password input, or the masked
+// multiline box every Create Secret form uses where the browser supports masking (finding 2339).
+export async function isMaskedSecretValue(control) {
+  return control.evaluate(
+    (node) =>
+      node.getAttribute("type") === "password" ||
+      globalThis.getComputedStyle(node).getPropertyValue("-webkit-text-security") === "disc",
   );
 }
 
@@ -287,10 +467,61 @@ export async function selectSecret(scope, label, secret, options = {}) {
   await scope.getByRole("option", { name: secretOptionLabel(secret), exact: true }).click();
 }
 
-export async function expectNoText(page, pattern) {
-  await assert.rejects(
-    page.getByText(pattern).waitFor({ state: "visible", timeout: 300 }),
-    /Timeout/,
+// Lists `secret` in the Secret field `label` and returns its option, which carries the reason in
+// its accessible name when the caller may read the Secret but not operate it (finding 2453).
+export async function operateDeniedSecretOption(scope, label, secret) {
+  await scope.getByLabel(label, { exact: true }).fill(secret.name);
+  const option = scope.getByRole("option", {
+    name: `${secretOptionLabel(secret)} ${SECRET_OPERATE_DENIED}`,
+    exact: true,
+  });
+  await option.waitFor();
+  assert.equal(await option.getAttribute("aria-disabled"), "true");
+  return option;
+}
+
+// Lists the Secret field `label`'s inline Create new Secret action and returns it, checking that
+// it is disabled with `reason` in its accessible name.
+export async function deniedCreateSecretOption(scope, label, reason) {
+  await scope.getByLabel(label, { exact: true }).fill("no matching Secret");
+  const option = scope.getByRole("option", {
+    name: `Create new Secret... ${reason}`,
+    exact: true,
+  });
+  await option.waitFor();
+  assert.equal(await option.getAttribute("aria-disabled"), "true");
+  return option;
+}
+
+// Expires every session the app holds, as time passing would: the API then refuses each one.
+// Better Auth's memory adapter stores session expiry as Date values.
+export function expireSessions(fixture) {
+  for (const session of fixture.memoryDatabase.session) {
+    session.expiresAt = new Date(Date.now() - 1000);
+  }
+}
+
+// Checks that no visible text matches `pattern`. `settled` resolves once the page has done what
+// could have shown the text: the read behind it settled (waitForIdleFetches,
+// waitForSettledFetches), or the page shows its last render before a held read answers. The
+// check runs once that has rendered, without a fixed wait. Without `settled`, it watches the
+// page for 300 ms: keep that where a timer could still show the text, such as the loading
+// timers that run while a test holds a session or admission read. The settled check waits for
+// page frames, so it hangs on a page whose clock is paused (page.clock.pauseAt).
+export async function expectNoText(page, pattern, settled) {
+  if (settled === undefined) {
+    await assert.rejects(
+      page.getByText(pattern).waitFor({ state: "visible", timeout: 300 }),
+      /Timeout/,
+    );
+    return;
+  }
+  await settled();
+  await nextFrames(page);
+  assert.equal(
+    await page.getByText(pattern).filter({ visible: true }).count(),
+    0,
+    `no visible text matches ${pattern}`,
   );
 }
 
@@ -310,6 +541,7 @@ export function detailUrl(fixture, namespaceId, agentId, revision, tab) {
   return url;
 }
 
+/** @param {ReturnType<typeof apiRequests>} requests */
 export function pathRequests(requests, method, path) {
   return requests.filter((request) => request.method === method && request.path === path);
 }
@@ -336,6 +568,15 @@ export async function waitForInputValue(locator, expected, timeoutMs = 10_000) {
     expected,
     `input value was ${JSON.stringify(value)}, not ${JSON.stringify(expected)}, after ${timeoutMs} ms`,
   );
+}
+
+// The Agent page builds its tab while the view is still held back (display: none) for its first
+// reads, and a picker's Secret list can load before the view is shown (findings 2034, 2626). A
+// test that measures layout waits through this, not waitForInputValue alone: a hidden field
+// measures 0 x 0.
+export async function waitForShownInputValue(locator, expected, timeoutMs = 10_000) {
+  await waitForInputValue(locator, expected, timeoutMs);
+  await locator.waitFor({ state: "visible", timeout: timeoutMs });
 }
 
 // A control becomes enabled when the page state behind it settles, which can be a task or more
@@ -442,15 +683,19 @@ export async function waitForIdleFetches(page) {
   await page.waitForFunction(() => globalThis.inFlightFetchCount() === 0);
 }
 
+// Polls `predicate` until it is truthy; on timeout, `message` alone is the failure.
 export async function waitForCondition(predicate, message, timeoutMs = 5_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await predicate()) {
-      return;
+  try {
+    await waitUntil(message, predicate, { timeoutMs, intervalMs: 50 });
+  } catch (error) {
+    if (
+      error instanceof assert.AssertionError &&
+      error.message === `Timed out waiting for ${message}.`
+    ) {
+      assert.fail(message);
     }
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    throw error;
   }
-  assert.fail(message);
 }
 
 export function nativeValues(marker, options = {}) {
@@ -499,6 +744,7 @@ export async function slackSelectionValue(input) {
     .evaluateAll((chips) => chips.map((chip) => chip.getAttribute("title")).join(", "));
 }
 
+/** @param {import("playwright").Page} page @param {string} name */
 export function repositoryCheckbox(page, name) {
   return page
     .locator("#repository-results .repository-result-row")
@@ -507,20 +753,39 @@ export function repositoryCheckbox(page, name) {
 }
 
 // Holds requests matching `url` until release(). `requested` resolves when the first one is
-// held. Once a test awaits it, it rejects if none is held within 10 s, so a test fails instead
-// of hanging. With `once`, only the first match is held; with `method`, only matches with that
-// method. Requests not held fall through to earlier routes. `once` is a hand-written flag, not
-// Playwright's { times: 1 }: that
-// turns interception off once no routes remain, which silently releases other held requests.
-// With `afterServer`, the server answers first and the page gets that answer on release (a
-// write that landed while the page waits); if that answer is lost, the page's request fails
-// rather than being sent again. With `fulfill`, the held request gets that response.
+// held. Once a test awaits it, it rejects if none is held within `timeout` ms (10 s by default),
+// so a test fails instead of hanging; `timeout: 0` waits as long as the test does. With `once`,
+// only the first match is held; with `method`, only matches with that method. Requests not held
+// fall through to earlier routes. `once` is a hand-written flag, not Playwright's { times: 1 }:
+// that turns interception off once no routes remain, which silently releases other held requests.
+// With `afterServer`, the server answers first, `requested` resolves with that answer, and the
+// page gets it on release (a write that landed while the page waits); if that answer is lost,
+// the page's request fails rather than being sent again. With `loseResponse` as well, the page's
+// request fails on release although the server applied it. With `fulfill`, the held request
+// gets that response.
+/**
+ * @param {import("node:test").TestContext} t
+ * @param {import("playwright").Page} page
+ * @param {Parameters<import("playwright").Page["route"]>[0]} url
+ * @param {{ once?: boolean, method?: string, afterServer?: boolean, loseResponse?: boolean, fulfill?: Parameters<import("playwright").Route["fulfill"]>[0] | null, timeout?: number }} [options]
+ * @returns {Promise<{ requested: Promise<import("playwright").APIResponse | undefined>, release: () => void, wasRequested: () => boolean }>}
+ */
 export async function holdRequests(
   t,
   page,
   url,
-  { once = false, method, afterServer = false, fulfill = null } = {},
+  {
+    once = false,
+    method,
+    afterServer = false,
+    loseResponse = false,
+    fulfill = null,
+    timeout = 10_000,
+  } = {},
 ) {
+  if (loseResponse && !afterServer) {
+    throw new Error("loseResponse needs afterServer: only a server answer can be lost");
+  }
   let release;
   const held = new Promise((resolve) => {
     release = resolve;
@@ -529,9 +794,9 @@ export async function holdRequests(
   let failRequested;
   let timer;
   const requested = new Promise((resolve, reject) => {
-    markRequested = () => {
+    markRequested = (response) => {
       clearTimeout(timer);
-      resolve();
+      resolve(response);
     };
     failRequested = (error = new Error(`No ${url} request was held`)) => {
       clearTimeout(timer);
@@ -558,8 +823,12 @@ export async function holdRequests(
         return;
       }
     }
-    markRequested();
+    markRequested(response ?? undefined);
     await held;
+    if (loseResponse) {
+      await route.abort("failed").catch(() => {});
+      return;
+    }
     await (response || fulfill ? route.fulfill(fulfill ?? { response }) : route.continue()).catch(
       () => {},
     );
@@ -571,8 +840,8 @@ export async function holdRequests(
   return {
     // The deadline starts at the first await, not at registration (a hold set before sign-in).
     get requested() {
-      if (!taken && timer === undefined) {
-        timer = setTimeout(failRequested, 10_000);
+      if (!taken && timer === undefined && timeout > 0) {
+        timer = setTimeout(failRequested, timeout);
       }
       return requested;
     },
@@ -604,6 +873,7 @@ export function recordLayoutShifts() {
 
 // Returns the layout shifts recorded since the last call, and their total.
 export async function takeLayoutShifts(page) {
+  /** @type {{ value: number, sources: { node: string, text?: string, from: number[], to: number[] }[] }[]} */
   const shifts = await page.evaluate(() => globalThis.__layoutShifts.splice(0));
   return { shift: shifts.reduce((sum, entry) => sum + entry.value, 0), shifts };
 }
@@ -620,8 +890,80 @@ export const nextFrames = (page) =>
       }),
   );
 
+// Records every node that holds focus from now until stopFocusTrail(), in
+// globalThis.focusFrames.trail: the focused node at every frame and the target of every focusin,
+// so a node that holds focus for less than a frame (a busy page paints late) still shows. Nodes
+// are numbered, so a replaced heading is a new entry. `loadingShown` turns true once the content
+// shows one of `loadingTexts`; `frames` counts sampled frames. With `until` (a regular
+// expression source), recording stops at the first entry it matches, so the trail ends there and
+// `stopped` turns true.
+/**
+ * @param {import("playwright").Page} page
+ * @param {string[]} [loadingTexts]
+ * @param {{ until?: string | null }} [options]
+ */
+export const recordFocusTrail = (page, loadingTexts = [], { until = null } = {}) =>
+  page.evaluate(
+    ({ loadingTexts, until }) => {
+      const ids = new WeakMap();
+      let next = 0;
+      const state = { trail: [], loadingShown: false, stopped: false, frames: 0 };
+      const record = (node) => {
+        if (node && node !== globalThis.document.body && !ids.has(node)) {
+          ids.set(node, ++next);
+        }
+        const entry =
+          !node || node === globalThis.document.body
+            ? "BODY"
+            : `${node.tagName}#${ids.get(node)}: ${node.textContent.trim()}`;
+        if (state.trail.at(-1) !== entry) {
+          state.trail.push(entry);
+          state.stopped ||= until !== null && new RegExp(until).test(entry);
+        }
+      };
+      const focused = (event) => {
+        if (!state.stopped) {
+          record(event.target);
+        }
+      };
+      const sample = () => {
+        if (state.stopped) {
+          globalThis.document.removeEventListener("focusin", focused, true);
+          return;
+        }
+        state.frames += 1;
+        record(globalThis.document.activeElement);
+        const shown = globalThis.document.querySelector(".content")?.textContent ?? "";
+        state.loadingShown ||= loadingTexts.some((text) => shown.includes(text));
+        globalThis.requestAnimationFrame(sample);
+      };
+      globalThis.document.addEventListener("focusin", focused, true);
+      globalThis.focusFrames = state;
+      sample();
+    },
+    { loadingTexts, until },
+  );
+
+// Stops the focus trail recordFocusTrail() started and returns it.
+/**
+ * @param {import("playwright").Page} page
+ * @returns {Promise<{ trail: string[], frames: number, loadingShown: boolean, stopped: boolean }>}
+ */
+export const stopFocusTrail = (page) =>
+  page.evaluate(() => {
+    globalThis.focusFrames.stopped = true;
+    return globalThis.focusFrames;
+  });
+
 // The page's main view once its reads have settled and nothing holds it inert.
 export const settledView = '.content [aria-live="polite"][aria-busy="false"]:not([inert])';
+
+// Whether the whole of an element is inside the window, so the reader sees it without scrolling.
+export const inViewport = (locator) =>
+  locator.evaluate((node) => {
+    const { top, bottom } = node.getBoundingClientRect();
+    return top >= 0 && bottom <= globalThis.innerHeight;
+  });
 
 // The desktop and phone sizes the console's layout checks sweep.
 export const consoleViewports = Object.freeze([
@@ -629,15 +971,21 @@ export const consoleViewports = Object.freeze([
   Object.freeze({ width: 390, height: 844 }),
 ]);
 
-// The getAgentDeployment response for an admitted revision when the fixture has no worker.
+// The getAgentDeployment response for an admitted revision when the fixture has no worker. A
+// running record with `nextAttemptAt` is a started deploy whose work waits for its next attempt:
+// it stays running between attempts (finding 2456).
 export function deploymentStatusResponse(
   { id: deploymentId, namespaceId, agentId, createdAt },
-  { status, error = null, attempt },
+  { status, error = null, attempt, nextAttemptAt, warnings = [] },
 ) {
+  const waiting = status === "queued" || nextAttemptAt !== undefined;
   const progress =
     status === "queued" || status === "running"
       ? deploymentProgressForWork(
-          { state: status === "queued" ? "queued" : "claimed", availableAt: new Date(createdAt) },
+          {
+            state: waiting ? "queued" : "claimed",
+            availableAt: new Date(nextAttemptAt ?? createdAt),
+          },
           attempt,
         )
       : null;
@@ -650,7 +998,7 @@ export function deploymentStatusResponse(
         status,
         cleanup: null,
         error,
-        warnings: [],
+        warnings,
         progress,
       },
       meta: { requestId: "req_00000000-0000-4000-8000-000000000001" },
@@ -675,6 +1023,60 @@ export async function routeFailedDeployment(
     (route) => route.fulfill(response),
   );
   return error;
+}
+
+// One readable version per history page: the first page lists the newest readable version.
+// `olderRead`, when given, is told of each older-page request and answers when it resolves.
+export function routeOneVersionPerPage(page, fixture, namespace, agent, olderRead) {
+  const revisionsPath = `/namespaces/${namespace.id}/agents/${agent.id}/revisions`;
+  return page.route(
+    (url) => url.origin === fixture.origin && url.pathname === revisionsPath,
+    async (route) => {
+      const cursor = new URL(route.request().url()).searchParams.get("cursor");
+      if (cursor === "older-page") {
+        await olderRead?.();
+      }
+      const response = await route.fetch({ url: `${fixture.origin}${revisionsPath}` });
+      const body = await response.json();
+      await route.fulfill({
+        response,
+        json: {
+          ...body,
+          data: cursor === "older-page" ? body.data.slice(1) : body.data.slice(0, 1),
+          meta: { ...body.meta, nextCursor: cursor === "older-page" ? null : "older-page" },
+        },
+      });
+    },
+  );
+}
+
+// Denies AgentRevision read on one version, as an administrator's per-version restriction does.
+// State reads the policy on each request, so it applies from the next read on.
+export function denyRevisionRead(fixture, namespace, revision) {
+  fixture.policy.restrictions.push({
+    id: `deny-read-${revision.id}`,
+    namespaceId: namespace.id,
+    resourceKind: "agent_revision",
+    resourceId: revision.id,
+    action: "read",
+    effect: "deny",
+  });
+}
+
+// The Stop Agent button in its row on the Agent page.
+export const stopAgentButton = (page) =>
+  page
+    .getByRole("region", { name: "Stop Agent", exact: true })
+    .getByRole("button", { name: "Stop Agent", exact: true });
+
+// The authorization denials an InMemoryAuditSink recorded for `action`: an exact action name, or
+// a RegExp for a family of actions.
+export function authorizationDenials(auditSink, action) {
+  const matches =
+    typeof action === "string" ? (name) => name === action : (name) => action.test(name);
+  return auditSink
+    .list()
+    .filter((event) => event.kind === "authorization_denial" && matches(event.action));
 }
 
 // WCAG 2 contrast between two sRGB colours given as [r, g, b] in 0-255.
@@ -753,6 +1155,22 @@ export function statusTone(locator, { text = false } = {}) {
       ...(withText ? { text: node.textContent } : {}),
     }),
     text,
+  );
+}
+
+// A long resource ID as the console shortens it in text: its first 12 and last 6 characters.
+export const shortId = (id) => `${id.slice(0, 12)}…${id.slice(-6)}`;
+
+// A control's accessible description from aria-describedby: the text of each element it names,
+// in order (finding D749). A referenced ID that renders nothing adds nothing.
+export function accessibleDescription(locator) {
+  return locator.evaluate((node) =>
+    (node.getAttribute("aria-describedby") ?? "")
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((id) => globalThis.document.getElementById(id)?.textContent?.trim() ?? "")
+      .filter(Boolean)
+      .join(" "),
   );
 }
 

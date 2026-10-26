@@ -8,6 +8,7 @@ import {
 
 import { PLUGIN_RUNTIME_TRANSLATOR_SOURCE } from "../../plugin/runtime-translator.ts";
 import { nodeProgramArguments } from "../node-program.ts";
+import { HARNESS_EGRESS_ENROLLMENT_HELPER } from "../harness-egress-enrollment.ts";
 import { gatewayStateMigrationHelper, startupPhaseHelper } from "../runtime-startup.ts";
 
 // Match the pinned OpenClaw service stop budget: 315s drain, 10s cleanup,
@@ -210,6 +211,12 @@ function serveHeldRuntimeFailureToTransportPeer(check, code, cause) {
 }
 `;
 
+// pluginTimerMs reads a Harness timer setting as whole milliseconds from 1 to 2147483647, the
+// longest delay a Node.js timer honours (MAX_TIMER_DELAY_MS in @openclaw-enterprise/utils, which
+// this script cannot import). The request timeout feeds AbortSignal.timeout, where Number() read
+// "12abc" as NaN, "" as 0 and 3e9 as a timer that fires after 1 ms (finding 2312); the install
+// deadline shares the bound. Whole-line comments here cost nothing at runtime: nodeProgramArguments
+// drops them before the dedicated Harness command is measured against the exec string budget.
 export const PLUGIN_RUNTIME_HELPERS = String.raw`
 const pluginRuntimeTranslator = (${PLUGIN_RUNTIME_TRANSLATOR_SOURCE})();
 const {
@@ -234,8 +241,15 @@ const { spawnSync: pluginSpawnSync } = require("node:child_process");
 const { createServer: pluginCreateServer, get: pluginHttpGet } = require("node:http");
 const { isDeepStrictEqual: pluginDeepEqual } = require("node:util");
 
-const CODEX_PLUGIN_RUNTIME_REQUEST_TIMEOUT_MS = Number(process.env.OPENCLAW_PLUGIN_RUNTIME_REQUEST_TIMEOUT_MS ?? "10000");
-const CODEX_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS = Number(process.env.OPENCLAW_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS ?? "60000");
+function pluginTimerMs(name, fallback) {
+  const value = Number(process.env[name] ?? fallback);
+  if (!/^\d+$/.test(process.env[name] ?? fallback) || value < 1 || value > 2147483647) {
+    throw new Error(name + " must be 1 to 2147483647 ms.");
+  }
+  return value;
+}
+const CODEX_PLUGIN_RUNTIME_REQUEST_TIMEOUT_MS = pluginTimerMs("OPENCLAW_PLUGIN_RUNTIME_REQUEST_TIMEOUT_MS", "10000");
+const CODEX_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS = pluginTimerMs("OPENCLAW_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS", "60000");
 const PLUGIN_STATUS_PATH = "/openclaw/plugin-runtime/status";
 const REMOTE_PLUGIN_STATUS_PATH = "/openclaw/plugin-runtime/remote-status";
 ${RUNTIME_STATUS_CONSTANTS_HELPER}
@@ -1249,6 +1263,14 @@ function assertCodexPluginRuntime(runtime) {
   if (!isPlainObject(runtime.manifest.selections ?? {})) {
     throw new Error("Codex plugin selections are invalid.");
   }
+  if ((runtime.manifest.providerTools !== undefined || runtime.manifest.egressEnrollment !== undefined) &&
+      (runtime.manifest.providerTools !== "none" ||
+       !isPlainObject(runtime.manifest.egressEnrollment) ||
+       (runtime.manifest.egressEnrollment.inference === true &&
+        (runtime.manifest.modelEndpoint?.modelProvider !== "openai-compatible" ||
+         typeof runtime.manifest.modelEndpoint.baseUrl !== "string")))) {
+    throw new Error("Codex protected inference profile is invalid.");
+  }
 }
 
 function openClawPluginPackageSpec(plugin) {
@@ -2044,13 +2066,21 @@ function probeExitFailure({ error, status, signal }) {
 // the container's CPU limit (cgroup cpu.max, at most one core), at most 600 s.
 // A probe that still reaches it after waiting for CPU for over a quarter of the
 // time reports MODEL_PROBE_CPU_STARVED: a restart would get the same CPU. The
-// wait is cgroup cpu.pressure (throttling and node contention) or, on kernels
-// without pressure accounting, cpu.stat throttled_usec (throttling only).
+// wait is the larger of the cgroup cpu.pressure delta (throttling and node
+// contention) and the cpu.stat throttled time (throttling only), each used only
+// when both of its samples are valid: on one CI VM pressure read 8x low and hid
+// a starved probe as a timeout (finding 2271). throttled_usec adds up every
+// CPU's throttled time (about 9x the wall time in a starved test run), so it
+// is capped at the throttled periods' wall time (nr_throttled x cpu.max period).
 // OpenClaw buckets provider 401/403 and invalid-key responses as "auth". Only
 // that deterministic rejection fails the deployment before its deadline.
 // The turn allows 256 output tokens. A reasoning model spends output tokens on
 // thinking before any text; at 16 it returned none and the probe failed.
 // The Gateway times its model-probe phase from wrapper start: it is the first step.
+// At the cap only the probe's own process is killed; its children can still
+// write into the probe directory, so removing it can fail (ENOTEMPTY). Removal
+// retries briefly, then the event reports only the error code as cleanupError
+// and the probe result stands: a failed cleanup must not lose it (finding 2610).
 // Generated code stays compact: the Gateway program is near the exec limit.
 const OPENCLAW_AUTH_PROBE_HELPERS = String.raw`
 ${AUTH_PROBE_FAILURE_HELPER}
@@ -2059,13 +2089,16 @@ function probeOpenClawAuthenticationFailure() {
   const cgroup = (name) => { try { return fs.readFileSync("/sys/fs/cgroup/" + name, "utf8"); } catch { return ""; } };
   const [quota, period] = cgroup("cpu.max").split(" ");
   const capMs = Math.min(600000, 20000 + Math.ceil(45000 / Math.min(1, quota / period || 1)));
-  const read = (name) => (name === "cpu.pressure" ? /^some .*total=(\d+)/m : /throttled_usec (\d+)/).exec(cgroup(name))?.[1] / 1000;
-  const startedAt = Date.now(), pressure = read("cpu.pressure"), metric = Number.isFinite(pressure) ? "cpu.pressure" : "cpu.stat", before = metric === "cpu.pressure" ? pressure : read(metric);
-  let code = runOpenClawAuthenticationProbe(fs, capMs), cause, provider;
+  const sample = () => { const stat = cgroup("cpu.stat"); return [/^some .*total=(\d+)/m.exec(cgroup("cpu.pressure")), /throttled_usec (\d+)/.exec(stat), /nr_throttled (\d+)/.exec(stat)].map((m, i) => (m?.[1] * (i === 2 ? period : 1)) / 1000); };
+  const startedAt = Date.now(), before = sample();
+  const cleanup = {};
+  let code = runOpenClawAuthenticationProbe(fs, capMs, cleanup), cause, provider;
   if (typeof code === "object") ({ code, cause, ...provider } = code);
-  const elapsedMs = Date.now() - startedAt, after = read(metric), cpuWaitMs = Math.round(Number.isFinite(after) && after >= before ? after - before : NaN);
+  const elapsedMs = Date.now() - startedAt, [pressure, throttled, periods] = sample().map((total, i) => { const wait = total - before[i]; return Number.isFinite(wait) && wait >= 0 ? wait : NaN; });
+  const pressureWaitMs = Math.round(pressure), throttledWaitMs = Math.round(Math.min(throttled, periods));
+  const waits = [pressureWaitMs, throttledWaitMs].filter(Number.isFinite), cpuWaitMs = waits.length ? Math.max(...waits) : NaN;
   if (code === "CAP") code = cpuWaitMs > elapsedMs / 4 ? "MODEL_PROBE_CPU_STARVED" : "MODEL_PROBE_TIMEOUT";
-  console.error(JSON.stringify({ event: "openclaw.model_probe", elapsedMs, capMs, cpuWaitMs, code: code ?? "READY", cause, ...provider }));
+  console.error(JSON.stringify({ event: "openclaw.model_probe", elapsedMs, capMs, cpuWaitMs, pressureWaitMs, throttledWaitMs, code: code ?? "READY", cause, ...provider, ...cleanup }));
   return code === undefined ? undefined : { code, cause };
 }
 
@@ -2140,7 +2173,7 @@ function credentialRejectedUpfront(provider, fragment, key, stage) {
     ...upfrontToken("bodyShape", bodyShape, UPFRONT_BODY_SHAPES), ...upfrontToken("providerErrorCode", errorCode, [...UPFRONT_ERROR_CODES, "other"]), ...upfrontToken("providerErrorType", errorType, [...UPFRONT_ERROR_TYPES, "other"]) };
 }
 
-function runOpenClawAuthenticationProbe(fs, capMs) {
+function runOpenClawAuthenticationProbe(fs, capMs, cleanup) {
   const stageStartedAt = Date.now();
   const stage = (stage) => console.error(JSON.stringify({ event: "openclaw.model_probe_stage", stage, elapsedMs: Date.now() - stageStartedAt, capMs }));
   stage("prepare");
@@ -2201,7 +2234,8 @@ function runOpenClawAuthenticationProbe(fs, capMs) {
     return probeFailure("WRAPPER_ERROR");
   } finally {
     stage("cleanup");
-    fs.rmSync(directory, { recursive: true, force: true });
+    try { fs.rmSync(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }); }
+    catch (error) { cleanup.cleanupError = /^E[A-Z0-9]{1,15}$/.test(error?.code) ? error.code : "other"; }
     stage("complete");
   }
 }
@@ -2271,10 +2305,7 @@ ${OPENCLAW_AUTH_PROBE_HELPERS}
 ${startupPhaseHelper("gateway")}
 ${gatewayStateMigrationHelper("restart the Pod")}
 
-function gatewayRuntimeReady() {
-  if (pluginRuntimeStatusPort() !== undefined && pluginStatusReport.phase !== "ready") {
-    return false;
-  }
+function nativeGatewayAnswers(path) {
   return new Promise((resolve) => {
     let settled = false;
     const settle = (ready) => {
@@ -2286,7 +2317,7 @@ function gatewayRuntimeReady() {
       {
         host: "127.0.0.1",
         port: requireNonEmptyString(process.env.OPENCLAW_GATEWAY_PORT, "Gateway port"),
-        path: "/readyz",
+        path,
         timeout: 2_000,
       },
       (response) => {
@@ -2297,6 +2328,19 @@ function gatewayRuntimeReady() {
     request.on("timeout", () => request.destroy());
     request.on("error", () => settle(false));
   });
+}
+
+// OpenClaw's /readyz admits a Gateway whose agent databases are still in
+// background startup inspection, and a chat turn then gets HTTP 500 until it
+// finishes (19.6 s after start in finding 2185). /startupz stays 503 until
+// every agent's inspection settles; /readyz adds channel, state database,
+// failed agent database and plugin reload health.
+async function gatewayRuntimeReady() {
+  if (pluginRuntimeStatusPort() !== undefined && pluginStatusReport.phase !== "ready") {
+    return false;
+  }
+  const answers = await Promise.all([nativeGatewayAnswers("/startupz"), nativeGatewayAnswers("/readyz")]);
+  return answers.every((ready) => ready);
 }
 
 startPluginRuntimeStatusServer(gatewayRuntimeReady);
@@ -3404,7 +3448,11 @@ function codexRetryDelay(retry) {
 }
 `;
 
-export const AGENT_RUNTIME_ENTRYPOINT = String.raw`
+// Preserve the legacy command bytes: running Sandboxes compare their immutable command.
+// Zero provider retry budgets do not disable native connection waiting. Protected
+// launches turn that feature off explicitly in both native CLI invocations.
+function agentRuntimeEntrypoint(disableUnboundedConnectionRetries: boolean): string {
+  return String.raw`
 const { createHash } = require("node:crypto");
 const { mkdirSync, mkdtempSync, rmSync } = require("node:fs");
 const { spawn, spawnSync } = require("node:child_process");
@@ -3414,7 +3462,21 @@ ${PLUGIN_RUNTIME_HELPERS}
 ${AUTH_PROBE_FAILURE_HELPER}
 ${CODEX_FAILURE_OUTPUT_CLASS_HELPER}
 ${CODEX_STDERR_FILTER_HELPER}
+${HARNESS_EGRESS_ENROLLMENT_HELPER}
 ${startupPhaseHelper("agent")}
+
+// codex is the npm launcher: a timeout's SIGKILL ended only it and left its native child
+// running (finding 2274). Login and the model check run that native binary instead.
+function codexExecutable() {
+  for (const directory of (process.env.PATH ?? "").split(":")) {
+    let root;
+    try { root = require("node:fs").realpathSync(directory + "/codex"); } catch { continue; }
+    if (!root.endsWith("/@openai/codex/bin/codex.js")) return "codex";
+    try { root = require("node:module").createRequire(root).resolve("@openai/codex-linux-" + process.arch + "/package.json"); } catch {}
+    return root.slice(0, -12) + "vendor/" + (process.arch === "arm64" ? "aarch64" : "x86_64") + "-unknown-linux-musl/bin/codex";
+  }
+  return "codex";
+}
 
 function agentRuntimeReady() {
   if (
@@ -3487,7 +3549,7 @@ if (loginMode === "api_key") {
   if ((accessToken !== undefined && !nonempty(accessToken)) || !nonempty(externalAccount) || apiKey !== undefined) {
     throw new Error("Codex external authentication configuration is invalid.");
   }
-} else {
+} else if (loginMode !== "protected-no-inference") {
   throw new Error("Codex authentication mode is missing or unsupported.");
 }
 
@@ -3524,17 +3586,37 @@ function codexChildEnvironment() {
   if (providerManagedPat) {
     delete environment.CODEX_ACCESS_TOKEN;
   }
+  delete environment.OPENCLAW_SHELL_NODE_EXTRA_CA_CERTS;
   return environment;
+}
+// Codex gives hook commands its own environment; shell_environment_policy shapes only
+// sandboxed commands, which cannot read the hook directory's Gateway CA copy.
+function shellNodeCaArguments() {
+  const ca = process.env.OPENCLAW_SHELL_NODE_EXTRA_CA_CERTS;
+  if (ca === undefined) return [];
+  return ca
+    ? ["-c", "shell_environment_policy.set.NODE_EXTRA_CA_CERTS=" + JSON.stringify(ca)]
+    : ["-c", 'shell_environment_policy.exclude=["NODE_EXTRA_CA_CERTS"]'];
 }
 // Codex reports provider HTTP rejections as "status 401 Unauthorized" or
 // "unexpected status 403 Forbidden"; transport failures carry no status.
 function codexAuthenticationRejected(message) {
   return typeof message === "string" && /\bstatus 40[13] (Unauthorized|Forbidden)\b/.test(message);
 }
+const enrollment = pluginRuntime?.manifest.egressEnrollment;
+const noInference = loginMode === "protected-no-inference";
+if ((enrollment && (enrollment.inference === false) !== noInference) ||
+    (noInference && (enrollment?.inference !== false || apiKey !== undefined || accessToken !== undefined))) {
+  throw new Error("Protected execution without inference requires its exact non-inference plan.");
+}
+// Protected startup runs no Codex process, login or model probe until Compute releases it.
+const startReleasedCodex = () => {
 const loginStartedAt = Date.now();
 let login;
 let externalAuthenticationUnavailable = false;
-if (loginMode === "chatgptAuthTokens") {
+if (noInference) {
+  login = { status: 0 };
+} else if (loginMode === "chatgptAuthTokens") {
   let temporary;
   try {
     const fs = require("node:fs");
@@ -3595,7 +3677,7 @@ if (loginMode === "chatgptAuthTokens") {
   const loginDeadline = performance.now() + 90000;
   for (let attempt = 1; ; attempt++) {
     const attemptStartedAt = performance.now();
-    login = spawnSync("codex", loginArguments, {
+    login = spawnSync(codexExecutable(), loginArguments, {
       input: loginMode === "api_key" ? apiKey : accessToken,
       env: codexChildEnvironment(),
       encoding: "utf8",
@@ -3623,7 +3705,7 @@ if (loginMode === "chatgptAuthTokens") {
   }
 }
 // A failed native login names the class of its error output, never the output.
-logStartupPhase("codex-login", loginStartedAt, login.status !== 0 || login.error ? "failed" : "ok", undefined,
+if (!noInference) logStartupPhase("codex-login", loginStartedAt, login.status !== 0 || login.error ? "failed" : "ok", undefined,
   loginMode !== "chatgptAuthTokens" && (login.status !== 0 || login.error)
     ? codexFailureOutputClass(login.stderr, login.error) : undefined);
 if (login.status !== 0 || login.error) {
@@ -3724,8 +3806,8 @@ function probeCodexAuthentication(timeout) {
       "sleep_tool", "goals", "workspace_dependencies", "skill_search",
       "skill_mcp_dependency_install", "tool_suggest", "recommended_plugins", "request_permissions_tool",
     ];
-    result = spawnSync("codex", [
-      ...disabled.flatMap((feature) => ["--disable", feature]),
+    result = spawnSync(codexExecutable(), [
+${disableUnboundedConnectionRetries ? '      "--disable", "unbounded_connection_retries",\n' : ""}      ...disabled.flatMap((feature) => ["--disable", feature]),
       "-a", "never", "exec", "--ephemeral", "--ignore-user-config", "--ignore-rules",
       "--skip-git-repo-check", "--json", "--sandbox", "read-only", "--cd", directory,
       "--model", selectedModel.slice(selectedModel.indexOf("/") + 1),
@@ -3742,6 +3824,10 @@ function probeCodexAuthentication(timeout) {
         "-c", "model_providers." + pluginRuntime.manifest.modelEndpoint.modelProvider + '.wire_api="responses"',
         "-c", "model_providers." + pluginRuntime.manifest.modelEndpoint.modelProvider + ".requires_openai_auth=true",
         "-c", "model_providers." + pluginRuntime.manifest.modelEndpoint.modelProvider + ".supports_websockets=false",
+        ...(pluginRuntime.manifest.providerTools !== "none" ? [] : [
+          "-c", "model_providers." + pluginRuntime.manifest.modelEndpoint.modelProvider + ".request_max_retries=0",
+          "-c", "model_providers." + pluginRuntime.manifest.modelEndpoint.modelProvider + ".stream_max_retries=0",
+        ]),
       ]),
       "Reply only READY. Do not use tools.",
     ], {
@@ -3794,13 +3880,15 @@ function probeCodexAuthentication(timeout) {
       if (event.type === "turn.started") turnStarted = true;
       const failure = event.type === "error" ? codexProbeStatusFailure(event.message, "error-event")
         : event.type === "turn.failed" ? codexProbeStatusFailure(event.error?.message, "turn-failed") : undefined;
-      if (failure?.transient === true) {
+      // A protected profile (provider tools none) retries nothing, so its transient
+      // failure is held like any other error event (finding 1599).
+      if (failure?.transient === true && pluginRuntime?.manifest.providerTools !== "none") {
         transientFailure ??= failure;
         if (event.type !== "error" || event.message !== CODEX_NETWORK_WAIT || !turnStarted) unrecoveredTransientFailure = true;
         continue;
       }
       if (event.type === "error") {
-        if (!turnStarted || turnCompleted || !isRecoveredNativeStreamError(event) ||
+        if (pluginRuntime?.manifest.providerTools === "none" || !turnStarted || turnCompleted || !isRecoveredNativeStreamError(event) ||
           ++recoveredStreamErrors > MAX_RECOVERED_STREAM_RETRIES) return finish(codexProbeStatusFailure(event.message, "error-event"));
         continue;
       }
@@ -3857,8 +3945,9 @@ function startAuthenticatedCodex(attempt = 1, deadline = performance.now() + 610
     holdFailedAuthentication("model-probe", "MODEL_PROBE_TIMEOUT");
     return;
   }
-  const result = probeCodexAuthentication(timeout);
-  console.error(JSON.stringify({
+  // An execution without an inference route may serve its local app protocol, but never probes a model.
+  const result = noInference ? {} : probeCodexAuthentication(timeout);
+  if (!noInference) console.error(JSON.stringify({
     event: "codex.model_probe",
     attempt,
     elapsedMs: Math.round(performance.now() - startedAt),
@@ -3870,9 +3959,11 @@ function startAuthenticatedCodex(attempt = 1, deadline = performance.now() + 610
     providerCode: result.providerCode,
     failureClass: result.failureClass,
   }));
-  // The second attempt gets at least one second after the delay.
+  // The second attempt gets at least one second after the delay. A protected profile
+  // retries nothing (finding 1599).
   const delay = codexRetryDelay(1);
-  if (attempt === 1 && codexProbeRetryable(result) && deadline - performance.now() - delay >= 1000) {
+  if (pluginRuntime?.manifest.providerTools !== "none" && attempt === 1 && codexProbeRetryable(result) &&
+      deadline - performance.now() - delay >= 1000) {
     setTimeout(() => startAuthenticatedCodex(2, deadline), delay);
     return;
   }
@@ -3884,7 +3975,7 @@ function startAuthenticatedCodex(attempt = 1, deadline = performance.now() + 610
       : result.cause);
     return;
   }
-  logStartupPhase("model-probe", modelProbeStartedAt);
+  if (!noInference) logStartupPhase("model-probe", modelProbeStartedAt);
 
 function forwardTermination(child) {
   let terminating = false;
@@ -3924,7 +4015,7 @@ if (digest === undefined) {
 const child = spawn(
   "codex",
   [
-    // The successful probe validated this model; native policy readback must see it too.
+    // Preserve the admitted model selection for native policy readback.
     "-c",
     "model=" + JSON.stringify(process.env.OPENCLAW_HARNESS_MODEL.slice(process.env.OPENCLAW_HARNESS_MODEL.indexOf("/") + 1)),
     "-c",
@@ -3939,8 +4030,9 @@ const child = spawn(
     "shell_environment_policy.experimental_use_profile=false",
     "-c",
     "shell_environment_policy.set.PATH=" + JSON.stringify(process.env.PATH ?? ""),
+    ...shellNodeCaArguments(),
     ...(loginMode === "chatgptAuthTokens" || providerManagedPat ? ["-c", "cli_auth_credentials_store=file"] : []),
-    "app-server",
+${disableUnboundedConnectionRetries ? '    "--disable", "unbounded_connection_retries",\n' : ""}    "app-server",
     "--listen",
     "ws://0.0.0.0:" + process.env.APP_SERVER_PORT,
     "--ws-auth",
@@ -3985,10 +4077,30 @@ child.on("exit", (code, signal) => {
   }
 })();
 }
-const modelProbeStartedAt = Date.now();
+let modelProbeStartedAt = Date.now();
 startAuthenticatedCodex();
 }
+};
+const protectedStartup = enrollment !== undefined || noInference ||
+  process.env.OPENCLAW_EGRESS_ENROLLMENT_REVISION_ID !== undefined ||
+  process.env.OPENCLAW_EGRESS_COMPUTE_RELEASE_PUBLIC_KEY !== undefined;
+if (!protectedStartup) {
+  startReleasedCodex();
+} else {
+  const enrollmentStartedAt = Date.now();
+  waitForHarnessEgressEnrollment(enrollment).then(() => {
+    logStartupPhase("egress-enrollment", enrollmentStartedAt);
+    startReleasedCodex();
+  }, () => {
+    logStartupPhase("egress-enrollment", enrollmentStartedAt, "failed");
+    holdFailedAuthentication("egress-enrollment", "UNAVAILABLE");
+  });
+}
 `;
+}
+
+export const AGENT_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint(false);
+export const PROTECTED_CODEX_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint(true);
 
 // Kubernetes Codex implementation: this file-only node is not an OpenClaw
 // execution worker; its explicit command allowlist disables worker hosting.
@@ -4003,7 +4115,8 @@ startAuthenticatedCodex();
 // the saved device identity. No deadline here: the controller's convergence
 // deadline governs a setup that never arrives. SandboxDriver Harnesses still
 // receive OPENCLAW_NODE_SETUP_CODE in the environment.
-export const AGENT_WITH_NODE_ENTRYPOINT = String.raw`
+function agentWithNodeEntrypoint(entrypoint: string): string {
+  return String.raw`
 const { chmodSync, mkdirSync, readFileSync, writeFileSync, rmSync } = require("node:fs");
 const { join } = require("node:path");
 const { execFile, spawn, spawnSync } = require("node:child_process");
@@ -4084,6 +4197,9 @@ if (gatewayCa) {
     ? readFileSync(process.env.NODE_EXTRA_CA_CERTS, "utf8")
     : "";
   hookCa = [inheritedCa, gatewayCa].filter(Boolean).join("\n");
+  // Hook commands run outside the Codex sandbox with Codex's own environment. Sandboxed
+  // commands cannot read the hook directory, so they keep the Pod's own CA setting.
+  codexEnv.OPENCLAW_SHELL_NODE_EXTRA_CA_CERTS = process.env.NODE_EXTRA_CA_CERTS || "";
   codexEnv.NODE_EXTRA_CA_CERTS = join(hookDirectory, "gateway-ca.pem");
 }
 // Harness code runs as this user and can replace the directory, for example with a
@@ -4196,7 +4312,7 @@ const processes = [
   { name: "workspace node", args: nodeArguments, env: nodeEnv },
   {
     name: "Codex",
-    args: ${JSON.stringify(["-e", ...nodeProgramArguments(AGENT_RUNTIME_ENTRYPOINT)])},
+    args: ${JSON.stringify(["-e", ...nodeProgramArguments(entrypoint)])},
     env: codexEnv,
     prepare: prepareHookDirectory,
   },
@@ -4278,6 +4394,12 @@ nodeSetupWait = Date.now();
 // Codex first: it does not wait for the node setup.
 for (const slot of [...processes].reverse()) start(slot);
 `;
+}
+
+export const AGENT_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(AGENT_RUNTIME_ENTRYPOINT);
+export const PROTECTED_CODEX_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
+  PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
+);
 
 export const NATIVE_WORKER_ENTRYPOINT = String.raw`
 const { join } = require("node:path");
