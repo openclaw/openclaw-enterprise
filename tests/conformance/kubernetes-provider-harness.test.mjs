@@ -170,6 +170,14 @@ test("provider Harness endpoint writes transport and runtime requirements", asyn
   };
   await preparedEndpoint(fixture, context);
   const { requirements } = provisions[0];
+  assert.equal(Object.hasOwn(provisions[0], "existingHarnessOnly"), false);
+  await fixture.prepare(revision, { ...context, existingHarnessOnly: true });
+  assert.equal(provisions.at(-1).existingHarnessOnly, true);
+  assert.deepEqual(
+    provisions.at(-1).requirements,
+    requirements,
+    "dispatch intent does not change the immutable workload",
+  );
   assert.deepEqual(requirements.labels, fixture.labels);
   assert.deepEqual(
     requirements.environment.find(({ name }) => name === "APP_TOKEN_SHA"),
@@ -523,19 +531,34 @@ for (const scenario of [
   });
 }
 
-test("provider Harness unready Pod prevents transport status observation", async () => {
+test("provider Harness reports a held failure before Pod readiness but never activates an unready Pod", async () => {
   const fixture = await endpointWithGateway();
   let observations = 0;
+  let answer = { state: "failed", runtimeFailure: heldFailure };
   fixture.sandbox.harnessStatus = async () => {
     observations++;
-    return { state: "failed", runtimeFailure: heldFailure };
+    return answer;
   };
-  fixture.observePods([fixture.pod("starting", "False")]);
+  const pod = fixture.pod("starting", "False");
+  fixture.observePods([pod, fixture.pod("other", "False")]);
   assert.deepEqual(await fixture.prepare(), {
     ...expectedRevision(fixture),
     ready: false,
   });
   assert.equal(observations, 0);
+  fixture.observePods([pod]);
+  assert.deepEqual(await fixture.prepare(), {
+    ...expectedRevision(fixture),
+    ready: false,
+    runtimeFailure: heldFailure,
+  });
+  for (answer of [{ state: "starting" }, { state: "serving" }]) {
+    assert.deepEqual(await fixture.prepare(), { ...expectedRevision(fixture), ready: false });
+    const writes = fixture.writes.length;
+    await assert.rejects(fixture.activate(), /The exact AgentRevision workload is not ready/);
+    assert.equal(fixture.writes.length, writes);
+  }
+  assert.equal(observations, 3);
 });
 
 for (const scenario of transportScenarios) {
@@ -617,7 +640,8 @@ for (const scenario of transportScenarios) {
       ...expectedRevision(fixture),
       ...scenario.outcome,
     });
-    assert.deepEqual(attachmentChecks, [[toolSource.id]]);
+    // A terminal native startup failure ends preparation before readiness of attachments matters.
+    assert.deepEqual(attachmentChecks, scenario.answer.state === "failed" ? [] : [[toolSource.id]]);
     assert.equal(harnessObservations.length, 1);
     assert.equal(harnessObservations[0].revision, sourced);
   });

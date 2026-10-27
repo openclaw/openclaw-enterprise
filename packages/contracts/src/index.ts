@@ -540,6 +540,8 @@ export type ResolvedHarnessAuth =
   | Extract<HarnessAuthSnapshot, { source: ServiceAccountReference } | { method: "runtime" }>;
 
 export interface ComputeRevisionContext {
+  /** Active Sandbox maintenance may adopt its Harness but must not recreate a lost workload. */
+  readonly existingHarnessOnly?: true;
   readonly workspaceSetup?: Readonly<WorkspaceSetup>;
   readonly harnessAuth: ResolvedHarnessAuth;
   /** Non-model sources resolved again at dispatch, in admission order. */
@@ -1198,6 +1200,8 @@ export interface SandboxNamespaceContext {
 export interface SandboxHarnessContext extends SandboxNamespaceContext {
   readonly revision: Readonly<AgentRevision>;
   readonly requirements: HarnessWorkloadRequirements;
+  /** Refuse a missing workload during maintenance. This is dispatch intent, not an immutable input. */
+  readonly existingHarnessOnly?: true;
   /** Gateway transport authentication for a trusted provider readiness probe; never deliver to the workload. */
   readonly transportToken?: string;
   /**
@@ -1590,6 +1594,8 @@ export interface CredentialRefreshDriver extends Driver {
 }
 
 export interface SandboxDriver extends Driver {
+  /** Optional active-revision maintenance through the worker's existing Compute preparation loop. */
+  readonly maintenanceIntervalMs?: number;
   /** Explicit support; a networking facet alone never grants editable policy. */
   readonly networkPolicy?: {
     readonly wildcards: boolean;

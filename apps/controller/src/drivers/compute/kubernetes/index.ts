@@ -6492,6 +6492,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           ...sandboxContext,
           revision,
           requirements,
+          ...(context?.existingHarnessOnly ? { existingHarnessOnly: true as const } : {}),
           ...(nativeRuntime === undefined
             ? { transportToken: await this.sandboxTransportTokenText(revision) }
             : {}),
@@ -6534,20 +6535,22 @@ export class KubernetesComputeDriver implements ComputeDriver {
             : await this.prepareRevisionStage("sandbox_provision", () =>
                 sandboxDriver.harnessEndpoint!(harnessContext),
               );
+        let gatewayRolloutPending = false;
         if (
           providerEndpoint !== undefined &&
           (existingGateway === undefined || existingGatewayRevisionId === revision.id)
         ) {
           await reconcileGatewayDeployment({}, providerEndpoint);
-          if (
-            !(await this.gatewayReady(gatewayOwnership, gatewayName, gatewayNamespace, revision.id))
-          ) {
-            // The setup observer uses this Gateway. Do not turn its expected
-            // provider-endpoint rollout into a failed enrollment attempt.
-            return incomplete();
-          }
+          gatewayRolloutPending = !(await this.gatewayReady(
+            gatewayOwnership,
+            gatewayName,
+            gatewayNamespace,
+            revision.id,
+          ));
         }
-        if (!(await this.providerHarnessReady(revision, namespace, requirements.labels))) {
+        const podReady = await this.providerHarnessReady(revision, namespace, requirements.labels);
+        if (podReady === undefined) {
+          // No unique, live Pod for this revision to attribute a status response to.
           return incomplete();
         }
         // The provider-owned Harness's own view of its startup, read through the
@@ -6613,6 +6616,21 @@ export class KubernetesComputeDriver implements ComputeDriver {
           }
           return { ...result, runtimeFailure };
         };
+        // An authenticated terminal model probe can be held while the Pod is unready
+        // and before the node enrolls. Its evidence is useful even on a Gateway rollout.
+        const codexStatus =
+          providerEndpoint !== undefined && sandboxDriver.harnessStatus !== undefined
+            ? await observeProviderHarness()
+            : undefined;
+        if (codexStatus !== undefined) {
+          const held = heldProviderHarnessFailure(codexStatus);
+          if (held !== undefined) {
+            return held;
+          }
+        }
+        if (gatewayRolloutPending || !podReady) {
+          return incomplete();
+        }
         if (!(await this.workspaceNodeReady(revision, namespace))) {
           if (nativeRuntime !== undefined && !nodeEnrolled) {
             // The readiness check may have recorded the device of a node that enrolled but
@@ -6669,19 +6687,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
             return incomplete();
           }
         }
-        if (providerEndpoint !== undefined && sandboxDriver.harnessStatus !== undefined) {
-          // A Ready provider Pod proves only its supervisor. Like the Kubernetes
-          // readiness probe, require the Harness transport to answer, and fail on
-          // the Harness's held startup failure (a failed model probe) instead of
-          // activating a revision whose Codex never started.
-          const harness = await observeProviderHarness();
-          const held = heldProviderHarnessFailure(harness);
-          if (held !== undefined) {
-            return held;
-          }
-          if (harness.state !== "serving") {
-            return incomplete();
-          }
+        if (codexStatus !== undefined && codexStatus.state !== "serving") {
+          return incomplete();
         }
         return ready();
       }
@@ -9395,7 +9402,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     revision: AgentRevision,
     namespace: KubernetesNamespaceAddress,
     labels: Readonly<Record<string, string>>,
-  ): Promise<boolean> {
+  ): Promise<boolean | undefined> {
     const clients = await this.clients(namespace.plane);
     const pods = asRecord(
       await this.request(() =>
@@ -9488,7 +9495,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       candidates += 1;
       candidateReady = ready;
     }
-    return candidates === 1 && candidateReady;
+    return candidates === 1 ? candidateReady : undefined;
   }
 
   private async revisionPods(

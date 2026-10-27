@@ -6,6 +6,17 @@ import { waitFor } from "../helpers/wait-for.mjs";
 import { createOccMetrics } from "../../apps/controller/src/metrics/index.ts";
 import { PostgresMetricsSnapshot } from "../../packages/occ/src/index.ts";
 
+function maintenanceSandbox(maintenanceIntervalMs) {
+  return {
+    id: "sandbox-fixture",
+    capability: "sandbox",
+    implementation: "fixture",
+    facets: ["process"],
+    cleanup: async () => {},
+    maintenanceIntervalMs,
+  };
+}
+
 test(
   "production worker emits Compute preflight warnings before worker.started and continues startup",
   requiresPostgres,
@@ -322,6 +333,7 @@ test(
     const fixture = await setup(context);
     const owner = await fixture.agent();
     const first = await fixture.revision(owner, 1);
+    const sandbox = maintenanceSandbox(3_600_000);
     let second;
     const effects = [];
     let secondActivationAttempts = 0;
@@ -343,7 +355,12 @@ test(
       {
         ...fixture.compute,
         async preflight() {},
-        async prepareRevision(candidate) {
+        async prepareRevision(candidate, context) {
+          assert.equal(
+            Object.hasOwn(context, "existingHarnessOnly"),
+            false,
+            "the original deployment can still recover its published candidate",
+          );
           await record("prepare", candidate);
           return fixture.compute.prepareRevision(candidate);
         },
@@ -366,11 +383,14 @@ test(
       30_000,
       900_000,
       "development",
+      () => {},
+      undefined,
+      sandbox,
     );
     await fixture.work(first);
 
     try {
-      second = await fixture.revision(owner, 2);
+      second = await fixture.revision(owner, 2, sandbox.id);
       await waitFor("activation retry", async () => (retryStarted ? true : undefined));
       assert.equal(await fixture.activeRevision(owner), second.id);
       assert.deepEqual(
@@ -400,80 +420,100 @@ test(
   },
 );
 
-test(
-  "an opted-in active runtime continuously repairs under its original authorized actor",
-  requiresPostgres,
-  async (context) => {
-    const fixture = await setup(context);
-    const owner = await fixture.agent();
-    const candidate = await fixture.revision(owner, 1);
-    const preparations = [];
-    const activations = [];
+for (const maintenanceOwner of ["compute", "sandbox"]) {
+  test(
+    maintenanceOwner === "compute"
+      ? "an opted-in active runtime continuously repairs under its original authorized actor"
+      : "a selected Sandbox maintains its active revision through the authorized worker",
+    requiresPostgres,
+    async (context) => {
+      const fixture = await setup(context);
+      const owner = await fixture.agent();
+      const sandbox = maintenanceOwner === "sandbox" ? maintenanceSandbox(75) : undefined;
+      const candidate = await fixture.revision(owner, 1, sandbox?.id);
+      const preparations = [];
+      const activations = [];
 
-    await fixture.start({
-      ...fixture.compute,
-      activationOrder: "beforeCommit",
-      maintenanceIntervalMs: 75,
-      async preflight() {},
-      async prepareRevision(revision) {
-        preparations.push({
-          revisionId: revision.id,
-          activeRevisionId: await fixture.activeRevision(owner),
-        });
-        return fixture.compute.prepareRevision(revision);
-      },
-      async activateRevision(revision) {
-        activations.push({
-          revisionId: revision.id,
-          activeRevisionId: await fixture.activeRevision(owner),
-        });
-      },
-    });
-    await fixture.work(candidate);
+      await fixture.start(
+        {
+          ...fixture.compute,
+          activationOrder: "beforeCommit",
+          ...(maintenanceOwner === "compute" ? { maintenanceIntervalMs: 75 } : {}),
+          async preflight() {},
+          async prepareRevision(revision, context) {
+            preparations.push({
+              revisionId: revision.id,
+              activeRevisionId: await fixture.activeRevision(owner),
+              ...(Object.hasOwn(context, "existingHarnessOnly")
+                ? { existingHarnessOnly: context.existingHarnessOnly }
+                : {}),
+            });
+            return fixture.compute.prepareRevision(revision);
+          },
+          async activateRevision(revision) {
+            activations.push({
+              revisionId: revision.id,
+              activeRevisionId: await fixture.activeRevision(owner),
+            });
+          },
+        },
+        30_000,
+        900_000,
+        "production",
+        () => {},
+        undefined,
+        sandbox,
+      );
+      await fixture.work(candidate);
 
-    const maintained = await waitFor("a durable authorized maintenance pass", async () => {
-      const work = await fixture.observerPool.query(
-        `SELECT actor_id, namespace_id, agent_id, revision_id, state
+      const maintained = await waitFor("a durable authorized maintenance pass", async () => {
+        const work = await fixture.observerPool.query(
+          `SELECT actor_id, namespace_id, agent_id, revision_id, state
          FROM occ.controller_work
          WHERE namespace_id = $1 AND revision_id = $2
            AND idempotency_key LIKE $3 AND state = 'succeeded'
          ORDER BY completed_at DESC
          LIMIT 1`,
-        [fixture.namespace.id, candidate.id, `agent_revision:${candidate.id}:maintenance:%`],
-      );
-      return work.rows[0];
-    });
-    await fixture.stop();
+          [fixture.namespace.id, candidate.id, `agent_revision:${candidate.id}:maintenance:%`],
+        );
+        return work.rows[0];
+      });
+      await fixture.stop();
 
-    assert.deepEqual(maintained, {
-      actor_id: fixture.actor.id,
-      namespace_id: fixture.namespace.id,
-      agent_id: owner.id,
-      revision_id: candidate.id,
-      state: "succeeded",
-    });
-    assert.equal(await fixture.activeRevision(owner), candidate.id);
-    assert.deepEqual(preparations.slice(0, 2), [
-      { revisionId: candidate.id, activeRevisionId: null },
-      { revisionId: candidate.id, activeRevisionId: candidate.id },
-    ]);
-    assert.deepEqual(activations.slice(0, 2), [
-      { revisionId: candidate.id, activeRevisionId: null },
-      { revisionId: candidate.id, activeRevisionId: candidate.id },
-    ]);
+      assert.deepEqual(maintained, {
+        actor_id: fixture.actor.id,
+        namespace_id: fixture.namespace.id,
+        agent_id: owner.id,
+        revision_id: candidate.id,
+        state: "succeeded",
+      });
+      assert.equal(await fixture.activeRevision(owner), candidate.id);
+      assert.deepEqual(preparations.slice(0, 2), [
+        { revisionId: candidate.id, activeRevisionId: null },
+        {
+          revisionId: candidate.id,
+          activeRevisionId: candidate.id,
+          ...(maintenanceOwner === "sandbox" ? { existingHarnessOnly: true } : {}),
+        },
+      ]);
+      assert.deepEqual(activations.slice(0, 2), [
+        { revisionId: candidate.id, activeRevisionId: null },
+        { revisionId: candidate.id, activeRevisionId: candidate.id },
+      ]);
 
-    await fixture.observerPool.query(
-      `UPDATE occ.controller_work
+      await fixture.observerPool.query(
+        `UPDATE occ.controller_work
        SET state = 'succeeded',
            completed_at = clock_timestamp(),
            reason_code = 'REVISION_MAINTENANCE_SUPERSEDED',
            updated_at = clock_timestamp()
        WHERE namespace_id = $1 AND state = 'queued'
          AND idempotency_key LIKE $2`,
-      [fixture.namespace.id, `agent_revision:${candidate.id}:maintenance:%`],
-    );
-  },
-);
+        [fixture.namespace.id, `agent_revision:${candidate.id}:maintenance:%`],
+      );
+    },
+  );
+}
 
 for (const failure of ["observation", "binding"]) {
   test(

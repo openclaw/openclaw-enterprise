@@ -12561,26 +12561,26 @@ test("provider-owned Harness requirements preserve the exact projected ServicePr
   );
 });
 
-test("provider Harness readiness requires exactly one live matching Pod", async (t) => {
+test("provider Harness readiness is observable only for one live matching Pod", async (t) => {
   const fixture = providerReadinessFixture();
   const ready = fixture.pod("harness-ready");
   const unready = fixture.pod("harness-starting", "False");
   const terminating = fixture.pod("harness-terminating");
   terminating.metadata.deletionTimestamp = new Date("2026-08-25T00:00:00Z");
   const cases = [
-    ["no Pods", [], false],
+    ["no Pods", [], undefined],
     ["one Ready Pod", [ready], true],
     ["one unready Pod", [unready], false],
     ["one unknown Pod", [fixture.pod("harness-unknown", "Unknown")], false],
-    ["two Ready Pods", [ready, fixture.pod("harness-other")], false],
-    ["Ready then unready", [ready, unready], false],
-    ["unready then Ready", [unready, ready], false],
-    ["two unready Pods", [unready, fixture.pod("harness-other", "False")], false],
-    ["repeated Pod entry", [ready, ready], false],
-    ["only terminating", [terminating], false],
+    ["two Ready Pods", [ready, fixture.pod("harness-other")], undefined],
+    ["Ready then unready", [ready, unready], undefined],
+    ["unready then Ready", [unready, ready], undefined],
+    ["two unready Pods", [unready, fixture.pod("harness-other", "False")], undefined],
+    ["repeated Pod entry", [ready, ready], undefined],
+    ["only terminating", [terminating], undefined],
     ["Ready plus terminating", [ready, terminating], true],
     ["unready plus terminating", [unready, terminating], false],
-    ["all terminating", [terminating, terminating], false],
+    ["all terminating", [terminating, terminating], undefined],
   ];
   for (const missing of ["status", "conditions"]) {
     const waiting = fixture.pod(`harness-no-${missing}`);
@@ -12603,12 +12603,12 @@ test("provider Harness readiness requires exactly one live matching Pod", async 
     } else {
       unrelated.metadata.labels[field] = value;
     }
-    cases.push([`wrong ${field}`, [unrelated], false]);
+    cases.push([`wrong ${field}`, [unrelated], undefined]);
     cases.push([`Ready plus wrong ${field}`, [ready, unrelated], true]);
   }
   const unlabeled = fixture.pod("unlabeled");
   delete unlabeled.metadata.labels;
-  cases.push(["no labels", [unlabeled], false]);
+  cases.push(["no labels", [unlabeled], undefined]);
   const noTypeMetadata = fixture.pod("typed-sdk-pod");
   delete noTypeMetadata.apiVersion;
   delete noTypeMetadata.kind;

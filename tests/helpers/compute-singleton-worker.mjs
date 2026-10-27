@@ -155,7 +155,7 @@ async function setup(context) {
     return owner;
   }
 
-  async function revision(owner, number) {
+  async function revision(owner, number, sandboxDriverId) {
     const candidate = {
       id: `rev_${randomUUID()}`,
       namespaceId: namespace.id,
@@ -168,6 +168,7 @@ async function setup(context) {
       backendId: null,
       harness: { ...PRODUCTION_HARNESS_DESCRIPTOR, mode: "dedicated" },
       compute: { id: compute.id, implementation: compute.implementation },
+      ...(sandboxDriverId === undefined ? {} : { sandboxDriverId }),
       harnessAuth: { ...owner.harnessAuth, secretDriverId: secretDriver.id },
       servicePrincipalId: owner.servicePrincipalId,
       createdAt: new Date().toISOString(),
@@ -219,8 +220,12 @@ async function setup(context) {
     mode = "production",
     emit = () => {},
     metrics,
+    sandboxDriver,
   ) {
     configuration.drivers.compute.id = computeDriver.id;
+    if (sandboxDriver !== undefined) {
+      configuration.drivers.sandbox = { id: sandboxDriver.id };
+    }
     worker = createControllerWorker({
       metrics,
       pool: workerPool,
@@ -228,6 +233,7 @@ async function setup(context) {
       drivers: {
         installation: configuration,
         computeDriver,
+        ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
         configurationDriver: createTestConfigurationDriver({
           id: configuration.drivers.configuration.id,
         }),

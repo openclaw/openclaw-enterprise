@@ -1181,6 +1181,9 @@ export class ControllerWorker {
       if (!validSandboxDriver(this.sandbox)) {
         throw new Error("The selected Sandbox Driver is unavailable.");
       }
+      if (this.sandbox.maintenanceIntervalMs !== undefined) {
+        positiveInteger(this.sandbox.maintenanceIntervalMs, "Sandbox maintenance interval");
+      }
       if (!validLifecycleHooks(this.sandbox)) {
         throw new Error("The selected Sandbox Driver exposes invalid lifecycle hooks.");
       }
@@ -1614,7 +1617,11 @@ export class ControllerWorker {
       revision.repositoryCredentials === undefined
         ? undefined
         : this.repoDriver?.maintenanceIntervalMs;
-    const intervals = [this.maintenanceIntervalMs, repositoryInterval].filter(
+    const sandboxInterval =
+      revision.sandboxDriverId === this.sandbox?.id
+        ? this.sandbox?.maintenanceIntervalMs
+        : undefined;
+    const intervals = [this.maintenanceIntervalMs, sandboxInterval, repositoryInterval].filter(
       (interval): interval is number => interval !== undefined,
     );
     return intervals.length === 0 ? undefined : Math.min(...intervals);
@@ -4030,7 +4037,17 @@ export class ControllerWorker {
           const compute = this.compute;
           // Publishing the active pointer precedes activation. Reobserve even when
           // periodic maintenance is disabled so recovery verifies current readiness.
-          const prepared = await this.prepareRevision(claim, revision, secretContext.context);
+          const sandboxMaintenance =
+            this.sandbox?.maintenanceIntervalMs !== undefined &&
+            revision.sandboxDriverId === this.sandbox.id &&
+            claim.idempotencyKey.startsWith(`agent_revision:${revision.id}:maintenance:`);
+          const prepared = await this.prepareRevision(
+            claim,
+            revision,
+            sandboxMaintenance
+              ? { ...secretContext.context, existingHarnessOnly: true }
+              : secretContext.context,
+          );
           const observation = prepared.observation;
           const context = prepared.context;
           if (!validRevisionObservation(observation, revision)) {
