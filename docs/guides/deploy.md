@@ -46,7 +46,7 @@ hosting does not select the Agent model provider.
 - Kubernetes 1.35 or later, an explicit context, enforcing NetworkPolicies,
   Helm, a version-compatible `kubectl`, Python 3, `yq` v4, and the installed
   [OCC CLI](cli.md). Use Bash for image selection and model verification, and
-  Node.js 24 or newer for profile generation or the API transport-credential
+  Node.js 24.22.1 or newer for profile generation or the API transport-credential
   example. Manual YAML plus console transport provisioning avoids those Node
   commands. Older Kubernetes servers produce a startup warning and remain
   outside the supported boundary.
@@ -122,6 +122,9 @@ For startup diagnosis, see the [production startup flow](../flows/production-sta
 For runtime proof, see the [production TUI flow](../flows/production-tui.md).
 
 ## Customization
+
+[Apply a console theme](deploy/console-theme.md) to customize the product name,
+logo, browser icons, and colors through mounted files with the upstream image.
 
 Use Helm values, Kubernetes manifests, Installation startup YAML, and Collector
 Secrets for production. Use

@@ -1,3 +1,10 @@
+import { type ErrorDetail } from "@openclaw-enterprise/contracts";
+import {
+  CODEX_PLUGIN_DRIVER_IMPLEMENTATION,
+  OPENCLAW_PLUGIN_DRIVER_IMPLEMENTATION,
+  requireConfiguration,
+  ConfigurationValidationError,
+} from "@openclaw-enterprise/contracts";
 import { asRecord, deepFreeze, immutableCopy } from "@openclaw-enterprise/utils";
 import {
   type JSONSchema,
@@ -42,9 +49,9 @@ type BundledCatalogEntry = PluginCatalogEntry;
 export class PluginValidationError extends ScopeViolationError {}
 
 const OCC_DRIVER_ID = "occ-plugin";
-const OCC_IMPLEMENTATION = "occ/openclaw-plugin";
+const OCC_IMPLEMENTATION = OPENCLAW_PLUGIN_DRIVER_IMPLEMENTATION;
 const CODEX_DRIVER_ID = "codex-plugin";
-const CODEX_IMPLEMENTATION = "occ/codex-plugin";
+const CODEX_IMPLEMENTATION = CODEX_PLUGIN_DRIVER_IMPLEMENTATION;
 
 const EMPTY_CONFIGURATION_SCHEMA: JSONSchema = deepFreeze({
   type: "object",
@@ -225,17 +232,6 @@ function requiredString(value: unknown, path: string): string {
   return value;
 }
 
-function validateEmptyConfiguration(configuration: unknown, name: string): void {
-  const value = asRecord(configuration);
-  if (value === undefined) {
-    throw new PluginValidationError(`${name} configuration must be one object.`);
-  }
-  const keys = Object.keys(value);
-  if (keys.length > 0) {
-    throw new PluginValidationError(`${name} configuration does not accept options.`);
-  }
-}
-
 function validateCodexConfiguration(configuration: unknown): {
   catalogSource: "hosted" | "openai-curated";
   reader: ConstructorParameters<typeof NativeCodexPluginCatalogReader>[0] | undefined;
@@ -260,6 +256,17 @@ function validateCodexConfiguration(configuration: unknown): {
     value.requestTimeoutMs === undefined
   ) {
     return { catalogSource, reader: undefined };
+  }
+  for (const field of ["codexExecutable", "codexHome"] as const) {
+    if (value[field] === undefined) {
+      throw new ConfigurationValidationError([
+        {
+          path: `/${field}`,
+          code: "REQUIRED",
+          message: "This field is required for a configured native catalog reader.",
+        },
+      ]);
+    }
   }
   const codexExecutable = requiredString(value.codexExecutable, "codexExecutable");
   const codexHome = requiredString(value.codexHome, "codexHome");
@@ -359,12 +366,12 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
     this.validate("openclaw", selections, defaultApprovers);
   }
 
-  static validateConfiguration(configuration: unknown): void {
-    validateEmptyConfiguration(configuration, "OpenClaw Plugin Driver");
+  static validateConfiguration(): readonly ErrorDetail[] {
+    return [];
   }
 
   constructor(configuration: ConfigurationRecord = {}, selection: PluginDriverSelection = {}) {
-    OCCPluginDriver.validateConfiguration(configuration);
+    requireConfiguration(OCCPluginDriver, configuration);
     super(selection, { id: OCC_DRIVER_ID, implementation: OCC_IMPLEMENTATION });
   }
 
@@ -432,8 +439,24 @@ export class CodexPluginDriver extends BundledPluginDriverBase implements Plugin
   private readonly catalogSource: "hosted" | "openai-curated";
   readonly discoveryCredential: "required" | "none";
 
-  static validateConfiguration(configuration: unknown): void {
-    validateCodexConfiguration(configuration);
+  static validateConfiguration(
+    configuration: Readonly<Record<string, unknown>>,
+  ): readonly ErrorDetail[] {
+    try {
+      validateCodexConfiguration(configuration);
+
+      return [];
+    } catch (error) {
+      return error instanceof ConfigurationValidationError
+        ? error.error.details
+        : [
+            {
+              path: "",
+              code: "INVALID_VALUE",
+              message: "Configuration violates the Driver's constraints.",
+            },
+          ];
+    }
   }
 
   async discoverCatalog(
@@ -477,7 +500,9 @@ export class CodexPluginDriver extends BundledPluginDriverBase implements Plugin
     selection: PluginDriverSelection = {},
     catalogReader?: CodexPluginCatalogReader,
   ) {
-    const discovery = validateCodexConfiguration(configuration);
+    const discovery = validateCodexConfiguration(
+      requireConfiguration(CodexPluginDriver, configuration),
+    );
     super(selection, { id: CODEX_DRIVER_ID, implementation: CODEX_IMPLEMENTATION });
     this.catalogSource = discovery.catalogSource;
     this.discoveryCredential = discovery.catalogSource === "openai-curated" ? "none" : "required";

@@ -20,7 +20,7 @@ and which failures block merge, publication, or deployment.
 
 ## Requirements and credentials
 
-Install Node.js 24 or newer, the pnpm version in [`package.json`](../../package.json),
+Install Node.js 24.22.1 or newer, the pnpm version in [`package.json`](../../package.json),
 the Go version in [`go.mod`](../../go.mod), Git, and `tar`:
 
 ```sh
@@ -101,6 +101,8 @@ only resources created by the run.
 - [Docker, images, and Helm](docker.md)
 - [Kubernetes, Keycloak, gateway routing, and production TUI](kubernetes.md)
 - [OpenShell](openshell.md)
+- [Protected inference](static-egress.md): source checks, PostgreSQL proof, and prepared OpenShell qualification.
+- [Protected repository custody](protected-repository-custody.md): qualify dispatch and response handling on an installed controller and OpenShell pair.
 - [SSH](ssh.md)
 - [Agent plugins](plugins.md)
 - [Repository credentials](repository-credentials.md)

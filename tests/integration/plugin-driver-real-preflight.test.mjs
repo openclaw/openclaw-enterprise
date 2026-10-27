@@ -98,15 +98,13 @@ test("a Codex turn without its prompt mirror names the marker-bearing user messa
     const db = new DatabaseSync(path);
     try {
       db.exec(
-        "CREATE TABLE session_nodes (session_key TEXT, current_session_id TEXT, entry_json TEXT); CREATE TABLE transcript_events (session_id TEXT, seq INTEGER, event_json TEXT)",
+        "CREATE TABLE session_nodes (session_key TEXT, current_session_id TEXT, entry_json TEXT); CREATE TABLE transcript_events (session_id TEXT, seq INTEGER, event_json TEXT, event_zstd BLOB, event_utf8_bytes INTEGER)",
       );
       db.prepare("INSERT INTO session_nodes VALUES (?, ?, ?)").run("proof", "session", "{}");
       for (const [seq, message] of messages.entries()) {
-        db.prepare("INSERT INTO transcript_events VALUES (?, ?, ?)").run(
-          "session",
-          seq,
-          JSON.stringify({ type: "message", message }),
-        );
+        db.prepare(
+          "INSERT INTO transcript_events (session_id, seq, event_json) VALUES (?, ?, ?)",
+        ).run("session", seq, JSON.stringify({ type: "message", message }));
       }
     } finally {
       db.close();
@@ -233,11 +231,13 @@ test("the session evidence tolerates malformed rows and lists the newest marker 
     const db = new DatabaseSync(path);
     try {
       db.exec(
-        "CREATE TABLE session_nodes (session_key TEXT, current_session_id TEXT, entry_json TEXT); CREATE TABLE transcript_events (session_id TEXT, seq INTEGER, event_json TEXT)",
+        "CREATE TABLE session_nodes (session_key TEXT, current_session_id TEXT, entry_json TEXT); CREATE TABLE transcript_events (session_id TEXT, seq INTEGER, event_json TEXT, event_zstd BLOB, event_utf8_bytes INTEGER)",
       );
       db.prepare("INSERT INTO session_nodes VALUES (?, ?, ?)").run("proof", "session", "{}");
       for (const [seq, row] of rows.entries()) {
-        db.prepare("INSERT INTO transcript_events VALUES (?, ?, ?)").run(
+        db.prepare(
+          "INSERT INTO transcript_events (session_id, seq, event_json) VALUES (?, ?, ?)",
+        ).run(
           "session",
           seq,
           typeof row === "string" ? row : JSON.stringify({ type: "message", message: row }),

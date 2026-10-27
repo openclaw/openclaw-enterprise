@@ -24,11 +24,9 @@ concurrency:
 
 env:
   CI: "1"
-  NODE_VERSION: "24.16.0"
-  # CI Impact and CI Required only run the impact and aggregation scripts, so
-  # they take the runner's cached Node 24 instead of downloading NODE_VERSION
-  # (about 5 s each, on the critical path at both ends of the run).
-  GATE_NODE_VERSION: "24"
+  NODE_VERSION: "24.22.1"
+  # Metadata gates use the same patched runtime as the other CI lanes.
+  GATE_NODE_VERSION: "24.22.1"
 
 jobs:
   impact:
@@ -119,15 +117,21 @@ jobs:
       # the seccomp profile. Part 3 runs Docker-only files from part 1: two
       # that ran beside its startup file, and the native listener cases split
       # from that file, whose cases run one after another and set part 1's
-      # length.
+      # length. Part 3 also runs the CPU-contended model probe case beside
+      # them; it waits out the 110 s probe cap at 500m on any runner and sets
+      # part 3's length (it was a job of its own, Image Model Probes).
       # Runners: the k3d fixture and observability lanes use blacksmith
       # 32vcpu (8 CPUs). Its kernel enforces the NetworkPolicy proofs: with
       # K3s policy enforcement disabled, production-network-access fails
       # every deny case there. It ran these lanes about a minute faster than
-      # ubuntu-22.04 (4 CPUs). The Image Runtime Startup lanes use 32vcpu
+      # ubuntu-22.04 (4 CPUs). Image Runtime Startup and Startup 2 use 32vcpu
       # too: their preparation is faster there, and Startup 2 runs its four
-      # files at once. Image Model Probes stays on 16vcpu: its one case waits
-      # out the 110 s model probe cap at 500m on any runner. PostgreSQL
+      # files at once. Startup 3 (Docker only, no k3d) uses 16vcpu: its model
+      # probe case waits out the 110 s cap on any runner, its other three
+      # files run their cases two at a time beside it (45 s on 32vcpu), and
+      # 16vcpu jobs do not queue when 32vcpu jobs do (10-24: 21 % of 32vcpu
+      # jobs waited over 60 s for a runner, p90 268 s; no 16vcpu job over
+      # 12 s). PostgreSQL
       # Application uses 32vcpu too: it runs up to eight of its twelve files at
       # once, one per CPU (16vcpu caps it at four). Checks and Conformance 1
       # uses it for the same reason: on 16vcpu it ran four files at a time,
@@ -160,17 +164,15 @@ jobs:
               {"lane": "postgres-auth", "title": "PostgreSQL Authentication", "profile": "postgres", "timeout": 25, "runner": "blacksmith-16vcpu-ubuntu-2404"},
               {"lane": "postgres-platform", "title": "PostgreSQL Platform", "profile": "postgres", "timeout": 25, "runner": "blacksmith-16vcpu-ubuntu-2404"},
               {"lane": "images-packaging", "title": "Images and Packaging", "profile": "full", "timeout": 45, "runner": "blacksmith-16vcpu-ubuntu-2404"},
-              {"lane": "images-model-probes", "title": "Image Model Probes", "profile": "images", "timeout": 25, "runner": "blacksmith-16vcpu-ubuntu-2404"},
               {"lane": "images-runtime-startup", "title": "Image Runtime Startup", "profile": "full", "timeout": 30, "runner": "blacksmith-32vcpu-ubuntu-2404"},
               {"lane": "images-runtime-startup-2", "title": "Image Runtime Startup 2", "profile": "images", "timeout": 30, "runner": "blacksmith-32vcpu-ubuntu-2404"},
-              {"lane": "images-runtime-startup-3", "title": "Image Runtime Startup 3", "profile": "images", "timeout": 30, "runner": "blacksmith-32vcpu-ubuntu-2404"},
+              {"lane": "images-runtime-startup-3", "title": "Image Runtime Startup 3", "profile": "images", "timeout": 30, "runner": "blacksmith-16vcpu-ubuntu-2404"},
               {"lane": "k3d-fixture-configuration", "title": "k3d Fixture and Configuration", "profile": "k3d", "timeout": 45, "runner": "blacksmith-32vcpu-ubuntu-2404"},
               {"lane": "k3d-fixture-state", "title": "k3d State and Lifecycle", "profile": "k3d", "timeout": 45, "runner": "blacksmith-32vcpu-ubuntu-2404"},
               {"lane": "k3d-fixture-plugins", "title": "k3d Plugin Status", "profile": "k3d", "timeout": 45, "runner": "blacksmith-32vcpu-ubuntu-2404"},
               {"lane": "k3d-observability", "title": "Production Observability", "profile": "k3d", "timeout": 45, "runner": "blacksmith-32vcpu-ubuntu-2404"},
               {"lane": "logging-collector", "title": "Logging Collector", "profile": "images", "timeout": 30, "runner": "blacksmith-16vcpu-ubuntu-2404"},
               {"lane": "repository-credentials-container", "title": "Repository Credentials", "profile": "images", "timeout": 40, "runner": "blacksmith-16vcpu-ubuntu-2404"},
-              {"lane": "repository-credentials-platform", "title": "Repository Credentials Platform", "profile": "k3d", "timeout": 60, "runner": "blacksmith-16vcpu-ubuntu-2404"},
               {"lane": "keycloak-oidc", "title": "Keycloak OIDC", "profile": "postgres", "timeout": 25, "runner": "blacksmith-16vcpu-ubuntu-2404"}
             ]
         run: |
@@ -257,32 +259,10 @@ jobs:
       ci_attempt: ${{ github.run_attempt }}
       node_base_image: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
 
-  audit:
-    name: Suite Audit
-    # 16vcpu rarely waits for a runner (see the CI Impact lane table).
-    runs-on: blacksmith-16vcpu-ubuntu-2404
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-      - name: Set up workflow tools
-        run: bash scripts/ci/setup-tools.sh workflows
-      - name: Lint workflow definitions
-        run: actionlint .github/workflows/*.yml
-      - name: Audit suite manifest and workflows
-        run: node scripts/ci/run-tests.mjs audit
-
   static-checks:
-    name: Static Checks
-    needs: impact
-    # Workspace boundary, lint, format, OpenAPI and documentation checks need no
-    # test fixture, so they run beside the test lanes in every mode instead of
-    # before Checks and Conformance 1's tests (about 40 s of its critical path).
-    if: ${{ needs.impact.outputs.mode == 'docs' || needs.impact.outputs.mode == 'full' || needs.impact.outputs.mode == 'tests' }}
+    name: Suite Audit and Static Checks
+    # Both run in every mode. Start beside CI Impact, audit the workflow and
+    # suite first, then reuse this checkout, Node and runner for static checks.
     # 16vcpu rarely waits for a runner (see the CI Impact lane table).
     runs-on: blacksmith-16vcpu-ubuntu-2404
     timeout-minutes: 10
@@ -295,6 +275,12 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: ${{ env.NODE_VERSION }}
+      - name: Set up workflow tools
+        run: bash scripts/ci/setup-tools.sh workflows
+      - name: Lint workflow definitions
+        run: actionlint .github/workflows/*.yml
+      - name: Audit suite manifest and workflows
+        run: node scripts/ci/run-tests.mjs audit
       - uses: ./.github/actions/setup-pnpm-store-cache
         with:
           node-version: ${{ env.NODE_VERSION }}
@@ -306,12 +292,33 @@ jobs:
         run: pnpm check:workspace
       - name: Run lint check
         run: pnpm lint
+      # Restore only on main: a pull request can have its own cache at the same key.
+      # Prettier's content cache also depends on the absolute checkout path.
+      - name: Restore Prettier's content cache
+        id: prettier-cache
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/prettier-cache
+          key: prettier-content-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.NODE_VERSION }}-${{ hashFiles('pnpm-lock.yaml', 'package.json', '.editorconfig', '.prettierignore', '.prettierrc.json') }}-${{ github.workspace }}
       - name: Check formatting
+        if: steps.prettier-cache.outcome != 'success'
         run: pnpm format:check
+      # Restore succeeds on a miss too. Prettier then checks every file and builds the cache.
+      - name: Check formatting with content cache
+        if: steps.prettier-cache.outcome == 'success'
+        run: pnpm format:check --cache --cache-strategy content --cache-location "$RUNNER_TEMP/prettier-cache"
       - name: Run OpenAPI check
         run: pnpm openapi:check
       - name: Check and build documentation
         run: pnpm docs:install && pnpm docs:check && pnpm docs:build
+      # Seed the cache only after Static Checks passes on a push to main.
+      - name: Save Prettier's content cache
+        if: steps.prettier-cache.outcome == 'success' && steps.prettier-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/prettier-cache
+          key: ${{ steps.prettier-cache.outputs.cache-primary-key }}
 
   affected-packages:
     name: Affected Packages (advisory)
@@ -480,7 +487,6 @@ jobs:
     runs-on: ubuntu-22.04
     needs:
       - impact
-      - audit
       - static-checks
       - pr-safe
       - runtime-image-fixture
@@ -580,12 +586,13 @@ jobs:
           else
             node scripts/ci/impact-gate.mjs --needs "$RUNNER_TEMP/raw-needs.json" --mode "$EXPECTED_MODE" --output "$RUNNER_TEMP/needs.json"
           fi
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+      # The action retries after a pause and says why.
+      - name: Download CI results
+        uses: ./.github/actions/download-results
         if: ${{ !cancelled() && !contains(needs.*.result, 'cancelled') && (needs.impact.outputs.mode == 'full' || needs.impact.outputs.mode == 'tests') }}
         with:
           pattern: ci-results-*
           path: ${{ runner.temp }}/results
-          merge-multiple: true
       - name: Aggregate CI results
         if: ${{ !cancelled() && !contains(needs.*.result, 'cancelled') && (needs.impact.outputs.mode == 'full' || needs.impact.outputs.mode == 'tests') }}
         env:

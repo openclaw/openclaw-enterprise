@@ -1,17 +1,16 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { run } from "../fixtures/repository-credentials/process.mjs";
 import { ownedNetwork } from "../fixtures/repository-credentials-isolation/ownership.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 // These checks qualify fixture ownership only; they do not run the service,
 // Docker daemon, delivered images, or provider integration.
 test("runner timeout cancels and joins commands before teardown admits cleanup", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "isolation-owner-check-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "isolation-owner-check-");
   const late = join(directory, "late");
   const cleaned = join(directory, "cleaned");
   const ownership = new URL(

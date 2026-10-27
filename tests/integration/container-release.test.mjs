@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -27,6 +27,9 @@ import {
   stageReleaseChart,
   validateImageReceipt,
 } from "../../scripts/ci/chart-release.mjs";
+import { setEnvironment } from "../helpers/environment.mjs";
+import { writeCommand } from "../helpers/fake-commands.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const sourceSha = "a".repeat(40);
 const digest = `sha256:${"b".repeat(64)}`;
@@ -110,8 +113,7 @@ test("staged release chart records both verified digests and defaults to the con
     t.skip("Helm is required for the staged chart proof.");
     return;
   }
-  const directory = await mkdtemp(join(tmpdir(), "oce-release-chart-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "oce-release-chart-");
   const staged = await stageReleaseChart(directory, {
     sourceSha,
     version: "0.1.0",
@@ -147,8 +149,7 @@ test("a chart retry accepts matching files across Helm package timestamps and re
     t.skip("Helm is required for the chart retry proof.");
     return;
   }
-  const directory = await mkdtemp(join(tmpdir(), "oce-chart-retry-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "oce-chart-retry-");
   const staged = await stageReleaseChart(directory, {
     sourceSha,
     version: "0.1.0",
@@ -193,8 +194,7 @@ test("chart bootstrap package is valid OCI chart content but cannot be installed
     t.skip("Helm is required for the chart bootstrap package proof.");
     return;
   }
-  const directory = await mkdtemp(join(tmpdir(), "oce-chart-bootstrap-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "oce-chart-bootstrap-");
   await writeBootstrapChart(directory, "0.0.0-bootstrap.123.1");
   execFileSync(helm, ["package", directory, "--destination", directory]);
   const archive = join(directory, "openclaw-enterprise-0.0.0-bootstrap.123.1.tgz");
@@ -210,27 +210,18 @@ test("chart bootstrap package is valid OCI chart content but cannot be installed
 test("chart push accepts a digest on stderr only after a successful exit", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "oce-chart-push-stream-"));
   const helm = join(directory, "helm");
-  const previous = process.env.OCC_HELM_BIN;
-  t.after(async () => {
-    if (previous === undefined) {
-      delete process.env.OCC_HELM_BIN;
-    } else {
-      process.env.OCC_HELM_BIN = previous;
-    }
-    await rm(directory, { recursive: true, force: true });
-  });
-  process.env.OCC_HELM_BIN = helm;
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  setEnvironment(t, { OCC_HELM_BIN: helm });
   const reported = `sha256:${"f".repeat(64)}`;
   // Helm writes the successful push digest to stderr, so stdout-only parsing fails.
-  await writeFile(helm, `#!/bin/sh\nprintf 'Digest: ${reported}\\n' >&2\n`);
-  await chmod(helm, 0o700);
+  await writeCommand(directory, "helm", `printf 'Digest: ${reported}\\n' >&2\n`);
   assert.equal(pushChart("chart.tgz", "oci://registry.invalid/charts"), reported);
-  await writeFile(helm, `#!/bin/sh\nprintf 'Digest: ${reported}\\n' >&2\nexit 1\n`);
+  await writeCommand(directory, "helm", `printf 'Digest: ${reported}\\n' >&2\nexit 1\n`);
   assert.throws(() => pushChart("chart.tgz", "oci://registry.invalid/charts"), {
     actual: 1,
     expected: 0,
   });
-  await writeFile(helm, `#!/bin/sh\nprintf 'Digest: ${reported}\\n'\n`);
+  await writeCommand(directory, "helm", `printf 'Digest: ${reported}\\n'\n`);
   assert.throws(() => pushChart("chart.tgz", "oci://registry.invalid/charts"), {
     message: /^Helm did not report the chart digest on stderr\./,
   });
@@ -308,15 +299,7 @@ for (const workflow of [
 test("only explicit bootstrap lookups tolerate missing package metadata", async (t) => {
   // The external API supplies status codes; the real client must distinguish
   // absence from authorization failures before harmless bootstrap is permitted.
-  const token = process.env.GH_TOKEN;
-  process.env.GH_TOKEN = "test-token";
-  t.after(() => {
-    if (token === undefined) {
-      delete process.env.GH_TOKEN;
-    } else {
-      process.env.GH_TOKEN = token;
-    }
-  });
+  setEnvironment(t, { GH_TOKEN: "test-token" });
   for (const status of [401, 403, 404, 429, 500]) {
     t.mock.method(globalThis, "fetch", async () => new Response(null, { status }));
     await assert.rejects(
@@ -353,15 +336,7 @@ test("container context rejects malformed repository privacy in preparation and 
 });
 
 test("post-marker metadata retries only 404 and remains bounded", async (t) => {
-  const token = process.env.GH_TOKEN;
-  process.env.GH_TOKEN = "test-token";
-  t.after(() => {
-    if (token === undefined) {
-      delete process.env.GH_TOKEN;
-    } else {
-      process.env.GH_TOKEN = token;
-    }
-  });
+  setEnvironment(t, { GH_TOKEN: "test-token" });
   // Accelerate only the backoff; the real client still interprets API responses.
   t.mock.method(globalThis, "setTimeout", (resolve) => queueMicrotask(resolve));
   const pkg = { name: "example", package_type: "container", visibility: "public" };
@@ -389,15 +364,7 @@ test("post-marker metadata retries only 404 and remains bounded", async (t) => {
 });
 
 test("GHCR publication accepts omitted repository metadata without approval and rejects unsafe packages", async (t) => {
-  const token = process.env.GH_TOKEN;
-  process.env.GH_TOKEN = "test-token";
-  t.after(() => {
-    if (token === undefined) {
-      delete process.env.GH_TOKEN;
-    } else {
-      process.env.GH_TOKEN = token;
-    }
-  });
+  setEnvironment(t, { GH_TOKEN: "test-token" });
   const image = "ghcr.io/openclaw/openclaw-enterprise-controller";
   // GHCR can omit repository even for connected packages. The real validator
   // must accept that response without consulting deployment review history.
@@ -658,8 +625,7 @@ async function writeOciBlob(layout, value) {
 }
 
 test("OCI archive validation binds both platforms to their real manifest and config blobs", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "enterprise-oci-platforms-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "enterprise-oci-platforms-");
   await mkdir(join(directory, "blobs/sha256"), { recursive: true });
   const blob = (value) => writeOciBlob(directory, value);
   const manifests = [];
@@ -753,15 +719,7 @@ test("OCI archive validation binds both platforms to their real manifest and con
 });
 
 test("metadata GET transport retries are bounded, diagnostic and do not retry denials", async (t) => {
-  const token = process.env.GH_TOKEN;
-  process.env.GH_TOKEN = "test-token";
-  t.after(() => {
-    if (token === undefined) {
-      delete process.env.GH_TOKEN;
-    } else {
-      process.env.GH_TOKEN = token;
-    }
-  });
+  setEnvironment(t, { GH_TOKEN: "test-token" });
   t.mock.method(globalThis, "setTimeout", (resolve) => queueMicrotask(resolve));
   const path = "orgs/openclaw/packages/container/example";
   let calls = 0;
@@ -804,8 +762,7 @@ test("metadata GET transport retries are bounded, diagnostic and do not retry de
 });
 
 test("separate platform exports assemble into a digest-bound archive and reject corrupt inputs", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "container-platform-assembly-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "container-platform-assembly-");
   async function prepare(name, fault, created = "2026-09-25T07:23:02Z") {
     const output = join(directory, name);
     const env = {
@@ -972,9 +929,9 @@ test("the runtime release smoke runs every Image Runtime Startup file", () => {
   const notInSmoke = {
     // Drives the image helpers against a stand-in docker binary; it needs no image.
     "tests/integration/runtime-image-failure-output.test.mjs": null,
-    // Image Model Probes files: the release smoke has never run them. The outcomes moved
-    // into Image Runtime Startup 2 and stay out of the smoke.
-    "tests/integration/runtime-image-model-probe.test.mjs": "images-model-probes",
+    // Model probe files: the release smoke has never run them. The contention case runs
+    // in Image Runtime Startup 3 and the outcomes in Image Runtime Startup 2.
+    "tests/integration/runtime-image-model-probe.test.mjs": "images-runtime-startup-3",
     "tests/integration/runtime-image-model-probe-outcomes.test.mjs": "images-runtime-startup-2",
   };
   for (const [path, lane] of Object.entries(notInSmoke)) {

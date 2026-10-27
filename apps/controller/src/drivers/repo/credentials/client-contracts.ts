@@ -137,3 +137,33 @@ export function allowsPushRef(allowlist: readonly string[], ref: string): boolea
     )
   );
 }
+
+/**
+ * True when `name` is `repository` in any letter case. The registry delivers a lowercased
+ * owner/repository, while GitHub answers with the repository's own spelling and its names
+ * ignore case (findings 2232, 2236). Only ASCII names qualify, as on GitHub.
+ */
+export function isSameGitHubRepository(name: unknown, repository: string): boolean {
+  return (
+    typeof name === "string" &&
+    /^[\w.-]+\/[\w.-]+$/.test(name) &&
+    name.toLowerCase() === repository.toLowerCase()
+  );
+}
+
+/**
+ * True when `url` is GitHub's page for pull request `number` in `repository`. Only the
+ * repository's letter case may differ; the host, path shape and number are exact.
+ */
+export function isGitHubPullUrl(url: unknown, repository: string, number: unknown): boolean {
+  const prefix = "https://github.com/";
+  const suffix = "/pull/" + String(number);
+  return (
+    typeof url === "string" &&
+    Number.isSafeInteger(number) &&
+    (number as number) > 0 &&
+    url.startsWith(prefix) &&
+    url.endsWith(suffix) &&
+    isSameGitHubRepository(url.slice(prefix.length, -suffix.length), repository)
+  );
+}

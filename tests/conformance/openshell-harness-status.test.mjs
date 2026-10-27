@@ -17,6 +17,7 @@ import {
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { OpenShellServiceTransportError } from "../../apps/controller/src/drivers/sandbox/openshell-service-transport.ts";
 import { DependencyUnavailableError } from "../../packages/occ/src/errors.ts";
+import { availablePort, refusingPort } from "../helpers/available-port.mjs";
 
 // A provider-owned Codex Harness (OpenShell) receives only the transport token's
 // verifier and no Compute status port. When it holds a startup failure it serves
@@ -293,9 +294,7 @@ async function close(server) {
 const serviceUrl = "http://tenant--sandbox.openshell.localhost:8080/";
 
 test("the OpenShell client reads a held failure from the real Harness wrapper through the service host", async (t) => {
-  const probeServer = createServer();
-  const freePort = await listen(probeServer);
-  await close(probeServer);
+  const freePort = await availablePort();
   const { servers } = runCodexEntrypoint({
     env: providerEnv,
     probe: failedProbe("stream error: model unavailable"),
@@ -540,10 +539,11 @@ test("a refused OpenShell WebSocket handshake releases an unfinished HTTP respon
   }
 });
 
-test("an unreachable OpenShell gateway listener is a dependency failure, not a starting Harness", async () => {
-  const server = createServer();
-  const port = await listen(server);
-  await close(server);
+test("an unreachable OpenShell gateway listener is a dependency failure, not a starting Harness", async (t) => {
+  // A released port can be taken by a parallel test's listener; this one keeps refusing.
+  const refusing = await refusingPort();
+  t.after(() => refusing.release());
+  const { port } = refusing;
   const client = new GrpcOpenShellGatewayClient({ endpoint: `http://127.0.0.1:${port}` });
   for (const observe of [
     () =>
@@ -844,7 +844,7 @@ test("runtime wrapper status servers answer 400 to a request target that is not 
                 return {
                   createServer(value) {
                     handler = value;
-                    return { listen() {} };
+                    return { on() {}, listen() {} };
                   },
                 };
               }
@@ -883,9 +883,7 @@ test("runtime wrapper status servers answer 400 to a request target that is not 
   );
 
   await t.test("a raw request target over HTTP leaves the held wrapper serving", async (t) => {
-    const probeServer = createServer();
-    const freePort = await listen(probeServer);
-    await close(probeServer);
+    const freePort = await availablePort();
     const { servers } = runCodexEntrypoint({
       env: providerEnv,
       probe: failedProbe("stream error: model unavailable"),
@@ -1218,6 +1216,43 @@ test("a native OpenClaw worker without an exposed port, or with a Compute status
   assert.deepEqual(
     computeOwned.servers.map((server) => server.listening),
     [{ port: 18789, host: "0.0.0.0" }],
+  );
+  // Without Compute's status identity nothing is served there; with it, the readiness
+  // server reports the held check on the status path, as the Codex status server does
+  // (finding 2686), and readiness stays 503.
+  let unidentified;
+  computeOwned.servers[0].handler(
+    { method: "GET", url: "/openclaw/runtime/status", headers: {} },
+    {
+      writeHead(code) {
+        unidentified = code;
+      },
+      end() {},
+    },
+  );
+  assert.equal(unidentified, 404);
+  const identified = runNativeWorkerEntrypoint({
+    env: {
+      OPENCLAW_RUNTIME_STATUS_PORT: "18789",
+      OPENCLAW_AGENT_REVISION_ID: "rev_fixture",
+      OPENCLAW_RUNTIME_STATUS_CONTAINER: "agent",
+      OPENCLAW_POD_UID: "pod-fixture",
+    },
+  });
+  assert.equal(identified.connectStarts, 0);
+  const [{ handler: statusHandler }] = identified.servers;
+  const status = call(statusHandler, {});
+  assert.equal(status.status, 200);
+  const { checkedAt, ...heldCheck } = status.body.runtimeFailure;
+  assert.ok(!Number.isNaN(Date.parse(checkedAt)));
+  assert.deepEqual(
+    { ...status.body, runtimeFailure: heldCheck },
+    {
+      revisionId: "rev_fixture",
+      container: "agent",
+      podUid: "pod-fixture",
+      runtimeFailure: { component: "agent", check: "model-probe", code: "AUTHENTICATION_FAILED" },
+    },
   );
   // A present but malformed verifier or port never starts the server (finding 1661): a
   // loosened check would serve the held failure against a credential nobody can hold.

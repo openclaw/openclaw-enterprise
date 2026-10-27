@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { jsonErrorOffset, jsonObjectProblem } from "../../apps/controller/src/console/dom.mjs";
+import { jsonErrorOffset, jsonObjectProblem } from "../../apps/controller/src/console/dom.mts";
 
 const at = (line, column) =>
   `Invalid JSON at line ${line}, column ${column}. Enter a valid JSON object.`;
@@ -84,7 +84,7 @@ test("without Intl.Segmenter, columns still count code points, not UTF-16 units 
   delete Intl.Segmenter;
   let fallback;
   try {
-    fallback = await import("../../apps/controller/src/console/dom.mjs?no-segmenter");
+    fallback = await import("../../apps/controller/src/console/dom.mts?no-segmenter");
   } finally {
     Object.defineProperty(Intl, "Segmenter", segmenter);
   }

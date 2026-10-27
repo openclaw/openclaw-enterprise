@@ -208,6 +208,7 @@ function revision(driver, owner, agentId, number, harnessAuth) {
     configurationId: `cfg_${randomUUID()}`,
     configurationKind: "agent",
     configurationGeneration: number,
+    gatewayManagedMode: true,
     configuration: admitLoggingConfiguration(
       withStubbedProviderEndpoint({
         gateway: { controlUi: { enabled: false } },
@@ -219,6 +220,7 @@ function revision(driver, owner, agentId, number, harnessAuth) {
     harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
     harnessAuth: harnessAuth.snapshot,
     compute: { id: driver.id, implementation: driver.implementation },
+    executionAdmission: { version: 2, mode: "unprotected" },
     plugins: pluginRevisionState(),
     servicePrincipalId: `service-agent-${agentId}`,
     createdAt: new Date().toISOString(),

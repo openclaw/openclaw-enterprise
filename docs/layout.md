@@ -91,7 +91,8 @@ uses `RepoDriver` in `packages/contracts/src/repo.ts` and the bundled
 OCC owns immutable Agent bindings and safe session State; worker helpers connect
 those records to Compute delivery. Public status omits private cleanup diagnostics.
 The common engine's `RepositoryBackend` protocol is separate from `RepoDriver`.
-Only the dedicated service process initializes signing and provider-token custody.
+The worker Token Service owns GitHub App signing and provider-token custody.
+The native sender consumes prepared material without an App key.
 See the [Agent repository flow](flows/agent-repository-credentials.md).
 
 ## Deployment, tooling, and checks
@@ -121,6 +122,8 @@ selected emitted modules and minimal manifests in
 the standalone service/client images do not include the controller dependency
 graph. The full `deploy/runtime/Dockerfile` uses the repository root as its build
 context to include the emitted client router in the Agent image.
+`deploy/runtime/openclaw-source.json` owns the OpenClaw source commit, archive
+checksum, and fixed build timestamp used by that runtime recipe and its callers.
 
 Chart-owned startup scripts live under `deploy/helm/openclaw-enterprise/files/`
 and are embedded in rendered container commands; they ship with the chart.

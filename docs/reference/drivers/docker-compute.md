@@ -128,6 +128,14 @@ development Driver accepts tags as well as digests; production Kubernetes
 digest requirements do not imply that the local engine enforces immutable
 images.
 
+Both topologies keep one gateway container per Agent, so a new version
+replaces the active version's gateway. The Driver therefore declares
+[exclusive replacement](compute.md#production-revision-stages)
+(`requiresStoppedPredecessors`) for every version: the worker stops all earlier
+versions before preparing the new one, and stops a refused new version, so
+the Agent is unavailable until a later version deploys. Redeployment interrupts
+service and has no automatic rollback.
+
 `retireRevision(revision)` removes only the runtime with the same Agent revision
 ID. It preserves another Agent's containers and preserves a gateway still required by
 a replacement version for the same Agent.
@@ -140,11 +148,26 @@ Driver retains the Agent-owned state and workspace volumes used for initial
 workspace setup across stop and version replacement. Without initial workspace
 inputs, writable container tmpfs remains ephemeral.
 
+For a stateful embedded Gateway, the Driver can recover after an unclean stop
+if it observed the old container's private Linux PID namespace while it ran.
+Docker Engine must report that the same container instance exited, and the
+replacement must use the same local state volume. OpenClaw checks every
+recorded holder against that namespace before releasing its locks. If the
+Driver lost its observation or the holders do not match, follow
+[operator recovery](../../guides/topics/agent-troubleshoot.md#an-embedded-gateway-reports-an-unverifiable-state-owner).
+
+The Driver kills an observed embedded Gateway to record its exit. It stops
+every other container before removal: Docker sends SIGTERM and sends SIGKILL
+after 10 seconds. A Gateway that exits on SIGTERM releases its OpenClaw state
+lock, so its replacement needs no recovery. This includes a Gateway that the
+Driver did not observe, for example after a controller restart. If the stop
+fails, the Driver still removes the container and reports the stop failure.
+
 State on that volume outlives runtime image upgrades. Before OpenClaw starts,
-the gateway runs the same agent database migration as a
+the gateway runs the same state migration as a
 [Kubernetes Gateway](kubernetes-compute/storage-and-credentials.md#gateway-storage):
 `openclaw doctor --fix --non-interactive` once, with the configuration
-read-only, when an agent database uses an older schema. If a database is still
+read-only, when its shared state or an agent database uses an older schema. If a database is still
 older afterwards, the container logs `Gateway state migration failed` and exits
 without starting OpenClaw, and the deployment fails as an unready container.
 The Driver then removes the container, so Doctor's output survives only

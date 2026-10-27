@@ -120,7 +120,7 @@ test("workspace setup fails closed for invalid delivery, lost completed workspac
   assert.equal(existsSync(join(f.root, "outside", "USER.md")), false);
 });
 
-test("workspace setup exits 2 for a refusal and 1 for a failure a restart may clear", (t) => {
+test("workspace setup distinguishes refusal, retryable failure, and native setup diagnostics", (t) => {
   const f = fixture(t);
   const setup = { ...identity, completed: false, files: { "USER.md": "profile" } };
   assert.equal(WORKSPACE_SETUP_REFUSED_EXIT_STATUS, 2);
@@ -142,11 +142,18 @@ test("workspace setup exits 2 for a refusal and 1 for a failure a restart may cl
   }
   writeFileSync(
     join(runtime, "openclaw.mjs"),
-    'import { writeFileSync } from "node:fs"; writeFileSync(new URL("ran", import.meta.url), ""); process.exit(3);',
+    'import { writeFileSync } from "node:fs"; writeFileSync(new URL("ran", import.meta.url), ""); process.stderr.write("private native output"); process.exit(7);',
   );
   const standIn = { OPENCLAW_EXECUTABLE: join(runtime, "openclaw.mjs") };
-  failed(f.run(setup, standIn), 1);
+  failed(f.run(setup, standIn), 3);
   assert.equal(existsSync(join(runtime, "ran")), true, "native setup ran");
+  // Simulate only the native process's timeout result; no wall-clock timeout is exercised.
+  const timeout = `require("node:child_process").spawnSync = () => ({
+    error: Object.assign(new Error("private native output"), { code: "ETIMEDOUT" }),
+    status: null, stdout: "private native output", stderr: "private native output",
+  });\n`;
+  failed(f.execute(timeout + WORKSPACE_SETUP_RUNTIME, JSON.stringify(setup), standIn), 4);
+  assert.equal(existsSync(join(f.workspace, ".oce-workspace-setup.json")), false);
   // Templates that differ from the Console's defaults fail every restart the same way.
   writeFileSync(join(templates, "USER.md"), "changed");
   failed(f.run(setup, standIn));

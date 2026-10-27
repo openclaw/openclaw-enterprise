@@ -144,6 +144,7 @@ function revisionFor(agent, configuration, storedSecret, revisionNumber = 1) {
     configurationKind: configuration.kind,
     configurationGeneration: configuration.generation,
     backendId: null,
+    gatewayManagedMode: agent.gatewayManagedMode,
     harnessAuth: {
       method: "codex_pat",
       source: { kind: "secret", namespaceId: agent.namespaceId, id: storedSecret.id },
@@ -152,6 +153,7 @@ function revisionFor(agent, configuration, storedSecret, revisionNumber = 1) {
     configuration: { models: { providers: { codex: {} } } },
     harness: { id: "codex", version: "1.0.0", mode: agent.executionMode },
     compute: { id: "compute-test", implementation: "deterministic-test" },
+    executionAdmission: { version: 2, mode: "unprotected" },
     servicePrincipalId: agent.servicePrincipalId,
     createdAt: new Date().toISOString(),
     secretDriverId: "kubernetes-secret",
@@ -174,7 +176,7 @@ async function ensureInstallation(store) {
 
 async function exerciseRepository(store) {
   await ensureInstallation(store);
-  const { namespace, configuration, agent } = resources();
+  const { namespace, configuration, agent: initialAgent } = resources();
   const storedSecret = secret(namespace.id);
   const siblingConfiguration = {
     ...configuration,
@@ -183,14 +185,14 @@ async function exerciseRepository(store) {
   };
   const secondSharedSecret = secret(namespace.id);
   const siblingAgent = {
-    ...agent,
+    ...initialAgent,
     id: identifier("agt"),
     name: `Sibling ${randomUUID()}`,
     servicePrincipalId: `service-agent-${randomUUID()}`,
     configurationId: siblingConfiguration.id,
   };
 
-  await store.transact(async (state) => {
+  const agent = await store.transact(async (state) => {
     await state.namespaces.createNamespace(namespace);
     assert.equal(await state.namespaces.hasSecrets(namespace.id), false);
     // Namespace-owned Secrets can be registered before any Agent exists.
@@ -203,7 +205,7 @@ async function exerciseRepository(store) {
       ...configuration,
       secretBindings: acceptedBindings(storedSecret),
     });
-    await state.agents.createAgent(agent);
+    return state.agents.createAgent(initialAgent);
   });
 
   await store.transact(async (state) => {
@@ -605,11 +607,13 @@ test(
             compute: { id: "compute-test", implementation: "deterministic-test" },
             secret_driver_id: "kubernetes-secret",
             secret_bindings: bindingFor(sqlSecret),
+            harness_auth: { method: "runtime" },
+            execution_admission: { version: 2, mode: "unprotected" },
             unexpected: true,
           }),
         ],
       ),
-      { code: "23514" },
+      { code: "23514", constraint: "agent_revisions_admitted_snapshot" },
     );
 
     await pool.query(

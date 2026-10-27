@@ -39,11 +39,9 @@ Kubernetes DNS-subdomain `runtime.gatewayStorageClassName` selects an
 operator-provisioned StorageClass for a local or cloud block disk mounted as a
 filesystem.
 
-The filesystem must support SQLite: reliable file locking, durable `fsync`
-writes, and SQLite database and companion WAL/SHM files in one directory.
-The Driver checks claim configuration without certifying the provider's locking
-or durability guarantees.
-See [SQLite's filesystem requirements](https://sqlite.org/useovernet.html).
+The filesystem must support SQLite locking, durable `fsync`, and colocated
+database and WAL/SHM files. The Driver checks claim configuration, not filesystem
+guarantees. See [SQLite’s requirements](https://sqlite.org/useovernet.html).
 
 Do not use NFS or SMB/CIFS for gateway databases:
 [SQLite WAL does not support network filesystems](https://sqlite.org/wal.html).
@@ -60,8 +58,18 @@ writer.
 A stop deletes the Gateway and waits for its Pod to disappear before stopping the
 Harness, which finishes active work meanwhile; a refused candidate's stop deletes
 both at once. The Gateway supervisor and Pod allow up to 330 seconds for the
-pinned runtime's drain and cleanup; idle Gateways exit promptly. Forced termination can leave an owner lease until it
-expires and delay the successor; a longer grace period does not make it a clean shutdown.
+pinned runtime's drain and cleanup. Idle Gateways exit promptly. Forced
+termination can leave native Gateway locks and an owner lease on retained state.
+
+If the kubelet restarts an embedded Gateway container in the same Pod, OpenClaw
+can recover locks held by the **first container instance**. Before configurable
+code runs, that instance signs its Pod UID and Linux PID namespace and discards
+the signing key. The replacement uses a read-only public key held in the Pod
+to verify the previous instance, then asks OpenClaw to check every holder.
+This requires OCE's runtime launcher, private container PID namespaces and no
+custom lifecycle environment, additional Secret bindings, or repository tooling.
+Replacing the Pod discards its keys. A later container's locks or a missing
+record also require [operator recovery](../../../guides/topics/agent-troubleshoot.md#an-embedded-gateway-reports-an-unverifiable-state-owner).
 
 Only the Gateway Pod mounts these writable directories, including SQLite
 databases and their WAL/SHM siblings:
@@ -69,6 +77,7 @@ databases and their WAL/SHM siblings:
 | Private subpath             | Gateway mount                               |
 | --------------------------- | ------------------------------------------- |
 | `state`                     | `/home/node/.openclaw/state`                |
+| `client`                    | `/home/node/.openclaw/client`               |
 | `agent`                     | `/home/node/.openclaw/agents/main/agent`    |
 | `media`                     | `/home/node/.openclaw/media`                |
 | `worktrees`                 | `/home/node/.openclaw/worktrees`            |
@@ -76,6 +85,7 @@ databases and their WAL/SHM siblings:
 | `sessions` (dedicated mode) | `/home/node/.openclaw/agents/main/sessions` |
 
 Linked worktrees and Git metadata in `worktree-sources` persist across Gateway replacement.
+The retained database requires the client store’s migration receipt; both persist.
 
 Embedded Gateways mount the claim's `workspace` subpath at
 `/home/node/.openclaw/workspace`, the default workspace under the configured
@@ -99,10 +109,11 @@ OCE disables OpenClaw automatic package updates in the Gateway and workspace
 node; runtime upgrades use the operator-selected image and ordinary redeployment.
 State on this claim outlives those upgrades. Before OpenClaw starts, the Gateway
 wrapper runs `openclaw doctor --fix --non-interactive` once, with the
-configuration read-only, when an agent database uses an older schema than the
-pinned OpenClaw; Doctor keeps a `.pre-startup-migration-<id>.bak` copy beside
-it. A database still older afterwards holds the Gateway unready with check
-`state-migration` (`RUNTIME_STARTUP_FAILED`).
+configuration read-only, when the shared state database or an agent database
+uses an older schema than the pinned OpenClaw; Doctor keeps a
+`.pre-startup-migration-<id>.bak` copy beside each. A database still older
+afterwards holds the Gateway unready with check `state-migration`
+(`RUNTIME_STARTUP_FAILED`).
 
 ## Harness storage
 
@@ -123,6 +134,9 @@ renames such a directory aside, recreates it and moves its entries back. A name
 the new directory already has stays in `.<subpath>.kubelet-created`.
 
 This directory keeps node identity across Pod and version replacement.
+Before native setup, or before a native worker connects, the Harness or worker runs the
+[Gateway](#gateway-storage) Doctor pass on this state, with only the node's environment, when its database is
+older. A database still older holds it unready with check `state-migration`.
 The node Secret's setup code expires ten minutes after preparation mints it. A
 node with a saved device token for the same Gateway reconnects with that token;
 one without saved credentials rejects an expired code.
@@ -149,7 +163,8 @@ node uses when it restarts. Native workers and SandboxDriver Harnesses receive t
 their environment, keep it for restarts, and are replaced to attach the node.
 Installations that enrolled one node for each Agent revision enroll a new Agent device once,
 at the first replacement; retiring each earlier Agent revision deletes its node Secret.
-Sessions stay on the private Gateway claim, inaccessible to the Harness.
+Gateway conversation history stays on its private claim. Resuming the original Codex thread
+also requires the Harness claim’s `codex-sessions`.
 Selected generated-image bytes use the Codex remote-media reader; no image mount
 is shared. Each image initializes its bundled/plugin assets without shared Skill-tree mounts.
 Embedded Agents use the private claim without creating this Harness claim.
@@ -193,32 +208,9 @@ for retry and preserves the Agent's database identity.
 
 ## Managed native configuration
 
-Ordinary runtime gateways read the managed ConfigMap at
-`/etc/openclaw/openclaw.json`. Native admin editing uses a writable copy only
-when runtime gateway images and private `gatewayRouting` are configured and
-the saved native Configuration explicitly enables the pilot shape:
-
-- Trusted-proxy authentication accepts `x-occ-identity: occ-workspace-files`
-  with `operator.admin` identity scopes.
-- Trusted-proxy device auto-approval is enabled with `operator.admin` scope.
-- `controlUi.enabled` is true and `controlUi.allowedOrigins` is nonempty.
-- Dangerous device-auth disabling and host-header origin fallback are disabled.
-
-For those gateways, the managed ConfigMap remains read-only at
-`/etc/openclaw-managed/openclaw.json`. The nonroot init container copies it to
-`/home/node/.openclaw/openclaw.json` on the Pod-local `emptyDir`, and
-`OPENCLAW_CONFIG_PATH` points to that writable copy. Gateways without the full
-opt-in shape, including ordinary routed gateways, keep the read-only path.
-
-Native edits change only the copy; Pod replacement or Agent redeployment
-restores the managed snapshot, while the persistent gateway and workspace claims
-retain their data. Pod-local provenance records Agent revision ID, snapshot hash and
-generated bridges; only matches with the managed baseline are rebuilt.
-Peer recovery and same-Pod restarts retain unrelated edits; conflicting bridge
-edits remain refused. Pod replacement clears copy/provenance.
-Edits stay outside OCE Configuration and AgentRevisions; see
-the [native admin feature boundary](../../agent-native-admin.md#native-authority-and-drift)
-and [deployment procedure](../../../guides/deploy/native-admin.md).
+How runtime gateways read the managed native configuration, and when native
+admin editing uses a writable copy, is in
+[Managed native configuration](managed-native-configuration.md).
 
 ## Runtime credentials
 

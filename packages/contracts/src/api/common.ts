@@ -169,7 +169,7 @@ export const ServiceAccountDeleteQuery = Type.Object(
     force: Type.Optional(
       Type.Union([Type.Literal("true"), Type.Literal("false")], {
         description:
-          "`true` deletes an account whose issued access token no ChatGPT Backend can revoke, and leaves the token for an administrator to revoke at the provider. With a ChatGPT Backend configured it is ignored and the token is revoked as usual.",
+          "`true` deletes an account whose issued access token no ChatGPT Backend can revoke, and leaves the token for a ChatGPT workspace administrator to revoke at the provider. With a ChatGPT Backend configured it is ignored and the token is revoked as usual.",
       }),
     ),
   },
@@ -383,12 +383,24 @@ export const CreateCredentialSourceBody = Type.Object(
 
 export const UpdateCredentialSourceBody = Type.Object(
   {
+    adoption: Type.Optional(
+      Type.Literal("live", {
+        description:
+          "Opt an unbound static source into protected live Secret reads. A legacy or narrower source also requires explicit authorityScope: execution. Requires source update and Secret operate permission.",
+      }),
+    ),
+    authorityScope: Type.Optional(
+      Type.Literal("execution", {
+        description:
+          "Consent to every process in this dedicated execution using the constrained inference grant. An older executable-specific grant is never broadened by an upgrade or Secret change.",
+      }),
+    ),
     secrets: Type.Optional(CredentialSourceSecrets),
   },
   {
     additionalProperties: false,
     description:
-      "Re-reads the source's Secret values, or those of replacement Secret references, and updates the Credential Gateway copy. A refresh token field (`refresh_token` of `oauth2-refresh-token`) must reference a new Secret. Non-secret config is immutable.",
+      "For a legacy source, omitting adoption and authorityScope updates the Credential Gateway copy. To admit an unbound legacy or narrower source for protected per-operation reads, send adoption: live and authorityScope: execution together. Existing approvals never expand because of an upgrade or a Secret change. Already-admitted sources remain live. PATCH requires an unbound source. A refresh token field (`refresh_token` of `oauth2-refresh-token`) must reference a new Secret. Non-secret config is immutable.",
   },
 );
 
@@ -702,6 +714,11 @@ export const RepositoryBindingSelectionsSchema = Type.Array(RepositoryBindingSel
   maxItems: 16,
 });
 
+export const GatewayManagedModeSchema = Type.Boolean({
+  description:
+    "Whether OCE restricts Gateway-local administration. Defaults on when the selected Compute Driver supports it, otherwise off. Changing the setting requires Installation administer permission and takes effect on deployment.",
+});
+
 export const CreateAgentBody = Type.Object(
   {
     initialWorkspaceFiles: Type.Optional(
@@ -722,6 +739,7 @@ export const CreateAgentBody = Type.Object(
     harnessAuth: Type.Optional(Type.Union([HarnessAuthBindingSchema, Type.Null()])),
     credentialSources: Type.Optional(AgentCredentialSourcesSchema),
     executionMode: Type.Optional(HarnessExecutionModeSchema),
+    gatewayManagedMode: Type.Optional(GatewayManagedModeSchema),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     pluginApprovers: Type.Optional(Type.Ref("PluginApprovers")),
     repositoryBindings: Type.Optional(RepositoryBindingRequestsSchema),
@@ -754,6 +772,7 @@ export const ProvisionAgentBody = Type.Object(
       }),
     ),
     executionMode: Type.Optional(HarnessExecutionModeSchema),
+    gatewayManagedMode: Type.Optional(GatewayManagedModeSchema),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     pluginApprovers: Type.Optional(Type.Ref("PluginApprovers")),
     repositoryBindings: Type.Optional(RepositoryBindingRequestsSchema),
@@ -764,34 +783,92 @@ export const ProvisionAgentBody = Type.Object(
 
 export const ValidateAgentCreateBody = Type.Object(
   {
+    name: Type.Optional(
+      Type.String({
+        minLength: 1,
+        maxLength: NAME_MAX_CHARACTERS,
+        pattern: PLAIN_TEXT_PATTERN,
+        description:
+          "The Agent name create will use. A name that another Agent in the Namespace has is refused with create's `409`.",
+      }),
+    ),
     initialWorkspaceFiles: Type.Optional(CreateAgentBody.properties.initialWorkspaceFiles),
     configuration: Type.Object(
-      { kind: ConfigurationKindSchema, values: ConfigurationValues },
+      {
+        kind: ConfigurationKindSchema,
+        values: ConfigurationValues,
+        secretBindings: Type.Optional(SecretBindings),
+      },
       {
         additionalProperties: false,
-        description: "The Agent Configuration the caller will save, not yet saved.",
+        description:
+          "The Agent Configuration the caller will save, not yet saved. With `secretBindings`, a channel credential reference without a binding is refused where Configuration create refuses it (the bundled Kubernetes Compute); the bound Secrets are not read. Without them, that check is skipped.",
       },
     ),
     executionMode: Type.Optional(HarnessExecutionModeSchema),
+    gatewayManagedMode: Type.Optional(GatewayManagedModeSchema),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     pluginApprovers: Type.Optional(Type.Ref("PluginApprovers")),
+    harnessAuth: Type.Optional(
+      Type.Union(
+        [
+          HarnessAuthBindingSchema,
+          Type.Object(
+            { method: Type.Union([Type.Literal("api_key"), Type.Literal("codex_pat")]) },
+            { additionalProperties: false },
+          ),
+          Type.Null(),
+        ],
+        {
+          description:
+            "The Harness authentication Agent create will name, so Agent save's check of it against the execution mode and Compute settings runs here too. For a Secret the caller saves next, send only its `method`. The Secret and credential source are not read; omitted or null skips this check.",
+        },
+      ),
+    ),
   },
   { additionalProperties: false },
 );
 
 export const UpdateAgentBody = Type.Object(
   {
-    configurationId: ConfigurationId,
+    repositoryStandingApproval: Type.Optional(
+      Type.Union([
+        Type.Object(
+          {
+            repositoryRef: Type.String({ pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" }),
+            approvalId: Type.String({ pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" }),
+            approved: Type.Literal(true),
+            duration: Type.Literal("until-removed"),
+            expectedScopeFingerprint: Type.String({ pattern: "^[a-f0-9]{64}$" }),
+          },
+          { additionalProperties: false },
+        ),
+        Type.Object(
+          {
+            repositoryRef: Type.String({ pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" }),
+            approvalId: Type.String({ pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" }),
+            approved: Type.Literal(false),
+            expectedGeneration: Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
+          },
+          { additionalProperties: false },
+        ),
+      ]),
+    ),
+    configurationId: Type.Optional(ConfigurationId),
     backendId: Type.Optional(Type.Union([BackendId, Type.Null()])),
     harnessAuth: Type.Optional(Type.Union([HarnessAuthBindingSchema, Type.Null()])),
     credentialSources: Type.Optional(AgentCredentialSourcesSchema),
     executionMode: Type.Optional(HarnessExecutionModeSchema),
+    gatewayManagedMode: Type.Optional(GatewayManagedModeSchema),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     pluginApprovers: Type.Optional(Type.Union([Type.Ref("PluginApprovers"), Type.Null()])),
     repositoryBindings: Type.Optional(RepositoryBindingRequestsSchema),
     repositoryAccess: Type.Optional(RepositoryAccessSchema),
   },
-  { additionalProperties: false },
+  {
+    additionalProperties: false,
+    anyOf: [{ required: ["configurationId"] }, { required: ["gatewayManagedMode"] }],
+  },
 );
 
 const ChannelDirectoryLookupFields = {
@@ -860,6 +937,8 @@ export const ERROR_DETAIL_CODES = Object.freeze([
   "INVALID_VALUE",
   "TOO_LONG",
   "TOO_DEEP",
+  "INVALID_RANGE",
+  "OUTSIDE_CEILING",
 ] as const);
 
 export const ERROR_CODES = Object.freeze([
@@ -881,6 +960,10 @@ export const ERROR_CODES = Object.freeze([
   "DEPENDENCY_UNAVAILABLE",
   "CREDENTIAL_GATEWAY_NOT_CONFIGURED",
   "CREDENTIAL_WITHDRAWAL_IN_PROGRESS",
+  "CREDENTIAL_TOKEN_UNSETTLED",
+  "SANDBOX_POLICY_PROTECTED_EXECUTION",
+  "REPOSITORY_GIT_SENDER_UNQUALIFIED",
+  "REPOSITORY_GIT_PROFILE_UNSUPPORTED",
   "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED",
   "REPOSITORY_OPTIONS_UNAVAILABLE",
   "MODEL_DISCOVERY_CREDENTIALS_REJECTED",
@@ -915,6 +998,7 @@ export const ERROR_CODES = Object.freeze([
 
 export const ErrorDetail = Type.Object(
   {
+    message: Type.Optional(Type.String({ maxLength: 512 })),
     path: Type.String({
       maxLength: 512,
       pattern: "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -927,6 +1011,8 @@ export const ErrorDetail = Type.Object(
       Type.Literal("INVALID_VALUE"),
       Type.Literal("TOO_LONG"),
       Type.Literal("TOO_DEEP"),
+      Type.Literal("INVALID_RANGE"),
+      Type.Literal("OUTSIDE_CEILING"),
     ]),
   },
   { additionalProperties: false },
@@ -960,6 +1046,22 @@ export const ErrorResponse = Type.Object(
           Type.Literal("CREDENTIAL_WITHDRAWAL_IN_PROGRESS", {
             description:
               "Only credential withdrawal work still queued or running for an Agent revision that held the source keeps it from being deleted.",
+          }),
+          Type.Literal("CREDENTIAL_TOKEN_UNSETTLED", {
+            description:
+              "A provider token issued for the source may still be valid after a lost issue or revocation outcome; retry the deletion after the time in the message.",
+          }),
+          Type.Literal("SANDBOX_POLICY_PROTECTED_EXECUTION", {
+            description:
+              "Protected execution keeps only its Credential Proxy egress policy: Agent network policy additions are refused at save and deploy while the running or next revision is protected, and live application to a protected revision is refused.",
+          }),
+          Type.Literal("REPOSITORY_GIT_SENDER_UNQUALIFIED", {
+            description:
+              "Deploy is refused because the selected Credential Proxy has no qualified enforcement for the Agent's git-write repository binding; the version could never start.",
+          }),
+          Type.Literal("REPOSITORY_GIT_PROFILE_UNSUPPORTED", {
+            description:
+              "Deploy is refused because the selected Credential Proxy delivers repository Git only for one binding with the git-write or github-installation profile; git-read, git-full or several bindings could never start.",
           }),
           Type.Literal("SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED", {
             description:

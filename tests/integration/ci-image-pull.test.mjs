@@ -3,6 +3,7 @@ import { createServer } from "node:http";
 import test from "node:test";
 import { isTransientPullFailure, pullImage } from "../../scripts/ci/image-pull.mjs";
 import { fetchPinnedBytes, isTransientFetchError } from "../../scripts/ci/routing.mjs";
+import { listen } from "../helpers/listen.mjs";
 
 const image =
   "docker.io/otel/opentelemetry-collector-contrib:0.159.0@sha256:1f2c54a30e713fac6b3ae77a1ec84010c2007e29ced8ec666214fc2f6739c1cc";
@@ -145,13 +146,8 @@ async function flakyServer(t, handlers) {
     requests += 1;
     handler(request, response);
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => {
-    server.closeAllConnections();
-    return new Promise((resolve) => server.close(resolve));
-  });
   return {
-    url: `http://127.0.0.1:${server.address().port}/artifact.yaml`,
+    url: `http://127.0.0.1:${await listen(t, server)}/artifact.yaml`,
     requests: () => requests,
   };
 }

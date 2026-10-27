@@ -35,7 +35,6 @@ const defaults: ServiceLimits = Object.freeze({
   credentialMarginMs: 60000,
   accessTokenBytes: 16384,
   renewalBytesPerSession: 16384,
-  privateKeyBytes: 65536,
 });
 export function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -146,7 +145,6 @@ function validateLimits(value: unknown): ServiceLimits {
     limits.providerActions !== 1 ||
     limits.credentialSlotsPerSession < 2 ||
     limits.accessTokenBytes > 16384 ||
-    limits.privateKeyBytes > 65536 ||
     limits.providerActionMs > 30000
   ) {
     throw new Error("invalid-configuration");

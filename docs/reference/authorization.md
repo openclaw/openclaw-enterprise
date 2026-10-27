@@ -278,10 +278,10 @@ placeholders with the returned Role's `id`, the Agent's immutable
 }
 ```
 
-These are separate hypothetical creation requests, not a combined policy import.
 The Role permits `operate` on the **Secret kind**; the binding limits that grant
 to **one Secret ID**. Another Secret needs another binding. Neither JSON object
-contains a Secret value.
+contains a Secret value. For the CLI steps, see
+[Let an Agent use a Secret](../guides/topics/iam.md#let-an-agent-use-a-secret).
 
 The subject must be an existing human Principal or a ServicePrincipal in the
 path Namespace. A human does not need a separate Namespace ServicePrincipal.
@@ -380,8 +380,10 @@ ambiguous identity fails closed.
 
 - `401`: The session cookie or service key is missing, invalid, expired, or revoked.
 - `403`: The principal lacks an exact grant, belongs to another Namespace, or
-  matches a deny Restriction.
-- `404`: The requested resource does not exist under its exact parent.
+  matches a deny Restriction. The message names the grant; see
+  [denial messages](cheatsheets/permissions.md#denial-messages).
+- `404`: The resource does not exist under its exact parent, and your grants
+  cover its ID. Others get the same `403` as for a resource they cannot read.
 - `503 DEPENDENCY_UNAVAILABLE`: The selected IAM or audit dependency is
   unavailable; no fallback authorization provider is used.
 - A resource is absent from a list: your identity may lack `read` on that
@@ -389,8 +391,6 @@ ambiguous identity fails closed.
 - `400` creating a Role or binding: the detail path names the invalid field.
 - `409` deleting a Role: the Role is referenced by AccessBindings; remove them
   explicitly first.
-- Group or broad-grant mutation is rejected: Namespace policy APIs support
-  identity subjects and exact resource targets only.
 
 ## Evidence and related references
 

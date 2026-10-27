@@ -18,6 +18,34 @@ export function selectFirstAgentModel(configuredModel, existing) {
   return model;
 }
 
+/**
+ * The saved record of a repeated first-agent run, checked against this run's selection.
+ * A saved record this helper cannot read (not version 3, or version 3 without
+ * authMethod) is unsupported. Do not infer that it is older, and do not treat
+ * choosing a new Agent name as the way to recover the existing Agent. Still
+ * refuse it instead of claiming the selection differs (finding 1756) or that a
+ * PAT needs OpenShell (finding 1798).
+ */
+export function reuseFirstAgentRecord(existing, selection) {
+  if (existing.version !== 3 || existing.authMethod === undefined) {
+    throw new Error(
+      "This Agent name has a saved record this helper does not recognize. The recorded resources were not changed. To keep using that Agent, recover the record with a helper that understands it. Choosing a new Agent name starts a different Agent.",
+    );
+  }
+  if (
+    existing.name !== selection.name ||
+    existing.namespaceId !== selection.namespaceId ||
+    existing.harness !== selection.harness ||
+    existing.sandboxDriver !== selection.sandboxDriver ||
+    existing.controlUi !== selection.controlUi
+  ) {
+    throw new Error(
+      "This Agent's recorded Namespace, model, Harness, Sandbox Driver, or Control UI selection differs. Reuse its recorded selection or choose a new Agent name.",
+    );
+  }
+  return existing;
+}
+
 // Only a prior PAT revision identified by the helper can have the former workspace-write
 // policy, which OpenShell's blocked nested namespaces turn into failing shell tools.
 export function firstAgentPriorPatPolicy(values, record, revisionId, priorRevisionId) {

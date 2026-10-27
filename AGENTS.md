@@ -273,6 +273,8 @@ an ordinary document does not exempt that document.
 
 ## Documentation editing
 
+Human-verified documents must include `human_verified: true` in their YAML frontmatter.
+
 Before creating, updating, or reviewing documentation and specifications, read
 and apply [technical-writing](.agents/skills/technical-writing/SKILL.md).
 Use ASD-STE100 (Simplified Technical English) and complete its required
@@ -388,8 +390,11 @@ Use `tests/fixtures/synthetic-credential-url.mjs` to construct synthetic credent
 
 ## Running integration tests
 
-Run all integration tests with `pnpm test:integration`, or target one case with
-`node --test tests/integration/<name>.test.mjs`. Real-runtime coverage uses the
+Write new integration tests as `*.test.ts` with types Node.js can erase. Register
+the file in the CI lane that runs it; the existing typecheck includes these tests.
+Keep existing JavaScript tests in place unless the change calls for migration.
+Run all integration tests with `pnpm test:integration`, or target one file with
+`node --test tests/integration/<name>.test.ts`. Real-runtime coverage uses the
 Docker Compose or Kubernetes integrations with explicitly selected runtime
 images and existing authorized model credentials. Follow the
 [testing guide](docs/testing/README.md) and
@@ -440,6 +445,8 @@ On a devbox without an X server, run Playwright with `headless: true`.
 
 ## Console Storybook
 
+Use [console-ui](.agents/skills/console-ui/SKILL.md) to build on the shared
+[Console components and styles](docs/contributing/console-ui.md).
 UI changes require reviewable visual evidence, not just passing checks.
 When adding or changing console pages, shared components, or Agent lifecycle
 controls:
@@ -454,7 +461,11 @@ controls:
 - Capture screenshots of the new or changed UI states and a short video of the
   feature in use. Show the relevant user actions and visible result, not only a
   static screen or terminal output. Keep the walkthrough within the requested
-  behavior; do not invent additional acceptance criteria.
+  behavior; do not invent additional acceptance criteria. Use
+  [pr-walkthrough](.agents/skills/pr-walkthrough/SKILL.md) to record the interaction
+  at a pace reviewers can follow.
+- Lead visual review with the desktop Console. For responsive changes, also show
+  the relevant phone state; a second recording is useful only when the interaction differs.
 - Do not commit PR evidence, including screenshots, recordings, or generated
   evidence reports, to the repository. Keep local captures outside the checkout.
   Upload screenshots and a short video to GitHub, as native attachments or as

@@ -5,7 +5,7 @@ Kubernetes-only profile runs PostgreSQL, the OpenClaw Control Plane (OCC), and A
 
 ## Start the profile
 
-Install Node.js 24+, repository-pinned pnpm, the Go version from `go.mod`, k3d,
+Install Node.js 24.22.1+, repository-pinned pnpm, the Go version from `go.mod`, k3d,
 kubectl, Helm, and Docker or Podman. Kubernetes-only mode uses the engine for
 k3d and images, not OCE services.
 
@@ -131,7 +131,7 @@ export OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell
 ./scripts/dev-up
 ```
 
-The CLI creates one k3d cluster with pinned OpenShell `v0.1.4`, Agent
+The CLI creates one k3d cluster with pinned OpenShell `v0.1.5`, Agent
 Sandbox, cert-manager, and Envoy Gateway assets and digest-resolved images.
 PostgreSQL, the central OpenShell Gateway, and OCE run in `oce-system`; the
 Agent Sandbox controller stays in `agent-sandbox-system`. Tenant Workspaces,
@@ -157,6 +157,7 @@ set
 `OCC_DEVELOPMENT_OPENSHELL_HELM_CHART`,
 `OCC_DEVELOPMENT_OPENSHELL_WORKSPACE_HELM_CHART`, and
 `OCC_DEVELOPMENT_OPENSHELL_AGENT_SANDBOX_MANIFEST` to absolute paths.
+To test a candidate release, [select its OpenShell images by digest](local-openshell-images.md).
 
 For additional binary and endpoint rules, see [startup network policy](local-sandbox-network-policy.md).
 
@@ -182,8 +183,8 @@ to other host users. The helper preserves the default kubeconfig and context.
 For separate stacks, select distinct state directories, cluster names, bridge
 subnets and published ports. Compose also needs a distinct `OCC_POSTGRES_PORT`;
 changing the API port alone leaves PostgreSQL on port 55432. Each Agent Gateway
-requests 1792 MiB with a 3 GiB limit, and each dedicated Codex Harness requests
-768 MiB with a 6 GiB limit, so a dedicated Codex Agent reserves 2.5 GiB; size
+requests 2560 MiB with a 4 GiB limit, and each dedicated Codex Harness requests
+768 MiB with a 6 GiB limit, so a dedicated Codex Agent reserves 3.25 GiB; size
 the local engine VM for OCC plus the Agents you run
 ([measurements](installation-profiles.md)). Keep each stack's resources under the helper's lifecycle until cleanup.
 
@@ -388,24 +389,24 @@ reachable from the node network for a fresh startup:
 OCC_DEVELOPMENT_K3D_DNS_RESOLVER='<reachable-dns-ip>' ./scripts/dev-up
 ```
 
-The host resolver is unchanged. The
+The host resolver is unchanged; the
 [setting reference](../../reference/settings/development.md#required-development-controller-environment)
-describes its node effect and the `k3d` value.
+covers its node effect and the `k3d` value.
 
 ## Stop and clean up
 
 If repository access was enabled, first follow the
-[credential cleanup guidance](local-repository-credentials.md). The launcher
-does not verify repository credential disposal before removing the cluster.
+[credential cleanup guidance](local-repository-credentials.md); the launcher
+does not verify credential disposal before removing the cluster.
 Then remove only the cluster and private state the launcher recorded:
 
 ```bash
 ./scripts/dev-down
 ```
 
-Cleanup reads the recorded engine endpoint and cluster name. If cluster deletion
-fails, it preserves the state directory so the same command can retry without
-discovering or deleting an unrelated cluster.
+Cleanup uses the recorded engine endpoint and cluster name. If deletion fails, it
+keeps the state directory so a retry never discovers or deletes an unrelated
+cluster.
 
 ## Limits
 
@@ -423,14 +424,13 @@ credentialed real-cluster checks.
 ## Gateway placement boundary
 
 Dedicated Gateways and Harnesses share one tenant namespace but retain separate
-Pods, ServiceAccounts, credentials and storage. The local development profile
-selects its single k3d server for Gateway scheduling; this does not prove
-production node isolation. Production must configure
+Pods, ServiceAccounts, credentials and storage. The local profile schedules
+Gateways on its single k3d server, which does not prove production node isolation. Production must configure
 `runtime.gatewayNodeSelector` and `runtime.nodeSelector` for disjoint trusted and
 data-plane pools. See [production Namespace preparation](production-agents.md#prepare-each-namespace)
 for the scoped RoleBindings.
 
 - This is a development environment, not a production deployment recipe.
-- Stock OpenShell `v0.1.4` remains fail-closed for unsupported Secret and
+- Stock OpenShell `v0.1.5` remains fail-closed for unsupported Secret and
   workload-identity projections, so Workspace readiness does not prove that an
   Agent Sandbox can start or complete a model turn.

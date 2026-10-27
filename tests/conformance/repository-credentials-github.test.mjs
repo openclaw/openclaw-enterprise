@@ -1,71 +1,20 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createServer as createNetServer } from "node:net";
-import {
-  createGitHubDriverFactory,
-  createGitHubKeyOwner,
-} from "../../apps/controller/src/drivers/repo/github/credentials/index.ts";
+import { parseInstallationTokenResponse } from "../../apps/controller/src/drivers/repo/github/credentials/driver/acquisition-response.ts";
+import { parseUnambiguousJson } from "../../apps/controller/src/drivers/repo/credentials/json-members.ts";
+import { createGitHubKeyOwner } from "../../apps/controller/src/drivers/repo/github/credentials/material.ts";
 import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/credentials/configuration.ts";
 import { createCredentialService } from "../../apps/controller/src/drivers/repo/credentials/service.ts";
-import { createCustody } from "../../apps/controller/src/drivers/repo/credentials/custody.ts";
 import { createGitHubPlanningFixture } from "../fixtures/repository-credentials/planning.mjs";
 import { startGitHubFixture } from "../fixtures/repository-credentials/github.mjs";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
-import { eventually } from "../fixtures/repository-credentials/service.mjs";
 import { createProviderTransport } from "../../apps/controller/src/drivers/repo/github/credentials/provider-transport.ts";
 import {
-  githubConfigurationData,
   requestHead,
   serviceConfigurationData,
-  custodyLimits,
 } from "../fixtures/repository-credentials/builders.mjs";
-import { refusingPort } from "../helpers/available-port.mjs";
 
 const config = validateServiceConfig(serviceConfigurationData());
-function owner(factory, clock, profile, id, captured = () => {}, observeDispatch = () => {}) {
-  const authority = { sessionId: id, ...factory.resolve(profile).binding };
-  const attempts = new WeakSet();
-  const records = new Map();
-  let sequence = 0;
-  const custody = {
-    assertAttempt(attempt, action) {
-      assert.ok(attempts.has(attempt), "unknown-attempt");
-      assert.equal(attempt.action, action);
-    },
-    capture(attempt, bytes, observation) {
-      assert.ok(attempts.has(attempt));
-      const ref = Object.freeze({});
-      records.set(ref, { bytes: Buffer.from(bytes), observation });
-      captured();
-      return ref;
-    },
-    async withAccess(ref, purpose, consume) {
-      assert.ok(records.has(ref));
-      return consume(records.get(ref).bytes);
-    },
-  };
-  const driver = factory.create({ authority, custody, clock });
-  return {
-    driver,
-    records,
-    authority,
-    attempt(action, signal = new AbortController().signal) {
-      const attempt = Object.freeze({
-        id: `${id}-${++sequence}`,
-        authority,
-        action,
-        deadlineMonoMs: clock.monotonicNow() + 30000,
-        signal,
-        assertAdmitted() {
-          assert.ok(clock.monotonicNow() < this.deadlineMonoMs);
-        },
-        observeDispatch,
-      });
-      attempts.add(attempt);
-      return attempt;
-    },
-  };
-}
 test("gateway authentication preserves canonical syntax, token bounds and route-specific challenges", async (t) => {
   const { factory } = await createGitHubPlanningFixture(t);
   const git = requestHead("GET", "/fixture/repository.git/info/refs?service=git-upload-pack");
@@ -176,18 +125,7 @@ test("Git endpoint spellings share authentication and canonical request plans", 
 });
 
 test("Git normalization preserves raw endpoint and profile denial before acquisition", async (t) => {
-  const clock = createControlledClock();
-  const fixture = await startGitHubFixture(t, { clock });
-  const key = createGitHubKeyOwner({ privateKey: fixture.privateKey, appId: "12345", clock });
-  t.after(() => key.close());
-  const factory = createGitHubDriverFactory({
-    configuration: githubConfigurationData(),
-    authority: key,
-    clock,
-    gatewayOrigin: config.gateway.publicOrigin,
-    limits: config.limits,
-    trustedEndpoints: { apiOrigin: fixture.origin, gitOrigin: fixture.origin, ca: fixture.tls.ca },
-  });
+  const { factory, clock } = await createGitHubPlanningFixture(t);
   const service = createCredentialService({ config, factory, clock });
   t.after(() => service.shutdown(1000));
   const full = service.open({ durationSeconds: 3600, profile: "git-full" });
@@ -260,23 +198,13 @@ test("Git normalization preserves raw endpoint and profile denial before acquisi
   );
   assert.equal(service.plan(api).target, "/repos/fixture/repository");
   service.cancel(api);
-  // Rejected requests cannot reach provider issuance or upstream mutation.
-  assert.equal(fixture.issuesOfTokens.length, 0);
-  assert.deepEqual(fixture.trace, []);
-  assert.deepEqual(fixture.errors, []);
 });
 
 test("literal .git repository names normalize against the admitted identity", async (t) => {
-  const { key } = await createGitHubPlanningFixture(t);
-  const clock = createControlledClock();
-  const factory = createGitHubDriverFactory({
-    configuration: githubConfigurationData({ repository: "Fixture/Repository.git" }),
-    authority: key,
-    clock,
-    gatewayOrigin: config.gateway.publicOrigin,
-    limits: config.limits,
+  const { factory, bind } = await createGitHubPlanningFixture(t, {
+    repository: "Fixture/Repository.git",
   });
-  const bound = owner(factory, clock, "git-write", "literal-suffix");
+  const bound = bind("git-write");
   for (const repository of ["fixture/repository.git", "FIXTURE/REPOSITORY.GIT.git"]) {
     const head = requestHead("GET", `/${repository}/info/refs?service=git-upload-pack`);
     assert.equal(factory.unauthenticated(head).kind, "challenge");
@@ -456,102 +384,9 @@ test("provider transport pins destination and exact issuance scope before receiv
   assert.equal(fixture.tokenState()[0].revoked, true);
   assert.deepEqual(fixture.errors, []);
 });
-test("real HTTPS issuance preserves exact profiles after hour 13 and revokes with owned token after key closure", async (t) => {
-  const clock = createControlledClock();
-  const providerClock = createControlledClock(clock.wallNow());
-  const fixture = await startGitHubFixture(t, { clock: providerClock });
-  const key = createGitHubKeyOwner({ privateKey: fixture.privateKey, appId: "12345", clock });
-  const factory = createGitHubDriverFactory({
-    configuration: githubConfigurationData({
-      providerInstanceId: "fixture-instance",
-      configVersion: "v1",
-      repository: "Fixture/Repository",
-    }),
-    authority: key,
-    clock,
-    gatewayOrigin: config.gateway.publicOrigin,
-    limits: config.limits,
-    trustedEndpoints: { apiOrigin: fixture.origin, gitOrigin: fixture.origin, ca: fixture.tls.ca },
-  });
-  const first = owner(factory, clock, "git-write", "one");
-  const second = owner(factory, clock, "git-full", "two");
-  const originalAttempt = first.attempt("acquire");
-  // Custody refuses a copied attempt; the Driver refuses replaying an admitted one.
-  await assert.rejects(first.driver.acquire({ ...originalAttempt }, undefined, 360000), {
-    message: "unknown-attempt",
-  });
-  const a = await first.driver.acquire(originalAttempt, undefined, 360000);
-  assert.equal(a.kind, "acquired");
-  await assert.rejects(first.driver.settle({ ...a }), /foreign-outcome/);
-  await first.driver.settle(a);
-  await assert.rejects(first.driver.acquire(originalAttempt, undefined, 360000), {
-    message: "foreign-attempt",
-  });
-  const finished = await first.driver.finalize(first.attempt("finalize"));
-  assert.equal(finished.kind, "finalized");
-  await first.driver.settle(finished);
-  const b = await second.driver.acquire(second.attempt("acquire"), undefined, 360000);
-  assert.equal(b.kind, "acquired");
-  await second.driver.settle(b);
-  await providerClock.advance(13 * 3600000 + 1);
-  await clock.advance(13 * 3600000 + 1);
-  const c = await second.driver.acquire(second.attempt("acquire"), b.credential, 360000);
-  assert.equal(c.kind, "acquired");
-  await second.driver.settle(c);
-  assert.deepEqual(
-    fixture.issuesOfTokens.map((item) => item.permissions),
-    [
-      {
-        metadata: "read",
-        contents: "write",
-        issues: "read",
-        pull_requests: "write",
-        checks: "read",
-        statuses: "read",
-      },
-      {
-        metadata: "read",
-        contents: "write",
-        pull_requests: "write",
-        issues: "write",
-        checks: "read",
-        statuses: "read",
-      },
-      {
-        metadata: "read",
-        contents: "write",
-        pull_requests: "write",
-        issues: "write",
-        checks: "read",
-        statuses: "read",
-      },
-    ],
-  );
-  assert.notEqual(fixture.issuesOfTokens[1].claims.iat, fixture.issuesOfTokens[2].claims.iat);
-  await assert.rejects(
-    second.driver.retire(second.attempt("retire"), a.credential),
-    /foreign-credential/,
-  );
-  const head = requestHead(
-    "GET",
-    "/repos/Fixture/Repository",
-    {},
-    {
-      receivedMonoMs: clock.monotonicNow(),
-    },
-  );
-  const plan = second.driver.plan({ authority: second.authority, session: {}, head });
-  // GitHub returns canonical identity casing even when configuration retains capitals.
-  const issuePlan = second.driver.plan({
-    authority: second.authority,
-    session: {},
-    head: {
-      ...head,
-      method: "POST",
-      rawTarget: "/repos/Fixture/Repository/issues",
-      headers: { "content-type": "application/json" },
-    },
-  });
+test("canonical GitHub responses preserve admitted repository identity", async (t) => {
+  const { bind } = await createGitHubPlanningFixture(t, { repository: "Fixture/Repository" });
+  const issuePlan = bind("git-full").plan(requestHead("POST", "/repos/Fixture/Repository/issues"));
   const canonicalIssue = "https://api.github.com/repos/fixture/repository/issues/1";
   assert.deepEqual(
     issuePlan.responsePolicy.rewriteJson({ url: canonicalIssue, body: canonicalIssue }),
@@ -585,303 +420,43 @@ test("real HTTPS issuance preserves exact profiles after hour 13 and revokes wit
       );
     });
   }
-  await assert.rejects(
-    second.driver.withAuthentication(c.credential, { ...plan }, async () => {}),
-    /invalid-credential/,
-  );
-  await second.driver.withAuthentication(c.credential, plan, async (request) =>
-    assert.equal(fixture.authorize(request.headers.authorization), true),
-  );
-  // A local wall jump denies authentication but does not expire the provider token.
-  await clock.advance(0, 2 * 3600000);
-  await assert.rejects(
-    second.driver.withAuthentication(c.credential, plan, async () =>
-      assert.fail("a forward wall jump must deny authentication"),
-    ),
-    /invalid-credential/,
-  );
-  key.close();
-  const retired = await second.driver.retire(second.attempt("retire"), c.credential);
-  assert.equal(retired.kind, "revoked");
-  await second.driver.settle(retired);
-  assert.equal(fixture.tokenState().at(-1).revoked, true);
-  assert.deepEqual(fixture.errors, []);
-  for (const owned of [first, second]) {
-    for (const record of owned.records.values()) {
-      record.bytes.fill(0);
-    }
-  }
 });
-test("refused and cancelled observations remain independently captured and token-owned cleanup succeeds", async (t) => {
-  const clock = createControlledClock();
-  const providerClock = createControlledClock(clock.wallNow() + 5000);
-  let mode = "surplus";
-  const fixture = await startGitHubFixture(t, {
-    clock: providerClock,
-    issueResponse({ status, body }) {
-      if (mode === "surplus") {
-        return {
-          status,
-          body: { ...body, permissions: { ...body.permissions, administration: "write" } },
-        };
-      }
-      if (mode === "missing-checks") {
-        const { checks: _checks, ...permissions } = body.permissions;
-        return { status, body: { ...body, permissions } };
-      }
-      if (mode === "refused") {
-        return { status: 403, body };
-      }
-      if (mode === "excess-skew") {
-        return {
-          status,
-          body: { ...body, expires_at: new Date(clock.wallNow() + 3660001).toISOString() },
-        };
-      }
-      if (mode === "short") {
-        return {
-          status,
-          body: { ...body, expires_at: new Date(clock.wallNow() + 1000).toISOString() },
-        };
-      }
-      return { status, body };
-    },
-  });
-  const key = createGitHubKeyOwner({ privateKey: fixture.privateKey, appId: "12345", clock });
-  t.after(() => key.close());
-  const factory = createGitHubDriverFactory({
-    configuration: githubConfigurationData({
-      providerInstanceId: "fixture-instance",
-    }),
-    authority: key,
-    clock,
-    gatewayOrigin: config.gateway.publicOrigin,
-    limits: config.limits,
-    trustedEndpoints: { apiOrigin: fixture.origin, gitOrigin: fixture.origin, ca: fixture.tls.ca },
-  });
-  for (const { name, selected, expected } of [
-    { name: "surplus permissions", selected: "surplus", expected: "rejected" },
-    { name: "missing checks permission", selected: "missing-checks", expected: "rejected" },
-    { name: "provider refusal", selected: "refused", expected: "reauthorization-required" },
-    { name: "insufficient lifetime", selected: "short", expected: "rejected" },
-    { name: "closure during capture", selected: "cancel", expected: "uncertain" },
-    { name: "excessive provider skew", selected: "excess-skew", expected: "rejected" },
-    { name: "bounded provider skew", selected: "valid-skew", expected: "acquired" },
-  ]) {
-    await t.test(`${name} retains token-owned cleanup`, async () => {
-      mode = selected;
-      const abort = new AbortController();
-      // Closure during the original material callback cannot remove the cleanup obligation.
-      const owned = owner(factory, clock, "git-full", selected, () => {
-        if (selected === "cancel") {
-          abort.abort();
-        }
-      });
-      const result = await owned.driver.acquire(
-        owned.attempt("acquire", abort.signal),
-        undefined,
-        360000,
-      );
-      assert.equal(result.kind, expected);
-      assert.equal(owned.records.size, 1);
-      await owned.driver.settle(result);
-      const [credential] = owned.records.keys();
-      const plan = owned.driver.plan({
-        authority: owned.authority,
-        session: {},
-        head: requestHead("GET", "/repos/fixture/repository"),
-      });
-      if (selected === "valid-skew") {
-        await owned.driver.withAuthentication(credential, plan, async ({ headers }) =>
-          assert.equal(fixture.authorize(headers.authorization), true),
-        );
-        // Service wall time stays behind while independent provider time advances.
-        // Authentication must stop conservatively; the still-live token needs DELETE.
-        await providerClock.advance(3595000);
-        await clock.advance(3595000, 0);
-        assert.ok(fixture.tokenState().at(-1).expires > providerClock.wallNow());
-      }
-      await assert.rejects(
-        owned.driver.withAuthentication(credential, plan, async () =>
-          assert.fail("refused material cannot authenticate"),
-        ),
-        /invalid-credential/,
-      );
-      const cleanup = await owned.driver.retire(owned.attempt("retire"), credential);
-      assert.equal(cleanup.kind, "revoked");
-      await owned.driver.settle(cleanup);
-      for (const record of owned.records.values()) {
-        record.bytes.fill(0);
-      }
-    });
+test("installation response parsing separates unique root custody from unambiguous evidence", () => {
+  const cases = [
+    ['{"token":"owned","permissions":{"contents":"read"}}', "owned", true],
+    ['{"token":"owned","permissions":{"contents":"write","contents":"read"}}', "owned", false],
+    ['{"token":"owned","permissions":{},"permissions":{}}', "owned", false],
+    ['{"token":"owned","unknown":1,"unknown":2}', "owned", false],
+    ['{"token":"owned","nested":{"token":"a","token":"b"}}', "owned", false],
+    ['{"token":"owned","nested":[{"token":"a","token":"b"}]}', "owned", false],
+    ['{"token":"owned","token":"owned"}', undefined, false],
+    [String.raw`{"token":"owned","to\u006ben":"other"}`, undefined, false],
+    ['{"token":"owned","nested":{"token":"other"}}', "owned", true],
+    ['{"token":""}', undefined, true],
+    ['{"nested":{"token":"other"}}', undefined, true],
+    ['[{"token":"owned"}]', undefined, false],
+    ["null", undefined, false],
+    ['"owned"', undefined, false],
+    ['{"token":"owned",', undefined, false],
+    [
+      Buffer.concat([
+        Buffer.from('{"token":"owned","unknown":"'),
+        Buffer.from([0xff]),
+        Buffer.from('"}'),
+      ]),
+      undefined,
+      false,
+    ],
+  ];
+  for (const [input, token, usable] of cases) {
+    const parsed = parseInstallationTokenResponse(Buffer.from(input));
+    assert.equal(parsed.token, token);
+    assert.equal(parsed.packet !== undefined, usable);
   }
-  assert.ok(fixture.tokenState().every((token) => token.revoked));
-  assert.deepEqual(fixture.errors, []);
-});
-
-test("token issue failures before a connection are definite; after one they stay uncertain", async (t) => {
-  const clock = createControlledClock();
-  const fixture = await startGitHubFixture(t, { clock });
-  const key = createGitHubKeyOwner({ privateKey: fixture.privateKey, appId: "12345", clock });
-  t.after(() => key.close());
-  // A held port refuses the connection; a raw TCP server accepts and then drops it.
-  const refusing = await refusingPort();
-  t.after(() => refusing.release());
-  const refused = `https://127.0.0.1:${refusing.port}`;
-  const dropping = createNetServer((socket) => socket.destroy());
-  await new Promise((resolve) => dropping.listen(0, "127.0.0.1", resolve));
-  t.after(() => new Promise((resolve) => dropping.close(resolve)));
-  const factoryFor = (origin) =>
-    createGitHubDriverFactory({
-      configuration: githubConfigurationData({ providerInstanceId: "fixture-instance" }),
-      authority: key,
-      clock,
-      gatewayOrigin: config.gateway.publicOrigin,
-      limits: config.limits,
-      trustedEndpoints: { apiOrigin: origin, gitOrigin: origin, ca: fixture.tls.ca },
-    });
-  const closedAtConnect = () => {
-    throw new Error("ATTEMPT_CLOSED");
-  };
-  for (const { name, origin, observeDispatch, expected } of [
-    { name: "connection refused", origin: refused, expected: "not-dispatched" },
-    {
-      name: "connection dropped",
-      origin: `https://127.0.0.1:${dropping.address().port}`,
-      expected: "uncertain",
-    },
-    // Admission closing before connect cancels the request before any byte is sent.
-    {
-      name: "admission closed at connect",
-      origin: fixture.origin,
-      observeDispatch: closedAtConnect,
-      expected: "not-dispatched",
-    },
-  ]) {
-    await t.test(name, async () => {
-      const owned = owner(factoryFor(origin), clock, "git-read", name, undefined, observeDispatch);
-      const result = await owned.driver.acquire(owned.attempt("acquire"), undefined, 360000);
-      assert.equal(result.kind, expected);
-      await owned.driver.settle(result);
-      assert.equal(owned.records.size, 0);
-    });
-  }
-  assert.deepEqual(fixture.trace, []);
-
-  // A definite failure releases the reservation, so a closed session reaches DISPOSED.
-  const service = createCredentialService({ config, factory: factoryFor(refused), clock });
-  t.after(async () => {
-    // Grace runs on the controlled clock; advance it so a stuck session cannot hang.
-    const stopped = service.shutdown(1000);
-    await clock.advance(1000);
-    await stopped;
-  });
-  const opened = service.open({ durationSeconds: 3600, profile: "git-read" });
-  const exchange = service.reserve(
-    opened.bearer,
-    requestHead("GET", "/repos/fixture/repository"),
-    new AbortController().signal,
+  // The rehomed strict consumer still rejects decoded duplicates at any depth.
+  assert.throws(
+    () => parseUnambiguousJson(String.raw`{"a":[{"x":1,"\u0078":2}]}`),
+    /Ambiguous JSON/,
   );
-  const outcome = await service.execute(exchange, async () =>
-    assert.fail("no upstream exchange without a credential"),
-  );
-  assert.equal(outcome.kind, "not-dispatched");
-  service.close(opened.session.sessionId);
-  await clock.advance(0);
-  await eventually(() => service.status(opened.session.sessionId)?.state === "DISPOSED");
-});
-
-test("retirement uncertainty retains real custody after non-204 replies and lost responses", async (t) => {
-  for (const { name, revokeStatus, disconnect, revoked } of [
-    { name: "accepted without confirmation", revokeStatus: 202, disconnect: false, revoked: false },
-    { name: "provider unavailable", revokeStatus: 503, disconnect: false, revoked: false },
-    { name: "response lost after revocation", revokeStatus: 204, disconnect: true, revoked: true },
-  ]) {
-    await t.test(name, async (t) => {
-      const clock = createControlledClock();
-      const fixture = await startGitHubFixture(t, { clock, revokeStatus });
-      const key = createGitHubKeyOwner({ privateKey: fixture.privateKey, appId: "12345", clock });
-      t.after(() => key.close());
-      const factory = createGitHubDriverFactory({
-        configuration: githubConfigurationData({ providerInstanceId: "fixture-instance" }),
-        authority: key,
-        clock,
-        gatewayOrigin: config.gateway.publicOrigin,
-        limits: config.limits,
-        trustedEndpoints: {
-          apiOrigin: fixture.origin,
-          gitOrigin: fixture.origin,
-          ca: fixture.tls.ca,
-        },
-      });
-      const authority = { sessionId: name, ...factory.resolve("git-read").binding };
-      const custody = createCustody({
-        clock,
-        ...custodyLimits,
-        maximumSlots: 1,
-        maximumCallbacks: 1,
-        admitted: () => true,
-        changed() {},
-      });
-      const driver = factory.create({ authority, custody: custody.driver, clock });
-      let sequence = 0;
-      let dispatches = 0;
-      const attempt = (action) => {
-        const value = Object.freeze({
-          id: `${name}-${++sequence}`,
-          authority,
-          action,
-          deadlineMonoMs: clock.monotonicNow() + 30000,
-          signal: new AbortController().signal,
-          assertAdmitted() {
-            assert.ok(clock.monotonicNow() < this.deadlineMonoMs);
-          },
-          observeDispatch() {
-            dispatches++;
-          },
-        });
-        custody.register(value);
-        return value;
-      };
-      const acquisition = attempt("acquire");
-      const reservation = custody.reserve(acquisition);
-      const acquired = await driver.acquire(acquisition, undefined, 360000);
-      assert.equal(acquired.kind, "acquired");
-      await driver.settle(acquired);
-      custody.settle(reservation);
-      const record = custody.lookup(acquired.credential);
-      if (disconnect) {
-        // The provider commits revocation before dropping the reply; the driver cannot confirm it.
-        fixture.disconnectAfterMutation("DELETE", "/installation/token");
-      }
-      const retirement = attempt("retire");
-      const result = await driver.retire(retirement, acquired.credential);
-      assert.equal(result.kind, "uncertain");
-      await assert.rejects(driver.settle({ ...result }), /foreign-outcome/);
-      await driver.settle(result);
-      custody.endAttempt(retirement);
-      assert.equal(dispatches, 2);
-      assert.equal(fixture.trace.filter((entry) => entry.method === "DELETE").length, 1);
-      assert.equal(fixture.tokenState()[0].revoked, revoked);
-      assert.equal(record.callbacks, 0);
-      assert.ok(custody.records.has(record));
-      assert.throws(() => custody.release(record), /CREDENTIAL_BUSY/);
-      // Uncertainty retains the original token; only the conservative expiry bound ends custody.
-      await custody.driver.withAccess(acquired.credential, "retire", async (bytes) => {
-        assert.equal(fixture.authorize(`Bearer ${Buffer.from(bytes).toString("utf8")}`), !revoked);
-      });
-      await clock.advance(3600000);
-      const expiration = attempt("retire");
-      const expired = await driver.retire(expiration, acquired.credential);
-      assert.equal(expired.kind, "expired");
-      await driver.settle(expired);
-      custody.endAttempt(expiration);
-      record.disposition = "expired";
-      custody.release(record);
-      assert.equal(dispatches, 2);
-      assert.equal(custody.records.size, 0);
-      assert.equal(custody.reservations.size, 0);
-      assert.deepEqual(fixture.errors, []);
-    });
-  }
+  assert.deepEqual(parseUnambiguousJson('{"a":{"x":1},"b":{"x":2}}'), { a: { x: 1 }, b: { x: 2 } });
 });

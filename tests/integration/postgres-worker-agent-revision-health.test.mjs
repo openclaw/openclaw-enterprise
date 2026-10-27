@@ -1,8 +1,8 @@
+import { GitHubNativeRepositorySender } from "../../apps/controller/src/drivers/repo/github/driver.ts";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import test, { after } from "node:test";
@@ -11,6 +11,7 @@ import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
 import { repositoryAttempts } from "../helpers/postgres-worker-revision-support.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 // Worker health, readiness, leases and outages. Deployment and dispatch cases are in
 // postgres-worker-agent-revision.test.mjs, credential-source withdrawals in its
@@ -114,12 +115,30 @@ test(
   },
 );
 
+// Finding 2379: pg's pool.end() resolves before its idle sessions close, so the database drop
+// right after can end one of them. The server's 57P01 reached the pool's idle listener, which
+// re-emitted it on the pool, and with no listener that failed the test in its teardown.
+test(
+  "worker fixture teardown ignores the error of an ended pool's session the drop ends",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    const fixture = await setup(context);
+    const idle = await fixture.observerPool.connect();
+    idle.release();
+    await fixture.database.dispose();
+    // What that idle client receives when the drop ends its session before it closed.
+    const ended = Object.assign(new Error("terminating connection due to administrator command"), {
+      code: "57P01",
+    });
+    assert.doesNotThrow(() => idle.emit("error", ended));
+  },
+);
+
 // Runs `body` as a test file of its own under the revision fixture (created with `fixtureOptions`),
 // needing no PostgreSQL, and returns its output once its process exits with `status`, or fails
 // after 30 s naming the file as still running.
 async function runFixtureFile(t, body, { fixtureOptions, status: expectedStatus = 0 } = {}) {
-  const directory = await mkdtemp(join(tmpdir(), "revision-fixture-exit-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "revision-fixture-exit-");
   const file = join(directory, "abandoned.test.mjs");
   const helper = new URL("../helpers/postgres-worker-revision-fixture.mjs", import.meta.url);
   await writeFile(
@@ -511,7 +530,7 @@ test(
       },
     });
     const [
-      { GitHubRepoDriver },
+      { GitHubRepositoryPolicy },
       { UnixRepositoryCredentialControlClient },
       { startRegistryCredentialServiceFixture },
       { startRepositoryReceiptServer },
@@ -519,7 +538,7 @@ test(
       { createResourceScope },
       { dirname },
     ] = await Promise.all([
-      import("../../apps/controller/src/drivers/repo/github/driver.ts"),
+      import("../../apps/controller/src/drivers/repo/github/policy.ts"),
       import("../../apps/controller/src/backends/repository-credentials/control-client.ts"),
       import("../fixtures/repository-credentials/registry.mjs"),
       import("../../apps/controller/src/backends/repository-credentials/receipt-server.ts"),
@@ -541,15 +560,17 @@ test(
     });
     // Simulate the old broker's 404 while all other traffic still reaches the real service.
     relay.setCapabilitiesHidden(true);
-    const driver = new GitHubRepoDriver(
-      {
-        id: credentials.backendId,
-        client: new UnixRepositoryCredentialControlClient({ controlSocket: relay.socketPath }),
-        drivers: { repo: "repository-credentials" },
-      },
-      credentials.registry,
-      { sessionDurationSeconds: 60, publicCa: credentials.tls.ca },
-    );
+    const repositoryBackend = {
+      id: credentials.backendId,
+      client: new UnixRepositoryCredentialControlClient({ controlSocket: relay.socketPath }),
+      drivers: { repo: "repository-credentials" },
+    };
+    const sender = new GitHubNativeRepositorySender(repositoryBackend, {
+      publicCa: credentials.tls.ca,
+    });
+    const driver = new GitHubRepositoryPolicy(repositoryBackend, credentials.registry, {
+      sessionDurationSeconds: 60,
+    });
     const receiptServer = await startRepositoryReceiptServer({
       state: fixture.state,
       controlSocket: credentials.config.gateway.controlSocket,
@@ -560,7 +581,7 @@ test(
     context.after(() => receiptServer.close());
     const resolution = driver.resolve({
       namespaceId: fixture.namespace.id,
-      bindings: [{ repositoryRef: "repo-a", profile: "git-read" }],
+      bindings: [{ repositoryRef: "repo-a", profile: "git-write" }],
     });
     const owner = await fixture.agent("repository-capability");
     const selection = {
@@ -576,7 +597,11 @@ test(
       },
       {
         pool: fixture.workerPool,
-        transformDrivers: (drivers) => ({ ...drivers, repoDriver: driver }),
+        transformDrivers: (drivers) => ({
+          ...drivers,
+          repositoryPolicy: driver,
+          nativeRepositorySender: sender,
+        }),
       },
     );
     // Four jittered retry delays can total nearly 15 seconds before the fifth claim.
@@ -589,9 +614,9 @@ test(
     await waitFor("worker readiness after compatible broker selection", async () =>
       healthy > 0 ? true : undefined,
     );
-    const open = driver.open.bind(driver);
+    const open = sender.open.bind(sender);
     let lostSessionId;
-    driver.open = async (input, signal) => {
+    sender.open = async (input, signal) => {
       const result = await open(input, signal);
       if (lostSessionId === undefined && result.kind === "created") {
         lostSessionId = result.session.sessionId;
