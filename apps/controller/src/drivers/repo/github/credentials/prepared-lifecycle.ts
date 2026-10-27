@@ -1,5 +1,4 @@
 import { TokenService } from "../../../../backends/token-service/service.ts";
-import { retireToken } from "../../../../backends/token-service/retirement.ts";
 import { githubProviderOrigin } from "./origin.ts";
 import { createHash, createPrivateKey, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -27,7 +26,7 @@ import { preparationIssuerAuthority } from "./grants.ts";
 import { PreparedGitHubPostgres } from "./prepared-postgres.ts";
 import { createGitHubPreparationOwner } from "./prepared-owner.ts";
 import { createGitHubWarmReader } from "./prepared-reader.ts";
-import { createProviderTransport, type ProviderAttempt } from "./provider-transport.ts";
+import { retirePreparedGitHubToken } from "./prepared-retirement.ts";
 
 function grantId({ grant: g }: Source) {
   // Normalize field order using the admission owner's function, including after a jsonb round trip.
@@ -343,35 +342,3 @@ const unsettledRetirement = new Set([
   "Prepared GitHub token revocation is unconfirmed.",
   "provider-unavailable",
 ]);
-
-/** Retirement is shared by both background owners. An ambiguous attempt is never replayed. */
-export async function retirePreparedGitHubToken(
-  repository: PreparedGitHubPostgres,
-  familyId: string | null,
-  outer: AbortSignal,
-  apiOrigin: string,
-  ca: Uint8Array | undefined,
-  clock: ReturnType<typeof createSystemClock>,
-) {
-  const result = await retireToken(repository, familyId, async ({ bytes, admission: a }) => {
-    const signal = AbortSignal.any([outer, AbortSignal.timeout(25_000)]);
-    const assertAdmitted = () => signal.throwIfAborted();
-    const attempt: ProviderAttempt = {
-      signal,
-      deadlineMonoMs: clock.monotonicNow() + 25_000,
-      assertAdmitted,
-      observeDispatch: assertAdmitted,
-    };
-    const response = await createProviderTransport(apiOrigin, ca, clock, a.grant).revoke(
-      Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString(),
-      attempt,
-      () => {},
-    );
-    response.body.fill(0);
-    return response.status === 204;
-  });
-  if (result === "unknown") {
-    throw new Error("Prepared GitHub token revocation is unconfirmed.");
-  }
-  return result;
-}

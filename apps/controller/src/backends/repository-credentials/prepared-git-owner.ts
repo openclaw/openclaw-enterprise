@@ -17,7 +17,7 @@ import { githubProviderOrigin } from "../../drivers/repo/github/credentials/orig
 import { preparationIssuerAuthority } from "../../drivers/repo/github/credentials/grants.ts";
 import { createGitHubKeyOwner } from "../../drivers/repo/github/credentials/material.ts";
 import { createGitHubPreparationOwner } from "../../drivers/repo/github/credentials/prepared-owner.ts";
-import { retirePreparedGitHubToken } from "../../drivers/repo/github/credentials/prepared-lifecycle.ts";
+import { retirePreparedGitHubToken } from "../../drivers/repo/github/credentials/prepared-retirement.ts";
 import {
   PreparedRepositoryGitStore,
   type InstalledGitMaterial,
