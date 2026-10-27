@@ -269,8 +269,7 @@ const harness = [
   '  return new (require("node:events").EventEmitter)();',
   "};",
   entrypoint,
-].join("
-");
+].join("\n");
 const start = () => {
   const result = spawnSync(process.execPath, ["-e", harness], {
     env: {

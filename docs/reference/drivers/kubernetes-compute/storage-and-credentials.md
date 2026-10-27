@@ -109,10 +109,11 @@ OCE disables OpenClaw automatic package updates in the Gateway and workspace
 node; runtime upgrades use the operator-selected image and ordinary redeployment.
 State on this claim outlives those upgrades. Before OpenClaw starts, the Gateway
 wrapper runs `openclaw doctor --fix --non-interactive` once, with the
-configuration read-only, when an agent database uses an older schema than the
-pinned OpenClaw; Doctor keeps a `.pre-startup-migration-<id>.bak` copy beside
-it. A database still older afterwards holds the Gateway unready with check
-`state-migration` (`RUNTIME_STARTUP_FAILED`).
+configuration read-only, when the shared state database or an agent database
+uses an older schema than the pinned OpenClaw; Doctor keeps a
+`.pre-startup-migration-<id>.bak` copy beside each. A database still older
+afterwards holds the Gateway unready with check `state-migration`
+(`RUNTIME_STARTUP_FAILED`).
 
 ## Harness storage
 
@@ -133,6 +134,10 @@ renames such a directory aside, recreates it and moves its entries back. A name
 the new directory already has stays in `.<subpath>.kubelet-created`.
 
 This directory keeps node identity across Pod and version replacement.
+Before native setup, the Harness runs the [Gateway](#gateway-storage) Doctor
+pass on this state, with only the node's environment, when its database is
+older. A database still older holds the Harness unready
+(`Harness state migration failed`).
 The node Secret's setup code expires ten minutes after preparation mints it. A
 node with a saved device token for the same Gateway reconnects with that token;
 one without saved credentials rejects an expired code.

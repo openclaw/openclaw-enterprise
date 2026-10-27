@@ -232,9 +232,11 @@ The script polls each returned deployment through its authorized status
 operation, confirms the selected version, and waits for all version Pods
 to be `Running` and `Ready` on the candidate runtime digest. Before OpenClaw
 starts, `GATEWAY_RUNTIME_ENTRYPOINT` runs `openclaw doctor --fix
---non-interactive` once when an agent database uses an older schema, such as a
-2026-09-28 release Gateway's; a database still older holds the Gateway unready
-with check `state-migration`. Embedded execution
+--non-interactive` once when its shared state or an agent database uses an older
+schema, such as a 2026-09-28 release Gateway's; a database still older holds the
+Gateway unready with check `state-migration`. A dedicated Harness runs the same
+step on its workspace node state before native setup
+(`openClawStateMigrationHelper` in `runtime-startup.ts`). Embedded execution
 requires one runtime container; dedicated execution requires both gateway and
 Agent containers. Each replacement gateway then runs read-only
 `openclaw doctor --lint --json --severity-min error`. Failures retain dispatch,
