@@ -101,6 +101,12 @@ explicit Harness login mode, `credentialAttachments`, and Agent and Agent revisi
 Sandbox must use these prepared values rather than guessing login mode or
 resolving another credential.
 
+Optional `supervisedCommand` is the same prepared Harness entrypoint without
+Compute's generic process-init wrapper. A provider may use it only when its own
+private supervisor reaps orphans, forwards termination and removes all
+descendants on exit. Other providers execute `command` in full. When the field
+is absent, a provider must not infer which command arguments it can remove.
+
 Optional `workspaceSetup` carries `{id, defaultsId?, secretKeyRef: {name, key}}`.
 Compute stages an Agent-owned, same-Namespace setup Secret; OCC retains
 completion state. Requirements exclude document contents. A receiving
