@@ -11,7 +11,9 @@ The bot needs `users:read` for people, `channels:read` for public channels, and
 `groups:read` for private channels. Slack returns only resources visible to the
 bot. The Driver scans up to three provider pages for a nonempty search query and
 one page without a query. It returns a cursor when more pages remain. The
-Console displays the workspace and saves selected IDs, never names.
+Console displays the workspace and saves selected IDs, never names. An empty,
+null, or absent provider cursor marks the final page, as defined by
+[Slack pagination](https://docs.slack.dev/apis/web-api/pagination/).
 
 For exact-ID searches and saved IDs, the Driver calls [`users.info`](https://docs.slack.dev/reference/methods/users.info/)
 or [`conversations.info`](https://docs.slack.dev/reference/methods/conversations.info/)
@@ -45,8 +47,11 @@ and never opens a Socket Mode connection or sends a message.
 
 Failures return sanitized `CHANNEL_CREDENTIAL_*` errors with the native field
 path. A retryable `503` means Slack or its route failed. When the production API
-has no proxy URL and `auth.test` gets no answer from Slack (connection, DNS, or
-time budget failure), validation instead returns `409` `RESOURCE_CONFLICT`. The
+has no proxy URL, its egress is closed (`OCC_API_HTTPS_EGRESS_OPEN` is not `true`),
+and `auth.test` gets no answer from Slack (connection, DNS, or time budget
+failure), validation instead returns `409` `RESOURCE_CONFLICT`. Helm sets
+`OCC_API_HTTPS_EGRESS_OPEN` to `true` when GitHub, Google or OIDC sign-in is
+enabled with empty `egressCidrs`, because that rule allows TCP 443 to any address. The
 message names the [proxy settings](#enable-lookup-in-production) and says to try
 again if the API has another approved route to Slack, because an open route that
 timed out gets the same answer. App-token prefixes do not prove validity, scopes, or app/bot pairing.

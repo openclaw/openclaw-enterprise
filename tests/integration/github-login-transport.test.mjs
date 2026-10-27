@@ -322,18 +322,15 @@ test(
           response.end(JSON.stringify({ id: 12345678 }));
         };
         const before = requests.length;
-        const response = await login.callback();
-        assert.equal(response.status, 503);
-        assert.deepEqual(await response.json(), {
-          message: "Authentication dependency unavailable.",
-        });
+        // The handler throws the State error itself, unclassified, so no response (and no
+        // session cookie) leaves the endpoint; the controller answers it as an outage.
+        await assert.rejects(login.callback(), (error) => error === failure);
         // A lost COMMIT acknowledgement may follow a committed login. The callback
         // must preserve that uncertainty without retrying or recording identity denial.
         assert.deepEqual(login.errors, [failure]);
         assert.deepEqual(login.denials, []);
         assert.equal(issueAttempts, failurePoint === "issueSession" ? 1 : 0);
         assert.equal(requests.length - before, failurePoint === "consumeAttempt" ? 0 : 2);
-        assert.doesNotMatch(response.headers.get("set-cookie") ?? "", /session_token/);
       });
     }
 

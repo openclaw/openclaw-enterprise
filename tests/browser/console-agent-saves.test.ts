@@ -43,6 +43,7 @@ import {
   waitForEnabled,
   waitForIdleFetches,
   waitForInputValue,
+  waitForShownInputValue,
   secretOptionLabel,
 } from "./console-agents-browser-helpers.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
@@ -61,8 +62,11 @@ import {
   unreadableSlackTokenRefusal,
   RELOAD_DRAFT_BEFORE_SAVING,
   REPOSITORY_ACCESS_CHANGED,
+  REPOSITORY_ACCESS_NOT_CONFIGURED,
   RESOURCE_CONFLICT,
   SAVED_CONFIGURATION_CHANGED,
+  unboundReferenceRefusal,
+  unsubstitutedReferenceRefusal,
 } from "../helpers/refusal-text.mjs";
 
 // Saves and reloads on the Agent page's tabs, and every Reload draft, re-navigated to the same
@@ -291,8 +295,7 @@ test("an unbound Slack token is refused at save, under its picker and under the 
   assert.equal((await patched).status(), 400);
   // The refusal shows once, under the editor, which takes focus as for invalid JSON. The editor
   // saves no Secret bindings, so the console says where it binds them (finding 2494).
-  const unbound =
-    "Configuration setting channels.slack.appToken references SLACK_APP_TOKEN without a Configuration Secret binding: bind SLACK_APP_TOKEN in secretBindings to an environment-backed Secret, or remove the reference.";
+  const unbound = unboundReferenceRefusal("channels.slack.appToken", "SLACK_APP_TOKEN");
   await page
     .locator("#configuration-json-error")
     .filter({ hasText: `${unbound} ${CHANNEL_BINDING_CONSOLE_REMEDY}` })
@@ -318,9 +321,7 @@ test("an unbound Slack token is refused at save, under its picker and under the 
   await page
     .locator("#configuration-json-error")
     .filter({
-      hasText:
-        "Configuration setting channels.slack.appToken contains ${slack_app}, which the runtime does not substitute: use an uppercase ${NAME} bound to a Secret in secretBindings, or escape literal text as $${NAME}. " +
-        CHANNEL_BINDING_CONSOLE_REMEDY,
+      hasText: `${unsubstitutedReferenceRefusal("channels.slack.appToken", "${slack_app}")} ${CHANNEL_BINDING_CONSOLE_REMEDY}`,
     })
     .waitFor();
   assert.equal(await editor.getAttribute("aria-invalid"), "true");
@@ -674,7 +675,7 @@ test("the Credentials and Repositories tabs are one card each with a heading gap
   );
   const page = await openTab(t, fixture, namespace, agent, "credentials");
   const secretField = page.getByLabel("API key Secret");
-  await waitForInputValue(secretField, secretOptionLabel(first));
+  await waitForShownInputValue(secretField, secretOptionLabel(first));
   const gap = await page
     .locator("fieldset.harness-auth-fields")
     .evaluate(
@@ -688,11 +689,7 @@ test("the Credentials and Repositories tabs are one card each with a heading gap
   // own border and background inside it, and no empty band below its last block.
   await page.getByRole("tab", { name: "Repositories", exact: true }).click();
   const card = page.locator(".agent-card:has(> .repository-selection)");
-  await card
-    .getByText("Repository access is not available in this Installation's configuration.", {
-      exact: false,
-    })
-    .waitFor();
+  await card.getByText(REPOSITORY_ACCESS_NOT_CONFIGURED, { exact: false }).waitFor();
   assert.deepEqual(
     await card.evaluate((node) => {
       const picker = node.querySelector<HTMLElement>(":scope > .repository-selection")!;
@@ -2383,7 +2380,9 @@ test("Edit current Configuration opens the draft's Configuration editor in view 
   // Unsaved edits keep the draft in its editor: going to v1 and back through Edit current
   // Configuration brings that editor, with the edits, into view and focus.
   await editor.fill(`${await editor.inputValue()}\n`);
-  await page.locator('.revision-selector [aria-label$=", current version"]').click();
+  await page
+    .getByRole("combobox", { name: "Viewing version", exact: true })
+    .selectOption(revision.id);
   await page.waitForURL((next) => next.searchParams.get("revision") === revision.id);
   await start.scrollIntoViewIfNeeded();
   await start.click();

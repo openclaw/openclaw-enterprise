@@ -1,5 +1,10 @@
 import type { Agent, Permission } from "@openclaw-enterprise/contracts";
-import { type RequestOptions, requestFailure, responseFields } from "../api-client.mjs";
+import {
+  INSTALLATION_ADMINISTRATION,
+  type RequestOptions,
+  requestFailure,
+  responseFields,
+} from "../api-client.mjs";
 import {
   button,
   element,
@@ -7,6 +12,7 @@ import {
   setStatusTone,
   statusBlock,
   validateOnSubmit,
+  withRequestId,
 } from "../dom.mjs";
 import {
   type AgentAccessContext,
@@ -228,8 +234,8 @@ export function renderAgentAccess(
 
   async function readPolicy() {
     const [roles, bindings] = await Promise.all([
-      context.request(`${path}/roles`),
-      context.request(`${path}/access-bindings`),
+      context.request(`${path}/roles`, INSTALLATION_ADMINISTRATION),
+      context.request(`${path}/access-bindings`, INSTALLATION_ADMINISTRATION),
     ]);
     if (!context.isCurrent()) {
       throw new DOMException("View closed", "AbortError");
@@ -268,7 +274,7 @@ export function renderAgentAccess(
             : message(error, mutation);
     state.error += " Refresh sharing to inspect current policy before another change.";
     if (requestId) {
-      state.error += ` Request ID: ${requestId}`;
+      state.error = withRequestId(state.error, requestId);
     }
   }
 

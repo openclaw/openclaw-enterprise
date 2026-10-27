@@ -1409,6 +1409,8 @@ export const occApiRoutes = [
           meta: Type.Object({ requestId: Type.String() }),
         }),
         ...readErrors,
+        // The Agent's saved repository selections are no longer approved.
+        409: ErrorResponseRef,
       },
     },
   },
@@ -1820,7 +1822,14 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: WorkspaceFileParams,
-      response: { 200: WorkspaceFileResponse, ...readErrors },
+      response: {
+        200: WorkspaceFileResponse,
+        ...readErrors,
+        409: Type.Ref("ErrorResponse", {
+          description:
+            "Conflict. The Agent has no running version: deploy it, or wait until its deployment finishes.",
+        }),
+      },
     },
   },
   {

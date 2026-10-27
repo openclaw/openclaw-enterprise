@@ -5,14 +5,64 @@ import type {
   SecretMetadata,
 } from "@openclaw-enterprise/contracts";
 import type { Static } from "typebox";
-import { describeFailure, explainedConflict } from "./agents/list.mjs";
+import {
+  askAdministratorTo,
+  SECRET_CREATE_DENIED,
+  SECRET_DELETE_DENIED,
+  SECRET_LINK_UNLISTED,
+  secretLinkUnlistedForAdministrator,
+  SECRET_READ_DENIED,
+  SECRET_UPDATE_DENIED,
+} from "./agents/access-reasons.mjs";
+import {
+  describeFailure,
+  explainedConflict,
+  NAMESPACE_NOT_READY_MESSAGE,
+  readFailureReason,
+} from "./agents/list.mjs";
 import { requestFailure, responseFields } from "./api-client.mjs";
-import { button, dismissOnBackdrop, element, field, statusBlock, validateFields } from "./dom.mjs";
+import {
+  button,
+  dismissOnBackdrop,
+  element,
+  field,
+  statusBlock,
+  validateFields,
+  requestIdLine,
+} from "./dom.mjs";
 import { namespaceNameProblem, type NamespacePageContext } from "./namespaces.mjs";
 import type { createNavigation } from "./navigation.mjs";
 
 type SecretSummary = Pick<SecretMetadata, "id" | "name">;
-type SecretDetail = SecretSummary & { consumers: SecretConsumers };
+type SecretDetail = SecretSummary & {
+  consumers: SecretConsumers;
+  // The read's advisory answer; a missing field is unknown and keeps the action.
+  callerPermissions: { update?: boolean; delete?: boolean };
+  // Agent names by ID from the readable Agent list; null when that read failed.
+  agentNames: ReadonlyMap<string, string> | null;
+};
+
+function callerPermissions(value: unknown) {
+  const fields = responseFields(value);
+  return {
+    ...(typeof fields.update === "boolean" ? { update: fields.update } : {}),
+    ...(typeof fields.delete === "boolean" ? { delete: fields.delete } : {}),
+  };
+}
+
+function agentNames(value: unknown): ReadonlyMap<string, string> | null {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+  const names = new Map<string, string>();
+  for (const item of value) {
+    const { id, name } = responseFields(item);
+    if (typeof id === "string" && typeof name === "string" && name) {
+      names.set(id, name);
+    }
+  }
+  return names;
+}
 
 function secretSummary(value: unknown, expectedId?: string): SecretSummary {
   const { id, name } = responseFields(value);
@@ -138,6 +188,8 @@ export function renderSecrets(
     sorted(items: readonly SecretSummary[]): SecretSummary[];
     pageUrl: ReturnType<typeof createNavigation>["pageUrl"];
     permissions?: Static<typeof NamespaceCallerPermissionsResponse>["data"] | null;
+    // A listed Secret to open, from the `secret` parameter an Agent page's link sets.
+    openSecretId?: string | null;
   },
 ) {
   const path = `/namespaces/${encodeURIComponent(context.namespaceId)}/secrets`;
@@ -186,7 +238,7 @@ export function renderSecrets(
           element(
             "p",
             { className: "muted", role: "status", id: "secrets-create-denied" },
-            "Your access does not include creating Secrets in this Namespace.",
+            SECRET_CREATE_DENIED,
           ),
         ]
       : []),
@@ -212,7 +264,16 @@ export function renderSecrets(
         element(
           "section",
           { className: "state-panel" },
-          element("h2", {}, items.length ? "No matching Secrets" : "No Secrets yet"),
+          // A reader without create sees only Secrets shared with them, not every Secret here.
+          element(
+            "h2",
+            {},
+            items.length
+              ? "No matching Secrets"
+              : createDenied
+                ? "No Secrets are shared with you"
+                : "No Secrets yet",
+          ),
           element(
             "p",
             {},
@@ -331,9 +392,7 @@ export function renderSecrets(
     }
     current.feedback.replaceChildren(statusBlock(tone, null, description));
     if (error.requestId) {
-      current.feedback.append(
-        element("p", { className: "request-id" }, `Request ID: ${error.requestId}`),
-      );
+      current.feedback.append(requestIdLine(error.requestId));
     }
   }
 
@@ -355,12 +414,30 @@ export function renderSecrets(
         return;
       }
       const secret = secretSummary(detail, item.id);
-      const { consumers } = responseFields(detail);
+      const fields = responseFields(detail);
+      const { consumers } = fields;
       // Incomplete or unrecognized consumer metadata cannot establish that deletion is safe.
       if (!hasConsumerDetails(consumers)) {
         throw new Error("Invalid Secret detail");
       }
-      renderDetail(current, { ...secret, consumers });
+      // Consumers name the Agents the caller may read; the readable Agent list gives their names,
+      // and audits nothing it leaves out (finding D761). A failed list read keeps the IDs.
+      const names = consumers.agents.length
+        ? agentNames(
+            await context
+              .request(`/namespaces/${encodeURIComponent(context.namespaceId)}/agents`)
+              .catch(() => null),
+          )
+        : new Map<string, string>();
+      if (!isOpen(current) || version !== readVersion) {
+        return;
+      }
+      renderDetail(current, {
+        ...secret,
+        consumers,
+        callerPermissions: callerPermissions(fields.callerPermissions),
+        agentNames: names,
+      });
     } catch (cause) {
       if (!isOpen(current) || version !== readVersion) {
         return;
@@ -369,7 +446,7 @@ export function renderSecrets(
       current.body.replaceChildren();
       let description = "Could not read this Secret. Close and try again.";
       if (error.status === 403) {
-        description = "You do not have permission to read this Secret.";
+        description = SECRET_READ_DENIED;
       } else if (error.status === 404) {
         description =
           "This Secret is no longer available in this Namespace. Close and Refresh the list.";
@@ -409,10 +486,21 @@ export function renderSecrets(
             if (label !== "Agents") {
               return element("li", { className: "resource-id" }, id);
             }
+            const name = detail.agentNames?.get(id);
+            if (detail.agentNames && name === undefined) {
+              // The Secret read lists only Agents the caller may read; one the list leaves out
+              // was deleted or changed access since.
+              return element(
+                "li",
+                {},
+                "An Agent you cannot read ",
+                element("span", { className: "resource-id" }, id),
+              );
+            }
             const link = element(
               "a",
               { href: context.pageUrl(`agents/${id}`, context.namespaceId) },
-              id,
+              name ?? id,
             );
             link.addEventListener("click", (event) => {
               if (
@@ -428,7 +516,9 @@ export function renderSecrets(
               closeModal();
               context.navigate(`agents/${id}`, context.namespaceId);
             });
-            return element("li", { className: "resource-id" }, link);
+            return name === undefined
+              ? element("li", { className: "resource-id" }, link)
+              : element("li", {}, link, " ", element("span", { className: "resource-id" }, id));
           }),
         ),
       );
@@ -438,7 +528,7 @@ export function renderSecrets(
         statusBlock(
           "info",
           null,
-          `${consumers.unreadable} additional consumer(s) cannot be shown with your access. Ask an administrator to inspect them.`,
+          `${consumers.unreadable} additional consumer(s) cannot be shown with your access. ${askAdministratorTo("inspect them")}`,
         ),
       );
     }
@@ -457,16 +547,41 @@ export function renderSecrets(
     current.body.append(
       element(
         "p",
-        {},
+        referenced ? { id: "secret-delete-blocked" } : {},
         referenced
           ? "Deletion is blocked while references remain. Remove them from their owning resources first."
           : "No current consumers were found. Deletion checks references again.",
       ),
     );
+    // The read's advisory answer disables what the API would refuse, with the reason, instead of
+    // refusing a replacement after the value is typed (finding D761). Gating only: the API still
+    // authorizes each write, and an unknown answer keeps the action.
+    const replaceDenied = detail.callerPermissions.update === false;
+    const deleteDenied = detail.callerPermissions.delete === false;
+    if (replaceDenied) {
+      current.body.append(
+        element("p", { className: "muted", id: "secret-replace-denied" }, SECRET_UPDATE_DENIED),
+      );
+    }
+    if (deleteDenied) {
+      current.body.append(
+        element("p", { className: "muted", id: "secret-delete-denied" }, SECRET_DELETE_DENIED),
+      );
+    }
     const replace = button("Replace value", () => editValue(detail));
-    replace.disabled = !ready;
+    replace.disabled = !ready || replaceDenied;
+    if (replaceDenied) {
+      replace.setAttribute("aria-describedby", "secret-replace-denied");
+    }
     const remove = button("Delete Secret", () => confirmDelete(detail), { tone: "danger" });
-    remove.disabled = referenced;
+    remove.disabled = referenced || deleteDenied;
+    const deleteReasons = [
+      ...(referenced ? ["secret-delete-blocked"] : []),
+      ...(deleteDenied ? ["secret-delete-denied"] : []),
+    ];
+    if (deleteReasons.length) {
+      remove.setAttribute("aria-describedby", deleteReasons.join(" "));
+    }
     current.actions.append(replace, remove);
   }
 
@@ -595,8 +710,9 @@ export function renderSecrets(
             ? "Outcome unknown. The value may have changed and cannot be read back. Close this dialog and verify credential use before deciding to submit a new replacement."
             : "Outcome unknown. The Secret may have been created. Close this dialog and Refresh the list before deciding to create another.";
         } else if (status === 403) {
-          description =
-            "Your access does not include this Secret operation. Ask an administrator for access.";
+          // Create is checked on the Namespace, which no Namespace Role grants; replace is Secret
+          // update on this Secret.
+          description = replacing ? SECRET_UPDATE_DENIED : SECRET_CREATE_DENIED;
         } else if (nameConflict) {
           // The API names the taken name's rule; the generic conflict keeps the hedge.
           const explained = explainedConflict(cause);
@@ -607,7 +723,7 @@ export function renderSecrets(
         } else if (status === 409) {
           description =
             code === "NAMESPACE_NOT_READY"
-              ? "This Namespace is not ready for Secret changes. Close and Refresh to check its current state."
+              ? NAMESPACE_NOT_READY_MESSAGE
               : describeFailure(cause, {
                   mutation: true,
                   conflict: "The Secret cannot be saved in its current state.",
@@ -679,7 +795,7 @@ export function renderSecrets(
           description =
             "Outcome unknown. The Secret may have been deleted. Check its status before deciding to delete again.";
         } else if (error.status === 403) {
-          description = "Your access does not include deleting this Secret.";
+          description = SECRET_DELETE_DENIED;
         } else if (error.status === 409) {
           // The API names what still uses the Secret, or the change that raced this deletion.
           description = `Could not delete this Secret. ${describeFailure(cause, {
@@ -743,10 +859,13 @@ export function renderSecrets(
             ),
           );
         } else {
+          // A refused or failed read says which, instead of guessing that access changed.
           showError(
             current,
             error,
-            "Could not confirm deletion. Your access may have changed. Close and Refresh the list.",
+            `Could not confirm deletion. ${
+              error.status === 403 ? SECRET_READ_DENIED : readFailureReason(cause)
+            }`,
           );
         }
       } finally {
@@ -757,4 +876,18 @@ export function renderSecrets(
   }
 
   renderList();
+  // An Agent page links a bound Secret here, with its metadata and consumers open (finding D757).
+  // A Secret the list leaves out opens nothing, and says why without reading it: the caller may
+  // not read it, or it does not exist (finding D761).
+  const linked = items.find((item) => item.id === context.openSecretId);
+  if (linked) {
+    void openDetail(linked);
+  } else if (context.openSecretId) {
+    // An administrator is the one the member text sends the reader to, so she gets no ask.
+    const unlisted =
+      context.permissions?.installation?.administer === true
+        ? secretLinkUnlistedForAdministrator(context.openSecretId)
+        : SECRET_LINK_UNLISTED;
+    list.before(statusBlock("warning", null, unlisted, [], { role: "status" }));
+  }
 }

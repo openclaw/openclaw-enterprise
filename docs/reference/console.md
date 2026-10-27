@@ -110,9 +110,10 @@ replacement delivery, deletion effects, and uncertain-write recovery.
 
 ## Agent creation and deployment
 
-Dedicated provisioning waits for first activation; failure links the original
-request’s existing Agent and version. Otherwise, creation
-saves a draft: provide model and channel credentials when prompted, then select
+Dedicated provisioning waits for first activation. If the first deployment fails, Create links
+to the original Agent and version. If a newer deployment takes over, Create explains the change and
+stays open without a deployment link. Ordinary creation saves a draft. Provide model
+and channel credentials when prompted, then select
 **Deploy new version**. If the Compute Driver requires them, OCC generates
 missing connection credentials during that first deployment.
 See [Create and deploy Agents](console/create-and-deploy.md) for the full
@@ -142,7 +143,7 @@ again** confirms a new stop intent, even without a selected version, but not
 when you can read no version, as before a first deploy (the list then shows no
 Stop icon). That does not prove cleanup finished.
 
-To resume, open **Create new version** and select **Deploy new version**. See
+To resume, open **Open draft** and select **Deploy new version**. See
 [Stop and resume](agents/deployment.md#stop-and-resume) for worker lifecycle and
 preservation.
 
@@ -168,12 +169,25 @@ blocked until a status read succeeds or, in the list, until **Refresh**.
 
 An authorized empty list differs from a failed read. Access denials, unavailable
 dependencies, missing resources, and network failures clear affected rows and
-offer recovery. A denied Namespace list or draft Configuration read names the grant
-it checks; denials send you to an Installation administrator, who grants access.
+offer recovery. A denied Namespace list or draft Configuration read, and a control
+disabled for lack of access, names the grant the API checks, such as Agent operate
+to stop an Agent or AgentRevision read on each new version. A refused save says so and
+lists the grants the save checks, such as "Save was refused: your access does not include
+saving this Configuration." Other denials of your own permission, such as a recheck of an open
+Agent or a Slack lookup, show the API's sentence naming the missing grant; denials send you to
+an Installation administrator, who grants access. A version link the page cannot list says the
+version does not exist or your access does not include it, because a reader granted read per
+version cannot tell the two apart.
+A rejected model credential tells a person without Agent update which grants fix it: Agent
+update to choose another credential, or, for a Secret-backed credential, Secret update on that
+Secret to replace its value. It also says who gives them.
 A refusal the API explains, such as an invalid field, a name already in use or a
 lifecycle change, shows the API's sentence; a rate limit says how long to wait.
-Other backend error text is not rendered; include any displayed request
-ID when reporting an API failure. A current protected `401` clears private
+The console also shows named dependency refusals, recorded deployment and policy
+outcomes, and field errors, with each setting as a dotted path. A generic answer,
+such as an unnamed outage, gets the console's own sentence: what failed, and who to
+ask if it continues. Include the displayed **Request ID** when you report an API
+failure. A current protected `401` clears private
 content and closes open channel editors and harness authentication controls.
 Interrupted response bodies and request deadlines keep the interrupted-read
 recovery path. View cancellation does not show a new failure, and a failed
@@ -224,8 +238,8 @@ For an unavailable gateway, follow the
 ## Open the native admin UI
 
 When [Agent native admin UI access](agent-native-admin.md) is enabled, all Agent
-detail tabs, including Configuration and Workspace files, show a **Native admin
-UI** panel to callers with exact Agent `administer`.
+detail tabs, including Configuration and Workspace files, show **Open Agent UI**
+in the header and its availability information to callers with exact Agent `administer`.
 It is hidden otherwise, when the Installation disables the feature, and until
 the next sign-in or new tab after a denial. The panel reports a stopped Agent
 (including before first deployment) as needing to be started, asks you to check
@@ -233,10 +247,10 @@ deployment and refresh access when a desired-running Agent has no selected versi
 administrators can [share an Agent](console/agent-sharing.md) with an existing
 person.
 
-**Open admin console** opens the Agent's selected version in a new tab, even
-from a draft or older version. Its visible warning is part of the operator
-contract: native UI changes to the gateway bypass OCE and are not recorded in
-AgentRevisions. Use OCE for durable configuration. The tab shares
+**Open Agent UI** opens the Agent's selected version in a new tab, even
+from a draft or older version. Its visible warning explains that Gateway managed mode restricts
+administrative changes by default. OCE deployments can overwrite changes made
+while managed mode is off. Use OCE for durable configuration. The tab shares
 the console's OCE session cookie through the configured shared cookie parent
 domain; native chat or other Agent-host activity does not extend that session.
 

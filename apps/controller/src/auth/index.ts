@@ -17,7 +17,7 @@ import {
 } from "@openclaw-enterprise/iam";
 import {
   PostgresHumanAuthentication,
-  AuthorizationDeniedError,
+  CallerStateDeniedError,
   ScopeViolationError,
   type HumanAuthenticationActivation,
   type HumanAuthenticationActivationHooks,
@@ -920,6 +920,7 @@ export class ControllerAdmissionVerifier implements AdmissionVerifier {
         401,
         "UNAUTHENTICATED",
         "Controller API bearer authentication is disabled.",
+        "authorization_header",
       );
     }
     if (request.requestedScope.installationId !== this.#installationId) {
@@ -1082,16 +1083,11 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
             cookieCache: { enabled: false },
           },
           logger: { disabled: true },
-          onAPIError: {
-            onError(error) {
-              // Better Call logs unclassified exceptions even when the auth logger is disabled.
-              throw error instanceof APIError
-                ? error
-                : APIError.fromStatus("SERVICE_UNAVAILABLE", {
-                    message: "Authentication dependency unavailable.",
-                  });
-            },
-          },
+          // Better Call logs an unclassified exception to the console even when the auth
+          // logger is disabled, and since Better Auth 1.7.9 `onAPIError.onError` can only
+          // observe it. Throwing leaves the router without logging; runPrivateEndpoint owns
+          // the error and answers it as a dependency failure.
+          onAPIError: { throw: true },
         }),
     plugins: [
       ...(humanLogin === undefined ? [] : [humanLogin.plugin]),
@@ -1367,13 +1363,20 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
     if (body !== undefined) {
       headers.set("content-type", "application/json");
     }
-    const response = await auth.handler(
-      new Request(url, {
-        method: request.method,
-        headers,
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      }),
-    );
+    const authRequest = new Request(url, {
+      method: request.method,
+      headers,
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+    let response: Response;
+    try {
+      response = await auth.handler(authRequest);
+    } catch {
+      // Better Auth answers its own APIErrors; it throws only an error it cannot classify
+      // (onAPIError.throw), such as a database or audit failure. The error itself may hold
+      // dependency detail, so it is not logged or returned.
+      throw new AuthDependencyUnavailable();
+    }
     if (!response.ok) {
       if (response.status === 429) {
         throw APIError.fromStatus("TOO_MANY_REQUESTS", {
@@ -1753,7 +1756,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
     holdSession: async (_unit, session, request) => {
       const current = await resolveSession(request);
       if (current?.id !== session.id || current.userId !== session.userId) {
-        throw new AuthorizationDeniedError("The assigning session is no longer current.");
+        throw new CallerStateDeniedError("The assigning session is no longer current.");
       }
     },
     async createServiceKey({ principal, name, expiresIn }) {
@@ -2053,7 +2056,7 @@ export async function createPostgresControllerAuth(
         await persistence!.holdSession(unit, session.userId, session.id);
       }
       if (!(await unit.installations.holdAuthenticationSession(session.id, session.userId))) {
-        throw new AuthorizationDeniedError("The assigning session is no longer current.");
+        throw new CallerStateDeniedError("The assigning session is no longer current.");
       }
     },
     ...(activationSkipped.length === 0 ? {} : { activationSkipped }),

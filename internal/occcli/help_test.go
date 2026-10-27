@@ -67,7 +67,8 @@ func TestAgentPolicyGroupRejectsUnknownCommands(t *testing.T) {
 	for _, args := range [][]string{{"agent", "policy", "nosuch"}, {"agent", "policy", "gett"}} {
 		out, errOut, err := runHelp(t, args...)
 		want := `unknown command "` + args[2] + `" for "occ agent policy"`
-		if err == nil || err.Error() != want {
+		// "gett" also gets a suggestion; "nosuch" keeps the exact text.
+		if err == nil || !strings.HasPrefix(err.Error(), want) || (args[2] == "nosuch" && err.Error() != want) {
 			t.Fatalf("occ %v error = %v, want %q", args, err, want)
 		}
 		if out != "" || errOut != "" {
@@ -97,5 +98,26 @@ func TestAgentLogsHelpNamesTheOutputFormatsItAccepts(t *testing.T) {
 	out, _, err = runHelp(t, "agent", "list", "--help")
 	if err != nil || !strings.Contains(out, `Output format: table, json, or yaml (default "table")`) {
 		t.Fatalf("agent list help = %q, %v", out, err)
+	}
+}
+
+// An update may name gatewayManagedMode instead of configurationId, and changing it needs a grant
+// the other fields do not (finding 2691).
+func TestAgentUpdateHelpNamesGatewayManagedModeAndItsGrant(t *testing.T) {
+	out, _, err := runHelp(t, "agent", "update", "--help")
+	if err != nil {
+		t.Fatal(err)
+	}
+	flat := strings.Join(strings.Fields(out), " ")
+	for _, want := range []string{
+		"Each update names configurationId or gatewayManagedMode (or both)",
+		"Changing gatewayManagedMode needs Installation administer.",
+	} {
+		if !strings.Contains(flat, want) {
+			t.Fatalf("agent update help does not say %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(flat, "required in every update") {
+		t.Fatalf("agent update help still requires configurationId in every update:\n%s", out)
 	}
 }

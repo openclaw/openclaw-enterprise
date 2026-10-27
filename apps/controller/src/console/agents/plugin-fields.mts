@@ -188,6 +188,7 @@ export function createPluginFields({
 }: PluginFieldsOptions) {
   let disabled = false;
   let configuredOnly = false;
+  let capabilitiesUnread = false;
   const tabs = [newTabState(), newTabState()] as const;
   let renderedTab: PluginTabState | null = null;
   let renderedPlugin: string | null = null;
@@ -688,7 +689,7 @@ export function createPluginFields({
     // does not make screen readers announce the same words again (finding 1890).
     setText(
       policyStatus,
-      capabilities
+      capabilities || capabilitiesUnread
         ? ""
         : "This installation does not support plugin policy editing. You can browse plugins; existing settings are preserved.",
     );
@@ -1222,8 +1223,11 @@ export function createPluginFields({
       search.value = "";
       render();
     },
-    setCapabilities(value: PluginPolicyCapabilities | null) {
+    // `unread` says the capabilities read failed, so nothing is known about Installation support;
+    // the owner shows why (finding 2538).
+    setCapabilities(value: PluginPolicyCapabilities | null, unread = false) {
       capabilities = value;
+      capabilitiesUnread = value === null && unread;
       render();
     },
     setCatalog(value: PluginFieldCatalog) {

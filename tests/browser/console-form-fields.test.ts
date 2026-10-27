@@ -4,7 +4,12 @@ import test, { type TestContext } from "node:test";
 import type { Locator, Page } from "playwright";
 
 import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
-import { SECRET_NAME_CONFLICT } from "../helpers/refusal-text.mjs";
+import {
+  CONSOLE_NAMESPACE_NOT_READY,
+  RESOURCE_CONFLICT,
+  SECRET_CREATE_DENIED,
+  SECRET_NAME_CONFLICT,
+} from "../helpers/refusal-text.mjs";
 import { createConsoleAppFixture as createBaseConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   apiRequests,
@@ -603,14 +608,8 @@ for (const viewport of consoleViewports) {
     // The Secret API never answers 429: a rate limit in front of it (an ingress or proxy) does,
     // with its own page and no API envelope.
     const cases = [
-      [
-        apiErrorResponse(409, "NAMESPACE_NOT_READY", "refused"),
-        "This Namespace is not ready, so it cannot store Secrets yet.",
-      ],
-      [
-        apiErrorResponse(403, "FORBIDDEN", "refused"),
-        "Access denied. You do not have permission to manage this Secret binding.",
-      ],
+      [apiErrorResponse(409, "NAMESPACE_NOT_READY", "refused"), CONSOLE_NAMESPACE_NOT_READY],
+      [apiErrorResponse(403, "FORBIDDEN", "refused"), SECRET_CREATE_DENIED],
       [proxyErrorResponse(429), "Too many requests. Wait before trying again."],
     ] as const;
     // While the request runs, every control that could change or reveal the value is disabled.
@@ -657,7 +656,7 @@ for (const viewport of consoleViewports) {
       "Secret creation conflicted. A Secret with this name may already exist in this Namespace. Check the name and Namespace state before trying again.";
     for (const response of [
       proxyErrorResponse(409),
-      apiErrorResponse(409, "RESOURCE_CONFLICT", "The requested platform resource already exists."),
+      apiErrorResponse(409, "RESOURCE_CONFLICT", RESOURCE_CONFLICT),
     ]) {
       refusal = response;
       await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();

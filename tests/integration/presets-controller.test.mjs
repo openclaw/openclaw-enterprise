@@ -30,7 +30,7 @@ import {
   partialWrite,
 } from "../helpers/partial-write-authorization.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
-import { GENERIC_DENIAL } from "../helpers/refusal-text.mjs";
+import { callerDenied, createDenied } from "../helpers/refusal-text.mjs";
 
 async function createFixture(t, options = {}) {
   const root = await temporaryDirectory(t, "occ-presets-");
@@ -474,9 +474,10 @@ describe("Presets", { concurrency: 2 }, () => {
     const session = await fixture.signIn(member.credentials);
     // Over the general 64 KiB limit and under the Preset route limit (6 MiB + 8 KiB).
     const declaredBytes = 6 * 1024 * 1024;
+    // Each refusal names the grant it checked, the same before and after the body arrives.
     const forbidden = {
-      code: "FORBIDDEN",
-      message: GENERIC_DENIAL,
+      POST: { code: "FORBIDDEN", message: createDenied("Preset", namespace.id) },
+      PATCH: { code: "FORBIDDEN", message: callerDenied("Preset update", `Preset ${existing.id}`) },
     };
     for (const [method, path, action, grant, targetId] of [
       ["POST", collection(namespace.id), "openclaw.presets.create", "create", namespace.id],
@@ -494,7 +495,7 @@ describe("Presets", { concurrency: 2 }, () => {
         body: { name: "Unauthorized", template: {} },
       });
       assert.equal(small.status, 403, `${method}: ${JSON.stringify(small.body)}`);
-      assert.deepEqual(small.body.error, forbidden, method);
+      assert.deepEqual(small.body.error, forbidden[method], method);
       const auditStart = fixture.audit.events.length;
       const refused = await partialWrite({
         origin: fixture.origin,
@@ -507,7 +508,7 @@ describe("Presets", { concurrency: 2 }, () => {
       });
       assert.notEqual(refused, null, `${method}: the controller waited for the unread body`);
       assert.equal(refused.status, 403, `${method}: ${JSON.stringify(refused.body)}`);
-      assert.deepEqual(refused.body.error, forbidden, method);
+      assert.deepEqual(refused.body.error, forbidden[method], method);
       // The refusal keeps its audit row, naming the exact grant the write itself checks.
       assertWriteAuthorizationDenial(
         fixture.audit.events.slice(auditStart),

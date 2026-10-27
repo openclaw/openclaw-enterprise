@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
-updated: 2026-10-25
-last_updated_session: authoring-run/b7994562-b460-4667-9017-4c62c3f56eb0
+updated: "2026-10-26"
+last_updated_session: "authoring-run/0f3c367f-75d3-40f0-bcfa-3b649b78721f"
 ---
 
 # Agent sandbox policy flow
@@ -150,9 +150,33 @@ renders schema fields and JSON fallback, with safe field/root diagnostics.
 String controls retain the complete draft. Length validation stays with the
 policy owner: JSON Schema counts Unicode code points, while HTML length
 attributes count UTF-16 code units and can truncate a valid executable path.
-`console/agents/sandbox-policy.mts:renderPolicy` keeps proposed rules local until
-preview. Review shows the rules the controller validated, and Save sends those
-rules with the reviewed policy version. Superseded preview and read responses
+`console/agents/sandbox-policy.mts:renderLogs` snapshots the displayed log window,
+filters it, and renders five denials per page initially. Selection spans pages;
+Select page changes only eligible visible rows. Follow retains up to 1,000 new
+log records without replacing inspected rows. Show newest accepts the retained
+window and removes selections for records no longer retained.
+
+`stageGrants` builds exact executable/host/port candidates, deduplicates requests,
+and skips requests already covered by saved or proposed grants. It retains the
+complete additions array and opens the schema editor or batch preview. Missing
+metadata disables prefilling. An incomplete existing draft must be corrected
+before staging more grants. `ruleList` searches and pages explicit rules five at
+a time; row controls edit or remove local additions.
+
+`console/agents/sandbox-policy.mts:renderPolicy` places policy status and suggestions
+above the log. It shows three suggestions initially and expands the remaining
+candidates on request, independently of mutation authority. `openNetworkLimits`
+uses the policy view's ceiling in a separate read-only dialog. Defaults and
+version details stay in the main-page disclosure. The Network policy card also enables or disables Agent policy editing
+through the separately authorized editing operation. Mutation feedback appears in
+the card while the dialog is closed; a failed policy read retains its error and
+read recovery action. `renderEditor` manages rules without an editing toggle and
+keeps proposed rules local until preview. Its footer compares the draft with saved
+additions, including removals and restored values, to offer review, application,
+or Done. Saving a confirmed response closes the dialog and clears the completed
+selection. Review shows additions, updates, and removals from the controller-validated rules,
+with the previously saved policy available for comparison. Save sends the complete
+validated array with the reviewed policy version. Superseded preview and read responses
 cannot overwrite a newer draft. Policy reads use a separate sequence: an earlier response
 cannot invalidate a newer request. A pending application re-arms polling after
 the latest read, including a response discarded after a draft edit.
@@ -164,7 +188,10 @@ unconfirmed save, only an explicit refresh started after the outcome can reopen 
 Save alone leaves running enforcement unchanged. Applying a
 previously saved policy is disabled while local edits are unsaved. If application
 fails after saving, the alert identifies the saved version rather than implying
-that the entire operation was rejected.
+that the entire operation was rejected. `loadPolicy(true)` records explicit
+inspection of a failed application. Refresh issues only the policy GET; a separate
+Retry application action invokes the existing apply descriptor after inspection.
+The action remains subject to current permissions, lifecycle, and draft guards.
 
 `console/agents/sandbox-policy.mts:mutate` displays rejected saves as focused
 alerts and scrolls the reason into view after rendering. Ceiling rejection
@@ -194,6 +221,12 @@ the policy read, only the network policy card states it; the suggestions card is
 - [PostgreSQL admission integration](../../tests/integration/postgres-agent-sandbox-policy.test.mjs)
   exercises HTTP/IAM/storage; the [OpenShell runtime lane](../../tests/integration/sandbox-driver-openshell-k3d-real.test.mjs)
   owns real enforcement proof. Storybook proves simulated presentation only.
+- [Console batch browser tests](../../tests/browser/console-policy-denials.test.ts)
+  cover selection across pages, stable Follow, deduplication, preservation of saved
+  rules, and ceiling rejection through real controller routes. They use in-memory
+  storage and test Drivers with simulated log input. A simulated failed-application
+  view covers explicit inspection and retry against the real API refusal; neither
+  case proves provider enforcement.
 
 ## Related docs
 
@@ -206,6 +239,8 @@ the policy read, only the network policy card states it; the suggestions card is
 
 ## Changelog
 
+- 2026-10-26 10:49: Combine the accompanying policy UX controls with upstream permission hints, unavailable Sandbox log handling, and application failure explanations. (authoring-run/0f3c367f-75d3-40f0-bcfa-3b649b78721f - e89a4e37a0b3dff75739cf6988028f81cd96f5ac)
+
 - 2026-10-25: Hide the empty denial rows and state a refused policy read once. (finding 2522)
 - 2026-10-25: Hide the denial window's controls on the draft. (finding 2509)
 - 2026-10-25: Skip the policy and suggestion reads that the permission answer refuses. (finding 2454)
@@ -215,6 +250,12 @@ the policy read, only the network policy card states it; the suggestions card is
 - 2026-10-24 13:19: Refuse explicit unsupported CLI formats before policy requests. (authoring-run/3954aa04-12f8-4a8e-bb62-a4d9a8603edd - 1b59554add06e9f7be0b0a730202f558c939a661)
 
 - 2026-10-22 23:45: Preserve CLI output guidance alongside upstream grant admission rules after conflict resolution. (authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d - c574fc743b21599c51d3809365039010a7e077d2)
+
+- 2026-10-23 16:20: Trace the accompanying compact policy controls, suggestion disclosure, independent ceiling dialog, contextual footer, and explicit retry after status inspection. (authoring-run/2d64e0f2-543e-4fee-bc9d-0ed8f2d48f5b - a8575405cf9fbd1779b2daa1fab96a88d584cc7c)
+
+- 2026-10-23 14:55: Trace the accompanying move of the policy-editing control to the page, visible mutation feedback, and read recovery. (authoring-run/71e6c3c8-7b57-42ff-bc6c-37f2506f2da5 - a8575405cf9fbd1779b2daa1fab96a88d584cc7c)
+
+- 2026-10-22 16:59: Trace the accompanying console changes for paged denials, batch proposals, rule management, and review before saving. (authoring-run/cd2ce6a3-4507-46cc-b936-68c9862c794b - 0c73a86a6cdd92f0129c8e52e0f230517490bd46)
 
 - 2026-10-22 13:40: Run the shared grant rules before a Driver contribution, at every admission (preview, save, apply, deploy) and the worker recheck; empty or reversed ranges never satisfy the ceiling. (bughunt-1022c)
 

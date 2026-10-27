@@ -104,6 +104,45 @@ Before selecting an older controller or runtime image, verify it can read all
 state written by the candidate and restore compatible data if required. Never
 delete Agents, versions, PVCs, or the bootstrap volume to force recovery.
 
+## Correct a refused Agent deployment
+
+When OCC refuses an Agent's deployment with a 4xx answer, such as
+`HTTP 400 ... must use reviewed task actions` for a saved Configuration that
+the new release refuses, it saved no new version. The command lists each
+refused Agent with OCC's message, keeps the message in `dispatch/*.rejected`,
+and stops. Correct the cause, for example with `occ configuration update`, and
+repeat the command with `--resume`. The resume deploys each refused Agent once,
+so do not deploy it yourself. A 408 or 5xx answer stays an unknown dispatch.
+When OCC rejects the command's own service key, the command says so and lists
+the Agents it did not deploy; get a new key, point `OCC_SERVICE_KEY_FILE` at it,
+and resume.
+
+## Correct a Doctor failure
+
+Doctor shares the gateway container's memory limit. At the default heap cap,
+the command waits for two consecutive readings with at least 640 MiB free or
+one with at least 1024 MiB free. Initially unavailable cgroup data produces a
+warning and Doctor runs. Once insufficient memory is observed, missing or failed
+reads cannot admit Doctor and reset consecutive evidence. Fresh sufficient
+readings must arrive before the original upgrade timeout. Wait for memory use
+to settle, then resume; consider a larger gateway memory limit if it stays low.
+These readings do not reserve memory or guarantee that the gateway avoids an OOM kill.
+
+A Doctor failure reports its command exit separately from gateway restart
+history. A higher restart count on the same Pod with last termination
+`OOMKilled` means an OOM restart occurred after the Ready baseline; it does not
+prove Doctor caused it. The restart history is unknown when the gateway Pod was
+replaced, its container status is missing, or its restart count went down.
+Wait until the gateway is `Ready` again, then resume; the resume runs Doctor
+again without new deployments.
+
+`OpenClaw Doctor ran out of its 384 MiB heap` means Doctor reached its heap cap;
+check the separate gateway restart observation. Repeat the command with
+`--resume` and `--doctor-heap-mib 768`, doubling again if needed. Each extra MiB
+of heap needs the same free gateway memory before Doctor starts, so raise the
+gateway memory limit first if the command then waits for memory. The command
+refuses a cap too large for its 64-bit memory arithmetic before it changes anything.
+
 ## Correct an invalid Installation name
 
 The stored Installation name must follow the API Name rule: 1 to 200

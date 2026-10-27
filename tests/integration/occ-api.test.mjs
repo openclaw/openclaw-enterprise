@@ -40,11 +40,22 @@ import { createTestConfigurationDriver } from "../helpers/configuration-driver.m
 import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { jsonLineDestination } from "../helpers/json-lines.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
-import { AGENT_NAME_CONFLICT, referenceFormRefusal } from "../helpers/refusal-text.mjs";
+import {
+  AGENT_NAME_CONFLICT,
+  callerDenied,
+  DEPLOYMENT_FAILED,
+  referenceFormRefusal,
+  SERVICE_ACCOUNT_CROSS_NAMESPACE,
+  SLACK_ROUTE_NOT_CONFIGURED,
+  unboundReferenceRefusal,
+  unsubstitutedReferenceRefusal,
+} from "../helpers/refusal-text.mjs";
+import { assertSameAnswer } from "../helpers/refusal-answers.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { availablePort } from "../helpers/available-port.mjs";
 import { stopProcess } from "../helpers/stop-process.mjs";
+import { servedAs } from "../helpers/agent-identity.mjs";
 
 const repository = fileURLToPath(new URL("../..", import.meta.url));
 const entrypoint = fileURLToPath(new URL("../../apps/controller/src/server.mjs", import.meta.url));
@@ -3083,48 +3094,40 @@ test("a refused deployment's status names its cause and remedy without naming pr
   const workKey = `agent_revision:${admitted.data.id}:reconcile`;
   const path = `/namespaces/${namespace.id}/agents/${agent.id}/deployments/${admitted.data.id}`;
   const messages = {
-    AUTHORIZATION_DENIED:
-      "The account that requested this deployment, or the Agent's own identity, no longer has a permission the revision needs: deploy on the Agent, read on its Configuration, or use of a Secret, credential source or ServiceAccount it binds. Ask an admin to grant the access, then deploy again.",
+    AUTHORIZATION_DENIED: DEPLOYMENT_FAILED.AUTHORIZATION_DENIED,
     ACTOR_REVOKED:
       "The account that requested this deployment is no longer an active account in the Installation. Deploy again from an account with deploy access to the Agent.",
     HARNESS_AUTH_REQUIRED:
       "This revision has no Harness authentication method. Set one on the Agent, then deploy again.",
-    BACKEND_UNAVAILABLE:
-      "The Backend this revision was admitted with is no longer configured on the Installation. Ask an admin to restore it, or move the Agent to a configured Backend, then deploy again.",
+    BACKEND_UNAVAILABLE: DEPLOYMENT_FAILED.BACKEND_UNAVAILABLE,
     HARNESS_AUTH_SOURCE_CHANGED:
       "The ServiceAccount this revision authenticates with is missing, has no access token, or its credential changed since admission. Bind an available ServiceAccount, or deploy again to admit a revision with its current credential.",
     SECRET_BINDING_UNAVAILABLE:
       "A Secret this revision binds is missing or no longer belongs to the selected Secret Driver. Bind available Secrets, then deploy again.",
     NAMESPACE_NOT_READY:
       "The Agent's Namespace was not ready when the controller ran this deployment, for example while it is being deleted. Deploy again once the Namespace is ready.",
-    WORKSPACE_SETUP_UNSUPPORTED:
-      "The Agent was created with initial workspace files, which the Installation's Compute Driver cannot set up. Ask an admin to select a Compute Driver that supports them, then deploy again, or create the Agent without initial workspace files.",
+    WORKSPACE_SETUP_UNSUPPORTED: DEPLOYMENT_FAILED.WORKSPACE_SETUP_UNSUPPORTED,
     REPOSITORY_REVISION_STOPPED:
       "Deployment ended because the Agent was stopped or its Namespace is no longer ready. To run the Agent, deploy again once its Namespace is ready.",
     REPOSITORY_REVISION_SUPERSEDED: "Deployment was superseded by a newer revision.",
     // Finding 1045: repository credential refusals name cause and remedy, never the repository.
-    REPOSITORY_RUNTIME_UNSUPPORTED:
-      "The Installation's Compute Driver can no longer deliver repository credentials to this revision. Repository access needs an embedded OpenClaw or dedicated Codex runtime with no Sandbox Driver, on a Compute Driver configured for repository credentials. Ask an admin to restore that setup, or remove the Agent's repository access, then deploy again.",
-    REPOSITORY_BINDING_UNAVAILABLE:
-      "A repository this revision binds, or its access level, is no longer approved for the Agent's Namespace. Choose approved repository access on the Agent, or ask an admin to approve it again, then deploy again.",
+    REPOSITORY_RUNTIME_UNSUPPORTED: DEPLOYMENT_FAILED.REPOSITORY_RUNTIME_UNSUPPORTED,
+    REPOSITORY_BINDING_UNAVAILABLE: DEPLOYMENT_FAILED.REPOSITORY_BINDING_UNAVAILABLE,
     REPOSITORY_BINDING_CHANGED:
       "The approval behind a repository this revision binds changed since admission, for example the access levels or push rules approved for the Agent's Namespace. Deploy again to admit a revision with the current approval.",
-    REPOSITORY_DRIVER_MISMATCH:
-      "The Installation no longer selects the repository credential Driver this revision was admitted with. Deploy again to admit a revision for the selected Driver, choosing approved repository access first if the deploy is refused. If the Installation has none, remove the Agent's repository access or ask an admin to select one.",
+    REPOSITORY_DRIVER_MISMATCH: DEPLOYMENT_FAILED.REPOSITORY_DRIVER_MISMATCH,
     REPOSITORY_CREDENTIAL_DEADLINE_EXCEEDED:
       "This revision's repository access deadline, fixed when the revision was admitted, has passed. Deploy again to admit a revision with a new deadline.",
-    DEPENDENCY_UNAVAILABLE:
-      "A dependency the controller needs stayed unavailable through every attempt. Deploy again; if it keeps failing, ask an admin to check the controller worker log.",
+    DEPENDENCY_UNAVAILABLE: DEPLOYMENT_FAILED.DEPENDENCY_UNAVAILABLE,
     LEASE_EXPIRED:
       "The controller worker stopped or lost its claim during this deployment's last attempt. Deploy again.",
     // Finding 1393: held runtime failures name the next step too, so occ and HTTP clients get
     // the guidance the console used to add on its own.
     RUNTIME_AUTHENTICATION_FAILED:
       "The model provider rejected this version's credential (HTTP 401 or 403). Check that the key or token is valid and can use the selected model, update or replace the Agent's model credential, then deploy a new version.",
-    RUNTIME_CPU_STARVED:
-      "Deployment runtime did not get enough CPU to finish its startup model check, because of a CPU limit below one core or a busy node. Ask an admin to raise the limit or free node capacity, then deploy a new version.",
+    RUNTIME_CPU_STARVED: DEPLOYMENT_FAILED.RUNTIME_CPU_STARVED,
     RUNTIME_MODEL_PROBE_TIMEOUT:
-      "The startup model check did not get a reply from the model provider in time. With OpenClaw this includes a provider the runtime cannot reach (refused connection or unknown host). Check that the runtime can reach the provider (network egress, proxy, or a custom baseUrl in the Configuration) and that the provider is responding, then deploy a new version.",
+      "The startup model check got no reply from the provider in time. With OpenClaw this includes an unreachable provider (refused connection or unknown host). Check egress, proxy or a custom baseUrl and that the provider responds, then deploy a new version.",
     RUNTIME_LOGIN_FAILED:
       "Deployment runtime could not sign in to the model provider. Check the Agent's model credential (for an OAuth login, sign in again) and that the runtime can reach the provider, then deploy a new version.",
     RUNTIME_STARTUP_FAILED:
@@ -3355,6 +3358,56 @@ test("Installation deployment inventory fails closed on incomplete authorization
   const incomplete = await controller.request("GET", inventoryPath);
   assert.equal(incomplete.status, 503);
   assert.equal(incomplete.body.error.code, "DEPENDENCY_UNAVAILABLE");
+});
+
+test("Channel directory accepts Slack's null terminal cursor without losing prior matches", async () => {
+  const controller = await configuredController({ secretDriver: createTestSecretDriver() });
+  await bootstrap(controller);
+  const namespace = await createNamespace(controller, "slack-terminal-cursor");
+  const { fixture } = controller;
+  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
+  const secret = await controller.request("POST", `/namespaces/${namespace.id}/secrets`, {
+    body: { name: "directory-bot", value: "xoxb-directory-fixture" },
+  });
+  assert.equal(secret.status, 201);
+  let terminalCursor = null;
+  const driver = new SlackChannelDriver(async (url) => {
+    const request = new URL(url);
+    if (request.pathname === "/api/auth.test") {
+      return Response.json({ ok: true, bot_id: "BFIXTURE", team_id: "TWORKSPACE" });
+    }
+    assert.equal(request.pathname, "/api/conversations.list");
+    const secondPage = request.searchParams.has("cursor");
+    if (secondPage) {
+      assert.equal(request.searchParams.get("cursor"), "page-two");
+    }
+    return Response.json({
+      ok: true,
+      channels: [
+        secondPage ? { id: "CSECOND", name: "ann-second" } : { id: "CFIRST", name: "ann-first" },
+      ],
+      response_metadata: { next_cursor: secondPage ? terminalCursor : "page-two" },
+    });
+  });
+  fixture.controller.registerDriver(driver);
+  fixture.controller.selectDriver("channel", driver.id);
+  const path = `/namespaces/${namespace.id}/channel-directory/lookup`;
+  const body = { secretId: secret.data.id, kind: "channels", query: "ann" };
+  const found = await controller.request("POST", path, { body });
+  assert.equal(found.status, 200, JSON.stringify(found.body));
+  assert.deepEqual(found.data, {
+    workspaceId: "TWORKSPACE",
+    candidates: [
+      { id: "CFIRST", name: "ann-first" },
+      { id: "CSECOND", name: "ann-second" },
+    ],
+    complete: true,
+  });
+  // Accepting the documented null sentinel must not accept arbitrary cursor types.
+  terminalCursor = 7;
+  const invalid = await controller.request("POST", path, { body });
+  assert.equal(invalid.status, 503);
+  assert.equal(invalid.body.error.code, "CHANNEL_DIRECTORY_INVALID_RESPONSE");
 });
 
 test("Channel directory lookup checks the exact edit target and Secret before and after reading", async () => {
@@ -4573,15 +4626,17 @@ test("a forced ServiceAccount delete without a ChatGPT Backend removes an accoun
   // account, and the grant holder the usual 404 for an unknown one.
   const outsider = await controller.fixture.createAuthPrincipal("service-account-force-outsider");
   controller.fixture.state.identities.push(outsider.principal);
-  const denials = [];
-  for (const path of [accountPath, missingPath]) {
-    const denied = await controller.request("DELETE", `${path}?force=true`, {
-      session: outsider.session,
-    });
-    assert.equal(denied.status, 403, JSON.stringify(denied.body));
-    denials.push({ ...denied.body.error });
-  }
-  assert.deepEqual(denials[0], denials[1]);
+  const denied = await assertSameAnswer(
+    (id) =>
+      controller.request(
+        "DELETE",
+        `/namespaces/${namespace.id}/service-accounts/${id}?force=true`,
+        { session: outsider.session },
+      ),
+    [account.id, missingPath.split("/").at(-1)],
+  );
+  // The denial names the account ID its request sent, and nothing else about it.
+  assert.equal(denied.message, callerDenied("ServiceAccount delete", "ServiceAccount <id>"));
   const unknown = await controller.request("DELETE", `${missingPath}?force=true`);
   assert.equal(unknown.status, 404, JSON.stringify(unknown.body));
 
@@ -4707,7 +4762,7 @@ test("native ServiceAccounts keep private credential references and cannot admit
   assertApiError(issuance, 409, "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED");
   assert.equal(
     issuance.body.error.message,
-    "This Installation has no ChatGPT Backend, so it cannot issue service-account credentials. An administrator must configure the ChatGPT Backend and select its ServiceAccount Driver; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
+    "This Installation has no ChatGPT Backend, so it cannot issue service-account credentials. An Installation administrator must configure it and select its ServiceAccount Driver; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
   );
   const unknownIssuance = await controller.request(
     "POST",
@@ -4728,7 +4783,7 @@ test("native ServiceAccounts keep private credential references and cannot admit
   assertApiError(missingCredential, 409, "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED");
   assert.equal(
     missingCredential.body.error.message,
-    "ChatGPT Harness authentication requires an issued account access-token credential, and this Installation has no ChatGPT Backend to issue one. An administrator must configure it; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
+    "ChatGPT Harness authentication needs an issued access-token credential, and this Installation has no ChatGPT Backend to issue one. An Installation administrator must configure it; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
   );
 
   const initialCredential = {
@@ -4754,10 +4809,7 @@ test("native ServiceAccounts keep private credential references and cannot admit
   const nativeDeployment = await controller.request("POST", deploymentPath);
   assertApiError(nativeDeployment, 409, "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED");
   // A PAT source admits only an access-token credential, never an API key in its place.
-  assert.match(
-    nativeDeployment.body.error.message,
-    /requires an issued account access-token credential/,
-  );
+  assert.match(nativeDeployment.body.error.message, /needs an issued access-token credential/);
 
   // OAuth references are representable, but no refresh or OAuth execution exists yet.
   const oauthCredential = {
@@ -4770,10 +4822,7 @@ test("native ServiceAccounts keep private credential references and cannot admit
   assert.equal(oauthUpdate.status, 200);
   const oauthDeployment = await controller.request("POST", deploymentPath);
   assertApiError(oauthDeployment, 409, "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED");
-  assert.match(
-    oauthDeployment.body.error.message,
-    /requires an issued account access-token credential/,
-  );
+  assert.match(oauthDeployment.body.error.message, /needs an issued access-token credential/);
 
   const replacementCredential = {
     kind: "api_key",
@@ -4969,23 +5018,26 @@ test("native ServiceAccounts reject invalid references and enforce exact Namespa
       },
     },
   );
-  assert.equal(foreignSourceAssociation.status, 404, JSON.stringify(foreignSourceAssociation.body));
-  // The API hides the reason; the controller names the Namespace boundary, not a later store check.
-  await assert.rejects(
-    controller.fixture.controller.createAgent(controller.fixture.principal.id, {
-      namespaceId: namespaceA.id,
-      name: "foreign-source-agent",
-      configurationId: configurationA.id,
-      harnessAuth: {
-        method: "codex_pat",
-        source: { kind: "service_account", namespaceId: namespaceB.id, id: accountA.id },
-      },
-    }),
+  // The rule reads only the request, before any account lookup, so the API names it as a request
+  // error instead of a 404 (finding 2536): the text is the same whether the account exists.
+  assert.equal(foreignSourceAssociation.status, 400, JSON.stringify(foreignSourceAssociation.body));
+  assert.equal(foreignSourceAssociation.body.error.code, "INVALID_REQUEST");
+  assert.equal(foreignSourceAssociation.body.error.message, SERVICE_ACCOUNT_CROSS_NAMESPACE);
+  const missingForeignSource = await controller.request(
+    "POST",
+    `/namespaces/${namespaceA.id}/agents`,
     {
-      name: "ScopeViolationError",
-      message: "Harness authentication sources cannot cross Namespaces.",
+      body: {
+        name: "foreign-source-agent",
+        configurationId: configurationA.id,
+        harnessAuth: {
+          method: "codex_pat",
+          source: { kind: "service_account", namespaceId: namespaceB.id, id: `sa_${randomUUID()}` },
+        },
+      },
     },
   );
+  assert.deepEqual(missingForeignSource.body.error, foreignSourceAssociation.body.error);
 
   // Namespace-wide Agent authority never substitutes for an exact ServiceAccount binding.
   controller.fixture.state.roles.push(
@@ -6632,13 +6684,16 @@ test("Agent provisioning API validates inline configuration with existing Secret
   const unreadableAccount = await provisionWithAccount(managedSource);
   fixture.state.restrictions.pop();
   assertApiError(unreadableAccount, 403, "FORBIDDEN");
-  for (const [description, source] of [
-    ["another Namespace", { ...managedSource, namespaceId: foreignNamespaceId }],
-    ["a missing account", { ...managedSource, id: `sa_${randomUUID()}` }],
-  ]) {
-    const refused = await provisionWithAccount(source);
-    assertApiError(refused, 404, "NOT_FOUND", description);
-  }
+  // Another Namespace is a rule about the request, named before any lookup (finding 2536); a
+  // missing account in the route Namespace stays a 404.
+  const foreignAccount = await provisionWithAccount({
+    ...managedSource,
+    namespaceId: foreignNamespaceId,
+  });
+  assertApiError(foreignAccount, 400, "INVALID_REQUEST", "another Namespace");
+  assert.equal(foreignAccount.body.error.message, SERVICE_ACCOUNT_CROSS_NAMESPACE);
+  const missingAccount = await provisionWithAccount({ ...managedSource, id: `sa_${randomUUID()}` });
+  assertApiError(missingAccount, 404, "NOT_FOUND", "a missing account");
   const acceptedAccount = await provisionWithAccount(managedSource);
   assert.equal(acceptedAccount.status, 503, JSON.stringify(acceptedAccount.body));
   assert.equal(acceptedAccount.body.error.code, "DEPENDENCY_UNAVAILABLE");
@@ -7050,6 +7105,7 @@ test("two Namespaces become independently ready and deletion tombstones only its
     "configurationId",
     "configurationKind",
     "createdAt",
+    "gatewayManagedMode",
     "harness",
     "harnessAuth",
     "id",
@@ -7061,7 +7117,10 @@ test("two Namespaces become independently ready and deletion tombstones only its
   assert.equal(readyDeployment.data.configurationGeneration, 1);
   assert.deepEqual(
     readyDeployment.data.configuration,
-    admitLoggingConfiguration({ model: "first", temperature: "0" }, "info"),
+    admitLoggingConfiguration(
+      servedAs({ model: "first", temperature: "0" }, agentA.data.name),
+      "info",
+    ),
   );
   assert.deepEqual(readyDeployment.data.harness, {
     id: "openclaw",
@@ -7103,7 +7162,10 @@ test("two Namespaces become independently ready and deletion tombstones only its
   assert.equal(nextDeployment.data.revision, 2);
   assert.deepEqual(
     nextDeployment.data.configuration,
-    admitLoggingConfiguration({ model: "second", temperature: "1" }, "info"),
+    admitLoggingConfiguration(
+      servedAs({ model: "second", temperature: "1" }, agentA.data.name),
+      "info",
+    ),
   );
   const admittedRevisions = await injectedRequest(
     fixture.app,
@@ -7866,7 +7928,7 @@ test("IAM and audit dependency failures fail closed without orphaned state", asy
   assertOnlyDefaultNamespace(stillUnchanged);
 });
 
-test("runtime auth admits SSH revisions without source permissions but retains deployment authorization and exact grammar", async () => {
+test("SSH Compute refuses managed mode at save and deploy and validates runtime authentication and deployment authorization", async () => {
   const computeDriver = new SshComputeDriver({
     ssh: { identityFile: "/tmp/ssh-test-key", knownHostsFile: "/tmp/ssh-test-hosts" },
     hosts: { runtime: { address: "127.0.0.1", user: "root" } },
@@ -7927,7 +7989,46 @@ test("runtime auth admits SSH revisions without source permissions but retains d
   });
   assert.equal(created.status, 201);
   assert.deepEqual(created.data.harnessAuth, { method: "runtime" });
+  // SSH Compute cannot enforce managed mode, so a new Agent defaults to off (finding 2676).
+  assert.equal(created.data.gatewayManagedMode, false);
   const path = `${collection}/${created.data.id}`;
+  const unsupported =
+    "Agent setting gatewayManagedMode is not supported by the selected Compute Driver.";
+  // Asking for managed mode fails at save and in the create preflight, not at the next deploy.
+  for (const [method, target, body] of [
+    [
+      "POST",
+      collection,
+      { name: "Managed SSH Agent", configurationId: configuration.id, gatewayManagedMode: true },
+    ],
+    [
+      "POST",
+      `${collection}/validate`,
+      { configuration: { kind: "agent", values: configuration.values }, gatewayManagedMode: true },
+    ],
+    ["PATCH", path, { gatewayManagedMode: true }],
+  ]) {
+    const refused = await controller.request(method, target, { body });
+    assert.equal(refused.status, 400, `${method} ${target}: ${JSON.stringify(refused.body)}`);
+    assert.equal(refused.body.error.message, unsupported);
+  }
+  // An Agent saved before managed mode existed was migrated to on; deploy still refuses it
+  // until an Installation administrator turns it off.
+  await controller.fixture.platformState.transact((unit) =>
+    unit.agents.updateConfiguration(
+      namespace.id,
+      created.data.id,
+      configuration.id,
+      ...Array(8).fill(undefined),
+      true,
+    ),
+  );
+  const rejected = await controller.request("POST", `${path}/deploy`);
+  assert.equal(rejected.status, 400, JSON.stringify(rejected.body));
+  assert.equal(rejected.body.error.message, unsupported);
+  assert.deepEqual((await controller.request("GET", `${path}/revisions`)).data, []);
+  const updated = await controller.request("PATCH", path, { body: { gatewayManagedMode: false } });
+  assert.equal(updated.status, 200, JSON.stringify(updated.body));
   const deployed = await controller.request("POST", `${path}/deploy`);
   assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
   assert.deepEqual(deployed.data.harnessAuth, { method: "runtime" });
@@ -8022,7 +8123,12 @@ test("SSH Compute refuses at deploy gateway authentication and Secret bindings i
   const collection = `/namespaces/${namespace.id}/agents`;
   const createAgentFor = async (name, configuration) => {
     const created = await controller.request("POST", collection, {
-      body: { name, configurationId: configuration.id, harnessAuth: { method: "runtime" } },
+      body: {
+        name,
+        configurationId: configuration.id,
+        harnessAuth: { method: "runtime" },
+        gatewayManagedMode: false,
+      },
     });
     assert.equal(created.status, 201, JSON.stringify(created.body));
     return created.data;
@@ -8160,7 +8266,13 @@ test("SSH Compute refuses at Agent save and deploy a roster or workspace whose m
   const files = { "USER.md": "ssh-workspace-roster" };
   const create = (name, configurationId, extra = {}) =>
     controller.request("POST", collection, {
-      body: { name, configurationId, harnessAuth: { method: "runtime" }, ...extra },
+      body: {
+        name,
+        configurationId,
+        harnessAuth: { method: "runtime" },
+        gatewayManagedMode: false,
+        ...extra,
+      },
     });
   const roster =
     "Configuration setting agents.entries must hold only main, or be omitted, for initial workspace files: only the main Agent reads them.";
@@ -8344,8 +8456,8 @@ test("Agent provisioning and deploy name a refused channel token reference form 
         },
       ),
     });
-  const setting = (requirement) => `Configuration setting channels.slack.botToken ${requirement}.`;
   const form = (name) => referenceFormRefusal("channels.slack.botToken", name);
+  const unbound = unboundReferenceRefusal("channels.slack.botToken", "SLACK_SPARE_TOKEN");
   const forms = [
     ["xoxb-${SLACK_BOT_TOKEN}", form("otherText")],
     // Finding 2517: a token pasted as the value names the setting the same way.
@@ -8355,25 +8467,10 @@ test("Agent provisioning and deploy name a refused channel token reference form 
     ["${SLACK_BOT_TOKEN}${SLACK_APP_TOKEN}", form("otherText")],
     ["${SLACK_BOT_TOKEN:-}", form("fallback")],
     ["$SLACK_BOT_TOKEN", form("shorthand")],
-    [
-      "${slack_bot}",
-      setting(
-        "contains ${slack_bot}, which the runtime does not substitute: use an uppercase ${NAME} bound to a Secret in secretBindings, or escape literal text as $${NAME}",
-      ),
-    ],
-    [
-      "${SLACK_SPARE_TOKEN}",
-      setting(
-        "references SLACK_SPARE_TOKEN without a Configuration Secret binding: bind SLACK_SPARE_TOKEN in secretBindings to an environment-backed Secret, or remove the reference",
-      ),
-    ],
+    ["${slack_bot}", unsubstitutedReferenceRefusal("channels.slack.botToken", "${slack_bot}")],
+    ["${SLACK_SPARE_TOKEN}", unbound],
     // Finding 2520: the binding rule answers before the form rule, at save and at deploy.
-    [
-      "xoxb-${SLACK_SPARE_TOKEN}",
-      setting(
-        "references SLACK_SPARE_TOKEN without a Configuration Secret binding: bind SLACK_SPARE_TOKEN in secretBindings to an environment-backed Secret, or remove the reference",
-      ),
-    ],
+    ["xoxb-${SLACK_SPARE_TOKEN}", unbound],
   ];
   for (const [botToken, message] of forms) {
     const refused = await provision(botToken);
@@ -8792,8 +8889,7 @@ test("Slack validation with no Slack proxy names the setting at provision and de
         { configuration },
       ),
     });
-  const noRoute =
-    "OCC could not reach Slack, and the API has no Slack proxy. If the API has another approved route to Slack, try again. Otherwise an administrator must set Helm slackProxy.enabled or api.channelDirectoryProxyUrl; see the Slack integration guide.";
+  const noRoute = SLACK_ROUTE_NOT_CONFIGURED;
   // Checks that need no provider call keep their own answers: a wrong token role is still named.
   assertApiError(await provision(), 400, "CHANNEL_CREDENTIAL_ROLE_MISMATCH");
   assert.equal(calls, 0);

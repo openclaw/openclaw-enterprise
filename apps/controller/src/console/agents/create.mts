@@ -31,10 +31,18 @@ import {
   setText,
   statusBlock,
   validateFields,
+  requestIdText,
+  withRequestId,
 } from "../dom.mjs";
 import { WORKSPACE_DEFAULTS, WORKSPACE_DEFAULTS_ID } from "../workspace-defaults.mjs";
 import { configuredHarnessId, harnessAuthDescription } from "./harness-auth.mjs";
 import { type DeviceLogin, createDeviceLogin } from "./device-login.mjs";
+import {
+  agentCreateDenied,
+  askAdministratorTo,
+  CONFIGURATION_CREATE_REFUSED,
+  notIncluded,
+} from "./access-reasons.mjs";
 import { createRepositoryFields } from "./repositories.mjs";
 import { ensureCredentialOperateBinding, secretOperateAnswer } from "./credential-access.mjs";
 import {
@@ -52,7 +60,6 @@ import { createSlackApproverField } from "./slack-approvers.mjs";
 import { renderChannels } from "../channels.mjs";
 import {
   administratorMessage,
-  AGENT_CREATE_DENIED,
   type AgentNavigation,
   channelBindingRefusal,
   describeFailure,
@@ -62,8 +69,11 @@ import {
   NAMESPACE_MISSING,
   NAMESPACE_RECHECK_MS,
   namespaceCreation,
+  namespaceListNeed,
   namespacePath,
+  neutralDeploymentOutcome,
   preAdmissionRefusal,
+  readFailure,
   rejectionMessage,
 } from "./list.mjs";
 
@@ -158,6 +168,7 @@ interface ProvisioningAttempt {
   body: Record<string, unknown> & { requestId: string };
   acknowledged: boolean;
   statusUrl?: string | undefined;
+  revisionId?: string;
 }
 
 type ProvisioningContext = Pick<CreateAgentContext, "request" | "namespaceId" | "isCurrent"> & {
@@ -293,7 +304,7 @@ const HARNESS_AUTH_REFUSAL = "Agent setting harnessAuth.method must be ";
 // changes (finding 2427).
 function runtimeBindingRefusal(refusal: string): string {
   const requirement = refusal.replace(/: change [^:]*$/u, ".");
-  return `This Preset's operator-managed credentials need a Compute Driver that supplies them. ${requirement} Ask an administrator to change the Preset's harnessAuth or the Compute Driver, or start without a Preset.`;
+  return `This Preset's operator-managed credentials need a Compute Driver that supplies them. ${requirement} Ask an Installation administrator to change the Preset's harnessAuth or the Compute Driver, or start without a Preset.`;
 }
 
 function selectedHarnessAuth(
@@ -337,6 +348,26 @@ function credentialRegistrationResult(
     throw new Error("The response did not identify the requested credential registration.");
   }
   return { id, state };
+}
+
+// Why removing a failed credential registration failed and the next step (finding 2538): a
+// refusal names its grant (DELETE authorizes credential source delete on the source), and only
+// an unanswered request suggests the Credential Gateway was unavailable.
+function credentialRemovalFailure(cause: unknown) {
+  const { status } = requestFailure(cause);
+  if (status === 403) {
+    return notIncluded("removing this credential registration", "credential source delete on it");
+  }
+  if (status === 404) {
+    return "This credential registration is no longer available. Select Check credential registration.";
+  }
+  if (status === 400 || status === 409 || status === 429) {
+    return `The failed credential registration was not removed. ${describeFailure(cause, {
+      mutation: true,
+      next: "Select Check credential registration, then try again.",
+    })}`;
+  }
+  return "The failed credential registration could not be removed: the Credential Gateway did not confirm it. Retry removal when the Credential Gateway is available.";
 }
 
 function createClientRequestId() {
@@ -427,13 +458,13 @@ const NAMED_DEPLOYMENT_WAITS = new Set([
 // An outage, unlike the Installation's shape, needs no administrator change (finding 1624). Agent
 // save and deploy answer 503 for every harness until the selected Sandbox Driver returns.
 const SANDBOX_DRIVER_OUTAGE =
-  "Agents cannot be created right now: this installation's Sandbox Driver is unavailable. Reload this page to check again, or ask an administrator if it persists.";
+  "Agents cannot be created right now: this installation's Sandbox Driver is unavailable. Reload this page to check again, or ask an Installation administrator if it persists.";
 // Without native worker support the Installation does not say why (finding 1612), unless it
 // lists Embedded: then it selects no Sandbox Driver, and the reason is exact (finding 2384).
 const NATIVE_WORKERS_UNAVAILABLE =
-  "Dedicated OpenClaw is unavailable: this installation has no Sandbox Driver that can provision it, or its OpenClaw runtime lacks native worker support. Choose the Codex harness, or Embedded execution if the installation selects no Sandbox Driver. Otherwise an administrator must select a Sandbox Driver that can provision dedicated OpenClaw, or a runtime with native worker support.";
+  "Dedicated OpenClaw is unavailable: this installation has no Sandbox Driver that can provision it, or its OpenClaw runtime lacks native worker support. Choose the Codex harness, or Embedded execution if the installation selects no Sandbox Driver. Otherwise an Installation administrator must select a Sandbox Driver that can provision dedicated OpenClaw, or a runtime with native worker support.";
 const NO_SANDBOX_DRIVER_DEDICATED =
-  "Dedicated OpenClaw is unavailable: this installation selects no Sandbox Driver. Choose the Codex harness or Embedded execution, or ask an administrator to select a Sandbox Driver that can provision dedicated OpenClaw.";
+  "Dedicated OpenClaw is unavailable: this installation selects no Sandbox Driver. Choose the Codex harness or Embedded execution, or ask an Installation administrator to select a Sandbox Driver that can provision dedicated OpenClaw.";
 // The deployment read was refused (401, 403 or 404): the reader can't see its waits now.
 const DEPLOYMENT_UNREADABLE = Symbol("deployment unreadable");
 
@@ -497,9 +528,12 @@ async function waitForProvisioning({
   status,
   first,
   namespaceId,
-  provisionPath,
+  observeJob,
   isCurrent,
-}: ProvisioningContext & { first: ProvisioningJob; provisionPath: string }) {
+}: ProvisioningContext & {
+  first: ProvisioningJob;
+  observeJob: (value: unknown) => ProvisioningJob;
+}) {
   let current = first;
   // A started job goes back to queued between retries. Keep one label once it has started,
   // and write it only when it changes, since this rereads every second (finding 1424).
@@ -534,7 +568,7 @@ async function waitForProvisioning({
       throw new DOMException("View closed", "AbortError");
     }
     const next = await request(first.url);
-    current = provisioningJob(next, provisionPath, first.requestId, first.url);
+    current = observeJob(next);
   }
   // A Stop during the first deployment (REVISION_STOPPED) or before it (PROVISIONING_CANCELLED)
   // is the owner's choice, not a failure to repair.
@@ -542,18 +576,20 @@ async function waitForProvisioning({
     current?.status === "failed" && current.error?.code === "PROVISIONING_CANCELLED"
       ? await cancelledAgentState(request, namespaceId, current.agentId)
       : null;
-  const stopped =
-    current?.status === "failed" &&
-    (current.error?.code === "REVISION_STOPPED" || cancelledAgent === "kept");
+  const neutralOutcome =
+    cancelledAgent === "kept"
+      ? "stopped"
+      : neutralDeploymentOutcome({ status: current.status, error: current.error ?? null });
   // A failed job's reason leads the form's error line, so its status line would only repeat
   // that it failed (finding 2423).
-  status.textContent = stopped
-    ? "Provisioning stopped."
-    : current?.status === "failed"
-      ? ""
-      : provisioningStatusText(current?.status);
+  status.textContent =
+    neutralOutcome === "stopped"
+      ? "Provisioning stopped."
+      : current?.status === "failed"
+        ? ""
+        : provisioningStatusText(current?.status);
   if (current?.status !== "succeeded") {
-    throw new ProvisioningFailure(current, stopped, cancelledAgent === "unknown");
+    throw new ProvisioningFailure(current, neutralOutcome, cancelledAgent === "unknown");
   }
   if (typeof current.agentId !== "string" || !current.agentId) {
     throw new Error("Provisioning status did not include an Agent.");
@@ -566,18 +602,22 @@ async function waitForProvisioning({
 
 class ProvisioningFailure extends Error {
   readonly job: ProvisioningJob;
-  readonly stopped: boolean;
+  readonly neutralOutcome: ReturnType<typeof neutralDeploymentOutcome>;
   readonly agentUnknown: boolean;
   readonly failed: boolean;
   readonly canRetry: boolean;
 
-  constructor(job: ProvisioningJob, stopped: boolean, agentUnknown: boolean) {
+  constructor(
+    job: ProvisioningJob,
+    neutralOutcome: ReturnType<typeof neutralDeploymentOutcome>,
+    agentUnknown: boolean,
+  ) {
     super(job.error?.message ?? "Provisioning did not complete.");
     this.job = job;
-    this.stopped = stopped;
+    this.neutralOutcome = neutralOutcome;
     this.agentUnknown = agentUnknown;
     this.failed = job.status === "failed";
-    this.canRetry = this.failed && canRetryFailedProvisioning(job);
+    this.canRetry = !neutralOutcome && this.failed && canRetryFailedProvisioning(job);
   }
 }
 
@@ -586,32 +626,40 @@ async function finishProvisioningAttempt({
   status,
   namespaceId,
   attempt,
+  retryUrl,
   isCurrent,
-}: ProvisioningContext & { attempt: ProvisioningAttempt }) {
+}: ProvisioningContext & { attempt: ProvisioningAttempt; retryUrl?: string | undefined }) {
   status.textContent = "Submitting provisioning request…";
   const provisionPath = `${namespacePath(namespaceId)}/agents/provision`;
   const provisioned =
-    attempt.statusUrl === undefined
+    retryUrl === undefined
       ? await request(provisionPath, {
           method: "POST",
           body: attempt.body,
         })
-      : await request(`${attempt.statusUrl}/retry`, { method: "POST" });
+      : await request(`${retryUrl}/retry`, { method: "POST" });
   attempt.acknowledged = true;
-  const accepted = provisioningJob(
-    provisioned,
-    provisionPath,
-    attempt.body.requestId,
-    attempt.statusUrl,
-  );
-  attempt.statusUrl = accepted.url;
+  function observeJob(value: unknown) {
+    const job = provisioningJob(value, provisionPath, attempt.body.requestId, attempt.statusUrl);
+    // A job can acquire its first revision at handoff. Once observed, that revision belongs
+    // to this request across subsequent polls and explicit recovery attempts.
+    if (attempt.revisionId !== undefined && job.revisionId !== attempt.revisionId) {
+      throw new Error("The provisioning response did not identify the expected revision.");
+    }
+    attempt.statusUrl = job.url;
+    if (typeof job.revisionId === "string" && job.revisionId) {
+      attempt.revisionId = job.revisionId;
+    }
+    return job;
+  }
+  const accepted = observeJob(provisioned);
   status.textContent = "Provisioning request accepted.";
   return waitForProvisioning({
     request,
     status,
     first: accepted,
     namespaceId,
-    provisionPath,
+    observeJob,
     isCurrent,
   });
 }
@@ -632,7 +680,7 @@ export function renderCreateAgent(context: CreateAgentContext, restored?: unknow
   const notReady = createNamespaceState(context);
   const unavailable =
     context.permissions?.agents?.create === false
-      ? AGENT_CREATE_DENIED
+      ? agentCreateDenied(context.permissions)
       : notReady?.blocked
         ? notReady.note
         : null;
@@ -711,18 +759,12 @@ export function renderCreateAgent(context: CreateAgentContext, restored?: unknow
 // A member's Agent reaches its Secrets through an Installation administrator's grant (UX plan A2).
 const MEMBER_CREDENTIAL_ACCESS =
   "An Installation administrator then gives the new Agent access to its Secrets.";
-const MEMBER_GRANT_REFUSED =
-  "The Agent was created as a draft. Giving it access to its saved model and channel Secrets needs Installation administration access: open the saved Agent and ask an Installation administrator to grant it.";
-const INSTALLATION_REFUSAL =
-  "Creating an Agent needs Installation access that your account does not have. Ask an Installation administrator to create this Agent.";
+const MEMBER_GRANT_REFUSED = `The Agent was created as a draft. Giving it access to its saved model and channel Secrets needs Installation administration. ${askAdministratorTo("open the saved Agent and grant it")}`;
+const INSTALLATION_REFUSAL = `Creating an Agent needs Installation access that your account does not have. ${askAdministratorTo("create this Agent")}`;
 // The Installation read was refused and the Namespace's permission answer is unknown (its read
 // failed), so whether this account may create Agents here is not known (finding 2110).
 const PERMISSIONS_UNREAD =
   "Your permissions in this Namespace could not be checked, and Installation-wide capabilities are not readable with your access. Retry the permission check before creating an Agent.";
-// A refused Configuration create names the grants it needs, as a refused save does
-// (SAVE_REFUSALS): one fixed text for every 403 (finding 2111).
-const CONFIGURATION_CREATE_REFUSAL =
-  "You do not have permission to create this Agent's Configuration. Ask an administrator for Configuration create access in this Namespace, plus Secret operate on each Secret it binds.";
 // This form saves Secret bindings only from its Slack channel settings. A channel refusal that
 // asks for a binding gets where to add one, as on the Agent page (findings 2494, 2506).
 const CHANNEL_BINDING_FORM_REMEDY =
@@ -1712,6 +1754,8 @@ function renderAgentForm(
   // must then resend the same plan: the API answers an edited one with 409 "different plan".
   let requestAdmitted = false;
   let provisioningAttempt: ProvisioningAttempt | null = null;
+  // Create can resend an admitted plan after the retry endpoint refuses a finished job.
+  let admittedAttempt: ProvisioningAttempt | undefined;
   const capabilityStatus = element(
     "p",
     { id: "create-agent-capability-status", className: "hint", role: "status" },
@@ -1774,7 +1818,7 @@ function renderAgentForm(
     if (!provisioningAttempt || pending) {
       return;
     }
-    void submitProvisioningAttempt(provisioningAttempt);
+    void submitProvisioningAttempt(provisioningAttempt, provisioningAttempt.statusUrl);
   });
   const checkCredentialRegistration = button("Check credential registration", async () => {
     if (!credentialRegistration || pending) {
@@ -1814,7 +1858,12 @@ function renderAgentForm(
       }
     } catch (error) {
       if (context.isCurrent()) {
-        feedback.textContent = message(error);
+        // The list checks Namespace read, like the other Namespace lists (finding 2538).
+        feedback.textContent = readFailure(
+          "Credential registrations",
+          error,
+          namespaceListNeed("credential sources"),
+        );
       }
     } finally {
       if (context.isCurrent()) {
@@ -1846,7 +1895,7 @@ function renderAgentForm(
           "Failed credential registration removed. Select Create Agent to retry with the saved model Secret.";
       } catch (error) {
         if (context.isCurrent()) {
-          feedback.textContent = `${message(error)} Retry removal when the Credential Gateway is available; the model Secret remains saved.`;
+          feedback.textContent = `${credentialRemovalFailure(error)} The model Secret remains saved.`;
         }
       } finally {
         if (context.isCurrent()) {
@@ -2566,7 +2615,7 @@ function renderAgentForm(
     let noOpenClawAdvice = "";
     if (!dedicatedSettingRefusal) {
       noOpenClawAdvice =
-        " Choose OpenAI with the Codex harness, or ask an administrator to select a Sandbox Driver that can provision dedicated OpenClaw, with a runtime that has native worker support.";
+        " Choose OpenAI with the Codex harness, or ask an Installation administrator to select a Sandbox Driver that can provision dedicated OpenClaw, with a runtime that has native worker support.";
     } else if (!codexSelectable) {
       // Anthropic hides Codex: name the provider switch the Driver's advice leaves out, when the
       // form still allows it.
@@ -2579,11 +2628,11 @@ function renderAgentForm(
       ? SANDBOX_DRIVER_OUTAGE
       : noOpenClawMode
         ? binding?.method === "runtime"
-          ? `OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and ${dedicatedRefusalReason} This Preset's operator-managed credentials require OpenClaw. Ask an administrator, or start without a Preset.`
+          ? `OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and ${dedicatedRefusalReason} This Preset's operator-managed credentials require OpenClaw. Ask an Installation administrator, or start without a Preset.`
           : `OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and ${dedicatedRefusalReason}${noOpenClawAdvice}`
         : openclawEmbeddedRefused && mode.value === "embedded"
           ? binding?.method === "runtime"
-            ? "This Preset's operator-managed credentials require Embedded OpenClaw, which this installation refuses because it selects a Sandbox Driver. Ask an administrator, or start without a Preset."
+            ? "This Preset's operator-managed credentials require Embedded OpenClaw, which this installation refuses because it selects a Sandbox Driver. Ask an Installation administrator, or start without a Preset."
             : nativeProvider.value === "anthropic"
               ? "Anthropic uses Embedded OpenClaw, which this installation refuses because it selects a Sandbox Driver. Choose OpenAI to use Dedicated execution."
               : "Embedded OpenClaw is unavailable: this installation selects a Sandbox Driver, which requires Dedicated execution. Select Dedicated under Runtime details."
@@ -3001,11 +3050,11 @@ function renderAgentForm(
     }
   }
   void loadInstallationCapabilities();
-  async function submitProvisioningAttempt(attempt: ProvisioningAttempt) {
+  async function submitProvisioningAttempt(attempt: ProvisioningAttempt, retryUrl?: string) {
     // A retry of a job known to have failed. Read before the request: an admitted first
     // attempt also gains a retry URL, and after an unknown outcome the job may have
     // succeeded (recovering), so a refusal there must keep the request ID to recover it.
-    const viaRetry = attempt.statusUrl !== undefined;
+    const viaRetry = retryUrl !== undefined;
     const retrying = viaRetry && !outcomeUnknown;
     const recovering = viaRetry && outcomeUnknown;
     pending = true;
@@ -3021,6 +3070,7 @@ function renderAgentForm(
         status: savedStatus,
         namespaceId,
         attempt,
+        retryUrl,
         isCurrent: context.isCurrent,
       });
       focusFeedbackLine(savedStatus);
@@ -3071,7 +3121,9 @@ function renderAgentForm(
         detail = `${reason ?? "Outcome unknown."} Retry resubmits the same request ID and saved references.`;
       } else if (terminal?.canRetry) {
         detail = `${error.message} Retry uses the accepted provisioning job.`;
-      } else if (terminal?.stopped) {
+      } else if (terminal?.neutralOutcome === "superseded") {
+        detail = "A newer deployment took over before this one was ready.";
+      } else if (terminal?.neutralOutcome === "stopped") {
         // A stopped Agent keeps its name and needs a deployment, not a repair or a new Agent.
         detail = `${error.message} Open this Agent and deploy ${terminal.job.revisionId ? "a new version" : "a version"} when you want it running.`;
       } else if (terminal?.agentUnknown) {
@@ -3095,7 +3147,7 @@ function renderAgentForm(
       } else {
         detail = followableRefusal(createRefusal(cause, mutationStarted));
       }
-      const feedbackText = detail + (error.requestId ? ` Request ID: ${error.requestId}` : "");
+      const feedbackText = withRequestId(detail, error.requestId);
       // A job that ended keeps its final status (none once it failed: the error line says so);
       // any other progress line spoke for the request that just ended (finding 1490).
       if (!terminal) {
@@ -3107,15 +3159,19 @@ function renderAgentForm(
       }
       // Admission's channel reference refusal names the Configuration JSON's setting.
       refusedInConfiguration = !terminal && !outcomeUnknown && showChannelBindingRefusal(cause);
-      if (terminal?.stopped) {
+      if (terminal?.neutralOutcome) {
         // Not an error: keep the guidance out of the error colour. Later messages replace the span.
         feedback.replaceChildren(
-          element("span", { className: "provisioning-stopped" }, feedbackText),
+          element("span", { className: "provisioning-neutral" }, feedbackText),
         );
       } else {
         feedback.textContent = refusedInConfiguration ? "" : feedbackText;
       }
-      if (terminal?.job.revisionId && terminal.job.agentId) {
+      if (
+        terminal?.job.revisionId &&
+        terminal.job.agentId &&
+        terminal.neutralOutcome !== "superseded"
+      ) {
         feedback.append(
           link(
             " Open Agent and deployment details",
@@ -3123,7 +3179,10 @@ function renderAgentForm(
             context,
           ),
         );
-      } else if ((terminal?.stopped || terminal?.agentUnknown) && terminal.job.agentId) {
+      } else if (
+        (terminal?.neutralOutcome === "stopped" || terminal?.agentUnknown) &&
+        terminal.job.agentId
+      ) {
         feedback.append(link(" Open Agent", `agents/${terminal.job.agentId}`, context));
       }
       focusFeedbackLine(feedback);
@@ -3149,6 +3208,7 @@ function renderAgentForm(
           provisioningRequestId = createClientRequestId();
           requestAdmitted = false;
         }
+        admittedAttempt = requestAdmitted && attempt.statusUrl ? attempt : undefined;
       }
       // A job that names its Agent created one, which a kept draft must not create again.
       if (!terminal?.job.agentId) {
@@ -3389,7 +3449,7 @@ function renderAgentForm(
           refusedInConfiguration = showChannelBindingRefusal(error);
           feedback.textContent = refusedInConfiguration
             ? ""
-            : detail + (failure.requestId ? ` Request ID: ${failure.requestId}` : "");
+            : withRequestId(detail, failure.requestId);
           // While the pressed control is still disabled, as after a save.
           focusFeedbackLine(feedback);
           if (nameTaken) {
@@ -3475,19 +3535,21 @@ function renderAgentForm(
         harnessAuth = { method: "credential_source", sourceId: savedCredentialSource.id };
       }
       if (shouldProvision()) {
-        provisioningAttempt = {
-          acknowledged: false,
-          body: {
-            requestId: provisioningRequestId,
-            ...body,
-            harnessAuth,
-            configuration: {
-              kind: "agent",
-              values,
-              ...(Object.keys(bindings).length ? { secretBindings: bindings } : {}),
-            },
+        const plan = {
+          requestId: provisioningRequestId,
+          ...body,
+          harnessAuth,
+          configuration: {
+            kind: "agent",
+            values,
+            ...(Object.keys(bindings).length ? { secretBindings: bindings } : {}),
           },
         };
+        provisioningAttempt =
+          admittedAttempt && sameValue(admittedAttempt.body, plan)
+            ? admittedAttempt
+            : { body: plan, acknowledged: false };
+        admittedAttempt = undefined;
         await submitProvisioningAttempt(provisioningAttempt);
         return;
       }
@@ -3513,7 +3575,9 @@ function renderAgentForm(
           },
         }).catch((error: unknown) => {
           if (requestFailure(error).status === 403) {
-            responseFields(error).refusal = CONFIGURATION_CREATE_REFUSAL;
+            // A refused Configuration create names the grants it needs: one fixed text for
+            // every 403, since only an Installation administrator can create one (finding 2111).
+            responseFields(error).refusal = CONFIGURATION_CREATE_REFUSED;
           }
           throw error;
         });
@@ -3659,13 +3723,14 @@ function renderAgentForm(
         context.onExpired();
         return;
       }
-      const registrationProblem = error.status && error.status >= 400 ? ` ${message(cause)}` : "";
+      const registrationProblem =
+        error.status && error.status >= 400 ? ` ${describeFailure(cause, { mutation: true })}` : "";
       // A refused grant on a saved Agent shows this text only to an Installation administrator (a
       // member sees MEMBER_GRANT_REFUSED below), so its denial names nobody to ask (finding 2113).
       const detail = credentialRegistration
         ? `Credential Source registration could not be confirmed.${registrationProblem} Check credential registration before retrying; the selected Secret remains saved.`
         : savedAgent
-          ? `The Agent was created, but credential access is not confirmed. ${administratorMessage(cause)} Retry credential access, or open the saved Agent and ask an administrator to check access to its saved model and channel Secrets.`
+          ? `The Agent was created, but credential access is not confirmed. ${administratorMessage(cause)} Retry credential access, or open the saved Agent and check its access to its saved model and channel Secrets.`
           : error.status === 409 && creatingSecret && error.code !== "NAMESPACE_NOT_READY"
             ? `A Secret named "${body.name}" already exists in this Namespace, possibly from an earlier Agent with this name. Choose another Agent name, delete that Secret, or select Start over, choose the Preset again, and set its Secret source to Use existing Secret.`
             : error.status === 409 && savedConfiguration && error.code !== "NAMESPACE_NOT_READY"
@@ -3719,7 +3784,7 @@ function renderAgentForm(
         ? ""
         : (memberGrantRefused ? MEMBER_GRANT_REFUSED : detail) +
           guidance +
-          (error.requestId ? ` Request ID: ${error.requestId}` : "");
+          (error.requestId ? ` ${requestIdText(error.requestId)}` : "");
       focusFeedbackLine(feedback);
       // A create that raced another Agent to the name (the preflight checked it).
       if (!savedAgent && error.status === 409 && error.serverMessage === AGENT_NAME_CONFLICT) {

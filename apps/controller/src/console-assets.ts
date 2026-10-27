@@ -50,6 +50,7 @@ const CONSOLE_ASSETS = new Map([
       "secrets.mts",
       "runtime-images.mts",
       "agents/list.mts",
+      "agents/access-reasons.mts",
       "agents/collection.mts",
       "agents/lifecycle-confirmation.mts",
       "agents/logs.mts",

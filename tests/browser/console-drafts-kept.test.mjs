@@ -30,6 +30,10 @@ import {
   routeInstallationProvisioning,
   raceAgentName,
   routeInstallationWithoutProvisioning,
+  submitCreateAgent,
+  createAgentThroughForm,
+  routeProvisioningJob,
+  provisioningJob,
 } from "./console-agents-test-support.mjs";
 import {
   AGENT_NAME_CONFLICT,
@@ -152,13 +156,7 @@ test("a refused Create stays a draft for a reload and a return, and the retry re
   // Another create takes the name after the preflight, so the Secret and Configuration are saved
   // before the API refuses the Agent.
   await raceAgentName(page, fixture, namespace.id, "Existing Agent");
-  const conflict = page.waitForResponse(
-    (response) =>
-      response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
-      response.request().method() === "POST",
-  );
-  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  assert.equal((await conflict).status(), 409);
+  await submitCreateAgent(page, fixture, namespace.id, { status: 409 });
   await page.getByText(AGENT_NAME_CONFLICT).waitFor();
   // The form is still the reader's to fix, so a reload asks first (finding 1934).
   assert.equal(await asksBeforeUnload(page), true);
@@ -179,15 +177,7 @@ test("a refused Create stays a draft for a reload and a return, and the retry re
   // The retry uses the Secret the refused attempt saved; the restored form cannot pick another.
   assert.equal(await page.getByLabel("API key Secret", { exact: true }).isDisabled(), true);
   await name.fill("Kept Agent");
-  const createdResponse = page.waitForResponse(
-    (response) =>
-      response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
-      response.request().method() === "POST",
-  );
-  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  const created = await createdResponse;
-  assert.equal(created.status(), 201);
-  const { data } = await created.json();
+  const data = await createAgentThroughForm(page, fixture, namespace.id);
   await page.waitForURL((url) => url.pathname === `/console/agents/${data.id}`);
   assert.equal(data.name, "Kept Agent");
   assert.equal(data.configurationId, configurationId);
@@ -243,15 +233,7 @@ test("a draft kept after a refusal between the Secret and the Configuration keep
   await waitForInputValue(picker, "Refused configuration Agent");
   assert.equal(await picker.isDisabled(), true);
 
-  const createdResponse = page.waitForResponse(
-    (response) =>
-      response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
-      response.request().method() === "POST",
-  );
-  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  const created = await createdResponse;
-  assert.equal(created.status(), 201);
-  const { data } = await created.json();
+  const data = await createAgentThroughForm(page, fixture, namespace.id);
   await page.waitForURL((url) => url.pathname === `/console/agents/${data.id}`);
   assert.equal(data.harnessAuth.source.id, secretId);
   assert.equal(pathRequests(requests, "POST", `/namespaces/${namespace.id}/secrets`).length, 1);
@@ -895,34 +877,6 @@ async function fillProvisionedAgent(page, fixture, namespace, name) {
   await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
 }
 
-// Admits one provisioning job and answers its status reads with `read`.
-async function routeProvisioningJob(page, namespace, read) {
-  const url = `/namespaces/${namespace.id}/agents/provision/work_1`;
-  let requestId;
-  await page.route(`**/namespaces/${namespace.id}/agents/provision`, (route) => {
-    requestId = route.request().postDataJSON().requestId;
-    return route.fulfill({
-      status: 202,
-      contentType: "application/json",
-      body: JSON.stringify({
-        data: {
-          provisioning: {
-            requestId,
-            workId: "work_1",
-            status: "queued",
-            phase: "accepted",
-            attemptCount: 0,
-            updatedAt: new Date().toISOString(),
-            url,
-          },
-        },
-        meta: { requestId: "req_00000000-0000-4000-8000-000000000202" },
-      }),
-    });
-  });
-  await page.route(`**${url}`, (route) => route.fulfill(read(url, requestId)));
-}
-
 test("an uncertain Create outcome keeps no draft", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -954,8 +908,10 @@ test("a refused read of an admitted provisioning job keeps no draft", async (t) 
   const { page } = await newPage(t, fixture);
   await routeInstallationProvisioning(page, fixture);
   // The job is admitted, then its status read is refused: the request ID stays the job's.
-  await routeProvisioningJob(page, namespace, () =>
-    apiErrorResponse(404, "NOT_FOUND", RESOURCE_NOT_FOUND),
+  const work = provisioningJob(namespace.id, "work_1");
+  await routeProvisioningJob(page, work, null);
+  await page.route(`**${work.url}`, (route) =>
+    route.fulfill(apiErrorResponse(404, "NOT_FOUND", RESOURCE_NOT_FOUND)),
   );
   await fillProvisionedAgent(page, fixture, namespace, "Admitted Agent");
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
@@ -971,28 +927,18 @@ test("a failed provisioning job that names its Agent keeps no draft", async (t) 
   await routeInstallationProvisioning(page, fixture);
   // The job created its Agent and first version, then the deployment failed: no Retry, and a
   // kept draft would create the Agent again.
-  await routeProvisioningJob(page, namespace, (url, requestId) => ({
-    status: 200,
-    contentType: "application/json",
-    body: JSON.stringify({
-      data: {
-        requestId,
-        workId: "work_1",
-        status: "failed",
-        phase: "handoff",
-        attemptCount: 1,
-        updatedAt: new Date().toISOString(),
-        agentId: "agt_00000000-0000-4000-8000-000000001965",
-        revisionId: "rev_00000000-0000-4000-8000-000000001965",
-        url,
-        error: {
-          code: "PROVISIONING_DEPLOYMENT_FAILED",
-          message: "The initial deployment failed.",
-        },
+  const work = provisioningJob(namespace.id, "work_1");
+  await routeProvisioningJob(page, work, [
+    work.job("failed", {
+      phase: "handoff",
+      agentId: "agt_00000000-0000-4000-8000-000000001965",
+      revisionId: "rev_00000000-0000-4000-8000-000000001965",
+      error: {
+        code: "PROVISIONING_DEPLOYMENT_FAILED",
+        message: "The initial deployment failed.",
       },
-      meta: { requestId: "req_00000000-0000-4000-8000-000000000200" },
     }),
-  }));
+  ]);
   await fillProvisionedAgent(page, fixture, namespace, "Failed job Agent");
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   await page.getByText(/^The initial deployment failed\. Open this Agent/).waitFor();

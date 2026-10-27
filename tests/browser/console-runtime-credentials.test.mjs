@@ -24,9 +24,11 @@ import {
 } from "./console-agents-browser-helpers.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import {
+  agentPrincipalDenied,
   CHANNEL_BINDING_CREDENTIALS_REMEDY,
   CONFIGURATION_EDITS_PENDING,
   DEPENDENCY_UNAVAILABLE,
+  DEPLOY_CLUSTER_RBAC_REFUSED,
   READ_UNAVAILABLE,
   namespaceListDenied,
   unreadableSlackTokenRefusal,
@@ -123,11 +125,12 @@ test("draft Agent offers deployment without a generated-credential step", async 
   );
   await deploy.click();
   assert.equal((await deniedDeployment).status(), 403);
-  // The API names the Agent's own principal and the grant it lacks; the console shows that.
+  // The API names the grant the Agent's own principal lacks and who gives it; the console shows
+  // that. The administrator may read the model Secret, so it is named (finding 2592).
   await page
     .getByRole("alert")
     .filter({
-      hasText: `The Agent service principal ${agent.servicePrincipalId} is not authorized to operate`,
+      hasText: agentPrincipalDenied(`Agent ${agent.id}`, `Secret ${agent.harnessAuth.source.id}`),
     })
     .waitFor();
   await waitForEnabled(deploy);
@@ -147,7 +150,9 @@ test("draft Agent offers deployment without a generated-credential step", async 
   await deploy.click();
   await page
     .getByRole("alert")
-    .filter({ hasText: /cluster denied OCC access.*tenant RoleBindings/ })
+    .filter({
+      hasText: DEPLOY_CLUSTER_RBAC_REFUSED,
+    })
     .waitFor();
   await waitForEnabled(deploy);
   await page.unroute(deployUrl);
@@ -312,12 +317,16 @@ test("active Agent can deploy the current saved draft as a new version", async (
     fixture,
     `/console/agents/${agent.id}?namespace=${encodeURIComponent(namespace.id)}`,
   );
-  await page.getByRole("heading", { name: "Version v1" }).waitFor();
+  await page
+    .getByLabel("Viewing version", { exact: true })
+    .getByRole("option", { selected: true })
+    .filter({ hasText: /^v1/ })
+    .waitFor({ state: "attached" });
 
   await page.screenshot({ path: join(artifacts, "revision-deploy.png"), fullPage: true });
 
   // The viewed version stays immutable; create a draft before deploying v2.
-  await page.getByRole("button", { name: "Create new version" }).first().click();
+  await page.getByRole("button", { name: "Open draft" }).first().click();
   await page
     .getByText(/Complete these in Credentials before deploying: Slack Secret bindings/)
     .waitFor();
@@ -446,7 +455,7 @@ test("revision deployment blocks unavailable reads and does not replay a lost re
     },
   );
   await login(page, fixture, `/console/agents/${agent.id}?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Create new version" }).first().click();
+  await page.getByRole("button", { name: "Open draft" }).first().click();
   const deploy = page.getByRole("button", { name: "Deploy new version" });
   await page.getByRole("alert").filter({ hasText: READ_UNAVAILABLE }).first().waitFor();
   assert.equal(deploymentRequests, 0);
@@ -1474,7 +1483,9 @@ test("operator-managed console binding saves and deploys without a managed crede
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
   await page.getByLabel("Authentication source").selectOption("runtime");
   await page
-    .getByText("Configured on the runtime host; not validated by OCC.", { exact: true })
+    .getByText("Configured on the runtime host; OpenClaw Enterprise does not check it.", {
+      exact: true,
+    })
     .waitFor();
   assert.equal(await page.getByLabel("API key Secret").isVisible(), false);
   const save = page.waitForResponse(

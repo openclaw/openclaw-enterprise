@@ -28,6 +28,12 @@ import {
   waitForInputValue,
   writeRequests,
 } from "./console-agents-browser-helpers.mjs";
+import {
+  BOUND_SECRET_UNLISTED,
+  CONFIGURATION_SAVE_DENIED,
+  SECRET_CREATE_DENIED,
+  SLACK_SETUP_HINT,
+} from "../helpers/refusal-text.mjs";
 
 // The Agent's grant of a saved Slack Secret was refused, or the IAM policy shows none (finding 1920).
 const GRANT_REFUSED =
@@ -104,9 +110,6 @@ async function failMethod(page, pattern, method, answer) {
     await route.fulfill(answer);
   });
 }
-
-const SLACK_SETUP_HINT =
-  "Provide SLACK_APP_TOKEN and SLACK_BOT_TOKEN through Secret bindings before deployment.";
 
 // Every case builds its own Console and browser context, so cases run a few at a time.
 describe("Agent channels", { concurrency: 3 }, () => {
@@ -189,8 +192,10 @@ describe("Agent channels", { concurrency: 3 }, () => {
       await statusTone(dialog.getByText(/^New version\. Changes affect future deployments/)),
       { className: "status", tone: "info", role: "status" },
     );
-    const appSecretPath = `/namespaces/${namespace.id}/secrets/${slackAppSecret.id}`;
-    const botSecretPath = `/namespaces/${namespace.id}/secrets/${slackBotSecret.id}`;
+    // Each link opens the console's Secrets page with that Secret, not the API's JSON (finding
+    // D757).
+    const appSecretPath = `/console/secrets?namespace=${namespace.id}&secret=${slackAppSecret.id}`;
+    const botSecretPath = `/console/secrets?namespace=${namespace.id}&secret=${slackBotSecret.id}`;
     const appSecretLink = dialog.getByRole("link", {
       name: "View app token Secret metadata (opens in new tab)",
     });
@@ -237,9 +242,15 @@ describe("Agent channels", { concurrency: 3 }, () => {
     const appSecretPopupPromise = page.waitForEvent("popup");
     await appSecretLink.click();
     const appSecretPopup = await appSecretPopupPromise;
-    await appSecretPopup.waitForLoadState("domcontentloaded");
-    assert.equal(new URL(appSecretPopup.url()).pathname, appSecretPath);
-    await appSecretPopup.getByText("Slack app token").waitFor();
+    // The Secrets page opens the linked Secret's metadata, then drops the `secret` parameter so
+    // its Refresh does not reopen the Secret.
+    const appSecretDialog = appSecretPopup.getByRole("dialog", { name: "Slack app token" });
+    await appSecretDialog.getByText(slackAppSecret.id, { exact: true }).waitFor();
+    const popupUrl = new URL(appSecretPopup.url());
+    assert.equal(
+      `${popupUrl.pathname}${popupUrl.search}`,
+      `/console/secrets?namespace=${namespace.id}`,
+    );
     const secretMetadataText = await appSecretPopup.locator("body").textContent();
     assert.match(secretMetadataText, new RegExp(slackAppSecret.id));
     assert.doesNotMatch(secretMetadataText, new RegExp(slackAppSecretValue));
@@ -574,13 +585,15 @@ describe("Agent channels", { concurrency: 3 }, () => {
   });
 
   // A version snapshot cannot be edited, so its Slack card offers no setup step: a reader of a
-  // v1 without Slack was told to provide the tokens (finding 2455). The draft still asks.
+  // v1 without Slack was told to provide the tokens (finding 2455). The Dedicated draft still
+  // asks; an Embedded one cannot have channels, so it does not (finding D708).
   test("A version snapshot's Slack card shows no setup hint", async (t) => {
     const { fixture, namespace } = await readyNamespace(t, "Snapshot Slack hint");
     const agent = await fixture.createAgent(
       namespace.id,
       "Snapshot Agent",
-      nativeValues("snapshot"),
+      nativeValues("snapshot", { harnessId: "codex" }),
+      { executionMode: "dedicated" },
     );
     const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
     const { page } = await newPage(t, fixture, { browser });
@@ -749,7 +762,7 @@ describe("Agent channels", { concurrency: 3 }, () => {
     assert.equal(await allowedUsers.isVisible(), false);
     await selectSecret(dialog, "Slack app token", slackAppSecret);
     await page.getByRole("button", { name: "Save configuration" }).click();
-    await dialog.getByText(/Access denied|permission/i).waitFor();
+    await dialog.getByText(CONFIGURATION_SAVE_DENIED).waitFor();
     assert.equal(await allowEveryone.inputValue(), "everyone");
     await waitForEnabled(allowEveryone);
     assert.equal(await allowedUsers.isVisible(), false);
@@ -1067,7 +1080,6 @@ describe("Agent channels", { concurrency: 3 }, () => {
       );
       const { page } = await newPage(t, fixture, { browser });
       const requests = apiRequests(page, fixture.origin);
-      const probe = page.waitForResponse(`${fixture.origin}/observability`);
       await login(
         page,
         fixture,
@@ -1081,8 +1093,12 @@ describe("Agent channels", { concurrency: 3 }, () => {
         writer.credentials,
       );
       await page.getByRole("heading", { name: "Member Slack Grant Agent" }).waitFor();
-      // The session's Installation read already found this account is no administrator.
-      assert.equal((await probe).status(), 403);
+      // The Namespace permission answer already said this account is no administrator, so the
+      // session sends no probe.
+      assert.deepEqual(
+        requests.filter(({ path }) => path === "/observability"),
+        [],
+      );
       if (entry === "drawer") {
         await page.getByRole("button", { name: "Edit Slack" }).click();
         const dialog = page.getByRole("dialog", { name: "Edit Slack" });
@@ -1118,8 +1134,9 @@ describe("Agent channels", { concurrency: 3 }, () => {
       assert.equal(await page.getByRole("button", { name: "Retry Secret access" }).count(), 0);
       // The save finished and nothing this member can do confirms the grant, so Deploy is not
       // held: the API checks the Agent's access when it deploys (finding 2547).
-      await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
-      await expectNoText(page, "Resolve the saved Secret access grant before deploying.");
+      await expectNoText(page, "Resolve the saved Secret access grant before deploying.", () =>
+        waitForEnabled(page.getByRole("button", { name: "Deploy new version" })),
+      );
       const configuration = await fixture.request(
         "GET",
         `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
@@ -1179,6 +1196,62 @@ describe("Agent channels", { concurrency: 3 }, () => {
       );
     });
   }
+
+  // Finding 2623. A member's channel card names bound Secrets from the view's readable Secret
+  // list, read once per view (finding 2619): a Secret the list leaves out shows as unlisted. A
+  // Secret she creates inline is not in that list either, so binding it drops the list and the
+  // card reads it again: it shows the new Secret's name, not the unlisted refusal.
+  test("A member's Slack card names a Secret she creates inline after an unlisted one rendered", async (t) => {
+    const { fixture, namespace } = await readyNamespace(t, "Member inline Secret");
+    const botSecret = await fixture.createSecret(
+      namespace.id,
+      "Restricted Slack bot token",
+      "hidden-restricted-bot",
+    );
+    const { agent } = await createSlackAgent(fixture, namespace, {
+      name: "Member Inline Agent",
+      slug: "member-inline",
+      secretBindings: { SLACK_BOT_TOKEN: { source: botSecret.ref, delivery: { type: "env" } } },
+    });
+    const writer = await fixture.createNamespaceMember("inline-writer", namespace.id, MEMBER_WRITE);
+    // The member reads the Namespace's Secrets except the bound bot token, so her list leaves it
+    // out; a Secret she creates is readable to her.
+    fixture.policy.restrictions.push({
+      id: "deny-bot-token-read",
+      namespaceId: namespace.id,
+      resourceKind: "secret",
+      resourceId: botSecret.id,
+      action: "read",
+      effect: "deny",
+    });
+    const { page } = await newPage(t, fixture, { browser });
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, "draft", "channels"),
+      writer.credentials,
+    );
+    const card = page.locator(".configuration-summary");
+    const unlisted = card.getByText(BOUND_SECRET_UNLISTED, { exact: true });
+    await unlisted.waitFor();
+    assert.equal(await unlisted.getAttribute("title"), botSecret.id);
+
+    await page.getByRole("button", { name: "Edit Slack" }).click();
+    const drawer = page.getByRole("dialog", { name: "Edit Slack" });
+    await drawer.getByLabel("Slack app token", { exact: true }).fill("Create a new Secret");
+    await drawer.getByRole("option", { name: "Create new Secret...", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Create Slack app token Secret" });
+    await dialog.getByLabel("Name", { exact: true }).fill("Inline Slack app token");
+    await dialog.getByLabel("Value", { exact: true }).fill("hidden-inline-app");
+    await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
+    await dialog.waitFor({ state: "hidden" });
+    await drawer.getByRole("button", { name: "Save configuration", exact: true }).click();
+    await drawer.waitFor({ state: "hidden" });
+    await card.getByRole("link", { name: "Inline Slack app token", exact: true }).waitFor();
+    // The bot token is still the only unlisted Secret.
+    assert.equal(await card.getByText(BOUND_SECRET_UNLISTED, { exact: true }).count(), 1);
+    assert.equal(await unlisted.getAttribute("title"), botSecret.id);
+  });
 
   test("Agent credentials retry outstanding Slack Secret grants after changing one token", async (t) => {
     const { fixture, namespace } = await readyNamespace(t, "Runtime Slack retained grant");
@@ -1563,7 +1636,7 @@ describe("Agent channels", { concurrency: 3 }, () => {
     assert.equal(await drawer.getByText(/or create/).count(), 0);
     await drawer.getByLabel("Slack app token", { exact: true }).fill("Create a new Secret");
     const action = drawer.getByRole("option", {
-      name: "Create new Secret... Your access does not include creating Secrets in this Namespace.",
+      name: `Create new Secret... ${SECRET_CREATE_DENIED}`,
       exact: true,
     });
     await action.waitFor();

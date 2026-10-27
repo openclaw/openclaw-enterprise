@@ -1,11 +1,127 @@
 # Earlier breaking-change notices from 2026-10-24
 
-These [breaking-change notices](breaking-changes.md) are dated 2026-10-24 and
-are older than the ones on that page; older ones are in the
-[notices before 2026-10-24](breaking-changes-before-2026-10-24.md). They still
-apply when you upgrade from a source commit older than their date. Entries are
-newest first. Steps marked _untested_ have not been run against a real
+These [breaking-change notices](breaking-changes.md) from 2026-10-24 predate
+that page, the
+[notices before 2026-10-26](breaking-changes-before-2026-10-26.md) and the
+[later notices from 2026-10-24](breaking-changes-later-2026-10-24.md); older
+ones are in the [notices before 2026-10-24](breaking-changes-before-2026-10-24.md).
+They still apply when you upgrade from a source commit older than their date.
+Entries are newest first. Steps marked _untested_ have not been run against a real
 Installation.
+
+## 2026-10-24: SSH deployment checks Gateway authentication and Secret bindings
+
+**What breaks.** On SSH Compute, deployment refuses a
+Configuration whose `gateway` or `gateway.auth` is not an object, whose
+`gateway.auth.mode` is not `trusted-proxy` or `password`, which sets another
+`gateway.auth` field such as `token`, or whose `gateway.auth.password` is not
+the `OPENCLAW_GATEWAY_PASSWORD` reference, with `409 RESOURCE_CONFLICT`.
+Deployment and provisioning refuse non-empty Configuration `secretBindings` with `400`. Earlier builds
+answered `202`, and every preparation failed. Agent save is unchanged.
+
+**Who is affected.** SSH Installations with such a Configuration; none of them
+could deploy.
+
+**How to tell.** The deploy answers with a message such as `Configuration
+setting gateway.auth.mode must be trusted-proxy or password`, or
+`Configuration secretBindings must be empty on SSH Compute`, and creates no
+version.
+
+**Steps.** Fix the named setting, or provision credentials in the
+operator-owned `<agentDir>/env` file instead of `secretBindings`; then deploy
+again.
+
+## 2026-10-24: OpenShell refuses OpenClaw Agents with several Sandbox ServiceAccounts
+
+**What breaks.** With the OpenShell Sandbox Driver, Agent save, deployment and
+provisioning refuse a dedicated OpenClaw Agent with `400` when
+`gateway.operatorWorkspaceResources` lists more than one ServiceAccount.
+Earlier builds admitted it and failed every new revision in workspace
+preparation, after its predecessors had stopped. The Installation's
+`openclaw.executionModes` now omits `dedicated` whenever these checks, or the
+`kubernetes.userNamespaces` check, refuse it. Codex Agents are unaffected.
+
+**Who is affected.** OpenShell Installations with several such ServiceAccounts
+and OpenClaw Agents; none of those Agents could deploy.
+
+**How to tell.** The refusal reads `Dedicated OpenClaw needs at most one
+ServiceAccount in gateway.operatorWorkspaceResources`, and Create Agent no
+longer offers Dedicated for OpenClaw.
+
+**Steps.** Keep one ServiceAccount in `gateway.operatorWorkspaceResources` and
+restart the controller, or switch the Agent to Codex.
+
+## 2026-10-24: chart container resources are checked at render
+
+**What breaks.** `helm install` and `helm upgrade` refuse a `resources`,
+`slackProxy.resources` or `logging.collector.resources` entry with a negative
+quantity or a resource name other than `cpu`, `memory`,
+`ephemeral-storage`, `hugepages-<size>` or a domain-prefixed extended resource
+such as `example.com/gpu`. They also refuse a negative
+`logging.collector.state.sizeLimit` or `tmp.sizeLimit`. Earlier builds rendered
+these and Kubernetes refused the Deployment or Pod when Helm applied it, after
+other objects of the release had changed. With `gatewayRouting.enabled`, a
+release name whose first 34 characters end in `.` now renders a valid Envoy
+NetworkPolicy name; earlier builds failed to create it.
+
+**Who is affected.** Releases that set one of these values by hand.
+
+**How to tell.** Helm fails before applying anything, naming the value, for
+example `resources.limits.cpu must not be negative`. A request above its limit
+is still left to Kubernetes, which refuses it when Helm applies the release.
+
+**Steps.** Remove the negative or unknown entry, and run the upgrade again.
+
+## 2026-10-24: SSH Compute refuses runtime paths under /tmp
+
+**What breaks.** Controller startup refuses an SSH Compute `runtime.root` that
+is `/`, has a `.` or `..` segment, or lies under `/tmp` or `/var/tmp`, as the
+[SSH Compute reference](../../reference/drivers/ssh-compute.md) already said,
+and a `nodePath` or `openclawPath` under `/tmp` or `/var/tmp`. Earlier builds
+started, but each Agent unit runs with `PrivateTmp`, so it could not reach paths
+under those and every deployment timed out. A root such as `/var/lib/./oce`
+worked and is now refused too.
+
+**Who is affected.** SSH Installations with such a path.
+
+**How to tell.** Startup fails with `INVALID_VALUE` at `/runtime/root`,
+`/runtime/nodePath`, `/runtime/openclawPath` or `/hosts`.
+
+**Steps.** Write a root with `.` or `..` segments in its resolved form (the same
+directory, so state is kept). Move a path under `/tmp` or `/var/tmp`, for example
+the state root to `/var/lib/openclaw-enterprise`. Then restart the controller
+and deploy again.
+
+## 2026-10-24: Kubernetes Compute checks dedicated placement and selector labels
+
+**What breaks.** Deployment admission refuses a dedicated Agent (Codex or
+OpenClaw) when the Kubernetes Compute configuration sets `runtime` without
+`runtime.gatewayNodeSelector` or `gatewayRouting`. Agent create and update
+refuse it too when the Configuration selects a model and the Agent binds a
+Secret or `runtime` authentication; a stored such Agent still reads, but each
+update is refused until the setting is fixed. Controller startup refuses
+`runtime.nodeSelector` or `runtime.gatewayNodeSelector` label keys or values
+that Kubernetes refuses, and `resources.namespace.quota` entries whose name is
+not a Kubernetes quota resource name or whose value is not a non-negative
+quantity. Earlier builds accepted all of these; each dedicated deployment then
+stopped the running revision and failed in preparation, or the API server
+refused the Deployment or ResourceQuota.
+
+**Who is affected.** Installations with such a setting. Embedded and
+channel-runtime Installations without dedicated Agents are not affected by the
+placement check.
+
+**How to tell.** Saving or deploying the Agent fails with 400 and `Dedicated Agents need
+runtime.gatewayNodeSelector` (or `gatewayRouting`) `in this Installation's
+Kubernetes Compute configuration`. Or startup fails at
+`/runtime/nodeSelector`, `/runtime/gatewayNodeSelector` or
+`/resources/namespace/quota`.
+
+**Steps.** Set `runtime.gatewayNodeSelector` to the trusted node pool's labels
+and configure `gatewayRouting`, as the
+[Kubernetes Compute reference](../../reference/drivers/kubernetes-compute.md)
+describes; fix the selector labels or quota entries; then restart the
+controller.
 
 ## 2026-10-24: Preset saves check literal Agent launch fields
 

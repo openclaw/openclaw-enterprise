@@ -64,7 +64,7 @@ input is not supported. The server validates document fields against the
 | `occ credential-source update ID [--file FILE]`        | Pushes current Secret values, or the replacement `secrets` in `FILE`, to the gateway copy. Running Agents use them after a redeploy. An `oauth2-refresh-token` source needs `FILE` naming a new `refresh_token` Secret.                                                                                                                                                                           |
 | `occ credential-source rotate ID`                      | Mints a new token for a `refresh`-type source now; running Agents need no redeploy. See [rotate a refresh source](credential-sources.md#rotate-a-refresh-source).                                                                                                                                                                                                                                 |
 | `occ service-account list`                             | Lists the Namespace's ServiceAccounts: ID and name.                                                                                                                                                                                                                                                                                                                                               |
-| `occ service-account delete ID [--force]`              | Deletes an unreferenced ServiceAccount and revokes its access token. `--force` also deletes one whose ChatGPT Backend is gone; an administrator then revokes the token at the provider. See [service accounts](service-accounts.md#force-delete-when-the-backend-is-gone).                                                                                                                        |
+| `occ service-account delete ID [--force]`              | Deletes an unreferenced ServiceAccount and revokes its access token. `--force` also deletes one whose ChatGPT Backend is gone; a ChatGPT workspace administrator then revokes the token at the provider. See [service accounts](service-accounts.md#force-delete-when-the-backend-is-gone).                                                                                                       |
 | `occ iam role list`                                    | Lists Namespace Roles.                                                                                                                                                                                                                                                                                                                                                                            |
 | `occ iam role get ID`                                  | Reads a Namespace Role.                                                                                                                                                                                                                                                                                                                                                                           |
 | `occ iam role create --file FILE`                      | Creates a Namespace Role with explicit permissions.                                                                                                                                                                                                                                                                                                                                               |
@@ -116,7 +116,10 @@ key, including under a restrictive umask. Existing files and symlinks are refuse
 explicit zero is refused before output-file creation or API issuance.
 
 Commands take IDs, not names. The CLI rejects a value without the expected
-prefix, such as `ns_` or `agt_`, and names the list command that shows the ID.
+prefix, such as `ns_` or `agt_`, and names the list command that shows the ID
+and, for an ID of another kind, that kind.
+It also rejects a prefixed value that is not the prefix plus a UUID, such as
+`agt_../x`, before sending anything.
 
 The `installation get`, `installation deployment-inventory`, and `namespace
 list` commands require an Installation-scoped service key. With a
@@ -199,9 +202,11 @@ waits; an expired or invalid date keeps the normal follow interval. It does not 
 the server's request ID. To capture that ID for a failed request, use the
 [HTTP API directly](../guides/http-api.md#troubleshoot).
 
-OCC's generic `403` adds a `hint:` line naming the grants the command needs, or
-the Namespace of a Namespace-scoped key used elsewhere. It never depends on the
-IDs passed: OCC refuses a missing ID the same way.
+OCC's `403` names the grant you lack. A generic `403` from an older OCC gets a
+`hint:` line naming the grants the command needs, and a Namespace-scoped key
+used elsewhere gets one naming its Namespace. A create's hint says only an
+Installation administrator can create that resource. OCC refuses a missing ID the same
+way as one you cannot read.
 
 ## Local development
 

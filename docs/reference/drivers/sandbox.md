@@ -44,7 +44,8 @@ transport token. It answers `serving` only after an authenticated handshake, or
 `failed` with the Harness's held startup failure, which Compute validates and
 fails the Agent revision with; anything else is `starting`. A read the provider does
 not answer is a transient dependency failure, not evidence. Compute activates
-only a `serving` Codex Harness, and reads a dedicated OpenClaw worker's status
+only a `serving` Codex Harness, reads its status while its workspace node is
+pending (a hold before Codex starts), and reads a dedicated OpenClaw worker's status
 only before its node has enrolled (`workspaceNodeEnrolled` in the context); then
 it calls `withdrawHarnessExposure(context)`, which removes that worker's exposure
 and resolves only once the provider confirms it gone, through a read the
@@ -132,11 +133,6 @@ credential source the Agent revision uses; it is empty otherwise. The selected
 paired Sandbox can consume them. The Sandbox must apply every attachment and
 reject any it did not issue. After the Harness is ready, Compute asks the
 gateway whether each attachment is applied before activating the Agent revision.
-
-A private WSS Harness endpoint may supply public CA trust in `tls.caBundle`. Compute
-projects that bundle through an immutable revision ConfigMap into only this Gateway; Node
-verifies the peer certificate and hostname, activation checks the same trust, and
-retirement removes it after the workloads.
 
 ### Sandbox resource identity
 
@@ -262,8 +258,6 @@ as the `reason`. OpenShell throws it for gRPC `PERMISSION_DENIED` and
 
 - Supported facets are `networking`, `filesystem`, and `process`; there is no
   `exec` facet, per-tool Sandbox creation, or Sandbox-owned command authorization.
-- Sandbox selection currently requires bundled Kubernetes Compute and dedicated
-  Harness execution. An installed Sandbox package does not broaden that support.
 - The shared interface does not offer a separate readiness or activation method;
   Compute owns both and retains its baseline isolation rules.
 

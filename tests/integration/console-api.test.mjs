@@ -7,10 +7,17 @@ import { stripTypeScriptTypes } from "node:module";
 import test from "node:test";
 import { brotliDecompressSync, gunzipSync } from "node:zlib";
 
-import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
-import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
+import {
+  authorizationDenials,
+  backendFixtures,
+  createConsoleAppFixture,
+  grantMember,
+  memberRole,
+} from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { bindRole, grantRole } from "../helpers/iam-grants.mjs";
+import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.mjs";
 import {
   authenticatedHeaders,
   cookieHeaderFromSetCookie,
@@ -68,20 +75,11 @@ test("observability destination requires Installation administration", async (t)
   assert.deepEqual(administrator.data, { url });
 
   // A Namespace reader must not discover the Installation-wide external destination.
-  const limited = await fixture.createAccountWithPolicy("namespace-observer", (principal) => {
-    fixture.policy.roles.push({
-      id: "role-console-observability-reader",
-      namespaceId: namespace.id,
-      permissions: [{ action: "read", resourceKind: "namespace" }],
-    });
-    fixture.policy.bindings.push({
-      id: "binding-console-observability-reader",
-      namespaceId: namespace.id,
-      subjectKind: "identity",
-      subjectId: principal.id,
-      roleId: "role-console-observability-reader",
-    });
-  });
+  const limited = await fixture.createNamespaceMember(
+    "console-observability-reader",
+    namespace.id,
+    [["read", "namespace"]],
+  );
   const session = await fixture.signIn(limited.credentials);
   const denied = await fixture.request("GET", "/observability", { session });
   assertApiError(denied, 403, "FORBIDDEN");
@@ -101,23 +99,10 @@ test("console collection APIs keep exact Namespace and Agent IAM boundaries", as
   const alphaAgent = await fixture.createAgent(alpha.id, "Alpha agent");
   const betaAgent = await fixture.createAgent(beta.id, "Beta agent");
 
-  const limited = await fixture.createAccountWithPolicy("namespace-reader", (principal) => {
-    fixture.policy.roles.push({
-      id: "role-console-alpha-reader",
-      namespaceId: alpha.id,
-      permissions: [
-        { action: "read", resourceKind: "namespace" },
-        { action: "read", resourceKind: "agent" },
-      ],
-    });
-    fixture.policy.bindings.push({
-      id: "binding-console-alpha-reader",
-      namespaceId: alpha.id,
-      subjectKind: "identity",
-      subjectId: principal.id,
-      roleId: "role-console-alpha-reader",
-    });
-  });
+  const limited = await fixture.createNamespaceMember("console-alpha-reader", alpha.id, [
+    ["read", "namespace"],
+    ["read", "agent"],
+  ]);
   const limitedSession = await fixture.signIn(limited.credentials);
 
   const visibleNamespaces = await fixture.request("GET", "/namespaces", {
@@ -184,8 +169,7 @@ test("console collection APIs keep exact Namespace and Agent IAM boundaries", as
 // the decision createSecret makes: Secret create on the Namespace collection, not Secret read and
 // not Agent create. Each step proves the answer against the same real POST.
 test("the Namespace Secret create answer matches what Secret creation checks", async (t) => {
-  const auditSink = new InMemoryAuditSink();
-  const fixture = await createConsoleAppFixture(t, { auditSink });
+  const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Secret create answer", { ready: true });
   const permissionsPath = `/namespaces/${namespace.id}/permissions`;
@@ -205,9 +189,13 @@ test("the Namespace Secret create answer matches what Secret creation checks", a
   const create = (name) =>
     fixture.request("POST", secretsPath, { session, body: { name, value: "synthetic-value" } });
 
-  assert.deepEqual(await answer(), { agents: { create: true }, secrets: { create: false } });
+  assert.deepEqual(await answer(), {
+    agents: { create: true },
+    secrets: { create: false },
+    installation: { administer: false },
+  });
   // A false answer is not an attempted operation: only the real POST is audited as denied.
-  const denials = () => auditSink.list().filter((event) => event.kind === "authorization_denial");
+  const denials = () => authorizationDenials(fixture.auditSink);
   assert.equal(denials().length, 0);
   assertApiError(await create("Refused token"), 403, "FORBIDDEN");
   assert.deepEqual(
@@ -215,16 +203,197 @@ test("the Namespace Secret create answer matches what Secret creation checks", a
     ["openclaw.secrets.create"],
   );
 
-  fixture.policy.roles
-    .find((role) => role.id === "role-secret-create-answer")
-    .permissions.push({ action: "create", resourceKind: "secret" });
+  grantMember(fixture, "secret-create-answer", [["create", "secret"]]);
   assert.deepEqual((await answer()).secrets, { create: true });
   assert.equal((await create("Created token")).status, 201);
 });
 
+// The console reads this answer instead of probing GET /observability, whose refusal the API
+// audits, and gates Backends, Settings and the Access tab on it (findings 2620-2622). So it must
+// be the decision Installation-wide operations make, and not one inferred from a Namespace grant:
+// each step proves it against the real GET /backends.
+test("the Namespace Installation administer answer matches what Installation-wide reads check", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  const installation = await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Administer answer", { ready: true });
+  const permissionsPath = `/namespaces/${namespace.id}/permissions`;
+  const answer = async (session) => {
+    const summary = await fixture.request("GET", permissionsPath, { session });
+    assert.equal(summary.status, 200);
+    return summary.data;
+  };
+  const backends = (session) => fixture.request("GET", "/backends", { session });
+  const denials = () => authorizationDenials(fixture.auditSink);
+
+  // A member with Namespace-wide Agent create does not administer the Installation.
+  const member = await fixture.createNamespaceMember("administer-answer", namespace.id, [
+    ["read", "namespace"],
+    ["create", "agent"],
+  ]);
+  const session = await fixture.signIn(member.credentials);
+  const memberAnswer = await answer(session);
+  assert.deepEqual(memberAnswer.agents, { create: true });
+  assert.deepEqual(memberAnswer.installation, { administer: false });
+  // A false answer is not an attempted operation: only the real read is audited as denied.
+  assert.deepEqual(denials(), []);
+  assertApiError(await backends(session), 403, "FORBIDDEN");
+  assert.deepEqual(
+    denials().map((event) => event.action),
+    ["openclaw.backends.list"],
+  );
+
+  // An administrator whose Restriction denies Agent create in this Namespace still administers
+  // the Installation: Agent create says nothing about it. The Restriction is Namespace-wide, so
+  // it applies to the member too; her answer was read above.
+  fixture.policy.restrictions.push({
+    id: "deny-agent-create-here",
+    namespaceId: namespace.id,
+    resourceKind: "agent",
+    action: "create",
+    effect: "deny",
+  });
+  const restricted = await answer();
+  assert.deepEqual(restricted.agents, { create: false });
+  assert.deepEqual(restricted.installation, { administer: true });
+  assert.equal((await backends()).status, 200);
+
+  // A Restriction on Installation administer changes the answer as it changes the read.
+  fixture.policy.restrictions.push({
+    id: "deny-installation-administer",
+    resourceKind: "installation",
+    resourceId: installation.id,
+    action: "administer",
+    effect: "deny",
+  });
+  assert.deepEqual((await answer()).installation, { administer: false });
+  assertApiError(await backends(), 403, "FORBIDDEN");
+});
+
+// The console's Secret dialog disables Replace value and Delete Secret when the exact Secret
+// read's callerPermissions say the caller may not, instead of refusing after the value is typed
+// (finding D761). So each must be the decision the real PATCH and DELETE make, including a
+// Restriction over an administrator, and reading it must audit nothing.
+test("the Secret read's caller answer matches what Secret replace and delete check", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Secret write answer", { ready: true });
+  const secret = await fixture.createSecret(namespace.id, "Answered token", "synthetic-value");
+  const secretPath = `/namespaces/${namespace.id}/secrets/${secret.id}`;
+  const answer = async (session) => {
+    const read = await fixture.request("GET", secretPath, { session });
+    assert.equal(read.status, 200);
+    return read.data.callerPermissions;
+  };
+  const replace = (session) =>
+    fixture.request("PATCH", secretPath, { session, body: { value: "synthetic-rotated" } });
+  const denials = () => authorizationDenials(fixture.auditSink);
+
+  // A reader may neither replace nor delete; a false answer is not an attempted operation.
+  const member = await fixture.createNamespaceMember("secret-write-answer", namespace.id, [
+    ["read", "namespace"],
+    ["read", "secret"],
+  ]);
+  const session = await fixture.signIn(member.credentials);
+  assert.deepEqual(await answer(session), { update: false, delete: false });
+  assert.deepEqual(denials(), []);
+  assertApiError(await replace(session), 403, "FORBIDDEN");
+  assertApiError(await fixture.request("DELETE", secretPath, { session }), 403, "FORBIDDEN");
+  assert.deepEqual(
+    denials().map((event) => event.action),
+    ["openclaw.secrets.update", "openclaw.secrets.delete"],
+  );
+
+  // Each grant changes its own answer and its own write.
+  grantMember(fixture, "secret-write-answer", [["update", "secret"]]);
+  assert.deepEqual(await answer(session), { update: true, delete: false });
+  assert.equal((await replace(session)).status, 200);
+
+  // A Restriction on Secret update overrides an administrator's grant, in the answer and the
+  // write alike.
+  assert.deepEqual(await answer(), { update: true, delete: true });
+  fixture.policy.restrictions.push({
+    id: "deny-secret-update-here",
+    namespaceId: namespace.id,
+    resourceKind: "secret",
+    action: "update",
+    effect: "deny",
+  });
+  assert.deepEqual(await answer(), { update: false, delete: true });
+  assertApiError(await replace(), 403, "FORBIDDEN");
+
+  grantMember(fixture, "secret-write-answer", [["delete", "secret"]]);
+  assert.deepEqual(await answer(session), { update: false, delete: true });
+  assert.equal((await fixture.request("DELETE", secretPath, { session })).status, 204);
+});
+
+// The console's Logs view skips the log text read for a caller whose Agent answer says readLogs
+// is false, because the API audits each refused read as a denial (finding D758). So readLogs must
+// be the decision the log read makes: read_logs, or administer in its place unless a Restriction
+// denies read_logs. Each step proves it against the real read, and the answer audits nothing.
+test("the Agent readLogs answer matches what the runtime log read checks", async (t) => {
+  const fixture = await createConsoleAppFixture(t, {
+    computeDriver: createRuntimeLogComputeDriver(),
+    agentRuntimeLogs: { enabled: true, cursorSecret: `console-api-logs-${randomUUID()}` },
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Log text answer", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Log text agent");
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const readLogs = async (session) => {
+    const summary = await fixture.request("GET", `${agentPath}/permissions`, { session });
+    assert.equal(summary.status, 200);
+    return summary.data.readLogs;
+  };
+  const logRead = (session) =>
+    fixture.request(
+      "GET",
+      `${agentPath}/deployments/${active.revision.id}/runtime/logs?source=gateway`,
+      { session },
+    );
+  const denials = () =>
+    authorizationDenials(fixture.auditSink, "openclaw.agents.runtime_logs.view");
+
+  // A reader without read_logs: the answer is false, and only the real read is audited.
+  const reader = await fixture.createNamespaceMember("log-text-reader", namespace.id, [
+    ["read", "namespace"],
+    ["read", "agent"],
+  ]);
+  const readerSession = await fixture.signIn(reader.credentials);
+  assert.equal(await readLogs(readerSession), false);
+  assert.deepEqual(denials(), []);
+  assertApiError(await logRead(readerSession), 403, "FORBIDDEN");
+  assert.equal(denials().length, 1);
+
+  // read_logs, as the Agent logs guide delegates it.
+  grantMember(fixture, "log-text-reader", [["read_logs", "agent"]]);
+  assert.equal(await readLogs(readerSession), true);
+  assert.equal((await logRead(readerSession)).status, 200);
+
+  // An Installation administrator holds administer, which stands in for read_logs.
+  assert.equal(await readLogs(), true);
+  assert.equal((await logRead()).status, 200);
+
+  // A Restriction on read_logs denies log text even to an administrator: administer cannot
+  // bypass it.
+  fixture.policy.restrictions.push({
+    id: "deny-log-text",
+    namespaceId: namespace.id,
+    resourceKind: "agent",
+    resourceId: agent.id,
+    action: "read_logs",
+    effect: "deny",
+  });
+  assert.equal(await readLogs(), false);
+  assert.equal(await readLogs(readerSession), false);
+  assert.equal(denials().length, 1);
+  assertApiError(await logRead(), 403, "FORBIDDEN");
+  assertApiError(await logRead(readerSession), 403, "FORBIDDEN");
+  assert.equal(denials().length, 3);
+});
+
 test("caller permission summaries report primary IAM decisions without authorizing a later operation", async (t) => {
-  const auditSink = new InMemoryAuditSink();
-  const fixture = await createConsoleAppFixture(t, { auditSink });
+  const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Permission summaries", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Summarized agent");
@@ -247,47 +416,32 @@ test("caller permission summaries report primary IAM decisions without authorizi
     configurationSecretsOperateDeniedBindings: [],
     agentSourcesOperate: true,
     sandboxPolicyRead: true,
+    readLogs: true,
   });
   const adminNamespace = await fixture.request("GET", namespacePath);
   assert.equal(adminNamespace.status, 200);
-  assert.deepEqual(adminNamespace.data, { agents: { create: true }, secrets: { create: true } });
+  assert.deepEqual(adminNamespace.data, {
+    agents: { create: true },
+    secrets: { create: true },
+    installation: { administer: true },
+  });
 
   // Namespace read plus exact read and deploy on one Agent: only deploy is reported.
-  const limited = await fixture.createAccountWithPolicy("permission-summary", (principal) => {
-    fixture.policy.roles.push(
-      {
-        id: "role-permission-summary-namespace",
-        namespaceId: namespace.id,
-        permissions: [{ action: "read", resourceKind: "namespace" }],
-      },
-      {
-        id: "role-permission-summary-agent",
-        namespaceId: namespace.id,
-        permissions: [
-          { action: "read", resourceKind: "agent" },
-          { action: "deploy", resourceKind: "agent" },
-        ],
-      },
-    );
-    fixture.policy.bindings.push(
-      {
-        id: "binding-permission-summary-namespace",
-        namespaceId: namespace.id,
-        subjectKind: "identity",
-        subjectId: principal.id,
-        roleId: "role-permission-summary-namespace",
-      },
-      {
-        id: "binding-permission-summary-agent",
-        namespaceId: namespace.id,
-        subjectKind: "identity",
-        subjectId: principal.id,
-        roleId: "role-permission-summary-agent",
-        resourceKind: "agent",
-        resourceId: agent.id,
-      },
-    );
-  });
+  const limited = await fixture.createNamespaceMember(
+    "permission-summary-namespace",
+    namespace.id,
+    [["read", "namespace"]],
+  );
+  // Each grant below is its own Role, bound to one exact resource.
+  const grantExact = (name, permissions, resource) =>
+    grantRole(fixture.policy, limited.principal.id, {
+      id: `role-permission-summary-${name}`,
+      bindingId: `binding-permission-summary-${name}`,
+      namespaceId: namespace.id,
+      permissions,
+      resource,
+    });
+  grantExact("agent", { agent: ["read", "deploy"] }, { kind: "agent", id: agent.id });
   const session = await fixture.signIn(limited.credentials);
   const summary = await fixture.request("GET", permissionsPath, { session });
   assert.equal(summary.status, 200);
@@ -303,24 +457,16 @@ test("caller permission summaries report primary IAM decisions without authorizi
     configurationSecretsOperateDeniedBindings: [],
     agentSourcesOperate: false,
     sandboxPolicyRead: false,
+    readLogs: false,
   });
   // Reading the Agent's network policy and suggestions needs read on its SandboxPolicy, a grant
   // no other answer covers (finding 2454). The grant names only this Agent's policy, the
   // resource the policy and suggestion reads authorize.
-  fixture.policy.roles.push({
-    id: "role-permission-summary-sandbox-policy",
-    namespaceId: namespace.id,
-    permissions: [{ action: "read", resourceKind: "sandbox_policy" }],
-  });
-  fixture.policy.bindings.push({
-    id: "binding-permission-summary-sandbox-policy",
-    namespaceId: namespace.id,
-    subjectKind: "identity",
-    subjectId: limited.principal.id,
-    roleId: "role-permission-summary-sandbox-policy",
-    resourceKind: "sandbox_policy",
-    resourceId: `sbp_${agent.id.slice(4)}`,
-  });
+  grantExact(
+    "sandbox-policy",
+    { sandbox_policy: ["read"] },
+    { kind: "sandbox_policy", id: `sbp_${agent.id.slice(4)}` },
+  );
   const policySummary = await fixture.request("GET", permissionsPath, { session });
   assert.equal(policySummary.status, 200);
   assert.equal(policySummary.data.sandboxPolicyRead, true);
@@ -338,20 +484,11 @@ test("caller permission summaries report primary IAM decisions without authorizi
   );
   assertApiError(policyOutage, 503, "DEPENDENCY_UNAVAILABLE");
   // Configuration update on the Agent's Configuration is its own grant (finding 2421).
-  fixture.policy.roles.push({
-    id: "role-permission-summary-configuration",
-    namespaceId: namespace.id,
-    permissions: [{ action: "update", resourceKind: "configuration" }],
-  });
-  fixture.policy.bindings.push({
-    id: "binding-permission-summary-configuration",
-    namespaceId: namespace.id,
-    subjectKind: "identity",
-    subjectId: limited.principal.id,
-    roleId: "role-permission-summary-configuration",
-    resourceKind: "configuration",
-    resourceId: agent.configurationId,
-  });
+  grantExact(
+    "configuration",
+    { configuration: ["update"] },
+    { kind: "configuration", id: agent.configurationId },
+  );
   const configurationSummary = await fixture.request("GET", permissionsPath, { session });
   assert.equal(configurationSummary.status, 200);
   assert.equal(configurationSummary.data.configurationUpdate, true);
@@ -361,9 +498,10 @@ test("caller permission summaries report primary IAM decisions without authorizi
   assert.deepEqual(namespaceSummary.data, {
     agents: { create: false },
     secrets: { create: false },
+    installation: { administer: false },
   });
   // A false flag is an answer, not an attempted operation, so nothing is audited as denied.
-  const denials = () => auditSink.list().filter((event) => event.kind === "authorization_denial");
+  const denials = () => authorizationDenials(fixture.auditSink);
   assert.equal(denials().length, 0);
 
   // The summary itself requires Agent read and an existing Agent.
@@ -416,15 +554,12 @@ test("caller permission summaries report primary IAM decisions without authorizi
     },
   );
   const boundPermissions = `/namespaces/${namespace.id}/agents/${boundAgent.id}/permissions`;
-  const bindExact = (id, roleId, resourceKind, resourceId) =>
-    fixture.policy.bindings.push({
+  const bindExact = (id, roleId, kind, resourceId) =>
+    bindRole(fixture.policy, limited.principal.id, {
       id,
-      namespaceId: namespace.id,
-      subjectKind: "identity",
-      subjectId: limited.principal.id,
       roleId,
-      resourceKind,
-      resourceId,
+      namespaceId: namespace.id,
+      resource: { kind, id: resourceId },
     });
   fixture.policy.roles.push(
     {
@@ -501,8 +636,7 @@ test("caller permission summaries report primary IAM decisions without authorizi
 // replaced in the same save (finding 2444). The per-binding answer names each binding whose
 // Secret the caller lacks operate on, and each step proves it against the same real PATCH.
 test("the per-binding Secret answer names the bindings a Configuration save must replace", async (t) => {
-  const auditSink = new InMemoryAuditSink();
-  const fixture = await createConsoleAppFixture(t, { auditSink });
+  const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Per-binding answer", { ready: true });
   // An administrator's bot token Secret, bound under two names, and an app token Secret.
@@ -530,24 +664,20 @@ test("the per-binding Secret answer names the bindings a Configuration save must
     ["read", "configuration"],
   ]);
   const session = await fixture.signIn(member.credentials);
-  const grant = (id, permissions, resourceKind, resourceId) => {
-    fixture.policy.roles.push({ id: `role-${id}`, namespaceId: namespace.id, permissions });
-    fixture.policy.bindings.push({
-      id: `binding-${id}`,
+  const grant = (id, permissions, kind, resourceId) =>
+    grantRole(fixture.policy, member.principal.id, {
+      id: `role-${id}`,
+      bindingId: `binding-${id}`,
       namespaceId: namespace.id,
-      subjectKind: "identity",
-      subjectId: member.principal.id,
-      roleId: `role-${id}`,
-      resourceKind,
-      resourceId,
+      permissions,
+      resource: { kind, id: resourceId },
     });
-  };
   const answer = async () => {
     const summary = await fixture.request("GET", permissionsPath, { session });
     assert.equal(summary.status, 200);
     return summary.data;
   };
-  const denials = () => auditSink.list().filter((event) => event.kind === "authorization_denial");
+  const denials = () => authorizationDenials(fixture.auditSink);
 
   // Without Configuration update the answer is not reported: no names, as with the boolean. Agent
   // update reads the bindings for its own answer, which does not report them either.
@@ -617,24 +747,36 @@ test("the per-binding Secret answer names the bindings a Configuration save must
   const operable = await answer();
   assert.equal(operable.configurationSecretsOperate, true);
   assert.deepEqual(operable.configurationSecretsOperateDeniedBindings, []);
-
-  // An IAM failure on a bound Secret's operate decision is not a denial: the whole answer is
-  // unavailable, so the console keeps its usual rule instead of listing or omitting a name.
-  const authorize = fixture.iamDriver.authorize;
-  fixture.iamDriver.authorize = async (request) => {
-    if (request.action === "operate" && request.resource.kind === "secret") {
-      throw new Error("IAM outage");
-    }
-    return authorize.call(fixture.iamDriver, request);
-  };
-  let outage;
-  try {
-    outage = await fixture.request("GET", permissionsPath, { session });
-  } finally {
-    fixture.iamDriver.authorize = authorize;
-  }
-  assertApiError(outage, 503, "DEPENDENCY_UNAVAILABLE");
+  // An IAM failure on a bound Secret's operate decision fails the whole answer: "an IAM failure
+  // on any caller permission decision ..." proves it for a Configuration editor like this one.
 });
+
+// A signed-in member of `namespace` holding `grants` across it, plus read on each of the
+// `readable` Secrets. `grant` adds one more grant: on one resource, or across the Namespace
+// without `resourceId`, as Agent create needs. `data` and `answer` read the Secret answer at
+// `answerPath`.
+async function secretAnswerMember(fixture, namespace, answerPath, label, grants, readable) {
+  const created = await fixture.createNamespaceMember(label, namespace.id, grants);
+  const grant = (id, action, kind, resourceId) =>
+    grantRole(fixture.policy, created.principal.id, {
+      id: `role-${label}-${id}`,
+      bindingId: `binding-${label}-${id}`,
+      namespaceId: namespace.id,
+      permissions: [{ action, resourceKind: kind }],
+      resource: resourceId === undefined ? undefined : { kind, id: resourceId },
+    });
+  for (const secret of readable) {
+    grant(`read-${secret.id}`, "read", "secret", secret.id);
+  }
+  const session = await fixture.signIn(created.credentials);
+  const data = async () => {
+    const response = await fixture.request("GET", answerPath, { session });
+    assert.equal(response.status, 200);
+    return response.data;
+  };
+  const answer = async () => (await data()).operateDenied;
+  return { session, grant, answer, data, principal: created.principal };
+}
 
 // Binding a Secret to an Agent's Configuration, or as its Harness authentication source,
 // authorizes Secret operate on it, so a Secret field that offered every readable Secret let a
@@ -642,8 +784,7 @@ test("the per-binding Secret answer names the bindings a Configuration save must
 // Secrets the caller may not operate, only to a caller who could make such a save, and each
 // step proves it against the same real Configuration PATCH.
 async function secretAnswerFixture(t, options = {}) {
-  const auditSink = new InMemoryAuditSink();
-  const fixture = await createConsoleAppFixture(t, { auditSink, ...options });
+  const fixture = await createConsoleAppFixture(t, options);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Secret operate answer", { ready: true });
   const app = await fixture.createSecret(namespace.id, "App token", "app-value");
@@ -656,37 +797,9 @@ async function secretAnswerFixture(t, options = {}) {
     { secretBindings: { SLACK_APP_TOKEN: binding(app), SLACK_BOT_TOKEN: binding(bot) } },
   );
   const answerPath = `/namespaces/${namespace.id}/agents/${agent.id}/permissions/secrets`;
-  // A member with read on the Agent, its Configuration and the named Secrets, plus `grants`.
-  const member = async (label, grants, readable) => {
-    const created = await fixture.createNamespaceMember(label, namespace.id, grants);
-    const grant = (id, action, resourceKind, resourceId) => {
-      fixture.policy.roles.push({
-        id: `role-${label}-${id}`,
-        namespaceId: namespace.id,
-        permissions: [{ action, resourceKind }],
-      });
-      fixture.policy.bindings.push({
-        id: `binding-${label}-${id}`,
-        namespaceId: namespace.id,
-        subjectKind: "identity",
-        subjectId: created.principal.id,
-        roleId: `role-${label}-${id}`,
-        resourceKind,
-        resourceId,
-      });
-    };
-    for (const secret of readable) {
-      grant(`read-${secret.id}`, "read", "secret", secret.id);
-    }
-    const session = await fixture.signIn(created.credentials);
-    const answer = async () => {
-      const response = await fixture.request("GET", answerPath, { session });
-      assert.equal(response.status, 200);
-      return response.data.operateDenied;
-    };
-    return { session, grant, answer, principal: created.principal };
-  };
-  const denials = () => auditSink.list().filter((event) => event.kind === "authorization_denial");
+  const member = (label, grants, readable) =>
+    secretAnswerMember(fixture, namespace, answerPath, label, grants, readable);
+  const denials = () => authorizationDenials(fixture.auditSink);
   return { fixture, namespace, agent, app, bot, binding, answerPath, member, denials };
 }
 
@@ -722,7 +835,7 @@ test("the Agent Secret answer names the readable Secrets a binding save would be
   // An administrator may operate every Secret, so nothing is listed.
   const admin = await fixture.request("GET", answerPath);
   assert.equal(admin.status, 200);
-  assert.deepEqual(admin.data, { operateDenied: [] });
+  assert.deepEqual(admin.data, { operateDenied: [], unreadableOperateDenied: 0 });
 
   // The D710 persona: Configuration update without Agent update.
   const editor = await member("secret-answer-editor", reads, readable);
@@ -778,11 +891,63 @@ test("the Agent Secret answer names the readable Secrets a binding save would be
   agentEditor.grant("agent", "update", "agent", agent.id);
   assert.deepEqual(await agentEditor.answer(), [app.id, bot.id, ...spareIds].sort());
   // Agent deploy without either update: deploying a draft authorizes Secret operate on every
-  // Secret it binds, so the answer is reported (the iam.md operator, finding 2546).
-  const deployer = await member("secret-answer-deployer", reads, readable);
+  // Secret it binds, so the answer is reported (the iam.md operator, finding 2546). Such a caller
+  // can bind nothing, so it covers only the Secrets the draft binds now: the Configuration's
+  // bindings (the editor rebound them to app and the first spare) and the fixture's Harness
+  // authentication Secret, readable here. The other readable Secrets stay unreported, since no
+  // deployment checks them (finding 2565).
+  const harnessSecret = agent.harnessAuth.source;
+  const deniedBeforeDeployer = denials().length;
+  const deployer = await member("secret-answer-deployer", reads, [...readable, harnessSecret]);
   assert.deepEqual(await deployer.answer(), []);
   deployer.grant("deploy", "deploy", "agent", agent.id);
-  assert.deepEqual(await deployer.answer(), [app.id, bot.id, ...spareIds].sort());
+  assert.deepEqual(await deployer.answer(), [app.id, spares[0].id, harnessSecret.id].sort());
+  deployer.grant("operate-harness", "operate", "secret", harnessSecret.id);
+  assert.deepEqual(await deployer.answer(), [app.id, spares[0].id].sort());
+  // The narrowed answer still makes no refused, audited read.
+  assert.equal(denials().length, deniedBeforeDeployer);
+  // A bound Secret the caller may not read is never named, only counted, and only while she may
+  // not operate it either: deploying checks operate alone (finding D756). This deployer reads
+  // only app of the three Secrets the draft binds.
+  const blind = await member("secret-answer-blind-deployer", reads, [app]);
+  blind.grant("deploy", "deploy", "agent", agent.id);
+  assert.deepEqual(await blind.data(), { operateDenied: [app.id], unreadableOperateDenied: 2 });
+  blind.grant("operate-spare", "operate", "secret", spares[0].id);
+  blind.grant("operate-app", "operate", "secret", app.id);
+  assert.deepEqual(await blind.data(), { operateDenied: [], unreadableOperateDenied: 1 });
+  assert.equal(denials().length, deniedBeforeDeployer);
+  // The count matches the real deployment: refused while one is counted, authorized at 0.
+  const deployPath = `/namespaces/${namespace.id}/agents/${agent.id}/deploy`;
+  const refused = await fixture.request("POST", deployPath, { session: blind.session });
+  assertApiError(refused, 403, "FORBIDDEN");
+  assert.equal(denials().at(-1).action, "openclaw.agents.deploy");
+  blind.grant("operate-harness", "operate", "secret", harnessSecret.id);
+  assert.deepEqual(await blind.data(), { operateDenied: [], unreadableOperateDenied: 0 });
+  // The deployment also checks the Agent's own access to the Secrets the editor rebound.
+  for (const secret of [app, spares[0]]) {
+    await fixture.grantAgentSecretOperate(agent, secret.ref);
+  }
+  // Every authorization check passes: this fixture's Compute Driver then refuses the topology,
+  // which is no authorization denial.
+  const deniedBeforeDeploy = denials().length;
+  const admitted = await fixture.request("POST", deployPath, { session: blind.session });
+  assertApiError(admitted, 409, "RESOURCE_CONFLICT");
+  assert.equal(denials().length, deniedBeforeDeploy);
+  const deniedAfterDeploy = denials().length;
+  // A reader who may not deploy or update gets no count.
+  const blindReader = await member("secret-answer-blind-reader", reads, []);
+  assert.deepEqual(await blindReader.data(), { operateDenied: [], unreadableOperateDenied: 0 });
+  assert.equal(denials().length, deniedAfterDeploy);
+  // A caller who may bind gets both answers at once: every readable Secret she may not operate,
+  // bound or not, and a count of the bound ones she may neither read nor operate (app and the
+  // Harness authentication Secret). The unbound Secret nobody reads is in neither.
+  const blindEditor = await member("secret-answer-blind-editor", reads, [bot, ...spares]);
+  blindEditor.grant("configuration", "update", "configuration", agent.configurationId);
+  assert.deepEqual(await blindEditor.data(), {
+    operateDenied: [bot.id, ...spareIds].sort(),
+    unreadableOperateDenied: 2,
+  });
+  assert.equal(denials().length, deniedAfterDeploy);
   // Both updates without Configuration read: no save can bind a Secret, so it is not reported.
   const unreadConfiguration = await member(
     "secret-answer-no-configuration-read",
@@ -813,19 +978,10 @@ test("the Agent Secret answer names the readable Secrets a binding save would be
 
   // An IAM failure on a Secret's operate decision is not a denial: the whole answer is
   // unavailable, so the console keeps every Secret choosable instead of marking some.
-  const authorize = fixture.iamDriver.authorize;
-  fixture.iamDriver.authorize = async (request) => {
-    if (request.action === "operate" && request.resource.kind === "secret") {
-      throw new Error("IAM outage");
-    }
-    return authorize.call(fixture.iamDriver, request);
-  };
-  let outage;
-  try {
-    outage = await fixture.request("GET", answerPath, { session: editor.session });
-  } finally {
-    fixture.iamDriver.authorize = authorize;
-  }
+  const outage = await fixture.withIamOutage(
+    (request) => request.action === "operate" && request.resource.kind === "secret",
+    () => fixture.request("GET", answerPath, { session: editor.session }),
+  );
   assertApiError(outage, 503, "DEPENDENCY_UNAVAILABLE");
   // The answer itself requires Agent read and an existing Agent.
   const missing = await fixture.request(
@@ -901,44 +1057,15 @@ test("the Agent Secret answer makes its Secret decisions in one read unit", asyn
 // the Namespace Secret answer names the readable Secrets the caller may not operate, only to a
 // caller who may create an Agent, and each step proves it against the same real creates.
 async function namespaceSecretAnswerFixture(t, options = {}) {
-  const auditSink = new InMemoryAuditSink();
-  const fixture = await createConsoleAppFixture(t, { auditSink, ...options });
+  const fixture = await createConsoleAppFixture(t, options);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Create Secret answer", { ready: true });
   const model = await fixture.createSecret(namespace.id, "Model key", "model-value");
   const bot = await fixture.createSecret(namespace.id, "Bot token", "bot-value");
   const answerPath = `/namespaces/${namespace.id}/permissions/secrets`;
-  // A member with `grants` across the Namespace, plus read on each of the `readable` Secrets.
-  const member = async (label, grants, readable) => {
-    const created = await fixture.createNamespaceMember(label, namespace.id, grants);
-    const grant = (id, action, resourceKind, resourceId) => {
-      fixture.policy.roles.push({
-        id: `role-${label}-${id}`,
-        namespaceId: namespace.id,
-        permissions: [{ action, resourceKind }],
-      });
-      fixture.policy.bindings.push({
-        id: `binding-${label}-${id}`,
-        namespaceId: namespace.id,
-        subjectKind: "identity",
-        subjectId: created.principal.id,
-        roleId: `role-${label}-${id}`,
-        // A grant without a resource ID applies across the Namespace, as Agent create needs.
-        ...(resourceId === undefined ? {} : { resourceKind, resourceId }),
-      });
-    };
-    for (const secret of readable) {
-      grant(`read-${secret.id}`, "read", "secret", secret.id);
-    }
-    const session = await fixture.signIn(created.credentials);
-    const answer = async () => {
-      const response = await fixture.request("GET", answerPath, { session });
-      assert.equal(response.status, 200);
-      return response.data.operateDenied;
-    };
-    return { session, grant, answer };
-  };
-  const denials = () => auditSink.list().filter((event) => event.kind === "authorization_denial");
+  const member = (label, grants, readable) =>
+    secretAnswerMember(fixture, namespace, answerPath, label, grants, readable);
+  const denials = () => authorizationDenials(fixture.auditSink);
   return { fixture, namespace, model, bot, answerPath, member, denials };
 }
 
@@ -1065,19 +1192,10 @@ test("the Namespace Secret answer names the readable Secrets Agent creation woul
   // An IAM failure on a Secret's operate decision is not a denial: the whole answer is
   // unavailable, so the console keeps every Secret choosable instead of marking some.
   const deniedBefore = denials().length;
-  const authorize = fixture.iamDriver.authorize;
-  fixture.iamDriver.authorize = async (request) => {
-    if (request.action === "operate" && request.resource.kind === "secret") {
-      throw new Error("IAM outage");
-    }
-    return authorize.call(fixture.iamDriver, request);
-  };
-  let outage;
-  try {
-    outage = await fixture.request("GET", answerPath, { session: creator.session });
-  } finally {
-    fixture.iamDriver.authorize = authorize;
-  }
+  const outage = await fixture.withIamOutage(
+    (request) => request.action === "operate" && request.resource.kind === "secret",
+    () => fixture.request("GET", answerPath, { session: creator.session }),
+  );
   assertApiError(outage, 503, "DEPENDENCY_UNAVAILABLE");
   assert.equal(denials().length, deniedBefore);
 });
@@ -1143,8 +1261,7 @@ test("the Namespace Secret answer makes its Secret decisions in one read unit", 
 // Secrets and the Harness authentication Secret, and only for a caller who may update the Agent
 // and read its Configuration. Each step proves the answer against the same real Agent PATCH.
 test("the Agent sources answer matches what a real Agent update checks", async (t) => {
-  const auditSink = new InMemoryAuditSink();
-  const fixture = await createConsoleAppFixture(t, { auditSink });
+  const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Agent sources", { ready: true });
   const bound = await fixture.createSecret(namespace.id, "Bound token", "bound-token-value");
@@ -1165,41 +1282,26 @@ test("the Agent sources answer matches what a real Agent update checks", async (
   );
   assert.equal(agent.harnessAuth.method, "api_key");
   const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
-  const member = await fixture.createAccountWithPolicy("agent-sources", (principal) => {
-    fixture.policy.roles.push({
-      id: "role-agent-sources-editor",
-      namespaceId: namespace.id,
-      permissions: [
-        { action: "read", resourceKind: "namespace" },
-        { action: "read", resourceKind: "agent" },
-        { action: "update", resourceKind: "agent" },
-      ],
-    });
-    fixture.policy.bindings.push({
-      id: "binding-agent-sources-editor",
-      namespaceId: namespace.id,
-      subjectKind: "identity",
-      subjectId: principal.id,
-      roleId: "role-agent-sources-editor",
-    });
-  });
+  const member = await fixture.createNamespaceMember("agent-sources-editor", namespace.id, [
+    ["read", "namespace"],
+    ["read", "agent"],
+    ["update", "agent"],
+  ]);
   const session = await fixture.signIn(member.credentials);
-  const grant = (id, action, resourceKind, resourceId) => {
+  // A revoked grant is granted again by binding its Role once more.
+  const grant = (id, action, kind, resourceId) => {
     if (!fixture.policy.roles.some((role) => role.id === `role-${id}`)) {
       fixture.policy.roles.push({
         id: `role-${id}`,
         namespaceId: namespace.id,
-        permissions: [{ action, resourceKind }],
+        permissions: [{ action, resourceKind: kind }],
       });
     }
-    fixture.policy.bindings.push({
+    bindRole(fixture.policy, member.principal.id, {
       id: `binding-${id}`,
-      namespaceId: namespace.id,
-      subjectKind: "identity",
-      subjectId: member.principal.id,
       roleId: `role-${id}`,
-      resourceKind,
-      resourceId,
+      namespaceId: namespace.id,
+      resource: { kind, id: resourceId },
     });
   };
   const summary = async () => {
@@ -1218,7 +1320,7 @@ test("the Agent sources answer matches what a real Agent update checks", async (
       session,
       body: { configurationId: agent.configurationId },
     });
-  const denials = () => auditSink.list().filter((event) => event.kind === "authorization_denial");
+  const denials = () => authorizationDenials(fixture.auditSink);
 
   const revoke = (id) => {
     const index = fixture.policy.bindings.findIndex((binding) => binding.id === `binding-${id}`);
@@ -1259,7 +1361,7 @@ test("the Agent sources answer matches what a real Agent update checks", async (
   // answer is false even though each source check would pass.
   grant("agent-sources-harness", "operate", "secret", agent.harnessAuth.source.id);
   assert.equal(await answer(), true);
-  const editor = fixture.policy.roles.find((role) => role.id === "role-agent-sources-editor");
+  const editor = memberRole(fixture, "agent-sources-editor");
   editor.permissions = editor.permissions.filter((permission) => permission.action !== "update");
   const withoutUpdate = await summary();
   assert.equal(withoutUpdate.update, false);
@@ -1717,8 +1819,7 @@ test("public Agent revisions return the selected binding without private credent
 // #3600), so the answer must be the decision that probe makes: Agent administer on the exact
 // Agent, not any other Agent action. Each step proves the answer against the real probe.
 test("the Agent administer answer matches what native admin access checks", async (t) => {
-  const auditSink = new InMemoryAuditSink();
-  const fixture = await createConsoleAppFixture(t, { auditSink });
+  const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Administer answer", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Administered agent");
@@ -1739,7 +1840,7 @@ test("the Agent administer answer matches what native admin access checks", asyn
     return summary.data.administer;
   };
   const probe = () => fixture.request("GET", `${agentPath}/native-admin`, { session });
-  const denials = () => auditSink.list().filter((event) => event.kind === "authorization_denial");
+  const denials = () => authorizationDenials(fixture.auditSink);
 
   assert.equal(await answer(), false);
   // The answer is not an attempted operation: only the real probe is audited as denied.
@@ -1753,19 +1854,12 @@ test("the Agent administer answer matches what native admin access checks", asyn
   // Administer granted on this Agent alone: the answer probes this exact Agent, as the probe
   // does, so it is true here and stays false for another Agent the member can read.
   const other = await fixture.createAgent(namespace.id, "Other administered agent");
-  fixture.policy.roles.push({
+  grantRole(fixture.policy, member.principal.id, {
     id: "role-administer-exact",
+    bindingId: "binding-administer-exact",
     namespaceId: namespace.id,
-    permissions: [{ action: "administer", resourceKind: "agent" }],
-  });
-  fixture.policy.bindings.push({
-    id: "binding-administer-exact",
-    namespaceId: namespace.id,
-    subjectKind: "identity",
-    subjectId: member.principal.id,
-    roleId: "role-administer-exact",
-    resourceKind: "agent",
-    resourceId: agent.id,
+    permissions: { agent: ["administer"] },
+    resource: { kind: "agent", id: agent.id },
   });
   assert.equal(await answer(), true);
   const otherPath = `/namespaces/${namespace.id}/agents/${other.id}`;
@@ -1778,9 +1872,7 @@ test("the Agent administer answer matches what native admin access checks", asyn
     "FORBIDDEN",
   );
 
-  fixture.policy.roles
-    .find((role) => role.id === "role-administer-answer")
-    .permissions.push({ action: "administer", resourceKind: "agent" });
+  grantMember(fixture, "administer-answer", [["administer", "agent"]]);
   assert.equal(await answer(), true);
   // This fixture does not enable native admin UI, so an authorized probe reports it disabled.
   const allowed = await probe();
@@ -1832,6 +1924,18 @@ test("an IAM failure on any caller permission decision fails the whole answer in
       503,
       "DEPENDENCY_UNAVAILABLE",
       label,
+    );
+  }
+  // The exact Secret read's callerPermissions (finding D761).
+  for (const action of ["update", "delete"]) {
+    assertApiError(
+      await outage(
+        `/namespaces/${namespace.id}/secrets/${bound.id}`,
+        decision(action, "secret", bound.id),
+      ),
+      503,
+      "DEPENDENCY_UNAVAILABLE",
+      `secret ${action}`,
     );
   }
 

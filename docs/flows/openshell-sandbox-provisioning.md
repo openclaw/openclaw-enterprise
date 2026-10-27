@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
-updated: 2026-10-24
-last_updated_session: authoring-run/67a0706e-56ab-4514-adca-35cf217b0c3b
+updated: 2026-10-27
+last_updated_session: authoring-run/8777cd8a-6832-4b9e-8fdd-51579d6b02d2
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -219,10 +219,14 @@ The Driver mounts version state at `/sandbox/.openclaw-runtime` and persistent
 subpaths below `/sandbox/.openclaw-mounts`. Admitted `/home/node` paths move under
 runtime `harnessHome` for native hook credentials. Codex
 hooks trust the provider-file Gateway CA and require node-reachable routing.
-`OPENCLAW_NODE_STATE_DIR` uses a process-created `state` child to avoid atomic
-replacement through symlinks/root-owned mounts. Workspace, node identity, sessions
-and images stay separate. The supervisor probes `/tmp`; native `TMPDIR` is a
-private `tmp` child under the runtime home.
+`OPENCLAW_NODE_STATE_DIR` uses a process-created `state` child to avoid root-owned
+mounts and symlinks.
+`apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:agentWithNodeEntrypoint`
+and `NATIVE_WORKER_ENTRYPOINT` apply `0700` before OpenClaw setup or migration,
+clearing inherited setgid. OpenClaw prepares its children on retry; retained state
+and workspace permissions stay unchanged. Permission failures stop startup. On upgrade, the Driver can adopt a correctly owned Codex workspace-node Sandbox whose launcher differs only in the old directory initialization. It leaves the running Sandbox and its permissions unchanged. Newly created Sandboxes always use private node state.
+Workspace, node identity, sessions and images stay separate. The supervisor probes
+`/tmp`; native `TMPDIR` is a private `tmp` child under the runtime home.
 
 `prepareNativeWorkspace` uses a restricted Deployment for the Agent revision to privatize
 writable PVC subpaths, preserving retained entries. Mode and process ownership checks precede
@@ -351,6 +355,10 @@ needs the provider ClusterIP, advertised `ws://*.openshell.localhost:8080/`
 route, and inactive direct Service. Native model execution requires real runtime
 proof on a Landlock-capable host; Console admission and initialized files are insufficient.
 
+`tests/integration/runtime-image-node-state-permissions.test.ts` checks packaged
+setup, retry and restart under setgid parents. It does not prove Kubernetes or
+model execution.
+
 ## Related docs
 
 - [Agent Sandbox policy admission and live application](agent-sandbox-policy.md)
@@ -367,6 +375,8 @@ proof on a Landlock-capable host; Console admission and initialized files are in
 
 ## Changelog
 
+- 2026-10-27 10:15: Prepare private node state before startup in the accompanying setgid fix. (authoring-run/8777cd8a-6832-4b9e-8fdd-51579d6b02d2 - ed6a5e31e7912eb9e79fd039735b81d6f0bd1b2e)
+
 - 2026-10-24 20:50: Refuse dedicated OpenClaw with several operator-mode ServiceAccounts at admission, and offer only admitted OpenClaw modes. (finding 2346)
 
 - 2026-10-21 23:23: Record per-source retirement refusal in the accompanying worker change. (authoring-run/67a0706e-56ab-4514-adca-35cf217b0c3b - 7e5773662f34dc38be8138757ee47fd246bc3f9e)
@@ -380,25 +390,5 @@ proof on a Landlock-capable host; Console admission and initialized files are in
 - 2026-10-16 22:08: Keep the OpenShell OAuth, protected startup and repository-session boundaries explicit. (authoring-run/9fd90bae-7158-4df5-8f2e-62b0bd548272 - 4f98051f14)
 
 - 2026-10-16 01:36: Integrate credential-independent Codex permissions while preserving external OAuth and private relay delivery. (authoring-run/3cfe533a-7ff7-4f25-ba91-7a0fc8bc35b6 - 5af46154157b7da222e2dd9839fd1bcb741c3056)
-
-- 2026-10-15 23:19: Normalize Helm `appVersion` labels. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - 5e5473f0631a4eb17c4497795a4dd850d244de4c)
-
-- 2026-10-15 22:26: Reconcile current main behavior with OpenShell OAuth contracts in the accompanying merge. (authoring-run/41e4bb7a-c8eb-4332-b1f9-07fb8e234f63 - b747cf5b6402ad36ce9f1ae6dbed08928ddcf3dc)
-
-- 2026-10-15 18:17: Pin OpenShell v0.1.4. (authoring-run/openshell-014-rebase-20261015 - 64a3424a9)
-
-- 2026-10-14: Merge current contracts with native provisioning and retained-workspace preparation. (Codex/01a13654-be66-7741-b54f-f8ae80f2d496)
-
-- 2026-10-15 08:47: Select explicit Codex permissions. (authoring-run/7eb24321-3670-4154-adde-41a0f1b36728 - 04514330688378316bd0641b8d5560da56aeff85)
-
-- 2026-10-15 02:25: Distinguish API-key and PAT isolation. (authoring-run/c11897e0-33a6-4276-b620-aaec6d57ab00 - 07eb950b5)
-
-- 2026-10-14 14:04: Scope PAT authentication and OpenShell prerequisites. (authoring-run/dba0a6cb-33d9-40fd-b38b-e20cddf4b75f - 96a2b79fa)
-
-- 2026-10-14 22:33: Exclude static Codex aliases. (authoring-run/32c91236-108c-48b8-9a06-9747c1d2d90c - f3a4d896bb51cd0d8e62bcdb29a69645b1c850dc)
-
-- 2026-10-15 16:14: Link frozen Agent policy admission and later live application. (authoring-run/43cb74b9-e1fe-4fc2-adde-9d932b061d7c - a28596ab8)
-
-- 2026-10-14 14:52: Validate and snapshot startup Sandbox network policy overrides through the Driver. (authoring-run/5e9763cf-c7fd-4990-94ac-6bc267d0287a - a28596ab8cf5e028a5eb91c276feb19a3775554c)
 
 [OpenShell Sandbox provisioning documentation history](openshell-sandbox-provisioning/history.md) preserves the older dated entries.

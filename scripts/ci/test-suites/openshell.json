@@ -52,7 +52,10 @@
     },
     {
       "path": "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
-      "expectedTests": ["OpenShell enforces provider delivery and authenticated Codex exposure"]
+      "expectedTests": [
+        "OpenShell enforces provider delivery and authenticated Codex exposure",
+        "OpenShell dedicated Agents enforce Gateway tool policy during normal work"
+      ]
     },
     {
       "path": "tests/integration/local-first-agent-openshell-k3d-real.test.mjs",

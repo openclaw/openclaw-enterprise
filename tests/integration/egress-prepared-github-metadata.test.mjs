@@ -1,9 +1,14 @@
+import { randomUUID } from "node:crypto";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { validateInstallationTokenResponse } from "../../apps/controller/src/drivers/repo/github/credentials/driver/acquisition-response.ts";
+import { validateInstallationTokenResponse } from "../../apps/controller/src/drivers/repo/github/credentials/installation-token-response.ts";
 import { githubMetadataProvider } from "../../apps/controller/src/drivers/egress-proxy/github-metadata.ts";
 import { captureMetadata, dispatchMetadata } from "../helpers/github-metadata-exchange.mjs";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
+import {
+  CREDENTIAL_SOURCE_SECRETS_CROSS_NAMESPACES,
+  credentialSourceFieldRequired,
+} from "../helpers/refusal-text.mjs";
 import { createPreparedStore } from "../fixtures/repository-credentials/github/prepared-store.mjs";
 import {
   startGitHubFixture,
@@ -13,12 +18,10 @@ import {
   fixtureAppId,
 } from "../fixtures/repository-credentials/github.mjs";
 import { createSystemClock } from "../../apps/controller/src/drivers/repo/credentials/clock.ts";
-import {
-  createGitHubPreparationOwner,
-  preparationIssuerAuthority,
-  createGitHubWarmReader,
-  createGitHubKeyOwner,
-} from "../../apps/controller/src/drivers/repo/github/credentials/index.ts";
+import { createGitHubPreparationOwner } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-owner.ts";
+import { preparationIssuerAuthority } from "../../apps/controller/src/drivers/repo/github/credentials/grants.ts";
+import { createGitHubWarmReader } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-reader.ts";
+import { createGitHubKeyOwner } from "../../apps/controller/src/drivers/repo/github/credentials/material.ts";
 
 // Real source/Agent/binding/deployment APIs, IAM, protected forwarder, preparation owner,
 // scoped GitHub issuance, HTTPS GET and actual last trailer. The test plays the enrolled supervisor and the store is in-memory;
@@ -125,10 +128,26 @@ test("consented protected repository read uses only exact, already prepared meta
         secrets: { private_key: secret.ref },
       };
       const missingConsent = await app.request("POST", path, { body: input });
-      // OCC intentionally hides out-of-scope catalog fields. No lifecycle was configured; the only added field is consent.
-      assert.equal(missingConsent.status, 404);
+      // No lifecycle was configured; the catalog requires consent, and the refusal names it.
+      assert.equal(missingConsent.status, 400);
+      assert.equal(
+        missingConsent.body.error.message,
+        credentialSourceFieldRequired("github-app-metadata", "config.authority"),
+      );
       assert.equal(owner, undefined);
       input.config.authority = "execution";
+      // An issuer Secret reference to another Namespace is the request's own error, refused as
+      // the Credential Gateway path refuses it (finding 2536), before any issuer work.
+      const crossed = await app.request("POST", path, {
+        body: {
+          ...input,
+          secrets: { private_key: { ...secret.ref, namespaceId: `ns_${randomUUID()}` } },
+        },
+      });
+      assert.equal(crossed.status, 400, JSON.stringify(crossed.body));
+      assert.equal(crossed.body.error.code, "INVALID_REQUEST");
+      assert.equal(crossed.body.error.message, CREDENTIAL_SOURCE_SECRETS_CROSS_NAMESPACES);
+      assert.equal(owner, undefined);
       const created = await app.request("POST", path, { body: input });
       assert.equal(created.status, 201, JSON.stringify(created.body));
       const source = created.data;
@@ -176,6 +195,32 @@ test("consented protected repository read uses only exact, already prepared meta
     "committed",
   );
   assert.equal(gh.issuesOfTokens.length, 1);
+
+  // A replacement grant callback must not participate in an already resolved exchange,
+  // even when it would return the same authorized grant.
+  const providers = f.egress.sourceControl.providers;
+  const providerIndex = providers.findIndex(
+    (provider) => provider.ref.id === githubMetadataProvider.ref.id,
+  );
+  const registered = providers[providerIndex];
+  const selected = { ...registered };
+  providers[providerIndex] = selected;
+  try {
+    const captured = captureMetadata(f);
+    const { ready } = await f.resolve(captured);
+    assert.ok(ready);
+    let replacementCalls = 0;
+    selected.normalizeGrant = function (...args) {
+      replacementCalls += 1;
+      return Reflect.apply(registered.normalizeGrant, this, args);
+    };
+    const result = await f.authorize(f.permitRequest(captured, ready));
+    assert.ok(result.refused);
+    assert.equal(result.allowed, undefined);
+    assert.equal(replacementCalls, 0);
+  } finally {
+    providers[providerIndex] = registered;
+  }
 
   // The registry lowercases the repository; GitHub answers with its own spelling, and the
   // response releases the admitted name (finding 2239). Another name is never released.

@@ -1,8 +1,26 @@
 import type { Namespace } from "@openclaw-enterprise/contracts";
 import { type createApiClient, requestFailure, responseFields } from "./api-client.mjs";
-import { button, dismissOnBackdrop, element, field, statusBlock, validateFields } from "./dom.mjs";
+import {
+  button,
+  dismissOnBackdrop,
+  element,
+  field,
+  statusBlock,
+  validateFields,
+  requestIdLine,
+} from "./dom.mjs";
 import type { createNavigation } from "./navigation.mjs";
 import { describeFailure, explainedConflict } from "./agents/list.mjs";
+import {
+  ASK_INSTALLATION_ADMINISTRATOR,
+  askAdministratorTo,
+  askForGrant,
+  NAMESPACE_CREATE_DENIED,
+} from "./agents/access-reasons.mjs";
+
+// The heading wherever a caller reads no Namespace: the Namespaces page and the shell's panel
+// say it alike (finding D755).
+export const NO_READABLE_NAMESPACES = "No readable Namespaces";
 
 /** The part of the mounted page context used by Namespaces and Secrets. */
 export interface NamespacePageContext {
@@ -74,7 +92,7 @@ export function renderNamespaces(
   const refusal = element(
     "p",
     { className: "muted", id: "namespace-create-refused" },
-    "Your access does not include creating Namespaces in this Installation. Only an Installation administrator can create Namespaces: ask one to create a Namespace or to give you access to an existing one, then select Refresh.",
+    `${NAMESPACE_CREATE_DENIED} Then select Refresh.`,
   );
   const emptyText = element("p");
   // The API refused this person's creation: the control says so instead of offering another
@@ -84,12 +102,18 @@ export function renderNamespaces(
     create.disabled = true;
     create.setAttribute("aria-describedby", refusal.id);
     collection.before(refusal);
-    emptyText.textContent =
-      "Ask an administrator to create a Namespace or grant access to an existing one.";
+    emptyText.textContent = askAdministratorTo(
+      "create a Namespace or to give you access to an existing one",
+    );
   }
-  emptyText.textContent = administrator
-    ? "Create a Namespace to get started, or ask an administrator for access to an existing one."
-    : "Ask an administrator for access to an existing Namespace, or create one if your role allows it.";
+  // Only a known administrator gets the short invitation: a caller whose answer is unknown may
+  // be a member, who gets access from an Installation administrator (finding 2583).
+  emptyText.textContent =
+    context.installationAdmin === true
+      ? "Create a Namespace to get started."
+      : context.installationAdmin === false
+        ? `No Namespaces are shared with you. ${askAdministratorTo("give you access to one")}`
+        : `Create a Namespace if your access allows it, or ${ASK_INSTALLATION_ADMINISTRATOR} to give you access to one.`;
   context.view.replaceChildren(
     element(
       "div",
@@ -110,7 +134,7 @@ export function renderNamespaces(
       element(
         "section",
         { className: "state-panel" },
-        element("h2", {}, "No accessible namespaces"),
+        element("h2", {}, NO_READABLE_NAMESPACES),
         emptyText,
       ),
     );
@@ -289,7 +313,7 @@ export function renderNamespaces(
             statusBlock(
               "info",
               null,
-              "Your access does not include viewing this Namespace. Ask an administrator for access to open its Agents.",
+              `Your access does not include viewing this Namespace. ${askForGrant("Namespace read on it to open its Agents")}`,
               [],
               { id: "create-namespace-access" },
             ),
@@ -324,8 +348,7 @@ export function renderNamespaces(
           message =
             "Outcome unknown. Namespace creation could not be confirmed. Check Namespaces for this name before trying again.";
         } else if (forbidden) {
-          message =
-            "You do not have permission to create Namespaces in this Installation. Only an Installation administrator can create them: ask one to create a Namespace or to give you access to an existing one.";
+          message = NAMESPACE_CREATE_DENIED;
         } else if (error.status === 409 && explainedConflict(cause) === undefined) {
           message =
             "This Namespace name is already in use or reserved by a deleted Namespace. Choose a different name.";
@@ -344,9 +367,7 @@ export function renderNamespaces(
         // A refusal the reader can fix here, a taken name above all, does not need one (finding
         // 2102).
         const requestId =
-          (unknown || forbidden) && error.requestId
-            ? [element("p", { className: "request-id" }, `Request ID: ${error.requestId}`)]
-            : [];
+          (unknown || forbidden) && error.requestId ? [requestIdLine(error.requestId)] : [];
         if (error.status === 400) {
           // The name is the only field: mark it invalid with the refusal linked to it, until
           // it is edited (finding 2046).

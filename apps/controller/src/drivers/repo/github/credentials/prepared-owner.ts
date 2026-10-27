@@ -5,7 +5,7 @@ import { createTokenPreparation } from "../../../../backends/token-service/prepa
 import {
   parseInstallationTokenResponse,
   validateInstallationTokenResponse,
-} from "./driver/acquisition-response.ts";
+} from "./installation-token-response.ts";
 import { preparationIssuerAuthority } from "./grants.ts";
 import { permissionsForProfile } from "./profiles.ts";
 import { createProviderTransport, type ProviderAttempt } from "./provider-transport.ts";

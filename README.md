@@ -24,7 +24,7 @@ This selects the Kubernetes-only profile for Agent deployment. With no profile
 selection, `occ dev up` starts a Compose control-plane preview that cannot deploy
 Agents.
 
-You need Docker Engine or Podman, k3d, kubectl, Helm, Bash, Python 3, Go (the version in [`go.mod`](go.mod)), Node.js 24 or newer, and the pnpm version in [`package.json`](package.json). The quickstart covers installation checks, the local API credentials, and cleanup.
+You need Docker Engine or Podman, k3d, kubectl, Helm, Bash, Python 3, Go (the version in [`go.mod`](go.mod)), Node.js 24.22.1 or newer, and the pnpm version in [`package.json`](package.json). The quickstart covers installation checks, the local API credentials, and cleanup.
 
 After local setup, [deploy your first Agent](docs/guides/first-agent.md) and send it a model request. You need an OpenAI API key with access to the [default model or your selected override](docs/guides/first-agent.md#before-you-start) for that step. If you installed on an existing cluster, [deploy and verify an Agent on that installation](docs/guides/deploy/production-agents.md).
 
@@ -33,7 +33,7 @@ Reuse settings with [Agent Presets](docs/guides/topics/agent-presets.md), then f
 ## Develop
 
 Follow [Make your first platform change](docs/contributing/first-change.md) for
-setup, a small source edit, and focused verification. You need Node.js 24 or
+setup, a small source edit, and focused verification. You need Node.js 24.22.1 or
 newer, the pnpm version pinned in [`package.json`](package.json), and the Go
 version selected by [`go.mod`](go.mod).
 

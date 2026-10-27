@@ -22,7 +22,7 @@ unavailable.
 | **Enable Slack**                                                        | Enables Slack in the draft when saved.                                                                                                                                                                                                                                                        |
 | **Slack bot token** / **Slack app token**                               | Search readable Secrets by name or ID, then select with arrow keys and Enter, or choose **Create new Secret...**. The bot token Secret also enables name search below. Both are required while Slack is enabled. A Secret you may read but not `operate` is listed disabled, with the reason. |
 | **Create new Secret...**                                                | Opens a modal with an editable Name (the Agent name and token by default), the fixed binding key, and a masked Value. Without Secret `create` in the Namespace, it is disabled and says why.                                                                                                  |
-| **View bot token Secret metadata** / **View app token Secret metadata** | Opens the selected Secret's metadata in a new tab, keeping unsaved drawer inputs.                                                                                                                                                                                                             |
+| **View bot token Secret metadata** / **View app token Secret metadata** | Opens the selected Secret on the **Secrets** page in a new tab, keeping unsaved drawer inputs. Shown only for a Secret you can read.                                                                                                                                                          |
 | **Channels**                                                            | Search channels by name with the bot token Secret, or paste exact channel IDs. Existing properties of retained channels are preserved.                                                                                                                                                        |
 | **Who can use the agent in these channels?**                            | **Specific people** limits mentions to **Allowed people in these channels**; **Everyone in these channels** allows any Slack user there. Direct-message access is separate.                                                                                                                   |
 | **Allowed people in these channels**                                    | Slack users, by name search or exact user ID, who may mention the Agent in the selected channels.                                                                                                                                                                                             |
@@ -87,11 +87,11 @@ that the Agent and its Configuration bind, and `read` on a ChatGPT service accou
 without them, the source is read-only and a note names what is missing.
 For API keys and Service Accounts tokens, it also grants the Agent access to
 that exact Secret. Granting needs Installation `administer`. When a member saves
-the source, the binding saves, but the member's session sends no grant, so it
-does not verify the Agent's access. The console asks an Installation administrator
-to open the Agent's Credentials and select **Save authentication source**, which
-grants it. **Deploy new version** stays available: the API checks the Agent's access
-when it deploys. When an administrator opens Credentials, the tab reads Namespace IAM, says
+the source, the binding saves, but the member's session sends no grant. The form
+stays editable and says that deploying checks the Agent's access: if the Agent
+cannot use the Secret, ask an Installation administrator to give the Agent
+`operate` on it, for example by opening the Agent's Credentials and selecting
+**Save authentication source**. **Deploy new version** stays available. When an administrator opens Credentials, the tab reads Namespace IAM, says
 when that grant is missing and holds **Deploy new version** until it is granted.
 If the grant was already in place, **Reload authentication source** clears the
 warning. If a grant request is refused or its outcome is lost, the console says
@@ -100,6 +100,8 @@ The retry checks the saved binding and does not resave it. If the
 binding changed, or the save outcome is unknown, use **Reload authentication source** first.
 Deploying needs Secret `operate` on each Secret the draft binds. When your access
 does not include it, **Deploy new version** is disabled and names those Secrets.
+A bound Secret you cannot read is not named: the button is disabled and asks for
+Secret `read` and `operate` on it. The Secret field says its name is unavailable.
 Other deployment authorization failures remain visible beside **Deploy new version**;
 check both your deployment permission and the Agent's credential access.
 Changing between **API key** and **Service Accounts** clears the selected Secret

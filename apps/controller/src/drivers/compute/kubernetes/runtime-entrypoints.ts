@@ -7,9 +7,15 @@ import {
 } from "../../../../../../packages/contracts/src/runtime-failure.mjs";
 
 import { PLUGIN_RUNTIME_TRANSLATOR_SOURCE } from "../../plugin/runtime-translator.ts";
+import { GATEWAY_TOOL_POLICY_RUNTIME } from "../gateway-tool-policy.ts";
 import { nodeProgramArguments } from "../node-program.ts";
 import { HARNESS_EGRESS_ENROLLMENT_HELPER } from "../harness-egress-enrollment.ts";
-import { gatewayStateMigrationHelper, startupPhaseHelper } from "../runtime-startup.ts";
+import {
+  gatewayManagedModeEnvironment,
+  gatewayNodeOptionsEnvironment,
+  openClawStateMigrationHelper,
+  startupPhaseHelper,
+} from "../runtime-startup.ts";
 
 // Match the pinned OpenClaw service stop budget: 315s drain, 10s cleanup,
 // and 5s supervisor margin. Idle Gateways exit as soon as their work settles.
@@ -94,22 +100,38 @@ function runtimeRequestPathname(request, response) {
 }
 `;
 
+// A supervisor's readiness server on the Compute status port. It also serves a
+// startup failure the supervisor holds (heldRuntimeStatus, set by
+// SUPERVISOR_HELD_FAILURE_HELPER) on the status path, in the Codex status shape.
 const RUNTIME_READINESS_SERVER_HELPER = String.raw`
 ${RUNTIME_READINESS_RESPONSE_HELPER}
+let heldRuntimeStatus;
+let runtimeReadinessServing = false;
 function startRuntimeReadinessServer(readiness) {
   const port = Number(process.env.OPENCLAW_RUNTIME_STATUS_PORT);
   if (!Number.isSafeInteger(port) || port < 1 || port > 65535) {
     throw new Error("Runtime status port is invalid.");
   }
+  runtimeReadinessServing = true;
   const server = readinessCreateServer((request, response) => {
     const pathname = runtimeRequestPathname(request, response);
     if (pathname === undefined) return;
+    if (request.method === "GET" && pathname === RUNTIME_STATUS_PATH && heldRuntimeStatus !== undefined) {
+      response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+      response.end(heldRuntimeStatus);
+      return;
+    }
     if (request.method !== "GET" || pathname !== ${JSON.stringify(RUNTIME_READINESS_PATH)}) {
       response.writeHead(404, { "cache-control": "no-store" });
       response.end();
       return;
     }
     void answerRuntimeReadiness(response, readiness);
+  });
+  // A bind failure leaves the runtime unready instead of ending it: a restart
+  // would run Doctor again before failing the same way.
+  server.on("error", (error) => {
+    console.error("Runtime readiness server failed: " + (error?.code ?? "unknown"));
   });
   server.listen(port, "0.0.0.0");
 }
@@ -208,6 +230,51 @@ function serveHeldRuntimeFailureToTransportPeer(check, code, cause) {
     console.error("Held runtime failure server failed: " + (error?.code ?? "unknown"));
   });
   server.listen(port, "0.0.0.0");
+}
+`;
+
+// The Harness supervisor (Codex with its workspace node) and the dedicated OpenClaw worker
+// can hold a startup failure before the child that would report it starts: a failed state
+// migration, a failed native workspace setup, or the worker's model check. Compute reads
+// the hold on its private status port; a Sandbox provider's caller reads it on the Harness
+// port. Both carry the check and code; the worker's model check adds its cause from a
+// closed vocabulary. Any other cause, such as setup's message, stays in the container
+// log (finding 2686).
+const SUPERVISOR_HELD_FAILURE_HELPER = String.raw`
+${RUNTIME_READINESS_SERVER_HELPER}
+${RUNTIME_STATUS_CONSTANTS_HELPER}
+${HELD_RUNTIME_FAILURE_TRANSPORT_HELPER}
+function publishRuntimeFailure(check, code, cause) {
+  if (runtimeStatusPort() === undefined) return;
+  if (!RUNTIME_FAILURE_CHECKS.has(check)) {
+    throw new Error("Runtime failure check is invalid.");
+  }
+  if (!RUNTIME_DIAGNOSTIC_CODES.has(code)) {
+    throw new Error("Runtime failure code is invalid.");
+  }
+  const { OPENCLAW_AGENT_REVISION_ID: revisionId, OPENCLAW_RUNTIME_STATUS_CONTAINER: container, OPENCLAW_POD_UID: podUid } = process.env;
+  // Compute accepts only a status naming its exact revision, container and Pod.
+  if (!revisionId || !container || !podUid) return;
+  heldRuntimeStatus = JSON.stringify({
+    revisionId,
+    container,
+    podUid,
+    runtimeFailure: {
+      component: container,
+      check,
+      checkedAt: new Date().toISOString(),
+      code,
+      ...(cause === undefined ? {} : { cause }),
+    },
+  });
+}
+function holdStartupFailure(check, code) {
+  publishRuntimeFailure(check, code);
+  if (runtimeStatusPort() !== undefined && !runtimeReadinessServing) {
+    startRuntimeReadinessServer(() => false);
+  }
+  serveHeldRuntimeFailureToTransportPeer(check, code);
+  setInterval(() => {}, 3600000);
 }
 `;
 
@@ -2066,13 +2133,21 @@ function probeExitFailure({ error, status, signal }) {
 // the container's CPU limit (cgroup cpu.max, at most one core), at most 600 s.
 // A probe that still reaches it after waiting for CPU for over a quarter of the
 // time reports MODEL_PROBE_CPU_STARVED: a restart would get the same CPU. The
-// wait is cgroup cpu.pressure (throttling and node contention) or, on kernels
-// without pressure accounting, cpu.stat throttled_usec (throttling only).
+// wait is the larger of the cgroup cpu.pressure delta (throttling and node
+// contention) and the cpu.stat throttled time (throttling only), each used only
+// when both of its samples are valid: on one CI VM pressure read 8x low and hid
+// a starved probe as a timeout (finding 2271). throttled_usec adds up every
+// CPU's throttled time (about 9x the wall time in a starved test run), so it
+// is capped at the throttled periods' wall time (nr_throttled x cpu.max period).
 // OpenClaw buckets provider 401/403 and invalid-key responses as "auth". Only
 // that deterministic rejection fails the deployment before its deadline.
 // The turn allows 256 output tokens. A reasoning model spends output tokens on
 // thinking before any text; at 16 it returned none and the probe failed.
 // The Gateway times its model-probe phase from wrapper start: it is the first step.
+// At the cap only the probe's own process is killed; its children can still
+// write into the probe directory, so removing it can fail (ENOTEMPTY). Removal
+// retries briefly, then the event reports only the error code as cleanupError
+// and the probe result stands: a failed cleanup must not lose it (finding 2610).
 // Generated code stays compact: the Gateway program is near the exec limit.
 const OPENCLAW_AUTH_PROBE_HELPERS = String.raw`
 ${AUTH_PROBE_FAILURE_HELPER}
@@ -2081,13 +2156,16 @@ function probeOpenClawAuthenticationFailure() {
   const cgroup = (name) => { try { return fs.readFileSync("/sys/fs/cgroup/" + name, "utf8"); } catch { return ""; } };
   const [quota, period] = cgroup("cpu.max").split(" ");
   const capMs = Math.min(600000, 20000 + Math.ceil(45000 / Math.min(1, quota / period || 1)));
-  const read = (name) => (name === "cpu.pressure" ? /^some .*total=(\d+)/m : /throttled_usec (\d+)/).exec(cgroup(name))?.[1] / 1000;
-  const startedAt = Date.now(), pressure = read("cpu.pressure"), metric = Number.isFinite(pressure) ? "cpu.pressure" : "cpu.stat", before = metric === "cpu.pressure" ? pressure : read(metric);
-  let code = runOpenClawAuthenticationProbe(fs, capMs), cause, provider;
+  const sample = () => { const stat = cgroup("cpu.stat"); return [/^some .*total=(\d+)/m.exec(cgroup("cpu.pressure")), /throttled_usec (\d+)/.exec(stat), /nr_throttled (\d+)/.exec(stat)].map((m, i) => (m?.[1] * (i === 2 ? period : 1)) / 1000); };
+  const startedAt = Date.now(), before = sample();
+  const cleanup = {};
+  let code = runOpenClawAuthenticationProbe(fs, capMs, cleanup), cause, provider;
   if (typeof code === "object") ({ code, cause, ...provider } = code);
-  const elapsedMs = Date.now() - startedAt, after = read(metric), cpuWaitMs = Math.round(Number.isFinite(after) && after >= before ? after - before : NaN);
+  const elapsedMs = Date.now() - startedAt, [pressure, throttled, periods] = sample().map((total, i) => { const wait = total - before[i]; return Number.isFinite(wait) && wait >= 0 ? wait : NaN; });
+  const pressureWaitMs = Math.round(pressure), throttledWaitMs = Math.round(Math.min(throttled, periods));
+  const waits = [pressureWaitMs, throttledWaitMs].filter(Number.isFinite), cpuWaitMs = waits.length ? Math.max(...waits) : NaN;
   if (code === "CAP") code = cpuWaitMs > elapsedMs / 4 ? "MODEL_PROBE_CPU_STARVED" : "MODEL_PROBE_TIMEOUT";
-  console.error(JSON.stringify({ event: "openclaw.model_probe", elapsedMs, capMs, cpuWaitMs, code: code ?? "READY", cause, ...provider }));
+  console.error(JSON.stringify({ event: "openclaw.model_probe", elapsedMs, capMs, cpuWaitMs, pressureWaitMs, throttledWaitMs, code: code ?? "READY", cause, ...provider, ...cleanup }));
   return code === undefined ? undefined : { code, cause };
 }
 
@@ -2162,7 +2240,7 @@ function credentialRejectedUpfront(provider, fragment, key, stage) {
     ...upfrontToken("bodyShape", bodyShape, UPFRONT_BODY_SHAPES), ...upfrontToken("providerErrorCode", errorCode, [...UPFRONT_ERROR_CODES, "other"]), ...upfrontToken("providerErrorType", errorType, [...UPFRONT_ERROR_TYPES, "other"]) };
 }
 
-function runOpenClawAuthenticationProbe(fs, capMs) {
+function runOpenClawAuthenticationProbe(fs, capMs, cleanup) {
   const stageStartedAt = Date.now();
   const stage = (stage) => console.error(JSON.stringify({ event: "openclaw.model_probe_stage", stage, elapsedMs: Date.now() - stageStartedAt, capMs }));
   stage("prepare");
@@ -2223,7 +2301,8 @@ function runOpenClawAuthenticationProbe(fs, capMs) {
     return probeFailure("WRAPPER_ERROR");
   } finally {
     stage("cleanup");
-    fs.rmSync(directory, { recursive: true, force: true });
+    try { fs.rmSync(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }); }
+    catch (error) { cleanup.cleanupError = /^E[A-Z0-9]{1,15}$/.test(error?.code) ? error.code : "other"; }
     stage("complete");
   }
 }
@@ -2279,7 +2358,10 @@ function publishAgentPluginSkillPath() {
 
 `;
 
-export const GATEWAY_RUNTIME_ENTRYPOINT = String.raw`
+export const GATEWAY_RUNTIME_ENTRYPOINT = gatewayRuntimeEntrypoint(false);
+
+export function gatewayRuntimeEntrypoint(managedMode: boolean): string {
+  return String.raw`
 const { accessSync, constants: fsConstants, mkdirSync, rmSync } = require("node:fs");
 const { dirname, join } = require("node:path");
 const { spawn } = require("node:child_process");
@@ -2288,10 +2370,11 @@ const { spawn } = require("node:child_process");
 process.env.OPENCLAW_NO_AUTO_UPDATE = "1";
 
 ${PLUGIN_RUNTIME_HELPERS}
+${GATEWAY_TOOL_POLICY_RUNTIME}
 ${WORKSPACE_ASSET_HELPERS}
 ${OPENCLAW_AUTH_PROBE_HELPERS}
 ${startupPhaseHelper("gateway")}
-${gatewayStateMigrationHelper("restart the Pod")}
+${openClawStateMigrationHelper("Gateway", "restart the Pod")}
 
 function nativeGatewayAnswers(path) {
   return new Promise((resolve) => {
@@ -2341,7 +2424,43 @@ const GATEWAY_RESPAWN_WINDOW_MS = 10 * 60_000;
 const GATEWAY_RESPAWN_READY_TIMEOUT_MS = 180_000;
 const GATEWAY_RESPAWN_READY_POLL_MS = 500;
 const GATEWAY_RESPAWN_KILL_GRACE_MS = 10_000;
+const GATEWAY_STOP_RECHECK_MS = 1_000;
 let gatewayTerminating = false;
+
+// OpenClaw ignores a stop signal that arrives while it restarts itself in place
+// (after a native configuration edit that needs a Gateway restart) and then
+// serves again. A stopping Gateway does not serve again after its server closes,
+// so repeat the signal when the native readiness endpoint answers after it
+// refused a connection. A slow or unready answer proves neither.
+function stopNativeGateway(target, signal) {
+  const exited = () => target.exitCode !== null || target.signalCode !== null;
+  target.kill(signal);
+  let closed = false;
+  let checking = false;
+  const recheck = setInterval(async () => {
+    if (exited()) {
+      clearInterval(recheck);
+      return;
+    }
+    if (checking) return;
+    checking = true;
+    try {
+      const response = await fetch(
+        "http://127.0.0.1:" + process.env.OPENCLAW_GATEWAY_PORT + "/readyz",
+        { signal: AbortSignal.timeout(2_000), redirect: "error" },
+      ).catch((error) => error);
+      if (response instanceof Error) {
+        if (response.cause?.code === "ECONNREFUSED") closed = true;
+      } else if (response.status === 200 && closed && !exited()) {
+        closed = false;
+        target.kill(signal);
+      }
+    } finally {
+      checking = false;
+    }
+  }, GATEWAY_STOP_RECHECK_MS);
+  recheck.unref?.();
+}
 
 // Forward to the current native process; between a respawn's stop and spawn
 // there is none, and the wrapper exits itself.
@@ -2354,7 +2473,7 @@ function forwardTermination(currentChild) {
       process.exit(0);
       return;
     }
-    target.kill(signal);
+    stopNativeGateway(target, signal);
     setTimeout(() => currentChild()?.kill("SIGKILL"), ${GATEWAY_STOP_TIMEOUT_MS}).unref();
   };
   process.on("SIGTERM", () => forward("SIGTERM"));
@@ -2407,13 +2526,7 @@ function requireWorkspaceNodePlugins(config) {
 function configureWorkspaceNodePlugins(config, workspaceNodeId) {
   requireWorkspaceNodePlugins(config);
   const plugins = config.plugins ??= {};
-  if (Array.isArray(plugins.allow)) {
-    plugins.allow = [...new Set([...plugins.allow, "file-transfer"])];
-  }
   const entries = plugins.entries ??= {};
-  const transfer = entries["file-transfer"] ??= {};
-  transfer.enabled = true;
-  const fileConfig = transfer.config ??= {};
   // Provider-owned Harnesses can relocate the workspace. Deployment-backed
   // Kubernetes Harnesses retain the canonical path when no override is present.
   const nativeWorkspace = process.env.OPENCLAW_NATIVE_WORKER_PROFILE === undefined
@@ -2425,6 +2538,15 @@ function configureWorkspaceNodePlugins(config, workspaceNodeId) {
     const appServer = (entries.codex.config ??= {}).appServer ??= {};
     appServer.remoteWorkspaceRoot ??= remoteRoot;
   }
+  // The path is known at startup. Pairing supplies only the node identity, so
+  // loading file-transfer should not also replace the Codex plugin.
+  if (workspaceNodeId === undefined) return;
+  if (Array.isArray(plugins.allow)) {
+    plugins.allow = [...new Set([...plugins.allow, "file-transfer"])];
+  }
+  const transfer = entries["file-transfer"] ??= {};
+  transfer.enabled = true;
+  const fileConfig = transfer.config ??= {};
   // OCC edits four owner documents; native previews read the Agent workspace.
   const editable = ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"];
   const memoryPaths = ["MEMORY.md", "memory.md", "DREAMS.md", "dreams.md", "memory", "memory/**"]
@@ -2475,12 +2597,6 @@ function configureWorkspaceNodePlugins(config, workspaceNodeId) {
 // configuration changes, which could drop this list, "plugins" installs,
 // enables or disables plugins in the Gateway process, and "gateway" runs its
 // self-update. OCC owns the Gateway's plugins, configuration and version.
-const GATEWAY_LOCAL_CODEX_DYNAMIC_TOOLS = [
-  "ls", "read", "write", "edit", "apply_patch",
-  "exec", "process", "gateway_exec", "gateway_process",
-  "terminal", "portal", "openclaw", "plugins", "gateway",
-];
-
 function excludeGatewayLocalCodexTools(config) {
   const codex = config.plugins?.entries?.codex;
   if (!isPlainObject(codex)) {
@@ -2711,6 +2827,14 @@ const followsPeerStatus =
   pluginRuntime?.manifest?.kind === "codex" && hasEnabledPluginSelections(pluginRuntime);
 // A respawn configures from the file a container restart would start from.
 const initialConfigPath = process.env.OPENCLAW_CONFIG_PATH;
+const appliesGatewayToolPolicy = Boolean(process.env.APP_SERVER_URL || process.env.OPENCLAW_NATIVE_WORKER_PROFILE);
+// Native human administration can use a writable config, but it is not the
+// authority for OCE-approved model tools. Keep the admitted revision snapshot.
+const gatewayToolPolicyInput = appliesGatewayToolPolicy
+  ? JSON.parse(pluginReadFileSync(
+      initialConfigPath === writableOpenClawConfigPath()
+        ? "/etc/openclaw-managed/openclaw.json" : initialConfigPath, "utf8"))
+  : undefined;
 const writableInitialConfig = followsPeerStatus && initialConfigPath === writableOpenClawConfigPath();
 atomicOpenClawConfigWrites = writableInitialConfig;
 const codexBridgePath = ["plugins", "entries", "codex", "config", "codexPlugins"];
@@ -2794,6 +2918,7 @@ function prepareWritableCodexBridge(failures) {
 // so an in-place respawn repeats it for a changed peer. For a Codex peer this
 // installs nothing: the Harness installs the plugins; the Gateway applies its result.
 function configureGateway(peerStatus) {
+  if (appliesGatewayToolPolicy) requireGatewayToolPolicyRuntime();
   process.env.OPENCLAW_CONFIG_PATH = initialConfigPath;
   configureNativeWorkerProfile();
   const peerFailures = peerStatus?.failures ?? readPluginFailuresFromEnvironment();
@@ -2833,15 +2958,13 @@ function configureGateway(peerStatus) {
     commands.allow = [...new Set([...(commands.allow ?? []), "file.fetch", "file.stat", "file.write", "file.create", "dir.list", "workspace.memory", "workspace.skills"])];
     if (environmentWorkspaceNodeId !== undefined || workspaceNodeBindingPath !== undefined) {
       // Refuse a revision that cannot host its node now, not when the node arrives.
-      requireWorkspaceNodePlugins(config);
-      excludeGatewayLocalCodexTools(config);
-    }
-    workspaceNodeId = environmentWorkspaceNodeId ?? readWorkspaceNodeBinding();
-    if (workspaceNodeId !== undefined) {
+      workspaceNodeId = environmentWorkspaceNodeId ?? readWorkspaceNodeBinding();
       configureWorkspaceNodePlugins(config, workspaceNodeId);
+      excludeGatewayLocalCodexTools(config);
     }
     writeOpenClawConfig(config);
   }
+  if (appliesGatewayToolPolicy) configureManagedGatewayTools(gatewayToolPolicyInput);
   return { pluginResult, workspaceNodeId };
 }
 
@@ -2874,7 +2997,7 @@ function startGatewayProcess() {
   const spawned = spawn(
     "node",
     ["/app/openclaw.mjs", "gateway", "--port", process.env.OPENCLAW_GATEWAY_PORT],
-    { stdio: "inherit", env: gatewayEnvironment() },
+    { stdio: "inherit", env: { ...gatewayEnvironment(), ...${gatewayManagedModeEnvironment(managedMode)}, ...${gatewayNodeOptionsEnvironment()} } },
   );
   child = spawned;
   childRunning = true;
@@ -2903,7 +3026,7 @@ function stopContainer() {
     process.exit(1);
     return;
   }
-  child.kill("SIGTERM");
+  stopNativeGateway(child, "SIGTERM");
   setTimeout(() => process.exit(1), ${GATEWAY_STOP_TIMEOUT_MS}).unref();
 }
 
@@ -2923,8 +3046,12 @@ const started = configureGateway(peerStatus);
 // no await before the spawn.
 // A failure holds the Gateway unready with the step named, rather than
 // restarting into the same refusal and another Doctor backup.
-const outdatedDatabases = outdatedAgentDatabases();
-if (outdatedDatabases.length > 0 && !(await migrateGatewayState(outdatedDatabases))) {
+const gatewayStateDirectory = process.env.OPENCLAW_STATE_DIR || "/home/node/.openclaw";
+const outdatedDatabases = outdatedOpenClawDatabases(gatewayStateDirectory);
+if (
+  outdatedDatabases.length > 0 &&
+  !(await migrateOpenClawState(gatewayStateDirectory, outdatedDatabases, process.env))
+) {
   setInterval(() => {}, 3600000);
   return;
 }
@@ -3058,7 +3185,7 @@ if (followsPeerStatus) {
   // leaves only the container restart.
   const stopGatewayProcess = async () => {
     if (!childRunning) return;
-    child.kill("SIGTERM");
+    stopNativeGateway(child, "SIGTERM");
     const exited = childExited;
     const escalate = setTimeout(() => child.kill("SIGKILL"), ${GATEWAY_STOP_TIMEOUT_MS});
     escalate.unref?.();
@@ -3159,16 +3286,20 @@ if (followsPeerStatus) {
       }
       publishPluginRuntimeStatus({ phase: "ready", ...pluginResult });
       logStartupPhase("gateway-respawn", respawnStartedAt);
-    } catch {
+    } catch (error) {
       logStartupPhase("gateway-respawn", respawnStartedAt, "failed");
-      stopContainer();
+      if (holdGatewayToolPolicyFailure(error)) {
+        clearInterval(peerStatusPoll);
+      } else {
+        stopContainer();
+      }
     } finally {
       waitingForPeerDuringOutage = false;
       verifyingServingReplacement = false;
       respawning = false;
     }
   };
-  setInterval(async () => {
+  const peerStatusPoll = setInterval(async () => {
     if (pollInFlight || respawning || stoppingContainer) return;
     pollInFlight = true;
     try {
@@ -3187,10 +3318,11 @@ if (followsPeerStatus) {
   }, 2_000).unref();
 }
 })().catch((error) => {
-  if (!holdPluginApproverConfigurationFailure(error)) throw error;
+  if (!holdGatewayToolPolicyFailure(error) && !holdPluginApproverConfigurationFailure(error)) throw error;
 });
 }
 `;
+}
 
 // Codex 0.158 app-server hard-codes FmtSpan::FULL on its stderr layer, so each
 // instrumented call prints span "new" and "close" records, and each poll of an
@@ -4103,13 +4235,27 @@ export const PROTECTED_CODEX_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint(true);
 // the saved device identity. No deadline here: the controller's convergence
 // deadline governs a setup that never arrives. SandboxDriver Harnesses still
 // receive OPENCLAW_NODE_SETUP_CODE in the environment.
-function agentWithNodeEntrypoint(entrypoint: string): string {
+const PRIVATE_WORKSPACE_NODE_STATE = `mkdirSync(state, { recursive: true, mode: 0o700 });
+// PVC parents can propagate setgid even with mkdir's 0700 mode. Keep the
+// process-owned node state private before OpenClaw creates its child directories.
+chmodSync(state, 0o700);`;
+
+function agentWithNodeEntrypoint(
+  entrypoint: string,
+  prepareState = PRIVATE_WORKSPACE_NODE_STATE,
+): string {
   return String.raw`
-const { chmodSync, mkdirSync, readFileSync, writeFileSync, rmSync } = require("node:fs");
+const { chmodSync, closeSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, writeFileSync, rmSync } = require("node:fs");
 const { join } = require("node:path");
 const { execFile, spawn, spawnSync } = require("node:child_process");
+const { createServer: readinessCreateServer } = require("node:http");
 ${WORKSPACE_ASSET_HELPERS}
 ${startupPhaseHelper("agent")}
+${openClawStateMigrationHelper("Harness", "deploy the Agent again")}
+// The Codex child serves this container's runtime status, and it starts only after the
+// node state is current and the workspace is initialized. A failure before then is held
+// here with the named step in the log and its check served in Codex's place.
+${SUPERVISOR_HELD_FAILURE_HELPER}
 const state = process.env.OPENCLAW_NODE_STATE_DIR;
 const setupEnvironment = process.env.OPENCLAW_NODE_SETUP_CODE;
 const setupPath = process.env.OPENCLAW_NODE_SETUP_PATH;
@@ -4124,7 +4270,7 @@ if (
 ) {
   throw new Error("The workspace node is not provisioned.");
 }
-mkdirSync(state, { recursive: true });
+${prepareState}
 initializeRuntimeAssets();
 publishAgentPluginSkillPath();
 const configPath = join(state, "openclaw.json");
@@ -4156,15 +4302,109 @@ if (process.env.OPENCLAW_NODE_CA_PEM) {
 } else if (process.env.OPENCLAW_NODE_CA_PATH) {
   nodeEnv.NODE_EXTRA_CA_CERTS = process.env.OPENCLAW_NODE_CA_PATH;
 }
+// At most 64 KiB of a native setup output file: its start, or its end for a tail.
+function workspaceBaselineOutput(path, tail = false) {
+  const descriptor = openSync(path, "r");
+  try {
+    const size = fstatSync(descriptor).size;
+    const buffer = Buffer.alloc(Math.min(size, 65536));
+    const length = readSync(descriptor, buffer, 0, buffer.length, tail ? size - buffer.length : 0);
+    return buffer.toString("utf8", 0, length);
+  } finally {
+    closeSync(descriptor);
+  }
+}
+// OpenClaw's recovery hints name commands (doctor, config validate) that no Agent
+// user can run in this container: the Harness runs Doctor itself, and its failure
+// line names the remedy (finding 2699). A hint names the command itself, so a
+// path such as a .doctor-importing claim under .openclaw is no hint. A sentence
+// that opens with a hint is dropped; a hint in parentheses or in a later clause
+// after ";" is cut, keeping the cause before it (finding 2701).
+const OPENCLAW_COMMAND_HINT = /\bopenclaw(?:\s+--profile\s+\S+)?\s+(?:doctor|config\s+validate)\b/i;
+function withoutOpenClawCommandHints(text) {
+  return text.split(/(?<=\.)\s+/).flatMap((sentence) => {
+    if (/\bdoctor commands\b/i.test(sentence)) return [];
+    if (!OPENCLAW_COMMAND_HINT.test(sentence)) return [sentence];
+    const clauses = sentence
+      .replace(/\s*\([^()]*\)/g, (group) => OPENCLAW_COMMAND_HINT.test(group) ? "" : group)
+      .split(/\s*;\s*/);
+    if (OPENCLAW_COMMAND_HINT.test(clauses[0])) return [];
+    const kept = clauses.filter((clause) => !OPENCLAW_COMMAND_HINT.test(clause)).join("; ").replace(/[\s.,:;]+$/, "");
+    return kept === "" ? [] : [/[.!?]$/.test(sentence) ? kept + "." : kept];
+  }).join(" ");
+}
+// What a failed native setup reported: its message on one line of at most 400
+// characters, and up to five invalid setting paths (names, never values).
+function workspaceBaselineReport(path) {
+  let reported;
+  try {
+    reported = JSON.parse(workspaceBaselineOutput(path));
+  } catch {}
+  const message = reported?.error?.message;
+  const settings = [...new Set((Array.isArray(reported?.issues) ? reported.issues : [])
+    .map((issue) => issue?.path)
+    .filter((setting) => typeof setting === "string" && setting.length <= 64 && /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/.test(setting)))].slice(0, 5);
+  // A message that is only a hint is still what OpenClaw reported: keep it whole.
+  const collapsed = typeof message === "string"
+    ? message.replace(/[\s\u0000-\u001f\u007f-\u009f]+/g, " ").trim()
+    : "";
+  const summary = (withoutOpenClawCommandHints(collapsed) || collapsed).slice(0, 400).replace(/\.$/, "");
+  return (summary === "" ? "reported no error message" : "reported: " + summary) +
+    (settings.length > 0 ? " (invalid settings: " + settings.join(", ") + ")." : ".");
+}
+// The node state on the Agent's workspace claim outlives runtime image upgrades.
+// Native setup and both children open it, so Doctor migrates it first, with the
+// node's environment only: no model credential reaches Doctor. A failure holds
+// the Harness unready rather than restarting into another Doctor backup.
+(async () => {
+const outdatedDatabases = outdatedOpenClawDatabases(state);
+if (outdatedDatabases.length > 0 && !(await migrateOpenClawState(state, outdatedDatabases, nodeEnv))) {
+  holdStartupFailure("state-migration", "UNAVAILABLE");
+  return;
+}
 // The workspace belongs to the Harness. Native setup creates missing defaults
 // without replacing owner edits; neither child may serve an uninitialized workspace.
+// Its JSON result goes to a file: spawnSync kills a child whose output outgrows a
+// pipe's buffer, which would fail a setup that succeeded. The result is a multi-line
+// document that runtime logs withhold as a possible payload, so a failure names only
+// its message and invalid setting paths, on one bounded line. A failure holds the
+// Harness: a restart would run the same setup on the same configuration.
 const baselineStartedAt = Date.now();
-const baseline = spawnSync(process.execPath, [
-  "/app/openclaw.mjs", "setup", "--baseline", "--workspace", workspaceDirectory, "--json",
-], { env: nodeEnv, stdio: "inherit" });
-logStartupPhase("workspace-baseline", baselineStartedAt, baseline.error || baseline.status !== 0 ? "failed" : "ok");
-if (baseline.error) throw baseline.error;
-if (baseline.status !== 0) throw new Error("Workspace initialization failed.");
+const baselineResultPath = join(state, "workspace-baseline.json");
+const baselineResult = openSync(baselineResultPath, "w", 0o600);
+// Setup's diagnostics are replayed once it ends, at most their last 64 KiB,
+// without OpenClaw's recovery hints.
+const baselineOutputPath = join(state, "workspace-baseline.log");
+const baselineOutput = openSync(baselineOutputPath, "w", 0o600);
+let baseline;
+try {
+  baseline = spawnSync(process.execPath, [
+    "/app/openclaw.mjs", "setup", "--baseline", "--workspace", workspaceDirectory, "--json",
+  ], { env: nodeEnv, stdio: ["inherit", baselineResult, baselineOutput] });
+} finally {
+  closeSync(baselineResult);
+  closeSync(baselineOutput);
+}
+try {
+  for (const line of workspaceBaselineOutput(baselineOutputPath, true).split("\n")) {
+    const kept = withoutOpenClawCommandHints(line);
+    if (kept.trim() !== "") console.error(kept);
+  }
+} catch {}
+if (baseline.error || baseline.status !== 0) {
+  logStartupPhase("workspace-baseline", baselineStartedAt, "failed");
+  console.error(
+    "Workspace initialization failed: openclaw setup --baseline (" +
+      (baseline.error
+        ? "error-" + (/^E[A-Z0-9]{1,15}$/.test(baseline.error.code) ? baseline.error.code : "spawn")
+        : baseline.signal ?? "exit-" + baseline.status) +
+      ") " + workspaceBaselineReport(baselineResultPath) +
+      " Codex was not started. Fix the cause, then deploy the Agent again.",
+  );
+  holdStartupFailure("workspace-baseline", "UNAVAILABLE");
+  return;
+}
+logStartupPhase("workspace-baseline", baselineStartedAt);
 const codexEnv = { ...process.env, PATH: harnessPath };
 // Per-run hook capabilities are delivered by the authenticated app-server connection.
 // Keep them outside the model workspace and the file-transfer plugin's roots.
@@ -4381,6 +4621,10 @@ logStartupPhase("supervisor-spawn", startupPhaseOrigin);
 nodeSetupWait = Date.now();
 // Codex first: it does not wait for the node setup.
 for (const slot of [...processes].reverse()) start(slot);
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
 `;
 }
 
@@ -4389,21 +4633,44 @@ export const PROTECTED_CODEX_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
   PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
 );
 
+/** Check the one supported upgrade without exposing an old program to the launch path. */
+export function matchesWorkspaceNodeStateUpgrade(
+  expected: readonly string[],
+  observed: readonly string[],
+  protectedCodex: boolean,
+): boolean {
+  const entrypoint = protectedCodex ? PROTECTED_CODEX_RUNTIME_ENTRYPOINT : AGENT_RUNTIME_ENTRYPOINT;
+  const samePayload = (parts: readonly string[], program: string) => {
+    const [, ...encoded] = nodeProgramArguments(program);
+    return parts.length === encoded.length && parts.every((part, index) => part === encoded[index]);
+  };
+  return (
+    samePayload(
+      expected,
+      protectedCodex ? PROTECTED_CODEX_WITH_NODE_ENTRYPOINT : AGENT_WITH_NODE_ENTRYPOINT,
+    ) &&
+    samePayload(
+      observed,
+      agentWithNodeEntrypoint(entrypoint, "mkdirSync(state, { recursive: true });"),
+    )
+  );
+}
+
 export const NATIVE_WORKER_ENTRYPOINT = String.raw`
 const { join } = require("node:path");
 const { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } = require("node:fs");
 const { execFile, spawn } = require("node:child_process");
 const { createServer: readinessCreateServer } = require("node:http");
 ${WORKSPACE_ASSET_HELPERS}
-${RUNTIME_READINESS_SERVER_HELPER}
-${RUNTIME_STATUS_CONSTANTS_HELPER}
-${HELD_RUNTIME_FAILURE_TRANSPORT_HELPER}
+${startupPhaseHelper("agent")}
+${openClawStateMigrationHelper("Native worker", "deploy the Agent again")}
 
-// The Compute-owned worker publishes readiness only; a provider-owned worker
-// (APP_TOKEN_SHA and APP_SERVER_PORT, no status port) serves a held model-check
-// failure on the Harness port, as the provider-owned Codex Harness does, so the
-// revision fails with that code instead of waiting for a node that never connects.
-function publishRuntimeFailure() {}
+// A held failure (the model check, or the node state migration) is served on the
+// Compute status port beside readiness, or, for a provider-owned worker (APP_TOKEN_SHA
+// and APP_SERVER_PORT, no status port), on the Harness port as the provider-owned
+// Codex Harness does, so the revision fails with that code instead of waiting for a
+// node that never connects.
+${SUPERVISOR_HELD_FAILURE_HELPER}
 ${OPENCLAW_AUTH_PROBE_HELPERS}
 
 const inferenceConfig = process.env.OPENCLAW_NATIVE_INFERENCE_CONFIG;
@@ -4425,9 +4692,17 @@ if (
 ) {
   throw new Error("Dedicated OpenClaw worker configuration is invalid.");
 }
+// The node state on the Agent's workspace claim outlives runtime image upgrades.
+// Until Doctor has brought it current, readiness does not open it.
+const outdatedNodeDatabases = outdatedOpenClawDatabases(state);
+let nodeStateCurrent = outdatedNodeDatabases.length === 0;
 
 function nativeWorkerReady() {
   return new Promise((resolve) => {
+    if (!nodeStateCurrent) {
+      resolve(false);
+      return;
+    }
     execFile(
       process.execPath,
       ["/app/openclaw.mjs", "node", "identity", "--json"],
@@ -4470,7 +4745,9 @@ const authenticationFailure = probeOpenClawAuthenticationFailure();
 if (authenticationFailure !== undefined) {
   holdFailedAuthentication("model-probe", authenticationFailure.code, authenticationFailure.cause);
 } else {
-mkdirSync(state, { recursive: true });
+mkdirSync(state, { recursive: true, mode: 0o700 });
+// Match the Harness's private node-state preparation on fsGroup-backed storage.
+chmodSync(state, 0o700);
 const workerConfigPath = join(state, "openclaw.json");
 writeFileSync(workerConfigPath, JSON.stringify({
   ...JSON.parse(inferenceConfig),
@@ -4510,6 +4787,25 @@ if (gatewayCa) {
   writeFileSync(caPath, [inheritedCa, gatewayCa].filter(Boolean).join("\n"), { mode: 0o600 });
   nodeEnv.NODE_EXTRA_CA_CERTS = caPath;
 }
+// Identity and connect open the node state, so Doctor migrates an older one first
+// with the node's own settings: never the model credential or setup code the
+// connect child receives. A failure holds the worker unready rather than
+// restarting into another Doctor backup.
+const doctorEnv = {
+  HOME: process.env.HOME,
+  PATH: process.env.PATH,
+  TMPDIR: temporary,
+  OPENCLAW_STATE_DIR: state,
+  OPENCLAW_CONFIG_PATH: workerConfigPath,
+  OPENCLAW_NO_AUTO_UPDATE: "1",
+  ...(nodeEnv.NODE_EXTRA_CA_CERTS === undefined ? {} : { NODE_EXTRA_CA_CERTS: nodeEnv.NODE_EXTRA_CA_CERTS }),
+};
+(async () => {
+if (!nodeStateCurrent && !(await migrateOpenClawState(state, outdatedNodeDatabases, doctorEnv))) {
+  holdStartupFailure("state-migration", "UNAVAILABLE");
+  return;
+}
+nodeStateCurrent = true;
 // Provider files carry the exact revision's setup envelope. Convert it to the
 // private one-shot target file consumed by connect, without exposing it in argv.
 const target = setupCode ?? Buffer.from(readFileSync(setupEnvelopePath, "utf8")).toString("base64url");
@@ -4538,6 +4834,10 @@ const stop = (signal) => {
 process.on("SIGTERM", () => stop("SIGTERM"));
 process.on("SIGINT", () => stop("SIGINT"));
 child.on("exit", (code, signal) => process.exit(code ?? (signal === "SIGTERM" ? 0 : 1)));
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
 }
 `;
 

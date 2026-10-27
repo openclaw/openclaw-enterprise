@@ -152,7 +152,7 @@ test("an Agent's page leads with ← Agents and keeps its ID and Namespace under
     await page.getByRole("heading", { name: LONG_NAME, level: 1 }).waitFor();
     await page
       .locator(".content .page-header")
-      .getByRole("button", { name: "Create new version" })
+      .getByRole("button", { name: "Open draft" })
       .waitFor();
     await page.locator("#namespace-selector:not(:disabled)").waitFor();
 
@@ -176,7 +176,7 @@ test("an Agent's page leads with ← Agents and keeps its ID and Namespace under
       {
         "← Agents": "header",
         Refresh: "actions",
-        "Create new version": "actions",
+        "Open draft": "actions",
         "Copy Agent ID": "meta",
         Namespace: "meta",
       },
@@ -212,21 +212,11 @@ test("an Agent's page leads with ← Agents and keeps its ID and Namespace under
       }
     }
 
-    // The Versions card pads like the card above it at every width; on a phone it kept 24 px
-    // while the other cards narrowed to 16 px (finding 2423).
-    const cards = [".agent-stat-card", ".revision-selector"];
-    for (const selector of cards) {
-      await page.locator(selector).waitFor();
-    }
-    const paddings = await page.evaluate(
-      (selectors) =>
-        selectors.map(
-          (selector) =>
-            globalThis.getComputedStyle(globalThis.document.querySelector(selector)!).padding,
-        ),
-      cards,
-    );
-    assert.equal(paddings[0], paddings[1], `${size}: ${paddings.join(" vs ")}`);
+    // Replacing the rail with a picker must not introduce horizontal overflow on phones.
+    const picker = page.getByRole("combobox", { name: "Viewing version", exact: true });
+    const bounds = await picker.boundingBox();
+    assert.ok(bounds, `${size}: picker is visible`);
+    assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= viewport.width, `${size}: picker fits`);
 
     // The copy button puts the ID on the clipboard and says so.
     await header.getByRole("button", { name: "Copy Agent ID" }).click();

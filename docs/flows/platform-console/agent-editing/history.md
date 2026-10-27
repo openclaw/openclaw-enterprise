@@ -8,6 +8,7 @@ This record preserves the dated changes to the Console Agent editing flow. See t
 
 ## Changelog
 
+- 2026-10-26: Deploy holds for a bound Secret the caller may neither read nor operate; Secret links open the Secrets page; a deployed version the list leaves out is not read. (findings D756-D758)
 - 2026-10-25: Agent-side tabs follow the reread after a channel save; Disable waits for a rebind. (findings 2470, 2471)
 - 2026-10-25: The sources note names a Harness ServiceAccount's `read`. (finding 2459)
 - 2026-10-25: Channel saves may replace unoperable Secrets. (finding 2444)

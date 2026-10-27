@@ -1319,7 +1319,7 @@ async function assertCompletedHistory(db, previous = []) {
     await readFile(join(migrationsDirectory, "meta/_canonical-history.json"), "utf8"),
   );
   const receipts = await historyReceipts(db.migrator);
-  assert.equal(receipts.length, 63);
+  assert.equal(receipts.length, manifest.entries.length);
   await assertCredentialSchemaPrivileges(db.app);
   assert.deepEqual(receipts.slice(0, previous.length), previous);
   const providerEntries = manifest.compatibleLineages.providerCompleted.entries;
@@ -1843,6 +1843,20 @@ async function assertUpgradedRevisionReadable(db) {
 
 async function canonicalData(db) {
   const result = { presets: [] };
+  const migrationOwnedColumns = {
+    account: ["authentication_version", "identity_only"],
+    agents: [
+      "repository_bindings",
+      "repository_access",
+      "harness_auth_credential_source_id",
+      "plugin_approvers",
+      "credential_sources",
+      "sandbox_policy_editing",
+      "gateway_managed_mode",
+    ],
+    agent_revisions: ["gateway_managed_mode"],
+    controller_work: ["work_kind"],
+  };
   const hasPresets =
     (await db.app.query("SELECT to_regclass('occ.presets') AS relation")).rows[0].relation !== null;
   for (const table of [
@@ -1864,27 +1878,12 @@ async function canonicalData(db) {
     "session",
     ...(hasPresets ? ["presets"] : []),
   ]) {
-    const ignoredColumns =
-      table === "account"
-        ? ["authentication_version", "identity_only"]
-        : table === "agents"
-          ? [
-              "repository_bindings",
-              "repository_access",
-              "harness_auth_credential_source_id",
-              "plugin_approvers",
-              "credential_sources",
-              "sandbox_policy_editing",
-            ]
-          : table === "controller_work"
-            ? ["work_kind"]
-            : [];
     result[table] = (
       await db.app.query(
         // New migration-owned compatibility columns may be defaulted onto
         // existing rows; every previously stored field must remain identical.
         `SELECT to_jsonb(t) - $1::pg_catalog.text[] AS value FROM occ."${table}" t ORDER BY to_jsonb(t)::pg_catalog.text`,
-        [ignoredColumns],
+        [migrationOwnedColumns[table] ?? []],
       )
     ).rows;
   }
@@ -1990,6 +1989,7 @@ test(
       [58, "preSandboxPolicyAdministrator"],
       [59, "preCredentialProxy"],
       [62, "prePreparedAttemptSettlement"],
+      [63, "preGatewayManagedMode"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2015,6 +2015,28 @@ test(
         await assertUpgradedRevisionReadable(db);
         assert.deepEqual(await canonicalData(db), upgradedCanonicalData(before));
         await assertUpgradedAuthentication(db);
+        if (history === "preGatewayManagedMode") {
+          await db.app.query(
+            `INSERT INTO occ.agent_revisions
+               (id, namespace_id, agent_id, revision_number, backend_id, admitted_spec, admitted_at)
+             SELECT $1, namespace_id, agent_id, revision_number + 1, backend_id, admitted_spec, now()
+             FROM occ.agent_revisions`,
+            [`rev_${randomUUID()}`],
+          );
+          assert.deepEqual(
+            (
+              await db.app.query(
+                `SELECT a.gateway_managed_mode AS desired, r.gateway_managed_mode AS admitted
+                 FROM occ.agents a JOIN occ.agent_revisions r
+                   ON r.namespace_id = a.namespace_id AND r.agent_id = a.id ORDER BY r.revision_number`,
+              )
+            ).rows,
+            [
+              { desired: true, admitted: false },
+              { desired: true, admitted: true },
+            ],
+          );
+        }
         if (prefix === 59) {
           const upgradedReceipts = await historyReceipts(db.migrator);
           const sessions = await db.app.query("SELECT count(*)::integer AS count FROM occ.session");
@@ -2694,9 +2716,8 @@ test(
     const manifest = JSON.parse(
       await readFile(join(migrationsDirectory, "meta/_canonical-history.json"), "utf8"),
     );
-    assert.equal(manifest.entries.length, 63);
     assert.deepEqual(
-      manifest.entries.slice(58).map(({ tag }) => tag),
+      manifest.entries.slice(58, 63).map(({ tag }) => tag),
       [
         "0059_administrator_sandbox_policy_grants",
         "0060_credential_proxy_admission",
@@ -2811,7 +2832,7 @@ test(
       });
     }
 
-    // Discarding all four new receipts leaves main's exact ledger but the completed
+    // Discarding every new receipt leaves main's exact ledger but the completed
     // catalog. The runner must refuse before replaying any credential migration.
     assert.equal(
       (
@@ -2819,7 +2840,7 @@ test(
           before.receipts.at(-1).id,
         ])
       ).rowCount,
-      4,
+      completed.receipts.length - before.receipts.length,
     );
     assert.deepEqual(await historyReceipts(db.migrator), before.receipts);
     await assertHistoryRefused(

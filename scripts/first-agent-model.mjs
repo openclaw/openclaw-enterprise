@@ -75,13 +75,15 @@ export function firstAgentRevisionValuesMatch(
   revisionId,
   priorRevisionId,
 ) {
+  // Reconstruct the expected snapshot; never change the revision or ignore other drift.
+  // Deployment names the helper's sole main Agent after the OCC Agent.
+  const expected = structuredClone(configured);
+  expected.agents = { ...expected.agents, entries: { main: { identity: { name: record.name } } } };
   if (record.sandboxDriver !== "openshell" || record.harness !== "codex") {
-    return isDeepStrictEqual(values, configured);
+    return isDeepStrictEqual(values, expected);
   }
 
-  // Reconstruct the expected snapshot; never change the revision or ignore other drift.
   const priorPatPolicy = firstAgentPriorPatPolicy(values, record, revisionId, priorRevisionId);
-  const expected = structuredClone(configured);
   const appServer = expected.plugins.entries.codex.config.appServer;
   appServer.sandbox = priorPatPolicy ? "workspace-write" : "danger-full-access";
   appServer.approvalsReviewer = "user";

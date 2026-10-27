@@ -31,28 +31,32 @@ import {
   withholdPermissionSummary,
 } from "./console-agents-test-support.mjs";
 import { createPolicyConsole } from "./console-sandbox-policy-fixture.ts";
-import { CONFIGURATION_SAVE_DENIED } from "../helpers/refusal-text.mjs";
+import {
+  AGENT_SOURCES_DENIED,
+  AGENT_STOP_DENIED,
+  AGENT_UPDATE_DENIED,
+  CONFIGURATION_SAVE_DENIED,
+  DIAGNOSTICS_DENIED,
+  stopRefused,
+  WORKSPACE_SAVE_DENIED,
+  REPOSITORY_CHOICES_AGENT_DENIED,
+  SAVE_READ_REFUSED,
+  WORKSPACE_SAVE_REFUSED,
+} from "../helpers/refusal-text.mjs";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
 
 // A member who can read an Agent and its Configuration, but not change them, was offered Save
 // on the Configuration JSON editor, the Slack drawer and the Agent-side editors. Each save
-// answered 403 and the console showed "Access denied. You do not have permission for this
-// operation.", naming no permission (finding 1530, D618). Configuration saves now name the
+// answered 403 and the console showed a bare "Access denied" sentence, naming no permission (finding 1530, D618). Configuration saves now name the
 // grant they need; Agent-side saves are disabled up front when the permission answer denies
 // Agent update.
 
-const AGENT_UPDATE_DENIED =
-  "Your access does not include updating this Agent. Ask an administrator for Agent update access to save these settings.";
-const AGENT_SOURCES_DENIED =
-  "Saving these settings needs operate on each Secret and credential source this Agent and its Configuration bind, which your access does not include. Ask an administrator for that access.";
 const AGENT_SOURCES_SERVICE_ACCOUNT_DENIED =
-  "Saving these settings needs operate on each Secret and credential source this Agent and its Configuration bind, and read on the ServiceAccount it uses for Harness authentication. Your access does not include all of them. Ask an administrator for that access.";
+  "Saving these settings needs operate on each Secret and credential source this Agent and its Configuration bind, and read on the ServiceAccount it uses for Harness authentication. Your access does not include all of them. Ask an Installation administrator for that access.";
 const AGENT_CONFIGURATION_READ_DENIED =
-  "Saving these settings needs read access to this Agent's Configuration, which your access does not include. Ask an administrator for Configuration read access.";
-const READ_REFUSAL =
-  "You do not have permission to read this Agent's saved settings. Ask an administrator for Agent read and Configuration read access.";
+  "Saving these settings needs read access to this Agent's Configuration, which your access does not include. Ask an Installation administrator for Configuration read on it.";
 
 // A member who can read the Namespace's Agents and Configurations but change nothing.
 const READER = "save-refusal-reader";
@@ -423,6 +427,35 @@ test("an unknown permission answer keeps the repository access editor", async (t
   assert.equal(await page.getByText(/read-only with your access/).count(), 0);
 });
 
+// Without a permission answer a reader's console still reads the repository choices. The API
+// refuses them for lack of Agent update, and the status says so and who grants it, not that the
+// choices are "denied" (finding D753).
+test("a refused repository choices read names the Agent update it needs", async (t) => {
+  const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId: string) => [
+    {
+      repositoryRef: "application",
+      repositoryId: "1602",
+      repository: "example/application",
+      namespaces: [{ namespaceId, profiles: ["git-read", "git-write", "git-full"] }],
+    },
+  ]);
+  const agent = await fixture.createAgent(namespace.id, "Repository Choices", nativeValues("repo"));
+  const member = await createReader(fixture, namespace);
+  const { page } = await newPage(t, fixture, { browser });
+  await withholdPermissionSummary(page, fixture, namespace.id, agent.id);
+  const refused = page.waitForResponse((response) =>
+    response.url().endsWith(`/namespaces/${namespace.id}/agents/${agent.id}/repository-options`),
+  );
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "repositories").href,
+    member.credentials,
+  );
+  assert.equal((await refused).status(), 403);
+  await page.getByText(REPOSITORY_CHOICES_AGENT_DENIED, { exact: true }).waitFor();
+});
+
 // The permission answer was read once per page, so a grant applied only after a full page
 // Refresh (finding 1538). Reload authentication source reads it again.
 test("a granted Agent update enables the Agent-side save on the next draft refresh", async (t) => {
@@ -556,7 +589,7 @@ for (const c of readRefusals) {
       ...c.deny(agent),
     });
     await c.save(page);
-    await page.getByText(READ_REFUSAL, { exact: true }).waitFor();
+    await page.getByText(SAVE_READ_REFUSED, { exact: true }).waitFor();
     assert.deepEqual(
       requests.filter(({ method }) => method === "PATCH"),
       [],
@@ -596,16 +629,11 @@ test("a refused workspace file save names Agent operate", async (t) => {
   await page.getByText("AGENTS.md loaded.", { exact: true }).waitFor();
   await editor.fill("after");
   await page.getByRole("button", { name: "Save AGENTS.md", exact: true }).click();
-  await page
-    .getByText(
-      "You do not have permission to save this file. Ask an administrator for Agent operate access.",
-    )
-    .waitFor();
+  await page.getByText(WORKSPACE_SAVE_REFUSED, { exact: true }).waitFor();
   assert.equal(await editor.inputValue(), "after");
 });
 
-const OPERATE_REASON =
-  "Your access does not include operating this Agent. Ask an administrator for Agent operate access to save workspace files.";
+const OPERATE_REASON = WORKSPACE_SAVE_DENIED;
 
 // A member who can read the Agent but not operate it was offered an enabled Save on every
 // workspace file, and learned only from the refusal that saving needs Agent operate (finding
@@ -646,6 +674,10 @@ test("a member without Agent operate sees workspace Saves unavailable with the r
   );
   await page.getByText(OPERATE_REASON, { exact: true }).waitFor();
   for (const name of ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"]) {
+    await page
+      .getByRole("tablist", { name: "Workspace file", exact: true })
+      .getByRole("tab", { name: new RegExp(name.replace(".", "\\.")) })
+      .click();
     await page.getByText(`${name} loaded.`, { exact: true }).waitFor();
     const editor = page.getByLabel(name, { exact: true });
     assert.equal(await editor.inputValue(), `# ${name}\n`);
@@ -672,16 +704,14 @@ test("a member without Agent operate sees workspace Saves unavailable with the r
   assert.deepEqual(writes, []);
 });
 
-const DIAGNOSTICS_DENIED = "Your access does not include running diagnostics for this Agent.";
-const STOP_REFUSED =
-  "You do not have permission to stop this Agent. Ask an administrator for Agent operate access.";
+const STOP_REFUSED = stopRefused("this Agent");
 
 // The page's other operate-gated controls follow the same observed answer as Workspace: the Stop
 // row hides and each version's Run diagnostics disables while operate is denied (finding 2328).
 async function expectOperateControls(page: Page, allowed: boolean) {
   const stopRow = page.getByRole("region", { name: "Stop Agent", exact: true });
   await stopRow.waitFor({ state: allowed ? "visible" : "hidden" });
-  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await page.getByRole("tab", { name: "Deployment", exact: true }).click();
   const run = page.getByRole("button", { name: "Run diagnostics for this version", exact: true });
   await run.waitFor();
   const denial = page.getByText(DIAGNOSTICS_DENIED, { exact: true });
@@ -754,7 +784,8 @@ async function operateScenario(t: TestContext, name: string) {
       if (answered) {
         await page.getByText(OPERATE_REASON, { exact: true }).waitFor();
         for (const file of ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"]) {
-          await page.getByText(`${file} loaded.`, { exact: true }).waitFor();
+          // All files load before retention, including the editors hidden by the picker.
+          await page.getByText(`${file} loaded.`, { exact: true }).waitFor({ state: "attached" });
         }
       }
     },
@@ -860,7 +891,7 @@ test("a Stop refusal clears once a later answer grants Agent operate", async (t)
   await page.unroute(scenario.permissionsUrl);
   await scenario.rememberStatusDenial();
   // The row stays because this viewer used it; the denial disables Stop and adds its notice.
-  const notice = stopRow.getByText("Your access does not include stopping this Agent.");
+  const notice = stopRow.getByText(AGENT_STOP_DENIED);
   await scenario.rereadThroughLogs();
   await notice.waitFor();
   scenario.operate(true);
@@ -889,7 +920,9 @@ for (const reply of ["an incomplete preview", "a save with different rules"] as 
     const preview = reply === "an incomplete preview";
     const url = detailUrl(fixture, namespace.id, agent.id, revision.id, "policy");
     await login(page, fixture, url.href);
-    await page.getByRole("button", { name: "Remove Network rules 1", exact: true }).click();
+    await page.getByRole("button", { name: "Manage rules", exact: true }).click();
+    await page.getByLabel("Actions for network rule 1", { exact: true }).click();
+    await page.getByRole("button", { name: "Remove rule", exact: true }).click();
     const refresh = page.getByRole("button", { name: "Refresh policy", exact: true });
 
     // The operator removes the grant. Let the controller validate or commit that removal, then
@@ -916,7 +949,10 @@ for (const reply of ["an incomplete preview", "a save with different rules"] as 
         .getByRole("alert")
         .filter({ hasText: "could not read the validated rules" })
         .waitFor();
-      assert.equal(await page.getByRole("button", { name: "Save", exact: true }).count(), 0);
+      assert.equal(
+        await page.getByRole("button", { name: "Save for later", exact: true }).count(),
+        0,
+      );
       assert.equal(pathRequests(requests, "PUT", base).length, 0);
       assert.equal(await review.isEnabled(), true);
     } else {
@@ -945,7 +981,7 @@ for (const reply of ["an incomplete preview", "a save with different rules"] as 
       assert.equal(await alert.isVisible(), true, "a pre-save policy read cannot resolve the save");
       assert.equal(await review.count(), 0);
       assert.equal(
-        await page.getByRole("button", { name: "Apply saved policy to current revision" }).count(),
+        await page.getByRole("button", { name: /^(Apply saved rules|Retry application)$/ }).count(),
         0,
       );
       await refresh.click();

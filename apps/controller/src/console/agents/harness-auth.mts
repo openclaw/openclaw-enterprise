@@ -218,12 +218,12 @@ export function createHarnessAuthFields(
   const runtimeHint = element(
     "p",
     { className: "hint" },
-    "Configured on the runtime host; not validated by OCC.",
+    "Configured on the runtime host; OpenClaw Enterprise does not check it.",
   );
   const validationHint = element(
     "p",
     { className: "hint" },
-    "Managed sources are checked during deployment. Operator-managed credentials are not validated by OCC. Selection does not establish provider login or model readiness.",
+    "Managed sources are checked during deployment. OpenClaw Enterprise does not check operator-managed credentials. Selection does not establish provider login or model readiness.",
   );
   const section = element(
     "fieldset",
@@ -353,7 +353,7 @@ export function createHarnessAuthFields(
         (method.value !== "api_key" && method.value !== "codex_pat") ||
         !selectedSecretSource?.id
       ) {
-        throw new Error("Choose an OCC Secret.");
+        throw new Error("Choose a Secret.");
       }
       return method.value === "api_key"
         ? { method: "api_key", source: selectedSecretSource }

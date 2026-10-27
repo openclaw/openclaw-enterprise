@@ -35,12 +35,21 @@ func TestCreateCommandsShowAJSONExample(t *testing.T) {
 		{"secret", "create"},
 		{"agent", "create"},
 		{"credential-source", "create"},
+		// Update bodies have rules the API reference owns: agent update needs
+		// configurationId, and configuration update keeps omitted secretBindings
+		// (finding D766).
+		{"configuration", "update"},
+		{"agent", "update"},
 	} {
 		command, _, err := root.Find(path)
 		if err != nil || command == root {
 			t.Fatalf("occ %s: %v", strings.Join(path, " "), err)
 		}
-		checkJSONExample(t, command, "occ "+strings.Join(path, " ")+" --file")
+		invocation := "occ " + strings.Join(path, " ")
+		if path[len(path)-1] == "update" {
+			invocation += " <" + path[0] + "-id>"
+		}
+		checkJSONExample(t, command, invocation+" --file")
 	}
 }
 

@@ -20,9 +20,13 @@ import type { SecretsOperateDenied } from "./credential-access.mjs";
 import {
   NEW_SECRET_OPERATE_DENIED,
   NEW_SECRET_OPERATE_REMEDY,
-  SECRET_CREATE_DENIED,
   SECRET_OPERATE_DENIED,
 } from "./secret-picker.mjs";
+import {
+  askAdministratorTo,
+  NO_SECRETS_CREATE_DENIED,
+  SECRET_CREATE_DENIED,
+} from "./access-reasons.mjs";
 
 type PresetContext = Pick<NamespacePageContext, "request" | "isCurrent" | "onExpired"> & {
   namespaceId: string;
@@ -297,7 +301,7 @@ export function createPresetFields(
         }
         field.secretStatus.textContent =
           createDenied && !field.secrets.length
-            ? `No Secrets you can read in this Namespace. ${SECRET_CREATE_DENIED} Ask an administrator for read access to an existing one.`
+            ? NO_SECRETS_CREATE_DENIED
             : newSecretDenied
               ? `Choose an existing Secret. ${newSecretHint}`
               : field.secrets.length
@@ -638,8 +642,9 @@ export function createPresetFields(
         selector.dispatchEvent(new Event("change"));
       }
       if (presets.length === 0) {
-        status.textContent =
-          "No Presets available to you in this Namespace. Ask an administrator to install default-codex or another Preset, or to give you read access to a Preset.";
+        status.textContent = `No Presets available to you in this Namespace. ${askAdministratorTo(
+          "install default-codex or another Preset, or to give you Preset read on one",
+        )}`;
       } else {
         status.textContent = chooseHint();
       }

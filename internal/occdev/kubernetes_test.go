@@ -2,6 +2,7 @@ package occdev
 
 import (
 	"context"
+	"encoding/json/v2"
 	"os"
 	"path/filepath"
 	"slices"
@@ -10,9 +11,87 @@ import (
 	"time"
 )
 
+func TestImportRuntimePassesTheCheckoutSourceIdentity(t *testing.T) {
+	t.Setenv("OCC_KUBERNETES_RUNTIME_IMAGE", "")
+	repository := t.TempDir()
+	source := map[string]string{
+		"commit":              strings.Repeat("a", 40),
+		"sourceArchiveSha256": strings.Repeat("b", 64),
+		"buildTimestamp":      "2026-01-02T03:04:05Z",
+	}
+	data, err := json.Marshal(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repository, "deploy/runtime"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, "deploy/runtime/openclaw-source.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Stop at the external build boundary. This checks argument delivery, not a Docker build.
+	fakeEngine(t, "docker", `
+build*) printf '%s\n' "$@" > build-args; exit 17 ;;
+`)
+	r := newRunner(Options{Repository: repository})
+	r.engine = "docker"
+	if _, err := r.importRuntime(context.Background(), &developmentState{}); err == nil {
+		t.Fatal("the failed build was reported as success")
+	}
+	arguments, err := os.ReadFile(filepath.Join(repository, "build-args"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"build", "-f", "deploy/runtime/Dockerfile",
+		"--build-arg", "OPENCLAW_COMMIT=" + source["commit"],
+		"--build-arg", "OPENCLAW_SOURCE_SHA256=" + source["sourceArchiveSha256"],
+		"--build-arg", "OPENCLAW_BUILD_TIMESTAMP=" + source["buildTimestamp"],
+		"--tag", "openclaw-enterprise-runtime:kubernetes-quickstart", "."}
+	if got := strings.Split(strings.TrimSpace(string(arguments)), "\n"); !slices.Equal(got, want) {
+		t.Fatalf("runtime build arguments = %q, want %q", got, want)
+	}
+}
+
+func TestImportRuntimeRejectsInvalidSourceIdentityBeforeTheBuild(t *testing.T) {
+	t.Setenv("OCC_KUBERNETES_RUNTIME_IMAGE", "")
+	valid := `{"commit":"` + strings.Repeat("a", 40) + `","sourceArchiveSha256":"` + strings.Repeat("b", 64) + `","buildTimestamp":"2026-01-02T03:04:05Z"}`
+	for name, contents := range map[string]string{
+		"missing file":             "",
+		"missing fields":           `{}`,
+		"invalid JSON":             `{`,
+		"invalid commit":           strings.Replace(valid, strings.Repeat("a", 40), "main", 1),
+		"invalid archive checksum": strings.Replace(valid, strings.Repeat("b", 64), "unknown", 1),
+		"invalid calendar date":    strings.Replace(valid, "2026-01-02", "2026-02-30", 1),
+		"non-UTC timestamp":        strings.Replace(valid, "03:04:05Z", "03:04:05+01:00", 1),
+		"unknown field":            strings.Replace(valid, `"commit":`, `"extra":true,"commit":`, 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			repository := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(repository, "deploy/runtime"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if contents != "" {
+				if err := os.WriteFile(filepath.Join(repository, "deploy/runtime/openclaw-source.json"), []byte(contents), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// Any engine invocation would record a build attempt despite invalid source metadata.
+			fakeEngine(t, "docker", `build*) touch build-attempted; exit 17 ;;`)
+			r := newRunner(Options{Repository: repository})
+			r.engine = "docker"
+			if _, err := r.importRuntime(context.Background(), &developmentState{}); err == nil || !strings.Contains(err.Error(), "openclaw-source.json") {
+				t.Fatalf("expected the source identity error, got %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(repository, "build-attempted")); !os.IsNotExist(err) {
+				t.Fatalf("the build ran with invalid source metadata: %v", err)
+			}
+		})
+	}
+}
+
 // fakeEngine puts a container engine named after the runner's selection on
-// PATH. It answers only the inspect commands image resolution issues, so a
-// test passes only when resolution asks what the real CLI supports.
+// PATH. It answers only each test's selected build or inspect commands, so
+// unexpected calls fail instead of silently succeeding.
 func fakeEngine(t *testing.T, engine string, script string) {
 	t.Helper()
 	directory := t.TempDir()

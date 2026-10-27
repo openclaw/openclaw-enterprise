@@ -69,9 +69,7 @@ readable if the catalog entry or Driver disappears.
 For Compute-owned Kubernetes embedded OpenClaw and dedicated Codex workloads,
 a selected native install rejection produces a `PLUGIN_INSTALL_FAILED` warning,
 and a successful Codex install whose apps still need authentication produces
-`PLUGIN_AUTH_REQUIRED`. Deployment can succeed with these warnings once the
-failed selections are explicitly disabled in the effective native and gateway
-configuration. Warnings contain only the admitted selection key and a closed
+`PLUGIN_AUTH_REQUIRED`. Deployment can still succeed. Warnings contain only the admitted selection key and a closed
 code, never native error text or credentials.
 
 The requested plugin map stays unchanged; startup derives an effective map that
@@ -219,10 +217,9 @@ See [native mappings](drivers/plugin-bundled.md#native-mappings-and-limits).
 ### Verification boundary
 
 Source, schema, and fixture tests establish API and translation behavior. Native
-runtime compatibility requires opt-in Kubernetes proof: a real Agent turn, then
-a later deployment that disables or removes the selection and leaves another
-Agent unchanged. [Agent plugin testing](../testing/plugins.md) covers
-contributor fixtures, service-account boundaries, and current proof notes.
+runtime compatibility needs the opt-in Kubernetes proof in
+[Agent plugin testing](../testing/plugins.md): a real Agent turn, then a later
+deployment that disables or removes the selection and leaves another Agent unchanged.
 
 This page owns the nested plugin wire contract. The
 [generated API reference](api.md) summarizes routes and top-level schemas;
@@ -260,13 +257,12 @@ launch; see the
 [compatibility check](../flows/agent-plugin-approvals.md#3-check-the-selected-gateway-before-launch).
 
 The Console resolves display names with the selected same-Namespace bot Secret,
-which stays on the server. Selecting a person shows their name and handle immediately;
-the policy stores their workspace-qualified Slack user ID. If the Console cannot resolve
-a saved name, it shows **Name unavailable** and keeps the selection until you remove it.
-During Agent creation, choose a Secret
+which stays on the server. Selecting a person shows their name and handle; the policy
+stores their workspace-qualified Slack user ID. A saved name the Console cannot resolve
+shows **Name unavailable** and stays selected. During Agent creation, choose a Secret
 beside the approver field; this search-only selection does not bind it to the Agent.
 An existing Slack channel binding supplies the initial selection. Lookup requires
-Agent create or edit and Secret `operate` permission; operators can paste user IDs instead. The
+Agent create or edit and Secret `operate`; operators can paste user IDs instead. The
 [Slack Channel Driver](drivers/slack-channel.md) describes workspace display,
 scopes, and pagination.
 
@@ -298,8 +294,8 @@ mandatory review.
 
 Codex maps `toolDefaults.reviewer` to the native app-wide reviewer. Native Codex
 has no per-tool reviewer setting, so explicit `tools.<toolId>.reviewer` values
-are rejected rather than applied to the whole app. Unsupported choices fail even if the tool is disabled
-or the value matches an inherited reviewer. Reviewer does not belong in
+are rejected rather than applied to the whole app. Unsupported choices fail even when the value
+matches an inherited reviewer. Reviewer does not belong in
 `driverPolicy`. Agent create, update, provisioning, and deploy answer `400` for an enabled
 `auto` reviewer unless the Agent's Configuration sets
 `plugins.entries.codex.config.appServer.approvalPolicy` to `on-request` or

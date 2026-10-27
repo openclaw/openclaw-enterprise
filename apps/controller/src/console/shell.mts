@@ -1,6 +1,6 @@
 import type { BackendSummary, Namespace } from "@openclaw-enterprise/contracts";
 import { displayDate } from "./agents/list.mjs";
-import { button, element, type statusBlock } from "./dom.mjs";
+import { button, describeDisabled, element, type statusBlock, requestIdLine } from "./dom.mjs";
 import type { createNavigation, pages } from "./navigation.mjs";
 
 interface Account {
@@ -52,6 +52,10 @@ export function brandContents(placement: "navigation" | "sign-in") {
   return [logo, element("span", { className: "brand-name", title: displayName }, displayName)];
 }
 
+// The page panel's sentence that says why no Namespace can be selected. The header's disabled
+// selector is described by it (finding D749); the panel renders below the header afterwards.
+export const NAMESPACE_ACCESS_REASON_ID = "namespace-access-reason";
+
 export function panel(
   target: HTMLElement,
   title: string,
@@ -66,7 +70,7 @@ export function panel(
       { className: "state-panel", role: "status" },
       element("h2", {}, title),
       element("p", {}, description),
-      requestId ? element("p", { className: "request-id" }, `Request ID: ${requestId}`) : null,
+      requestId ? requestIdLine(requestId) : null,
       action ? button(actionLabel, action) : null,
     ),
   );
@@ -157,6 +161,8 @@ export function createShell({
   let namespaces: readonly Namespace[] = [];
   let namespaceId: string | null = null;
   let observabilityUrl: string | null = null;
+  // The shown shell's Observability link, if any.
+  let observabilityLink: HTMLAnchorElement | null = null;
   let menuControls: ReturnType<typeof createAccountMenus> | null = null;
   let drawerControls: {
     shell: HTMLElement;
@@ -349,9 +355,25 @@ export function createShell({
     };
   }
 
+  // A reader with no Namespace sees a panel whose sentence says why the selector is disabled
+  // (finding D749). Only a shown panel describes it: on any other page, such as Settings, the
+  // selector names no reason that is not there.
+  function describeNamespaceSelector(select: HTMLSelectElement) {
+    describeDisabled(
+      select,
+      session && !namespaceAdmissionPending && namespaces.length === 0
+        ? // The page view may still be detached from the document while it renders.
+          (select.closest(".shell") ?? document).querySelector<HTMLElement>(
+            `#${NAMESPACE_ACCESS_REASON_ID}`,
+          )
+        : null,
+    );
+  }
+
   function updateNamespaceSelector(select: HTMLSelectElement) {
     const readable = namespaceAdmissionPending ? [] : namespaces;
     select.disabled = namespaceAdmissionPending || !session || readable.length === 0;
+    describeNamespaceSelector(select);
     select.replaceChildren();
     if (!readable.some((item) => item.id === namespaceId)) {
       // Once this session knows the Namespace list, admission names the selection instead of
@@ -583,20 +605,20 @@ export function createShell({
       });
       nav.append(link);
     }
+    observabilityLink = null;
     if (session && observabilityUrl) {
-      nav.append(
-        element(
-          "a",
-          {
-            href: observabilityUrl,
-            target: "_blank",
-            rel: "noopener noreferrer",
-          },
-          element("span", { className: "nav-icon", "aria-hidden": "true" }, "◉"),
-          "Observability",
-          externalLinkIcon(),
-        ),
+      observabilityLink = element(
+        "a",
+        {
+          href: observabilityUrl,
+          target: "_blank",
+          rel: "noopener noreferrer",
+        },
+        element("span", { className: "nav-icon", "aria-hidden": "true" }, "◉"),
+        "Observability",
+        externalLinkIcon(),
       );
+      nav.append(observabilityLink);
     }
     const revision =
       document.querySelector<HTMLMetaElement>('meta[name="occ-build-revision"]')?.content ?? "";
@@ -627,7 +649,9 @@ export function createShell({
               "span",
               {
                 className: "occ-version",
-                title: knownRevision ? `OCC commit ${revision}` : "OCC build revision unavailable",
+                title: knownRevision
+                  ? `Control plane commit ${revision}`
+                  : "Control plane build revision unavailable",
               },
               knownRevision ? revision.slice(0, 8) : "dev",
             )
@@ -832,7 +856,7 @@ export function createShell({
           : `No accessible ${pages[feature].toLowerCase()}`,
         feature === "backends"
           ? "No experimental Backends are configured for this Installation."
-          : "Ask an administrator to provision resources or grant access, then refresh.",
+          : "Ask an Installation administrator to provision resources or grant access, then refresh.",
         "Refresh",
         () => void loadPage(),
       );
@@ -1032,6 +1056,12 @@ export function createShell({
     renderRows,
     switchNamespace,
     updateNamespaces,
+    // The page view calls this once it shows (or replaces) the no-Namespace panel.
+    describeNamespaceSelector() {
+      if (namespaceSelect) {
+        describeNamespaceSelector(namespaceSelect);
+      }
+    },
     // The shown shell's control, outside its page view, that matches one from an earlier
     // render: the same sidebar link or button, Namespace selector, Refresh, heading or navigation
     // toggle. A new shell's account menus start closed, so their items give way to their toggle (the
@@ -1058,6 +1088,13 @@ export function createShell({
       }
       // The sidebar, toggle and header precede the page view, so their match is found first.
       return sameControl(node, shell);
+    },
+    // The shown page learned that the caller does not administer the Installation, whose
+    // administrators alone get the link (finding D760).
+    dropObservabilityLink() {
+      observabilityUrl = null;
+      observabilityLink?.remove();
+      observabilityLink = null;
     },
     setLeaveGuard(guard: LeaveGuard) {
       refuseLeave = guard;
