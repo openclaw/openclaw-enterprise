@@ -721,9 +721,14 @@ async function fakeCommand(root, { command: tool, args, cwd }, io) {
       // from the case's script (ample by default) and 100 MiB of reclaimable file cache.
       // "unlimited" is a container without a limit (memory.max reads "max"); "transient"
       // is a dropped kubelet connection, and "missing" a container without the files.
-      const free = state.gatewayFree?.shift() ?? 2048;
+      // "slow:N" answers N after 8.5 s, past an 8 s upgrade timeout.
+      let free = state.gatewayFree?.shift() ?? 2048;
       save();
       log(`gateway-memory ${free}`);
+      if (String(free).startsWith("slow:")) {
+        free = Number(free.slice("slow:".length));
+        await new Promise((resolve) => setTimeout(resolve, 8500));
+      }
       if (free === "transient") {
         return fail(
           1,
@@ -1740,6 +1745,24 @@ test("OpenClaw Doctor does not run while the gateway lacks free memory", async (
   );
 });
 
+// A read can admit Doctor and still end at the deadline. Doctor then does not start,
+// and the error is a plain timeout: the gateway had the memory, so the low-memory
+// message (with its "last read" of ample memory) would contradict itself.
+test("OpenClaw Doctor admitted at the upgrade deadline reports a plain timeout", async (t) => {
+  const f = await fixture(t, { agent: true });
+  // The low read and the slow read both start well before the 8 s deadline.
+  await scriptGatewayMemory(f, [300, "slow:2048"]);
+  const failure = await f.run("--timeout-seconds", "8").then(
+    () => assert.fail("the upgrade must stop at the timeout"),
+    (stopped) => stopped,
+  );
+  assert.deepEqual(await doctorEvents(f), ["gateway-memory 300", "gateway-memory slow:2048"]);
+  assert.equal(
+    failure.stderr.trimEnd().split("\n").at(-1),
+    "upgrade-production-images: OpenClaw Doctor did not run before the upgrade timeout.",
+  );
+});
+
 test("OpenClaw Doctor keeps low memory admission closed across missing and transient reads", async (t) => {
   for (const unavailable of ["missing", "transient"]) {
     await t.test(unavailable, async (t) => {
@@ -1801,34 +1824,15 @@ test("OpenClaw Doctor reports unknown restart history unless Ready and post-read
   });
   const withoutRows = pod();
   delete withoutRows.status.containerStatuses;
-  const withoutCount = pod();
-  delete withoutCount.status.containerStatuses[0].restartCount;
   const replacement = pod();
   replacement.metadata.uid = "replacement-uid";
-  const unbound = pod();
-  delete unbound.metadata.uid;
-  const wrongName = pod();
-  wrongName.metadata.name = "another-gateway";
-  const wrongNamespace = pod();
-  wrongNamespace.metadata.namespace = "another-tenant";
-  const duplicate = pod();
-  duplicate.status.containerStatuses.push({ ...duplicate.status.containerStatuses[0] });
+  // Only Pod states the Kubernetes API returns: container statuses not reported, a Pod
+  // replaced under the same name (new UID), and a lower restart count.
   const cases = [
     ["missing Ready row", withoutRows, pod()],
-    ["missing Ready count", withoutCount, pod()],
     ["missing post row", pod(), withoutRows],
-    ["missing post count", pod(), withoutCount],
     ["replacement Pod", pod(), replacement],
-    ["unbound Ready identity", unbound, pod()],
-    ["unbound post identity", pod(), unbound],
-    ["wrong name", pod(), wrongName],
-    ["wrong namespace", pod(), wrongNamespace],
-    ["duplicate row", pod(), duplicate],
     ["decreased count", pod(2), pod(1)],
-    ...["bad", -1, 0.5, null, 9007199254740992].flatMap((count) => [
-      [`malformed Ready count ${count}`, pod(count), pod()],
-      [`malformed post count ${count}`, pod(), pod(count)],
-    ]),
     ["additional restart without reason", pod(), pod(1), "restart"],
     ["true zero", pod(), pod(), true],
     ["unchanged nonzero", pod(3), pod(3), true],

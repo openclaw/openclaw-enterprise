@@ -1479,11 +1479,13 @@ if ((target_count > 0)); then
     doctor_prefix="$evidence_dir/status/$(json_file_name "$namespace_id--$agent_id--$deployment_id").doctor"
     settled=0
     measured_low=0
+    admitted=0
     free=unknown
     while ((SECONDS < deadline)); do
       if ! free=$(gateway_free_memory "$gateway_namespace" "$gateway_name" "$doctor_prefix.memory"); then
         if ((measured_low == 0)); then
           warn "cannot read the cgroup v2 memory use of Agent $agent_id's gateway; running OpenClaw Doctor without checking its free memory."
+          admitted=1
           break
         fi
         settled=0
@@ -1491,10 +1493,14 @@ if ((target_count > 0)); then
       fi
       [[ ! -s "$doctor_prefix.memory.retry" ]] || settled=0
       if [[ "$free" == unlimited ]] || { [[ "$free" != unknown ]] && ((free >= doctor_ample_mib)); }; then
+        admitted=1
         break
       fi
       if [[ "$free" != unknown ]] && ((free >= doctor_memory_mib)); then
-        ((++settled < 2)) || break
+        if ((++settled >= 2)); then
+          admitted=1
+          break
+        fi
       else
         settled=0
       fi
@@ -1502,7 +1508,9 @@ if ((target_count > 0)); then
       ((SECONDS < deadline)) || break
       sleep 2
     done
-    if ((SECONDS >= deadline)); then
+    # A read that admitted Doctor can still end at the deadline; that is a plain
+    # timeout below, not a memory shortage.
+    if ((admitted == 0 && measured_low == 1)); then
       doctor_timeout="Agent $agent_id's gateway did not keep $doctor_memory_mib MiB free below its memory limit before the upgrade timeout (last read: $free MiB free), so OpenClaw Doctor did not run: Doctor shares the gateway container's limit and could OOM-kill the serving gateway. Wait for the gateway's memory use to settle, then repeat the command with --resume; see docs/guides/deploy/production-upgrade-recovery.md#correct-a-doctor-failure."
     fi
     # On a timeout, start no further Doctor; the ones already started are joined

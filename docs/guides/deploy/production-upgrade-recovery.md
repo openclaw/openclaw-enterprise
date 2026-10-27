@@ -129,19 +129,19 @@ to settle, then resume; consider a larger gateway memory limit if it stays low.
 These readings do not reserve memory or guarantee that the gateway avoids an OOM kill.
 
 A Doctor failure reports its command exit separately from gateway restart
-history. A comparable count increase on the same Pod with last termination
+history. A higher restart count on the same Pod with last termination
 `OOMKilled` means an OOM restart occurred after the Ready baseline; it does not
-prove Doctor caused it. Missing counts, decreasing or malformed counts, or
-unbound or changed Pod identity report unknown. Wait until the gateway is
-`Ready` again, then resume; the resume runs Doctor again without new deployments.
+prove Doctor caused it. The restart history is unknown when the gateway Pod was
+replaced, its container status is missing, or its restart count went down.
+Wait until the gateway is `Ready` again, then resume; the resume runs Doctor
+again without new deployments.
 
 `OpenClaw Doctor ran out of its 384 MiB heap` means Doctor reached its heap cap;
 check the separate gateway restart observation. Repeat the command with
 `--resume` and `--doctor-heap-mib 768`, doubling again if needed. Each extra MiB
 of heap needs the same free gateway memory before Doctor starts, so raise the
-gateway memory limit first if the command then waits for memory. The maximum
-accepted cap is 9223372036854775167 MiB (signed 64-bit maximum minus the larger
-640 MiB margin); larger values are rejected before upgrade effects.
+gateway memory limit first if the command then waits for memory. The command
+refuses a cap too large for its 64-bit memory arithmetic before it changes anything.
 
 ## Correct an invalid Installation name
 
