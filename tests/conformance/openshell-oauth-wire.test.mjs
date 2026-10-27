@@ -6,12 +6,13 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 import test from "node:test";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
-import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
 import {
   createOpenShellBackend,
   openShellProviderName,
 } from "../../apps/controller/src/backends/openshell.ts";
+import { createCredentialProxyInstallationConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { loadInstallationFile } from "../helpers/installation-file.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
@@ -285,20 +286,35 @@ test(
       },
     };
     // A retained account still uses operator mTLS over the IP-SAN endpoint with enrollment off.
-    for (const operatorTls of [certificates.operatorTls, undefined]) {
-      const retainedBackend = createOpenShellBackend({
-        id: "openshell-ip",
-        implementation: "openshell",
-        configuration: { ...configuration, endpoint: `https://127.0.0.1:${port}`, operatorTls },
-        drivers: { sandbox: "sandbox", credential_gateway: "credential-gateway-openshell" },
-      });
+    for (const [native, operatorTls] of [
+      [false, certificates.operatorTls],
+      [true, certificates.operatorTls],
+      [false, undefined],
+    ]) {
+      const installation = createCredentialProxyInstallationConfiguration();
+      const definition = installation.backend[0];
+      definition.configuration = {
+        ...configuration,
+        endpoint: `https://127.0.0.1:${port}`,
+        operatorTls,
+      };
+      if (native) {
+        installation.drivers.credential_refresh = {
+          id: "native-token-service",
+          implementation: "native",
+          configuration: {},
+        };
+      }
+      const retainedBackend = createOpenShellBackend(definition);
       t.after(() => retainedBackend.client.close());
-      const gateway = new OpenShellCredentialGatewayDriver(
-        { binaries: ["/app/bin/codex"] },
-        { backend: retainedBackend },
-      );
-      const read = gateway.sourceTokens.withSourceToken(
-        context,
+      const { credentialRefreshDriver } = await loadInstallationFile(t, installation, {
+        createOpenShellBackend: () => retainedBackend,
+      });
+      const read = credentialRefreshDriver.sourceTokens.withSourceToken(
+        {
+          ...context,
+          source: { ...context.source, driverId: definition.drivers.credential_gateway },
+        },
         async ({ accessToken }) => accessToken,
       );
       if (operatorTls === undefined) {

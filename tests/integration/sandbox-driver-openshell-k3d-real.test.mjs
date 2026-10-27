@@ -26,6 +26,7 @@ import { connect as connectTls } from "node:tls";
 import { promisify } from "node:util";
 import { inflateRawSync } from "node:zlib";
 import { createAuthenticatedControllerRequest } from "../helpers/auth-session.mjs";
+import { openShellCredentialAttachments } from "../../apps/controller/src/drivers/sandbox/openshell-credential-attachments.ts";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
@@ -1770,7 +1771,7 @@ function createIntegrationSandboxDriverFactory(
     return state.endpoint;
   }
 
-  const createDriver = (selection) => {
+  const createDriver = (selection, backend, credentialProfiles) => {
     function optionsFor(requirements, namespaceName) {
       const options = structuredClone(selection.configuration);
       options.gateway.readiness = {
@@ -1841,6 +1842,7 @@ function createIntegrationSandboxDriverFactory(
     return {
       id: selection.id,
       capability: "sandbox",
+      credentialAttachments: openShellCredentialAttachments(backend.client, credentialProfiles),
       implementation: selection.implementation,
       facets: Object.freeze(["networking", "filesystem", "process"]),
       networkPolicy: { live: true, wildcards: true, portRanges: true },

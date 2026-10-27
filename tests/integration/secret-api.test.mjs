@@ -1370,9 +1370,6 @@ function createRecordingCredentialGateway() {
     async removeSource(context) {
       stored.delete(context.source.id);
     },
-    async attachForRevision() {
-      throw new Error("not exercised");
-    },
   };
 }
 

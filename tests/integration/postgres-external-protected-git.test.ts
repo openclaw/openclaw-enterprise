@@ -9,6 +9,7 @@ import test, { type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import type {
   AgentRevision,
+  Backend,
   ComputeRevisionContext,
   ComputeDriver,
   RepositoryGitDeliveryProfile,
@@ -46,7 +47,11 @@ import { installationOrigin } from "../fixtures/driver-packages/protected-execut
 
 import { standingGitConversation } from "../helpers/standing-git-conversation.ts";
 import { gitExpiryGateway } from "../helpers/openshell-online-git-journey.mjs";
-import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
+import {
+  openShellProviderName,
+  type OpenShellGateway,
+} from "../../apps/controller/src/backends/openshell.ts";
+import { openShellCredentialAttachments } from "../../apps/controller/src/drivers/sandbox/openshell-credential-attachments.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import {
   KubernetesComputeDriver,
@@ -463,16 +468,19 @@ function externalGitJourney(
     let modelClient: Awaited<ReturnType<typeof gitExpiryGateway>>["client"];
     const modelSourceId = "cs_" + randomUUID();
     const modelGatewayConfiguration = { binaries: [codex!] };
+    const modelBackend: Backend<OpenShellGateway> = {
+      id: "external-journey-model",
+      drivers: { credential_gateway: "external-journey-model" },
+      client: { placement: () => undefined, clientForNamespace: () => modelClient },
+    } as never;
     const modelGateway = conversation
       ? new OpenShellCredentialGatewayDriver(modelGatewayConfiguration, {
           id: "external-journey-model",
-          backend: {
-            id: "external-journey-model",
-            drivers: { credential_gateway: "external-journey-model" },
-            client: { placement: () => undefined, clientForNamespace: () => modelClient },
-          } as never,
+          backend: modelBackend,
         })
       : undefined;
+    const modelAttachments =
+      modelGateway && openShellCredentialAttachments(modelBackend.client, modelGateway.profiles);
     if (modelGateway && conversation) {
       // A ready gateway-held model source is the same state ordinary registration commits.
       // The existing stock-wire fixture supplies its independent model attachment below.
@@ -661,12 +669,12 @@ function externalGitJourney(
         const { egressPlan: plan } = revision;
         assert.ok(plan?.repositoryGit && custody.currentEgressInstallation);
         const context = { plan, revision, namespace, signal: t.signal };
-        if (conversation && modelGateway) {
+        if (conversation && modelAttachments) {
           preparationStage = "attach-model-source";
           assert.equal(custody.harnessAuth?.method, "credential_source");
           const auth = custody.harnessAuth;
           assert.ok(auth && auth.method === "credential_source");
-          await modelGateway.attachForRevision({
+          await modelAttachments.prepare({
             revision,
             namespace,
             sources: [auth.source],

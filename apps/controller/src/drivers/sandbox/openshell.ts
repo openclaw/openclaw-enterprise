@@ -15,6 +15,7 @@ import {
   SandboxNetworkPolicyConfiguration,
   ConfigurationValidationError,
 } from "@openclaw-enterprise/contracts";
+import type { OpenShellCredentialProfiles } from "../../backends/openshell-credential-profiles.ts";
 import { openShellCredentialAttachments } from "./openshell-credential-attachments.ts";
 import { openShellLogDecisions } from "./openshell-log-decisions.ts";
 import {
@@ -202,6 +203,7 @@ export interface OpenShellSandboxDriverOptions {
 }
 
 export interface OpenShellSandboxDriverSelection {
+  readonly credentialProfiles?: OpenShellCredentialProfiles;
   readonly openShellGit?: OpenShellGitRuntime;
   readonly operatorOwnedKubernetesResources?: boolean;
   readonly id?: string;
@@ -2913,7 +2915,10 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       );
     }
     this.backend = selection.backend;
-    this.credentialAttachments = openShellCredentialAttachments(selection.backend.client);
+    this.credentialAttachments = openShellCredentialAttachments(
+      selection.backend.client,
+      selection.credentialProfiles,
+    );
     this.operatorOwnedKubernetesResources = selection.operatorOwnedKubernetesResources === true;
   }
 

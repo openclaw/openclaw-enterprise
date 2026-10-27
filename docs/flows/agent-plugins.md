@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
 updated: 2026-10-27
-last_updated_session: authoring-run/5f2d68c9-a379-48d1-b61e-f9971c654e17
+last_updated_session: authoring-run/8c5c9976-b378-420d-8133-8f5ae666f25a
 ---
 
 # Agent Plugin Deployment Flow
@@ -77,7 +77,8 @@ Saved-Agent discovery requires an active dedicated Agent and caller `read` and
 `update`. Bound Secrets use [`SecretDriver.withValue`](../reference/drivers/secret.md).
 For a bound or explicitly supplied managed OAuth source, OCC calls the
 [Token Service reader](../reference/drivers/credential-refresh.md#plugin-catalog-discovery).
-The reader can refresh the token and return account metadata. Bound credential callbacks
+The installed OpenShell Backend supplies this reader even after new logins are disabled.
+It can refresh the token and return account metadata. Bound credential callbacks
 recheck binding and caller and Agent `operate` grants. Missing or non-ready
 Agent-bound CredentialSources return `404` at binding lookup.
 For a caller-specified `credentialSource`, OCC rechecks Agent scope and caller
@@ -357,6 +358,8 @@ establish starvation.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-27 01:32: Keep the Token Service reader for previously enrolled OpenShell accounts. (authoring-run/8c5c9976-b378-420d-8133-8f5ae666f25a - a6b902bd80837f1a1849f267172a6d3340f1626b)
 
 - 2026-10-27 00:41: Route OAuth catalog discovery through the selected Token Service. (authoring-run/5f2d68c9-a379-48d1-b61e-f9971c654e17 - 09e9cb6e4a452c2f727a7b53b9b2dcbd5ac5503c)
 

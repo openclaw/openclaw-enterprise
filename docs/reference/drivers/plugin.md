@@ -83,8 +83,8 @@ changing the query.
 Both routes require Agent `create` in the Namespace. Stored references must
 belong to that Namespace and require caller `operate` on the exact source.
 OCC uses SecretDriver `withValue` for Secrets. For managed OAuth sources it calls
-the [Token Service reader](credential-refresh.md#plugin-catalog-discovery), supplied
-by the source's Gateway if the selected service lacks one. The PluginDriver receives
+the [Token Service reader](credential-refresh.md#plugin-catalog-discovery).
+The PluginDriver receives
 credentials in server memory. For PAT discovery, the bundled Codex Driver derives the
 account ID from the PAT. Clients do not provide an account ID. A Secret reference
 to another Namespace returns `400 INVALID_REQUEST`. After caller authorization,

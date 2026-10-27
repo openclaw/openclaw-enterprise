@@ -162,7 +162,7 @@ when enabled, OpenShell rejects before Gateway mutation because its pinned API
 cannot preserve the exact Agent ServiceAccount/token.
 
 For `credential_source`, Compute renders the catalog login mode without a model
-Secret and passes version and `attachForRevision` provider names through
+Secret and passes the provider names returned by the Sandbox’s `credentialAttachments.prepare` through
 `requirements.credentialAttachments`. For `chatgptAuthTokens`, OpenShell omits
 static `CODEX_ACCESS_TOKEN`, retaining account metadata. Codex receives only `APP_TOKEN_SHA` from its exact Agent transport
 Secret. Compute converts the admitted plugin snapshot into `runtime.json` and
@@ -184,7 +184,7 @@ admit bootstrap/model traffic; failure keeps versions inactive.
 API-key profiles bind immutable `config.base_url` plus `/**` (default OpenAI `/v1`),
 preserving prefixes including `/api/v1`. [Registration validation](credential-source-lifecycle.md#1-admit-the-registration-request)
 rejects invalid endpoints.
-`attachForRevision` rejects custom endpoints for native OpenClaw. For Codex,
+The OpenShell Sandbox requires every native OpenClaw model endpoint to match the bound source. For Codex,
 `apps/controller/src/drivers/compute/plugin-runtime.ts:codexConfigurationToml`
 selects a named provider and HTTPS Responses transport.
 

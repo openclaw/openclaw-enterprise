@@ -1,4 +1,21 @@
-import type { CredentialAttachmentStatus, SandboxDriver } from "@openclaw-enterprise/contracts";
+import { CredentialSourceRevisionError, ScopeViolationError } from "@openclaw-enterprise/occ";
+import { asRecord } from "@openclaw-enterprise/utils";
+import {
+  ownedBy,
+  sourceBaseUrl,
+  type OpenShellCredentialProfiles,
+} from "../../backends/openshell-credential-profiles.ts";
+import { normalizeOpenAiBaseUrl } from "../openai-endpoint.ts";
+import {
+  CODEX_OAUTH_TYPE,
+  CODEX_ACCESS_TOKEN_ENV,
+  codexAccountMetadata,
+} from "../credential-refresh/codex-device-authorization.ts";
+import type {
+  CredentialAttachmentStatus,
+  CredentialSourceAttachment,
+  SandboxDriver,
+} from "@openclaw-enterprise/contracts";
 import {
   openShellProviderName,
   openShellWorkspaceName,
@@ -6,11 +23,97 @@ import {
 } from "../../backends/openshell.ts";
 import { confirmSandboxAbsent, gatewayIdentityRefusal } from "./openshell-gateway-client.ts";
 
-/** The paired Sandbox uses its Workspace identity to observe and revoke provider attachments. */
+/** The paired Sandbox uses its Workspace identity to prepare, observe and revoke provider attachments. */
 export function openShellCredentialAttachments(
-  gateway: Pick<OpenShellGateway, "clientForNamespace">,
+  gateway: Pick<OpenShellGateway, "clientForNamespace" | "placement">,
+  profiles?: OpenShellCredentialProfiles,
 ): NonNullable<SandboxDriver["credentialAttachments"]> {
   return {
+    async prepare(context) {
+      if (profiles === undefined) {
+        throw new Error("The OpenShell Sandbox has no credential source profiles configured.");
+      }
+      const workspace = openShellWorkspaceName(context.namespace);
+      const client = gateway.clientForNamespace(context.namespace.name);
+      const attachments: CredentialSourceAttachment[] = [];
+      const environment = new Set<string>();
+      for (const source of context.sources) {
+        if (source.driverId !== profiles.id || source.namespaceId !== context.namespace.id) {
+          throw new ScopeViolationError("The credential source is not owned by this gateway.");
+        }
+        const type = profiles.sourceType(source.type);
+        if (type.catalog.type === "openai") {
+          if (
+            (context.revision.harness.id !== "codex" &&
+              context.revision.harness.id !== "openclaw") ||
+            context.revision.harness.mode !== "dedicated"
+          ) {
+            throw new ScopeViolationError(
+              "OpenShell OpenAI-compatible credential sources require a dedicated Harness.",
+            );
+          }
+          if (context.revision.harness.id === "openclaw") {
+            const providers = asRecord(asRecord(context.revision.configuration?.models)?.providers);
+            const provider = asRecord(providers?.openai);
+            const catalog = provider?.models;
+            const endpoint = sourceBaseUrl(source.config);
+            if (
+              !Array.isArray(catalog) ||
+              catalog.length === 0 ||
+              catalog.some((model) => {
+                const written = asRecord(model)?.baseUrl ?? provider?.baseUrl;
+                return typeof written !== "string" || normalizeOpenAiBaseUrl(written) !== endpoint;
+              })
+            ) {
+              throw new ScopeViolationError(
+                "Dedicated native OpenClaw model endpoints must match the bound credential source endpoint.",
+              );
+            }
+          }
+        }
+        // Two sources cannot place their placeholders in the same Sandbox variable.
+        for (const name of Object.values(type.credentials(source.config))) {
+          if (environment.has(name)) {
+            throw new CredentialSourceRevisionError(
+              "CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT",
+              "Two credential sources bound to the revision use the same environment variable.",
+            );
+          }
+          environment.add(name);
+        }
+        const name = openShellProviderName(source.id);
+        const provider = await client.getProvider(workspace, name, context.signal);
+        if (provider === undefined || !ownedBy(provider, source.id)) {
+          throw new Error("The OpenShell provider for a bound credential source is unavailable.");
+        }
+        // Each deployment applies the current binary lists to the profiles it attaches. OpenShell
+        // composes Sandbox policy from the stored profile, so attached Sandboxes narrow too.
+        await profiles.ensure(
+          client,
+          workspace,
+          type,
+          source.id,
+          source.config,
+          gateway.placement(context.namespace.name),
+          context.signal,
+        );
+        attachments.push(
+          Object.freeze({
+            sourceId: source.id,
+            ref: name,
+            ...(source.type === CODEX_OAUTH_TYPE
+              ? {
+                  externalChatgptAuth: {
+                    ...codexAccountMetadata(provider.config),
+                    accessTokenPlaceholder: `openshell:resolve:env:${CODEX_ACCESS_TOKEN_ENV}`,
+                  },
+                }
+              : {}),
+          }),
+        );
+      }
+      return Object.freeze(attachments);
+    },
     async status(context) {
       if (context.sandbox === undefined) {
         throw new Error("OpenShell attachment status requires the provisioned Sandbox.");

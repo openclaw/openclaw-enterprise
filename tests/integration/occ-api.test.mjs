@@ -1282,9 +1282,6 @@ test("Agent reads return the bound credentialSources; revision reads return only
       return { state: "ready" };
     },
     async removeSource() {},
-    async attachForRevision(context) {
-      return context.sources.map((entry) => ({ sourceId: entry.id, ref: entry.id }));
-    },
   };
   const sandbox = {
     id: "sandbox-api",
@@ -1416,9 +1413,6 @@ test("refresh source PATCH and rotate refuse a stale refresh token and audit a f
       return { state: "ready" };
     },
     async removeSource() {},
-    async attachForRevision() {
-      throw new Error("not exercised");
-    },
   };
   let mint = { state: "ready" };
   const refresh = {

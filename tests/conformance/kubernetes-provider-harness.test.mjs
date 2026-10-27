@@ -612,15 +612,10 @@ for (const scenario of transportScenarios) {
       return scenario.answer;
     };
     const attachmentChecks = [];
-    // The Credential Gateway Compute holds; only revisions that bind sources reach it.
-    driver.credentialGatewayDriver = {
-      id: "credential-gateway",
-      capability: "credential_gateway",
-      async attachForRevision(context) {
+    fixture.sandbox.credentialAttachments = {
+      async prepare(context) {
         return context.sources.map(({ id }) => ({ sourceId: id, ref: `ref-${id}` }));
       },
-    };
-    fixture.sandbox.credentialAttachments = {
       async status(context) {
         attachmentChecks.push(context.sources.map(({ id }) => id));
         return context.sources.map(({ id }) => ({ sourceId: id, state: "ready" }));

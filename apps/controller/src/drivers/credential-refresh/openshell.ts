@@ -25,7 +25,7 @@ import {
   ownedCodexProvider,
   ownedProvider,
 } from "./openshell-source-tokens.ts";
-import { openShellRefreshSourceType } from "../credential-gateway/openshell.ts";
+import { openShellRefreshSourceType } from "../../backends/openshell-credential-profiles.ts";
 import type {
   OpenShellProviderResponse,
   OpenShellRefreshStatus,

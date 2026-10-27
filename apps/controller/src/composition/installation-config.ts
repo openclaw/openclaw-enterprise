@@ -1,3 +1,7 @@
+import type {
+  OpenShellCredentialProfiles,
+  OpenShellCredentialProfileOptions,
+} from "../backends/openshell-credential-profiles.ts";
 import {
   openShellProxyConfiguration,
   validateOpenShellRepositoryTransport,
@@ -106,11 +110,9 @@ import { GitHubRepositoryPolicy } from "../drivers/repo/github/policy.ts";
 import { composeRepositoryAccess } from "./repository-credentials/platform.ts";
 import { startPreparedGitHubGitOwner } from "../backends/repository-credentials/prepared-git-owner.ts";
 import { createOpenShellBackend, type OpenShellGateway } from "../backends/openshell.ts";
-import {
-  OpenShellCredentialGatewayDriver,
-  type OpenShellCredentialGatewayOptions,
-} from "../drivers/credential-gateway/openshell.ts";
+import { OpenShellCredentialGatewayDriver } from "../drivers/credential-gateway/openshell.ts";
 import { OpenShellCredentialRefreshDriver } from "../drivers/credential-refresh/openshell.ts";
+import { openShellSourceTokenReader } from "../drivers/credential-refresh/openshell-source-tokens.ts";
 
 import { loadInstallationPresets, type ShadowedDefaultPreset } from "./installation-presets.ts";
 
@@ -610,6 +612,7 @@ export async function loadInstallationConfiguration(options: {
   readonly createSandboxDriver?: (
     selection: SelectedDriverConfiguration,
     backend: Backend<OpenShellGateway> | undefined,
+    credentialProfiles: OpenShellCredentialProfiles | undefined,
   ) => SandboxDriver;
 }): Promise<InstallationRuntimeDrivers | undefined> {
   const environment = options.environment ?? process.env;
@@ -1160,7 +1163,7 @@ export async function loadInstallationConfiguration(options: {
     credentialGateway === undefined
       ? undefined
       : new OpenShellCredentialGatewayDriver(
-          credentialGateway.configuration as unknown as OpenShellCredentialGatewayOptions,
+          credentialGateway.configuration as unknown as OpenShellCredentialProfileOptions,
           {
             id: credentialGateway.id,
             implementation: credentialGateway.implementation,
@@ -1215,6 +1218,7 @@ export async function loadInstallationConfiguration(options: {
       const capabilities = createOpenShellCapabilities({
         sandbox,
         backend: openShell!,
+        ...(credentialGatewayDriver && { credentialProfiles: credentialGatewayDriver.profiles }),
         operatorOwnedKubernetesResources: preprovisionedNamespace !== undefined,
         createSandbox: (configuration, selection) =>
           new bundledSandboxPackage!.OpenShellSandboxDriver(configuration, selection),
@@ -1254,12 +1258,18 @@ export async function loadInstallationConfiguration(options: {
       sandbox === undefined
         ? undefined
         : options.createSandboxDriver !== undefined
-          ? validateCreatedSandboxDriver(options.createSandboxDriver(sandbox, openShell), sandbox)
+          ? validateCreatedSandboxDriver(
+              options.createSandboxDriver(sandbox, openShell, credentialGatewayDriver?.profiles),
+              sandbox,
+            )
           : sandboxPackage === undefined
             ? (() => {
                 const capabilities = createOpenShellCapabilities({
                   sandbox,
                   backend: openShell!,
+                  ...(credentialGatewayDriver && {
+                    credentialProfiles: credentialGatewayDriver.profiles,
+                  }),
                   operatorOwnedKubernetesResources: preprovisionedNamespace !== undefined,
                   createSandbox: (configuration, selection) =>
                     new bundledSandboxPackage!.OpenShellSandboxDriver(configuration, selection),
@@ -1295,19 +1305,22 @@ export async function loadInstallationConfiguration(options: {
         ...(startWorker === false && { startWorker }),
       });
     });
+  // The Backend can still read an enrolled account after the Installation disables new logins.
+  const tokenService = credentialRefresh ?? openShell;
   const credentialRefreshDriver =
-    credentialRefresh &&
+    tokenService &&
     Object.assign(
-      credentialRefresh.implementation === "openshell"
+      credentialRefresh?.implementation === "openshell"
         ? new OpenShellCredentialRefreshDriver(credentialRefresh.configuration, {
             id: credentialRefresh.id,
             implementation: credentialRefresh.implementation,
             backend: openShell!,
           })
         : {
-            id: credentialRefresh.id,
-            implementation: credentialRefresh.implementation,
+            id: tokenService.id,
+            implementation: credentialRefresh?.implementation ?? "openshell",
             capability: "credential_refresh" as const,
+            ...(openShell && { sourceTokens: openShellSourceTokenReader(openShell) }),
           },
       {
         ...(preparedTokens && { preparedTokens }),
