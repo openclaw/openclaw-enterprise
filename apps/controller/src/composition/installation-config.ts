@@ -1,3 +1,4 @@
+import { managedPluginRequestListener } from "../drivers/egress-proxy/managed-plugin-requests.ts";
 import {
   openShellProxyConfiguration,
   validateOpenShellRepositoryTransport,
@@ -223,6 +224,7 @@ export interface InstallationRuntimeDrivers {
   readonly credentialGatewayDriver?: CredentialGatewayDriver;
   readonly credentialRefreshDriver?: CredentialRefreshDriver;
   readonly protectedDriver?: InstalledDriver;
+  readonly managedPluginRequestAuthority?: EgressAuthorityConfiguration;
   readonly proxyDriver?: CredentialProxyDriver;
   /** Present only when this registration owns protected repository delivery. */
   readonly repositoryGitDriver?: InstalledDriver;
@@ -787,6 +789,7 @@ export async function loadInstallationConfiguration(options: {
     }
   }
 
+  const managedPluginRequestAuthority = managedPluginRequestListener(environment, options.mode);
   requireChartListener(egressAuthority, environment, chartListeners.egressAuthority);
   requireChartListener(
     repositoryTransportConfiguration?.authority,
@@ -1328,6 +1331,7 @@ export async function loadInstallationConfiguration(options: {
     ...(preparedGitHub === undefined ? {} : { preparedGitHub }),
     createIAMDriver,
     ...(pluginDriver === undefined ? {} : { pluginDriver }),
+    ...(managedPluginRequestAuthority && { managedPluginRequestAuthority }),
     ...(repositoryRuntime ?? {}),
     ...(preparedRepositoryGit ? { preparedRepositoryGit } : {}),
     ...(repositoryTransport ? { repositoryTransport } : {}),

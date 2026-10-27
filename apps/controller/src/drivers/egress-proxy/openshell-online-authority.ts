@@ -1,6 +1,12 @@
 import { isIP } from "node:net";
 import { hasControlCharacter } from "@openclaw-enterprise/utils";
-import { Server, status, type ServerUnaryCall, type sendUnaryData } from "@grpc/grpc-js";
+import {
+  Server,
+  status,
+  type ServerDuplexStream,
+  type ServerUnaryCall,
+  type sendUnaryData,
+} from "@grpc/grpc-js";
 import {
   describeOpenShellMiddleware,
   loadOpenShellMiddleware,
@@ -75,6 +81,8 @@ export interface OpenShellOnlineAuthorityOptions {
     signal: AbortSignal,
   ) => Promise<OpenShellOnlineDecision>;
   readonly budgetMs?: number;
+  /** This fixed, REST-only policy refuses upgrades and admits no other installation binding. */
+  readonly httpOnlyBinding?: string;
 }
 
 /** Stock v0.1.4's normalized pre-credential view. Omitted headers and original framing
@@ -291,13 +299,19 @@ function createAuthority<T>(
   }
   const { service } = loadOpenShellMiddleware();
   const server = new Server({ "grpc.max_receive_message_length": 5 * 1024 * 1024 });
-  const claims = (call: ServerUnaryCall<Wire, Wire>) =>
+  const claims = (call: Pick<ServerUnaryCall<Wire, Wire>, "metadata">) =>
     verifier.verify(middlewareBearer(call.metadata));
   const control = (identity: Wire | undefined) =>
     (identity?.caller_kind === "gateway" &&
       identity.sub === options.identity.issuer &&
       identity.sandbox_id === undefined) ||
     supervisor(identity) !== undefined;
+  const acceptedBinding = (config: unknown) => {
+    const id = bindingId(config);
+    return (
+      id !== undefined && (options.httpOnlyBinding === undefined || options.httpOnlyBinding === id)
+    );
+  };
   let pending = 0;
   server.addService(service.SupervisorMiddleware!.service, {
     Describe(call: ServerUnaryCall<Wire, Wire>, callback: sendUnaryData<Wire>) {
@@ -307,6 +321,7 @@ function createAuthority<T>(
           call.request.gateway,
           options.identity.audience,
           "online-request-authorization",
+          options.httpOnlyBinding !== undefined,
         );
       if (description) {
         callback(null, description);
@@ -319,9 +334,23 @@ function createAuthority<T>(
         valid:
           control(claims(call)) &&
           call.request.middleware_name === options.registrationName &&
-          bindingId(call.request.config) !== undefined,
+          acceptedBinding(call.request.config),
       });
     },
+    ...(options.httpOnlyBinding !== undefined && {
+      EvaluateWebSocketSession(call: ServerDuplexStream<Wire, Wire>) {
+        const sandboxId = supervisor(claims(call));
+        call.once("data", (event: Wire) => {
+          const preflight = record(event.preflight);
+          if (!sandboxId || record(preflight.context).sandbox_id !== sandboxId) {
+            call.emit("error", { code: status.PERMISSION_DENIED, message: "Supervisor required." });
+            return;
+          }
+          call.write({ preflight_decision: { action: 3, reason_code: "http_only" } });
+          call.end();
+        });
+      },
+    }),
     EvaluateHttpRequest(call: ServerUnaryCall<Wire, Wire>, callback: sendUnaryData<Wire>) {
       // Convert the call deadline once; delayed timers or wall-clock changes cannot extend it.
       const startedAt = performance.now();
@@ -339,6 +368,7 @@ function createAuthority<T>(
       if (
         !request ||
         call.request.middleware_name !== options.registrationName ||
+        (options.httpOnlyBinding !== undefined && !acceptedBinding(call.request.config)) ||
         pending >= 1024 ||
         expired()
       ) {

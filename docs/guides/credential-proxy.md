@@ -104,6 +104,54 @@ TLS port are separate from the static API authority above. A missing key,
 unqualified sender, or unavailable trust path is a stop condition, not a reason
 to use an ambient token.
 
+## Enable Google Workspace requests from a dedicated worker
+
+For a dedicated OpenClaw Agent on Kubernetes, OpenShell checks each request
+with the OCE API before resolving the worker's placeholder. The Agent
+revision's Google provider covers Gmail. Discovery is public.
+
+The Google source must allow only `/usr/local/lib/oce/plugins/google/bin/gog`.
+If the installation allows other tools, set the source's `config.binary` to
+that path. OpenShell also matches process ancestors. Helpers launched by
+`gog` pass the same HTTP checks.
+
+Enable the API listener with the TLS and public-key Secrets and peer selectors
+described above. Use the Gateway's `gateway_id` and the contents of its `kid_path`.
+
+```yaml
+egressAuthority:
+  enabled: true
+  tlsSecretName: oce-egress-tls
+  issuerSecretName: openshell-extension-public
+  pluginRequests:
+    enabled: true
+    port: 9445
+    issuer: openshell-gateway:replace-with-gateway-id
+    keyId: replace-with-signing-key-id
+```
+
+Append this registration to the Gateway configuration. Match the Service DNS
+name to its certificate, mount its public CA at `tls_ca_cert_path` on the
+Gateway, and allow Gateway and supervisor traffic to the listener. The Gateway
+sends supervisors the registration and CA.
+
+```toml
+[[openshell.supervisor.middleware]]
+name = "oce-plugin-requests"
+grpc_endpoint = "https://openclaw-enterprise-egress-authority.oce-system.svc.cluster.local:9445"
+audience = "urn:openshell:extension:middleware:oce-plugin-requests"
+tls_ca_cert_path = "/etc/openshell/certs/oce-egress-ca.pem"
+max_payload_bytes = 4194304
+timeout = "2s"
+```
+
+Restart the Gateway once the listener serves authenticated `Describe`. Set
+`drivers.sandbox.configuration.gateway.managedPluginMiddleware` to
+the exact `grpc_endpoint` URL above in the OCE Installation. Select the ready Google
+credential, save, and deploy. At a controlled upstream, verify
+the exact `GET /gmail/v1/users/me/messages?maxResults=1` receives the bearer,
+discovery receives none, and an extra query parameter produces no request.
+
 <a id="register-authorize-and-deploy-a-static-source"></a>
 <a id="register%2C-authorize%2C-and-deploy-a-static-source"></a>
 

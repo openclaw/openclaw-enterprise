@@ -6512,6 +6512,60 @@ test(
       await assert.rejects(render({ ...protectedValues, ...override }), diagnostic);
     }
 
+    const pluginValues = {
+      ...protectedValues,
+      "egressAuthority.pluginRequests.enabled": "true",
+      "egressAuthority.pluginRequests.issuer": "openshell-gateway:test",
+      "egressAuthority.pluginRequests.keyId": "gateway-current",
+    };
+    const withPlugins = await resources((await render(pluginValues)).stdout);
+    const spec = (kind, name) =>
+      withPlugins.find((object) => object.kind === kind && object.metadata?.name === name).spec;
+    assert.deepEqual(spec("Service", service.metadata.name).ports, [
+      ...service.spec.ports,
+      { name: "plugin-requests", port: 9445, targetPort: "plugin-requests" },
+    ]);
+    assert.deepEqual(spec("NetworkPolicy", ingress.metadata.name).ingress, [
+      {
+        from: ingress.spec.ingress[0].from,
+        ports: [...ingress.spec.ingress[0].ports, { protocol: "TCP", port: 9445 }],
+      },
+    ]);
+    for (const component of ["api", "worker"]) {
+      const container = spec(
+        "Deployment",
+        `openclaw-enterprise-${component}`,
+      ).template.spec.containers.find((entry) => entry.name === component);
+      const settings = Object.fromEntries(
+        container.env
+          .filter(({ name }) => name.startsWith("OCC_PLUGIN_REQUEST_AUTHORITY_"))
+          .map(({ name, value }) => [name, value]),
+      );
+      assert.deepEqual(
+        settings,
+        component === "api"
+          ? {
+              OCC_PLUGIN_REQUEST_AUTHORITY_PORT: "9445",
+              OCC_PLUGIN_REQUEST_AUTHORITY_ISSUER: "openshell-gateway:test",
+              OCC_PLUGIN_REQUEST_AUTHORITY_KEY_ID: "gateway-current",
+            }
+          : {},
+      );
+      assert.equal(
+        container.ports?.some((p) => p.name === "plugin-requests" && p.containerPort === 9445) ??
+          false,
+        component === "api",
+      );
+    }
+    await assert.rejects(
+      render({ ...pluginValues, "egressAuthority.pluginRequests.port": 9444 }),
+      /distinct TCP port/,
+    );
+    await assert.rejects(
+      render({ ...pluginValues, "egressAuthority.pluginRequests.keyId": "" }),
+      /keyId is required/,
+    );
+
     const prepared = {
       ...protectedValues,
       "preparedGitHub.custodySecretName": "prepared-github-custody",

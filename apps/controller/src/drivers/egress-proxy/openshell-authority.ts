@@ -90,6 +90,7 @@ export function describeOpenShellMiddleware(
   gateway: unknown,
   audience: string,
   implementation: "static-egress" | "online-request-authorization",
+  denyUpgrades = false,
 ): Wire | undefined {
   const execution = implementation === "static-egress";
   const profile = execution
@@ -116,7 +117,12 @@ export function describeOpenShellMiddleware(
         [4, 1],
         [3, 2],
       ]
-    : [[1, 1]];
+    : denyUpgrades
+      ? [
+          [1, 1],
+          [2, 1],
+        ]
+      : [[1, 1]];
   return {
     name: `oce-${implementation}`,
     expected_audience: audience,

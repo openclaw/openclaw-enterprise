@@ -1,3 +1,7 @@
+{{- $plugins := .Values.egressAuthority.pluginRequests }}
+{{- if and $plugins.enabled (not .Values.egressAuthority.enabled) }}
+{{- fail "egressAuthority.pluginRequests requires egressAuthority.enabled" }}
+{{- end }}
 {{- if .Values.egressAuthority.enabled }}
 {{- $authority := .Values.egressAuthority }}
 {{- include "openclaw.validateResourceName" (dict "label" "egressAuthority.tlsSecretName" "value" (required "egressAuthority.tlsSecretName is required" $authority.tlsSecretName)) }}
@@ -5,6 +9,12 @@
 {{- $port := include "openclaw.positiveSafeInteger" (dict "name" "egressAuthority.port" "value" $authority.port "port" true) | int }}
 {{- if or (gt $port 65535) (eq $port (int .Values.api.port)) (and .Values.metrics.enabled (eq $port (int .Values.metrics.port))) }}
 {{- fail "egressAuthority.port must be a distinct TCP port from 1 to 65535" }}
+{{- end }}
+{{- if $plugins.enabled }}
+{{- $pluginPort := include "openclaw.positiveSafeInteger" (dict "name" "egressAuthority.pluginRequests.port" "value" $plugins.port "port" true) | int }}
+{{- if or (gt $pluginPort 65535) (eq $pluginPort $port) (eq $pluginPort (int .Values.api.port)) (and .Values.metrics.enabled (eq $pluginPort (int .Values.metrics.port))) }}
+{{- fail "egressAuthority.pluginRequests.port must be a distinct TCP port from 1 to 65535" }}
+{{- end }}
 {{- end }}
 {{- if not $authority.clients }}
 {{- fail "egressAuthority.clients must select trusted callers" }}
@@ -30,6 +40,11 @@ spec:
     - name: egress-tls
       port: {{ $port }}
       targetPort: egress-tls
+    {{- if $plugins.enabled }}
+    - name: plugin-requests
+      port: {{ $plugins.port }}
+      targetPort: plugin-requests
+    {{- end }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -48,4 +63,8 @@ spec:
       ports:
         - protocol: TCP
           port: {{ $port }}
+        {{- if $plugins.enabled }}
+        - protocol: TCP
+          port: {{ $plugins.port }}
+        {{- end }}
 {{- end }}

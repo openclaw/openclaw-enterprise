@@ -350,6 +350,14 @@ spec:
             {{- include "openclaw.resourceRequirements" (dict "name" "resources" "requirements" $.Values.resources) }}
             {{- toYaml $.Values.resources | nindent 12 }}
           env:
+            {{- if and (eq $component "api") $.Values.egressAuthority.pluginRequests.enabled }}
+            - name: OCC_PLUGIN_REQUEST_AUTHORITY_PORT
+              value: {{ $.Values.egressAuthority.pluginRequests.port | quote }}
+            - name: OCC_PLUGIN_REQUEST_AUTHORITY_ISSUER
+              value: {{ required "egressAuthority.pluginRequests.issuer is required" $.Values.egressAuthority.pluginRequests.issuer | quote }}
+            - name: OCC_PLUGIN_REQUEST_AUTHORITY_KEY_ID
+              value: {{ required "egressAuthority.pluginRequests.keyId is required" $.Values.egressAuthority.pluginRequests.keyId | quote }}
+            {{- end }}
             - name: NODE_ENV
               value: production
             {{- if and (eq $component "api") $.Values.api.consoleTheme.configMapName }}
@@ -611,6 +619,10 @@ spec:
             {{- if $.Values.egressAuthority.enabled }}
             - name: egress-tls
               containerPort: {{ $.Values.egressAuthority.port }}
+            {{- if $.Values.egressAuthority.pluginRequests.enabled }}
+            - name: plugin-requests
+              containerPort: {{ $.Values.egressAuthority.pluginRequests.port }}
+            {{- end }}
             {{- end }}
             {{- end }}
           {{- end }}

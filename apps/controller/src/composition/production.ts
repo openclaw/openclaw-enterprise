@@ -399,7 +399,11 @@ export async function composeProduction(
       ...(workspaceFilesAccess === undefined ? {} : { workspaceFilesAccess }),
     });
     await preparedGitHub?.connect(pool);
-    const exchange = protectedDriver && (await installEgressAuthority(controller, protectedDriver));
+    const exchange = await installEgressAuthority(
+      controller,
+      protectedDriver,
+      config.drivers.managedPluginRequestAuthority,
+    );
     app.get("/healthz", async () => ({ status: "ok" }));
     app.get("/readyz", async () => {
       await pool.query("SELECT 1");
