@@ -310,13 +310,11 @@ Trusted Configuration authors can select reviewed task tools:
 }
 ```
 
-Diffs must separately be enabled as a plugin. Omitting the policy uses the
+Enable Diffs as a plugin. Omitting the policy uses the
 [baseline](../../apps/controller/src/drivers/compute/gateway-tool-policy.ts);
-empty `allow` withholds Gateway tools. Action-bearing tools require explicit
-allowed actions: Agent save refuses core OpenClaw tools such as `dashboard`
-without them, and a plugin tool without them fails each model turn. Baseline
-actions can only narrow; administrative tools and additional baseline actions
-are rejected. Profiles, denies and Codex dynamic-tool
+empty `allow` withholds Gateway tools. Action-bearing tools, such as `dashboard`,
+require explicit allowed actions. Baseline actions can only narrow; administrative tools and
+additional baseline actions are rejected. Profiles, denies and Codex dynamic-tool
 exclusions still apply.
 
 Compute enforces `automations.scope: "caller"` and `allowCommandJobs: false` under
