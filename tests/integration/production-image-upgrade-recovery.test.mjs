@@ -27,6 +27,11 @@ import { listen } from "../helpers/listen.mjs";
 
 const execute = promisify(execFile);
 const repository = fileURLToPath(new URL("../..", import.meta.url));
+const sourceRevision = (
+  await execute("git", ["rev-parse", "--verify", "HEAD^{commit}"], {
+    cwd: repository,
+  })
+).stdout.trim();
 const script =
   process.env.OCC_UPGRADE_SCRIPT ?? join(repository, "scripts/upgrade-production-images");
 const controller = `registry.example.invalid/controller@sha256:${"a".repeat(64)}`;
@@ -1187,7 +1192,7 @@ async function fixture(
         ]
       : []),
     "--source-revision",
-    "d".repeat(40),
+    sourceRevision,
     "--evidence-dir",
     evidence,
     "--occ",

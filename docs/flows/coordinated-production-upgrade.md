@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
-updated: "2026-10-25"
-last_updated_session: "authoring-run/f03f716e-ea13-48ab-ad6e-e179b342d585"
+updated: "2026-10-26"
+last_updated_session: "authoring-run/dc3e51c1-8f14-4410-9c70-e4a993ea58fe"
 ---
 
 # Production image upgrade flow
@@ -60,7 +60,12 @@ graph TD
 
 ### 1. Prepare the candidate
 
-`scripts/upgrade-production-images:prepare_upgrade`
+`scripts/upgrade-production-images:256`, `scripts/upgrade-production-images:prepare_upgrade`
+
+Before it reads protected files or contacts the cluster, the script checks that
+the current repository root's Git `HEAD` matches `--source-revision`. If the
+checkout is unavailable or the commit differs, the command stops before writing
+evidence. This check does not verify uncommitted changes or image provenance.
 
 The script verifies protected files, cluster, deployed Helm release, and matching
 OCC and Secret Installation IDs. It compares all protected and live configuration,
@@ -305,6 +310,7 @@ The check does not separate resources an older import already merged.
 
 ## Changelog
 
+- 2026-10-26 23:24: Record source checkout verification before private inputs. (authoring-run/dc3e51c1-8f14-4410-9c70-e4a993ea58fe - 821bee5fe0bb446319fab40ad21055b1e942eb37)
 - 2026-10-25 11:53: Record native scale, Helm upgrade, and rollout failures; preserve recovery. (authoring-run/f03f716e-ea13-48ab-ad6e-e179b342d585 - 87784a3230964bd8a7a1763f8350c1fd2b4284e0)
 - 2026-10-25 09:19: Keep preflight kubectl errors in private evidence. (authoring-run/6fccb13c-5ec3-44d5-aded-c3c3e9c1da81 - aaabca1fec6b28fbbb674f48f11f015242f86b59)
 - 2026-10-25 06:51: Identify temporary preflight resources by UID before cleanup. (authoring-run/d15969fb-1113-416f-9573-e045dd683b66 - dd36945fec0ec3de38cd15b971537eb10a90d0e4)
