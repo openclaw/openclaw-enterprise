@@ -6153,7 +6153,7 @@ export class OpenClawController {
     const { provider, ref, inject, normalizeConfig, assertCurrent } = selection;
     const reference = references[provider.sourceType.secrets[0]!.name];
     assertCurrent();
-    normalizeConfig.call(provider, config);
+    Reflect.apply(normalizeConfig, provider, [config]);
     // An Installation property: a Proxy that cannot serve the source refuses it before any
     // Secret is read (finding 2360).
     await control.assertAvailable(AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS));
@@ -6189,7 +6189,7 @@ export class OpenClawController {
     });
     // Validate format before committing the candidate, without retaining or exporting material.
     assertCurrent();
-    inject.call(provider, material.value);
+    Reflect.apply(inject, provider, [material.value]);
     assertCurrent();
     if (!material.version || !Number.isFinite(Date.parse(material.authoritativeObservedAt))) {
       throw new DependencyUnavailableError("The Secret Driver returned no version evidence.");

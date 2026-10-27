@@ -477,12 +477,19 @@ test("a source update withholds resolved material after its provider or injector
   let replacementCalls = 0;
   const a: CredentialProviderDefinition = {
     ...original,
+    normalizeConfig(config) {
+      assert.equal(this, a);
+      return Reflect.apply(original.normalizeConfig, this, [config]);
+    },
     inject(value) {
+      assert.equal(this, a);
+      assert.equal(value, "synthetic-key-initial");
       originalCalls += 1;
       return original.inject.call(this, value);
     },
   };
   const approvedInject = a.inject;
+  const approvedNormalize = a.normalizeConfig;
   const b: CredentialProviderDefinition = {
     ...a,
     inject(value) {
@@ -543,4 +550,64 @@ test("a source update withholds resolved material after its provider or injector
   assert.equal(f.secretReads, reads, "a replacement before access must prevent the Secret read");
   assert.deepEqual([originalCalls, replacementCalls], [1, 0]);
   assert.deepEqual(await savedSource(), before);
+
+  providers[index] = a;
+  a.normalizeConfig = approvedNormalize;
+  let normalizerCallLookups = 0;
+  let injectorCallLookups = 0;
+  let materialExposed = false;
+  assert.equal(Object.hasOwn(approvedNormalize, "call"), false);
+  assert.equal(Object.hasOwn(approvedInject, "call"), false);
+  t.after(() => {
+    Reflect.deleteProperty(approvedNormalize, "call");
+    Reflect.deleteProperty(approvedInject, "call");
+  });
+  Object.defineProperty(approvedNormalize, "call", {
+    configurable: true,
+    value(receiver: CredentialProviderDefinition, config: Readonly<Record<string, string>>) {
+      normalizerCallLookups += 1;
+      return Reflect.apply(approvedNormalize, receiver, [config]);
+    },
+  });
+  const heldReads = f.secretReads;
+  const release = f.pauseSecretReads();
+  const pending = update();
+  try {
+    const until = Date.now() + 5_000;
+    while (f.secretReads === heldReads && Date.now() < until) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.equal(f.secretReads, heldReads + 1);
+    // The approved function identity is unchanged while its own call property is replaced.
+    Object.defineProperty(approvedInject, "call", {
+      configurable: true,
+      value(_receiver: CredentialProviderDefinition, value: string) {
+        injectorCallLookups += 1;
+        materialExposed = value === "synthetic-key-initial";
+      },
+    });
+    assert.equal(a.inject, approvedInject);
+  } finally {
+    release();
+  }
+  const accepted = await pending;
+  assert.deepEqual(
+    {
+      status: accepted.status,
+      originalCalls,
+      replacementCalls,
+      normalizerCallLookups,
+      injectorCallLookups,
+      materialExposed,
+    },
+    {
+      status: 200,
+      originalCalls: 2,
+      replacementCalls: 0,
+      normalizerCallLookups: 0,
+      injectorCallLookups: 0,
+      materialExposed: false,
+    },
+  );
+  assert.equal(f.providerRequests.length, 0);
 });
