@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { Clock } from "./backend-contracts.ts";
 import type { CredentialServiceOwner } from "./internal-contracts.ts";
 import type { SessionInput } from "./sessions.ts";
-import { snapshotSessionInput, sameSessionInput, isBoundInput } from "./sessions.ts";
+import { snapshotSessionInput, sameSessionInput, isBoundInput, sameBinding } from "./sessions.ts";
 import type {
   SessionControl,
   ServiceConfig,
@@ -38,6 +38,7 @@ interface AdmissionRecord {
   unbound: boolean;
   saved: boolean;
   writing: Promise<void> | undefined;
+  publication?: { readonly status: SessionStatus; observed: boolean };
   cancel(): void;
 }
 
@@ -50,6 +51,8 @@ export function createControlAdmission(
 ) {
   const records = new Map<string, AdmissionRecord>();
   const sessions = new Map<string, string>();
+  // Retain the original publication while its session remains in the service cache.
+  const retained = new Map<string, AdmissionRecord>();
   const operations = new Map<
     string,
     Promise<{ result: unknown; sessionId: string; created: boolean }>
@@ -73,6 +76,11 @@ export function createControlAdmission(
   };
   // `skip` is the admission the calling open handles itself.
   const sweep = (skip?: string) => {
+    for (const sessionId of retained.keys()) {
+      if (service.status(sessionId) === undefined) {
+        retained.delete(sessionId);
+      }
+    }
     for (const [id, record] of records) {
       // A reservation whose fence did not commit (a refused open, or a failed bind
       // whose session is gone) is never saved: a refusal has no session, and the
@@ -110,12 +118,15 @@ export function createControlAdmission(
       const status = record.sessionId === undefined ? undefined : service.status(record.sessionId);
       if (
         (status === undefined || status.state === "DISPOSED") &&
-        (!record.durable || record.saved) &&
+        (!record.durable || record.saved || record.publication?.observed) &&
         clock.monotonicNow() >= record.forgetAt
       ) {
         record.cancel();
         records.delete(id);
         if (record.sessionId !== undefined) {
+          if (status !== undefined && record.publication?.observed && !record.saved) {
+            retained.set(record.sessionId, record);
+          }
           sessions.delete(record.sessionId);
         }
       }
@@ -136,6 +147,26 @@ export function createControlAdmission(
     }
     return true;
   };
+  const observePublication = async (record: AdmissionRecord) => {
+    const publication = record.publication;
+    if (!journal || !publication || !isBoundInput(record.input)) {
+      throw new Error("RECEIPT_UNAVAILABLE");
+    }
+    const original = publication.status;
+    const found = await journal.status(original.sessionId);
+    if (
+      !found ||
+      !sameBinding(found.binding, record.input.expectedBinding) ||
+      found.deadlineWallMs !== original.deadlineWallMs ||
+      found.cleanup.revoked !== original.cleanup.revoked ||
+      found.cleanup.expired !== original.cleanup.expired
+    ) {
+      throw new Error("RECEIPT_UNAVAILABLE");
+    }
+    publication.observed = true;
+    record.unbound = false;
+    return found;
+  };
   const persist = async (id: string, record: AdmissionRecord, status: SessionStatus) => {
     if (!record.durable || record.saved) {
       return;
@@ -143,8 +174,18 @@ export function createControlAdmission(
     if (!journal || !isBoundInput(record.input)) {
       throw new Error("RECEIPT_UNAVAILABLE");
     }
-    record.writing ??= (async () => {
+    if (record.writing) {
+      return record.writing;
+    }
+    if (record.publication) {
+      await observePublication(record);
+      return;
+    }
+    record.writing = (async () => {
       await record.ready;
+      // Binding failure is known to precede this write. Once invoked, publication
+      // belongs to this original attempt even when its acknowledgement is lost.
+      record.publication = { status, observed: false };
       await journal.dispose(id, record.input as RepositoryCredentialBoundSessionInput, status);
       record.saved = true;
     })().finally(() => {
@@ -174,12 +215,13 @@ export function createControlAdmission(
   };
   const readStatus = async (sessionId: string) => {
     const found = localStatus(sessionId);
-    if (found?.state === "DISPOSED") {
-      const id = sessions.get(sessionId);
-      const record = id === undefined ? undefined : records.get(id);
-      if (id !== undefined && record !== undefined) {
-        await persist(id, record, found);
-      }
+    const id = sessions.get(sessionId);
+    const record = (id === undefined ? undefined : records.get(id)) ?? retained.get(sessionId);
+    if (record?.publication && !record.saved) {
+      return observePublication(record);
+    }
+    if (record?.durable && found?.state === "DISPOSED" && !record.saved) {
+      throw new Error("RECEIPT_UNAVAILABLE");
     }
     if (found !== undefined) {
       return found;
@@ -403,6 +445,10 @@ export function createControlAdmission(
       }
       // Binding can outlive the session. Never hand out a bearer for a session
       // that reached cleanup while its durable admission was being recorded.
+      const terminal = localStatus(opened.session.sessionId);
+      if (terminal?.state === "DISPOSED") {
+        await persist(id, record, terminal);
+      }
       const current = await readStatus(opened.session.sessionId);
       if (!current) {
         throw new Error("RECEIPT_UNAVAILABLE");
@@ -431,7 +477,7 @@ export function createControlAdmission(
     status: readStatus,
     async close(sessionId: string) {
       const found = service.status(sessionId);
-      if (!found) {
+      if (!found || retained.has(sessionId)) {
         return readStatus(sessionId);
       }
       const result = service.close(sessionId);
@@ -465,6 +511,7 @@ export function createControlAdmission(
       }
       records.clear();
       sessions.clear();
+      retained.clear();
       refencing.clear();
     },
   };
@@ -591,12 +638,12 @@ export async function handleControl(
         return;
       }
       const id = (status ?? close)![1]!;
-      const found = await admissions.status(id);
+      const found = close ? await admissions.close(id) : await admissions.status(id);
       if (!found) {
         reply(response, 404, { error: "not-found" });
         return;
       }
-      reply(response, 200, close ? await admissions.close(id) : found);
+      reply(response, 200, found);
     }
   } catch (error) {
     if (!response.destroyed && !response.headersSent) {

@@ -49,6 +49,13 @@ driver refused an object it does not own, such as a Deployment with the Agent's
 workload name but no OCE ownership labels. The driver never adopts such an
 object. Delete it, then deploy again.
 
+For an OpenShell `workspace-baseline` failure with `created directory admission
+failed` and `insecure-permissions`, ask the operator to check the node-state
+directory's owner and mode. Its private root must be `0700`; OCE prepares it at
+startup, including on storage that adds setgid. After correcting the startup or
+storage problem, deploy the Agent again. Keep its retained state and shared
+workspace intact. See [writable runtime state](../../reference/drivers/openshell-sandbox.md#writable-runtime-state).
+
 <span id="the-console-says-serving-status-unavailable"></span>
 
 ## Verify runtime health after deployment

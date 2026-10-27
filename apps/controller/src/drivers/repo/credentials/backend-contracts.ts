@@ -40,9 +40,9 @@ export interface DriverCustody {
     bytes: Uint8Array,
     observation: CaptureObservation,
   ): CredentialRef;
-  withAccess<T>(
+  withRetirement<T>(
+    attempt: AttemptContext,
     credential: CredentialRef,
-    purpose: "authenticate" | "retire",
     consume: (bytes: Uint8Array) => Promise<T>,
   ): Promise<T>;
   retainRenewal(bytes: Uint8Array): RenewalRef;
@@ -158,11 +158,15 @@ export interface RepositoryBackend {
   finalize(attempt: AttemptContext): Promise<FinalizeOutcome>;
   settle(original: AcquireOutcome | RetireOutcome | FinalizeOutcome): Promise<void>;
   plan(request: SessionAuthenticatedRequest): RequestPlan | Denied;
-  withAuthentication<T>(
+  /**
+   * The trusted lifecycle owner invokes the returned authenticator with temporary bytes
+   * from the exact credential record identified by `credential`. The reference alone
+   * does not grant access to bytes; the authenticator must not retain them.
+   */
+  prepareAuthentication(
     credential: CredentialRef,
     plan: RequestPlan,
-    send: (request: PrivateUpstreamRequest) => Promise<T>,
-  ): Promise<T>;
+  ): <T>(bytes: Uint8Array, send: (request: PrivateUpstreamRequest) => Promise<T>) => Promise<T>;
 }
 export interface ResolvedGrant {
   readonly binding: RepositoryCredentialGrantIdentity;

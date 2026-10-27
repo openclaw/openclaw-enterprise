@@ -1,7 +1,6 @@
 import type {
   Clock,
   CredentialRef,
-  DriverCustody,
   PrivateUpstreamRequest,
   RepositoryBackend,
   RequestPlan,
@@ -10,7 +9,6 @@ import type { GitHubDriverState } from "./state.ts";
 
 type AuthenticationDependencies = Readonly<{
   state: GitHubDriverState;
-  custody: DriverCustody;
   clock: Clock;
 }>;
 
@@ -58,11 +56,16 @@ async function sendAuthenticated<T>(
 
 export function createCredentialAuthentication(
   deps: AuthenticationDependencies,
-): RepositoryBackend["withAuthentication"] {
-  return async (credential, plan, send) => {
+): RepositoryBackend["prepareAuthentication"] {
+  return (credential, plan) => {
     assertAuthenticationAllowed(deps, credential, plan);
-    return deps.custody.withAccess(credential, "authenticate", (bytes) =>
-      sendAuthenticated(bytes, plan, send),
-    );
+    let used = false;
+    return async (bytes, send) => {
+      if (used) {
+        throw new Error("authentication-used");
+      }
+      used = true;
+      return sendAuthenticated(bytes, plan, send);
+    };
   };
 }

@@ -20,6 +20,8 @@
     "tests/integration/container-resume.test.mjs",
     "tests/integration/metrics-monitoring-readiness.test.mjs",
     "tests/integration/repository-credentials-control.test.mjs",
+    "tests/integration/repository-credential-operator-recovery.test.ts",
+    "tests/integration/repository-receipt-observation.test.ts",
     "tests/integration/codex-plugin-startup-reads.test.mjs",
     "tests/integration/container-release.test.mjs",
     "tests/integration/password-sign-in-audit.test.mjs",
@@ -47,6 +49,7 @@
     "tests/integration/repository-credentials-server-timeout.test.mjs",
     "tests/integration/protected-repository-metadata-read.test.mjs",
     "tests/integration/repository-credentials-http.test.mjs",
+    "tests/integration/repository-original-lease.test.ts",
     "tests/integration/public-github-read-http.test.mjs",
     "tests/conformance/repository-credentials-fixture-ownership.test.mjs",
     "tests/integration/repository-credentials-projected-inputs.test.mjs",
@@ -385,6 +388,16 @@
       "path": "tests/integration/repository-credentials-http.test.mjs"
     },
     {
+      "path": "tests/integration/repository-original-lease.test.ts",
+      "expectedTests": [
+        "an owned exchange keeps its original lease through replacement and an injected standing callback fences the first write",
+        "standing denial prevents eager Expect headers",
+        "authentication rejection closes a pending dispatch",
+        "a confirmed TLS close before the first write is not dispatched",
+        "authentication rejection after the first write remains uncertain"
+      ]
+    },
+    {
       "path": "tests/integration/public-github-read-http.test.mjs"
     },
     {
@@ -395,6 +408,12 @@
     },
     {
       "path": "tests/integration/repository-credentials-control.test.mjs"
+    },
+    {
+      "path": "tests/integration/repository-credential-operator-recovery.test.ts"
+    },
+    {
+      "path": "tests/integration/repository-receipt-observation.test.ts"
     },
     {
       "path": "tests/integration/repository-credentials-shutdown.test.mjs"
