@@ -217,6 +217,7 @@ local setup for deploying an Agent; follow [Local Setup](../guides/quickstart.md
 | `occ dev up --sandbox-network-policy-file FILE` | Adds binary and endpoint rules for Kubernetes Compute with OpenShell; see [startup network policy](../guides/deploy/local-sandbox-network-policy.md).                          |
 | `occ dev down`                                  | Stops the selected profile. Docker keeps Compose volumes by default. Kubernetes removes its owned k3d cluster; the Compose control-plane profile also removes Compose volumes. |
 | `occ dev down --volumes`                        | Also removes Docker Compose volumes; Kubernetes cleanup already removes its volumes.                                                                                           |
+| `occ dev reconcile-k3d-api-egress`              | [Maintains local API egress](../guides/deploy/local-api-egress-recovery.md).                                                                                                   |
 
 In the Go Kubernetes helpers, a failed exclusive write removes its newly created
 output, including a partial key file. Existing targets stay unchanged. If removal

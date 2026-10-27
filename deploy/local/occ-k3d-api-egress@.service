@@ -1,0 +1,22 @@
+[Unit]
+Description=OCE exact Kubernetes API egress reconciliation (%i)
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/occ/k3d-api-egress/%i.conf
+ExecStart=/usr/local/libexec/occ-k3d-infra dev reconcile-k3d-api-egress --docker-context=${DOCKER_CONTEXT} --cluster=${CLUSTER} --namespace=${NAMESPACE} --namespace-uid=${NAMESPACE_UID} --release=${RELEASE} --api-port=${API_PORT} --apply --watch
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=10s
+NoNewPrivileges=true
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+RestrictAddressFamilies=AF_UNIX
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
