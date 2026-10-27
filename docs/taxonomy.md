@@ -13,5 +13,3 @@ location follow the reader's task and the [repository layout](layout.md#document
 Copy the template, including its frontmatter, when you write a base Driver
 contract. An implementation page such as [OpenShell SandboxDriver](reference/drivers/openshell-sandbox.md)
 describes a specific provider and does not use this kind.
-
-For other page structures, see [Documentation templates](contributing/documentation-templates.md).
