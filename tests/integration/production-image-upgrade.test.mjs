@@ -260,9 +260,10 @@ case "$*" in
   *'.spec.template.spec as $pod'*) exit 0 ;;
   *'.deploymentInProgress'*|*'.activeRevisionId == null'*|*'.status != "ready"'*) exit 1 ;;
   *'namespaceId: $namespace.id'*) printf '%s\\n' '{"namespaceId":"ns_test","agentId":"agt_test","executionMode":"dedicated","baselineRevisionId":"rev_test"}' ;;
-  *'gatewayNamespace: $gatewayNamespace'*) printf '%s\\n' '{"namespaceId":"ns_test","agentId":"agt_test","deploymentId":"rev_candidate","gatewayNamespace":"tenant-test","gatewayName":"gateway-test","gatewayRestarts":0}' ;;
+  *'gatewayNamespace: $gatewayNamespace'*) printf '%s\\n' '{"namespaceId":"ns_test","agentId":"agt_test","deploymentId":"rev_candidate","gatewayNamespace":"tenant-test","gatewayName":"gateway-test","gatewayRestarts":0,"gatewayUid":"gateway-test-uid"}' ;;
   *'{namespaceId: $namespaceId'*) printf '%s\\n' '{"namespaceId":"ns_test","agentId":"agt_test","executionMode":"dedicated","deploymentId":"rev_candidate"}' ;;
-  *'{namespace: .metadata.namespace, name: .metadata.name,'*) printf '%s\\n' '{"namespace":"tenant-test","name":"gateway-test","restarts":0}' ;;
+  *'{namespace: .metadata.namespace, name: .metadata.name,'*) printf '%s\\n' '{"namespace":"tenant-test","name":"gateway-test","restarts":0,"uid":"gateway-test-uid"}' ;;
+  *' .uid') cat >/dev/null; printf '"gateway-test-uid"\\n' ;;
   *'.restarts'*|*'.gatewayRestarts'*) cat >/dev/null; printf '0\\n' ;;
   *'.lastState.terminated.reason'*) cat >/dev/null; printf '0\\tnone\\n' ;;
   *'spec.containers'*'length'*)

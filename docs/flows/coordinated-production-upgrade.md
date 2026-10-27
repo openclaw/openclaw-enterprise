@@ -52,8 +52,8 @@ graph TD
     L --> M{"Dispatch response known?"}
     M -->|No| N["Read Agent and stop for reconciliation"]
     N --> L
-    M -->|Refused| R["Name refusals and stop for correction"]
-    R --> L
+    M -->|Refused| U["Name refusals and stop for correction"]
+    U --> L
     M -->|Yes| O["Check versions, Pods, and Doctor"]
     O --> K
 ```
@@ -245,17 +245,20 @@ Gateway unready with check `state-migration`. A dedicated Harness runs the same
 step on its workspace node state before native setup, and a native worker before
 it connects (`openClawStateMigrationHelper` in `runtime-startup.ts`). Embedded execution
 requires one runtime container; dedicated execution requires both gateway and
-Agent containers. Each replacement gateway then runs read-only
+Agent containers. Each replacement gateway runs read-only
 `openclaw doctor --lint --json --severity-min error` with a heap cap
-(`--doctor-heap-mib`, default 384 MiB). Doctor shares the gateway container's
-memory limit, and an out-of-memory kill there also stops the gateway. The script
-reads the container's cgroup v2 memory (`gateway_free_memory`) and starts Doctor
-after one read with the cap plus 640 MiB free or two reads with the cap plus
-256 MiB. It retries a read that timed out; without cgroup files it warns and
-runs Doctor. A failure reports Doctor's exit status and the gateway's restarts
-since Ready; only an `OOMKilled` status names an OOM kill. A memory timeout
-waits for started Doctors before it releases the evidence lock.
-Failures retain dispatch, status, Pod, and Doctor evidence for inspection.
+(`--doctor-heap-mib`, default 384 MiB). Doctor shares the gateway's memory limit;
+an OOM kill can stop both. The cgroup v2 check (`gateway_free_memory`) requires
+one reading with cap plus 640 MiB free or two consecutive readings with cap plus
+256 MiB. This reduces risk without reserving memory or guaranteeing availability.
+Transient failures are retried. Initially unavailable data allows warning and run.
+After insufficient memory is observed, unavailable reads reset consecutive
+evidence; only fresh sufficient readings admit Doctor within the original deadline.
+Failure reports separate Doctor's exit status from gateway restarts since Ready.
+Missing or incomparable counts or Pod identities report unknown; only a comparable
+increase with last termination `OOMKilled` names an OOM kill. A memory timeout
+joins started Doctors before releasing the evidence lock.
+Failures retain dispatch, status, Pod, and Doctor evidence.
 
 ### 6. Hand off application verification
 

@@ -291,6 +291,12 @@ done
   die "select a controller, broker, or runtime image."
 positive_integer "$timeout_seconds" || die "--timeout-seconds must be positive."
 positive_integer "$doctor_heap_mib" || die "--doctor-heap-mib must be positive."
+# Leave room for both margins in signed 64-bit shell arithmetic; compare decimal
+# strings before evaluating the untrusted value as an arithmetic expression.
+if ((${#doctor_heap_mib} > 19)) || \
+  { ((${#doctor_heap_mib} == 19)) && [[ "$doctor_heap_mib" > 9223372036854775167 ]]; }; then
+  die "--doctor-heap-mib must be at most 9223372036854775167 (signed 64-bit threshold limit)."
+fi
 [[ -z "$controller_image" ]] || require_immutable_image --controller-image "$controller_image"
 [[ -z "$broker_image" ]] || require_immutable_image --broker-image "$broker_image"
 [[ -z "$runtime_image" ]] || require_immutable_image --runtime-image "$runtime_image"
@@ -1333,7 +1339,9 @@ while IFS= read -r deployment; do
         .items[] |
         select(any(.spec.containers[]; .name == "gateway")) |
         {namespace: .metadata.namespace, name: .metadata.name,
-          restarts: ([.status.containerStatuses[]? | select(.name == "gateway") | .restartCount // 0][0] // 0)}
+          uid: .metadata.uid,
+          restarts: ([.status.containerStatuses[]? | select(.name == "gateway")] |
+            if length == 1 then .[0].restartCount else null end)}
       ] |
       if length == 1 then .[0] else error("expected exactly one gateway Pod") end
     ' "$pods"
@@ -1344,20 +1352,21 @@ while IFS= read -r deployment; do
   gateway_name=$(jq -er '.name' <<<"$gateway")
   # The ready gateway container's restart count: a Doctor failure reports only
   # restarts after this point.
-  gateway_restarts=$(jq -er '.restarts' <<<"$gateway")
+  gateway_restarts=$(jq -c '.restarts' <<<"$gateway")
   jq -cn --arg namespaceId "$namespace_id" --arg agentId "$agent_id" \
     --arg deploymentId "$deployment_id" --arg gatewayNamespace "$gateway_namespace" \
     --arg gatewayName "$gateway_name" --argjson gatewayRestarts "$gateway_restarts" \
+    --argjson gatewayUid "$(jq '.uid' <<<"$gateway")" \
     '{namespaceId: $namespaceId, agentId: $agentId, deploymentId: $deploymentId,
       gatewayNamespace: $gatewayNamespace, gatewayName: $gatewayName,
-      gatewayRestarts: $gatewayRestarts}' \
+      gatewayRestarts: $gatewayRestarts, gatewayUid: $gatewayUid}' \
     >>"$doctor_targets"
 done <"$deployments"
 
 # Doctor runs in the serving gateway container and shares its memory limit. An
-# out-of-memory kill there can stop the gateway too (on cgroup v2, Kubernetes
-# kills every process in the container), so Doctor must not use the gateway's
-# memory (finding 2697). With a dedicated Agent's configuration, Doctor used
+# out-of-memory kill there can stop the gateway too. The headroom check reduces
+# that risk but does not reserve memory (finding 2697).
+# With a dedicated Agent's configuration, Doctor used
 # under 256 MiB of heap and needed 320 to 384 MiB in all. Cap its heap
 # (--doctor-heap-mib, default 384). Node also uses about 100 MiB outside the
 # heap (code, buffers, thread stacks), so a Doctor at its cap needs about
@@ -1375,12 +1384,16 @@ transient_kubectl_failure='^error: EOF$|"https?://[^" ]+": EOF$|Unable to connec
 # or "unlimited". Inactive file cache counts as free, as in the kubelet's
 # working set. Fails when the container's cgroup files cannot be read.
 gateway_free_memory() {
-  local gateway_namespace=$1 gateway_name=$2 output=$3 free attempt
+  local gateway_namespace=$1 gateway_name=$2 output=$3 free attempt remaining
   local LC_ALL=C
+  : >"$output.retry"
   # A network or API timeout is retried twice (reads change nothing); any other
   # failure, such as missing cgroup v2 files, falls back at once.
   for attempt in 1 2 3; do
-    "${kube[@]}" --request-timeout=15s --namespace "$gateway_namespace" exec "$gateway_name" \
+    remaining=$((deadline - SECONDS))
+    ((remaining > 0)) || return 1
+    ((remaining <= 15)) || remaining=15
+    "${kube[@]}" --request-timeout="${remaining}s" --namespace "$gateway_namespace" exec "$gateway_name" \
       --container gateway -- cat /sys/fs/cgroup/memory.max /sys/fs/cgroup/memory.current \
       /sys/fs/cgroup/memory.stat </dev/null >"$output" 2>"$output.error" && break
     if ((attempt == 3 || SECONDS >= deadline)) ||
@@ -1388,6 +1401,7 @@ gateway_free_memory() {
       ! grep -Eq "$transient_kubectl_failure" "$output.error"; then
       return 1
     fi
+    printf 'retry\n' >"$output.retry"
     sleep 2
   done
   free=$(python3 - "$output" <<'PYTHON'
@@ -1409,7 +1423,7 @@ PYTHON
 # gateway container's restarts since it became Ready. A kill (status 137) alone
 # does not show an out-of-memory kill; only the container status names one.
 report_doctor_failure() {
-  local status=$1 agent_id=$2 gateway_namespace=$3 gateway_name=$4 ready_restarts=$5 doctor_prefix=$6
+  local status=$1 agent_id=$2 gateway_namespace=$3 gateway_name=$4 ready_gateway=$5 doctor_prefix=$6
   local gateway_state restarts reason
   if ((status == 137)); then
     warn "OpenClaw Doctor was killed (exit 137) in Agent $agent_id's gateway."
@@ -1420,20 +1434,31 @@ report_doctor_failure() {
     warn "OpenClaw Doctor failed (exit $status) in Agent $agent_id's gateway."
   fi
   if ! gateway_state=$("${kube[@]}" --request-timeout=15s --namespace "$gateway_namespace" get \
-    "pod/$gateway_name" --output json 2>/dev/null | jq -er '
-      [.status.containerStatuses[]? | select(.name == "gateway")][0] |
-      "\(.restartCount // 0)\t\(.lastState.terminated.reason // "none")"'); then
-    warn "cannot read the restart history of Agent $agent_id's gateway container."
+    "pod/$gateway_name" --output json 2>/dev/null | jq -er \
+      --argjson baseline "$ready_gateway" '
+      def count:
+        if type == "number" then . >= 0 and . <= 9007199254740991 and floor == .
+        else false end;
+      select(.metadata.namespace == $baseline.gatewayNamespace and
+        .metadata.name == $baseline.gatewayName and
+        ($baseline.gatewayUid | type == "string" and length > 0) and
+        .metadata.uid == $baseline.gatewayUid) |
+      [.status.containerStatuses[]? | select(.name == "gateway")] |
+      select(length == 1) | .[0] |
+      select((.restartCount | count) and ($baseline.gatewayRestarts | count)) |
+      select(.restartCount >= $baseline.gatewayRestarts) |
+      "\(.restartCount - $baseline.gatewayRestarts)\t\(.lastState.terminated.reason // "none")"'); then
+    warn "Agent $agent_id's gateway restart history since Ready is unknown (missing or incomparable observations)."
     return
   fi
   restarts=${gateway_state%%$'\t'*}
   reason=${gateway_state#*$'\t'}
-  if ! [[ "$restarts" =~ ^[0-9]+$ ]] || ((restarts <= ready_restarts)); then
+  if ((restarts == 0)); then
     warn "Agent $agent_id's gateway container did not restart after it became Ready."
   elif [[ "$reason" == OOMKilled ]]; then
-    warn "Agent $agent_id's gateway container was OOM-killed and restarted $((restarts - ready_restarts)) time(s) after it became Ready: Doctor shares its memory limit. Repeat the command with --resume once the gateway is Ready; Doctor waits for $doctor_memory_mib MiB of free gateway memory."
+    warn "Agent $agent_id's gateway container was OOM-killed and restarted $restarts time(s) after it became Ready: Doctor shares its memory limit. Repeat the command with --resume once the gateway is Ready; Doctor waits for $doctor_memory_mib MiB of free gateway memory."
   else
-    warn "Agent $agent_id's gateway container restarted $((restarts - ready_restarts)) time(s) after it became Ready (last termination: ${reason:0:100})."
+    warn "Agent $agent_id's gateway container restarted $restarts time(s) after it became Ready (last termination: ${reason:0:100})."
   fi
 }
 
@@ -1443,7 +1468,7 @@ if ((target_count > 0)); then
   doctor_pids=()
   doctor_agents=()
   doctor_gateways=()
-  doctor_restarts=()
+  doctor_baselines=()
   doctor_prefixes=()
   while IFS= read -r target; do
     namespace_id=$(jq -r '.namespaceId' <<<"$target")
@@ -1453,25 +1478,33 @@ if ((target_count > 0)); then
     gateway_name=$(jq -r '.gatewayName' <<<"$target")
     doctor_prefix="$evidence_dir/status/$(json_file_name "$namespace_id--$agent_id--$deployment_id").doctor"
     settled=0
-    while true; do
+    measured_low=0
+    free=unknown
+    while ((SECONDS < deadline)); do
       if ! free=$(gateway_free_memory "$gateway_namespace" "$gateway_name" "$doctor_prefix.memory"); then
-        warn "cannot read the cgroup v2 memory use of Agent $agent_id's gateway; running OpenClaw Doctor without checking its free memory."
+        if ((measured_low == 0)); then
+          warn "cannot read the cgroup v2 memory use of Agent $agent_id's gateway; running OpenClaw Doctor without checking its free memory."
+          break
+        fi
+        settled=0
+        free=unknown
+      fi
+      [[ ! -s "$doctor_prefix.memory.retry" ]] || settled=0
+      if [[ "$free" == unlimited ]] || { [[ "$free" != unknown ]] && ((free >= doctor_ample_mib)); }; then
         break
       fi
-      if [[ "$free" == unlimited ]] || ((free >= doctor_ample_mib)); then
-        break
-      fi
-      if ((free >= doctor_memory_mib)); then
+      if [[ "$free" != unknown ]] && ((free >= doctor_memory_mib)); then
         ((++settled < 2)) || break
       else
         settled=0
       fi
-      if ((SECONDS >= deadline)); then
-        doctor_timeout="Agent $agent_id's gateway did not keep $doctor_memory_mib MiB free below its memory limit before the upgrade timeout (last read: $free MiB free), so OpenClaw Doctor did not run: Doctor shares the gateway container's limit and could OOM-kill the serving gateway. Wait for the gateway's memory use to settle, then repeat the command with --resume; see docs/guides/deploy/production-upgrade-recovery.md#correct-a-doctor-failure."
-        break
-      fi
+      measured_low=1
+      ((SECONDS < deadline)) || break
       sleep 2
     done
+    if ((SECONDS >= deadline)); then
+      doctor_timeout="Agent $agent_id's gateway did not keep $doctor_memory_mib MiB free below its memory limit before the upgrade timeout (last read: $free MiB free), so OpenClaw Doctor did not run: Doctor shares the gateway container's limit and could OOM-kill the serving gateway. Wait for the gateway's memory use to settle, then repeat the command with --resume; see docs/guides/deploy/production-upgrade-recovery.md#correct-a-doctor-failure."
+    fi
     # On a timeout, start no further Doctor; the ones already started are joined
     # below, so the evidence lock outlasts every running Doctor command.
     [[ -z "$doctor_timeout" ]] || break
@@ -1488,7 +1521,7 @@ if ((target_count > 0)); then
     doctor_pids+=("$!")
     doctor_agents+=("$agent_id")
     doctor_gateways+=("$gateway_namespace/$gateway_name")
-    doctor_restarts+=("$(jq -r '.gatewayRestarts' <<<"$target")")
+    doctor_baselines+=("$target")
     doctor_prefixes+=("$doctor_prefix")
   done <"$doctor_targets"
   for index in "${!doctor_pids[@]}"; do
@@ -1497,7 +1530,7 @@ if ((target_count > 0)); then
     ((doctor_status != 0)) || continue
     doctor_failed=1
     report_doctor_failure "$doctor_status" "${doctor_agents[index]}" "${doctor_gateways[index]%%/*}" \
-      "${doctor_gateways[index]#*/}" "${doctor_restarts[index]}" "${doctor_prefixes[index]}"
+      "${doctor_gateways[index]#*/}" "${doctor_baselines[index]}" "${doctor_prefixes[index]}"
   done
 fi
 [[ -z "$doctor_timeout" ]] || die "$doctor_timeout"

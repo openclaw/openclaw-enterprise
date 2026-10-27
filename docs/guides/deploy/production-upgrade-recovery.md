@@ -119,20 +119,29 @@ and resume.
 
 ## Correct a Doctor failure
 
-Doctor shares the gateway container's memory limit. The command starts it only
-when the container has 640 MiB free and stops at the upgrade timeout if it
-never does. Wait for the gateway's memory use to settle, then resume. A gateway
-that never keeps 640 MiB free runs close to its limit; plan a larger gateway
-memory limit. A Doctor failure also reports whether the gateway container
-restarted. `gateway container was OOM-killed` means the container reached its
-memory limit while Doctor ran. Wait until the gateway is `Ready` again, then
-resume; the resume runs Doctor again without new deployments.
+Doctor shares the gateway container's memory limit. At the default heap cap,
+the command waits for two consecutive readings with at least 640 MiB free or
+one with at least 1024 MiB free. Initially unavailable cgroup data produces a
+warning and Doctor runs. Once insufficient memory is observed, missing or failed
+reads cannot admit Doctor and reset consecutive evidence. Fresh sufficient
+readings must arrive before the original upgrade timeout. Wait for memory use
+to settle, then resume; consider a larger gateway memory limit if it stays low.
+These readings do not reserve memory or guarantee that the gateway avoids an OOM kill.
 
-`OpenClaw Doctor ran out of its 384 MiB heap` means the Agent's state needs a
-larger heap; the gateway keeps running. Repeat the command with `--resume` and
-`--doctor-heap-mib 768`, doubling again if needed. Each extra MiB of heap needs
-the same free gateway memory before Doctor starts, so raise the gateway memory
-limit first if the command then waits for memory.
+A Doctor failure reports its command exit separately from gateway restart
+history. A comparable count increase on the same Pod with last termination
+`OOMKilled` means an OOM restart occurred after the Ready baseline; it does not
+prove Doctor caused it. Missing counts, decreasing or malformed counts, or
+unbound or changed Pod identity report unknown. Wait until the gateway is
+`Ready` again, then resume; the resume runs Doctor again without new deployments.
+
+`OpenClaw Doctor ran out of its 384 MiB heap` means Doctor reached its heap cap;
+check the separate gateway restart observation. Repeat the command with
+`--resume` and `--doctor-heap-mib 768`, doubling again if needed. Each extra MiB
+of heap needs the same free gateway memory before Doctor starts, so raise the
+gateway memory limit first if the command then waits for memory. The maximum
+accepted cap is 9223372036854775167 MiB (signed 64-bit maximum minus the larger
+640 MiB margin); larger values are rejected before upgrade effects.
 
 ## Correct an invalid Installation name
 

@@ -258,7 +258,7 @@ async function fakeCommand(root, { command: tool, args, cwd }, io) {
   const fileArg = (name) => args[args.indexOf(name) + 1];
   // The replacement revision's ready gateway Pod; an OOM kill shows in its restart history.
   const gatewayPod = () => ({
-    metadata: { namespace: "tenant", name: "gateway" },
+    metadata: { namespace: "tenant", name: "gateway", uid: "gateway-uid" },
     spec: { containers: [{ name: "gateway", image: runtime }] },
     status: {
       phase: "Running",
@@ -477,7 +477,7 @@ async function fakeCommand(root, { command: tool, args, cwd }, io) {
         message: "private-delete-response-marker",
       });
     } else if (resource === "pod/gateway" && args.includes("get")) {
-      out(gatewayPod());
+      out(state.gatewayAfter ?? gatewayPod());
     } else if (resource && (args.includes("get") || args.includes("logs"))) {
       const pod = state.preflight.pods[resource.slice("pod/".length)];
       if (!pod) {
@@ -710,7 +710,7 @@ async function fakeCommand(root, { command: tool, args, cwd }, io) {
             initialization && state.initActive
               ? [{ status: { phase: "Running" } }]
               : revision
-                ? [gatewayPod()]
+                ? [state.gatewayReady ?? gatewayPod()]
                 : [],
         });
       }
@@ -742,6 +742,9 @@ async function fakeCommand(root, { command: tool, args, cwd }, io) {
       out(`${free === "unlimited" ? "max" : limit}\n${used}\nanon 1\ninactive_file ${cache}\n`);
     } else if (args.includes("exec") && args.includes("doctor")) {
       log(`doctor ${args.slice(args.indexOf("--") + 1).join(" ")}`);
+      if (take("doctor-error")) {
+        return fail(1, "command terminated with exit code 1");
+      }
       // The container reached its memory limit while Doctor ran: Kubernetes killed both.
       // "doctor-killed" is another kill of both, such as a failed liveness probe.
       for (const [fault, reason] of [
@@ -1735,6 +1738,155 @@ test("OpenClaw Doctor does not run while the gateway lacks free memory", async (
     (await f.events()).some((event) => event.startsWith("doctor ")),
     false,
   );
+});
+
+test("OpenClaw Doctor keeps low memory admission closed across missing and transient reads", async (t) => {
+  for (const unavailable of ["missing", "transient"]) {
+    await t.test(unavailable, async (t) => {
+      const f = await fixture(t, { agent: true });
+      // Do not exhaust the script: the fixture defaults to ample memory afterward.
+      await scriptGatewayMemory(f, [300, ...Array(100).fill(unavailable)]);
+      await assert.rejects(f.run("--timeout-seconds", "8"), /before the upgrade timeout/);
+      const events = await doctorEvents(f);
+      assert.equal(events[0], "gateway-memory 300");
+      assert.ok(events.includes(`gateway-memory ${unavailable}`));
+      assert.ok(!events.includes("gateway-memory 2048"));
+      assert.ok(!events.some((event) => event.startsWith("doctor ")));
+    });
+  }
+});
+
+test("OpenClaw Doctor retains warning and run for initially unavailable transport observations", async (t) => {
+  const f = await fixture(t, { agent: true });
+  await scriptGatewayMemory(f, Array(3).fill("transient"));
+  const result = await f.run();
+  assert.match(result.stderr, /running OpenClaw Doctor without checking its free memory/);
+  assert.deepEqual(await doctorEvents(f), [
+    ...Array(3).fill("gateway-memory transient"),
+    doctorCommand(384),
+  ]);
+});
+
+test("OpenClaw Doctor recovers with fresh consecutive memory evidence after observation failures", async (t) => {
+  const f = await fixture(t, { agent: true });
+  const reads = [
+    300,
+    "transient",
+    "transient",
+    "transient",
+    700,
+    "missing",
+    700,
+    "transient",
+    700,
+    640,
+  ];
+  await scriptGatewayMemory(f, reads);
+  await f.run();
+  assert.deepEqual(await doctorEvents(f), [
+    ...reads.map((free) => `gateway-memory ${free}`),
+    doctorCommand(384),
+  ]);
+});
+
+test("OpenClaw Doctor reports unknown restart history unless Ready and post-read observations are comparable", async (t) => {
+  const pod = (count = 0) => ({
+    metadata: { namespace: "tenant", name: "gateway", uid: "gateway-uid" },
+    spec: { containers: [{ name: "gateway", image: runtime }] },
+    status: {
+      phase: "Running",
+      conditions: [{ type: "Ready", status: "True" }],
+      containerStatuses: [{ name: "gateway", restartCount: count, lastState: {} }],
+    },
+  });
+  const withoutRows = pod();
+  delete withoutRows.status.containerStatuses;
+  const withoutCount = pod();
+  delete withoutCount.status.containerStatuses[0].restartCount;
+  const replacement = pod();
+  replacement.metadata.uid = "replacement-uid";
+  const unbound = pod();
+  delete unbound.metadata.uid;
+  const wrongName = pod();
+  wrongName.metadata.name = "another-gateway";
+  const wrongNamespace = pod();
+  wrongNamespace.metadata.namespace = "another-tenant";
+  const duplicate = pod();
+  duplicate.status.containerStatuses.push({ ...duplicate.status.containerStatuses[0] });
+  const cases = [
+    ["missing Ready row", withoutRows, pod()],
+    ["missing Ready count", withoutCount, pod()],
+    ["missing post row", pod(), withoutRows],
+    ["missing post count", pod(), withoutCount],
+    ["replacement Pod", pod(), replacement],
+    ["unbound Ready identity", unbound, pod()],
+    ["unbound post identity", pod(), unbound],
+    ["wrong name", pod(), wrongName],
+    ["wrong namespace", pod(), wrongNamespace],
+    ["duplicate row", pod(), duplicate],
+    ["decreased count", pod(2), pod(1)],
+    ...["bad", -1, 0.5, null, 9007199254740992].flatMap((count) => [
+      [`malformed Ready count ${count}`, pod(count), pod()],
+      [`malformed post count ${count}`, pod(), pod(count)],
+    ]),
+    ["additional restart without reason", pod(), pod(1), "restart"],
+    ["true zero", pod(), pod(), true],
+    ["unchanged nonzero", pod(3), pod(3), true],
+  ];
+  for (const [name, ready, after, comparable] of cases) {
+    await t.test(name, async (t) => {
+      const f = await fixture(t, { agent: true });
+      const state = await f.state();
+      state.gatewayReady = ready;
+      state.gatewayAfter = after;
+      await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+      await f.failNext("doctor-error");
+      const failure = await f.run().then(
+        () => assert.fail("Doctor command failure must stop the upgrade"),
+        (stopped) => stopped,
+      );
+      assert.match(failure.stderr, /OpenClaw Doctor failed \(exit 1\)/);
+      if (comparable === "restart") {
+        assert.match(
+          failure.stderr,
+          /restarted 1 time\(s\) after it became Ready \(last termination: none\)/,
+        );
+        assert.doesNotMatch(
+          failure.stderr,
+          /did not restart|OOM-killed and restarted|history since Ready is unknown/,
+        );
+      } else if (comparable) {
+        assert.match(failure.stderr, /gateway container did not restart after it became Ready/);
+        assert.doesNotMatch(failure.stderr, /restart history since Ready is unknown/);
+      } else {
+        assert.match(failure.stderr, /restart history since Ready is unknown/);
+        assert.doesNotMatch(failure.stderr, /did not restart|OOM-killed and restarted/);
+      }
+    });
+  }
+});
+
+test("OpenClaw Doctor rejects overflowing heap thresholds before upgrade effects", async (t) => {
+  for (const heap of [
+    "9223372036854775168",
+    "9223372036854775808",
+    "18446744073709551616",
+    "9".repeat(100),
+  ]) {
+    const f = await fixture(t, { agent: true });
+    const before = await f.state();
+    await assert.rejects(f.run("--doctor-heap-mib", heap), /must be at most 9223372036854775167/);
+    assert.deepEqual(await f.state(), before);
+    assert.deepEqual(await f.events(), []);
+    assert.equal(existsSync(f.evidence), false);
+  }
+  const f = await fixture(t, { agent: true });
+  await scriptGatewayMemory(f, ["unlimited"]);
+  await f.run("--doctor-heap-mib", "9223372036854775167");
+  assert.deepEqual(await doctorEvents(f), [
+    "gateway-memory unlimited",
+    doctorCommand("9223372036854775167"),
+  ]);
 });
 
 // A Doctor that exhausts its capped heap is named; resume with a larger cap, whose
