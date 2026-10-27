@@ -84,7 +84,6 @@ The bundled Docker and Kubernetes [model discovery client](../../../apps/control
 uses a 10-second timeout and accepts up to 4 MiB per response, ten pages, and
 10,000 model IDs. It refuses redirects. See [model discovery and API egress](../console/create-and-deploy.md#create-an-agent).
 
-<a id="optional-startup-preflight"></a>
 <a id="optional-gateway-endpoint-resolution"></a>
 
 ### Namespace and gateway results
@@ -157,6 +156,8 @@ Configuration, responses, logs, errors, and audit records. See
 Installed Drivers run with control-plane privileges.
 
 ## Lifecycle
+
+<a id="optional-startup-preflight"></a>
 
 ### Driver initialization and shutdown
 
