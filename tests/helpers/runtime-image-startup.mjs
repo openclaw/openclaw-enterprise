@@ -21,18 +21,19 @@ import { GATEWAY_RUNTIME_ENTRYPOINT as DOCKER_GATEWAY_RUNTIME_ENTRYPOINT } from 
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
+import { productionGatewayMemoryLimitGi } from "./kubernetes-real.mjs";
 import { redactLogLine } from "../../scripts/ci/failure-redaction.mjs";
 
 export const execute = promisify(execFile);
 export const docker = process.env.OCC_DOCKER_BIN ?? "docker";
 export const image = process.env.OCC_TEST_RUNTIME_IMAGE;
 export const runtimeImageModel = defaultAgentModel;
-// The production example's Gateway memory limit
-// (deploy/examples/production/installation.yaml), with swap capped at the same
-// value. Docker's `--memory` alone allows as much again in swap, so a Gateway
-// that outgrew its limit passed on CI runners, which swap, and was OOM-killed
-// on a host without swap, as on a typical Kubernetes node (finding 2700).
-const gatewayMemoryLimitBytes = 4 * 1024 ** 3;
+// The production Gateway memory limit (productionGatewayMemoryLimitGi), with
+// swap capped at the same value. Docker's `--memory` alone allows as much again
+// in swap, so a Gateway that outgrew its limit passed on CI runners, which swap,
+// and was OOM-killed on a host without swap, as on a typical Kubernetes node
+// (finding 2700).
+const gatewayMemoryLimitBytes = productionGatewayMemoryLimitGi * 1024 ** 3;
 export const gatewayMemoryArguments = [
   "--memory",
   String(gatewayMemoryLimitBytes),
