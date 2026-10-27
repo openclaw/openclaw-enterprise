@@ -5,6 +5,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { sanitizeRuntimeLogChunk } from "../../packages/occ/src/runtime-logs/sanitize.ts";
+import { OPTIONAL_BOOTSTRAP_FILES } from "../../packages/occ/src/configuration-settings.ts";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
 import {
   AGENT_WITH_NODE_ENTRYPOINT,
@@ -189,6 +190,44 @@ for (let attempt = 0; attempt < 3; attempt++) {
       records.some((record) => record.type === "line" && summary.test(record.message)),
       JSON.stringify(records),
     );
+  },
+);
+
+test(
+  "runtime image accepts exactly the optional bootstrap files Configuration save accepts",
+  imageTestOptions,
+  async () => {
+    // Configuration save refuses skipOptionalBootstrapFiles names outside OCE's list, which
+    // copies the pinned OpenClaw schema (finding 2699). Read the image's own schema, so a pin
+    // that changes the list fails here instead of at save or in native setup.
+    const { stdout } = await runDocker(
+      [
+        "run",
+        "--rm",
+        "--user",
+        "1000:1000",
+        "--read-only",
+        "--network",
+        "none",
+        "--tmpfs",
+        "/tmp:size=64m,mode=1777",
+        "--tmpfs",
+        "/home/node:size=64m,uid=1000,gid=1000",
+        "--entrypoint",
+        "node",
+        image,
+        "/app/openclaw.mjs",
+        "config",
+        "schema",
+        "--json",
+      ],
+      { timeout: 120_000 * imageSmokeTimeoutMultiplier, maxBuffer: 16 * 1024 * 1024 },
+    );
+    const files =
+      JSON.parse(stdout).properties?.agents?.properties?.defaults?.properties
+        ?.skipOptionalBootstrapFiles?.items?.enum;
+    assert.ok(Array.isArray(files), "the image schema lists the optional bootstrap files");
+    assert.deepEqual([...files].sort(), [...OPTIONAL_BOOTSTRAP_FILES].sort());
   },
 );
 

@@ -195,7 +195,13 @@ that is not `<provider>/<model>` (OpenClaw's `openrouter:auto` included), and
 fallbacks that are not a list, naming the setting. A Preset model that waits on
 a variable is checked as far as its written text goes, and in full once filled.
 A Configuration saved before this check still reads; deployment refuses it, and
-only a write that keeps the model is refused. Agent
+only a write that keeps the model is refused.
+Every write and Preset save also refuses an `agents.defaults.skipBootstrap`
+that is not `true` or `false`, and an `agents.defaults.skipOptionalBootstrapFiles`
+that is not a list of `SOUL.md`, `USER.md`, `HEARTBEAT.md` or `IDENTITY.md`, the
+names the pinned OpenClaw accepts. Native workspace setup would otherwise fail
+after deployment starts. Agent save and deployment refuse a Configuration saved
+before this check with the same message; a running revision is not affected. Agent
 deployment separately validates supported
 runtime selection, topology, and Secret binding ownership before admission.
 Creation requires `create` permission for Configurations in the
