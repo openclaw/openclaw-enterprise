@@ -12670,6 +12670,7 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
           },
           setInterval() {
             held = true;
+            return { unref() {} };
           },
           require(specifier) {
             if (specifier === "node:http") {

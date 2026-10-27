@@ -2460,7 +2460,6 @@ function stopNativeGateway(target, signal) {
     }
   }, GATEWAY_STOP_RECHECK_MS);
   recheck.unref?.();
-  target.once("exit", () => clearInterval(recheck));
 }
 
 // Forward to the current native process; between a respawn's stop and spawn
