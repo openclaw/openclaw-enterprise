@@ -130,7 +130,7 @@ test("provider Harness endpoint preparation re-observes the same revision across
 test("provider Harness endpoint writes transport and runtime requirements", async () => {
   let endpointWorkspaceRoot = providerWorkspaceRoot;
   const providerHome = "/private/provider-home";
-  const providerHookDirectory = `${providerHome}/.oce-native-hooks`;
+  const providerHookDirectory = `${providerHome}/.codex/.oce-native-hooks`;
   const fixture = providerEndpointFixture({
     harnessEndpoint: async () => ({ url: providerUrl, workspaceRoot: endpointWorkspaceRoot }),
   });

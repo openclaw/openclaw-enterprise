@@ -115,6 +115,7 @@ func developmentCommand() *cobra.Command {
 	}
 	analyze.Flags().StringVar(&profile, "profile", "docker", "Development Compute Driver")
 	command.AddCommand(analyze)
+	command.AddCommand(developmentAPIEgressCommand())
 	return command
 }
 

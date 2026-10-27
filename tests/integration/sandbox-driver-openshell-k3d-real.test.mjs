@@ -5516,7 +5516,7 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
   );
   assert.equal(
     hookDirectory,
-    `${harnessHome}/.oce-native-hooks`,
+    `${harnessHome}/.codex/.oce-native-hooks`,
     "the Gateway must deliver native hook credentials into the Harness launcher's private directory.",
   );
   assert.equal(hookDirectory.startsWith(`${providerWorkspace}/`), false);

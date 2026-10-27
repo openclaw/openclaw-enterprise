@@ -1149,6 +1149,13 @@ export interface HarnessWorkloadRequirements {
   readonly loginMode: HarnessAuthBinding["method"] | CredentialSourceLoginMode;
   readonly image: string;
   readonly command: readonly string[];
+  /**
+   * The same prepared Harness entrypoint without Compute's process-init wrapper.
+   * A provider may use this only when it supplies private process supervision,
+   * orphan reaping, termination forwarding and complete descendant cleanup.
+   * Otherwise use command in full. Absence does not permit guessing a wrapper.
+   */
+  readonly supervisedCommand?: readonly string[];
   /** Optional identity that a Sandbox must preserve in full or reject before provisioning. */
   readonly workloadIdentity?: SandboxWorkloadIdentity;
   readonly workspaceMounts: readonly SandboxWorkspaceMount[];
@@ -1191,6 +1198,8 @@ export interface SandboxNamespaceContext {
 export interface SandboxHarnessContext extends SandboxNamespaceContext {
   readonly revision: Readonly<AgentRevision>;
   readonly requirements: HarnessWorkloadRequirements;
+  /** Gateway transport authentication for a trusted provider readiness probe; never deliver to the workload. */
+  readonly transportToken?: string;
   /**
    * True once the revision's workspace node has enrolled with its Agent Gateway. A dedicated
    * OpenClaw worker's Harness exposure serves Compute's status read only before that: a Driver
@@ -1671,6 +1680,13 @@ export interface SandboxDriver extends Driver {
    * revision's Sandbox alone, never another Sandbox in the namespace.
    */
   workspaceNodePeerLabels?(
+    context: SandboxNamespaceContext & { readonly revision: Readonly<AgentRevision> },
+  ): Promise<Readonly<Record<string, string>> | undefined>;
+  /** Exact Harness ingress Pods in the prepared Namespace, for namespace Service routing.
+   * Include Namespace, Agent, revision and agent workload-role ownership labels.
+   * Return undefined until the owned workload exists; this never grants an empty selector.
+   */
+  harnessPeerLabels?(
     context: SandboxNamespaceContext & { readonly revision: Readonly<AgentRevision> },
   ): Promise<Readonly<Record<string, string>> | undefined>;
   /** Required for revision stop, retirement, and Namespace cleanup, independent of Harness ownership. */

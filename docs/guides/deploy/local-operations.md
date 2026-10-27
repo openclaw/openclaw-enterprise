@@ -6,6 +6,10 @@ commands from the repository root. If you are installing the platform for the
 first time, start with [Local Setup](../quickstart.md). For Namespace and Agent
 setup on an existing installation, use the [production deployment sequence](../deploy.md#production).
 
+For a retained Linux k3d installation with exact control-plane API egress, install
+the [API endpoint recovery service](local-api-egress-recovery.md) as part of its
+host lifecycle. It follows address changes without a subnet-wide exception.
+
 ## Build images for local Kubernetes
 
 Build the controller from this checkout and one combined OpenClaw/Codex image

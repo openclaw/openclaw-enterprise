@@ -1,0 +1,254 @@
+diff --git a/docs/cli/memory.md b/docs/cli/memory.md
+--- a/docs/cli/memory.md
++++ b/docs/cli/memory.md
+@@ -607,3 +607,23 @@
+ 
+ - [CLI reference](/cli)
+ - [Memory overview](/concepts/memory)
++
++## Remote workspace index maintenance
++
++When a Gateway owns the memory index and Harness hosts workspace files, rebuild
++through the running Gateway so its registered remote file access remains in use:
++
++```sh
++openclaw gateway call memory.index --params '{"agentId":"main"}' --timeout 180000
++```
++
++This method requires `operator.admin`. It uses the current agent memory settings
++and may call the configured embedding provider. Use it explicitly after changing
++provider, model, or index configuration. It returns the resulting index status.
++An optional `"force":true` requests a full rebuild. Disconnection, revoked caller
++authority, or a configuration change prevents further index publication.
++
++The standalone `openclaw memory status --index` command only discovers files
++available to that CLI process; it must not replace Gateway maintenance for a
++remote workspace. Workspace bytes remain on Harness and the derived index stays
++on Gateway.
+diff --git a/extensions/memory-core/index.ts b/extensions/memory-core/index.ts
+--- a/extensions/memory-core/index.ts
++++ b/extensions/memory-core/index.ts
+@@ -17,6 +17,7 @@
+ import { registerShortTermPromotionDreaming } from "./src/dreaming.js";
+ import { buildMemoryFlushPlan } from "./src/flush-plan.js";
+ import "./src/memory/background-context.js";
++import { registerMemoryIndexGatewayMethod } from "./src/index-gateway.js";
+ import {
+   buildMemoryPromptSection,
+   MEMORY_GET_TOOL_CONTRACT,
+@@ -216,6 +217,7 @@
+     const memoryRuntime = createLazyMemoryRuntime(host);
+     registerShortTermPromotionDreaming(api);
+     registerSessionBackfillGatewayMethods(api);
++    registerMemoryIndexGatewayMethod(api);
+     api.registerMemoryCapability({
+       recallToolNames: ["memory_search", "memory_get"],
+       deterministicRecallToolName: "memory_search",
+diff --git a/extensions/memory-core/src/index-gateway.runtime.ts b/extensions/memory-core/src/index-gateway.runtime.ts
+new file mode 100644
+--- /dev/null
++++ b/extensions/memory-core/src/index-gateway.runtime.ts
+@@ -0,0 +1,38 @@
++import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
++import type { MemoryCoreAcquireLocalService } from "./memory/embedding-local-service.js";
++import { withMemoryMaintenanceAuthority } from "./memory/maintenance-authority.js";
++import { getMemorySearchManager } from "./memory/search-manager.js";
++
++export async function indexMemoryOnGateway(params: {
++  cfg: OpenClawConfig;
++  agentId: string;
++  force: boolean;
++  assertCurrent: () => void;
++  acquireLocalService?: MemoryCoreAcquireLocalService;
++}) {
++  return withMemoryMaintenanceAuthority(params.assertCurrent, async () => {
++    const { manager, error } = await getMemorySearchManager({
++      cfg: params.cfg,
++      agentId: params.agentId,
++      purpose: "cli",
++      inspectSources: true,
++      acquireLocalService: params.acquireLocalService,
++    });
++    if (!manager) {
++      throw new Error(error ?? "Memory search is disabled.");
++    }
++    try {
++      params.assertCurrent();
++      if (!manager.sync) {
++        throw new Error("The memory manager does not support indexing.");
++      }
++      // The Gateway owns the remote workspace binding and the derived index.
++      // Reuse the same explicit maintenance operation as the local CLI.
++      await manager.sync({ reason: "cli", force: params.force });
++      params.assertCurrent();
++      return manager.status();
++    } finally {
++      await manager.close?.();
++    }
++  });
++}
+diff --git a/extensions/memory-core/src/index-gateway.ts b/extensions/memory-core/src/index-gateway.ts
+new file mode 100644
+--- /dev/null
++++ b/extensions/memory-core/src/index-gateway.ts
+@@ -0,0 +1,69 @@
++import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
++import { ErrorCodes, errorShape } from "openclaw/plugin-sdk/gateway-runtime";
++import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
++import {
++  resolveConfiguredAgentId,
++  type OpenClawConfig,
++} from "openclaw/plugin-sdk/memory-core-host-runtime-core";
++import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
++
++const loadIndexRuntime = createLazyRuntimeModule(() => import("./index-gateway.runtime.js"));
++
++export function registerMemoryIndexGatewayMethod(api: OpenClawPluginApi): void {
++  api.registerGatewayMethod(
++    "memory.index",
++    async ({ params, respond, client, signal, hasCurrentClientAuthority }) => {
++      const cfg = api.runtime.config.current() as OpenClawConfig;
++      let agentId: string;
++      try {
++        if (
++          !params ||
++          Array.isArray(params) ||
++          Object.keys(params).some((key) => key !== "agentId" && key !== "force") ||
++          typeof params.agentId !== "string" ||
++          !params.agentId.trim() ||
++          (params.force !== undefined && typeof params.force !== "boolean")
++        ) {
++          throw new Error("memory.index requires agentId and an optional boolean force.");
++        }
++        agentId = resolveConfiguredAgentId(cfg, params.agentId);
++      } catch (error) {
++        respond(
++          false,
++          undefined,
++          errorShape(ErrorCodes.INVALID_REQUEST, formatErrorMessage(error)),
++        );
++        return;
++      }
++      const assertCurrent = () => {
++        signal?.throwIfAborted();
++        client?.connectionSignal?.throwIfAborted();
++        if (!client || client.invalidated || hasCurrentClientAuthority?.() !== true) {
++          throw new Error("Memory maintenance operator authority is no longer current.");
++        }
++        if (api.runtime.config.current() !== cfg) {
++          throw new Error(
++            "Memory configuration changed during maintenance; inspect status before retrying.",
++          );
++        }
++      };
++      try {
++        assertCurrent();
++        const { indexMemoryOnGateway } = await loadIndexRuntime();
++        assertCurrent();
++        const status = await indexMemoryOnGateway({
++          cfg,
++          agentId,
++          force: params.force === true,
++          assertCurrent,
++          acquireLocalService: (...args) => api.runtime.llm.acquireLocalService(...args),
++        });
++        assertCurrent();
++        respond(true, { agentId, status });
++      } catch (error) {
++        respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, formatErrorMessage(error)));
++      }
++    },
++    { scope: "operator.admin" },
++  );
++}
+diff --git a/extensions/memory-core/src/memory/maintenance-authority.ts b/extensions/memory-core/src/memory/maintenance-authority.ts
+new file mode 100644
+--- /dev/null
++++ b/extensions/memory-core/src/memory/maintenance-authority.ts
+@@ -0,0 +1,17 @@
++import { AsyncLocalStorage } from "node:async_hooks";
++
++// Explicit remote maintenance carries the admitted operator authority to the
++// existing SQLite publication owner, including its synchronous commit guard.
++const maintenanceAuthority = new AsyncLocalStorage<() => void>();
++
++export function withMemoryMaintenanceAuthority<T>(
++  assertCurrent: () => void,
++  run: () => Promise<T>,
++): Promise<T> {
++  assertCurrent();
++  return maintenanceAuthority.run(assertCurrent, run);
++}
++
++export function captureMemoryMaintenanceAuthority(): (() => void) | undefined {
++  return maintenanceAuthority.getStore();
++}
+diff --git a/extensions/memory-core/src/memory/manager-database-context.ts b/extensions/memory-core/src/memory/manager-database-context.ts
+--- a/extensions/memory-core/src/memory/manager-database-context.ts
++++ b/extensions/memory-core/src/memory/manager-database-context.ts
+@@ -24,6 +24,7 @@
+   withOpenClawAgentDatabaseWrite,
+   type StoreWriterQueue,
+ } from "openclaw/plugin-sdk/sqlite-runtime";
++import { captureMemoryMaintenanceAuthority } from "./maintenance-authority.js";
+ import { memoryCpuProcessEntrypoints } from "./manager-cpu-entrypoints.js";
+ import { runMemorySourceState } from "./manager-cpu-worker-runtime.js";
+ import {
+@@ -348,11 +349,16 @@
+     operation: (scope: PublicationScope) => Promise<T>,
+     assertCurrent: () => void,
+   ): Promise<T> {
++    const maintenanceAuthority = captureMemoryMaintenanceAuthority();
++    const assertPublicationCurrent = () => {
++      maintenanceAuthority?.();
++      assertCurrent();
++    };
+     const run = async () => {
+-      assertCurrent();
++      assertPublicationCurrent();
+       try {
+         const worker = await this.getPublicationWorker();
+-        return await worker.store.run(operation, assertCurrent);
++        return await worker.store.run(operation, assertPublicationCurrent);
+       } catch (error) {
+         const [cleanup] = await Promise.allSettled([this.closePublicationWorker()]);
+         if (cleanup.status === "rejected") {
+diff --git a/extensions/memory-core/src/memory/manager.ts b/extensions/memory-core/src/memory/manager.ts
+--- a/extensions/memory-core/src/memory/manager.ts
++++ b/extensions/memory-core/src/memory/manager.ts
+@@ -599,6 +599,7 @@
+         lastProvider: this.batchFailure.lastProvider,
+       },
+       custom: {
++        workspaceHost: this.memoryFiles ? "remote" : "local",
+         watcher: this.memoryWatcherHealth,
+         llamaCppRuntime: getLocalEmbeddingRuntimeFacts(this.provider),
+         searchMode: providerInfo.searchMode,
+diff --git a/packages/memory-host-sdk/src/host/types.ts b/packages/memory-host-sdk/src/host/types.ts
+--- a/packages/memory-host-sdk/src/host/types.ts
++++ b/packages/memory-host-sdk/src/host/types.ts
+@@ -287,10 +287,13 @@
+ }
+ 
+ export function formatMemoryIndexRebuildGuidance(
+-  status: Partial<Pick<MemoryProviderStatus, "provider" | "requestedProvider">>,
++  status: Partial<Pick<MemoryProviderStatus, "provider" | "requestedProvider" | "custom">>,
+   agentId?: string,
+ ): string {
+-  const command = `openclaw memory status --index${agentId?.trim() ? ` --agent ${agentId.trim()}` : ""}`;
++  const command =
++    status.custom?.workspaceHost === "remote" && agentId?.trim()
++      ? `openclaw gateway call memory.index --params '${JSON.stringify({ agentId: agentId.trim() }).replaceAll("'", "'\\''")}' --timeout 180000`
++      : `openclaw memory status --index${agentId?.trim() ? ` --agent ${agentId.trim()}` : ""}`;
+   const configuredProvider = status.requestedProvider?.trim() || status.provider?.trim();
+   const disclosure =
+     configuredProvider === "none"
+@@ -350,7 +353,7 @@
+ 
+ export function resolveMemorySearchStaleness(
+   status: Pick<MemoryProviderStatus, "custom" | "lastSyncError"> &
+-    Partial<Pick<MemoryProviderStatus, "provider" | "requestedProvider">>,
++    Partial<Pick<MemoryProviderStatus, "provider" | "requestedProvider" | "custom">>,
+   agentId?: string,
+ ): { stale: true; warning: string; action: string } | null {
+   const diagnostic = resolveMemoryIndexIdentityDiagnostic(status);

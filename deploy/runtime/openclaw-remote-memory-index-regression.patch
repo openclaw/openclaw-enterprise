@@ -1,0 +1,145 @@
+diff --git a/extensions/memory-core/src/memory/manager-workspace-files.test.ts b/extensions/memory-core/src/memory/manager-workspace-files.test.ts
+--- a/extensions/memory-core/src/memory/manager-workspace-files.test.ts
++++ b/extensions/memory-core/src/memory/manager-workspace-files.test.ts
+@@ -3,6 +3,7 @@
+ import { DatabaseSync } from "node:sqlite";
+ import { registerAgentWorkspaceAccess } from "openclaw/plugin-sdk/agent-workspace-runtime";
+ import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
++import type { GatewayRequestHandlerOptions } from "openclaw/plugin-sdk/gateway-runtime";
+ import {
+   buildFileEntry,
+   buildMultimodalChunkForIndexing,
+@@ -12,7 +13,10 @@
+   type MemoryWorkspaceFiles,
+ } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
+ import { readAgentMemoryFile } from "openclaw/plugin-sdk/memory-core-host-runtime-files";
++import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
+ import { afterEach, describe, expect, it, vi } from "vitest";
++import { registerMemoryIndexGatewayMethod } from "../index-gateway.js";
++import { indexMemoryOnGateway } from "../index-gateway.runtime.js";
+ import {
+   getMemoryWorkspaceMaintenance,
+   listWorkspaceMemoryFiles,
+@@ -103,6 +107,95 @@
+       },
+     };
+   }
++
++  it("rebuilds via Gateway maintenance using remote bytes and ignores a local decoy", async () => {
++    const { harness } = await registerHarness();
++    await fs.writeFile(path.join(harness, "memory/notes.md"), "alpha Harness canonical notes.");
++    await fs.writeFile(path.join(fixture.paths.memory, "notes.md"), "beta Gateway decoy.");
++    const cfg = createConfig();
++    const status = await indexMemoryOnGateway({
++      cfg,
++      agentId: "main",
++      force: true,
++      assertCurrent() {},
++    });
++    expect(status.files).toBe(1);
++    expect(status.custom?.workspaceHost).toBe("remote");
++    const manager = await fixture.getFreshManager(cfg, "status");
++    expect(await manager.search("canonical", { minScore: 0 })).toHaveLength(1);
++    expect(await manager.search("decoy", { minScore: 0 })).toEqual([]);
++  });
++
++  it("does not publish a replacement after the maintenance operator loses authority", async () => {
++    const { harness, files } = await registerHarness();
++    const filename = path.join(harness, "memory/notes.md");
++    await fs.writeFile(filename, "alpha original canonical notes.");
++    const cfg = createConfig();
++    await indexMemoryOnGateway({ cfg, agentId: "main", force: true, assertCurrent() {} });
++    await fs.writeFile(filename, "beta revoked replacement.");
++    let current = true;
++    const read = files.readForIndexing.bind(files);
++    vi.spyOn(files, "readForIndexing").mockImplementation(async (file) => {
++      const result = await read(file);
++      current = false;
++      return result;
++    });
++    await expect(
++      indexMemoryOnGateway({
++        cfg,
++        agentId: "main",
++        force: true,
++        assertCurrent() {
++          if (!current) {
++            throw new Error("operator revoked");
++          }
++        },
++      }),
++    ).rejects.toThrow("operator revoked");
++    const manager = await fixture.getFreshManager(cfg, "status");
++    expect(await manager.search("original", { minScore: 0 })).toHaveLength(1);
++    expect(await manager.search("replacement", { minScore: 0 })).toEqual([]);
++  });
++
++  it("validates admin maintenance requests before acquiring a manager", async () => {
++    let registered:
++      | { handler: (args: GatewayRequestHandlerOptions) => Promise<void>; scope?: string }
++      | undefined;
++    const cfg = createConfig();
++    const api = {
++      runtime: { config: { current: () => cfg } },
++      registerGatewayMethod(
++        name: string,
++        handler: (args: GatewayRequestHandlerOptions) => Promise<void>,
++        options: { scope?: string },
++      ) {
++        expect(name).toBe("memory.index");
++        registered = { handler, scope: options.scope };
++      },
++    } as unknown as OpenClawPluginApi;
++    registerMemoryIndexGatewayMethod(api);
++    expect(registered?.scope).toBe("operator.admin");
++    for (const params of [
++      {},
++      { agentId: "unknown" },
++      { agentId: "main", force: "true" },
++      { agentId: "main", path: "/tmp" },
++    ]) {
++      const respond = vi.fn();
++      await registered!.handler({ params, respond } as unknown as GatewayRequestHandlerOptions);
++      expect(respond.mock.calls[0]?.[2]).toMatchObject({ code: "INVALID_REQUEST" });
++    }
++    const respond = vi.fn();
++    await registered!.handler({
++      params: { agentId: "main" },
++      respond,
++      client: null,
++    } as unknown as GatewayRequestHandlerOptions);
++    expect(respond.mock.calls[0]?.[2]).toMatchObject({
++      code: "UNAVAILABLE",
++      message: "Memory maintenance operator authority is no longer current.",
++    });
++  });
+ 
+   it("still rejects maintenance absent from an opted-in Memory host", async () => {
+     await registerHarness();
+diff --git a/packages/memory-host-sdk/src/host/types.test.ts b/packages/memory-host-sdk/src/host/types.test.ts
+--- a/packages/memory-host-sdk/src/host/types.test.ts
++++ b/packages/memory-host-sdk/src/host/types.test.ts
+@@ -1,11 +1,23 @@
+ import { describe, expect, it } from "vitest";
+ import {
++  formatMemoryIndexRebuildGuidance,
+   resolveMemoryIndexIdentityDiagnostic,
+   resolveMemorySearchStaleness,
+   type MemoryProviderStatus,
+ } from "./types.js";
+ 
+ describe("memory search staleness", () => {
++  it("routes remote workspace index maintenance through the authenticated Gateway", () => {
++    expect(
++      formatMemoryIndexRebuildGuidance(
++        { provider: "none", custom: { workspaceHost: "remote" } },
++        "main",
++      ),
++    ).toBe(
++      `openclaw gateway call memory.index --params '{"agentId":"main"}' --timeout 180000. Rebuilding uses keyword indexing only and does not call an embedding provider.`,
++    );
++  });
++
+   it("keeps routine pending index work silent", () => {
+     const status: MemoryProviderStatus = {
+       backend: "builtin",

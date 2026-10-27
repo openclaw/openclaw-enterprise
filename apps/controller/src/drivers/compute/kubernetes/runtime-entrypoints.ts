@@ -20,12 +20,15 @@ export const GATEWAY_STOP_TIMEOUT_MS = 330_000;
 // SIGTERM in every phase, and container exit ends its children. -e 143 reports
 // that termination as exit 0, as a running wrapper does. -s keeps reaping
 // orphans when a Sandbox provider runs this below PID 1.
-export const RUNTIME_WRAPPER_COMMAND: readonly string[] = Object.freeze([
+export const RUNTIME_PROCESS_INIT_COMMAND: readonly string[] = Object.freeze([
   "/usr/bin/tini",
   "-s",
   "-e",
   "143",
   "--",
+]);
+export const RUNTIME_WRAPPER_COMMAND: readonly string[] = Object.freeze([
+  ...RUNTIME_PROCESS_INIT_COMMAND,
   "node",
   "-e",
 ]);
@@ -43,7 +46,7 @@ export const SETUP_WRAPPER_COMMAND: readonly string[] = Object.freeze([
 ]);
 export const MANAGED_CONFIGURATION_DIRECTORY = "/etc/openclaw-managed";
 // Under the Harness HOME; Compute renders the same path into the Gateway's relay config.
-export const NATIVE_HOOK_CREDENTIAL_DIRECTORY = ".oce-native-hooks";
+export const NATIVE_HOOK_CREDENTIAL_DIRECTORY = ".codex/.oce-native-hooks";
 
 export const PLUGIN_APP_SERVER_TOKEN_HMAC_DOMAIN = "openclaw-plugin-runtime/app-server-token/v1";
 export const RUNTIME_READINESS_PATH = "/readyz";
@@ -4093,6 +4096,11 @@ if (gatewayCa) {
 // left there belong to the previous Codex process's relays; the Gateway writes a new one
 // for each new or resumed run.
 function prepareHookDirectory() {
+  const parent = join(process.env.HOME, ".codex");
+  mkdirSync(parent, { recursive: true, mode: 0o700 });
+  if (!lstatSync(parent).isDirectory()) {
+    throw new Error("Codex private state must be a real directory.");
+  }
   rmSync(hookDirectory, { recursive: true, force: true });
   mkdirSync(hookDirectory, { mode: 0o700 });
   chmodSync(hookDirectory, 0o700);

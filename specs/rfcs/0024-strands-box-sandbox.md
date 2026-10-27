@@ -1,6 +1,6 @@
 ---
 status: Proposed
-implementation_status: Not implemented
+implementation_status: Partially implemented
 author: Kimiyu-186
 ---
 
@@ -8,23 +8,74 @@ author: Kimiyu-186
 
 - **ID:** RFC-0024
 - **Created:** 2026-10-22
-- **Implementation plan:** [Sandbox integration](../plans/0024-strands-box-sandbox.md)
+- **Implementation plan:** [Sandbox integration](../plans/0024-strands-box-sandbox/index.md)
 
 ## Decision
 
-Offer Strands Box as an optional bundled Sandbox Driver for dedicated Codex on
-Kubernetes ARM64. Compute still prepares the Harness command and owns its
-authenticated Gateway route. The Driver starts that command inside Box and
-exposes a revision-specific endpoint through the
-[SandboxDriver contract](../../docs/reference/drivers/sandbox.md).
-Credential Proxy integration is a separate phase.
+Add an optional bundled Strands Box Sandbox Driver for dedicated Codex on
+Kubernetes ARM64. Preserve the existing [SandboxDriver lifecycle](../../docs/reference/drivers/sandbox.md)
+and Compute ownership of the Harness startup command. Extend the readiness,
+supervision and peer-label handoffs described below. Introduce an explicit Installation
+selector and provider configuration for Box. Credential Proxy integration is a
+separate phase.
 
-The deployment decision is whether OCE should support a separately reviewed
-placement or admission policy for Box. The tested build requires a Pod setting
-that OCE's Restricted tenant Namespaces reject. Without an approved placement
-design or a Box build that works under Restricted, those Namespaces cannot run
-this Driver. Selecting it must preserve the tenant policy and surface the
-admission failure.
+This is a proposal with a local candidate implementation. It is not published,
+merged or production-qualified. The implementation plan distinguishes current
+native Agent acceptance from historical probes that used admission exceptions.
+
+### Local revision, 2026-10-23
+
+The operator authorized local Box changes and small interface changes, but
+prohibited PR publication and merge. The current candidate replaces the
+unmasked-proc proposal below. Keep one revision Pod with two containers and
+separate PID namespaces: the trusted Box supervisor and one contained agent.
+The workload receiver must be its container's sole PID 1. It retains the
+runtime's masked procfs, binds it recursively read-only, and creates Box's
+private user, mount, network, IPC and UTS namespaces. Keep Restricted admission,
+dropped capabilities and non-root execution. A separate node setup profile
+permits exact setup arguments only. Workload compatibility adds argument-scoped
+RENAME_NOREPLACE, MSG_CMSG_CLOEXEC and private-namespace child signalling only
+for the explicit container backend. Ordinary namespace workloads retain their
+original refusals for these calls.
+Refused sendfile/copy_file_range return ENOSYS for existing read/write fallbacks.
+These are explicit filter changes: MSG_CMSG_CLOEXEC does not filter ancillary
+descriptors. Qualification must exclude access to trusted descriptor-passing
+peers, close inherited launch descriptors, and preserve filesystem, process and
+network boundaries. Arbitrary external Unix services are not qualified.
+
+The supervisor transfers opened descriptors over a private Unix socket.
+Supervisor loss terminates the receiver and its descendants. This candidate
+accepts one agent and refuses separate tool or MCP containment domains.
+The original remote Harness and split-storage paths remain in the revision Pod.
+
+Add optional `SandboxHarnessContext.transportToken` for trusted provider
+readiness. Kubernetes Compute supplies the revision's existing token during
+provisioning, as it already does for status checks. The Driver projects a
+revision-owned Secret only into the supervisor. Its readiness probe must pass
+transport authentication and receive a fresh native Codex `initialize` result.
+The workload does not mount this readiness Secret. Lifecycle signatures do not
+change. See the implementation plan for evidence and remaining qualification.
+
+The first native candidate fails on the generic Tini wrapper's signal wait.
+Add optional `HarnessWorkloadRequirements.supervisedCommand`: Compute supplies
+the same prepared Harness entrypoint without its generic process-init wrapper.
+A provider may select it only when it supplies private process supervision,
+orphan reaping, signal forwarding and descendant cleanup. Other providers use
+`command` in full. An absent alternative does not authorize the provider to
+guess or strip a command prefix. The Box candidate requires this explicit
+alternative; qualification must verify normal termination as well as crash cleanup.
+
+### Local deployment supplement, 2026-10-26
+
+The local candidate also includes [API endpoint recovery](../../docs/guides/deploy/local-api-egress-recovery.md)
+for retained Linux k3d installations. It belongs to installation infrastructure,
+not the Box Driver: a host service validates the owned cluster and maintains
+the chart's exact control-plane API destinations after restart. It gives OCC
+and workloads no new identity or authority and leaves revision Pods, Harness
+transport and split storage unchanged. This is a new compatible deployment
+supplement, not a capability implemented by the original proposal or a claim of
+production failover qualification. Local implementation and testing are
+authorized. Draft publication is now authorized; merge remains excluded.
 
 ## Problem
 
@@ -61,8 +112,9 @@ refresh, substitute, or inject provider credentials.
 
 Compute continues to own admission, workload identity, Gateway routing,
 transport authentication, baseline tenant isolation, and activation. The Driver
-uses `requirements.image` and `requirements.command` unchanged, with a runtime
-image that includes the fixed Box build and its transport adapters. It must not
+uses `requirements.image` and the explicit `requirements.supervisedCommand`,
+with a runtime image that includes the fixed Box build and its transport adapters.
+It must not
 substitute another image or bypass OCE's login and real-model startup checks.
 
 The Driver projects every prepared environment Secret reference, file,
@@ -71,8 +123,8 @@ Unsupported inputs fail before workload creation. Workspace setup uses the
 existing private setup payload and completion marker before Harness execution.
 Secret values remain in Kubernetes Secret delivery and private runtime memory
 or files; they must not enter Box's stored configuration, logs, or revisions.
-The secret handoff into the contained startup process needs its own verified
-implementation; the credential-free prototype does not prove this handoff.
+The local QA verifies delivery through normal OCE Secrets with a real model
+turn, followed by withdrawal. This is not Credential Proxy integration.
 
 ## Runtime and transport
 
@@ -88,8 +140,10 @@ Rejected connections create no inner session. Reconnection does not restart the
 Harness. Concurrent connections retain separate native sessions and request IDs.
 Both adapters need message-size, queue, connection-count, and shutdown bounds;
 the production limits remain to be selected and tested. The outer adapter is
-trusted provider code, has no model credential, and must not execute commands
-received from a client.
+trusted provider code and must not execute commands received from a client.
+The supervisor has mounted access to projected model Secrets even though the
+outer bridge's environment excludes their values; it is part of the trusted
+computing base, not a credential-isolation boundary.
 
 `harnessStatus` reports serving only after a native authenticated handshake.
 It preserves OCE's held startup-failure response when the model probe fails.
@@ -98,15 +152,15 @@ select that revision alone. Cleanup removes only owned revision resources,
 waits for workload termination, and retains the Agent workspace for redeploy.
 Namespace cleanup uses the same ownership checks across that Namespace.
 
-The proposed Pod candidate uses `hostUsers: false`, UID/GID 1000,
-`allowPrivilegeEscalation: false`, dropped capabilities, a read-only root, bounded
-writable volumes, a Localhost seccomp profile, and `procMount: Unmasked` inside
-the Pod user namespace. This last setting is a material node/admission requirement,
-not permission to expose host namespaces or run a privileged Harness. Node
-provisioning owns installation of the profile. OCE does not install it through
-a privileged workload on shared clusters.
+The current Pod candidate uses `hostUsers: false`, UID/GID 1000,
+`allowPrivilegeEscalation: false`, dropped capabilities, a read-only root,
+prepared writable volumes and default proc masks. The supervisor uses
+RuntimeDefault; the workload container uses the reviewed Localhost setup profile.
+It does not share a PID namespace with the supervisor. Node provisioning owns
+installation of that profile; OCE does not install it through a privileged
+workload on shared clusters. The original OCE Codex profile is unchanged.
 
-## Restricted admission compatibility gap
+## Historical stock-launcher compatibility gap
 
 A real local OCE installation admitted a dedicated Codex revision through the
 normal API and reached the new Driver. Its Deployment could not create a Pod:
@@ -115,18 +169,17 @@ OCE tenant Namespaces enforce the Kubernetes Restricted standard, which refuses
 the diagnostic Pod, but the fixed Box build then failed while mounting its fresh
 `/proc` with `Operation not permitted`. These are separate observed failures.
 
-Do not silently lower tenant admission or report this as default OCE compatibility.
-A specifically authorized local admission exception can test conditional
-functionality, but a supported deployment needs an explicit reviewed placement
-or admission design, or a compatible Box implementation. The Kubernetes
+The current candidate resolves this by reusing the masked container proc view
+and keeping its supervisor outside the workload PID namespace. It does not use
+the historical admission exception. The Kubernetes
 [user namespace documentation](https://kubernetes.io/docs/concepts/workloads/pods/user-namespaces/)
 also retains the default/empty ProcMount requirement under Restricted.
 
 The credential-free startup lane additionally requires the complete three-binary
 Box package, a canonical `/var/run` identity-token path in the adapter image,
 directory grants for rotating Secret projections, exact executable grants, and
-non-overlapping filesystem grants. These corrections are local work in progress;
-a regular Agent model tool turn and lifecycle qualification have not passed.
+non-overlapping filesystem grants. These corrections are included in the local
+candidate; current real Agent results are tracked in the implementation plan.
 
 ## Kubernetes provider routing refinement
 
@@ -164,7 +217,7 @@ requirements, not established support.
 
 ## Evidence and required verification
 
-Local credential-free probes on Debian 13 ARM64 and k3s 1.35.9 showed:
+Historical credential-free probes on Debian 13 ARM64 and k3s 1.35.9 showed:
 
 | Probe                                                   | Observed result                                                                                              |
 | ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
@@ -176,8 +229,9 @@ Local credential-free probes on Debian 13 ARM64 and k3s 1.35.9 showed:
 | Persistent transport prototype                          | Missing/wrong tokens return 401; reconnect and two concurrent sessions initialize through one Codex process. |
 
 The profile extends the captured runtime baseline; it is an experimental
-candidate, not a production-approved artifact. Network-policy enforcement,
-model turns, the full OCE startup command, and Agent lifecycle are still unproved.
+candidate, not a production-approved artifact. This historical table alone does
+not establish model turns, native startup or Agent lifecycle. Current evidence
+for the replacement container backend is recorded separately in the plan.
 An upstream filesystem test also has a reproducible parent-rename EBUSY
 expectation failure; the protected write remains refused. Qualification must
 resolve or explicitly account for that upstream compatibility result.

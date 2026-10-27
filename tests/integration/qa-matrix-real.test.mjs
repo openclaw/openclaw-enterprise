@@ -54,6 +54,16 @@ test(
     });
     await save();
     context.diagnostic(`QA evidence: ${artifacts}`);
+    if (selection.strandsSandbox) {
+      const { verifyQaStrandsSandbox } = await import("../helpers/qa-strands-sandbox.mjs");
+      await stage(
+        context,
+        "kubernetes/Codex/Strands",
+        "Strands Box local Agent sandbox lifecycle",
+        () => verifyQaStrandsSandbox(artifacts),
+        "strands-sandbox",
+      );
+    }
     if (selection.sandboxPolicy) {
       const { verifyQaSandboxPolicy } = await import("../helpers/qa-sandbox-policy.mjs");
       await stage(

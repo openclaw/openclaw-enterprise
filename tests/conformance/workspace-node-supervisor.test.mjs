@@ -218,7 +218,7 @@ test(
     assert.equal(codex.hasSetup, false);
     assert.equal(codex.hasModelKey, true);
     assert.equal(codex.hasTransportToken, true);
-    assert.equal((await stat(join(directory, ".oce-native-hooks"))).mode & 0o777, 0o700);
+    assert.equal((await stat(join(directory, ".codex/.oce-native-hooks"))).mode & 0o777, 0o700);
     assert.equal(await readFile(codex.caPath, "utf8"), "existing-public-ca\ngateway-public-ca");
     assert.equal(await readFile(node.caPath, "utf8"), "gateway-public-ca");
 
@@ -335,7 +335,7 @@ test(
     const node = rows.find(({ kind }) => kind === "node");
     const codex = rows.find(({ kind }) => kind === "codex");
     assert.equal(node.caPath, caPath);
-    const hooks = join(directory, ".oce-native-hooks");
+    const hooks = join(directory, ".codex/.oce-native-hooks");
     assert.equal((await stat(hooks)).mode & 0o777, 0o700);
     assert.equal(codex.caPath, join(hooks, "gateway-ca.pem"));
     assert.equal(await readFile(codex.caPath, "utf8"), "gateway-public-ca");
@@ -366,10 +366,11 @@ test(
       }),
     );
     // A previous Harness lifetime left the directory as a link into the workspace.
-    const hooks = join(directory, ".oce-native-hooks");
+    const hooks = join(directory, ".codex/.oce-native-hooks");
     const leak = join(directory, "workspace", "leak");
     await mkdir(leak, { recursive: true });
     await writeFile(join(leak, "planted.json"), "planted");
+    await mkdir(join(directory, ".codex"), { recursive: true });
     await symlink(leak, hooks);
     const { waitFor } = await startSupervisor(t, directory, {
       child: [
@@ -419,6 +420,41 @@ test(
   },
 );
 
+test(
+  "a linked Codex state directory prevents hook credential publication",
+  {
+    timeout: 15_000,
+    skip: process.platform !== "linux" && "Run the container entrypoint test on Linux.",
+  },
+  async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), "oce-node-hook-parent-"));
+    const workspace = join(directory, "workspace");
+    await mkdir(workspace);
+    await symlink(workspace, join(directory, ".codex"));
+    const { supervisor, exited, events, waitFor, output } = await startSupervisor(t, directory, {
+      child: [
+        'const { appendFileSync } = require("node:fs");',
+        "const [events, kind] = process.argv.slice(2);",
+        'appendFileSync(events, JSON.stringify({ kind, pid: process.pid }) + "\\n");',
+        "setInterval(() => {}, 1_000);",
+      ],
+      stubs: pendingIdentityProbe,
+      env: {
+        OPENCLAW_NODE_CA_PEM: "gateway-public-ca",
+        OPENCLAW_NODE_SETUP_PATH: join(directory, "setup", "setup-code"),
+      },
+    });
+    await waitFor("hook publication refused", () => /start preparation failed/.test(output()));
+    assert.equal(
+      (await events()).some(({ kind }) => kind === "codex"),
+      false,
+    );
+    assert.deepEqual(await readdir(workspace), []);
+    supervisor.kill("SIGTERM");
+    assert.deepEqual(await exited, [0, null], output());
+  },
+);
+
 // An earlier Harness lifetime's credentials belong to retired relays. The first Codex
 // start removes them from an intact directory, fixes its mode and replaces a linked CA copy.
 test(
@@ -438,7 +474,7 @@ test(
         expiresAtMs: Date.now() + 60_000,
       }),
     );
-    const hooks = join(directory, ".oce-native-hooks");
+    const hooks = join(directory, ".codex/.oce-native-hooks");
     const workspace = join(directory, "workspace");
     await mkdir(hooks, { recursive: true, mode: 0o755 });
     await mkdir(workspace, { recursive: true });

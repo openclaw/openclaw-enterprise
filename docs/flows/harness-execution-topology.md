@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-10-16
-last_updated_session: Codex/01a13654-be66-7741-b54f-f8ae80f2d496
+updated: 2026-10-26
+last_updated_session: Codex/01a16571-f230-73d0-b786-f83300124449
 ---
 
 # Harness Execution Topology Flow
@@ -133,6 +133,60 @@ independently places the Gateway Pod and private-state initializer on trusted no
 After Harness readiness, preparation starts a candidate Gateway if its predecessor is stopped or unready. Activation waits for workspace node enrollment. Dedicated Codex keeps `agent-<agent digest>-workspace` across versions.
 `KubernetesComputeDriver.gatewayNativeHookRelayConfiguration` binds its callbacks to the Agent route; `AGENT_WITH_NODE_ENTRYPOINT` prepares private capability storage and TLS trust, and OpenClaw authorizes callbacks. See [native hook routing](../reference/gateway-routing.md#native-node-endpoint).
 
+`apps/controller/src/drivers/compute/kubernetes/index.ts:harnessRequirementsFromDeployment`
+
+For a provider-owned Harness, Compute preserves the full prepared command and
+also supplies `supervisedCommand` when it owns the generic init wrapper. A
+provider with private process supervision may use that explicit entrypoint;
+other providers retain the full command. Compute passes the revision transport
+token separately for trusted provider readiness. The Strands candidate mounts
+that readiness Secret only in its supervisor and requires authenticated native
+initialization before Pod readiness. Its workload runs in a separate container
+PID namespace in the same revision Pod. Box's argument-scoped compatibility
+permits apply only to that explicit container backend; the ordinary namespace
+backend retains its prior refusals. See
+[RFC-0024](../../specs/rfcs/0024-strands-box-sandbox.md#local-revision-2026-10-23)
+for the candidate's qualification limits; readiness alone is not E2E proof.
+
+`scripts/generate-strands-box-seccomp.mjs` preserves the captured RuntimeDefault
+profile and adds exact setup operations for Box's original remount arguments.
+The node administrator installs that profile before deployment. The provider
+selects its Localhost path; tenants cannot install profiles. Box applies its
+separate workload filter after setup, which still rejects mount creation.
+
+`deploy/runtime/strands-box/transport.mjs` bounds shared framing and channel
+buffers. IPC backpressure pauses the originating TCP stream until drain; it
+does not truncate accepted data. A disconnected or persistently slow client
+closes only its channel. Malformed framing or loss of the shared IPC stream
+stops the revision fail-closed. These paths do not add destinations, credentials,
+retries or sandbox permissions.
+
+`deploy/runtime/openclaw-node-message-pipe.patch` changes the native node
+launcher's message transport. A package that declares `byte-pipe-v1` uses a
+private byte stream on POSIX systems; existing installed packages retain their
+Node IPC protocol. Both paths keep bootstrap acknowledgement, authenticated
+readiness, restart selection and parent-loss termination. Frames are limited
+to 1 MiB and queued writes to 4 MiB or 256 messages. The byte stream does not
+receive ancillary file descriptors, so Box can continue to deny `recvmsg`.
+The runtime build applies and tests this patch before compiling OpenClaw; the
+SandboxDriver does not replace native supervision or patch Node's IPC methods.
+
+`deploy/runtime/code-mode/main.rs` is OCE's entrypoint for the native Codex
+host and runtime libraries. It selects `V8JitMode::Disabled` before calling the
+upstream `run_main`. The app-server discovers it at the packaged host pathname;
+native code-mode tools remain enabled and Box's W^X restriction stays enforced.
+See [code-mode packaging and verification](../guides/deploy/strands-code-mode.md).
+
+`deploy/runtime/Dockerfile:openclaw-build` applies the pinned-runtime pairing
+publication repair before compilation. A pending write for another device does
+not invalidate a node's committed pairing. Binding reads install committed
+receipts before use; token revocation, rotation, removal and changed approvals
+still reject stale dispatch. Unknown publication state and foreign-revision
+invalidation remain fail-closed. This is an OpenClaw Gateway repair shared by
+all Sandbox Drivers; it adds no transport retry or provider-specific auth rule.
+`scripts/build-runtime-assets.mjs:289` records the patch hash
+in the image provenance. Real Gateway and SQLite regressions run during assembly.
+
 Dedicated Harnesses use ServiceAccounts separate from their Gateway. Compute owns the Gateway; SandboxDriver owns the native Harness. Its node retains identity, workspace and model credentials. OpenShell's version provider delivers setup and the Gateway CA; startup combines inherited trust, writes a private one-use target and reconnects with the persisted device token. Renewal and cleanup retain exact provider ownership.
 
 `internal/occdev/kubernetes.go:writeInstallation` permits Node and pinned Codex model egress. Native workers connect outbound without an app-server endpoint. Compute binds `dedicated-native` with `inference: "worker"`; a missing or disconnected Harness fails without Gateway inference. Exact callbacks and session admission scope transport to the Agent.
@@ -144,6 +198,21 @@ writes private capacity/isolation settings and Driver-provided `OPENCLAW_WORKSPA
 `apps/controller/src/drivers/sandbox/openshell.ts:configureAgent` pins default/main workspace to its data mount; file transfer uses that root absent an endpoint override. Node-local snapshots provide models/credentials and authorized workspaces, without an inference file, grant catalog or retired `nativeInferenceConfig`.
 
 Embedded OpenClaw combines identity and model credentials. Scoped worker permissions deliver Secrets and enrollment; Gateways receive no controller or Harness Kubernetes credentials.
+
+Memory source files stay on the Harness workspace; the native Memory Core manager
+owns the Gateway's derived index. The runtime patch
+`deploy/runtime/openclaw-remote-memory-index.patch` registers `memory.index` with
+`operator.admin`, opens the native manager with the live remote workspace binding,
+and fences SQLite publication with the caller's current configuration and
+authority. A local-only CLI view cannot substitute for that remote binding.
+
+The optional `deploy/runtime/local-memory/Dockerfile` packages the unchanged
+native llama.cpp provider and immutable model assets. Its documented
+`models.providers.llama-cpp.localService` runs on Gateway loopback under native
+process lifecycle; `memory.search.provider: local` uses that provider without
+embedding credentials or public Gateway egress. This changes packaging and native
+Configuration, not workspace ownership or Driver interfaces. See
+[offline memory setup](../guides/deploy/local-memory.md).
 
 Sandbox receives projections and login mode through `HarnessWorkloadRequirements`; unsupported delivery fails.
 
@@ -296,6 +365,12 @@ owns claim sizes, mount paths, StorageClass requirements, and final teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-26 21:33: Trace the reviewed original-remount setup profile. (Codex/01a16571-f230-73d0-b786-f83300124449 - 28e75abf85bb0460fbf3b2b289ea7e31d12c1efc)
+
+- 2026-10-26 11:47: Trace committed pairing publication and runtime regression proof. (Codex/01a16571-f230-73d0-b786-f83300124449 - 28e75abf85bb0460fbf3b2b289ea7e31d12c1efc)
+
+- 2026-10-23 17:48: Trace local provider supervision and authenticated readiness changes. (Codex/01a16571-f230-73d0-b786-f83300124449 - 28e75abf85bb0460fbf3b2b289ea7e31d12c1efc)
 
 - 2026-10-16 17:02: Persist worktrees and Git sources. (Codex/01a13654-be66-7741-b54f-f8ae80f2d496 - 68b95a2514f183b194a478e72d734b719bf4c2e8)
 
