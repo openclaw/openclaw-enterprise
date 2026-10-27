@@ -214,7 +214,7 @@ for (const [recovery, title] of [
             }))
           ).stdout.trim();
         const facts = await read(
-          "cat /sys/fs/cgroup/memory.max /sys/fs/cgroup/cpu.max | tr '\\n' ' '; p=$(pgrep -of '^openclaw-gateway'); tr '\\0' ' ' < /proc/$p/cmdline | cut -c1-120; echo; tr '\\0' '\\n' < /proc/$p/environ | grep -E '^NODE_OPTIONS=' | cut -c1-160; node -p 'require(\"v8\").getHeapStatistics().heap_size_limit>>20'",
+          "grep -E '^Swap(Total|Free)' /proc/meminfo | tr -s ' ' | tr '\\n' ' '; cat /sys/fs/cgroup/memory.max /sys/fs/cgroup/memory.swap.max /sys/fs/cgroup/cpu.max | tr '\\n' ' '; p=$(pgrep -of '^openclaw-gateway'); tr '\\0' ' ' < /proc/$p/cmdline | cut -c1-120; echo; tr '\\0' '\\n' < /proc/$p/environ | grep -E '^NODE_OPTIONS=' | cut -c1-160; node -p 'require(\"v8\").getHeapStatistics().heap_size_limit>>20'",
         );
         const samples = [];
         const turnStartedAt = Date.now();
@@ -222,7 +222,7 @@ for (const [recovery, title] of [
         const sampler = (async () => {
           while (sampling) {
             const line = await read(
-              "echo $(( $(cat /sys/fs/cgroup/memory.current) >> 20 )) $(grep -E '^throttled_usec' /sys/fs/cgroup/cpu.stat | cut -d' ' -f2)",
+              "echo $(( $(cat /sys/fs/cgroup/memory.current) >> 20 ))/$(( $(cat /sys/fs/cgroup/memory.swap.current) >> 20 ))",
             );
             samples.push(`${Math.round((Date.now() - turnStartedAt) / 1000)}s:${line.replace(" ", "/")}`);
             await new Promise((resolve) => setTimeout(resolve, 2_000));
@@ -247,7 +247,7 @@ for (const [recovery, title] of [
         throw new Error(
           `DIAG2692 ${recovery} turnMs=${turnMs} turn=${turnError ? "error" : firstTurn?.status} ` +
             `state=${after.stdout.trim()} events=[${events}] facts=[${facts.replaceAll("\n", " ; ")}] ` +
-            `mem(MiB)/throttledUs=${samples.join(",")}`,
+            `mem/swap(MiB)=${samples.join(",")}`,
         );
       },
     });
