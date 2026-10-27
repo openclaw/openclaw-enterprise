@@ -475,7 +475,8 @@ test(
     });
     await owner.maintain();
     const selectedRoute = { revisionId, fence: 1, observed };
-    const selected = await owner.readOpenShellMaterial(revisionId, t.signal, selectedRoute);
+    const recipient = owner.protectedGit!;
+    const selected = await recipient.readMaterial(selectedRoute, t.signal);
     assert.ok(
       selected && !("absent" in selected),
       "the real prepared owner selects committed material",
@@ -486,12 +487,12 @@ test(
     };
     assert.equal(await routes.writing(revisionId, 1, "rotate", a), 2);
     assert.deepEqual(
-      await owner.readOpenShellMaterial(revisionId, t.signal, selectedRoute),
+      await recipient.readMaterial(selectedRoute, t.signal),
       { absent: "unprepared" },
       "the real custody reader refuses the pre-reservation fence",
     );
     assert.deepEqual(
-      await owner.readOpenShellMaterial(revisionId, t.signal, { ...selectedRoute, fence: 2 }),
+      await recipient.readMaterial({ ...selectedRoute, fence: 2 }, t.signal),
       selected,
       "the real custody reader preserves the material and recipient at the reservation fence",
     );

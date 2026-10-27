@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import type { AgentRevision } from "../../packages/contracts/src/index.ts";
 import { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import {
@@ -10,7 +11,7 @@ import {
   type OpenShellProviderCreateRequest,
   type OpenShellProviderProfile,
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
-import type { routeStore } from "../fixtures/openshell-git-route-store.mjs";
+import { routeStore } from "../fixtures/openshell-git-route-store.mjs";
 import { unloggedFields } from "./occ-log-line.ts";
 
 // The worker logs the runtime's events through the production logger (worker.mjs), which keeps
@@ -62,8 +63,10 @@ type Material = {
 };
 type Owner = {
   material: Material;
-  readOpenShellMaterial: () => Promise<Material>;
-  authorizeOpenShellRequest: () => Promise<boolean>;
+  readMaterial: (
+    route: import("../../packages/contracts/src/protected-repository-git.ts").RepositoryGitInstallationFence,
+    signal: AbortSignal,
+  ) => Promise<Material | undefined>;
 };
 interface World {
   sandbox: {
@@ -127,7 +130,7 @@ const admitted = resolveGitHubRepositoryBinding(registry, {
 const future = () => new Date(Date.now() + 600_000).toISOString();
 
 export function openShellGitRuntimeFixture({
-  store,
+  store = routeStore(),
   world,
   resolveDelivery = createGitHubRepositoryDeliveryResolver(registry),
 }: {
@@ -135,15 +138,23 @@ export function openShellGitRuntimeFixture({
   world?: World;
   resolveDelivery?: ReturnType<typeof createGitHubRepositoryDeliveryResolver>;
 } = {}) {
+  const repositoryCredentials = {
+    driver: { id: "repo-driver", implementation: "github" },
+    deadlineWallMs: Date.now() + 3_600_000,
+    bindings: [admitted],
+  };
   const revision = Object.freeze({
     id: "rev-one",
     namespaceId: "namespace-a",
     agentId: "agent-one",
     harness: { id: "codex", mode: "dedicated" },
-    repositoryCredentials: {
-      driver: { id: "repo-driver", implementation: "github" },
-      deadlineWallMs: Date.now() + 3_600_000,
-      bindings: [admitted],
+    repositoryCredentials,
+    executionAdmission: { version: 5, mode: "protected" },
+    egressPlan: {
+      driver: { id: "openshell" },
+      execution: { executionId: "binding_0123456789abcdefghijklmn" },
+      repositoryGitAuthorization: "online-request",
+      repositoryGit: repositoryCredentials,
     },
   }) as unknown as AgentRevision;
   // `world` shares the gateway, supervisor, faults and owner of an earlier fixture: the state a
@@ -329,7 +340,15 @@ export function openShellGitRuntimeFixture({
     sessionId: "session-one",
   };
   const owner: Owner = world?.owner ?? {
-    readOpenShellMaterial: async () => {
+    readMaterial: async (route, signal) => {
+      if (
+        signal.aborted ||
+        !route?.observed ||
+        route.revisionId !== revision.id ||
+        route.fence !== store.rows.get(revision.id)?.fence
+      ) {
+        return undefined;
+      }
       calls.material += 1;
       if (faults.material) {
         throw faults.material;
@@ -337,7 +356,6 @@ export function openShellGitRuntimeFixture({
       return owner.material;
     },
     material,
-    authorizeOpenShellRequest: async () => true,
   };
   const entry: Entry = {
     revision,
@@ -350,13 +368,23 @@ export function openShellGitRuntimeFixture({
       workspace: sandbox.workspace,
       sandbox: sandbox.name,
       provider: "oce-git",
+      executionId: revision.id,
+      profile: "oce-git",
+      update: "accepted",
+      supervisor: "unknown",
+      readiness: {
+        rpc: "GetSandboxProviderStatus",
+        workspace: sandbox.workspace,
+        sandbox: sandbox.name,
+        provider: "oce-git",
+      },
       providerId: "provider-id-one",
       profileVersion: "7",
       resourceVersion: "11",
       credentialState: "bootstrap",
       expiresAt: "",
     },
-    ...(store === undefined ? {} : { fence: 1 }),
+    fence: 1,
     verify: (observed: { name: string }) => {
       if (observed.name !== "git-execution") {
         throw new Error("Refusing OpenShell Sandbox without exact AgentRevision ownership.");
@@ -372,7 +400,12 @@ export function openShellGitRuntimeFixture({
     },
     resolveDelivery,
   );
-  runtime["owner"] = owner;
+  runtime["owner"] = {
+    readMaterial: (route: Parameters<Owner["readMaterial"]>[0], signal: AbortSignal) =>
+      owner.readMaterial(route, signal),
+    // Reconciliation tests never authorize requests. Fail closed if one reaches this fixture.
+    authorizeOnlineRequest: async () => ({ kind: "denied", reason: "unavailable" }),
+  };
   runtime["emit"] = (event: Readonly<Record<string, unknown>>) => {
     events.push(event);
     logRuntimeEvent(event);
@@ -489,4 +522,30 @@ export function openShellGitRuntimeWorkerAfterRestart(
   fixture.runtime["entries"].clear();
   fixture.runtime["states"].clear();
   return fixture;
+}
+
+/** A retained revision is not an exception to protected admission or recipient fencing. */
+export async function assertRetainedNoPlanDenied() {
+  const f = openShellGitRuntimeFixture();
+  assert.equal("start" in f.runtime, false, "no public compatibility startup remains");
+  const { egressPlan: _plan, ...retained } = f.revision;
+  f.entry = { ...f.entry, revision: retained as AgentRevision };
+  f.runtime["entries"].set(f.revision.id, Promise.resolve(f.entry));
+  f.runtime["states"].set(f.revision.id, { entry: f.entry });
+  await f.reconcile();
+  assert.equal(f.calls.material, 0);
+  assert.equal(f.calls.rotate, 0);
+  assert.equal(await f.lookup(), undefined);
+  await assert.rejects(
+    f.runtime.prepare(
+      f.entry.revision,
+      f.client as unknown as Entry["client"],
+      f.sandbox.workspace,
+      f.sandbox.name,
+      AbortSignal.timeout(2000),
+      ["openai"],
+    ),
+    { message: /explicitly admitted GitHub binding/ },
+  );
+  assert.equal(f.calls.providerWrites, 0);
 }

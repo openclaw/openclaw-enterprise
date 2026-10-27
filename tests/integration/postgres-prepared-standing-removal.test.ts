@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
-import { fixture, prepare } from "../fixtures/prepared-repository-git.mjs";
+import { preparedProtectedGit } from "../helpers/prepared-protected-git.ts";
 import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
 
 for (const first of ["removal", "use"] as const) {
@@ -9,11 +9,10 @@ for (const first of ["removal", "use"] as const) {
     `standing removal orders prepared material and request authorization (${first} first)`,
     { ...requiresPostgres, timeout: 60_000 },
     async (t) => {
-      const f = await fixture(t, { standingApproval: true });
+      const f = await preparedProtectedGit(t, { standingApproval: true });
       const approval = f.approval!;
-      await prepare(f);
       const signal = new AbortController().signal;
-      const material = await f.owner.readOpenShellMaterial(f.revision.id, signal);
+      const material = await f.authority.readMaterial(f.version.route, signal);
       assert.ok(material && !("absent" in material));
       const { preparationAttemptId, materialVersion } = material;
 
@@ -21,13 +20,13 @@ for (const first of ["removal", "use"] as const) {
         (
           await f.pool.query(
             "SELECT exchange_id FROM occ.prepared_repository_git_uses WHERE admission_id=$1 ORDER BY exchange_id",
-            [f.admissionId],
+            [f.version.admissionId],
           )
         ).rows.map((r) => r.exchange_id);
       const operations = () => {
         const q = { ...f.request(), operation: "upload-pack" as const };
         const result = Promise.all([
-          f.owner.readOpenShellMaterial(f.revision.id, signal).then((m) => {
+          f.authority.readMaterial(f.version.route, signal).then((m) => {
             if (!m || "absent" in m) {
               return m?.absent;
             }
@@ -40,7 +39,14 @@ for (const first of ["removal", "use"] as const) {
             );
             return "same material";
           }),
-          f.owner.authorizeOpenShellRequest(q, { preparationAttemptId, materialVersion }, signal),
+          f.authority.authorize(q, f.installed, signal).then((decision) => {
+            if (decision.kind === "denied") {
+              return decision.reason;
+            }
+            assert.equal(decision.exchangeId, q.exchangeId);
+            assert.equal(decision.materialVersion, materialVersion);
+            return decision.kind;
+          }),
         ]).catch((error: unknown) => error); // assert the result after releasing the transaction barrier
         return { result, exchangeId: q.exchangeId };
       };
@@ -98,7 +104,7 @@ for (const first of ["removal", "use"] as const) {
           await holder.query("BEGIN");
           const locked = await holder.query(
             "SELECT pg_backend_pid() AS pid FROM occ.prepared_github_families WHERE source_id=$1 FOR UPDATE",
-            [f.familyId],
+            [f.version.familyId],
           );
           assert.equal(locked.rowCount, 1);
           const pending = operations();
@@ -106,7 +112,7 @@ for (const first of ["removal", "use"] as const) {
           const removal = remove();
           await blocked(readers, 1, writer);
           await holder.query("ROLLBACK");
-          assert.deepEqual(await pending.result, ["same material", true]);
+          assert.deepEqual(await pending.result, ["same material", "allow"]);
           await removal;
           expectedReceipts = [pending.exchangeId];
           failed = false;

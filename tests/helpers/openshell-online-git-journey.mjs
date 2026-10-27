@@ -99,6 +99,7 @@ export async function gitExpiryGateway(
     writes: 0,
     providerCreates: [],
     profileImports: [],
+    detachAttempts: 0,
     detaches: [],
     reports: [],
     version: 13,
@@ -304,6 +305,7 @@ export async function gitExpiryGateway(
     },
     GetSandboxProviderStatus: observe,
     DetachSandboxProvider: (req) => {
+      world.detachAttempts++;
       assert.equal(req.sandbox, sandbox);
       assert.equal(req.provider, gitName);
       assert.equal(req.workspace_scope.workspace, workspace);

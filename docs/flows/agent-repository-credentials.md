@@ -1,7 +1,7 @@
 ---
 created: "2026-09-18"
-updated: "2026-10-25"
-last_updated_session: authoring-run/3ab680f7-bea5-4377-bb8c-14e6b81c49b4
+updated: "2026-10-27"
+last_updated_session: authoring-run/f60cd87f-165b-42a9-8151-4e3b0b9878ff
 ---
 
 # Agent repository credential flow
@@ -153,6 +153,14 @@ every mode, before it constructs a worker or allocates an attempt. Operators mus
 drain accepted work on the original owner before cutover.
 Cleanup matches recorded owner identity without resolving policy or restoring authority.
 The worker's prepared provider owns issuance and custody.
+
+`apps/controller/src/drivers/egress-proxy/openshell-registration.ts:createOpenShellCapabilities`
+requires the selected Credential Proxy before it constructs an OpenShell Git Sandbox.
+`apps/controller/src/composition/repository-credentials/transport.ts:bindRepositoryGitTransport`
+passes only the selected protected authority to that transport. The recipient must match
+its durable route fence before it receives prepared material; a revision ID alone is insufficient.
+The online authority binds each decision to the installed material and reply deadline.
+Previously admitted protocol-1 work retains its original recovery and cleanup owner.
 
 ### 3. Record ownership before opening a session
 
@@ -369,6 +377,8 @@ denied before reaching the provider, and chat continues.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-27 12:11: Trace protected OpenShell Git authority and original-owner recovery. (authoring-run/f60cd87f-165b-42a9-8151-4e3b0b9878ff - 68bb26f6e25e7e3a755c6f154732241853c7f55d)
 
 - 2026-10-25 00:30: Answer repository options without a repository Driver with no options and `meta.notConfigured`. (finding 2387)
 

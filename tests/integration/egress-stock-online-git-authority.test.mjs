@@ -3,7 +3,10 @@ import test from "node:test";
 import { randomUUID } from "node:crypto";
 import { gzipSync } from "node:zlib";
 import { createOpenShellOnlineGitAuthority } from "../../apps/controller/src/drivers/egress-proxy/openshell-online-git-authority.ts";
-import { openShellOnlineGitWire } from "../helpers/openshell-online-git-wire.mjs";
+import {
+  protectedOnlineGitBoundaryCases,
+  protectedOnlineGitWire as openShellOnlineGitWire,
+} from "../helpers/protected-online-git.ts";
 import { invoke, token } from "../helpers/openshell-online-wire.mjs";
 
 const binding = {
@@ -18,7 +21,15 @@ const binding = {
   repository: "example/project",
   pushRef: "refs/heads/review/task",
   pullRequestBase: "main",
-  installed: { preparationAttemptId: "prepared-one", materialVersion: "version-one" },
+  installed: {
+    preparationAttemptId: "prepared-one",
+    materialVersion: "version-one",
+    route: {
+      revisionId: "execution-one",
+      fence: 1,
+      observed: { sandboxId: "immutable-sandbox-id" },
+    },
+  },
 };
 const packet = (value) =>
   Buffer.from((Buffer.byteLength(value) + 4).toString(16).padStart(4, "0") + value);
@@ -66,12 +77,20 @@ test(
         identities.push(identity);
         return binding;
       },
-      approve: async (q, installed) => {
+      authorizeOnlineRequest: async (q, installed) => {
         if (unavailable) {
           throw new Error("owner unavailable");
         }
         approvals.push({ q, installed });
-        return current;
+        return current
+          ? {
+              kind: "allow",
+              exchangeId: q.exchangeId,
+              requestDigestSha256: q.requestDigestSha256,
+              ...installed,
+              replyBy: q.deadlineAt,
+            }
+          : { kind: "denied", reason: "unavailable" };
       },
       onDeny: (denial) => denials.push(denial),
     });
@@ -181,9 +200,15 @@ test(
     const denials = [];
     const { client, keys } = await openShellOnlineGitWire(t, {
       lookupBinding: async () => binding,
-      approve: async () => {
+      authorizeOnlineRequest: async (q, installed) => {
         approvals++;
-        return true;
+        return {
+          kind: "allow",
+          exchangeId: q.exchangeId,
+          requestDigestSha256: q.requestDigestSha256,
+          ...installed,
+          replyBy: q.deadlineAt,
+        };
       },
       onDeny: (denial) => denials.push(denial.reason),
     });
@@ -266,9 +291,17 @@ test(
     let allow = true;
     const { client, keys } = await openShellOnlineGitWire(t, {
       lookupBinding: async () => binding,
-      approve: async (q) => {
+      authorizeOnlineRequest: async (q, installed) => {
         approvals.push(q);
-        return allow;
+        return allow === true
+          ? {
+              kind: "allow",
+              exchangeId: q.exchangeId,
+              requestDigestSha256: q.requestDigestSha256,
+              ...installed,
+              replyBy: q.deadlineAt,
+            }
+          : { kind: "denied", reason: allow === false ? "unavailable" : allow };
       },
       onDeny: (denial) => denials.push(denial),
     });
@@ -377,9 +410,15 @@ test(
     const denials = [];
     const { client, keys } = await openShellOnlineGitWire(t, {
       lookupBinding: async () => lookup,
-      approve: async () => {
+      authorizeOnlineRequest: async (q, installed) => {
         approvals++;
-        return true;
+        return {
+          kind: "allow",
+          exchangeId: q.exchangeId,
+          requestDigestSha256: q.requestDigestSha256,
+          ...installed,
+          replyBy: q.deadlineAt,
+        };
       },
       onDeny: (denial) => denials.push(denial),
     });
@@ -419,9 +458,15 @@ test(
     const approvals = [];
     const { client, keys } = await openShellOnlineGitWire(t, {
       lookupBinding: async () => binding,
-      approve: async (q) => {
+      authorizeOnlineRequest: async (q, installed) => {
         approvals.push(q);
-        return true;
+        return {
+          kind: "allow",
+          exchangeId: q.exchangeId,
+          requestDigestSha256: q.requestDigestSha256,
+          ...installed,
+          replyBy: q.deadlineAt,
+        };
       },
     });
     const bearer = token(keys, "supervisor", binding.sandboxId);
@@ -549,9 +594,15 @@ test("expired binding lookup cannot begin durable Git approval", { timeout: 1000
       lookupAborted.resolve();
       return binding;
     },
-    approve: async () => {
+    authorizeOnlineRequest: async (q, installed) => {
       approvals++;
-      return true;
+      return {
+        kind: "allow",
+        exchangeId: q.exchangeId,
+        requestDigestSha256: q.requestDigestSha256,
+        ...installed,
+        replyBy: q.deadlineAt,
+      };
     },
   });
   const result = await invoke(
@@ -564,3 +615,9 @@ test("expired binding lookup cannot begin durable Git approval", { timeout: 1000
   await lookupAborted.promise;
   assert.equal(approvals, 0);
 });
+
+test(
+  "protected online decisions bind the final callback, cancellation and recipient",
+  { timeout: 15000 },
+  (t) => protectedOnlineGitBoundaryCases(t, binding, pushRequest),
+);

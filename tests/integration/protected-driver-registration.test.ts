@@ -509,7 +509,8 @@ test("OpenShell registration pairs its capabilities using only a Repo delivery r
     },
   };
   let runtime: OpenShellGitRuntime | undefined;
-  const capabilities = createOpenShellCapabilities({
+  let constructions = 0;
+  const input: Parameters<typeof createOpenShellCapabilities>[0] = {
     sandbox: {
       id: "openshell-sandbox",
       implementation: "openshell",
@@ -522,6 +523,7 @@ test("OpenShell registration pairs its capabilities using only a Repo delivery r
     },
     operatorOwnedKubernetesResources: true,
     createSandbox(options, selection) {
+      constructions++;
       runtime = selection.openShellGit;
       return new OpenShellSandboxDriver(
         options as unknown as OpenShellSandboxDriverOptions,
@@ -544,31 +546,45 @@ test("OpenShell registration pairs its capabilities using only a Repo delivery r
         authority: {} as OpenShellGitRuntime["configuration"]["authority"],
       },
     },
-  });
+  };
+  const { proxy: _proxy, ...withoutProxy } = input;
+  assert.throws(
+    () => createOpenShellCapabilities(withoutProxy),
+    /requires its selected Credential Proxy/,
+  );
+  assert.equal(constructions, 0, "unsupported Git must fail before Sandbox construction");
+  const capabilities = createOpenShellCapabilities(input);
+  assert.equal(constructions, 1);
   t.after(() => capabilities.close());
   assert.ok(runtime);
   assert.ok(capabilities.sandbox.repositoryAccess);
   assert.ok(capabilities.proxy?.bindRepositoryGit);
-  assert.equal(runtime.configuration.protectedExecution, true);
+  assert.ok(capabilities.repositoryTransport);
 });
 
 test("the running OpenShell recipient refuses a changed Repo ref or foreign supplier identity without restoring access", async () => {
   const resolve = createGitHubRepositoryDeliveryResolver(runtimeRegistry);
   let changed = false;
-  const f = openShellGitRuntimeFixture({
-    resolveDelivery: (revision) => {
-      const scope = resolve(revision);
-      return changed
-        ? { ...scope, repository: { ...scope.repository!, pushRef: "refs/heads/other" } }
-        : scope;
-    },
-  });
+  const resolveDelivery: typeof resolve = (revision) => {
+    const scope = resolve(revision);
+    return changed
+      ? { ...scope, repository: { ...scope.repository!, pushRef: "refs/heads/other" } }
+      : scope;
+  };
+  const f = openShellGitRuntimeFixture({ resolveDelivery });
+  const reconcileFirst = openShellGitRuntimeFixture({ resolveDelivery });
   await f.reconcile();
+  await reconcileFirst.reconcile();
   assert.ok(await f.lookup());
   await f.prepare();
   assert.equal(f.calls.rotate, 1, "same admission does not reinstall material");
   // A faulty Repo result cannot change the ref used to initialize this recipient.
+  const materialReads = reconcileFirst.calls.material;
   changed = true;
+  assert.equal(await f.lookup(), undefined, "changed scope cannot expose the installed mapping");
+  await reconcileFirst.reconcile();
+  assert.equal(reconcileFirst.calls.material, materialReads, "changed scope cannot read material");
+  assert.equal(await reconcileFirst.lookup(), undefined);
   await assert.rejects(f.prepare(), /OpenShell Git revision binding is unavailable/);
   await f.reconcile();
   assert.equal(await f.lookup(), undefined);

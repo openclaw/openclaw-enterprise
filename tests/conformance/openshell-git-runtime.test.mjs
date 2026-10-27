@@ -14,6 +14,7 @@ import {
   validateGitHubRepositoryRegistry,
 } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import {
+  assertRetainedNoPlanDenied,
   bootstrappingOpenShellGitRuntimeFixture as bootstrapping,
   openShellGitRuntimeFixture as fixture,
   openShellGitRuntimeWorkerAfterRestart as workerAfterRestart,
@@ -814,29 +815,6 @@ test("a deploying revision whose route verified is ready before its material exi
   assert.equal(readiness(), "blocked");
 });
 
-test("a restarted worker names why it cannot adopt a revision's Sandbox, once per revision", async () => {
-  // Finding 2140: after a worker restart the Sandbox survives, but this worker never prepared
-  // it. Each later pass rethrows the retained failure; the cause is logged once, with the
-  // Agent, revision and repositoryRef, so the operator knows a new revision is required.
-  const f = workerAfterRestart();
-  for (let pass = 0; pass < 3; pass += 1) {
-    await assert.rejects(f.prepare(), /requires a new revision after worker restart/);
-  }
-  assert.deepEqual(f.errors(), [
-    {
-      event: "worker.error",
-      code: "OPENSHELL_GIT_RECONCILIATION_REQUIRED",
-      reason: "worker_restarted",
-      namespaceId: "namespace-a",
-      agentId: "agent-one",
-      revisionId: "rev-one",
-      repositoryRef: "application",
-    },
-  ]);
-  assert.equal(f.calls.getSandbox, 1, "the retained failure is not re-observed");
-  assert.equal(openShellGitRouteReadiness(f.runtime.route(f.revision.id)), "blocked");
-});
-
 test("a failed read while the Git route bootstraps is read again; a refused identity still closes it", async () => {
   // Finding 2210: one gateway read that failed during the bootstrap closed the route for good.
   const preparedName = (name) => /^oce-git-[0-9a-f]{32}$/.test(name ?? "");
@@ -985,15 +963,15 @@ test("a reconcile pass that runs out of time before the provider write sends not
   const store = routeStore();
   const f = fixture({ store });
   f.runtime.observeTimeoutMs = 1_000;
-  const readMaterial = f.owner.readOpenShellMaterial;
+  const readMaterial = f.owner.readMaterial;
   let reads = 0;
-  f.owner.readOpenShellMaterial = async (revisionId, signal, ...rest) => {
+  f.owner.readMaterial = async (route, signal, ...rest) => {
     reads += 1;
     if (reads === 2 && !signal.aborted) {
       // The last read before the write, inside the release, answers once the budget is spent.
       await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
     }
-    return readMaterial(revisionId, signal, ...rest);
+    return readMaterial(route, signal, ...rest);
   };
   await f.reconcile();
   assert.deepEqual(f.runtime.route(f.revision.id), {
@@ -1019,8 +997,8 @@ test("a rotation the store did not confirm clearing is cleared on the next pass,
     const f = fixture({ store });
     const material = f.owner.material;
     let reads = 0;
-    const readMaterial = f.owner.readOpenShellMaterial;
-    f.owner.readOpenShellMaterial = async (...args) => {
+    const readMaterial = f.owner.readMaterial;
+    f.owner.readMaterial = async (...args) => {
       reads += 1;
       return reads === 2 ? undefined : readMaterial(...args);
     };
@@ -1033,7 +1011,7 @@ test("a rotation the store did not confirm clearing is cleared on the next pass,
       failure: "read_failed",
     });
     store.cancelWriting = cancel;
-    f.owner.readOpenShellMaterial = readMaterial;
+    f.owner.readMaterial = readMaterial;
     f.owner.material = material;
     between(f);
     await f.reconcile();
@@ -1764,6 +1742,12 @@ test("only the worker that adopted a persisted Git route holds it: a stale fence
     a.faults.onRead = undefined;
   };
   await a.reconcile();
+  // The protected owner refuses the stale recipient before returning material.
+  assert.deepEqual(a.runtime.route(a.revision.id), {
+    state: "pending",
+    reason: "material_unavailable",
+  });
+  await a.reconcile();
   assert.deepEqual(a.runtime.route(a.revision.id), { state: "none" });
   assert.equal(a.calls.rotate, before);
   assert.equal(a.store.rows.get(a.revision.id).writePending, undefined);
@@ -2183,10 +2167,9 @@ test("protected material selection is serialized with the reservation fence at t
     },
   };
   f.entry.revision = revision;
-  f.runtime.configuration.protectedExecution = true;
   const reads = [];
   const material = f.owner.material;
-  f.owner.readOpenShellMaterial = async (_revisionId, _signal, route) => {
+  f.owner.readMaterial = async (route, _signal) => {
     // Serialize as the real custody transaction does. The selected observation must remain
     // unchanged; only the fence from this attempt's durable reservation may advance.
     const wire = JSON.parse(JSON.stringify(route));
@@ -2241,7 +2224,6 @@ test("an admitted preview rotates at its new fence only in the original worker",
   };
   f.entry.revision = revision;
   f.entry.authorization = resolve(revision);
-  f.runtime.configuration.protectedExecution = true;
   f.runtime.configuration.observedHookPreviewWorkspace = f.sandbox.workspace;
   f.runtime.configuration.authority.audience = "preview";
   const preview = new ObservedHookPreview(f.sandbox.workspace, f.entry.bindingId);
@@ -2383,3 +2365,8 @@ test("an admitted preview rotates at its new fence only in the original worker",
   await f.reconcile();
   assert.equal(f.calls.rotate, 1, "neither the replacement nor the fenced original can replay");
 });
+
+test(
+  "a retained no-plan revision cannot release material or use public compatibility startup",
+  assertRetainedNoPlanDenied,
+);

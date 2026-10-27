@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { get } from "node:https";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import pg from "pg";
 import {
   PostgresPlatformState,
@@ -33,10 +33,9 @@ import { ensurePostgresAgentBootstrap } from "../helpers/postgres-agent-app.mjs"
 
 // This exercises the production use service over real PostgreSQL and a synthetic
 // HTTPS GitHub App issuer. It does not prove a Git subprocess or live GitHub push.
-export async function fixture(
+export async function baseFixture(
   t,
   {
-    openBroker,
     draftPull = false,
     draftPullLimit = /** @type {"none" | undefined} */ (undefined),
     draftResponse,
@@ -45,13 +44,14 @@ export async function fixture(
     standingApproval = false,
     installationAccess = false,
     tokenLifetimeMs = /** @type {number | undefined} */ (undefined),
-    /** The first owner's clock argument; undefined starts it as the worker does. */
+    /** Shared test clock for owners; undefined starts them as the worker does. */
     ownerClock = /** @type {import("../../apps/controller/src/drivers/repo/credentials/backend-contracts.ts").Clock | undefined} */ (
       undefined
     ),
   } = {},
 ) {
   const directory = await socketDirectory(t, "prepared-git-");
+  const ownerDirectories = new Set([directory]);
   const privateKeyPath = join(directory, "app.pem");
   const custodyKeyPath = join(directory, "custody.key");
   const permissions = {
@@ -71,6 +71,18 @@ export async function fixture(
   });
   await writeFile(custodyKeyPath, randomBytes(32), { mode: 0o600 });
   const pool = new pg.Pool({ connectionString: databaseUrl, max: 4 });
+  const owners = [];
+  t.after(async () => {
+    try {
+      const closed = await Promise.allSettled(owners.map((owner) => owner.close()));
+      const failed = closed.find((result) => result.status === "rejected");
+      if (failed) {
+        throw failed.reason;
+      }
+    } finally {
+      await pool.end();
+    }
+  });
   const state = new PostgresPlatformState(pool);
   const namespaceId = `ns_${randomUUID()}`;
   const driverId = "repository-credentials";
@@ -122,14 +134,6 @@ export async function fixture(
     authSecret: "prepared-repository-git-fixture-session-secret",
   });
   const deadlineWallMs = Date.now() + sessionLifetimeMs;
-  let owner;
-  t.after(async () => {
-    try {
-      await owner?.close();
-    } finally {
-      await pool.end();
-    }
-  });
   const { agent, revision: first } = await seedSessionRevision(
     state,
     {
@@ -176,6 +180,104 @@ export async function fixture(
     };
     await state.transact((u) => u.revisions.createRevision(revision));
   }
+  await state.transact(async (unit) => {
+    assert.ok(
+      await unit.agents.compareAndSetActiveRevision(namespaceId, agent.id, undefined, revision.id),
+    );
+  });
+  const ownerOptions = {
+    pool,
+    driverId,
+    implementation: "github",
+    backendId,
+    registry,
+    privateKeyPath,
+    custodyKeyPath,
+    apiOrigin: dnsIssuer ? gh.origin.replace("127.0.0.1", "localhost") : gh.origin,
+    ca: gh.tls.ca,
+    startWorker: false,
+  };
+  return {
+    /** Owners with no explicit socket selection receive an independent listener directory. */
+    async startOwner(overrides = {}) {
+      const controlSocket =
+        "controlSocket" in overrides
+          ? overrides.controlSocket
+          : join(
+              await socketDirectory(t, "pgit-", { longest: "prepared-git-use.sock" }),
+              "control.sock",
+            );
+      if (controlSocket !== undefined) {
+        ownerDirectories.add(dirname(controlSocket));
+      }
+      const owner = await startPreparedGitHubGitOwner(
+        { ...ownerOptions, ...overrides, controlSocket },
+        ownerClock,
+      );
+      owners.push(owner);
+      return owner;
+    },
+    pool,
+    directory,
+    ownerDirectories,
+    driver,
+    repositoryRef,
+    pushRef,
+    permissions,
+    state,
+    agent,
+    revision,
+    deadlineWallMs,
+    gh,
+    binding,
+    approval,
+    registry,
+    request(overrides = {}) {
+      return {
+        ...binding.grant,
+        exchangeId: randomUUID(),
+        operation: "upload-pack",
+        requestDigestSha256: randomBytes(32).toString("hex"),
+        pushRef,
+        deadlineAt: new Date(Date.now() + 20_000).toISOString(),
+        ...overrides,
+      };
+    },
+    providerStatus(value) {
+      return new Promise((resolve, reject) => {
+        get(
+          `${gh.origin}/repos/${fixtureRepository}`,
+          {
+            ca: gh.tls.ca,
+            headers: { authorization: `Bearer ${value}` },
+          },
+          (response) => {
+            response.resume();
+            response.once("end", () => resolve(response.statusCode));
+          },
+        ).once("error", reject);
+      });
+    },
+  };
+}
+
+/** Native consumers explicitly admit a receipt-backed session and start its listener. */
+/** @param {Parameters<typeof baseFixture>[1] & { openBroker?: (options: object) => Promise<{ opened: { session: { sessionId: string } } }> }} options */
+export async function fixture(t, { openBroker, ...options } = {}) {
+  const f = await baseFixture(t, options);
+  const {
+    revision,
+    repositoryRef,
+    directory,
+    gh,
+    registry,
+    binding,
+    pushRef,
+    deadlineWallMs,
+    state,
+    driver,
+  } = f;
+  const namespaceId = revision.namespaceId;
   const attempt = sessionAttempt(revision, {
     repositoryRef,
     durationSeconds: 3600,
@@ -193,11 +295,6 @@ export async function fixture(
     repository: fixtureRepository,
   });
   const sessionId = broker?.opened.session.sessionId ?? `session-${randomUUID()}`;
-  await state.transact(async (unit) => {
-    assert.ok(
-      await unit.agents.compareAndSetActiveRevision(namespaceId, agent.id, undefined, revision.id),
-    );
-  });
   // Use State transitions so the session and its successor have authoritative distinct admission IDs.
   const admit = (sessionId, admissionId) =>
     state.transact(async (unit) => {
@@ -231,89 +328,32 @@ export async function fixture(
       );
     });
   await admit(sessionId, attempt.admissionId);
-  const ownerOptions = {
-    pool,
-    controlSocket: join(directory, "control.sock"),
-    driverId,
-    implementation: "github",
-    backendId,
-    registry,
-    privateKeyPath,
-    custodyKeyPath,
-    apiOrigin: dnsIssuer ? gh.origin.replace("127.0.0.1", "localhost") : gh.origin,
-    ca: gh.tls.ca,
-    startWorker: false,
-  };
-  owner = await startPreparedGitHubGitOwner(ownerOptions, ownerClock);
+  const owner = await f.startOwner({ controlSocket: join(directory, "control.sock") });
   return {
-    /** Another worker owner on the same database, such as one after an issuer change. */
-    async startOwner(overrides) {
-      // Each owner serves its use socket beside its control socket: give it its own directory.
-      const sockets = await socketDirectory(t, "pgit-", { longest: "prepared-git-use.sock" });
-      const other = await startPreparedGitHubGitOwner({
-        ...ownerOptions,
-        controlSocket: join(sockets, "control.sock"),
-        ...overrides,
-      });
-      t.after(() => other.close());
-      return other;
-    },
-    pool,
-    broker,
-    permissions,
-    admitReplacement: (sessionId) => admit(sessionId, "admission-" + randomUUID()),
-    state,
-    agent,
-    revision,
-    sessionId,
-    deadlineWallMs,
-    gh,
+    ...f,
     owner,
-    binding,
+    broker,
+    sessionId,
     admissionId: attempt.admissionId,
-    approval,
-    registry,
     familyId: `repository-git:${attempt.admissionId}`,
-    request(overrides = {}) {
-      return {
-        ...binding.grant,
-        sessionId,
-        exchangeId: randomUUID(),
-        operation: "upload-pack",
-        requestDigestSha256: randomBytes(32).toString("hex"),
-        pushRef,
-        deadlineAt: new Date(Date.now() + 20_000).toISOString(),
-        ...overrides,
-      };
-    },
-    async withdraw() {
-      await state.transact(async (unit) => {
-        assert.ok(
-          await unit.repositorySessions.advanceAttempt({
-            admissionId: attempt.admissionId,
-            expectedPhase: "open",
-            phase: "closing",
-            updatedAt: new Date().toISOString(),
-          }),
-        );
-      });
-    },
-    providerStatus(value) {
-      return new Promise((resolve, reject) => {
-        get(
-          `${gh.origin}/repos/${fixtureRepository}`,
-          {
-            ca: gh.tls.ca,
-            headers: { authorization: `Bearer ${value}` },
-          },
-          (response) => {
-            response.resume();
-            response.once("end", () => resolve(response.statusCode));
-          },
-        ).once("error", reject);
-      });
-    },
+    useSocketPath: socketPath,
+    admitReplacement: (sessionId) => admit(sessionId, "admission-" + randomUUID()),
+    request: (overrides = {}) => f.request({ sessionId, ...overrides }),
+    withdraw: () => withdrawRepositorySession(f, attempt.admissionId),
   };
+}
+
+export async function withdrawRepositorySession(f, admissionId) {
+  await f.state.transact(async (unit) => {
+    assert.ok(
+      await unit.repositorySessions.advanceAttempt({
+        admissionId,
+        expectedPhase: "open",
+        phase: "closing",
+        updatedAt: new Date().toISOString(),
+      }),
+    );
+  });
 }
 
 export async function prepare(f) {
@@ -349,7 +389,7 @@ export function startProtectedOwner(f, overrides = {}) {
  * released OpenShell Git recipient of its Sandbox. The installation and the delivery receipt
  * are controlled evidence; the standing transfer test exercises the real release.
  */
-export async function admitProtectedVersion(f, previous = f.revision) {
+export async function admitProtectedVersion(f, previous = f.revision, online = false) {
   const { namespaceId, agentId, servicePrincipalId, repositoryCredentials } = previous;
   const driver = controlledProtectedDriver;
   const revisionId = "rev_" + randomUUID();
@@ -372,6 +412,7 @@ export async function admitProtectedVersion(f, previous = f.revision) {
     egressDriverId: "controlled",
     routes: [],
     repositoryGit: repositoryCredentials,
+    ...(online && { repositoryGitAuthorization: "online-request" }),
   };
   const attempt = {
     namespaceId,
@@ -388,7 +429,7 @@ export async function admitProtectedVersion(f, previous = f.revision) {
     ...previous,
     id: revisionId,
     revision: previous.revision + 1,
-    executionAdmission: { version: 4, mode: "protected" },
+    executionAdmission: { version: online ? 5 : 4, mode: "protected" },
     egressPlan: plan,
   };
   await f.state.transact(async (u) => {
@@ -437,13 +478,14 @@ export async function admitProtectedVersion(f, previous = f.revision) {
         instanceId: "released-supervisor-A",
         repositoryGitRecipient: {
           providerId,
+          ...(online && { authorization: "online-request" }),
           attachmentEpoch: observed.attachmentEpoch,
           processInstanceId: observed.processInstanceId,
           networkInstanceId: observed.networkInstanceId,
         },
         configurationId: "c",
         authorityScope: "execution",
-        peerKeyId: "fixture",
+        ...(!online && { peerKeyId: "fixture" }),
       },
     }),
   );

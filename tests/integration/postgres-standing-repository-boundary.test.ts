@@ -12,16 +12,10 @@ test(
   { ...requiresPostgres, timeout: 60_000 },
   async (t) => {
     const f = await fixture(t, { sessionLifetimeMs: 8000 });
-    const signal = new AbortController().signal;
     await prepare(f);
-    const material = await f.owner.readOpenShellMaterial(f.revision.id, signal);
-    assert.ok(material && !("absent" in material));
-    const identity = {
-      preparationAttemptId: material.preparationAttemptId,
-      materialVersion: material.materialVersion,
-    };
     const request = () => ({ ...f.request(), operation: "upload-pack" as const });
-    assert.equal(await f.owner.authorizeOpenShellRequest(request(), identity, signal), true);
+    const material = await f.owner.use(request());
+    assert.ok("value" in material);
     const snapshot = async () =>
       (
         await f.pool.query(`SELECT admitted_spec FROM occ.agent_revisions WHERE id=$1`, [
@@ -41,10 +35,7 @@ test(
       "SELECT pg_sleep(greatest(0, $1::numeric/1000-extract(epoch FROM clock_timestamp())))",
       [f.deadlineWallMs],
     );
-    assert.equal(
-      await f.owner.authorizeOpenShellRequest(request(), identity, signal),
-      "access_withdrawn",
-    );
+    await assert.rejects(f.owner.use(request()), /custody transaction did not complete \(guard\)/);
     await f.withdraw();
     // Closing the old session removes the active-binding uniqueness conflict. The
     // remaining refusal is specifically the admitted deadline, not a duplicate key.
@@ -70,13 +61,7 @@ test(
     );
     const owner = await f.startOwner({});
     await owner.maintain();
-    assert.deepEqual(await owner.readOpenShellMaterial(f.revision.id, signal), {
-      absent: "withdrawn",
-    });
-    assert.equal(
-      await owner.authorizeOpenShellRequest(request(), identity, signal),
-      "access_withdrawn",
-    );
+    await assert.rejects(owner.use(request()), /custody transaction did not complete \(guard\)/);
     assert.equal(f.gh.issuesOfTokens.length, 1, "new owner must not remint an expired grant");
     assert.deepEqual(
       (

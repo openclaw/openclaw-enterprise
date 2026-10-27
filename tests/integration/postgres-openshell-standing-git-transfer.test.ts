@@ -153,6 +153,9 @@ test(
     let bindingId = "";
     let stops = 0;
     let withdrawn = 0;
+    let retireRuntimeObservations = 0;
+    let retirementScheduled = 0;
+    const stoppedRevisions: string[] = [];
     let lostDetachReply = false;
     let originCallsBeforeActivation = 0;
     const deadline = credentials.deadlineWallMs;
@@ -169,7 +172,7 @@ test(
       workspace,
       sandbox,
       deadline,
-      platformProfile: false,
+      platformProfile: true,
       modelSourceId: auth.sourceId,
       revisionId: revision.id,
       trackGitExpiry: true,
@@ -183,7 +186,6 @@ test(
       const r = new OpenShellGitRuntime(
         {
           registrationName,
-          protectedExecution: true,
           authority: {} as EgressAuthorityConfiguration,
         },
         createGitHubRepositoryDeliveryResolver(registry),
@@ -383,7 +385,10 @@ test(
               material_version: null,
               preparation_attempt_id: null,
             });
-            const material = await prepared.readOpenShellMaterial(r.id, s);
+            const material = await prepared.protectedGit!.online.githubInstallation!.readMaterial(
+              { revisionId: r.id, fence: 1, observed: {} },
+              s,
+            );
             assert.ok(!material || "absent" in material);
             assert.equal(
               await runtime.lookup(
@@ -404,6 +409,10 @@ test(
       verifyRepositoryExecution: kube.verifyRepositoryExecution.bind(kube),
       async retireExpiredRepositoryAccess(r: AgentRevision, signal: AbortSignal) {
         const result = await kube.retireExpiredRepositoryAccess(r, signal);
+        if (result === "retire-runtime") {
+          assert.equal(r.id, revision.id);
+          retireRuntimeObservations++;
+        }
         if (result === "withdrawn") {
           withdrawn++;
         }
@@ -413,6 +422,7 @@ test(
         return result;
       },
       async stopRevision(r: AgentRevision) {
+        stoppedRevisions.push(r.id);
         // Replacing the initial revision may stop it; Git withdrawal must not stop
         // the successor whose independent model authority remains current.
         if (r.id === revision.id) {
@@ -420,7 +430,7 @@ test(
         }
       },
     };
-    type Event = { event?: string; code?: string; reason?: string };
+    type Event = { event?: string; code?: string; reason?: string; workId?: string };
     const events: Event[] = [];
     const start = () =>
       f.start(compute, {
@@ -461,7 +471,11 @@ test(
     const uses = async () =>
       (
         await f.observerPool.query(
-          "select operation,material_version,attempt_id,send_start_by,authorization_reply_by from occ.prepared_repository_git_uses order by exchange_id",
+          `SELECT u.operation,u.material_version,u.attempt_id,u.send_start_by,u.authorization_reply_by
+           FROM occ.prepared_repository_git_uses u
+           JOIN occ.repository_session_attempts s ON s.admission_id=u.admission_id
+           WHERE s.revision_id=$1 ORDER BY u.exchange_id`,
+          [revision.id],
         )
       ).rows;
     const absent = () => {
@@ -581,14 +595,13 @@ test(
         );
       }
       assert.deepEqual(
-        await onlineOwner.readOpenShellMaterial(
-          revision.id,
-          t.signal,
+        await onlineOwner.readMaterial(
           {
             revisionId: revision.id,
             fence: route.fence + 1,
             observed: route.observed,
           },
+          t.signal,
           "github-installation",
         ),
         { absent: "unprepared" },
@@ -642,7 +655,11 @@ test(
       const custody = () =>
         f.observerPool
           .query(
-            "SELECT state,custody,sealed IS NULL AS erased FROM occ.prepared_github_attempts ORDER BY provider_expires_at",
+            `SELECT a.state,a.custody,a.sealed IS NULL AS erased
+             FROM occ.prepared_github_attempts a
+             JOIN occ.repository_session_attempts s ON a.source_id='repository-git:' || s.admission_id
+             WHERE s.revision_id=$1 ORDER BY a.provider_expires_at`,
+            [revision.id],
           )
           .then((x) => x.rows);
       // The admission has ended and GitHub's expiry has passed, but a GitHub clock behind
@@ -769,6 +786,7 @@ test(
         1,
         "one live successor retirement",
       );
+      const originCallsBeforeRecovery = more.originCalls();
       await expireStoppedClaims(f, revision);
       await start();
       // Stop both owners after the peer committed detach but lost its reply. Recovery must
@@ -816,6 +834,12 @@ test(
       assert.equal(settledReduction.request_id, acceptedRequest);
       assert.ok(settledReduction.observed_generation);
       assert.equal(settledReduction.material_version, pendingReduction.material_version);
+      // Send a fresh signed request through the recovered runtime. A denied request must not
+      // create another possible-use receipt or reach the origin after the lost detach reply.
+      const afterRecovery = await peer.exchange(() => evaluate(true), installed!, true);
+      assert.equal("decision" in afterRecovery && afterRecovery.decision, 2);
+      assert.deepEqual(await uses(), withAllow);
+      assert.equal(more.originCalls(), originCallsBeforeRecovery);
       const originalSandbox = world.id;
       world.id = crypto.randomUUID();
       assert.equal(
@@ -838,6 +862,98 @@ test(
         await askModel("after");
       }
       assert.equal(await readFile(join(cwd, "README.md"), "utf8"), "Controlled repository\n");
+      // Preserve the effective-platform-profile controls from the retired trial journey.
+      // These calls classify cleanup of an already withdrawn, genuinely released route;
+      // they do not authorize requests, expose material, or replay a provider mutation.
+      const retained = world as typeof world & {
+        addRetainedEndpoint(host: string): void;
+        profileReads: string[];
+        denyPlatformProfile?: boolean;
+      };
+      const cleanupCounts = [world.detaches.length, world.writes, gh.issuesOfTokens.length];
+      retained.addRetainedEndpoint("service-2.example.test");
+      retained.profileReads.length = 0;
+      assert.equal(await kube.retireExpiredRepositoryAccess(revision, t.signal), "withdrawn");
+      assert.ok(retained.profileReads.length > 0);
+      assert.ok(retained.profileReads.every((scope: string) => scope === "platform"));
+      const safeReduction = await reduction();
+      retained.denyPlatformProfile = true;
+      retained.profileReads.length = 0;
+      assert.equal(await kube.retireExpiredRepositoryAccess(revision, t.signal), "retire-runtime");
+      assert.deepEqual(
+        retained.profileReads,
+        ["platform"],
+        "no fallback to the benign workspace namesake",
+      );
+      assert.deepEqual(await reduction(), safeReduction);
+      retained.denyPlatformProfile = false;
+      retained.addRetainedEndpoint("uploads.github.com");
+      retained.profileReads.length = 0;
+      assert.equal(await kube.retireExpiredRepositoryAccess(revision, t.signal), "retire-runtime");
+      assert.deepEqual(
+        retained.profileReads,
+        ["platform"],
+        "the effective profile now overlaps GitHub",
+      );
+      assert.deepEqual(
+        [world.detaches.length, world.writes, gh.issuesOfTokens.length],
+        cleanupCounts,
+      );
+
+      // The same safe owner was active above. Leave the actual platform overlap in place
+      // and let ordinary queued maintenance decide its fate, then join terminal cleanup.
+      assert.equal((await f.currentAgent(owner))?.activeRevisionId, revision.id);
+      const stoppedBeforeRetirement = stoppedRevisions.length;
+      const observationsBeforeRetirement = retireRuntimeObservations;
+      const eventsBeforeRetirement = events.length;
+      retained.profileReads.length = 0;
+      await expireStoppedClaims(f, revision);
+      const scheduled = await f.advanceMaintenance(revision);
+      retirementScheduled = scheduled.rowCount ?? 0;
+      assert.ok(retirementScheduled > 0, "ordinary maintenance must be queued before restart");
+      const scheduledKeys = new Set(scheduled.rows.map((row) => row.idempotency_key));
+      await start();
+      const retirementPass = await waitForRevisionPass(
+        "the scheduled unsafe-profile maintenance pass to complete",
+        f,
+        revision,
+        () =>
+          events
+            .slice(eventsBeforeRetirement)
+            .find((event) => event.event === "worker.completed" && scheduledKeys.has(event.workId)),
+        15_000,
+      );
+      assert.equal(retireRuntimeObservations - observationsBeforeRetirement, 1);
+      assert.equal(retirementPass.code, "REPOSITORY_RUNTIME_RETIREMENT_QUEUED");
+      await waitForRevisionPass(
+        "the formerly active revision to stop and clear",
+        f,
+        revision,
+        async () =>
+          (stops === 1 && (await f.currentAgent(owner))?.activeRevisionId === undefined) ||
+          undefined,
+        15_000,
+      );
+      await f.stop();
+      assert.equal((await f.currentAgent(owner))?.activeRevisionId, undefined);
+      assert.deepEqual(stoppedRevisions.slice(stoppedBeforeRetirement), [revision.id]);
+      assert.equal(stops, 1);
+      assert.equal(world.id, originalSandbox);
+      assert.equal(creates, 1);
+      assert.deepEqual(retained.profileReads, ["platform"], "no workspace-profile fallback");
+      assert.deepEqual(
+        [world.detaches.length, world.writes, gh.issuesOfTokens.length],
+        cleanupCounts,
+      );
+      assert.equal(
+        world.detachAttempts,
+        1,
+        "lost-reply recovery and retirement must not replay detach",
+      );
+      const originCallsAfterRetirement = more.originCalls();
+      assert.equal(originCallsAfterRetirement, originCallsBeforeRecovery);
+      await peer.noBroker();
+
       t.diagnostic(
         JSON.stringify({
           revision: revision.id,
@@ -849,9 +965,15 @@ test(
           afterAdmissionMs: later - deadline,
           afterProviderExpiryMs: later - issue1.expires,
           originCallsAtDenial: before,
+          originCallsBeforeRecovery,
+          originCallsAfterRetirement,
           gitWrites: world.writes,
-          detaches: world.detaches.length,
+          detachAttempts: world.detachAttempts,
+          committedDetaches: world.detaches.length,
           withdrawnObservations: withdrawn,
+          retirementScheduled,
+          retireRuntimeObservations,
+          retiredOriginalRevision: stops === 1,
           evidence: askModel
             ? "controlled supervisor and model, real Codex conversation across Git withdrawal"
             : "controlled supervisor, actual model grant and continued authorized maintenance; no model turn exercised",
@@ -862,6 +984,9 @@ test(
         JSON.stringify({
           writes: world.writes,
           issued: gh.issuesOfTokens.length,
+          retirementScheduled,
+          retireRuntimeObservations,
+          stops,
           events: events.slice(-8).map(({ event, code, reason }) => ({ event, code, reason })),
         }),
       );

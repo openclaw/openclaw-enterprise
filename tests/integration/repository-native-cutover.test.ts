@@ -2,9 +2,12 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
+import { Server } from "node:net";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { rootCertificates } from "node:tls";
+import { protectedDriverPackage } from "../helpers/protected-driver-package.ts";
+import { createCredentialProxyInstallationConfiguration } from "../helpers/installation-driver-configuration.mjs";
 import { socketDirectory } from "../helpers/socket-directory.mjs";
 import {
   loadInstallationConfiguration,
@@ -39,7 +42,18 @@ import {
   githubTokenConfigurationData,
 } from "../fixtures/repository-credentials/builders.mjs";
 
-async function fixture(t: TestContext) {
+// The JavaScript fixture adds these selections after constructing the base configuration.
+function bundledConfiguration() {
+  return createCredentialProxyInstallationConfiguration() as unknown as {
+    backend: [{ configuration: Record<string, unknown>; drivers: Record<string, string> }];
+    drivers: Record<
+      "sandbox" | "credential_gateway" | "credential_proxy",
+      { id: string; configuration: Record<string, unknown> }
+    >;
+  };
+}
+
+async function repositoryFixture(t: TestContext) {
   const directory = await socketDirectory(t, "native-cutover-");
   const socket = join(directory, "c");
   const clock = createSystemClock();
@@ -70,6 +84,11 @@ async function fixture(t: TestContext) {
       },
     ],
   });
+  return { directory, socket, clock, config, namespaceId, registry };
+}
+
+async function fixture(t: TestContext) {
+  const { directory, socket, clock, config, namespaceId, registry } = await repositoryFixture(t);
   const client = new UnixRepositoryCredentialControlClient({ controlSocket: socket });
   const backend = { id: registry.backendId, drivers: { repo: "repository-credentials" }, client };
   const policy = new GitHubRepositoryPolicy(backend, registry, { sessionDurationSeconds: 600 });
@@ -379,8 +398,14 @@ test("v1 terminal lookup and close preserve the original session and receipt", a
   );
 });
 
-test("complete native configuration requires explicit selection and custody without protected fallback", async (t) => {
-  const f = await fixture(t);
+async function installationFixture(t: TestContext) {
+  // Selection must finish before the worker starts any authority. This guard can only fail;
+  // it cannot manufacture a successful listener or bypass the real selector's validation.
+  const listen = t.mock.method(Server.prototype, "listen", () => {
+    throw new Error("Installation selection must not start a listener.");
+  });
+  t.after(() => assert.equal(listen.mock.callCount(), 0));
+  const f = await repositoryFixture(t);
   const registryPath = join(f.directory, "registry.json");
   const publicCaPath = join(f.directory, "ca.pem");
   await writeFile(registryPath, JSON.stringify(f.registry), { mode: 0o600 });
@@ -406,11 +431,11 @@ test("complete native configuration requires explicit selection and custody with
       id: f.registry.backendId,
       type: "github",
       configuration: { registryPath },
-      drivers: { repo: f.sender.id },
+      drivers: { repo: "repository-credentials" },
     },
   ];
   const repository = {
-    id: f.sender.id,
+    id: "repository-credentials",
     configuration: { sessionDurationSeconds: 600 },
     nativeSender: { controlSocket: f.config.gateway.controlSocket, publicCaPath },
     preparedGitHub: {
@@ -419,23 +444,38 @@ test("complete native configuration requires explicit selection and custody with
     },
   };
   configuration.repository = repository;
-  const load = () =>
+  const load = (packageRoot?: string) =>
     loadInstallationConfiguration({
       mode: "production",
+      ...(packageRoot === undefined ? {} : { packageRoot }),
       environment: {},
       startupConfiguration: { ...snapshot, configuration },
     });
-  assert.ok((await load())?.nativeRepositorySender);
+  return { configuration, drivers, repository, load, publicCaPath };
+}
+
+test("complete native configuration requires explicit selection and custody without protected fallback", async (t) => {
+  const { configuration, drivers, repository, load } = await installationFixture(t);
+  const first = await load();
+  const second = await load();
+  assert.ok(first?.nativeRepositorySender);
+  assert.ok(second?.nativeRepositorySender);
+  assert.notEqual(first.nativeRepositorySender, second.nativeRepositorySender);
+  assert.equal(first.repositoryGitDriver, undefined);
+  assert.equal(first.repositoryTransport, undefined);
   configuration.repository = { ...repository, preparedGitHub: undefined };
   await assert.rejects(load(), /requires prepared GitHub custody/);
   // Selecting a Sandbox never downgrades protected delivery to the native socket.
   configuration.repository = repository;
-  drivers.sandbox = { id: "sandbox", configuration: {} };
+  drivers.sandbox = bundledConfiguration().drivers.sandbox;
   await assert.rejects(load(), /protected Git cannot fall back/);
   delete drivers.sandbox;
+  drivers.credential_proxy = bundledConfiguration().drivers.credential_proxy;
+  await assert.rejects(load(), /protected Git cannot fall back/);
+  delete drivers.credential_proxy;
   delete configuration.repository;
   drivers.repo = {
-    id: f.sender.id,
+    id: repository.id,
     configuration: { ...repository.configuration, ...repository.nativeSender },
   };
   await assert.rejects(load(), /Drain accepted work ON THE ORIGINAL owner/);
@@ -465,4 +505,128 @@ test("v1 unknown reserved result remains unresolved without a second acquisition
   );
   assert.equal(receipt?.state, "reserved");
   assert.equal(receipt?.generation, generation);
+});
+async function protectedInstallationFixture(t: TestContext) {
+  const f = await installationFixture(t);
+  const bundled = bundledConfiguration();
+  const backend = bundled.backend[0];
+  backend.configuration.endpoint = "https://127.0.0.1:41001";
+  backend.drivers.credential_proxy = bundled.drivers.sandbox.id;
+  f.configuration.backend = [...(f.configuration.backend as unknown[]), backend];
+  f.drivers.sandbox = bundled.drivers.sandbox;
+  f.drivers.credential_gateway = bundled.drivers.credential_gateway;
+  f.drivers.credential_proxy = { id: bundled.drivers.sandbox.id, configuration: {} };
+  const compute = f.drivers.compute as { configuration: { network: Record<string, unknown> } };
+  delete compute.configuration.network.repositoryCredentials;
+  const { nativeSender: _native, ...repository } = f.repository;
+  const openShell = {
+    registrationName: "repository-authority",
+    authority: bundled.drivers.credential_proxy.configuration.authority,
+  };
+  f.configuration.repository = { ...repository, openShell };
+  return { ...f, repository, openShell, backend, bundled };
+}
+
+test("ordinary loader keeps protected Git paired and refuses native fallback before transport binding", async (t) => {
+  const f = await protectedInstallationFixture(t);
+  const selected = await f.load();
+  assert.ok(selected?.repositoryGitDriver);
+  t.after(() => selected.protectedDriver?.close());
+  assert.equal(selected.repositoryGitDriver, selected.protectedDriver);
+  assert.equal(selected.proxyDriver, selected.protectedDriver?.require("credential_proxy"));
+  assert.ok(selected.repositoryTransport);
+  const second = await f.load();
+  assert.ok(second?.repositoryGitDriver);
+  t.after(() => second.protectedDriver?.close());
+  assert.notEqual(selected.repositoryGitDriver, second.repositoryGitDriver);
+  assert.notEqual(selected.repositoryTransport, second.repositoryTransport);
+  assert.deepEqual(selected.repositoryGitDriver.ref, second.repositoryGitDriver.ref);
+  assert.equal(selected.nativeRepositorySender, undefined);
+  // The installed stock capability still refuses Git before contacting its gateway.
+  await assert.rejects(
+    selected.proxyDriver!.sourceControl.assertAvailable!(t.signal, "repository_git"),
+    { name: "RepositoryGitSenderUnqualifiedError" },
+  );
+
+  delete f.drivers.credential_proxy;
+  delete f.backend.drivers.credential_proxy;
+  await assert.rejects(f.load(), /explicitly selected protected Git delivery/);
+
+  // Both the Sandbox and the paired Proxy prohibit fallback to a native sender.
+  f.configuration.repository = {
+    ...(f.configuration.repository as object),
+    nativeSender: { controlSocket: "/unselected/control.sock", publicCaPath: f.publicCaPath },
+  };
+  await assert.rejects(f.load(), /protected Git cannot fall back/);
+});
+
+test("ordinary loader preserves no-repository Sandbox and generic Proxy without a Git transport", async (t) => {
+  const f = await protectedInstallationFixture(t);
+  delete f.configuration.repository;
+  f.configuration.backend = [f.backend];
+  delete f.drivers.credential_proxy;
+  delete f.backend.drivers.credential_proxy;
+  const sandbox = await f.load();
+  assert.ok(sandbox?.sandboxDriver);
+  assert.equal(sandbox.repositoryTransport, undefined);
+  assert.equal(sandbox.repositoryGitDriver, undefined);
+  assert.equal(sandbox.nativeRepositorySender, undefined);
+
+  f.drivers.credential_proxy = f.bundled.drivers.credential_proxy;
+  f.backend.drivers.credential_proxy = f.bundled.drivers.credential_proxy.id;
+  const generic = await f.load();
+  assert.ok(generic?.proxyDriver?.bindExchange);
+  t.after(() => generic.protectedDriver?.close());
+  assert.equal(generic.proxyDriver.bindRepositoryGit, undefined);
+  assert.equal(generic.repositoryTransport, undefined);
+  assert.equal(generic.repositoryGitDriver, undefined);
+  assert.equal(generic.nativeRepositorySender, undefined);
+
+  // A proxy property is not a second way to select a repository transport.
+  for (const field of ["repository", "openShell"] as const) {
+    f.drivers.credential_proxy = {
+      ...f.bundled.drivers.credential_proxy,
+      configuration: { ...f.bundled.drivers.credential_proxy.configuration, [field]: f.openShell },
+    };
+    await assert.rejects(f.load(), new RegExp(`contains unsupported option ${field}`));
+  }
+});
+
+test("ordinary loader selects the installed external protected package with a distinct owner", async (t) => {
+  const f = await installationFixture(t);
+  const id = "external-repository-cutover";
+  const { directory } = await protectedDriverPackage(t, id, "repository-git");
+  const { nativeSender: _native, ...repository } = f.repository;
+  f.configuration.repository = repository;
+  const compute = f.drivers.compute as { configuration: { network: Record<string, unknown> } };
+  delete compute.configuration.network.repositoryCredentials;
+  f.drivers.sandbox = {
+    id,
+    package: id,
+    configuration: {
+      origin: "https://127.0.0.1:41001",
+      peerOrigin: "https://127.0.0.1:41002",
+      capabilityOrigin: "https://127.0.0.1:41003",
+      certFile: f.publicCaPath,
+      releaseKey: "unused-before-release",
+    },
+  };
+  f.drivers.credential_proxy = { id, configuration: {} };
+  const first = await f.load(directory);
+  const second = await f.load(directory);
+  assert.ok(first?.repositoryGitDriver);
+  assert.ok(second?.repositoryGitDriver);
+  t.after(() => first.protectedDriver?.close());
+  t.after(() => second.protectedDriver?.close());
+  assert.equal(first.repositoryGitDriver, first.protectedDriver);
+  assert.equal(first.proxyDriver, first.protectedDriver?.require("credential_proxy"));
+  assert.ok(first.proxyDriver?.bindRepositoryGit);
+  assert.equal(first.nativeRepositorySender, undefined);
+  assert.equal(first.repositoryTransport, undefined);
+  assert.notEqual(first.repositoryGitDriver, second.repositoryGitDriver);
+  assert.notEqual(first.proxyDriver, second.proxyDriver);
+  assert.deepEqual(first.repositoryGitDriver.ref, second.repositoryGitDriver.ref);
+
+  f.configuration.repository = f.repository;
+  await assert.rejects(f.load(directory), /protected Git cannot fall back/);
 });
