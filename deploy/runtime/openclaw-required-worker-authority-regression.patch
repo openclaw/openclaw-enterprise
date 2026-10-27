@@ -1,10 +1,10 @@
 diff --git a/src/gateway/server.required-placement-scopes.test.ts b/src/gateway/server.required-placement-scopes.test.ts
 --- a/src/gateway/server.required-placement-scopes.test.ts
 +++ b/src/gateway/server.required-placement-scopes.test.ts
-@@ -3,13 +3,20 @@
- import { afterEach, expect, test, vi } from "vitest";
+@@ -4,13 +4,20 @@
  import { WebSocket } from "ws";
  import type { HelloOk } from "../../packages/gateway-protocol/src/schema/frames.js";
+ import { waitForGatewayStartup } from "../../test/helpers/gateway-startup.js";
 +import {
 +  awaitGateBeforeSettlement,
 +  withinTest,
@@ -22,7 +22,7 @@ diff --git a/src/gateway/server.required-placement-scopes.test.ts b/src/gateway/
 
  gateway.installGatewayTestHooks({ scope: "suite" });
  const temps = useAutoCleanupTempDirTracker(afterEach);
-@@ -25,8 +32,12 @@
+@@ -26,8 +33,12 @@
  async function configureWriters(
    identityScopes: NonNullable<GatewayAuthConfig["identityScopes"]>,
    required = true,
@@ -36,7 +36,7 @@ diff --git a/src/gateway/server.required-placement-scopes.test.ts b/src/gateway/
    const auth: GatewayAuthConfig = {
      mode: "trusted-proxy",
      identityScopes,
-@@ -40,9 +51,19 @@
+@@ -41,9 +52,19 @@
    gateway.testState.gatewayAuth = auth;
    gateway.testState.gatewayControlUi = { allowedOrigins: [origin] };
    await writeConfigFile({
@@ -58,7 +58,7 @@ diff --git a/src/gateway/server.required-placement-scopes.test.ts b/src/gateway/
        : {}),
    });
    if (required) {
-@@ -116,146 +137,256 @@
+@@ -118,147 +139,257 @@
    },
  );
 
@@ -205,6 +205,7 @@ diff --git a/src/gateway/server.required-placement-scopes.test.ts b/src/gateway/
 +    });
 +
 +    await gateway.withGatewayServer(async ({ port }) => {
++      await waitForGatewayStartup(port);
 +      using adminConnection = await connectWriter(port, admin, ["operator.admin"]);
 +      const adminWs = adminConnection.ws;
 +      // Exclude lazy handler loading from the disconnect/placement ordering check.
@@ -236,6 +237,7 @@ diff --git a/src/gateway/server.required-placement-scopes.test.ts b/src/gateway/
 -  });
 -
 -  await gateway.withGatewayServer(async ({ port }) => {
+-    await waitForGatewayStartup(port);
 -    using adminConnection = await connectWriter(port, admin, ["operator.admin"]);
 -    const adminWs = adminConnection.ws;
 -    const commitConfigPatch = async (patch: Record<string, unknown>) => {

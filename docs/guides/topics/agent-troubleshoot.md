@@ -68,19 +68,23 @@ version or successful file read.
 
 ## An embedded Gateway reports an unverifiable state owner
 
-After a hard kill, a replacement Gateway can find locks on the Agent's retained
-volume. If it cannot verify that the previous Gateway stopped, startup requires
-operator confirmation. This can happen on a new deployment with managed mode
-on or off.
+A hard stop can leave the old Gateway's locks on the Agent's volume. With
+Gateway managed mode on or off, OCE can recover a verified Docker predecessor
+or the first eligible Kubernetes container in the same Pod. A new Pod cannot
+verify the previous Pod's owner. An older image may also lack a record of the
+original PID 1 start time. If the replacement reports an unverifiable owner,
+use the following procedure.
 
-1. Record the volume and original container ID. On Kubernetes, also record the
-   Pod UID and node. Stop the Agent and verify with the compute provider that
-   this exact container exited. If its node is unreachable, keep the Agent
-   stopped until an operator verifies shutdown. [Stop and resume](../../reference/agents/deployment.md#stop-and-resume)
+1. Record the Agent, state volume and original container ID. On Kubernetes,
+   also record the Pod UID and node. Stop the Agent in OCC and verify with the
+   compute provider that the exact container exited. A missing Pod or expired
+   heartbeat alone cannot establish this. If its node is unreachable, keep the
+   Agent stopped until the infrastructure operator verifies shutdown.
+   [Stop and resume](../../reference/agents/deployment.md#stop-and-resume)
 2. Keep other writers off the volume. Start a maintenance container from the
-   Gateway's pinned image as its runtime user. Mount the same retained volume
-   and configuration at the Gateway's paths and use its state directory and profile.
-   Inspect the recorded holders without starting a Gateway.
+   Gateway's pinned image as its runtime user. Mount the retained volume and
+   configuration at the Gateway's paths and use its state directory and profile.
+   Inspect the holders without starting a Gateway.
 
    ```sh
    node /app/openclaw.mjs gateway recover-lock --json

@@ -8,11 +8,15 @@ import { randomBytes } from "node:crypto";
 import { chmod, readFile, rm, writeFile } from "node:fs/promises";
 import { availableParallelism, freemem, loadavg } from "node:os";
 import { join } from "node:path";
+import {
+  EMBEDDED_GATEWAY_OWNER_STARTUP,
+  embeddedGatewayRecoveryPreamble,
+} from "../../apps/controller/src/drivers/compute/embedded-gateway-owner.ts";
 import { imageSmokeTimeoutMultiplier } from "./image-smoke-timeout.mjs";
 import { changeSignal, followContainer } from "./docker-follow.mjs";
 import {
   AGENT_RUNTIME_ENTRYPOINT,
-  GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
+  gatewayRuntimeEntrypoint,
   RUNTIME_WRAPPER_COMMAND,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
@@ -82,7 +86,7 @@ function containerStartedAt(value) {
 
 // The wrapper environment the Kubernetes driver renders, including the private
 // runtime and plugin status ports.
-function startupProbeWrapper(kind) {
+function startupProbeWrapper(kind, gatewayManagedMode) {
   const container = kind === "codex" ? "agent" : "gateway";
   const status = [
     "OPENCLAW_PLUGIN_STATUS_PORT=18791",
@@ -124,7 +128,7 @@ function startupProbeWrapper(kind) {
       },
     };
     return {
-      entrypoint: KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
+      entrypoint: gatewayRuntimeEntrypoint(gatewayManagedMode),
       cpus: startupProbeCpuLimit,
       nativePort: 8080,
       configuration,
@@ -173,7 +177,7 @@ function startupProbeWrapper(kind) {
     },
   };
   return {
-    entrypoint: KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
+    entrypoint: gatewayRuntimeEntrypoint(gatewayManagedMode),
     cpus: gatewayStartupProbeCpuLimit,
     nativePort: 8080,
     configuration,
@@ -189,6 +193,7 @@ function startupProbeWrapper(kind) {
       `OPENCLAW_HARNESS_PROBE_CONFIG=${JSON.stringify(probeConfiguration)}`,
       `OPENAI_API_KEY=${startupProbeApiKey}`,
       "NODE_EXTRA_CA_CERTS=/fixture/ca.pem",
+      "OPENCLAW_GATEWAY_RESTART_TRACE=1",
       ...status,
     ],
   };
@@ -320,10 +325,21 @@ function startupProbeFailure(headline, reason, evidence, snapshot) {
 // PersistentVolume does, so a later scenario can start on the same state.
 export async function runStartupProbeScenario(
   t,
-  { kind, mode, delayMs = 0, until, act, homeVolume },
+  {
+    kind,
+    mode,
+    delayMs = 0,
+    until,
+    act,
+    homeVolume,
+    stateVolume,
+    terminatedGatewayNamespace,
+    podOwner,
+    gatewayManagedMode = false,
+  },
 ) {
   const scenarioStartedAt = Date.now();
-  const wrapper = startupProbeWrapper(kind);
+  const wrapper = startupProbeWrapper(kind, gatewayManagedMode);
   const material = await createStartupProbeMaterial(t);
   if (wrapper.configuration !== undefined) {
     await writeFile(join(material, "openclaw.json"), JSON.stringify(wrapper.configuration));
@@ -394,6 +410,7 @@ export async function runStartupProbeScenario(
     ...(homeVolume === undefined
       ? ["--tmpfs", "/home/node:size=1024m,uid=1000,gid=1000,mode=700"]
       : ["--volume", `${homeVolume}:/home/node`]),
+    ...(stateVolume ? ["--volume", stateVolume + ":/home/node/.openclaw"] : []),
     "--tmpfs",
     "/tmp:size=64m,uid=1000,gid=1000,mode=1777",
     "--volume",
@@ -405,12 +422,26 @@ export async function runStartupProbeScenario(
     ...(wrapper.configuration === undefined
       ? []
       : ["--volume", `${join(material, "openclaw.json")}:/etc/openclaw/openclaw.json:ro`]),
+    ...(podOwner
+      ? [
+          "--volume",
+          podOwner.verifier + ":/run/oce-gateway-owner-key:ro",
+          "--volume",
+          podOwner.scratch + ":/run/oce-gateway-owner-start",
+          "-e",
+          "OPENCLAW_EMBEDDED_GATEWAY_OWNER=1",
+        ]
+      : []),
     ...wrapper.environment.flatMap((value) => ["-e", value]),
     "--entrypoint",
     command,
     image,
     ...commandArguments,
-    ...nodeProgramArguments(wrapper.entrypoint),
+    ...nodeProgramArguments(
+      (podOwner
+        ? EMBEDDED_GATEWAY_OWNER_STARTUP
+        : embeddedGatewayRecoveryPreamble(terminatedGatewayNamespace)) + wrapper.entrypoint,
+    ),
   ]);
   const startedAt = containerStartedAt(
     (await runDocker(["inspect", containerName, "--format", "{{.State.StartedAt}}"])).stdout,
@@ -436,6 +467,8 @@ export async function runStartupProbeScenario(
     return {
       events,
       output,
+      stdout: native.stdout,
+      stderr: native.stderr,
       phases: entries.filter(({ event }) => event === "runtime.startup_phase"),
       // Only the embedded Gateway's OpenClaw probe writes these.
       probe: entries.find(({ event }) => event === "openclaw.model_probe"),

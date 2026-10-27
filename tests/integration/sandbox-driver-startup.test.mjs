@@ -2930,8 +2930,12 @@ for (const harnessId of ["codex", "openclaw"]) {
     });
     const executions = [];
     let exitCode = 0;
+    let executionError;
     gatewayClient.execSandbox = async (request) => {
       executions.push(request);
+      if (executionError !== undefined) {
+        throw executionError;
+      }
       return exitCode;
     };
     const provision = () => driver.provisionHarness({ ...context, revision, requirements });
@@ -2953,7 +2957,28 @@ for (const harnessId of ["codex", "openclaw"]) {
 
     // Failed initialization and foreign Secret ownership must never report successful delivery.
     exitCode = 1;
-    await assert.rejects(provision(), /workspace initialization failed/);
+    await assert.rejects(provision(), {
+      message: "OpenShell workspace initialization failed (initializer exit 1).",
+    });
+    for (const [status, stage] of [
+      [3, "native setup failed"],
+      [4, "native setup timed out"],
+    ]) {
+      exitCode = status;
+      await assert.rejects(provision(), {
+        message: `OpenShell workspace initialization failed (${stage}; initializer exit ${status}).`,
+      });
+    }
+    // Only the protocol's numeric status is public; error text can contain private files.
+    executionError = Object.assign(new Error("private native output"), { grpcStatus: 14 });
+    await assert.rejects(provision(), {
+      message: "OpenShell workspace initialization failed (gRPC status 14).",
+    });
+    executionError.grpcStatus = "private native output";
+    await assert.rejects(provision(), {
+      message: "OpenShell workspace initialization failed.",
+    });
+    executionError = undefined;
     // A refusal (the runner's exit status 2) repeats on every retry, so Compute fails the
     // deployment at once with WORKSPACE_SETUP_REFUSED (finding 1708).
     exitCode = 2;
@@ -2968,12 +2993,24 @@ for (const harnessId of ["codex", "openclaw"]) {
     await assert.rejects(provision(), /workspace initialization failed/);
     assert.equal(executions.length, before);
 
-    await t.test("the setup wrapper passes the runner's refusal status through", async (t) => {
+    await t.test("setup wrapper preserves initializer diagnostics", async (t) => {
       const root = await temporaryDirectory(t, "openshell-workspace-wrapper-");
       const workspace = join(root, "workspace");
       await mkdir(workspace);
-      const wrapped = (payload, environment = {}) =>
-        spawnSync(process.execPath, ["-e", execution.command[2]], {
+      const wrapped = (payload, environment = {}, runnerExit) => {
+        let program = execution.command[2];
+        if (runnerExit !== undefined) {
+          // Only the nested initializer's result is synthetic; the wrapper and flock run.
+          program =
+            `
+          const childProcess = require("node:child_process");
+          const originalSpawnSync = childProcess.spawnSync;
+          childProcess.spawnSync = (command, ...args) => command === process.execPath
+            ? { status: ${runnerExit}, stdout: "private native output", stderr: "private native output" }
+            : originalSpawnSync(command, ...args);
+        ` + program;
+        }
+        return spawnSync(process.execPath, ["-e", program], {
           input: JSON.stringify(payload),
           encoding: "utf8",
           timeout: 60_000,
@@ -2985,13 +3022,20 @@ for (const harnessId of ["codex", "openclaw"]) {
             OPENCLAW_EXECUTABLE: join(root, "absent-runtime.mjs"),
             ...environment,
           },
-        }).status;
+        });
+      };
       // A completed setup whose workspace has no record refuses on every retry.
       const { files: _files, ...record } = setup;
-      assert.equal(wrapped({ ...record, completed: true }), 2);
+      assert.equal(wrapped({ ...record, completed: true }).status, 2);
       // A missing runtime may be back on a retry; a workspace path the wrapper rejects exits 1.
-      assert.equal(wrapped(setup), 1);
-      assert.equal(wrapped(setup, { OPENCLAW_WORKSPACE_DIR: "relative" }), 1);
+      assert.equal(wrapped(setup).status, 1);
+      assert.equal(wrapped(setup, { OPENCLAW_WORKSPACE_DIR: "relative" }).status, 1);
+      for (const status of [3, 4]) {
+        const result = wrapped(setup, {}, status);
+        assert.equal(result.status, status);
+        assert.equal(result.stdout, "");
+        assert.equal(result.stderr, "");
+      }
     });
 
     if (harnessId === "codex") {

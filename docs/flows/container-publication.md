@@ -103,8 +103,11 @@ use a separately pinned Node 24 Bookworm slim base. Both bases apply available
 Debian package updates when their recipe layers build. The Node digest identifies
 the upstream image; it does not freeze Debian package repositories.
 
-`deploy/runtime/Dockerfile:runtime` disables npm background update checks;
-see [runtime defaults](../../deploy/runtime/README.md).
+The build runs the caller-authority and Gateway recovery tests offline. The final
+image records the patch checksums in its provenance.
+
+The runtime disables npm background update checks. See the
+[runtime defaults](../../deploy/runtime/README.md).
 
 `scripts/build-runtime-assets.mjs` prunes development/QA files and unreachable
 pnpm entries, retaining runtime templates, skills, help, and importer-specific
@@ -116,6 +119,9 @@ package/binary identity. Upstream import-closure and native-addon checks remain;
 see the [runtime recipe](../../deploy/runtime/README.md).
 `org.openclaw.image.revision` must match packaged provenance;
 `org.opencontainers.image.revision` and receipt `sourceSha` identify OCE.
+
+Final image checks require `@openclaw/proc-safe/reaper` to return true from
+`isSupported()`.
 
 ### 2. Verify and assemble both platform variants
 
@@ -240,6 +246,8 @@ owns package-write access and coordination.
 - 2026-10-26 10:23: Read OpenClaw source metadata from one manifest; validate build arguments and provenance. (authoring-run/3032d748-8d18-4cef-a903-f9a72ed8cda9 - 37d28e211ed5831dc201433d36bb23eadd834f6b)
 
 - 2026-10-23 16:52: Select the source's CI base for standalone checks and update OpenClaw for Gateway managed mode. (codex/01a1558e-c27f-7bc0-a403-af59e9364ddf)
+
+- 2026-10-16 22:41: Require the native reaper and caller-authority regression checks. (codex/01a13683-3916-7880-b1a6-27175b853600 - fd21b43ce92dbd44f98fce5fef29489b97d6352c)
 
 - 2026-10-10 03:00: Pin stock Codex 0.163.0-alpha.2; alpha.1 sent metadata the backend rejects. (fix-992-pin)
 

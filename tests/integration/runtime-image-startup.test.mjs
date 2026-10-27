@@ -21,6 +21,7 @@ import {
   REPOSITORY_MATERIAL_INIT_ENTRYPOINT,
   REPOSITORY_NATIVE_GIT_INIT_ENTRYPOINT,
 } from "../../apps/controller/src/drivers/compute/kubernetes/repository-material-init.ts";
+import { GATEWAY_TOOL_POLICY_SOURCE_COMMIT } from "../../apps/controller/src/drivers/compute/gateway-tool-policy.ts";
 import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.mjs";
 import { startCredentialServiceFixture } from "../fixtures/repository-credentials/service.mjs";
 import {
@@ -987,6 +988,8 @@ function run(args, env, readinessUrl, limitMs = startupMs) {
         "none",
         "--volume",
         `${configurationPath}:/etc/openclaw/openclaw.json:ro`,
+        "--volume",
+        `${configurationPath}:/etc/openclaw-managed/openclaw.json:ro`,
         "--entrypoint",
         "node",
         image,
@@ -1755,6 +1758,12 @@ test(
   "runtime image shares Codex 0.163.0-alpha.2 between the plugin and Dedicated command",
   imageTestOptions,
   async () => {
+    const source = await readOpenclawSource();
+    assert.equal(
+      source.commit,
+      GATEWAY_TOOL_POLICY_SOURCE_COMMIT,
+      "expected a policy-qualified runtime",
+    );
     const defaultPluginPolicy = codexRuntimeArtifact({}, []).configuration.plugins;
     const codexExecutableSource = AGENT_RUNTIME_ENTRYPOINT.match(
       /^function codexExecutable\(\) \{\n[\s\S]*?\n\}\n/m,
@@ -1782,11 +1791,15 @@ assert.equal(provenance.sourceArchiveSha256, expectedSource.sourceArchiveSha256)
 assert.equal(provenance.openclawBridgePatchSha256, "2e529593cb72c69be86cf7bb927aa555de50bc7ef923e80b37ba67df9bc1a624");
 assert.equal(Object.hasOwn(provenance, "openclawConnectPatchSha256"), false);
 assert.equal(provenance.codexDependencyPinPatchSha256, "686dcb3fcdd384150845f7af5b5f3bf46b2dc6ee24ab8f5b629b10566e18afd4");
-assert.equal(provenance.openclawRequiredWorkerAuthorityRegressionPatchSha256, "0fda64033083d4db4ba13b823445ded303cdcd4d392ecf0d2413b19f7516bc66");
-// The patches the per-patch fields above omit; runtime-assets.test.mjs checks the full set.
-assert.equal(provenance.patches["openclaw-codex-full-access-profile.patch"], "ce301e59ba9266f7897c472cd54d51f487a4f9ed75034824f48c6839b35e922f");
-assert.equal(provenance.patches["openclaw-control-ui-browser-reconnect.patch"], "6a47120be7057dfbb0efad0096730fbad36db9739f8c9235afd3eed51be35e91");
-assert.equal(Object.keys(provenance.patches).length, 5);
+assert.equal(provenance.openclawRequiredWorkerAuthorityRegressionPatchSha256, "ac7d081a26c23b7e02d7b2c51abb77a7d5d36135eb49a077b5c65bdcae68dd40");
+assert.deepEqual(provenance.patches, {
+  "openclaw-codex-read-only-paths.patch": provenance.openclawBridgePatchSha256,
+  "openclaw-codex-full-access-profile.patch": "ce301e59ba9266f7897c472cd54d51f487a4f9ed75034824f48c6839b35e922f",
+  "stock-codex-0.163.0-alpha.2-dependency-pin.patch": provenance.codexDependencyPinPatchSha256,
+  "openclaw-required-worker-authority-regression.patch": provenance.openclawRequiredWorkerAuthorityRegressionPatchSha256,
+  "openclaw-control-ui-browser-reconnect.patch": "bbd27ee1384129ca00d113b6f2a30477502cce38588054d22d50e53f668eee59",
+  "openclaw-terminated-gateway-namespace.patch": "af52f6ec87e80f35f141c82cfd0e34a73b7ba90bf593fb4889a48b22dea76a11",
+});
 assert.equal(provenance.codex.version, "0.163.0-alpha.2");
 assert.equal(Object.hasOwn(provenance, "codexPatchSha256"), false);
 assert.equal(Object.hasOwn(provenance, "codexVersion"), false);
@@ -1968,7 +1981,7 @@ const deadline = setTimeout(() => {
       "-e",
       script,
       JSON.stringify(defaultPluginPolicy),
-      JSON.stringify(await readOpenclawSource()),
+      JSON.stringify(source),
     ]);
     assert.match(stdout, /shared-codex-0.163.0-alpha.2-ready/);
   },

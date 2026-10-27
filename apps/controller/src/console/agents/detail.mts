@@ -4008,6 +4008,14 @@ export async function renderAgentDetail(
           options?.fresh && permissionsReadSettled && latestPermissionsRead !== openingRead
             ? rereadPermissions()
             : latestPermissionsRead,
+        // The version read is AgentRevision read: a status refusal names that grant only when
+        // this read was refused (finding D753).
+        versionRead: details.then((result) => {
+          if (result && "snapshot" in result) {
+            return true;
+          }
+          return result && requestFailure(result.error).status === 403 ? false : undefined;
+        }),
         // The failed-version recovery stops offering Logs as soon as they are denied.
         onLogsDenied: () => {
           if (tabContext.isCurrent() && !recovery.section.hidden) {

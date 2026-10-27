@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-10-23
-last_updated_session: Codex/01a1558e-c27f-7bc0-a403-af59e9364ddf
+updated: 2026-10-26
+last_updated_session: authoring-run/5da38bb7-602c-4a49-a7f2-863af81abcba
 ---
 
 # Harness Execution Topology Flow
@@ -80,7 +80,8 @@ contains only its OCC identity, credential kind, and opaque Secret reference.
 
 The worker claims version work, rechecks actor/ownership and the frozen Harness,
 then calls `ComputeDriver.prepareRevision`. `apps/controller/src/drivers/compute/runtime-startup.ts:gatewayManagedModeEnvironment`
-supplies controls to the Gateway child after OCE setup.
+supplies native administration controls to the Gateway child after OCE setup.
+Dedicated Gateway launchers apply the model tool policy in both administration modes.
 
 `apps/controller/src/drivers/compute/docker/index.ts:DockerComputeDriver.prepareRevision`
 
@@ -231,19 +232,23 @@ to report its assigned workspace node: a 20-second budget per version and node a
 activation retries, then one status read per retry. That wait and the pairing wait end
 early when other Work is claimable.
 
-On version stop, the Driver allows the pinned Gateway 330 seconds to drain and
-waits for Pod disappearance before stopping the Harness, which finishes active work.
-Idle or pre-OpenClaw shutdown under `tini` completes promptly. Forced termination
-may leave an owner lease blocking replacement until operator-verified recovery.
+On version stop, the Driver gives the Gateway up to 330 seconds to drain. It
+waits for the Gateway Pod to disappear before stopping the Harness, which can
+finish active work. Idle Gateways and wrappers that have yet to start OpenClaw
+exit promptly. After forced termination, the next Gateway needs proof that the
+previous owner stopped before it can take over retained state.
+[Embedded recovery](../guides/topics/agent-troubleshoot.md#an-embedded-gateway-reports-an-unverifiable-state-owner)
+describes when an operator must confirm termination.
 
-Both Gateway modes persist SQLite, media, linked worktrees and common Git metadata
+Both Gateway modes persist SQLite, client credentials, media, linked worktrees and common Git metadata
 on their private claim, preserving session paths across replacement. Embedded Gateways
 retain their default workspace; dedicated Harness claims retain node identity. Claims
 precede Pods for `WaitForFirstConsumer`; [Gateway storage](../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage)
 defines initialization and mounts.
 
-Gateway and Harness share no workspace, session, skill or image mounts. Codex gets
-its Harness path before startup; node pairing enables file-transfer.
+Workspace-file access uses the enrolled Harness node. The Gateway and Harness
+share no workspace, session, skill or image mounts. Codex gets its Harness path
+before startup. Pairing enables file transfer.
 The [storage contract](../reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage)
 covers per-image assets and generated-image return. The node host stores bundles
 in its state and workspaces below `/home/node/workspace`, separate from gateway state,
@@ -305,6 +310,8 @@ owns claim sizes, mounts, StorageClass requirements and final teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-26 23:35: Trace the model tool policy in both Gateway administration modes and recovery after a forced stop. (authoring-run/5da38bb7-602c-4a49-a7f2-863af81abcba - fac7d121c3c582afb53ca49c7d4579e04b5e5ea5)
 
 - 2026-10-23 17:15: Correct forced-termination recovery. (Codex/01a1558e-c27f-7bc0-a403-af59e9364ddf)
 

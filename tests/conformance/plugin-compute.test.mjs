@@ -22,6 +22,7 @@ import {
   gatewayRuntimeEntrypoint,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { startupPhaseHelper } from "../../apps/controller/src/drivers/compute/runtime-startup.ts";
+import { GATEWAY_TOOL_POLICY_SOURCE_COMMIT } from "../../apps/controller/src/drivers/compute/gateway-tool-policy.ts";
 import {
   PLUGIN_RUNTIME_CODEX_CONFIG,
   PLUGIN_RUNTIME_CODEX_CONFIG_ENVIRONMENT,
@@ -52,6 +53,10 @@ const CODEX_ASANA_REMOTE_ID = "plugin_asdk_app_asana";
 const CODEX_ASANA_APP_ID = "asdk_app_asana";
 const PLUGIN_APP_SERVER_TOKEN_DOMAIN = "openclaw-plugin-runtime/app-server-token/v1";
 const nodeRequire = createRequire(import.meta.url);
+const gatewayRuntimeProvenance = JSON.stringify({
+  source: "https://github.com/openclaw/openclaw",
+  commit: GATEWAY_TOOL_POLICY_SOURCE_COMMIT,
+});
 
 function plain(value) {
   return JSON.parse(JSON.stringify(value));
@@ -3406,6 +3411,7 @@ test("Codex gateway supervisor waits for its Harness plugin status without a dea
     }),
   );
   const files = new Map([
+    ["/opt/oce/runtime/provenance.json", gatewayRuntimeProvenance],
     [
       "/etc/openclaw/openclaw.json",
       JSON.stringify({
@@ -3448,6 +3454,7 @@ test("Codex gateway supervisor waits for its Harness plugin status without a dea
   const sandbox = {
     AbortSignal,
     Buffer,
+    structuredClone,
     JSON,
     URL,
     Date: FixtureDate,
@@ -3523,8 +3530,12 @@ test("Codex gateway supervisor waits for its Harness plugin status without a dea
             child = { kill() {}, on() {} };
             return child;
           },
-          spawnSync() {
-            throw new Error("gateway bridge must not run native plugin installers for Codex peers");
+          spawnSync(command, args, options) {
+            // Native image tests separately exercise the real config validator.
+            assert.equal(command, "node");
+            assert.deepEqual(plain(args), ["/app/openclaw.mjs", "config", "validate", "--json"]);
+            assert.equal(options.env.OPENCLAW_CONFIG_READONLY, "1");
+            return { status: 0, stdout: JSON.stringify({ valid: true }) };
           },
         };
       }
@@ -3615,6 +3626,7 @@ async function startCodexGatewaySupervisor(
     signalHandlers: {},
     statusHandler: undefined,
     files: new Map([
+      ["/opt/oce/runtime/provenance.json", gatewayRuntimeProvenance],
       [
         configurationPath,
         JSON.stringify({
@@ -3672,6 +3684,7 @@ async function startCodexGatewaySupervisor(
   const sandbox = {
     AbortSignal,
     Buffer,
+    structuredClone,
     JSON,
     URL,
     console: {
@@ -3807,8 +3820,12 @@ async function startCodexGatewaySupervisor(
             fixture.children.push(child);
             return child;
           },
-          spawnSync() {
-            throw new Error("gateway bridge must not run native plugin installers for Codex peers");
+          spawnSync(command, args, options) {
+            // Native image tests separately exercise the real config validator.
+            assert.equal(command, "node");
+            assert.deepEqual(plain(args), ["/app/openclaw.mjs", "config", "validate", "--json"]);
+            assert.equal(options.env.OPENCLAW_CONFIG_READONLY, "1");
+            return { status: 0, stdout: JSON.stringify({ valid: true }) };
           },
         };
       }
@@ -4277,6 +4294,10 @@ test("Codex gateway supervisor keeps managed-mode restrictions when respawning f
     assert.equal(child.env.OPENCLAW_CONFIG_READONLY, "1");
     assert.equal(child.env.OPENCLAW_DISABLE_GATEWAY_LOCAL_TERMINALS, "1");
     assert.equal(child.env.OPENCLAW_DISABLE_CRON_HOST_EXECUTION, "1");
+    assert.deepEqual(child.config.tools.gatewayPolicy.automations, {
+      scope: "caller",
+      allowCommandJobs: false,
+    });
   }
   assert.equal(second.token, gateway.token("agent-startup-2"));
   assert.equal(
@@ -4580,6 +4601,7 @@ for (const [dedicated, withBroker, proxyEnabled] of [
         : undefined,
     );
     const files = new Map([
+      ["/opt/oce/runtime/provenance.json", gatewayRuntimeProvenance],
       [
         "/etc/openclaw/openclaw.json",
         JSON.stringify({
@@ -4604,6 +4626,7 @@ for (const [dedicated, withBroker, proxyEnabled] of [
     const sandbox = {
       AbortSignal,
       Buffer,
+      structuredClone,
       JSON,
       URL,
       console: { error() {} },
@@ -4666,8 +4689,12 @@ for (const [dedicated, withBroker, proxyEnabled] of [
               child = { kill() {}, on() {} };
               return child;
             },
-            spawnSync() {
-              throw new Error("plugin-free bridge must not run native plugin installers");
+            spawnSync(command, args, options) {
+              assert.equal(dedicated, true);
+              assert.equal(command, "node");
+              assert.deepEqual(plain(args), ["/app/openclaw.mjs", "config", "validate", "--json"]);
+              assert.equal(options.env.OPENCLAW_CONFIG_READONLY, "1");
+              return { status: 0, stdout: JSON.stringify({ valid: true }) };
             },
           };
         }

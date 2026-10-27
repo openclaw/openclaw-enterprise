@@ -24,9 +24,13 @@ Codex and Slack come from that same source. The selected commit contains
 the restricted workspace-node commands and saved-token-first pairing required by
 split storage; published `2026.9.5` packages do not contain that complete contract.
 
-The source pin identifies an OpenClaw source build, not a published release.
-It supports the Gateway-local terminal and Gateway-hosted command-job controls
-used by Gateway managed mode.
+OCE builds an unreleased OpenClaw commit that supports Gateway managed mode
+and the separate tool policy for dedicated Harnesses. Managed mode restricts
+native config writes, Gateway-local terminals and Gateway-hosted command jobs.
+The tool policy limits model turns in both modes. When a child spawns, OpenClaw
+waits for placement started by session creation and rechecks the parent's
+authority before dispatch. The source also preserves shared host-module links
+during plugin capture and handles bundled WebAssembly and directory assets.
 Until [OpenClaw #158724](https://github.com/openclaw/openclaw/pull/158724) or
 an equivalent implementation is available upstream, the build applies its
 `readOnlyPaths` compatibility change as
@@ -46,10 +50,20 @@ the native full-access Codex profile, and
 `openclaw-control-ui-browser-reconnect.patch`, which offers a browser navigation
 after the Control UI's access is refused. Remove each when the pinned OpenClaw
 does the same.
+`openclaw-terminated-gateway-namespace.patch` lets a supervisor that verified a
+private Linux PID namespace stopped recover only Gateway records from that
+namespace. OC still compares its lock fingerprint before recovery. An
+unattributed owner requires operator confirmation.
 The source archive and patch hashes identify the resulting custom build.
 Provenance `patches` maps every patch the Dockerfile applies, in order, to its
 SHA-256; `scripts/build-runtime-assets.mjs` holds that list, and a test checks it
 against the Dockerfile.
+
+Dedicated Gateways require the supporting source recorded in this recipe and
+validate their effective native configuration before starting. The required
+Gateway tool policy covers core dispatch, automation authority and Codex
+dynamic tools. Older or unknown source images remain unready; source checks
+and configuration validation do not replace runtime qualification.
 
 The Codex adapter preserves namespaced IDs with an explicit native
 provider. For a custom endpoint, OCE compiles its private Gateway model references
@@ -163,9 +177,9 @@ checksum-verifying download helper, and both installs read it from a loopback se
 instead of GitHub. When an OpenClaw update changes the locked
 `@matrix-org/matrix-sdk-crypto-nodejs` version, update that stage's version, URL and
 both SHA-256 values. Until then the install fails with a "no pinned file" message.
-The [reviewed upstream Docker assembly](https://github.com/openclaw/openclaw/blob/9cc4450e9d79a993a51dc6fa362468f46c6f1819/Dockerfile)
-shows how plugin-local dependencies can use different versions from core.
-The [source manifest](openclaw-source.json) selects the version OCE builds.
+The [source manifest](openclaw-source.json) selects the commit OCE builds. Its
+[upstream Dockerfile](https://github.com/openclaw/openclaw/blob/cee236c9e9891396a7d672ab016a5e5d9d51a003/Dockerfile)
+keeps plugin dependencies separate when their versions differ from core.
 Plugin chunks emitted directly under `dist` also need package-root resolution.
 The assembly links missing plugin dependencies into that root without replacing
 existing core dependencies.

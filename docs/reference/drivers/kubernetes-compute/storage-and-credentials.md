@@ -58,11 +58,18 @@ writer.
 A stop deletes the Gateway and waits for its Pod to disappear before stopping the
 Harness, which finishes active work meanwhile; a refused candidate's stop deletes
 both at once. The Gateway supervisor and Pod allow up to 330 seconds for the
-pinned runtime's drain and cleanup; idle Gateways exit promptly. Forced termination
-can leave an unverifiable owner lease that blocks the successor. A platform operator
-must confirm the predecessor stopped or fence it before
-[lock recovery](https://github.com/openclaw/openclaw/blob/9cc4450e9d79a993a51dc6fa362468f46c6f1819/docs/cli/gateway/running.md#recover-an-unverifiable-state-lock).
-Age alone cannot authorize takeover.
+pinned runtime's drain and cleanup. Idle Gateways exit promptly. Forced
+termination can leave native Gateway locks and an owner lease on retained state.
+
+If the kubelet restarts an embedded Gateway container in the same Pod, OpenClaw
+can recover locks held by the **first container instance**. Before configurable
+code runs, that instance signs its Pod UID and Linux PID namespace and discards
+the signing key. The replacement uses a read-only public key held in the Pod
+to verify the previous instance, then asks OpenClaw to check every holder.
+This requires OCE's runtime launcher, private container PID namespaces and no
+custom lifecycle environment, additional Secret bindings, or repository tooling.
+Replacing the Pod discards its keys. A later container's locks or a missing
+record also require [operator recovery](../../../guides/topics/agent-troubleshoot.md#an-embedded-gateway-reports-an-unverifiable-state-owner).
 
 Only the Gateway Pod mounts these writable directories, including SQLite
 databases and their WAL/SHM siblings:

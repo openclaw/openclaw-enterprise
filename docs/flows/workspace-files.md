@@ -1,7 +1,7 @@
 ---
 created: 2026-08-31
 updated: 2026-10-26
-last_updated_session: Codex/01a13654-be66-7741-b54f-f8ae80f2d496
+last_updated_session: authoring-run/f4c463b0-af6d-4850-a166-c663a7e78c64
 ---
 
 # Agent Workspace Files Flow
@@ -113,8 +113,10 @@ configuration, arguments and environment; remote output is discarded. The launch
 waits for completion. A workspace `flock` serializes attempts after lost
 acknowledgments. The verifier uses `OPENCLAW_WORKSPACE_DIR` after relocation.
 
-The runner validates identity, paths, OpenClaw `2026.9.9`, and template digest
-against Console defaults; identities must match, and links or conflicts fail.
+The runner validates the setup identity and workspace paths. It rejects symlinks
+and conflicting file contents. On first setup, the installed OpenClaw version must
+match `WORKSPACE_DEFAULTS_VERSION` and the template digest must match
+`WORKSPACE_DEFAULTS_ID`. Both constants live in `packages/contracts/src/workspace-defaults.mjs`.
 Native `setup` initializes workspace/Git without starting Gateway. Kubernetes init
 containers use Gateway resource budgets. Supplied files, including empty strings,
 atomically replace only absent, stock, or already-submitted content. The runner
@@ -126,9 +128,10 @@ Missing or mismatched markers after recorded completion block startup, preservin
 later edits. Errors omit document contents.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:safeRuntimeFailureObservation`
-reports a refusal (exit 2) as `WORKSPACE_SETUP_REFUSED`, failing at once, as
-does `SandboxWorkspaceSetupRefusedError` (OpenShell). Kubernetes restarts other
-failures (`WORKSPACE_SETUP_RETRYING`). `checkedAt` is termination or observation time.
+reports refusals (exit 2) as `WORKSPACE_SETUP_REFUSED`; OpenShell raises
+`SandboxWorkspaceSetupRefusedError`. Kubernetes retries other failures
+(`WORKSPACE_SETUP_RETRYING`). OpenShell reports only RPC status or setup
+exit/timeout. `checkedAt` records termination/observation time.
 
 ### 3. Activation clears staged contents and keeps completion metadata
 
@@ -362,6 +365,8 @@ replays it. Cleanup closes the native client.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-26 22:29: Point workspace setup to the version and template digest it checks. (authoring-run/f4c463b0-af6d-4850-a166-c663a7e78c64 - 855eeed7cb66c8f85b0ad9672d561bf0a825e621)
 
 - 2026-10-26: An Agent with no running version answers `409` instead of `503`. (fix-dogfood-r51)
 

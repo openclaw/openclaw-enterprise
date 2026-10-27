@@ -172,6 +172,7 @@ import { readdirSync } from "node:fs";
 import http from "node:http";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { inflateRawSync } from "node:zlib";
 const { AGENT_READINESS_ENTRYPOINT } = await import(process.argv[1]);
 const wsStore = readdirSync(join(process.cwd(), "node_modules/.pnpm")).find((entry) =>
   entry.startsWith("ws@"),
@@ -685,7 +686,7 @@ function splitEnvironment(entry) {
  * Models only the Docker inspect/create/start/delete boundary over one in-memory container map;
  * reconciliation runs in the real Driver. `createDriver()` returns a fresh Driver on that map.
  */
-function fakeDockerEngine() {
+function fakeDockerEngine(inspectCreated) {
   const containers = new Map();
   const createDriver = () => {
     const driver = new DockerComputeDriver({
@@ -701,10 +702,12 @@ function fakeDockerEngine() {
     driver.request = async (method, path, body) => {
       const url = new URL(path, "http://docker.invalid");
       if (method === "POST" && url.pathname === "/containers/create") {
-        containers.set(url.searchParams.get("name"), {
+        const name = url.searchParams.get("name");
+        const created = {
           Config: structuredClone(body),
           State: { Running: true, Health: { Status: "healthy" } },
-        });
+        };
+        containers.set(name, inspectCreated?.(name, created) ?? created);
         return "";
       }
       const [, name, action] = /^\/containers\/([^/]+)(?:\/(\w+))?$/.exec(url.pathname) ?? [];
@@ -1220,4 +1223,214 @@ test("Docker workspace setup refusals match Kubernetes Compute's and name the se
       `Configuration setting ${setting} must not be true for initial workspace files: Docker Compute writes them after native bootstrap.`,
     );
   }
+});
+
+test("Docker rejects an invalid dedicated Gateway tool policy before engine access", async () => {
+  const driver = new DockerComputeDriver({
+    images: { gateway: "gateway:local", agent: "agent:local" },
+  });
+  let requests = 0;
+  driver.network = async () => {
+    requests += 1;
+    return undefined;
+  };
+  for (const [gatewayPolicy, expected] of [
+    [{ allow: ["plugins"] }, /Gateway administrative tools/],
+    [{ allow: ["message"], actions: { message: ["set-profile"] } }, /reviewed task actions/],
+    [{ allow: ["automations"] }, /actions.automations must list/],
+  ]) {
+    assert.throws(
+      () =>
+        driver.validateWorkspaceSetup(
+          { id: "codex", version: "1.0.0", mode: "dedicated" },
+          { tools: { gatewayPolicy } },
+        ),
+      expected,
+      "Agent admission checks policy when initial workspace files are supplied",
+    );
+    await assert.rejects(
+      () =>
+        driver.prepareRevision({
+          ...dockerGatewayRevision(driver, { tools: { gatewayPolicy } }),
+          harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
+        }),
+      expected,
+    );
+  }
+  assert.equal(requests, 0);
+  await driver.prepareRevision({
+    ...dockerGatewayRevision(driver, { tools: { gatewayPolicy: { allow: [] } } }),
+    harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
+  });
+  assert.equal(requests, 1, "an explicit empty policy is a supported ceiling");
+});
+
+function embeddedRecoveryInspection(volumeName = "agent-state") {
+  const live = {
+    Id: "a".repeat(64),
+    State: { Status: "running", Running: true, Pid: 42, StartedAt: "2026-10-20T12:05:00Z" },
+    Config: { User: "1000:1000", Env: ["NODE_OPTIONS=--require=/tmp/untrusted", "PATH=/tmp"] },
+    HostConfig: {
+      PidMode: "",
+      Privileged: false,
+      ReadonlyRootfs: true,
+      CapDrop: ["ALL"],
+      SecurityOpt: ["no-new-privileges"],
+      Tmpfs: { "/home/node": "", "/tmp": "" },
+    },
+    Mounts: [{ Type: "volume", Name: volumeName, Destination: "/home/node/.openclaw", RW: true }],
+  };
+  const volume = {
+    Name: volumeName,
+    Driver: "local",
+    Scope: "local",
+    CreatedAt: "2026-10-20T12:00:00Z",
+  };
+  const namespace = {
+    platform: "linux",
+    identity: "d64275ef-a30a-4a02-917d-adb75653f494",
+    host: "old-gateway",
+    pidNsInode: "4026533123",
+    pidNsInitStartTicks: 12345,
+  };
+  const execId = "b".repeat(64);
+  const engine = async (method, path, body) => {
+    if (method === "GET" && path === "/volumes/" + volumeName) {
+      return volume;
+    }
+    if (method === "POST" && path.endsWith("/exec")) {
+      assert.equal(body.User, "65534:65534");
+      assert.deepEqual(body.Env, ["NODE_OPTIONS=", "PATH="]);
+      return { Id: execId };
+    }
+    if (method === "POST" && path === "/exec/" + execId + "/start") {
+      return JSON.stringify(namespace);
+    }
+    if (method === "GET" && path === "/exec/" + execId + "/json") {
+      return { Running: false, ExitCode: 0, ContainerID: live.Id };
+    }
+    assert.equal(path, "/containers/" + live.Id + "/json");
+    return live;
+  };
+  const stopped = {
+    ...live,
+    State: {
+      ...live.State,
+      Status: "exited",
+      Running: false,
+      Pid: 0,
+      FinishedAt: "2026-10-20T12:10:00Z",
+    },
+  };
+  return { live, stopped, volume, namespace, engine };
+}
+
+test("embedded recovery requires the observed container incarnation and its original state mounts", async () => {
+  const { observeEmbeddedGateway, terminatedEmbeddedGateway } =
+    await import("../../apps/controller/src/drivers/compute/docker/embedded-gateway-recovery.ts");
+  const { live, stopped, volume, namespace, engine } = embeddedRecoveryInspection();
+  const observed = await observeEmbeddedGateway(engine, live, volume.Name);
+  assert.deepEqual(
+    await terminatedEmbeddedGateway(engine, observed, stopped, volume.Name),
+    namespace,
+  );
+  for (const candidate of [
+    live,
+    { ...stopped, State: { ...stopped.State, StartedAt: "2026-10-20T12:08:00Z" } },
+    { ...stopped, Id: "c".repeat(64) },
+  ]) {
+    assert.equal(
+      await terminatedEmbeddedGateway(engine, observed, candidate, volume.Name),
+      undefined,
+    );
+  }
+  volume.CreatedAt = "2026-10-20T12:10:00Z";
+  assert.equal(await terminatedEmbeddedGateway(engine, observed, stopped, volume.Name), undefined);
+  for (const candidate of [
+    { ...live, HostConfig: { ...live.HostConfig, PidMode: "host" } },
+    { ...live, HostConfig: { ...live.HostConfig, SecurityOpt: [] } },
+    {
+      ...live,
+      Mounts: [
+        ...live.Mounts,
+        { Type: "bind", Destination: "/home/node/.openclaw/state/openclaw.sqlite" },
+      ],
+    },
+    { ...live, HostConfig: { ...live.HostConfig, Tmpfs: { "/usr/local": "" } } },
+  ]) {
+    assert.equal(await observeEmbeddedGateway(assert.fail, candidate, volume.Name), undefined);
+  }
+});
+
+test("Docker dispatches embedded recovery only while Engine can verify the old state volume", async () => {
+  await withModelKey(async () => {
+    for (const unavailable of [undefined, "at removal", "at replacement"]) {
+      let previous;
+      const { containers, createDriver } = fakeDockerEngine((name, created) => {
+        if (previous) {
+          return created;
+        }
+        const state = created.Config.HostConfig.Mounts.find(
+          ({ Target }) => Target === "/home/node/.openclaw",
+        );
+        previous = { name, ...embeddedRecoveryInspection(state.Source) };
+        previous.live.Config.Labels = created.Config.Labels;
+        previous.live.State.Health = created.State.Health;
+        return previous.live;
+      });
+      const driver = createDriver();
+      const revision = dockerGatewayRevision(driver);
+      const workspaceSetup = {
+        id: "existing",
+        namespaceId: tenant.id,
+        agentId: revision.agentId,
+        completed: true,
+      };
+      // The workspace already exists. Exercise normal Gateway creation, observation and replacement.
+      driver.initializeWorkspace = async () => {};
+      const lifecycle = driver.request;
+      let removed = false;
+      driver.request = async (method, path, data) => {
+        if (previous) {
+          const { name, live, volume, engine } = previous;
+          if (method === "POST" && path.startsWith("/containers/" + live.Id + "/stop?")) {
+            // The old Gateway has already exited (304 from Engine).
+            return "";
+          }
+          if (method === "DELETE" && path.startsWith("/containers/" + live.Id + "?")) {
+            removed = containers.delete(name);
+            return "";
+          }
+          if (
+            method === "GET" &&
+            path === "/volumes/" + volume.Name &&
+            !live.State.Running &&
+            unavailable === (removed ? "at replacement" : "at removal")
+          ) {
+            throw new Error("Docker volume inspection failed");
+          }
+          if (path.includes(live.Id) || path.startsWith("/exec/") || path.startsWith("/volumes/")) {
+            return engine(method, path, data);
+          }
+        }
+        return lifecycle(method, path, data);
+      };
+      assert.equal((await driver.prepareRevision(revision, { workspaceSetup })).ready, true);
+      previous.live.State = previous.stopped.State;
+      const successor = { ...revision, revision: 2, id: revision.id + "-replacement" };
+      assert.equal((await driver.prepareRevision(successor, { workspaceSetup })).ready, true);
+      assert.equal(removed, true, "an unavailable recovery proof must not prevent normal removal");
+      const command = containers.get(previous.name).Config.Cmd;
+      const program = inflateRawSync(Buffer.from(command.slice(2).join(""), "base64")).toString(
+        "utf8",
+      );
+      assert.equal(program.includes("--terminated-namespace"), unavailable === undefined);
+      if (unavailable === undefined) {
+        assert.ok(
+          program.includes(JSON.stringify(previous.namespace)),
+          "the preamble carries this exact owner",
+        );
+      }
+    }
+  });
 });

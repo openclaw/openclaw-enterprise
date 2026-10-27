@@ -29,6 +29,12 @@ import { createAuthenticatedControllerRequest } from "../helpers/auth-session.mj
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
+  assertNativeCronRunSucceeded,
+  assertCodexPolicyChild,
+  findCodexPolicyChild,
+  createNativePluginAssertions,
+} from "../helpers/plugin-driver-real.mjs";
+import {
   assertExposedCodexInitializes,
   createOpenShellInstallationConfiguration,
   createOpenShellKubernetesFixture,
@@ -212,6 +218,7 @@ const {
   assertGatewayBootstrapPolicies,
   assertNoSecretBytes,
   requestCodexTurnFromGatewayPod,
+  readCodexThreadFromGatewayPod,
   startGatewayPortForward,
 } = fixture;
 
@@ -310,6 +317,8 @@ async function createScopedController(context, identifier, platformNamespace, ku
             ],
             verbs: ["get", "list", "create", "patch", "delete"],
           },
+          // This fixture identity also serves the Configuration Driver, which replaces ConfigMaps.
+          { apiGroups: [""], resources: ["configmaps"], verbs: ["update"] },
           // As the chart's tenant worker role: a Pod annotation syncs a running Gateway's
           // workspace node at once, and its private status port answers through the Pod proxy.
           { apiGroups: [""], resources: ["pods"], verbs: ["get", "list", "watch", "patch"] },
@@ -1910,7 +1919,7 @@ function createIntegrationSandboxDriverFactory(
               sandboxServiceAccountName: agentSandboxServiceAccount(context),
               exact: context.requirements.workloadIdentity !== undefined,
             });
-            // The production Codex proof hands the real Driver exactly what Compute rendered;
+            // Both production Harness proofs hand the real Driver exactly what Compute rendered;
             // unsupported shapes fail closed before OpenShell creates provider resources.
             return await delegate(
               context.requirements,
@@ -2193,7 +2202,14 @@ function withUnauthorizedTokenSourceDiagnostic(computeDriver, tokenSources) {
 
 async function prepareProductionInstallation(
   context,
-  { harnessId = "codex", controllerPort } = {},
+  {
+    harnessId = "codex",
+    controllerPort,
+    controlUiOrigin,
+    gatewayManagedMode,
+    withOAuthToolSources = true,
+    enableCompatibilityBridges = harnessId === "openclaw",
+  } = {},
 ) {
   const kubeconfig = await validateOpenShellPrerequisites();
   const policyFixtureUrl = process.env.OCC_TEST_OPENSHELL_POLICY_MIGRATION_DATABASE_URL;
@@ -2293,8 +2309,9 @@ async function prepareProductionInstallation(
   configuration.drivers.compute.configuration.network.pluginStatusProxySourceCidrs =
     await apiServerPodProxySourceCidrs();
   if (harnessId === "openclaw") {
-    // scripts/k3d builds this runtime from an OpenClaw source with native worker support.
-    configuration.runtime = { nativeWorkerSupport: "custom-image" };
+    if (enableCompatibilityBridges) {
+      configuration.runtime = { nativeWorkerSupport: "custom-image" };
+    }
     configuration.drivers.compute.configuration.runtime.nativeOpenClawSessionCapacity = 2;
     // The node and two retained session workers share one container; the single-Harness
     // 2 GiB budget OOM-kills the second turn. Keep Compute and Sandbox budgets aligned.
@@ -2304,10 +2321,13 @@ async function prepareProductionInstallation(
     configuration.drivers.compute.configuration.resources.namespace.quota["limits.memory"] = "16Gi";
     configuration.drivers.credential_gateway.configuration.binaries = ["/usr/local/bin/node"];
   }
+  if (!enableCompatibilityBridges) {
+    configuration.drivers.compute.configuration.servicePrincipalCredentials = { mode: "disabled" };
+  }
   // A disposable Keycloak issues OAuth2 tokens over HTTPS signed by a private CA. The Namespace
   // gateway is configured to trust that CA so it can mint and refresh tokens itself.
   const keycloak =
-    harnessId === "codex"
+    harnessId === "codex" && withOAuthToolSources
       ? await startKeycloak({
           context,
           kubectl,
@@ -2357,9 +2377,11 @@ async function prepareProductionInstallation(
   configuration.drivers.compute.configuration.network.gatewayTrustedProxyCidrs =
     workspaceGateway.nativeOptions.gatewayAuth.trustedProxies;
   delete configuration.drivers.compute.configuration.network.gatewayClients;
-  configuration.drivers.sandbox.configuration.policy.filesystem.readWrite.push(
-    "/home/node/.openclaw-node",
-  );
+  if (harnessId === "codex" || enableCompatibilityBridges) {
+    configuration.drivers.sandbox.configuration.policy.filesystem.readWrite.push(
+      "/home/node/.openclaw-node",
+    );
+  }
   // The Sandbox Driver adds each Harness's workspace-node enrollment rule;
   // a second rule for the same host and port is ambiguous.
   configuration.drivers.secret.configuration.authentication = controller.authentication;
@@ -2381,7 +2403,7 @@ async function prepareProductionInstallation(
     OpenShellGateway,
     operatorKubernetes,
     {
-      enableCompatibilityBridges: harnessId === "openclaw",
+      enableCompatibilityBridges,
       ...(keycloak === undefined ? {} : { gatewayTrustPem: keycloak.caPem }),
     },
   );
@@ -2659,23 +2681,28 @@ async function prepareProductionInstallation(
       ? undefined
       : await registerRefreshSources(request, namespaceId, tokenEcho, keycloak, placement);
 
+  const nativeConfiguration =
+    harnessId === "openclaw"
+      ? nativeOpenClawConfiguration(
+          workspaceGateway.nativeOptions.gatewayAuth,
+          controllerPort === undefined
+            ? []
+            : [`http://127.0.0.1:${demoControlUiPort}`, `http://localhost:${demoControlUiPort}`],
+        )
+      : nativeCodexConfiguration(workspaceGateway.nativeOptions.gatewayAuth);
+  if (controlUiOrigin !== undefined) {
+    nativeConfiguration.gateway.controlUi = { enabled: true, allowedOrigins: [controlUiOrigin] };
+  }
   const agentConfiguration = await request("POST", `/namespaces/${namespaceId}/configurations`, {
     kind: "agent",
-    values:
-      harnessId === "openclaw"
-        ? nativeOpenClawConfiguration(
-            workspaceGateway.nativeOptions.gatewayAuth,
-            controllerPort === undefined
-              ? []
-              : [`http://127.0.0.1:${demoControlUiPort}`, `http://localhost:${demoControlUiPort}`],
-          )
-        : nativeCodexConfiguration(workspaceGateway.nativeOptions.gatewayAuth),
+    values: nativeConfiguration,
   });
   assert.equal(agentConfiguration.status, 201, JSON.stringify(agentConfiguration.error));
   const agent = await request("POST", `/namespaces/${namespaceId}/agents`, {
     name: `openshell-${randomUUID()}`,
     configurationId: agentConfiguration.data.id,
     executionMode: "dedicated",
+    ...(gatewayManagedMode === undefined ? {} : { gatewayManagedMode }),
     harnessAuth: { method: "credential_source", sourceId: modelSource.data.id },
     // Console creation includes initial files. Keep this normal setup path in the
     // real Sandbox proof so credential-only fixtures cannot hide delivery gaps.
@@ -2908,14 +2935,87 @@ async function prepareProductionInstallation(
     );
     assertNoProjectedAgentIdentity(harnessPod);
     assertApprovedOpenShellPrivileges(harnessPod);
-  } else {
+  } else if (enableCompatibilityBridges) {
     assertBridgedNativeStateMount(harnessPod);
     await assertBridgedServicePrincipalToken(
       placement,
       harnessPod,
       configuration.drivers.compute.configuration.servicePrincipalCredentials,
     );
-    assertApprovedOpenShellPrivileges(harnessPod, { compatibilityBridge: true });
+    assertApprovedOpenShellPrivileges(harnessPod);
+  } else {
+    assertNoProjectedAgentIdentity(harnessPod);
+    assertApprovedOpenShellPrivileges(harnessPod);
+    const mounts = harnessContainer.volumeMounts ?? [];
+    const environment = harnessContainer.env ?? [];
+    const nodeState = environment.find(({ name }) => name === "OPENCLAW_NODE_STATE_DIR")?.value;
+    assert.match(nodeState ?? "", /^\/sandbox\/\.openclaw-mounts\/[a-f0-9]{16}\/state$/u);
+    const stateMount = mounts.find(({ mountPath }) => `${mountPath}/state` === nodeState);
+    assert.equal(
+      stateMount?.subPath,
+      `workspace-node-${hash(agent.data.id, 12)}-${hash("harness:openclaw", 12)}`,
+    );
+    assert.notEqual(stateMount.readOnly, true);
+    for (const [mountPath, subPath] of [
+      ["/sandbox/enterprise", "workspace"],
+      ["/sandbox/.openclaw-runtime", `openshell-runtime-${hash(deployed.data.id, 16)}`],
+    ]) {
+      const mount = mounts.find((entry) => entry.mountPath === mountPath);
+      assert.equal(mount?.subPath, subPath);
+      assert.notEqual(mount.readOnly, true);
+    }
+    for (const name of ["APP_SERVER_TOKEN", "OPENCLAW_NODE_SETUP_CODE"]) {
+      assert.equal(
+        environment.some((entry) => entry.name === name),
+        false,
+        `native enrollment must use the provider's setup-envelope file without ${name}`,
+      );
+    }
+    // Enrollment still uses the provider's setup file. This separate verifier
+    // authenticates held startup failures without delivering the transport token.
+    assert.deepEqual(
+      environment.filter(({ name }) => name === "APP_TOKEN_SHA"),
+      [
+        {
+          name: "APP_TOKEN_SHA",
+          value: createHash("sha256").update(transport.appServerToken).digest("hex"),
+        },
+      ],
+      "the native failure endpoint must receive exactly its literal transport verifier",
+    );
+    await kubectl(
+      "exec",
+      harnessPod.metadata.name,
+      "-n",
+      placement,
+      "-c",
+      "agent",
+      "--",
+      "test",
+      "-w",
+      nodeState,
+    );
+    const relayPolicy = await resource(
+      "networkpolicy",
+      `allow-gateway-workspace-node-${hash(agent.data.id, 12)}`,
+      gatewayPlacement,
+    );
+    const sandboxId = harnessPod.metadata.labels["openshell.ai/boundary-pair"];
+    assert.ok(sandboxId);
+    assert.deepEqual(
+      relayPolicy.spec.ingress.flatMap(({ from }) => from),
+      [
+        {
+          namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": placement } },
+          podSelector: {
+            matchLabels: {
+              "openshell.ai/sandbox-id": sandboxId,
+              "openshell.ai/boundary-role": "supervisor",
+            },
+          },
+        },
+      ],
+    );
   }
   process.stderr.write(
     "OpenShell integration: approved mounts and privileges verified; checking secret exposure.\n",
@@ -2967,6 +3067,10 @@ async function prepareProductionInstallation(
     modelSecretId: modelSecret.data.id,
     sourceRoleId: sourceRole.data.id,
     controllerUrl,
+    // This is the existing authenticated Envoy route, including the host TLS relay.
+    gatewayAdminUrl: `wss://${workspaceGatewayHostname(workspaceGateway)}:${workspaceGateway.routing.endpointPort}/namespaces/${namespaceId}/agents/${agent.data.id}`,
+    gatewayApiKeySecretName: workspaceGateway.apiKeySecretName,
+    platformNamespace,
     credentials: adminCredentials,
     ...(toolSources === undefined ? {} : { toolSources, tokenEcho }),
     ...(untrustedTls === undefined ? {} : { untrustedTls, untrustedTlsSource }),
@@ -7230,6 +7334,907 @@ assert.match(
 if (demoStatePath !== undefined) {
   assert.equal(selectedHarness, "openclaw", "the OpenShell browser demo requires openclaw.");
 }
+
+// Exercise the regular dedicated Agent path with live inference and a real
+// administrator-origin chat. Direct tools.invoke probes are recorded separately:
+// an unavailable tool in a model response is not an invocation-denial proof.
+test(
+  "OpenShell dedicated Agents enforce Gateway tool policy during normal work",
+  { ...requiresOpenShellK3d, timeout: 2_400_000 },
+  async (context) => {
+    const controlUiOrigin = "http://127.0.0.1";
+    const topology = await prepareProductionInstallation(context, {
+      harnessId: selectedHarness,
+      controlUiOrigin,
+      // An administrator must be able to run the command that the model is denied.
+      gatewayManagedMode: false,
+      withOAuthToolSources: false,
+      enableCompatibilityBridges: false,
+    });
+    const apiSecret = await resource(
+      "secret",
+      topology.gatewayApiKeySecretName,
+      topology.platformNamespace,
+    );
+    const apiKey = Buffer.from(apiSecret.data.occ, "base64").toString();
+    const { GatewayClient } = await import(controllerRequire.resolve("@openclaw/gateway-client"));
+    const connectGateway = async () => {
+      const connected = Promise.withResolvers();
+      // Envoy authenticates the fixture API key and supplies the configured identity.
+      // The Gateway derives controlUiAdmin after authentication; no internal flags
+      // or device-auth exceptions are supplied by this test.
+      const connectedClient = new GatewayClient({
+        url: topology.gatewayAdminUrl,
+        origin: controlUiOrigin,
+        edgeAuthHeaders: { "x-api-key": apiKey },
+        clientName: "openclaw-control-ui",
+        mode: "ui",
+        role: "operator",
+        scopes: [],
+        deviceIdentity: null,
+        onHelloOk: connected.resolve,
+        onConnectError: connected.reject,
+      });
+      context.after(() => connectedClient.stopAndWait());
+      const helloTimeout = setTimeout(
+        () => connected.reject(new Error("Gateway admin connection timed out")),
+        15_000,
+      );
+      connectedClient.start();
+      let hello;
+      try {
+        hello = await connected.promise;
+      } finally {
+        clearTimeout(helloTimeout);
+      }
+      assert.equal(hello.auth?.role, "operator");
+      assert.ok(hello.auth.scopes.includes("operator.admin"));
+      return connectedClient;
+    };
+    let client = await connectGateway();
+    assert.equal(topology.revision.gatewayManagedMode, false);
+    const sessionKey = `agent:main:gateway-policy-${randomUUID()}`;
+    const execPod = async (pod, namespace, args) => ({
+      label: `${namespace}/${pod.metadata.name}`,
+      stdout: await kubectl(
+        "exec",
+        pod.metadata.name,
+        "-n",
+        namespace,
+        "-c",
+        pod === topology.gatewayPod ? "gateway" : "agent",
+        "--",
+        ...args,
+      ),
+    });
+    const native = createNativePluginAssertions({
+      gatewayUrl: async () => {
+        throw new Error("this proof uses authenticated chat.send");
+      },
+      execGateway: (_agent, args) => execPod(topology.gatewayPod, topology.gatewayPlacement, args),
+      execCodex: (_agent, args) => execPod(topology.harnessPod, topology.placement, args),
+      waitFor,
+      proofMode: selectedHarness,
+    });
+    const waitForTurn = async (targetSessionKey, marker, timeoutMs = 600_000) => {
+      return await waitFor(
+        `Gateway policy turn ${marker}`,
+        async () => {
+          const history = await client.request("chat.history", {
+            sessionKey: targetSessionKey,
+            limit: 30,
+          });
+          return history.messages?.some((message) => {
+            if (message.role !== "assistant") {
+              return false;
+            }
+            assert.notEqual(message.stopReason, "error", "the live model turn must complete");
+            const parts = Array.isArray(message.content) ? message.content : [];
+            const text =
+              typeof message.content === "string"
+                ? message.content
+                : parts
+                    .filter((part) => part.type === "text")
+                    .map((part) => part.text)
+                    .join("\n");
+            return (
+              text.includes(marker) &&
+              message.stopReason !== "toolUse" &&
+              !parts.some((part) => part.type === "toolCall")
+            );
+          })
+            ? history
+            : undefined;
+        },
+        timeoutMs,
+      );
+    };
+    const waitForRunCompletion = async (runId, deadline) => {
+      assert.ok(typeof runId === "string" && runId.length > 0);
+      // A transcript terminal can precede accounting. The RPC-owned wait closes
+      // only after dispatch publishes its completed result, including accounting.
+      return waitFor(
+        `Gateway policy run ${runId}`,
+        async () => {
+          const remaining = Math.max(0, deadline - Date.now());
+          const outcome = await client.request(
+            "agent.wait",
+            { runId, timeoutMs: Math.min(3_000, remaining) },
+            { timeoutMs: Math.max(1, remaining) },
+          );
+          assert.equal(outcome.runId, runId);
+          if (
+            ["pending", "timeout"].includes(outcome.status) &&
+            outcome.endedAt === undefined &&
+            outcome.stopReason === undefined
+          ) {
+            return undefined;
+          }
+          assert.equal(outcome.status, "ok", `Gateway policy run ${runId} must succeed`);
+          return outcome;
+        },
+        Math.max(0, deadline - Date.now()),
+      );
+    };
+    const turn = async (prompt, marker) => {
+      const deadline = Date.now() + 600_000;
+      const sent = await client.request("chat.send", {
+        sessionKey,
+        idempotencyKey: randomUUID(),
+        message: `${prompt} End your reply with exactly ${marker}.`,
+      });
+      await waitForRunCompletion(sent.runId, deadline);
+      return waitForTurn(sessionKey, marker, Math.max(0, deadline - Date.now()));
+    };
+    const exists = async (pod, namespace, path) =>
+      JSON.parse(
+        (
+          await execPod(pod, namespace, [
+            "node",
+            "-e",
+            "process.stdout.write(JSON.stringify(require('node:fs').existsSync(process.argv[1])))",
+            path,
+          ])
+        ).stdout,
+      );
+    // The native gpt-6-astra deployment uses Code Mode. Bind its complete program
+    // so a returned value proves this real call rather than model-written JSON.
+    const codeModeCallSpec = (code) => {
+      const codeModeCall = { title: "Gateway policy qualification", code, awaitResults: true };
+      return {
+        prompt: `Call exec exactly once with ${JSON.stringify(codeModeCall)}.`,
+        evidence: { toolName: "exec", codeModeCall },
+      };
+    };
+    const toolCallSpec = (name, args) =>
+      selectedHarness === "openclaw"
+        ? codeModeCallSpec(`return await ${name}(${JSON.stringify(args)});`)
+        : {
+            prompt: `Call ${name} exactly once with ${JSON.stringify(args)}.`,
+            evidence: { toolName: name, expectedArguments: args },
+          };
+    const catalogExpression = ({ present, absent }) =>
+      `catalog.all().filter(tool => ${JSON.stringify([...present, ...absent])}.includes(tool.toolName)).map(tool => ({name: tool.toolName, source: tool.source, callableName: tool.callableName}))`;
+    const proof = {
+      scenarioComplete: false,
+      harness: selectedHarness,
+      revisionId: topology.revision.id,
+      gateway: {
+        uid: topology.gatewayPod.metadata.uid,
+        containers: topology.gatewayPod.status.containerStatuses.map(({ name, imageID }) => ({
+          name,
+          imageID,
+        })),
+      },
+      harnessPod: {
+        uid: topology.harnessPod.metadata.uid,
+        containers: topology.harnessPod.status.containerStatuses.map(({ name, imageID }) => ({
+          name,
+          imageID,
+        })),
+      },
+      caller: "authenticated Control UI operator.admin through Envoy",
+      modelTurns: [],
+      modelProbeOmissions:
+        selectedHarness === "codex"
+          ? [
+              {
+                kind: "command-conversion-denied",
+                reason:
+                  "Source/schema coverage only: Codex's advertised automations schema omits command payloads, and the Gateway adapter validates callback arguments against that schema. This case does not test an invalid model invocation.",
+              },
+            ]
+          : [],
+      directInvocationProbes: [],
+    };
+    // Retain completed-phase evidence even if a later assertion fails.
+    context.after(() => context.diagnostic(JSON.stringify(proof)));
+    // Keep config evidence bounded; never export the native snapshot or credentials.
+    const { config } = await client.request("config.get", {});
+    proof.effectivePolicy = {
+      gatewayPolicy: config.tools?.gatewayPolicy,
+      modelSelectionScope: config.agents?.defaults?.modelSelectionScope,
+      cronTriggersEnabled: config.cron?.triggers?.enabled,
+    };
+    assert.ok(proof.effectivePolicy.gatewayPolicy?.allow?.includes("automations"));
+    assert.equal(proof.effectivePolicy.gatewayPolicy.allow.includes("openclaw"), false);
+    assert.deepEqual(proof.effectivePolicy.gatewayPolicy.automations, {
+      scope: "caller",
+      allowCommandJobs: false,
+    });
+    assert.equal(proof.effectivePolicy.modelSelectionScope, "session");
+    assert.equal(proof.effectivePolicy.cronTriggersEnabled, false);
+    // Image IDs above join these launched binaries to the candidate's source receipt.
+    proof.gatewayVersion = (
+      await execPod(topology.gatewayPod, topology.gatewayPlacement, ["openclaw", "--version"])
+    ).stdout.trim();
+    proof.harnessVersion = (
+      await execPod(topology.harnessPod, topology.placement, [
+        selectedHarness === "codex" ? "codex" : "openclaw",
+        "--version",
+      ])
+    ).stdout.trim();
+    const taskMarker = `TASK-${randomUUID()}`;
+    const taskPath = `/tmp/${taskMarker}`;
+    const taskCommand = `node -e ${JSON.stringify(`require('node:fs').writeFileSync('${taskPath}',require('node:os').hostname());console.log('${taskMarker}')`)}`;
+    const nativeTask = toolCallSpec("exec", { command: taskCommand, awaitResults: true });
+    await turn(
+      selectedHarness === "openclaw"
+        ? nativeTask.prompt
+        : `Use your shell tool to run ${taskCommand}. Report the real tool output.`,
+      taskMarker,
+    );
+    const taskEvidence = await native.assertSessionToolCallEvidence(topology.agent, {
+      sessionKey,
+      turnMarker: taskMarker,
+      ...(selectedHarness === "openclaw" ? nativeTask.evidence : { toolName: "bash" }),
+      resultPattern: taskMarker,
+      ...(selectedHarness === "openclaw" ? { expectedExitCode: 0 } : {}),
+    });
+    const taskHost = (
+      await execPod(topology.harnessPod, topology.placement, [
+        "node",
+        "-e",
+        "process.stdout.write(require('node:fs').readFileSync(process.argv[1],'utf8'))",
+        taskPath,
+      ])
+    ).stdout;
+    assert.equal(taskHost, topology.harnessPod.metadata.name);
+    assert.equal(await exists(topology.gatewayPod, topology.gatewayPlacement, taskPath), false);
+    proof.modelTurns.push({
+      ...taskEvidence,
+      kind: "workspace-task",
+      sessionKey,
+      marker: taskMarker,
+      executedOnHarnessPod: true,
+    });
+
+    const scheduledMarker = `SCHEDULED-${randomUUID()}`;
+    const scheduledCall = toolCallSpec("agents_list", {});
+    const name = `policy-schedule-${randomUUID()}`;
+    const jobDefinition = {
+      name,
+      enabled: false,
+      schedule: { kind: "every", everyMs: 86_400_000 },
+      sessionTarget: "isolated",
+      wakeMode: "now",
+      payload: {
+        kind: "agentTurn",
+        message: `${scheduledCall.prompt} Then reply with ${scheduledMarker}.`,
+        toolsAllow: ["agents_list"],
+      },
+      delivery: { mode: "none" },
+    };
+    const createMarker = `CREATE-${randomUUID()}`;
+    const createCall = toolCallSpec("automations", { action: "add", job: jobDefinition });
+    await turn(createCall.prompt, createMarker);
+    await native.assertSessionToolCallEvidence(topology.agent, {
+      sessionKey,
+      turnMarker: createMarker,
+      ...createCall.evidence,
+      resultPattern: name,
+    });
+    const listed = await client.request("cron.list", { includeDisabled: true });
+    const job = listed.jobs.find((candidate) => candidate.name === name);
+    assert.ok(job, "the model must create the scoped ordinary job");
+    assert.equal(job.enabled, false);
+    assert.deepEqual(job.payload.toolsAllow, ["agents_list"]);
+    assert.equal(job.owner?.agentId, "main");
+    assert.equal(job.owner?.sessionKey, sessionKey);
+    const updatedName = `policy-updated-${randomUUID()}`;
+    const updateMarker = `UPDATE-${randomUUID()}`;
+    const ordinaryUpdate = { action: "update", jobId: job.id, job: { name: updatedName } };
+    const updateCall = toolCallSpec("automations", ordinaryUpdate);
+    await turn(updateCall.prompt + " Do not change any other job fields.", updateMarker);
+    const updateEvidence = await native.assertSessionToolCallEvidence(topology.agent, {
+      sessionKey,
+      turnMarker: updateMarker,
+      ...updateCall.evidence,
+      resultPattern: updatedName,
+    });
+    const updatedJob = await client.request("cron.get", { id: job.id });
+    assert.equal(updatedJob.name, updatedName);
+    assert.deepEqual(updatedJob.owner, job.owner);
+    assert.deepEqual(updatedJob.payload, job.payload);
+    proof.modelTurns.push({ kind: "scoped-update", ...updateEvidence, jobId: job.id });
+    const runMarker = `RUN-${randomUUID()}`;
+    const runCall = toolCallSpec("automations", { action: "run", runMode: "force", jobId: job.id });
+    await turn(runCall.prompt + " Do not create another job.", runMarker);
+    await native.assertSessionToolCallEvidence(topology.agent, {
+      sessionKey,
+      turnMarker: runMarker,
+      ...runCall.evidence,
+      resultPattern: "runId",
+    });
+    const run = await waitFor(
+      "scheduled Agent task completion",
+      async () => {
+        const result = await client.request("cron.runs", { id: job.id, limit: 10 });
+        return result.entries?.find(
+          (entry) => entry.status === "ok" && entry.summary?.includes(scheduledMarker),
+        );
+      },
+      600_000,
+    );
+    assert.ok(run.sessionKey, "scheduled execution must retain its actual session identity");
+    const runKeyParts = run.sessionKey.split(":");
+    assert.deepEqual(runKeyParts.slice(0, -1), ["agent", "main", "cron", job.id, "run"]);
+    assert.ok(runKeyParts.at(-1), "the cron run key must retain its initial session identity");
+    assert.ok(typeof run.sessionId === "string" && run.sessionId.length > 0);
+    // Cron removes the run alias after persisting the stable row. Its final session ID may rotate.
+    const scheduledSessionKey = `agent:main:cron:${job.id}`;
+    const scheduledEvidence = await native.assertSessionToolCallEvidence(topology.agent, {
+      sessionKey: scheduledSessionKey,
+      turnMarker: scheduledMarker,
+      ...scheduledCall.evidence,
+      resultPattern: "main",
+    });
+    assert.equal(
+      scheduledEvidence.sessionId,
+      run.sessionId,
+      "the persisted transcript must belong to this completed cron run",
+    );
+    proof.modelTurns.push({
+      kind: "scoped-schedule",
+      sessionKey,
+      jobId: job.id,
+      scheduledSessionKey: run.sessionKey,
+      persistedSessionKey: scheduledSessionKey,
+      scheduledEvidence,
+    });
+
+    const foreignJob = await client.request("cron.add", {
+      ...jobDefinition,
+      name: `foreign-${randomUUID()}`,
+      owner: {
+        agentId: "main",
+        sessionKey: `agent:main:foreign-${randomUUID()}`,
+        accountId: `foreign-${randomUUID()}`,
+      },
+    });
+    const foreignBefore = await client.request("cron.get", { id: foreignJob.id });
+    const foreignMarker = `FOREIGN-${randomUUID()}`;
+    const foreignCall = toolCallSpec("automations", {
+      action: "update",
+      jobId: foreignJob.id,
+      job: { name: "model-must-not-set-this" },
+    });
+    await turn(
+      foreignCall.prompt + " Report the returned error; do not retry or use another interface.",
+      foreignMarker,
+    );
+    const foreignEvidence = await native.assertSessionToolPolicyDeniedEvidence(topology.agent, {
+      sessionKey,
+      turnMarker: foreignMarker,
+      ...foreignCall.evidence,
+      resultPattern: `Automation not found: ${foreignJob.id}`,
+    });
+    assert.deepEqual(await client.request("cron.get", { id: foreignJob.id }), foreignBefore);
+    await client.request("cron.update", {
+      id: foreignJob.id,
+      patch: { name: "human-admin-update" },
+    });
+    const foreignAfter = await client.request("cron.get", { id: foreignJob.id });
+    assert.equal(foreignAfter.name, "human-admin-update");
+    proof.modelTurns.push({
+      kind: "foreign-job-denied",
+      ...foreignEvidence,
+      jobId: foreignJob.id,
+      rejectingOwner: "caller scope",
+      unchangedAfterModel: true,
+      humanUpdateSucceeded: true,
+    });
+
+    const commandPath = `/tmp/DENIED-COMMAND-${randomUUID()}`;
+    const commandPayload = {
+      kind: "command",
+      argv: ["node", "-e", `require('node:fs').writeFileSync('${commandPath}','denied-command')`],
+      toolsAllow: [],
+    };
+    const ordinaryBefore = await client.request("cron.get", { id: job.id });
+    const updateProbes = [
+      [
+        "cross-agent-session-target-denied",
+        { sessionTarget: `session:agent:outside-${randomUUID()}:main` },
+        "session target outside caller scope",
+      ],
+    ];
+    // Code Mode can submit these exact arguments to its real callable. Codex's
+    // schema omits command payloads; its invalid-input coverage remains source-only.
+    if (selectedHarness === "openclaw") {
+      updateProbes.unshift([
+        "command-conversion-denied",
+        { payload: commandPayload },
+        ["automation command payloads cannot be created or edited", "job.payload.kind:"],
+      ]);
+    }
+    for (const [kind, patch, resultPattern] of updateProbes) {
+      const marker = `UPDATE-DENIED-${randomUUID()}`;
+      const args = { action: "update", jobId: job.id, job: patch };
+      const invocation = toolCallSpec("automations", args);
+      await turn(
+        invocation.prompt + " Report the returned error; do not retry or use another interface.",
+        marker,
+      );
+      const evidence = await native.assertSessionToolPolicyDeniedEvidence(topology.agent, {
+        sessionKey,
+        turnMarker: marker,
+        ...invocation.evidence,
+        resultPattern,
+      });
+      assert.deepEqual(await client.request("cron.get", { id: job.id }), ordinaryBefore);
+      assert.equal(
+        await exists(topology.gatewayPod, topology.gatewayPlacement, commandPath),
+        false,
+      );
+      proof.modelTurns.push({ kind, ...evidence, jobId: job.id, unchangedAfterModel: true });
+    }
+
+    const childMarker = `CHILD-${randomUUID()}`;
+    const spawnMarker = `SPAWN-${randomUUID()}`;
+    if (selectedHarness === "openclaw") {
+      const childLabel = `policy-child-${randomUUID()}`;
+      const childResult = `OC-CHILD-${randomUUID()}`;
+      // Child exclusions and Gateway policy must also remove deferred catalog entries.
+      const intrinsicChildExclusions = ["agents_list", "automations"];
+      const administrativeCatalogWithholding = [
+        "gateway",
+        "plugins",
+        "openclaw",
+        "nodes",
+        "terminal",
+        "secrets",
+        "gateway_exec",
+        "gateway_process",
+      ];
+      const childExclusions = [...intrinsicChildExclusions, ...administrativeCatalogWithholding];
+      const childCatalog = { present: ["read"], absent: childExclusions };
+      const childProgram = codeModeCallSpec(
+        `const command = await exec(${JSON.stringify({ command: `node -e ${JSON.stringify(`console.log(6*7, "${childResult}")`)}`, awaitResults: true })}); return {...command, catalog: ${catalogExpression(childCatalog)}};`,
+      );
+      const childTask = `${childProgram.prompt} Inspect the returned command and admitted catalog. Do not use another interface. End your reply with exactly ${childMarker}.`;
+      const spawnCall = toolCallSpec("sessions_spawn", { label: childLabel, task: childTask });
+      const spawnHistory = await turn(
+        spawnCall.prompt + " Do not perform its task yourself.",
+        spawnMarker,
+      );
+      const spawnEvidence = await native.assertSessionToolCallEvidence(topology.agent, {
+        sessionKey,
+        turnMarker: spawnMarker,
+        ...spawnCall.evidence,
+        resultPattern: "accepted",
+      });
+      const spawnResultMessage = spawnHistory.messages.find(
+        (message) =>
+          message.role === "toolResult" && message.toolCallId === spawnEvidence.toolCallId,
+      );
+      assert.ok(spawnResultMessage, "history must retain the successful spawn result");
+      assert.notEqual(spawnResultMessage.__openclaw?.truncated, true);
+      const spawnEnvelope = JSON.parse(
+        spawnResultMessage.content
+          .filter((part) => part.type === "text")
+          .map((part) => part.text)
+          .join("\n"),
+      );
+      // History retains tool JSON content but projects away arbitrary result details.
+      const accepted = spawnEnvelope.value;
+      assert.equal(accepted.status, "accepted");
+      assert.ok(
+        typeof accepted.childSessionKey === "string" && accepted.childSessionKey.length > 0,
+      );
+      const childDeadline = Date.now() + 600_000;
+      await waitForRunCompletion(accepted.runId, childDeadline);
+      const child = await waitFor(
+        "the labeled child of the tested parent",
+        async () => {
+          const listed = await client.request("sessions.list", {
+            spawnedBy: sessionKey,
+            label: childLabel,
+          });
+          const matches = listed.sessions?.filter((entry) => entry.label === childLabel) ?? [];
+          assert.ok(matches.length <= 1, "the parent must create exactly one labeled child");
+          return matches[0];
+        },
+        Math.max(0, childDeadline - Date.now()),
+      );
+      assert.notEqual(child.key, sessionKey);
+      assert.equal(child.key, accepted.childSessionKey);
+      await waitForTurn(child.key, childMarker, Math.max(0, childDeadline - Date.now()));
+      const allowed = await native.assertSessionToolCallEvidence(topology.agent, {
+        sessionKey: child.key,
+        turnMarker: childMarker,
+        ...childProgram.evidence,
+        resultPattern: `42 ${childResult}`,
+        expectedExitCode: 0,
+        expectedCatalog: childCatalog,
+      });
+      // The exact program inspects the actual complete catalog. Outer exec-only
+      // transcripts cannot establish that an arbitrary nested tool was never called.
+      assert.deepEqual(await client.request("cron.get", { id: foreignJob.id }), foreignAfter);
+      proof.modelTurns.push({
+        kind: "child-capability-withholding",
+        parentSessionKey: sessionKey,
+        childSessionKey: child.key,
+        childRunId: accepted.runId,
+        spawnEvidence,
+        allowed,
+        intrinsicChildExclusions,
+        administrativeCatalogWithholding,
+        admittedCatalog: allowed.catalog,
+        foreignJobUnchanged: true,
+      });
+    } else {
+      const childResult = `NATIVE-CHILD-${randomUUID()}`;
+      await turn(
+        `Use the advertised native spawn_agent schema to create exactly one fresh child with no inherited conversation. Discover the tool if needed. Give the child this task: use a native shell tool to execute node -e 'console.log(6*7, "${childResult}")', verify the output is 42 followed by that marker, then reply with exactly ${childMarker}. Wait for completion before replying. Do not run the command in the parent or ask the child to use Gateway tools.`,
+        spawnMarker,
+      );
+      const binding = await native.readCodexSessionBinding(topology.agent, { sessionKey });
+      const parent = await readCodexThreadFromGatewayPod({
+        namespace: topology.gatewayPlacement,
+        gatewayPod: topology.gatewayPod.metadata.name,
+        threadId: binding.threadId,
+      });
+      const childId = findCodexPolicyChild(parent, childMarker);
+      const child = await waitFor(
+        "completed fresh native Codex child",
+        async () => {
+          const observed = await readCodexThreadFromGatewayPod({
+            namespace: topology.gatewayPlacement,
+            gatewayPod: topology.gatewayPod.metadata.name,
+            threadId: childId,
+          });
+          return observed.turns?.some(
+            (turn) =>
+              turn.status === "completed" &&
+              turn.items.some(
+                (item) => item.type === "agentMessage" && item.text.includes(childMarker),
+              ),
+          )
+            ? observed
+            : undefined;
+        },
+        600_000,
+      );
+      const parentMetadata = await native.readCodexThreadMetadata(topology.agent, parent);
+      const childMetadata = await native.readCodexThreadMetadata(topology.agent, child);
+      proof.modelTurns.push({
+        kind: "fresh-native-child",
+        ...assertCodexPolicyChild({
+          parent,
+          child,
+          parentMetadata,
+          childMetadata,
+          childMarker,
+          childResult,
+        }),
+      });
+    }
+
+    await client.request("cron.update", {
+      id: job.id,
+      patch: { payload: commandPayload },
+    });
+    const commandBefore = await client.request("cron.get", { id: job.id });
+    assert.deepEqual(commandBefore.owner, job.owner);
+    assert.equal(commandBefore.enabled, false);
+    const commandEvidence = [];
+    // Command jobs are operator-only even when they retain this model caller's owner.
+    for (const [kind, operation] of [
+      [
+        "kind-less-command-update-denied",
+        { action: "update", job: { payload: { timeoutSeconds: 1 } } },
+      ],
+      ["command-enable-denied", { action: "update", job: { enabled: true } }],
+      ["command-run-denied", { action: "run" }],
+    ]) {
+      const marker = `COMMAND-${randomUUID()}`;
+      const args = { ...operation, jobId: job.id };
+      const invocation = toolCallSpec("automations", args);
+      context.diagnostic(`Gateway command-job probe: ${kind}`);
+      await turn(
+        invocation.prompt + " Report the returned error; do not retry or use another interface.",
+        marker,
+      );
+      const evidence = await native.assertSessionToolPolicyDeniedEvidence(topology.agent, {
+        sessionKey,
+        turnMarker: marker,
+        ...invocation.evidence,
+        // Update preflights use cron.get's legacy CLI wording; run does not.
+        resultPattern:
+          operation.action === "update"
+            ? `cron job not found: ${job.id}`
+            : `Automation not found: ${job.id}`,
+      });
+      assert.deepEqual(await client.request("cron.get", { id: job.id }), commandBefore);
+      assert.equal(
+        await exists(topology.gatewayPod, topology.gatewayPlacement, commandPath),
+        false,
+      );
+      commandEvidence.push({ kind, ...evidence });
+    }
+    const humanCommandMarker = `HUMAN-COMMAND-${randomUUID()}`;
+    const humanCommandPath = `/tmp/${humanCommandMarker}`;
+    const humanCommandJob = await client.request("cron.add", {
+      ...jobDefinition,
+      name: `human-command-${randomUUID()}`,
+      payload: {
+        kind: "command",
+        argv: [
+          "node",
+          "-e",
+          `require('node:fs').writeFileSync('${humanCommandPath}','${humanCommandMarker}')`,
+        ],
+        toolsAllow: [],
+      },
+    });
+    const humanCommandRun = await assertNativeCronRunSucceeded({
+      request: (method, params) => client.request(method, params),
+      waitFor,
+      jobId: humanCommandJob.id,
+    });
+    assert.equal(
+      (
+        await execPod(topology.gatewayPod, topology.gatewayPlacement, [
+          "node",
+          "-e",
+          "process.stdout.write(require('node:fs').readFileSync(process.argv[1],'utf8'))",
+          humanCommandPath,
+        ])
+      ).stdout,
+      humanCommandMarker,
+    );
+    assert.equal(await exists(topology.gatewayPod, topology.gatewayPlacement, commandPath), false);
+    assert.deepEqual(await client.request("cron.get", { id: job.id }), commandBefore);
+    proof.modelTurns.push({
+      kind: "command-run-denied",
+      ...commandEvidence.at(-1),
+      additionalChecks: commandEvidence.slice(0, -1),
+      jobId: job.id,
+      rejectingOwner: "caller scope",
+      unchangedAfterModel: true,
+      humanCommandSucceeded: true,
+      humanCommandRun: { ...humanCommandRun, marker: humanCommandMarker },
+      deniedMarkerAbsentAfterControl: true,
+    });
+
+    const password = await diagnosticGatewayPassword(topology);
+    const forwarding = await startGatewayPortForward(
+      topology.gatewayPlacement,
+      openShellGatewayName(topology.agent.id),
+    );
+    context.after(() => forwarding.stop());
+    for (const [tool, args, expectedStatus] of [
+      ["openclaw", {}, 404],
+      [
+        "message",
+        { action: "set-profile", channel: "matrix", displayName: "must-not-change" },
+        403,
+      ],
+    ]) {
+      const response = await fetch(`${forwarding.url}/tools/invoke`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${password}`, "content-type": "application/json" },
+        body: JSON.stringify({ tool, args, sessionKey }),
+      });
+      const result = await response.json();
+      assert.equal(response.status, expectedStatus);
+      if (expectedStatus === 403) {
+        assert.match(result.error?.message ?? "", /Gateway tool policy denies/);
+      }
+      proof.directInvocationProbes.push({ tool, action: args.action, status: response.status });
+    }
+    const beforeMarker = `BEFORE-REDEPLOY-${randomUUID()}`;
+    const beforeCall = toolCallSpec("agents_list", {});
+    const beforeHistory = await turn(beforeCall.prompt, beforeMarker);
+    await native.assertSessionToolCallEvidence(topology.agent, {
+      sessionKey,
+      turnMarker: beforeMarker,
+      ...beforeCall.evidence,
+      resultPattern: "main",
+    });
+    assert.ok(typeof beforeHistory.sessionId === "string" && beforeHistory.sessionId.length > 0);
+    const beforeBinding =
+      selectedHarness === "codex"
+        ? await native.readCodexSessionBinding(topology.agent, { sessionKey })
+        : undefined;
+    const oldRevisionId = topology.revision.id;
+    const oldHarnessUid = topology.harnessPod.metadata.uid;
+    const oldGatewayUid = topology.gatewayPod.metadata.uid;
+    const configPath = `/namespaces/${topology.namespaceId}/configurations/${topology.agent.configurationId}`;
+    const source = await topology.request("GET", configPath);
+    assert.equal(source.status, 200, JSON.stringify(source.error));
+    const values = structuredClone(source.data.values);
+    values.tools ??= {};
+    values.tools.gatewayPolicy = {
+      ...structuredClone(proof.effectivePolicy.gatewayPolicy),
+      allow: proof.effectivePolicy.gatewayPolicy.allow.filter((name) => name !== "agents_list"),
+    };
+    const updated = await topology.request("PATCH", configPath, { values });
+    assert.equal(updated.status, 200, JSON.stringify(updated.error));
+    await client.stopAndWait();
+    await forwarding.stop();
+    const agentPath = `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}`;
+    const managed = await topology.request("PATCH", agentPath, { gatewayManagedMode: true });
+    assert.equal(managed.status, 200, JSON.stringify(managed.error));
+    const redeployed = await topology.request("POST", `${agentPath}/deploy`);
+    assert.equal(redeployed.status, 202, JSON.stringify(redeployed.error));
+    assert.equal(redeployed.data.gatewayManagedMode, true);
+    assert.notEqual(redeployed.data.id, oldRevisionId);
+    assert.equal(redeployed.data.configurationGeneration, updated.data.generation);
+    await waitFor("narrower Gateway policy revision activation", async () => {
+      const observed = await topology.request("GET", agentPath);
+      assert.equal(observed.status, 200, JSON.stringify(observed.error));
+      const status = await topology.request(
+        "GET",
+        `${agentPath}/deployments/${redeployed.data.id}`,
+      );
+      assert.equal(status.status, 200, JSON.stringify(status.error));
+      assert.notEqual(status.data.status, "failed", "the policy replacement must activate");
+      return observed.data.activeRevisionId === redeployed.data.id || undefined;
+    });
+    topology.harnessPod = await waitForProviderHarnessPod(topology.placement, redeployed.data);
+    topology.gatewayPod = await waitFor("the replacement Agent Gateway Pod", async () => {
+      const pod = await resource(
+        "pod",
+        await currentGatewayPod(topology),
+        topology.gatewayPlacement,
+      );
+      return pod.metadata.uid !== oldGatewayUid &&
+        pod.status?.conditions?.some(
+          (condition) => condition.type === "Ready" && condition.status === "True",
+        )
+        ? pod
+        : undefined;
+    });
+    topology.revision = redeployed.data;
+    assert.notEqual(topology.harnessPod.metadata.uid, oldHarnessUid);
+    assert.notEqual(topology.gatewayPod.metadata.uid, oldGatewayUid);
+    await waitFor("the old policy Sandbox retirement", async () => {
+      const sandboxes = await fixture.customResources(
+        "sandboxes.agents.x-k8s.io",
+        topology.placement,
+      );
+      return (
+        !sandboxes.some(
+          (sandbox) =>
+            sandbox.metadata.labels?.["openshell.ai/sandbox-name"] ===
+            `os-${hash(oldRevisionId, 16)}`,
+        ) || undefined
+      );
+    });
+    client = await connectGateway();
+    const currentConfig = await client.request("config.get", {});
+    assert.deepEqual(currentConfig.config.tools.gatewayPolicy, values.tools.gatewayPolicy);
+    await assert.rejects(
+      client.request("cron.run", { id: humanCommandJob.id, mode: "force" }),
+      /OPENCLAW_DISABLE_CRON_HOST_EXECUTION/,
+    );
+    const restored = await client.request("chat.history", { sessionKey, limit: 30 });
+    assert.equal(restored.sessionId, beforeHistory.sessionId);
+    assert.ok(
+      JSON.stringify(restored.messages).includes(beforeMarker),
+      "the original conversation history must survive redeployment",
+    );
+    const afterMarker = `AFTER-REDEPLOY-${randomUUID()}`;
+    const afterCatalog = { present: ["read"], absent: ["agents_list"] };
+    const afterList = toolCallSpec("automations", { action: "list" });
+    const afterCatalogCall = codeModeCallSpec(
+      `return {catalog: ${catalogExpression(afterCatalog)}};`,
+    );
+    const afterHistory = await turn(
+      selectedHarness === "openclaw"
+        ? `${afterCatalogCall.prompt} Then ${afterList.prompt}`
+        : "If your tool interface still exposes agents_list, invoke it exactly once and report its refusal. Do not use another interface or substitute tool. Then call automations with action=list exactly once.",
+      afterMarker,
+    );
+    assert.equal(afterHistory.sessionId, beforeHistory.sessionId);
+    await native.assertSessionToolCallEvidence(topology.agent, {
+      sessionKey,
+      turnMarker: afterMarker,
+      ...afterList.evidence,
+      resultPattern: "jobs",
+    });
+    const afterSearch =
+      selectedHarness === "openclaw"
+        ? await native.assertSessionToolCallEvidence(topology.agent, {
+            sessionKey,
+            turnMarker: afterMarker,
+            ...afterCatalogCall.evidence,
+            expectedCatalog: afterCatalog,
+          })
+        : undefined;
+    let afterBinding;
+    let retainedDeclaration = false;
+    if (selectedHarness === "codex") {
+      afterBinding = await native.readCodexSessionBinding(topology.agent, { sessionKey });
+      const thread = await readCodexThreadFromGatewayPod({
+        namespace: topology.gatewayPlacement,
+        gatewayPod: topology.gatewayPod.metadata.name,
+        threadId: afterBinding.threadId,
+      });
+      const metadata = await native.readCodexThreadMetadata(topology.agent, thread);
+      retainedDeclaration = metadata.tools.some((tool) => tool.name === "agents_list");
+    }
+    if (retainedDeclaration) {
+      await native.assertSessionToolPolicyDeniedEvidence(topology.agent, {
+        sessionKey,
+        turnMarker: afterMarker,
+        toolName: "agents_list",
+        expectedArguments: {},
+        resultPattern: "OpenClaw tool is not available for this turn: agents_list",
+      });
+    } else if (selectedHarness === "codex") {
+      await native.assertNoSessionToolCallEvidence(topology.agent, {
+        sessionKey,
+        turnMarker: afterMarker,
+        toolName: "agents_list",
+      });
+    }
+    const afterForwarding = await startGatewayPortForward(
+      topology.gatewayPlacement,
+      openShellGatewayName(topology.agent.id),
+    );
+    context.after(() => afterForwarding.stop());
+    const removed = await fetch(`${afterForwarding.url}/tools/invoke`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${await diagnosticGatewayPassword(topology)}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ tool: "agents_list", args: {}, sessionKey }),
+    });
+    assert.equal(removed.status, 404);
+    proof.directInvocationProbes.push({
+      tool: "agents_list",
+      status: removed.status,
+      afterRedeploy: true,
+    });
+    proof.redeployment = {
+      previousRevisionId: oldRevisionId,
+      revisionId: topology.revision.id,
+      sessionKey,
+      sessionId: afterHistory.sessionId,
+      historyPreserved: true,
+      ...(beforeBinding === undefined
+        ? {}
+        : {
+            previousNativeThreadId: beforeBinding.threadId,
+            nativeThreadId: afterBinding.threadId,
+            nativeThreadOutcome:
+              beforeBinding.threadId === afterBinding.threadId ? "retained" : "reconstructed",
+          }),
+      removedToolEvidence: retainedDeclaration
+        ? "actual callback denied"
+        : afterSearch
+          ? "direct schema absent; exact deferred discovery withheld; no model call"
+          : "catalog omitted; no model call",
+      ...(afterSearch ? { catalogSearch: afterSearch } : {}),
+      allowedGatewayOperationSucceeded: true,
+    };
+    proof.scenarioComplete = true;
+  },
+);
 
 test(
   networkPolicyOnly

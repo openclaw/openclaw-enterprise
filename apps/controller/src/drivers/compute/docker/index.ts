@@ -40,6 +40,14 @@ import {
   PLUGIN_RUNTIME_HELPERS,
 } from "../kubernetes/runtime-entrypoints.ts";
 import {
+  embeddedGatewayVolumeInstance,
+  observeEmbeddedGateway,
+  terminatedEmbeddedGateway,
+  type EmbeddedContainerInspect,
+  type ObservedEmbeddedGateway,
+} from "./embedded-gateway-recovery.ts";
+import { embeddedGatewayRecoveryPreamble } from "../embedded-gateway-owner.ts";
+import {
   gatewayManagedModeEnvironment,
   gatewayStateMigrationHelper,
   startupPhaseHelper,
@@ -55,6 +63,10 @@ import {
   validatePlaintextNativeGateway,
   validateRoutableNativeListener,
 } from "../native-gateway-transport.ts";
+import {
+  GATEWAY_TOOL_POLICY_RUNTIME,
+  managedGatewayConfiguration,
+} from "../gateway-tool-policy.ts";
 import { validateCodexApprovalPolicySetting } from "../../../gateway/codex-approval-policy.ts";
 import { unsupportedNativeGatewayAuthFields } from "../../../gateway/auth-fields.ts";
 
@@ -66,14 +78,14 @@ export interface DockerComputeDriverOptions {
   readonly loggingAddress?: string;
 }
 
-interface DockerContainerInspect {
+interface DockerContainerInspect extends EmbeddedContainerInspect {
   readonly Image?: string;
-  readonly Config?: {
+  readonly Config?: EmbeddedContainerInspect["Config"] & {
     readonly Image?: string;
     readonly Labels?: Readonly<Record<string, string>>;
     readonly Env?: readonly string[];
   };
-  readonly State?: {
+  readonly State?: EmbeddedContainerInspect["State"] & {
     readonly Running?: boolean;
     readonly ExitCode?: number;
     readonly Health?: {
@@ -237,6 +249,7 @@ const { chmodSync, mkdirSync, writeFileSync } = require("node:fs");
 const { spawn } = require("node:child_process");
 
 ${PLUGIN_RUNTIME_HELPERS}
+${GATEWAY_TOOL_POLICY_RUNTIME}
 ${startupPhaseHelper("gateway")}
 ${gatewayStateMigrationHelper("deploy the Agent again")}
 
@@ -266,12 +279,16 @@ mkdirSync("/home/node/.openclaw", { recursive: true, mode: 0o700 });
 mkdirSync("/home/node/workspace", { recursive: true, mode: 0o700 });
 chmodSync("/home/node/.openclaw", 0o700);
 chmodSync("/home/node/workspace", 0o700);
+const gatewayToolPolicyInput = process.env.APP_SERVER_URL
+  ? JSON.parse(process.env.OPENCLAW_CONFIG_JSON) : undefined;
 writeFileSync(process.env.OPENCLAW_CONFIG_PATH, process.env.OPENCLAW_CONFIG_JSON, { mode: 0o600 });
 delete process.env.OPENCLAW_CONFIG_JSON;
 delete process.env.OPENCLAW_LOG_LEVEL;
 const pluginRuntime = readGatewayPluginRuntime();
 try {
+if (gatewayToolPolicyInput !== undefined) requireGatewayToolPolicyRuntime();
 if (pluginRuntime !== undefined) installOpenClawPlugins(pluginRuntime);
+if (gatewayToolPolicyInput !== undefined) configureManagedGatewayTools(gatewayToolPolicyInput);
 // State on the Agent's state volume outlives runtime image upgrades. Doctor
 // reads the configuration written above; current state adds no await before
 // the spawn. A failure exits: the Driver reports the container that stopped
@@ -292,7 +309,7 @@ if (outdatedDatabases.length === 0) {
   );
 }
 } catch (error) {
-  if (!holdPluginApproverConfigurationFailure(error)) throw error;
+  if (!holdGatewayToolPolicyFailure(error) && !holdPluginApproverConfigurationFailure(error)) throw error;
 }
 `;
 }
@@ -443,6 +460,12 @@ export class DockerComputeDriver implements ComputeDriver {
   private lifecycle = new ComputeLifecycleDispatcher([]);
   private lifecycleStarted = false;
   private podmanApi = false;
+  // Losing this observation on controller restart costs availability only. A
+  // stopped container or a volume cannot reconstruct a trusted live observation.
+  private readonly embeddedGateways = new Map<
+    string,
+    { observed: ObservedEmbeddedGateway; stopped: boolean }
+  >();
 
   /**
    * Every topology runs one gateway container per Agent, so a candidate replaces the active
@@ -554,10 +577,13 @@ export class DockerComputeDriver implements ComputeDriver {
   // Agent create and update apply preparation's workspace rule, with its message. (OCC
   // provisioning and deployment refuse Docker's Harness authentication first.)
   validateWorkspaceSetup(
-    _harness: RevisionHarnessDescriptor,
+    harness: RevisionHarnessDescriptor,
     configuration: Readonly<OpenClawConfigurationDocument>,
   ): void {
     dockerSetupWorkspace(configuration, callerSettingError);
+    if (harness.id === "codex" && harness.mode === "dedicated") {
+      managedGatewayConfiguration(configuration, configuration, true, callerSettingError);
+    }
   }
 
   validateHarnessAuth(): never {
@@ -605,6 +631,16 @@ export class DockerComputeDriver implements ComputeDriver {
       throw new ConfigurationFailure("AgentRevision Configuration ownership is invalid.");
     }
     dockerGatewayConfigurationDocument(revision.configuration);
+    if (context?.workspaceSetup !== undefined) {
+      this.validateWorkspaceSetup(revision.harness, revision.configuration);
+    } else if (revision.harness.mode === "dedicated") {
+      managedGatewayConfiguration(
+        revision.configuration,
+        revision.configuration,
+        true,
+        callerSettingError,
+      );
+    }
 
     const network = this.networkName(revision.namespaceId);
     const observed = await this.network(network);
@@ -640,6 +676,7 @@ export class DockerComputeDriver implements ComputeDriver {
             ...this.pluginRuntimeEnvironmentForWorkload(pluginRuntime, "gateway", true),
           },
           context?.workspaceSetup,
+          Object.keys(launch.environment).length === 0,
         );
         gatewayCreated = gateway.created ? gateway.containerName : undefined;
         return { ...result, ready: gateway.ready };
@@ -768,7 +805,7 @@ export class DockerComputeDriver implements ComputeDriver {
         `container ${gatewayName}`,
       );
       if (gateway.Config?.Labels?.[REVISION_LABEL] === revision.id) {
-        await this.removeContainer(gatewayName);
+        await this.removeGateway(gatewayName, gateway);
       }
     }
   }
@@ -784,6 +821,7 @@ export class DockerComputeDriver implements ComputeDriver {
       this.verifyOwnership(initializer.Config?.Labels, ownership, `container ${initializerName}`);
       await this.removeContainer(initializerName);
     }
+    this.embeddedGateways.delete(this.gatewayContainerName(binding.namespace.id, binding.agent.id));
     await this.removeWorkspaceVolumes(ownership);
   }
 
@@ -973,11 +1011,103 @@ ${WORKSPACE_SETUP_RUNTIME}`,
     }
   }
 
+  private async rememberEmbeddedGateway(
+    name: string,
+    container: DockerContainerInspect,
+    volume: string,
+  ) {
+    const saved = this.embeddedGateways.get(name)?.observed;
+    if (
+      saved &&
+      saved.containerId === container.Id &&
+      saved.startedAt === container.State?.StartedAt
+    ) {
+      return;
+    }
+    this.embeddedGateways.delete(name);
+    // A driver or image without a usable probe can still serve ordinary turns.
+    try {
+      const observed = await observeEmbeddedGateway(this.request.bind(this), container, volume);
+      if (observed) {
+        this.embeddedGateways.set(name, { observed, stopped: false });
+      }
+    } catch {
+      currentComputeAbortSignal()?.throwIfAborted();
+    }
+  }
+
+  private async removeGateway(name: string, container: DockerContainerInspect) {
+    const saved = this.embeddedGateways.get(name);
+    this.embeddedGateways.delete(name);
+    if (
+      !saved ||
+      !container.Id ||
+      saved.observed.containerId !== container.Id ||
+      saved.observed.startedAt !== container.State?.StartedAt
+    ) {
+      await this.removeContainer(container.Id ?? name);
+      return;
+    }
+    const target = container.Id;
+    let proof;
+    try {
+      let stopped = container;
+      if (container.State?.Running === true) {
+        // Forced removal would also kill this instance. Inspect its terminal
+        // state before releasing the volume so its replacement can use it.
+        await this.request(
+          "POST",
+          "/containers/" + target + "/kill?signal=SIGKILL",
+          undefined,
+          [204, 409],
+        );
+        await this.request(
+          "POST",
+          "/containers/" + target + "/wait?condition=not-running",
+          undefined,
+          [200],
+        );
+        stopped = (await this.container(target)) ?? {};
+      }
+      proof = await terminatedEmbeddedGateway(
+        this.request.bind(this),
+        saved.observed,
+        stopped,
+        saved.observed.volume,
+      );
+    } catch {
+      currentComputeAbortSignal()?.throwIfAborted();
+    }
+    await this.removeContainer(target);
+    if (proof) {
+      this.embeddedGateways.set(name, { observed: saved.observed, stopped: true });
+    }
+  }
+
+  private async takeEmbeddedGatewayHandoff(name: string, volume: string | undefined) {
+    const saved = this.embeddedGateways.get(name);
+    this.embeddedGateways.delete(name);
+    if (volume === undefined || !saved?.stopped || saved.observed.volume !== volume) {
+      return;
+    }
+    try {
+      if (
+        (await embeddedGatewayVolumeInstance(this.request.bind(this), volume)) ===
+        saved.observed.volumeCreatedAt
+      ) {
+        return saved.observed.namespace;
+      }
+    } catch {
+      currentComputeAbortSignal()?.throwIfAborted();
+    }
+  }
+
   private async reconcileGateway(
     revision: Readonly<AgentRevision>,
     network: string,
     environment: Readonly<Record<string, string>>,
     workspaceSetup?: Readonly<WorkspaceSetup>,
+    attestEmbeddedOwner = false,
   ): Promise<{
     readonly containerName: string;
     readonly created: boolean;
@@ -986,6 +1116,13 @@ ${WORKSPACE_SETUP_RUNTIME}`,
     const containerName = this.gatewayContainerName(revision.namespaceId, revision.agentId);
     const ownership = this.gatewayOwnership(revision);
     const existing = await this.container(containerName);
+    const stateVolume =
+      attestEmbeddedOwner &&
+      revision.harness.mode === "embedded" &&
+      workspaceSetup !== undefined &&
+      !this.podmanApi
+        ? this.workspaceMounts(ownership)[0]!.Source
+        : undefined;
     const gatewayConfiguration = dockerGatewayConfigurationDocument(revision.configuration);
     const configuration = JSON.stringify(gatewayConfiguration.configuration);
     const configurationHash = sha256Hex(configuration, 32);
@@ -1009,15 +1146,19 @@ ${WORKSPACE_SETUP_RUNTIME}`,
           revision.harness.mode === "embedded" ||
           containerTransportToken(existing) === environment.APP_SERVER_TOKEN;
         if (healthy(existing) && transportMatches) {
+          if (stateVolume) {
+            await this.rememberEmbeddedGateway(containerName, existing, stateVolume);
+          }
           return { containerName, created: false, ready: true };
         }
-        await this.removeContainer(containerName);
+        await this.removeGateway(containerName, existing);
       }
       if (currentRevision !== revision.revision || currentRevisionId !== revision.id) {
-        await this.removeContainer(containerName);
+        await this.removeGateway(containerName, existing);
       }
     }
 
+    const proof = await this.takeEmbeddedGatewayHandoff(containerName, stateVolume);
     const inspect = await this.createRuntimeContainer({
       name: containerName,
       image: this.options.images.gateway,
@@ -1037,6 +1178,7 @@ ${WORKSPACE_SETUP_RUNTIME}`,
         HOME: "/home/node",
       },
       command:
+        embeddedGatewayRecoveryPreamble(proof) +
         (workspaceSetup === undefined
           ? ""
           : workspaceSetupVerifier(workspaceSetup, this.workspaceDirectory(revision))) +
@@ -1054,6 +1196,9 @@ ${WORKSPACE_SETUP_RUNTIME}`,
       },
     });
     this.verifyOwnership(inspect.Config?.Labels, ownership, `container ${containerName}`);
+    if (stateVolume) {
+      await this.rememberEmbeddedGateway(containerName, inspect, stateVolume);
+    }
     return { containerName, created: true, ready: true };
   }
 
@@ -1399,9 +1544,9 @@ ${WORKSPACE_SETUP_RUNTIME}`,
   }
 
   // Stop before removal: Docker sends SIGTERM and a Gateway that exits on it
-  // releases its OpenClaw state lock. A force-removed (SIGKILL) Gateway leaves the
-  // lock on the Agent's state volume, and its replacement, in another PID
-  // namespace, cannot verify the owner stopped and refuses the state.
+  // releases its OpenClaw state lock. A force-removed (SIGKILL) Gateway that this
+  // Driver did not observe (removeGateway) leaves the lock on the Agent's state
+  // volume, and its replacement, in another PID namespace, refuses the state.
   private async removeContainer(name: string): Promise<void> {
     await this.request(
       "POST",

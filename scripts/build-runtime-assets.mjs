@@ -36,12 +36,16 @@ const appliedPatches = [
   },
   {
     file: "openclaw-required-worker-authority-regression.patch",
-    sha256: "0fda64033083d4db4ba13b823445ded303cdcd4d392ecf0d2413b19f7516bc66",
+    sha256: "ac7d081a26c23b7e02d7b2c51abb77a7d5d36135eb49a077b5c65bdcae68dd40",
     field: "openclawRequiredWorkerAuthorityRegressionPatchSha256",
   },
   {
     file: "openclaw-control-ui-browser-reconnect.patch",
-    sha256: "6a47120be7057dfbb0efad0096730fbad36db9739f8c9235afd3eed51be35e91",
+    sha256: "bbd27ee1384129ca00d113b6f2a30477502cce38588054d22d50e53f668eee59",
+  },
+  {
+    file: "openclaw-terminated-gateway-namespace.patch",
+    sha256: "af52f6ec87e80f35f141c82cfd0e34a73b7ba90bf593fb4889a48b22dea76a11",
   },
 ];
 const [command, sourceRoot, output, sourceManifest] = process.argv.slice(2);

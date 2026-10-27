@@ -1,11 +1,11 @@
 diff --git a/ui/src/api/gateway-browser-socket.ts b/ui/src/api/gateway-browser-socket.ts
-index 0e09d6e459921938d580520da7cd5dc6f3756a5f..9e0b748d4194c3117da9e2ed526c5248fd73de62 100644
+index 0ba4108dfcb2e14d929419e896ecc0f4a2a29155..c4a8670f7b6504e74c95b9db4e285eaaeaf3fe6d 100644
 --- a/ui/src/api/gateway-browser-socket.ts
 +++ b/ui/src/api/gateway-browser-socket.ts
-@@ -36,7 +36,10 @@ export function formatBrowserWebSocketConstructorError(err: unknown, url: string
+@@ -37,7 +37,10 @@ export function formatBrowserWebSocketConstructorError(err: unknown, url: string
    };
  }
-
+ 
 -export async function probeGatewayReachability(url: string, signal: AbortSignal): Promise<boolean> {
 +export async function probeGatewayReachability(
 +  url: string,
@@ -14,7 +14,7 @@ index 0e09d6e459921938d580520da7cd5dc6f3756a5f..9e0b748d4194c3117da9e2ed526c5248
    try {
      const gateway = new URL(url, window.location.href);
      gateway.protocol = gateway.protocol.replace(/^ws/u, "http");
-@@ -45,7 +48,7 @@ export async function probeGatewayReachability(url: string, signal: AbortSignal)
+@@ -46,7 +49,7 @@ export async function probeGatewayReachability(url: string, signal: AbortSignal)
        window.location.href,
      );
      if (probe.origin !== new URL(window.location.href).origin) {
@@ -23,7 +23,7 @@ index 0e09d6e459921938d580520da7cd5dc6f3756a5f..9e0b748d4194c3117da9e2ed526c5248
      }
      const response = await fetch(probe, {
        cache: "no-store",
-@@ -53,20 +56,25 @@ export async function probeGatewayReachability(url: string, signal: AbortSignal)
+@@ -54,20 +57,25 @@ export async function probeGatewayReachability(url: string, signal: AbortSignal)
        redirect: "error",
        signal,
      });
@@ -53,7 +53,7 @@ index 0e09d6e459921938d580520da7cd5dc6f3756a5f..9e0b748d4194c3117da9e2ed526c5248
 +    return "unavailable";
    }
  }
-
+ 
 diff --git a/ui/src/api/gateway-connect-errors.ts b/ui/src/api/gateway-connect-errors.ts
 index d45265c4cb9931d5516857a9ff5fa1fc4d8f366a..caf64c269ed74122d1e27e6d3d233924efdab2ee 100644
 --- a/ui/src/api/gateway-connect-errors.ts
@@ -64,7 +64,7 @@ index d45265c4cb9931d5516857a9ff5fa1fc4d8f366a..caf64c269ed74122d1e27e6d3d233924
    busy?: boolean;
 +  browserAccessDenied?: true;
  };
-
+ 
  export class GatewayRequestError extends GatewayProtocolRequestError {
 diff --git a/ui/src/api/gateway-reachability.node.test.ts b/ui/src/api/gateway-reachability.node.test.ts
 index 1f70fd5f455d69e12b9769061e295a5c8d632044..3e89cfec94a66623f7c80bb95c4428a95d46b7bc 100644
@@ -89,7 +89,7 @@ index 1f70fd5f455d69e12b9769061e295a5c8d632044..3e89cfec94a66623f7c80bb95c4428a9
    expect(onClose.mock.calls[0]?.[0].busy === true).toBe(busy);
 +  expect(onClose.mock.calls[0]?.[0].browserAccessDenied === true).toBe(denied === true);
  });
-
+ 
  it.each(["cross-origin", "opened"])("does not probe a %s transport", async (kind) => {
 diff --git a/ui/src/api/gateway.ts b/ui/src/api/gateway.ts
 index ad496c9162370a2243d60c022338aec428fb4720..64a9062d9c6eff80fd58a42dc30f54173c792005 100644
@@ -116,91 +116,79 @@ index ad496c9162370a2243d60c022338aec428fb4720..64a9062d9c6eff80fd58a42dc30f5417
                  }
                })
 diff --git a/ui/src/app/app-shell-view.test.ts b/ui/src/app/app-shell-view.test.ts
-index 41fe52a2c75c2761b4acdb10ec8ec515edf2cb04..65b70cb15b4a6d690b104e63f7a40651c2c01ee0 100644
+index 910ff8e478bae7ab4e1a70d6a7f4d55d5f9e9075..414bc063213bf604bc1e2803c8a882aa7dc6520f 100644
 --- a/ui/src/app/app-shell-view.test.ts
 +++ b/ui/src/app/app-shell-view.test.ts
-@@ -231,7 +231,7 @@ it("preserves notice padding when a session route resolves without a chat pane",
+@@ -308,6 +308,24 @@ it("keeps pages interactive through transport loss and fences reload-required",
    }
  });
-
--it("keeps pages interactive through transport loss and fences reload-required", async () => {
-+it("keeps pages interactive through transport loss and fences unavailable actions", async () => {
-   const { owner, runtime, query, refresh } = await mountShell();
-   owner.routeState = { routeId: "logs" };
-   const snapshot = vi.spyOn(runtime.context.gateway, "snapshot", "get");
-@@ -247,6 +247,19 @@ it("keeps pages interactive through transport loss and fences reload-required",
-     );
-     expect(query(".connection-action-block"), phase).toBeNull();
-   }
+ 
++it("keeps the current route mounted while offering a return to the Agent root", async () => {
++  const { runtime, query, refresh } = await mountShell();
++  const initial = runtime.context.gateway.snapshot;
++  const snapshot = vi.spyOn(runtime.context.gateway, "snapshot", "get");
 +  const outlet = query("openclaw-router-outlet")!;
 +  snapshot.mockReturnValue({ ...initial, phase: "reconnecting", browserAccessDenied: true });
 +  refresh();
-+  const reconnect = query("#control-ui-main .lazy-view-error__actions a");
-+  expect(reconnect?.getAttribute("href")).toBe("/");
-+  expect(reconnect?.getAttribute("target")).toBe("_self");
++  expect(query('.lazy-view-error a[href="/"]')?.getAttribute("target")).toBe("_self");
++  expect(query("openclaw-router-outlet")).toBe(outlet);
 +  expect(outlet.hasAttribute("hidden")).toBe(true);
 +  expect(outlet.hasAttribute("inert")).toBe(true);
-+  snapshot.mockReturnValue({ ...initial, phase: "reconnecting" });
++  snapshot.mockReturnValue({ ...initial, phase: "connected", browserAccessDenied: false });
 +  refresh();
++  expect(query('.lazy-view-error a[href="/"]')).toBeNull();
 +  expect(query("openclaw-router-outlet")).toBe(outlet);
 +  expect(outlet.hasAttribute("hidden")).toBe(false);
-+  expect(query("#control-ui-main .lazy-view-error__actions a")).toBeNull();
- });
-
- it("keeps one sidebar and outlet while navigation moves between desktop and drawer", async () => {
++});
++
+ it("keeps one sidebar through drawer and settings takeover transitions", async () => {
+   let mobile = false;
+   mockMobile(() => mobile);
 diff --git a/ui/src/app/app-shell-view.tsx b/ui/src/app/app-shell-view.tsx
-index 923932b7244e36c33330bb86f2e77aafe7160cdd..40f60c201c5eb9772f7e94b86dcee7c855acbe5f 100644
+index cdceb9d728d4241230465697b66ceafb32c04a13..7621dd1d7df48700dbe3a057d2c092db6387c59a 100644
 --- a/ui/src/app/app-shell-view.tsx
 +++ b/ui/src/app/app-shell-view.tsx
-@@ -6,6 +6,7 @@ import { LazySettingsSidebar } from "../components/settings-sidebar-lazy.tsx";
- import { GatewayStatus, gatewayStatusLabel } from "../components/solid/gateway-status.tsx";
- import { Icon } from "../components/solid/icon.tsx";
- import { ShortcutHint } from "../components/solid/kbd.tsx";
-+import { PanelErrorState } from "../components/solid/lazy-view-error.tsx";
- import { ConnectingSplash } from "../components/solid/loading-skeleton.tsx";
- import {
-   ContextNewSessionAction,
-@@ -69,6 +70,12 @@ export function ApplicationShell(props: {
-     props.host.shellRevision();
+@@ -96,6 +96,11 @@ export function ApplicationShell(props: {
      return readShellView(props.host);
    });
-+  const offerBrowserReconnect = createMemo(
-+    () =>
-+      view().gatewaySnapshot.browserAccessDenied === true &&
-+      !view().nativeEmbed &&
-+      window.top === window,
-+  );
    const shellConnectionStatus = createMemo(() => view().shellConnectionStatus);
++  // The browser can reopen the Agent root for sign-in while the tab keeps its local draft.
++  const offerBrowserReconnect = () =>
++    view().gatewaySnapshot.browserAccessDenied === true &&
++    !view().nativeEmbed &&
++    window.top === window;
    const footerStatus = createMemo(() =>
      shellConnectionStatus() || view().connectionRecovery ? view().gatewayStatus : null,
-@@ -328,6 +335,18 @@ export function ApplicationShell(props: {
-           <Show when={view().embedNavigation}>
-             <LazySettingsSidebar host={props.host} sidebarProps={view().settingsSidebarProps} />
-           </Show>
+   );
+@@ -357,6 +362,19 @@ export function ApplicationShell(props: {
+           onMouseDown={beginNativeWindowDragFromTopInset}
+           inert={view().mobileNavLayout && view().navDrawerOpen}
+         >
 +          <Show when={offerBrowserReconnect()}>
-+            <PanelErrorState
-+              role="status"
-+              title={t("connection.browserReconnectTitle")}
-+              subtitle={t("connection.browserReconnectExplanation")}
-+              actions={
++            <section class="lazy-view-error" role="status">
++              <div class="lazy-view-error__title">{t("connection.browserReconnectTitle")}</div>
++              <div class="lazy-view-error__subtitle">
++                {t("connection.browserReconnectExplanation")}
++              </div>
++              <div class="lazy-view-error__actions">
 +                <a class="btn primary" href="/" target="_self" rel="noreferrer">
 +                  {t("connection.browserReconnectAction")}
 +                </a>
-+              }
-+            />
++              </div>
++            </section>
 +          </Show>
-           <ShellLayoutProvider
-             value={{
-               get owner() {
-@@ -340,8 +359,9 @@ export function ApplicationShell(props: {
+           <Show
+             when={
+               floatingSidebarAttentionVisible(view().floatingUpdateCard) ||
+@@ -380,8 +398,9 @@ export function ApplicationShell(props: {
            >
              <RouterOutlet
                ref={(element) => (props.host.routeOutlet = element)}
 -              inert={view().reloadRequired}
 -              aria-disabled={view().reloadRequired ? "true" : undefined}
 +              hidden={offerBrowserReconnect()}
-+              inert={view().reloadRequired || offerBrowserReconnect()}
-+              aria-disabled={view().reloadRequired || offerBrowserReconnect() ? "true" : undefined}
++              inert={offerBrowserReconnect() || view().reloadRequired}
++              aria-disabled={offerBrowserReconnect() || view().reloadRequired ? "true" : undefined}
                router={view().runtime.router}
                retryContext={view().context}
                retryEnabled={view().gatewayConnected}
@@ -280,14 +268,14 @@ index a17b8d4f611e8dae0ef13544ca9ef96742d58eda..73ef71a6ace84bf3e5b3bc14f9a3d9d0
 +++ b/ui/src/app/router-outlet.tsx
 @@ -126,6 +126,7 @@ function renderRouterOutlet(
  }
-
+ 
  export type RouterOutletProps = {
 +  hidden?: boolean;
    inert?: boolean;
    "aria-disabled"?: "true" | "false";
    router?: ApplicationRouter;
 @@ -466,6 +467,7 @@ export function RouterOutlet(props: RouterOutletProps): SolidJSX.Element {
-
+ 
    return (
      <openclaw-router-outlet
 +      hidden={props.hidden}
@@ -295,10 +283,10 @@ index a17b8d4f611e8dae0ef13544ca9ef96742d58eda..73ef71a6ace84bf3e5b3bc14f9a3d9d0
        aria-disabled={props["aria-disabled"]}
        onOpenclaw-route-element={elements.register}
 diff --git a/ui/src/i18n/locales/en.ts b/ui/src/i18n/locales/en.ts
-index 70a8da101ce91544871f77f4cf96d9fae77f1f30..1b94e588f26f55aaa16bce32b80df96252d00334 100644
+index e199c046f3554bb62b102d717f7e71de6e7491df..7bfb3156d7e4a6d77aeefed4bb6e209422b3a21e 100644
 --- a/ui/src/i18n/locales/en.ts
 +++ b/ui/src/i18n/locales/en.ts
-@@ -1856,6 +1856,9 @@ export const en: TranslationMap & {
+@@ -1598,6 +1598,9 @@ export const en: TranslationMap & {
      "reload-required": "Refresh required",
      offline: "Disconnected",
      reconnecting: "Reconnecting…",
@@ -309,13 +297,13 @@ index 70a8da101ce91544871f77f4cf96d9fae77f1f30..1b94e588f26f55aaa16bce32b80df962
        "Connection to the Gateway was interrupted. Reconnecting automatically. (WebSocket {code})",
      interrupted:
 diff --git a/ui/src/styles/layout.css b/ui/src/styles/layout.css
-index 32cc5383a4dfd3ac7ceac429ff186288acb9131a..b5600f681f7d3e2a8c9e194edf74fb0f5c369fb4 100644
+index db327ed78561e20b7e4b657e48f2c2576537e2b0..47111ff5e3b7c1e90a7a5f8ead78aa39317f921d 100644
 --- a/ui/src/styles/layout.css
 +++ b/ui/src/styles/layout.css
-@@ -4236,6 +4236,10 @@ openclaw-tooltip.sidebar-hover-tooltip {
+@@ -4312,6 +4312,10 @@ openclaw-tooltip.sidebar-hover-tooltip {
    min-height: 0;
  }
-
+ 
 +.content > openclaw-router-outlet[hidden] {
 +  display: none;
 +}

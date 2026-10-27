@@ -171,16 +171,20 @@ COPY --from=openclaw-source /source/ ./
 # Exercise the original caller through the public RPC before and after the
 # placement acknowledgment, including revocation, against this exact source.
 COPY deploy/runtime/openclaw-required-worker-authority-regression.patch /tmp/openclaw-required-worker-authority-regression.patch
-RUN echo '0fda64033083d4db4ba13b823445ded303cdcd4d392ecf0d2413b19f7516bc66  /tmp/openclaw-required-worker-authority-regression.patch' | sha256sum --check --strict \
+RUN echo 'ac7d081a26c23b7e02d7b2c51abb77a7d5d36135eb49a077b5c65bdcae68dd40  /tmp/openclaw-required-worker-authority-regression.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-required-worker-authority-regression.patch
 # Remove this bridge when the pinned Control UI offers a browser navigation after access refusal.
 COPY deploy/runtime/openclaw-control-ui-browser-reconnect.patch /tmp/openclaw-control-ui-browser-reconnect.patch
-RUN echo '6a47120be7057dfbb0efad0096730fbad36db9739f8c9235afd3eed51be35e91  /tmp/openclaw-control-ui-browser-reconnect.patch' | sha256sum --check --strict \
+RUN echo 'bbd27ee1384129ca00d113b6f2a30477502cce38588054d22d50e53f668eee59  /tmp/openclaw-control-ui-browser-reconnect.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-control-ui-browser-reconnect.patch
+# The runtime needs supervised recovery across private PID namespaces. Native
+# lock reinspection and custody still guard every destructive operation.
+COPY deploy/runtime/openclaw-terminated-gateway-namespace.patch /tmp/openclaw-terminated-gateway-namespace.patch
+RUN echo 'af52f6ec87e80f35f141c82cfd0e34a73b7ba90bf593fb4889a48b22dea76a11  /tmp/openclaw-terminated-gateway-namespace.patch' | sha256sum --check --strict \
+    && git apply /tmp/openclaw-terminated-gateway-namespace.patch
 
-# The bridge tests run in their own stage, beside the build below: they only read
-# the patched tree, and they took 196 of a cold build's 591 s in series before it.
-# openclaw-runtime-assets mounts this stage, so the image still needs them to pass.
+# Run the bridge tests alongside the build using the same patched source.
+# Packaging mounts this stage so a failed test still blocks the runtime image.
 FROM openclaw-patched-source AS openclaw-bridge-tests
 RUN --network=none OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
     node --import ./scripts/tsx.mjs scripts/test-projects.mts src/gateway/server.required-placement-scopes.test.ts
@@ -193,6 +197,11 @@ RUN --network=none --mount=type=tmpfs,target=/source/.artifacts \
 RUN --network=none cd ui && node ../scripts/run-node-package-bin.mts vitest run --config vitest.config.ts \
     --project unit --project unit-node \
     src/api/gateway-reachability.node.test.ts src/app/gateway-store.observers.test.ts src/app/app-shell-view.test.ts
+# The test runner restores its cache by renaming directories. A fresh mount
+# keeps those renames off the previous test layer.
+RUN --network=none --mount=type=tmpfs,target=/source/.artifacts \
+    OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
+    node --import ./scripts/tsx.mjs scripts/test-projects.mts src/infra/gateway-lock-recovery.test.ts
 
 FROM openclaw-patched-source AS openclaw-build
 # Follow the pinned upstream Docker assembly; plugin-local dependencies remain
