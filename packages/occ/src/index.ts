@@ -6121,7 +6121,7 @@ export class OpenClawController {
         provider.normalizeConfig !== normalizeConfig
       ) {
         throw new ResourceStateConflictError(
-          "The selected credential provider changed during admission. Review the current provider configuration and retry the same source update only after confirming the configuration is current.",
+          "The selected credential provider changed during admission. Check the Installation's provider configuration before retrying this credential-source request.",
         );
       }
     };

@@ -550,13 +550,25 @@ test("a source update withholds resolved material after its provider or injector
     return original.normalizeConfig.call(this, config);
   };
   const reads = f.secretReads;
-  const refused = await update();
-  assert.equal(refused.status, 409);
-  assert.deepEqual(refused.body.error, {
-    code: "RESOURCE_CONFLICT",
-    message:
-      "The selected credential provider changed during admission. Review the current provider configuration and retry the same source update only after confirming the configuration is current.",
-  });
+  const name = "refused-create";
+  const createRefused = await f.request("POST", f.path, { body: { ...body, name } });
+  providers[index] = a;
+  const updateRefused = await update();
+  for (const result of [createRefused, updateRefused]) {
+    assert.equal(result.status, 409);
+    assert.deepEqual(result.body.error, {
+      code: "RESOURCE_CONFLICT",
+      message:
+        "The selected credential provider changed during admission. Check the Installation's provider configuration before retrying this credential-source request.",
+    });
+  }
+  const sources = await f.controller.transact((unit: PlatformUnitOfWork) =>
+    unit.credentialSources.listCredentialSources(f.namespace.id),
+  );
+  assert.equal(
+    sources.some((source: { name: string }) => source.name === name),
+    false,
+  );
   assert.equal(f.secretReads, reads, "a replacement before access must prevent the Secret read");
   assert.deepEqual([originalCalls, replacementCalls], [1, 0]);
   assert.deepEqual(await savedSource(), before);
