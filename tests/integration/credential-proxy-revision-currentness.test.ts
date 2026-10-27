@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import type { PlatformStateStore, PlatformUnitOfWork } from "../../packages/occ/src/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
@@ -8,7 +8,7 @@ test("credential exchange consults revision history only for inactive executions
   let revisionListings = 0;
   const f = await staticEgressFixture(t, {
     recordInstallation: false,
-    appFactory: (context, options) =>
+    appFactory: (context: TestContext, options: Parameters<typeof createConsoleAppFixture>[1]) =>
       createConsoleAppFixture(context, {
         ...options,
         wrapState: (state: PlatformStateStore): PlatformStateStore => ({

@@ -327,6 +327,7 @@ import {
   SecretValueError,
 } from "./errors.ts";
 import {
+  refuseRetiredOpenClawSettings,
   validateConfigurationSettings,
   validateWorkspaceBootstrapSettings,
 } from "./configuration-settings.ts";
@@ -10172,6 +10173,8 @@ export class OpenClawController {
       // Native workspace setup refuses an invalid bootstrap setting only after the deployment
       // starts (finding 2699).
       validateWorkspaceBootstrapSettings(configuration.values);
+      // The Gateway refuses a setting the pinned OpenClaw retired and does not start (finding 2709).
+      refuseRetiredOpenClawSettings(configuration.values);
       this.validateComputeConfiguration(configuration.values);
       await configurationDriver.validate({ ...configuration, values: admittedConfiguration });
       if (resolveConfiguredHarnessId(admittedConfiguration) !== configuredHarnessId) {
@@ -14366,8 +14369,9 @@ export class OpenClawController {
       return;
     }
     const configuration = await readConfiguration();
-    // Deploy admission's rule for a stored Configuration that predates it (finding 2699).
+    // Deploy admission's rules for a stored Configuration that predates them (findings 2699, 2709).
     validateWorkspaceBootstrapSettings(configuration.values);
+    refuseRetiredOpenClawSettings(configuration.values);
     if (agent.credentialSourceId !== undefined) {
       const source = await state.credentialSources.findCredentialSource(
         configuration.namespaceId,

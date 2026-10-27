@@ -5,7 +5,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { sanitizeRuntimeLogChunk } from "../../packages/occ/src/runtime-logs/sanitize.ts";
-import { OPTIONAL_BOOTSTRAP_FILES } from "../../packages/occ/src/configuration-settings.ts";
+import {
+  OPTIONAL_BOOTSTRAP_FILES,
+  RETIRED_OPENCLAW_SETTINGS,
+} from "../../packages/occ/src/configuration-settings.ts";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
 import {
   AGENT_WITH_NODE_ENTRYPOINT,
@@ -194,12 +197,13 @@ for (let attempt = 0; attempt < 3; attempt++) {
 );
 
 test(
-  "runtime image accepts exactly the optional bootstrap files Configuration save accepts",
+  "runtime image accepts exactly the optional bootstrap files Configuration save accepts and none of the retired settings",
   imageTestOptions,
   async () => {
     // Configuration save refuses skipOptionalBootstrapFiles names outside OCE's list, which
-    // copies the pinned OpenClaw schema (finding 2699). Read the image's own schema, so a pin
-    // that changes the list fails here instead of at save or in native setup.
+    // copies the pinned OpenClaw schema (finding 2699), and the settings that pin retired
+    // (finding 2709). Read the image's own schema, so a pin that changes either fails here
+    // instead of at save or in native setup.
     const { stdout } = await runDocker(
       [
         "run",
@@ -223,11 +227,21 @@ test(
       ],
       { timeout: 120_000 * imageSmokeTimeoutMultiplier, maxBuffer: 16 * 1024 * 1024 },
     );
+    const schema = JSON.parse(stdout);
     const files =
-      JSON.parse(stdout).properties?.agents?.properties?.defaults?.properties
-        ?.skipOptionalBootstrapFiles?.items?.enum;
+      schema.properties?.agents?.properties?.defaults?.properties?.skipOptionalBootstrapFiles?.items
+        ?.enum;
     assert.ok(Array.isArray(files), "the image schema lists the optional bootstrap files");
     assert.deepEqual([...files].sort(), [...OPTIONAL_BOOTSTRAP_FILES].sort());
+    // The core schema holds the agents.defaults settings; a plugin's config has its own schema.
+    for (const [setting] of RETIRED_OPENCLAW_SETTINGS.filter(([path]) =>
+      path.startsWith("agents."),
+    )) {
+      const keys = setting.split(".");
+      const parent = keys.slice(0, -1).reduce((node, key) => node?.properties?.[key], schema);
+      assert.ok(parent?.properties, `the image schema has ${keys.slice(0, -1).join(".")}`);
+      assert.equal(parent.properties[keys.at(-1)], undefined, `the image schema has no ${setting}`);
+    }
   },
 );
 
