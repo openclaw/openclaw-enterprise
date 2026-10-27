@@ -7871,7 +7871,7 @@ test("IAM and audit dependency failures fail closed without orphaned state", asy
   assertOnlyDefaultNamespace(stillUnchanged);
 });
 
-test("SSH admission rejects managed mode and validates runtime authentication and deployment authorization", async () => {
+test("SSH Compute refuses managed mode at save and deploy and validates runtime authentication and deployment authorization", async () => {
   const computeDriver = new SshComputeDriver({
     ssh: { identityFile: "/tmp/ssh-test-key", knownHostsFile: "/tmp/ssh-test-hosts" },
     hosts: { runtime: { address: "127.0.0.1", user: "root" } },
@@ -7932,13 +7932,43 @@ test("SSH admission rejects managed mode and validates runtime authentication an
   });
   assert.equal(created.status, 201);
   assert.deepEqual(created.data.harnessAuth, { method: "runtime" });
+  // SSH Compute cannot enforce managed mode, so a new Agent defaults to off (finding 2676).
+  assert.equal(created.data.gatewayManagedMode, false);
   const path = `${collection}/${created.data.id}`;
+  const unsupported =
+    "Agent setting gatewayManagedMode is not supported by the selected Compute Driver.";
+  // Asking for managed mode fails at save and in the create preflight, not at the next deploy.
+  for (const [method, target, body] of [
+    [
+      "POST",
+      collection,
+      { name: "Managed SSH Agent", configurationId: configuration.id, gatewayManagedMode: true },
+    ],
+    [
+      "POST",
+      `${collection}/validate`,
+      { configuration: { kind: "agent", values: configuration.values }, gatewayManagedMode: true },
+    ],
+    ["PATCH", path, { gatewayManagedMode: true }],
+  ]) {
+    const refused = await controller.request(method, target, { body });
+    assert.equal(refused.status, 400, `${method} ${target}: ${JSON.stringify(refused.body)}`);
+    assert.equal(refused.body.error.message, unsupported);
+  }
+  // An Agent saved before managed mode existed was migrated to on; deploy still refuses it
+  // until an Installation administrator turns it off.
+  await controller.fixture.platformState.transact((unit) =>
+    unit.agents.updateConfiguration(
+      namespace.id,
+      created.data.id,
+      configuration.id,
+      ...Array(8).fill(undefined),
+      true,
+    ),
+  );
   const rejected = await controller.request("POST", `${path}/deploy`);
   assert.equal(rejected.status, 400, JSON.stringify(rejected.body));
-  assert.equal(
-    rejected.body.error.message,
-    "Agent setting gatewayManagedMode is not supported by the selected Compute Driver.",
-  );
+  assert.equal(rejected.body.error.message, unsupported);
   assert.deepEqual((await controller.request("GET", `${path}/revisions`)).data, []);
   const updated = await controller.request("PATCH", path, { body: { gatewayManagedMode: false } });
   assert.equal(updated.status, 200, JSON.stringify(updated.body));

@@ -1495,6 +1495,9 @@ function validExecutionMode(value: unknown): value is HarnessExecutionMode {
   return value === "embedded" || value === "dedicated";
 }
 
+const GATEWAY_MANAGED_MODE_UNSUPPORTED =
+  "Agent setting gatewayManagedMode is not supported by the selected Compute Driver.";
+
 function normalizeGatewayManagedMode(value: unknown, defaultValue?: boolean): boolean {
   const mode = value === undefined ? defaultValue : value;
   if (typeof mode !== "boolean") {
@@ -9163,7 +9166,10 @@ export class OpenClawController {
     if (!validExecutionMode(executionMode)) {
       throw new ScopeViolationError("The Agent Harness execution mode is invalid.");
     }
-    const gatewayManagedMode = normalizeGatewayManagedMode(input.gatewayManagedMode, true);
+    const gatewayManagedMode = normalizeGatewayManagedMode(
+      input.gatewayManagedMode,
+      this.gatewayManagedModeSupported(),
+    );
     const backendId = this.backendId(input.backendId);
     const plugins = normalizeAgentPlugins(input.plugins);
     const pluginApprovers = normalizeAgentPluginApprovers(input.pluginApprovers);
@@ -9175,7 +9181,8 @@ export class OpenClawController {
         namespaceId: input.namespaceId,
       };
       await this.authorize(principalId, "create", target);
-      await this.authorizeGatewayManagedModeChange(principalId, gatewayManagedMode === false);
+      await this.authorizeGatewayManagedModeChange(principalId, input.gatewayManagedMode === false);
+      this.requireGatewayManagedModeSupport(gatewayManagedMode);
       const namespace = await this.lockNamespace(state, input.namespaceId);
       // Checked after authorization: the conflict names the Namespace state.
       if (namespace.status !== "provisioning" && namespace.status !== "ready") {
@@ -9310,6 +9317,9 @@ export class OpenClawController {
     await this.authorizeGatewayManagedModeChange(
       principalId,
       normalizeGatewayManagedMode(input.gatewayManagedMode, true) === false,
+    );
+    this.requireGatewayManagedModeSupport(
+      normalizeGatewayManagedMode(input.gatewayManagedMode, this.gatewayManagedModeSupported()),
     );
     await this.read(async (state) => {
       const namespace = await this.exactNamespace(state, input.namespaceId);
@@ -9556,6 +9566,7 @@ export class OpenClawController {
           principalId,
           gatewayManagedMode !== agent.gatewayManagedMode,
         );
+        this.requireGatewayManagedModeSupport(gatewayManagedMode);
       }
       await this.authorize(principalId, "read", {
         kind: "configuration",
@@ -10285,9 +10296,7 @@ export class OpenClawController {
         revisionDraft.gatewayManagedMode === true &&
         compute.supportsGatewayManagedMode !== true
       ) {
-        throw new ConfigurationHarnessError(
-          "Agent setting gatewayManagedMode is not supported by the selected Compute Driver.",
-        );
+        throw new ConfigurationHarnessError(GATEWAY_MANAGED_MODE_UNSUPPORTED);
       }
       const computeAdmission = compute.admitRevision?.(freezeAgentRevision(revisionDraft));
       const revision = await state.revisions.createRevision(
@@ -12811,6 +12820,25 @@ export class OpenClawController {
       executionMode,
       gatewayManagedMode: normalizeGatewayManagedMode(plan?.gatewayManagedMode, true),
     };
+  }
+
+  /**
+   * A new Agent's managed mode defaults to whether the selected Compute Driver enforces it, so
+   * an Agent on SSH Compute (or a Driver that does not declare support) is saved deployable
+   * instead of failing at its first deploy (finding 2676). The default needs no Installation
+   * administer: there is no enforcement to opt out of. Without a selected Compute it is on.
+   */
+  private gatewayManagedModeSupported(): boolean {
+    const compute = this.selections.get("compute")?.driver as ComputeDriver | undefined;
+    return compute === undefined || compute.supportsGatewayManagedMode === true;
+  }
+
+  // Agent save refuses a managed mode the selected Compute Driver cannot apply, with deploy's
+  // message, so it fails at save rather than at the next deploy (finding 2676).
+  private requireGatewayManagedModeSupport(gatewayManagedMode: boolean): void {
+    if (gatewayManagedMode && !this.gatewayManagedModeSupported()) {
+      throw new ConfigurationHarnessError(GATEWAY_MANAGED_MODE_UNSUPPORTED);
+    }
   }
 
   private async authorizeGatewayManagedModeChange(

@@ -109,6 +109,27 @@ const GATEWAY_TOOL_BASELINE = {
   },
 };
 
+// Tools outside the baseline that the pinned OpenClaw core (src/agents/tools)
+// declares with a top-level action field. OpenClaw refuses to assemble any
+// allowed tool like this without tools.gatewayPolicy.actions.<tool>, so every
+// model turn would fail; Agent save refuses it first. Plugin tools are not
+// listed: OCE cannot read their schemas before deployment.
+const GATEWAY_ACTION_TOOLS = [
+  "computer",
+  "dashboard",
+  "github_publish",
+  "image_generate",
+  "mobile_ui",
+  "music_generate",
+  "personal_instructions",
+  "portal",
+  "screen",
+  "skill_workshop",
+  "theme",
+  "transcripts",
+  "video_generate",
+];
+
 // Codex's native tools operate in the Harness. Their Gateway equivalents
 // would instead access the control-plane container.
 const GATEWAY_LOCAL_CODEX_DYNAMIC_TOOLS = [
@@ -250,6 +271,9 @@ export function managedGatewayConfiguration(
     } else if (prior !== undefined) {
       actions[tool] = prior;
     }
+    if (actions[tool] === undefined && GATEWAY_ACTION_TOOLS.includes(tool)) {
+      throw createError(`tools.gatewayPolicy.actions.${tool}`, "must list the permitted actions");
+    }
   }
   const next: Record<string, OpenClawConfigurationDocument[string]> =
     structuredClone(configuration);
@@ -302,6 +326,7 @@ export function managedGatewayConfiguration(
 // stack; accepting this schema alone would not establish adapter enforcement.
 export const GATEWAY_TOOL_POLICY_RUNTIME = String.raw`
 const GATEWAY_TOOL_BASELINE = ${JSON.stringify(GATEWAY_TOOL_BASELINE)};
+const GATEWAY_ACTION_TOOLS = ${JSON.stringify(GATEWAY_ACTION_TOOLS)};
 const GATEWAY_LOCAL_CODEX_DYNAMIC_TOOLS = ${JSON.stringify(GATEWAY_LOCAL_CODEX_DYNAMIC_TOOLS)};
 const managedGatewayConfiguration = ${managedGatewayConfiguration.toString()};
 class GatewayToolPolicyError extends Error {

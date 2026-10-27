@@ -12978,7 +12978,7 @@
                                 ]
                               },
                               "gatewayManagedMode": {
-                                "description": "Whether OCE restricts Gateway-local administration. Defaults on. Changing the setting requires Installation administer permission and takes effect on deployment.",
+                                "description": "Whether OCE restricts Gateway-local administration. Defaults on when the selected Compute Driver supports it, otherwise off. Changing the setting requires Installation administer permission and takes effect on deployment.",
                                 "type": "boolean"
                               },
                               "harnessAuth": {
@@ -13256,7 +13256,7 @@
                                 ]
                               },
                               "gatewayManagedMode": {
-                                "description": "Whether OCE restricts Gateway-local administration. Defaults on. Changing the setting requires Installation administer permission and takes effect on deployment.",
+                                "description": "Whether OCE restricts Gateway-local administration. Defaults on when the selected Compute Driver supports it, otherwise off. Changing the setting requires Installation administer permission and takes effect on deployment.",
                                 "type": "boolean"
                               },
                               "id": {
@@ -13429,7 +13429,7 @@
                     ]
                   },
                   "gatewayManagedMode": {
-                    "description": "Whether OCE restricts Gateway-local administration. Defaults on. Changing the setting requires Installation administer permission and takes effect on deployment.",
+                    "description": "Whether OCE restricts Gateway-local administration. Defaults on when the selected Compute Driver supports it, otherwise off. Changing the setting requires Installation administer permission and takes effect on deployment.",
                     "type": "boolean"
                   },
                   "harnessAuth": {
@@ -13697,7 +13697,7 @@
                           ]
                         },
                         "gatewayManagedMode": {
-                          "description": "Whether OCE restricts Gateway-local administration. Defaults on. Changing the setting requires Installation administer permission and takes effect on deployment.",
+                          "description": "Whether OCE restricts Gateway-local administration. Defaults on when the selected Compute Driver supports it, otherwise off. Changing the setting requires Installation administer permission and takes effect on deployment.",
                           "type": "boolean"
                         },
                         "harnessAuth": {
@@ -15258,7 +15258,7 @@
                     ]
                   },
                   "gatewayManagedMode": {
-                    "description": "Whether OCE restricts Gateway-local administration. Defaults on. Changing the setting requires Installation administer permission and takes effect on deployment.",
+                    "description": "Whether OCE restricts Gateway-local administration. Defaults on when the selected Compute Driver supports it, otherwise off. Changing the setting requires Installation administer permission and takes effect on deployment.",
                     "type": "boolean"
                   },
                   "harnessAuth": {
@@ -16361,7 +16361,7 @@
                     ]
                   },
                   "gatewayManagedMode": {
-                    "description": "Whether OCE restricts Gateway-local administration. Defaults on. Changing the setting requires Installation administer permission and takes effect on deployment.",
+                    "description": "Whether OCE restricts Gateway-local administration. Defaults on when the selected Compute Driver supports it, otherwise off. Changing the setting requires Installation administer permission and takes effect on deployment.",
                     "type": "boolean"
                   },
                   "harnessAuth": {
@@ -16670,7 +16670,7 @@
                           ]
                         },
                         "gatewayManagedMode": {
-                          "description": "Whether OCE restricts Gateway-local administration. Defaults on. Changing the setting requires Installation administer permission and takes effect on deployment.",
+                          "description": "Whether OCE restricts Gateway-local administration. Defaults on when the selected Compute Driver supports it, otherwise off. Changing the setting requires Installation administer permission and takes effect on deployment.",
                           "type": "boolean"
                         },
                         "harnessAuth": {
@@ -17038,7 +17038,7 @@
                               ]
                             },
                             "gatewayManagedMode": {
-                              "description": "Whether OCE restricts Gateway-local administration. Defaults on. Changing the setting requires Installation administer permission and takes effect on deployment.",
+                              "description": "Whether OCE restricts Gateway-local administration. Defaults on when the selected Compute Driver supports it, otherwise off. Changing the setting requires Installation administer permission and takes effect on deployment.",
                               "type": "boolean"
                             },
                             "harnessAuth": {
@@ -17316,7 +17316,7 @@
                               ]
                             },
                             "gatewayManagedMode": {
-                              "description": "Whether OCE restricts Gateway-local administration. Defaults on. Changing the setting requires Installation administer permission and takes effect on deployment.",
+                              "description": "Whether OCE restricts Gateway-local administration. Defaults on when the selected Compute Driver supports it, otherwise off. Changing the setting requires Installation administer permission and takes effect on deployment.",
                               "type": "boolean"
                             },
                             "id": {
@@ -17499,7 +17499,7 @@
                     ]
                   },
                   "gatewayManagedMode": {
-                    "description": "Whether OCE restricts Gateway-local administration. Defaults on. Changing the setting requires Installation administer permission and takes effect on deployment.",
+                    "description": "Whether OCE restricts Gateway-local administration. Defaults on when the selected Compute Driver supports it, otherwise off. Changing the setting requires Installation administer permission and takes effect on deployment.",
                     "type": "boolean"
                   },
                   "harnessAuth": {
@@ -17792,7 +17792,7 @@
                           ]
                         },
                         "gatewayManagedMode": {
-                          "description": "Whether OCE restricts Gateway-local administration. Defaults on. Changing the setting requires Installation administer permission and takes effect on deployment.",
+                          "description": "Whether OCE restricts Gateway-local administration. Defaults on when the selected Compute Driver supports it, otherwise off. Changing the setting requires Installation administer permission and takes effect on deployment.",
                           "type": "boolean"
                         },
                         "harnessAuth": {
@@ -25481,7 +25481,7 @@
                           ]
                         },
                         "gatewayManagedMode": {
-                          "description": "Whether OCE restricts Gateway-local administration. Defaults on. Changing the setting requires Installation administer permission and takes effect on deployment.",
+                          "description": "Whether OCE restricts Gateway-local administration. Defaults on when the selected Compute Driver supports it, otherwise off. Changing the setting requires Installation administer permission and takes effect on deployment.",
                           "type": "boolean"
                         },
                         "harnessAuth": {
@@ -26061,7 +26061,7 @@
                           ]
                         },
                         "gatewayManagedMode": {
-                          "description": "Whether OCE restricts Gateway-local administration. Defaults on. Changing the setting requires Installation administer permission and takes effect on deployment.",
+                          "description": "Whether OCE restricts Gateway-local administration. Defaults on when the selected Compute Driver supports it, otherwise off. Changing the setting requires Installation administer permission and takes effect on deployment.",
                           "type": "boolean"
                         },
                         "harnessAuth": {

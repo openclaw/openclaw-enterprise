@@ -252,6 +252,58 @@ test("partial Agent updates keep completed workspace topology unless its Configu
   assert.equal(saved.gatewayManagedMode, false);
 });
 
+test("a new Agent's Gateway managed mode defaults to what the selected Compute Driver enforces", async () => {
+  const { configuration, controller, iamState, namespace } = await fixture();
+  const create = (name, extra = {}) =>
+    controller.createAgent(administrator, {
+      namespaceId: namespace.id,
+      name,
+      configurationId: configuration.id,
+      ...extra,
+    });
+  const unsupported = {
+    name: "ConfigurationHarnessError",
+    message: "Agent setting gatewayManagedMode is not supported by the selected Compute Driver.",
+  };
+  // Kubernetes without a Gateway runtime cannot apply managed mode (finding 2676). The default
+  // is off, which needs no Installation administer: there is nothing to opt out of.
+  registerAndSelectDrivers(controller, [createTestKubernetesComputeDriver("no-gateway-runtime")]);
+  const unmanaged = await create("No Gateway runtime");
+  assert.equal(unmanaged.gatewayManagedMode, false);
+  // Asking for it is refused at save and in the create preflight, not at the next deploy.
+  await assert.rejects(
+    create("Managed without runtime", { gatewayManagedMode: true }),
+    unsupported,
+  );
+  await assert.rejects(
+    controller.validateAgentCreate(administrator, {
+      namespaceId: namespace.id,
+      configuration: { kind: "agent", values: configuration.values },
+      gatewayManagedMode: true,
+    }),
+    unsupported,
+  );
+  // Turning it on later is an Installation administrator's change, refused for the same reason.
+  grantRole(iamState, administrator, {
+    id: "managed-mode-administrator",
+    permissions: { installation: ["administer"] },
+    resource: { kind: "installation", id: installation.id },
+  });
+  await assert.rejects(
+    controller.updateAgent(administrator, {
+      namespaceId: namespace.id,
+      agentId: unmanaged.id,
+      gatewayManagedMode: true,
+    }),
+    unsupported,
+  );
+  // With a Gateway runtime the Driver enforces managed mode, so it is on by default.
+  registerAndSelectDrivers(controller, [
+    createTestKubernetesComputeDriver("gateway-runtime", { gatewayRuntime: true }),
+  ]);
+  assert.equal((await create("Gateway runtime")).gatewayManagedMode, true);
+});
+
 test("only an Installation administrator opts an Agent out of Gateway managed mode or changes it later", async () => {
   const { configuration, controller, iamState, namespace } = await fixture();
   // This fixture's administrator holds Agent create and update in the Namespace but not
