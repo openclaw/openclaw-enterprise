@@ -18,7 +18,9 @@ const maxLogContainers = 6;
 const credentialLineMarker = "[redacted credential-bearing line]";
 
 export async function assertGatewayPolicyRunSucceeded(client, outcome, protectedUpdate) {
-  if (outcome.status === "ok") return;
+  if (outcome.status === "ok") {
+    return;
+  }
 
   const details = [];
   if (protectedUpdate) {
@@ -34,8 +36,9 @@ export async function assertGatewayPolicyRunSucceeded(client, outcome, protected
   }
   // A provider can put arbitrary text in error, stopReason, or terminalReply.
   // Preserve only bounded Gateway facts. Job state alone cannot prove a denial.
-  if (typeof outcome.error === "string" && outcome.error.length > 0)
+  if (typeof outcome.error === "string" && outcome.error.length > 0) {
     details.push("errorText=present");
+  }
   for (const [field, known] of [
     ["stopReason", ["error", "timeout", "aborted", "restart", "superseded", "rpc", "stop"]],
     ["timeoutPhase", ["queue", "preflight", "provider", "post_turn", "gateway_draining"]],
@@ -44,8 +47,9 @@ export async function assertGatewayPolicyRunSucceeded(client, outcome, protected
       details.push(`${field}=${known.includes(outcome[field]) ? outcome[field] : "other"}`);
     }
   }
-  if (typeof outcome.providerStarted === "boolean")
+  if (typeof outcome.providerStarted === "boolean") {
     details.push(`providerStarted=${outcome.providerStarted}`);
+  }
   assert.equal(
     ["pending", "timeout", "error"].includes(outcome.status) ? outcome.status : "other",
     "ok",

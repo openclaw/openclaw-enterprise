@@ -75,7 +75,9 @@ test("a failed protected update reports its stored job state without disclosing 
     const client = {
       async request(...args) {
         requests.push(args);
-        if (!current) throw new Error("private read failure");
+        if (!current) {
+          throw new Error("private read failure");
+        }
         return current;
       },
     };
