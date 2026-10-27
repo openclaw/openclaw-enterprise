@@ -10,7 +10,7 @@ const box = spawn(
     stdio: ["pipe", "pipe", "inherit"],
     // The supervisor receives no model Secret environment. Private Secret files
     // are opened by the contained bootstrap, not serialized into Box config.
-    env: { HOME: "/home/node", PATH: process.env.PATH },
+    env: { HOME: "/home/node", PATH: process.env.PATH, EXPERIMENTAL_LINUX_SUPPORT: "TRUE" },
   },
 );
 let shutdownRequested = false;
