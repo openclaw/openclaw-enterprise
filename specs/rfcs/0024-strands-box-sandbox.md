@@ -83,6 +83,18 @@ Extend the existing contracts with these optional handoffs:
   authority, and repeats Compute preparation. Stop, replacement and driver
   mismatch end that revision's maintenance. Omission preserves current behavior.
 
+`ComputeRevisionContext.existingHarnessOnly?: true` and
+`SandboxHarnessContext.existingHarnessOnly?: true` carry a dispatch-only limit.
+The worker sets it only for durable maintenance of an active revision whose
+selected Sandbox requests maintenance. Compute forwards it to the provider;
+it is not persisted or included in immutable workload requirements. Strands
+must refuse a missing Deployment before any resource creation or enrollment
+credential read. If deletion follows a successful read, adoption still creates
+no workload. Ordinary candidate and publication-recovery passes retain their
+existing provisioning behavior. This preserves the `observeHarness` contract:
+a lost Sandbox requires a new deployment, while a provider-managed Pod restart
+can recover within its existing Deployment.
+
 Lifecycle signatures and Compute's authority do not change. There is no
 provider-name branch in OCC core.
 
