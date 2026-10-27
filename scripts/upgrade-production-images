@@ -119,6 +119,31 @@ json_file_name() {
   printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_'
 }
 
+# Prints OCC's refusal from a failed `occ agent deploy`'s stderr FILE and
+# succeeds only when OCC answered with a 4xx error code (occ prints
+# "OCC operation failed (HTTP 4xx): CODE: message") or refused the service key.
+# OCC admits a deploy in one transaction, so such a refusal saved no revision.
+# Anything else, such as a lost connection, a timeout, HTTP 408 or a 5xx, leaves
+# the outcome unknown.
+deploy_refusal() {
+  python3 - "$1" <<'PYTHON'
+import re, sys
+try:
+    lines = open(sys.argv[1], encoding="utf-8", errors="replace").read().splitlines()
+except OSError:
+    sys.exit(1)
+pattern = re.compile(r"Error: (OCC operation failed \(HTTP 4(?!08)[0-9]{2}\): [A-Z][A-Z0-9_]*: |OCC rejected the service key )")
+for index, line in enumerate(lines):
+    if pattern.match(line):
+        # occ indents the rejected fields' JSON details under its message.
+        details = [detail.strip() for detail in lines[index + 1 : index + 4] if detail.startswith("  ")]
+        refusal = " ".join([line.removeprefix("Error: ")] + details)
+        print(re.sub(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]", "?", refusal)[:600])
+        sys.exit(0)
+sys.exit(1)
+PYTHON
+}
+
 project_yaml() {
   local path=$1
   local filter=$2
@@ -135,6 +160,14 @@ matches_yaml() {
   cmp -s "$evidence_dir/compare-actual.json" "$evidence_dir/compare-expected.json"
 }
 
+# Prints the quoted name of the resource that the OCC read ARGS returns, or
+# nothing when the read fails. tojson escapes C0 controls and DEL; C1 controls
+# are replaced too, so a name cannot forge lines or terminal sequences.
+occ_name() {
+  "${occ_json[@]}" "$@" </dev/null 2>/dev/null |
+    jq -r 'if (.name | type) == "string" then .name | tojson | gsub("[\u0080-\u009f]"; "?") else empty end' 2>/dev/null
+}
+
 # Lists the first ten inventory Agents that FILTER selects, with their names,
 # so an inventory refusal tells the operator which Agents to act on. FILTER
 # binds $namespace. Names are read-only lookups with the same OCC credentials;
@@ -145,18 +178,13 @@ list_inventory_agents() {
   local limit=10
   local total namespace_id agent_id agent_name
   local listed_namespace='' namespace_name=''
-  # tojson escapes C0 controls and DEL; C1 controls are replaced too, so a name
-  # cannot forge lines or terminal sequences.
-  local name='if (.name | type) == "string" then .name | tojson | gsub("[\u0080-\u009f]"; "?") else empty end'
   total=$(jq "[$filter] | length" "$inventory")
   while IFS=$'\t' read -r namespace_id agent_id; do
     if [[ "$namespace_id" != "$listed_namespace" ]]; then
       listed_namespace=$namespace_id
-      namespace_name=$("${occ_json[@]}" namespace get "$namespace_id" </dev/null 2>/dev/null |
-        jq -r "$name" 2>/dev/null) || namespace_name=
+      namespace_name=$(occ_name namespace get "$namespace_id") || namespace_name=
     fi
-    agent_name=$("${occ_json[@]}" --namespace "$namespace_id" agent get "$agent_id" </dev/null 2>/dev/null |
-      jq -r "$name" 2>/dev/null) || agent_name=
+    agent_name=$(occ_name --namespace "$namespace_id" agent get "$agent_id") || agent_name=
     printf '  - Agent %s %s in Namespace %s %s\n' \
       "$agent_id" "${agent_name:-(name unavailable)}" \
       "$namespace_id" "${namespace_name:-(name unavailable)}"
@@ -1166,7 +1194,35 @@ if [[ -n "$runtime_image" ]] && ((target_count > 0)); then
     wait "$pid" || dispatch_failed=1
   done
 fi
-((dispatch_failed == 0)) || die "at least one Agent deployment outcome is unknown; inspect $evidence_dir/dispatch and reconcile it before resuming."
+if ((dispatch_failed)); then
+  refused=()
+  unknown=()
+  while IFS= read -r target; do
+    namespace_id=$(jq -r '.namespaceId' <<<"$target")
+    agent_id=$(jq -r '.agentId' <<<"$target")
+    prefix="$evidence_dir/dispatch/$(json_file_name "$namespace_id--$agent_id")"
+    [[ ! -f "$prefix.json" ]] || continue
+    agent_name=$(occ_name --namespace "$namespace_id" agent get "$agent_id") || agent_name=
+    agent="Agent $agent_id ${agent_name:-(name unavailable)} in Namespace $namespace_id"
+    if refusal=$(deploy_refusal "$prefix.error"); then
+      # OCC refused the request in the deploy transaction, so it saved no revision.
+      # Keep the refusal, then drop the intent so --resume sends this deploy again.
+      printf '%s\n' "$refusal" >>"$prefix.rejected"
+      rm -f "$prefix.intent" "$prefix.json.tmp"
+      refused+=("  - $agent: $refusal")
+    else
+      unknown+=("  - $agent")
+    fi
+  done <"$targets"
+  if ((${#refused[@]})); then
+    warn "OCC refused to deploy ${#refused[@]} recorded Agent(s) with the new release and saved no revision for them:
+$(printf '%s\n' "${refused[@]}")
+Correct what each refusal names, such as a Configuration setting the new release refuses, then repeat this command with --resume and the same evidence directory. The resume deploys each refused Agent once; do not deploy it yourself. The refusals are in dispatch/*.rejected."
+  fi
+  ((${#unknown[@]} == 0)) || die "at least one Agent deployment outcome is unknown; inspect $evidence_dir/dispatch and reconcile it before resuming:
+$(printf '%s\n' "${unknown[@]}")"
+  exit 1
+fi
 
 deployments="$evidence_dir/deployments.jsonl"
 : >"$deployments"
@@ -1272,12 +1328,41 @@ while IFS= read -r deployment; do
     >>"$doctor_targets"
 done <"$deployments"
 
-remaining_seconds=$((deadline - SECONDS))
-((target_count == 0 || remaining_seconds > 0)) ||
-  die "OpenClaw Doctor did not run before the upgrade timeout."
+# Doctor runs in the serving gateway container and shares its memory limit. An
+# out-of-memory kill there can stop the gateway too (on cgroup v2, Kubernetes
+# kills every process in the container), so Doctor must not use the gateway's
+# memory (finding 2697). With a dedicated Agent's configuration, Doctor used
+# under 256 MiB of heap and needed 320 to 384 MiB in all. Cap its heap, and
+# start it once one read leaves twice doctor_memory_mib free below the
+# container's limit, or two reads in a row leave doctor_memory_mib free.
+doctor_heap_mib=384
+doctor_memory_mib=512
+
+# Prints the gateway container's free memory below its cgroup v2 limit in MiB,
+# or "unlimited". Inactive file cache counts as free, as in the kubelet's
+# working set. Fails when the container's cgroup files cannot be read.
+gateway_free_memory() {
+  local gateway_namespace=$1 gateway_name=$2 output=$3
+  "${kube[@]}" --request-timeout=15s --namespace "$gateway_namespace" exec "$gateway_name" \
+    --container gateway -- cat /sys/fs/cgroup/memory.max /sys/fs/cgroup/memory.current \
+    /sys/fs/cgroup/memory.stat >"$output" 2>/dev/null || return 1
+  python3 - "$output" <<'PYTHON'
+import sys
+lines = open(sys.argv[1], encoding="utf-8").read().splitlines()
+limit = lines[0].strip()
+current = int(lines[1])
+stat = dict(line.split(" ", 1) for line in lines[2:] if " " in line)
+working = current - int(stat.get("inactive_file", "0"))
+print("unlimited" if limit == "max" else max(0, (int(limit) - working) // 1048576))
+PYTHON
+}
+
 doctor_failed=0
 if ((target_count > 0)); then
   pids=()
+  doctor_agents=()
+  doctor_gateways=()
+  doctor_prefixes=()
   while IFS= read -r target; do
     namespace_id=$(jq -r '.namespaceId' <<<"$target")
     agent_id=$(jq -r '.agentId' <<<"$target")
@@ -1285,14 +1370,56 @@ if ((target_count > 0)); then
     gateway_namespace=$(jq -r '.gatewayNamespace' <<<"$target")
     gateway_name=$(jq -r '.gatewayName' <<<"$target")
     doctor_prefix="$evidence_dir/status/$(json_file_name "$namespace_id--$agent_id--$deployment_id").doctor"
+    settled=0
+    while true; do
+      if ! free=$(gateway_free_memory "$gateway_namespace" "$gateway_name" "$doctor_prefix.memory"); then
+        warn "cannot read the cgroup v2 memory use of Agent $agent_id's gateway; running OpenClaw Doctor without checking its free memory."
+        break
+      fi
+      if [[ "$free" == unlimited ]] || ((free >= 2 * doctor_memory_mib)); then
+        break
+      fi
+      if ((free >= doctor_memory_mib)); then
+        ((++settled < 2)) || break
+      else
+        settled=0
+      fi
+      ((SECONDS < deadline)) ||
+        die "Agent $agent_id's gateway did not keep $doctor_memory_mib MiB free below its memory limit before the upgrade timeout (last read: $free MiB free), so OpenClaw Doctor did not run: Doctor shares the gateway container's limit and could OOM-kill the serving gateway. Wait for the gateway's memory use to settle, then repeat the command with --resume; see docs/guides/deploy/production-upgrade-recovery.md#correct-a-doctor-failure."
+      sleep 2
+    done
+    remaining_seconds=$((deadline - SECONDS))
+    ((remaining_seconds > 0)) || die "OpenClaw Doctor did not run before the upgrade timeout."
     ("${kube[@]}" --request-timeout="${remaining_seconds}s" \
       --namespace "$gateway_namespace" exec "$gateway_name" --container gateway -- \
+      env "NODE_OPTIONS=--max-old-space-size=$doctor_heap_mib" \
       node /app/openclaw.mjs doctor --lint --json --severity-min error \
       >"$doctor_prefix.json" 2>"$doctor_prefix.error") &
     pids+=("$!")
+    doctor_agents+=("$agent_id")
+    doctor_gateways+=("$gateway_namespace/$gateway_name")
+    doctor_prefixes+=("$doctor_prefix")
   done <"$doctor_targets"
-  for pid in "${pids[@]}"; do
-    wait "$pid" || doctor_failed=1
+  for index in "${!pids[@]}"; do
+    wait "${pids[index]}" && continue
+    doctor_failed=1
+    agent_id=${doctor_agents[index]}
+    gateway_namespace=${doctor_gateways[index]%%/*}
+    gateway_name=${doctor_gateways[index]#*/}
+    doctor_prefix=${doctor_prefixes[index]}
+    if grep -q 'exit code 137' "$doctor_prefix.error"; then
+      # Report whether the gateway went down with Doctor.
+      gateway_state=$("${kube[@]}" --request-timeout=15s --namespace "$gateway_namespace" get \
+        "pod/$gateway_name" --output json 2>/dev/null | jq -r '
+          [.status.containerStatuses[]? | select(.name == "gateway")][0] |
+          "restarted \(.restartCount // 0) time(s), last stopped: \(.lastState.terminated.reason // "never")"' \
+        2>/dev/null) || gateway_state="state unavailable"
+      warn "OpenClaw Doctor was OOM-killed (exit 137) in Agent $agent_id's gateway; gateway container $gateway_state. Repeat the command with --resume once the gateway is Ready; Doctor waits for $doctor_memory_mib MiB of free gateway memory."
+    elif grep -q 'heap out of memory' "$doctor_prefix.error"; then
+      warn "OpenClaw Doctor ran out of its $doctor_heap_mib MiB heap in Agent $agent_id's gateway."
+    else
+      warn "OpenClaw Doctor failed in Agent $agent_id's gateway."
+    fi
   done
 fi
 ((doctor_failed == 0)) ||

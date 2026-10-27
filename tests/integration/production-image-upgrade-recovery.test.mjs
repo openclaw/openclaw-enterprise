@@ -256,6 +256,22 @@ async function fakeCommand(root, { command: tool, args, cwd }, io) {
     io.exit(code);
   };
   const fileArg = (name) => args[args.indexOf(name) + 1];
+  // The replacement revision's ready gateway Pod; an OOM kill shows in its restart history.
+  const gatewayPod = () => ({
+    metadata: { namespace: "tenant", name: "gateway" },
+    spec: { containers: [{ name: "gateway", image: runtime }] },
+    status: {
+      phase: "Running",
+      conditions: [{ type: "Ready", status: "True" }],
+      containerStatuses: [
+        {
+          name: "gateway",
+          restartCount: state.gatewayRestarts ?? 0,
+          lastState: state.gatewayRestarts ? { terminated: { reason: "OOMKilled" } } : {},
+        },
+      ],
+    },
+  });
   if (tool === "node") {
     // Pair cases exercise upgrade orchestration after a successful qualification. The
     // separately selected real-image test verifies compatibility itself.
@@ -458,6 +474,8 @@ async function fakeCommand(root, { command: tool, args, cwd }, io) {
         status: "Success",
         message: "private-delete-response-marker",
       });
+    } else if (resource === "pod/gateway" && args.includes("get")) {
+      out(gatewayPod());
     } else if (resource && (args.includes("get") || args.includes("logs"))) {
       const pod = state.preflight.pods[resource.slice("pod/".length)];
       if (!pod) {
@@ -690,21 +708,30 @@ async function fakeCommand(root, { command: tool, args, cwd }, io) {
             initialization && state.initActive
               ? [{ status: { phase: "Running" } }]
               : revision
-                ? [
-                    {
-                      metadata: { namespace: "tenant", name: "gateway" },
-                      spec: { containers: [{ name: "gateway", image: runtime }] },
-                      status: {
-                        phase: "Running",
-                        conditions: [{ type: "Ready", status: "True" }],
-                      },
-                    },
-                  ]
+                ? [gatewayPod()]
                 : [],
         });
       }
     } else if (args.includes("get")) {
       out({ items: [] });
+    } else if (args.includes("exec") && args.includes("/sys/fs/cgroup/memory.max")) {
+      // The gateway container's cgroup v2 files: a 3 GiB limit, with free memory taken
+      // from the case's script (ample by default) and 100 MiB of reclaimable file cache.
+      const free = state.gatewayFree?.shift() ?? 2048;
+      save();
+      log(`gateway-memory ${free}`);
+      const limit = 3 * 1024 ** 3;
+      const cache = 100 * 1024 ** 2;
+      out(`${limit}\n${limit - free * 1024 ** 2 + cache}\nanon 1\ninactive_file ${cache}\n`);
+    } else if (args.includes("exec") && args.includes("doctor")) {
+      log(`doctor ${args.slice(args.indexOf("--") + 1).join(" ")}`);
+      // The container reached its memory limit while Doctor ran: Kubernetes killed both.
+      if (take("doctor-oom")) {
+        state.gatewayRestarts = (state.gatewayRestarts ?? 0) + 1;
+        save();
+        return fail(137, "command terminated with exit code 137");
+      }
+      out("{}");
     } else if (args.includes("exec")) {
       if (args.includes("worker") && state.simulatePair && take("fail-capability")) {
         return fail(9);
@@ -754,9 +781,22 @@ async function fakeCommand(root, { command: tool, args, cwd }, io) {
       if (name === undefined) {
         return fail(1, "permission denied");
       }
-      out({ id: args.at(-1), name });
+      out({
+        id: args.at(-1),
+        name,
+        ...(args.includes("agent") ? { activeRevisionId: state.activeRevision ?? "rev_old" } : {}),
+      });
     } else if (args.includes("deploy")) {
       state.dispatches += 1;
+      // A scripted failure answers like the real occ: exit 1 and its error on stderr. A
+      // refusal (4xx) commits no revision, so the selected revision stays unchanged.
+      if (state.deployFailure) {
+        const failure = state.deployFailure;
+        state.deployFailure = null;
+        save();
+        log("agent-deploy-failed");
+        return fail(1, failure);
+      }
       state.activeRevision = "rev_new";
       save();
       log("agent-deploy");
@@ -1412,6 +1452,140 @@ test("resume reads back and stops on an unknown Agent deployment instead of retr
   );
   await f.run("--resume");
   assert.equal((await f.state()).dispatches, 1);
+});
+
+// OCC admits a deploy in one transaction, so a 4xx answer with an OCC error code saved
+// no revision: the helper names the Agent and the refusal, and --resume deploys it
+// again. A 408 or 5xx answer, like a lost response, leaves the outcome unknown.
+for (const { status, error, refusal } of [
+  {
+    status: 400,
+    // occ indents the rejected field's details under the message; a control character
+    // in OCC's message must not reach the terminal.
+    error:
+      "Error: OCC operation failed (HTTP 400): INVALID_REQUEST: Configuration setting tools.gatewayPolicy.actions.sessions must use reviewed task actions.\u001b[2J\n" +
+      '  {"path":"tools.gatewayPolicy.actions.sessions","code":"invalid_value"}',
+    refusal:
+      'OCC operation failed (HTTP 400): INVALID_REQUEST: Configuration setting tools.gatewayPolicy.actions.sessions must use reviewed task actions.?[2J {"path":"tools.gatewayPolicy.actions.sessions","code":"invalid_value"}',
+  },
+  {
+    status: 408,
+    error: "Error: OCC operation failed (HTTP 408): REQUEST_TIMEOUT: The request timed out.",
+  },
+  {
+    status: 503,
+    error:
+      "Error: OCC operation failed (HTTP 503): DEPENDENCY_UNAVAILABLE: The selected compute Driver is unavailable.",
+  },
+]) {
+  test(`an Agent deploy answered with HTTP ${status} is ${refusal ? "refused and redeployed on resume" : "an unknown outcome"}`, async (t) => {
+    const f = await fixture(t, {
+      inventoryNamespaces: [
+        {
+          id: "ns_test",
+          status: "ready",
+          agents: [
+            {
+              id: "agt_test",
+              status: "active",
+              desiredRuntimeState: "running",
+              executionMode: "embedded",
+              activeRevisionId: "rev_old",
+              deploymentInProgress: false,
+            },
+          ],
+        },
+      ],
+      names: { ns_test: "Support", agt_test: "Mail triage" },
+    });
+    const state = await f.state();
+    state.deployFailure = error;
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+    const failure = await f.run().then(
+      () => assert.fail("the upgrade must stop at the failed deploy"),
+      (stopped) => stopped,
+    );
+    const prefix = join(f.evidence, "dispatch/ns_test--agt_test");
+    if (!refusal) {
+      assert.match(
+        failure.stderr,
+        /at least one Agent deployment outcome is unknown; .*\n {2}- Agent agt_test "Mail triage" in Namespace ns_test\n/,
+      );
+      assert.equal(existsSync(prefix + ".rejected"), false);
+      await assert.rejects(f.run("--resume"), /unknown deployment outcome/);
+      assert.equal((await f.state()).dispatches, 1);
+      return;
+    }
+    assert.deepEqual(failure.stderr.trimEnd().split("\n"), [
+      "upgrade-production-images: OCC refused to deploy 1 recorded Agent(s) with the new release and saved no revision for them:",
+      `  - Agent agt_test "Mail triage" in Namespace ns_test: ${refusal}`,
+      "Correct what each refusal names, such as a Configuration setting the new release refuses, then repeat this command with --resume and the same evidence directory. The resume deploys each refused Agent once; do not deploy it yourself. The refusals are in dispatch/*.rejected.",
+    ]);
+    assert.equal(await readFile(prefix + ".rejected", "utf8"), refusal + "\n");
+    assert.equal(existsSync(prefix + ".intent"), false);
+    // The operator corrected the Configuration; the resume sends the refused deploy once.
+    await f.run("--resume");
+    assert.equal((await f.state()).dispatches, 2);
+    assert.deepEqual(
+      (await f.events()).filter((event) => event.startsWith("agent-deploy")),
+      ["agent-deploy-failed", "agent-deploy"],
+    );
+  });
+}
+
+// Doctor shares the serving gateway container's memory limit, and an out-of-memory
+// kill there stops the gateway too (finding 2697). Doctor, with a capped heap, starts
+// after one read with 1 GiB free or two reads in a row with 512 MiB; a kill is named.
+test("OpenClaw Doctor waits for free gateway memory and names an OOM kill", async (t) => {
+  const f = await fixture(t, { agent: true });
+  const state = await f.state();
+  // Free MiB per read: a low read resets the count of good reads.
+  state.gatewayFree = [600, 300, 600, 512];
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+  await f.failNext("doctor-oom");
+  const failure = await f.run().then(
+    () => assert.fail("the upgrade must stop when Doctor is killed"),
+    (stopped) => stopped,
+  );
+  const doctor =
+    "doctor env NODE_OPTIONS=--max-old-space-size=384 node /app/openclaw.mjs doctor --lint --json --severity-min error";
+  assert.deepEqual(
+    (await f.events()).filter((event) => /^(gateway-memory|doctor) /.test(event)),
+    [
+      "gateway-memory 600",
+      "gateway-memory 300",
+      "gateway-memory 600",
+      "gateway-memory 512",
+      doctor,
+    ],
+  );
+  assert.match(
+    failure.stderr,
+    /OpenClaw Doctor was OOM-killed \(exit 137\) in Agent agt_test's gateway; gateway container restarted 1 time\(s\), last stopped: OOMKilled\./,
+  );
+  assert.match(failure.stderr, /OpenClaw Doctor failed for at least one replacement gateway/);
+  // Resume runs Doctor again after one read with ample room; the deploy is not repeated.
+  await f.run("--resume");
+  assert.equal((await f.state()).dispatches, 1);
+  assert.deepEqual(
+    (await f.events()).filter((event) => /^(gateway-memory|doctor) /.test(event)).slice(5),
+    ["gateway-memory 2048", doctor],
+  );
+});
+
+test("OpenClaw Doctor does not run while the gateway lacks free memory", async (t) => {
+  const f = await fixture(t, { agent: true });
+  const state = await f.state();
+  state.gatewayFree = Array(20).fill(511);
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+  await assert.rejects(
+    f.run("--timeout-seconds", "3"),
+    /Agent agt_test's gateway did not keep 512 MiB free below its memory limit before the upgrade timeout \(last read: 511 MiB free\), so OpenClaw Doctor did not run/,
+  );
+  assert.equal(
+    (await f.events()).some((event) => event.startsWith("doctor ")),
+    false,
+  );
 });
 
 test("resume refuses a pending Helm release or unrelated Secret changes", async (t) => {

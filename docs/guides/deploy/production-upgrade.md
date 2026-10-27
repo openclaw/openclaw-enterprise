@@ -318,16 +318,20 @@ configuration; their software version does not change.
 
 After OCC recovers, the command deploys every recorded running Agent, waits for
 durable success, confirms each new selected version, and requires its Pods to be
-`Running` and `Ready` on the requested runtime digest. Stopped and deleting
-Agents remain untouched. An empty fleet updates the saved runtime selection but
-does not prove that the image starts.
+`Running` and `Ready` on the requested runtime digest. If OCC refuses an
+Agent's deployment, such as for a saved setting the new release refuses, the
+command names the Agent and the refusal; correct it and
+[resume](production-upgrade-recovery.md#correct-a-refused-agent-deployment).
+Stopped and deleting Agents remain untouched. An empty fleet updates the saved
+runtime selection but does not prove that the image starts.
 
 OpenClaw runs startup-safe migrations and plugin convergence before each gateway
 becomes ready. This workflow replaces immutable images instead of running
 `openclaw update`, so the command then runs
 `openclaw doctor --lint --json --severity-min error` inside every replacement
-gateway. Doctor is read-only here; a reported error fails the upgrade and is
-saved under `status/*.doctor.*`. Gateways run `doctor --fix` themselves only
+gateway, once the gateway container has 512 MiB of memory free: Doctor shares
+its memory limit. Doctor is read-only here; a reported error fails the upgrade
+and is saved under `status/*.doctor.*`. Gateways run `doctor --fix` themselves only
 for [older state](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage).
 
 Success looks like:

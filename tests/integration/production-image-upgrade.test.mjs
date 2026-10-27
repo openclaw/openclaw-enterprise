@@ -299,7 +299,7 @@ esac
     "kubectl",
     `printf 'kubectl %s\\n' "$*" >>"$COMMAND_LOG"
 case "$*" in
-  *'exec gateway-test --container gateway -- node /app/openclaw.mjs doctor --lint --json --severity-min error'*)
+  *'exec gateway-test --container gateway -- env NODE_OPTIONS=--max-old-space-size=384 node /app/openclaw.mjs doctor --lint --json --severity-min error'*)
     if [[ "$DOCTOR_FAILURE" == "1" ]]; then
       printf 'doctor found an error\\n' >&2
       exit 53
@@ -401,7 +401,7 @@ esac
   assert.equal((await readFile(runtimeCountCounter, "utf8")).trim(), "3");
   assert.match(
     await readFile(commandLog, "utf8"),
-    /exec gateway-test --container gateway -- node \/app\/openclaw\.mjs doctor --lint --json --severity-min error/u,
+    /exec gateway-test --container gateway -- env NODE_OPTIONS=--max-old-space-size=384 node \/app\/openclaw\.mjs doctor --lint --json --severity-min error/u,
   );
 });
 

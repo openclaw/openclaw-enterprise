@@ -104,6 +104,26 @@ Before selecting an older controller or runtime image, verify it can read all
 state written by the candidate and restore compatible data if required. Never
 delete Agents, versions, PVCs, or the bootstrap volume to force recovery.
 
+## Correct a refused Agent deployment
+
+When OCC refuses an Agent's deployment with a 4xx answer, such as
+`HTTP 400 ... must use reviewed task actions` for a saved Configuration that
+the new release refuses, it saved no new version. The command lists each
+refused Agent with OCC's message, keeps the message in `dispatch/*.rejected`,
+and stops. Correct the cause, for example with `occ configuration update`, and
+repeat the command with `--resume`. The resume deploys each refused Agent once,
+so do not deploy it yourself. A 408 or 5xx answer stays an unknown dispatch.
+
+## Correct a Doctor failure
+
+Doctor shares the gateway container's memory limit. The command starts it only
+when the container has 512 MiB free and stops at the upgrade timeout if it
+never does. Wait for the gateway's memory use to settle, then resume. A gateway
+that never keeps 512 MiB free runs close to its limit; plan a larger gateway
+memory limit. `OpenClaw Doctor was OOM-killed (exit 137)` names the
+gateway's restart count and last stop reason. Wait until the gateway is `Ready`
+again, then resume; the resume runs Doctor again without new deployments.
+
 ## Correct an invalid Installation name
 
 The stored Installation name must follow the API Name rule: 1 to 200

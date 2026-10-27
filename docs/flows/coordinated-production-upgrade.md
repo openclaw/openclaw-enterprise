@@ -1,6 +1,6 @@
 ---
 created: 2026-09-23
-updated: "2026-10-25"
+updated: "2026-10-27"
 last_updated_session: "authoring-run/f03f716e-ea13-48ab-ad6e-e179b342d585"
 ---
 
@@ -52,6 +52,8 @@ graph TD
     L --> M{"Dispatch response known?"}
     M -->|No| N["Read Agent and stop for reconciliation"]
     N --> L
+    M -->|Refused| R["Name refusals and stop for correction"]
+    R --> L
     M -->|Yes| O["Check versions, Pods, and Doctor"]
     O --> K
 ```
@@ -226,7 +228,12 @@ an intent. Successful responses are saved atomically. On resume, existing
 responses are reused; an intent without a response triggers an Agent readback
 and stops for operator reconciliation. The helper does not infer rejection from
 an unchanged selected version or replay an unknown request. An operator can
-record a verified accepted response and resume.
+record a verified accepted response and resume. OCC admits a deployment in one
+transaction, so an `occ` error with a 4xx status and an OCC error code, other
+than 408, saved no version (`deploy_refusal`). The script names each refused
+Agent with OCC's message, saves it as `dispatch/*.rejected`, removes the intent,
+and stops; after the operator corrects the cause, `--resume` sends that request
+again.
 
 The script polls each returned deployment through its authorized status
 operation, confirms the selected version, and waits for all version Pods
@@ -239,8 +246,14 @@ step on its workspace node state before native setup, and a native worker before
 it connects (`openClawStateMigrationHelper` in `runtime-startup.ts`). Embedded execution
 requires one runtime container; dedicated execution requires both gateway and
 Agent containers. Each replacement gateway then runs read-only
-`openclaw doctor --lint --json --severity-min error`. Failures retain dispatch,
-status, Pod, and Doctor evidence for inspection.
+`openclaw doctor --lint --json --severity-min error` with a 384 MiB heap cap.
+Doctor shares the gateway container's memory limit, and an out-of-memory kill
+there also stops the gateway. The script reads the container's cgroup v2 memory
+first (`gateway_free_memory`, saved as `status/*.doctor.memory`) and starts
+Doctor after one read with 1 GiB free or two reads in a row with 512 MiB free.
+Without the cgroup files it warns and runs Doctor. Exit 137 is reported as an
+OOM kill with the gateway container's restart count and last stop reason.
+Failures retain dispatch, status, Pod, and Doctor evidence for inspection.
 
 ### 6. Hand off application verification
 
@@ -280,8 +293,8 @@ The check does not separate resources an older import already merged.
   for rejected candidates, inspect `preflight-<api|worker>.log` and `-status.json`.
 - For native scale, Helm upgrade, or rollout status failures, inspect
   `native-command-failures.tsv`; see [upgrade recovery](../guides/deploy/production-upgrade-recovery.md).
-- Before retrying runtime failures, inspect `dispatch/*.error`, version history,
-  and `status/*.json`. Doctor failures: `status/*.doctor.json` and `status/*.doctor.error`.
+- Before retrying runtime failures, inspect `dispatch/*.error`, `dispatch/*.rejected`,
+  version history, and `status/*.json`. Doctor failures: `status/*.doctor.json` and `status/*.doctor.error`.
 - Compare `before-workloads.json` and `after-workloads.json` for unexpected
   changes. The controller-only helper requests no Agent deployments; expect one
   same-image Pod template rollout per affected Agent. Separately check
