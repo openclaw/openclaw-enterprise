@@ -807,10 +807,6 @@
                     "label": "Overview"
                   },
                   {
-                    "page": "contributing/cookbook",
-                    "label": "Cookbook"
-                  },
-                  {
                     "page": "contributing/sprints",
                     "label": "Sprint Planning"
                   }

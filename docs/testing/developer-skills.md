@@ -17,6 +17,7 @@ Find the developer skill for your task and check how it is maintained.
 | Test quality                    | [test-audit](../../.agents/skills/test-audit/SKILL.md)                           |
 | Test selection and CI diagnosis | [enterprise-testing](../../.agents/skills/enterprise-testing/SKILL.md)           |
 | Acceptance scenarios            | [oceinteg](../../.agents/skills/oceinteg/SKILL.md), only when explicitly invoked |
+| Maintenance recipes             | [oce-cookbook](../../.agents/skills/oce-cookbook/SKILL.md), explicit invocation only |
 | Diagrams                        | [mermaid-diagrams](../../.agents/skills/mermaid-diagrams/SKILL.md)               |
 | Behavior-neutral cleanup        | [deslop](../../.agents/skills/deslop/SKILL.md)                                   |
 | Requested independent review    | [autoreview](autoreview.md)                                                      |
@@ -39,7 +40,7 @@ installation; the other skills are checked into `.agents/skills`.
 - `technical-writing` adapts Docy's core, developer-docs, concise-instructions,
   and spec references, inspected 2026-09-16. It leaves repository policy in
   `AGENTS.md`. Update its skill and specification reference together.
-- `console-ui`, `pr-walkthrough`, `design-review`, and `mermaid-diagrams` are maintained here. Check their linked
+- `console-ui`, `pr-walkthrough`, `design-review`, `mermaid-diagrams`, and `oce-cookbook` are maintained here. Check their linked
   guidance and validate changed workflows with an example of one supported task.
 
 The three adapted skills below use `openclaw/openclaw` commit
