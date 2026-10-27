@@ -179,9 +179,9 @@ preview, and the real OpenShell network-policy lifecycle. It requires a prepared
 OpenShell file environment; see [policy proof setup](openshell-coverage.md#qa-matrix-selector).
 The OpenShell advisory job covers the same workflow automatically.
 
-The matrix creates disposable Compose and Kubernetes control planes, both with
-Kubernetes compute, and separate OpenClaw/Codex Agents for each scenario. It does
-not use existing clusters or change the default kubeconfig. The exact test list
+Except for the explicitly prepared sandbox scenarios, the matrix creates
+disposable Compose and Kubernetes control planes, both with Kubernetes compute,
+and separate OpenClaw/Codex Agents. It does not change the default kubeconfig. The exact test list
 is in the [QA manifest](../../scripts/ci/test-suites/qa-matrix.json).
 
 The `model-ui` scenario mounts the example console theme on Compose or Kubernetes
@@ -212,16 +212,23 @@ OCC_TEST_QA_MATRIX=1 node --env-file="$TEST_ENV_FILE" \
   --test tests/integration/qa-matrix-real.test.mjs
 ```
 
+#### Local Strands Box sandbox acceptance
+
+Use the [prepared local Strands Box acceptance procedure](strands-box.md).
+It preserves the native revision-Pod topology and qualifies the optional runtime
+without relaxing admission or network policy. It is excluded from `all`.
+
 #### Scenarios
 
-| Scenario          | In advisory | Presets         | Checks                                                                                                      |
-| ----------------- | ----------- | --------------- | ----------------------------------------------------------------------------------------------------------- |
-| `model-ui`        | Yes (Codex) | OpenClaw, Codex | Real model turn and native browser response.                                                                |
-| `console-secrets` | Yes (Codex) | OpenClaw, Codex | Console create/replace/delete with an Agent draft Configuration reference and server-side deletion refusal. |
-| `git-full`        | No          | OpenClaw, Codex | Clone, edit, commit, push, open/verify a PR, dispose credentials.                                           |
-| `git-read`        | No          | Codex           | Reject read-only push and dispose credentials.                                                              |
-| `calendar`        | Yes (Codex) | Codex           | Successful Calendar read, approvals and tool restrictions.                                                  |
-| `slack`           | No          | Codex           | Threaded reply and new root message.                                                                        |
+| Scenario          | In advisory     | Presets         | Checks                                                                                                      |
+| ----------------- | --------------- | --------------- | ----------------------------------------------------------------------------------------------------------- |
+| `model-ui`        | Yes (Codex)     | OpenClaw, Codex | Real model turn and native browser response.                                                                |
+| `console-secrets` | Yes (Codex)     | OpenClaw, Codex | Console create/replace/delete with an Agent draft Configuration reference and server-side deletion refusal. |
+| `git-full`        | No              | OpenClaw, Codex | Clone, edit, commit, push, open/verify a PR, dispose credentials.                                           |
+| `git-read`        | No              | Codex           | Reject read-only push and dispose credentials.                                                              |
+| `calendar`        | Yes (Codex)     | Codex           | Successful Calendar read, approvals and tool restrictions.                                                  |
+| `strands-sandbox` | No (local only) | Codex           | Prepared Box deployment, real model tools, policy refusals, loss observation, persistence and cleanup.      |
+| `slack`           | No              | Codex           | Threaded reply and new root message.                                                                        |
 
 `OCC_TEST_QA_INSTALLATION` accepts `all` (default), `compose`, `kubernetes`;
 `OCC_TEST_QA_PRESET` accepts `all` (default), `OpenClaw`, `Codex`.
