@@ -15,7 +15,102 @@ import {
   CHUNK,
   MAX_BUFFER,
   MAX_FRAME,
+  MAX_CHANNELS,
 } from "../../deploy/runtime/strands-box/transport.mjs";
+import { serveHarness } from "../../deploy/runtime/strands-box/supervisor.mjs";
+
+async function supervisor(t) {
+  const reservation = createTcpServer();
+  await new Promise((resolve) => reservation.listen(0, "127.0.0.1", resolve));
+  const port = reservation.address().port;
+  await new Promise((resolve) => reservation.close(resolve));
+  const reader = new PassThrough();
+  const writer = new PassThrough();
+  const token = randomUUID();
+  const frames = [];
+  writer.on("data", (data) => frames.push(...data.toString().trim().split("\n").map(JSON.parse)));
+  const gateway = createTcpServer((socket) => {
+    gateway.connections++;
+    socket.destroy();
+  });
+  gateway.connections = 0;
+  await new Promise((resolve) => gateway.listen(0, "127.0.0.1", resolve));
+  const serving = serveHarness(
+    {
+      port,
+      transportHash: createHash("sha256").update(token).digest("hex"),
+      gateway: { host: "127.0.0.1", port: gateway.address().port },
+    },
+    { reader, writer, terminate() {} },
+  );
+  await once(serving.server, "listening");
+  t.after(() => {
+    serving.stop();
+    reader.destroy();
+    writer.destroy();
+    gateway.close();
+  });
+  async function client() {
+    const accepted = once(serving.server, "connection");
+    const socket = connect({ port, host: "127.0.0.1", allowHalfOpen: true });
+    socket.on("error", () => {});
+    t.after(() => socket.destroy());
+    await accepted;
+    return socket;
+  }
+  return { ...serving, client, token, reader, frames, gateway };
+}
+
+test(
+  "Strands rejected half-open clients release listener capacity without Harness I/O",
+  { timeout: 15000 },
+  async (t) => {
+    const harness = await supervisor(t);
+    for (const path of ["/", "/unknown"]) {
+      for (let i = 0; i < MAX_CHANNELS; i++) {
+        const client = await harness.client();
+        const ended = once(client, "end");
+        let response = "";
+        client.on("data", (data) => (response += data));
+        client.write(`GET ${path} HTTP/1.1\r\nAuthorization: Bearer invalid\r\n\r\n`);
+        await ended; // Deliberately leave the client's write half open.
+        assert.match(response, path === "/" ? /401 Unauthorized/u : /404 Not Found/u);
+      }
+    }
+    assert.deepEqual(harness.frames, [], "rejection must precede contained Harness I/O");
+    const client = await harness.client();
+    client.write(`GET / HTTP/1.1\r\nAuthorization: Bearer ${harness.token}\r\n\r\n`);
+    for (let i = 0; harness.frames.length < 2 && i < 100; i++) {
+      await delay(10);
+    }
+    assert.equal(harness.frames[0]?.type, "open");
+    assert.equal(harness.frames[1]?.type, "data");
+  },
+);
+
+test(
+  "Strands shutdown closes clients still reading headers and refuses queued Gateway opens",
+  { timeout: 5000 },
+  async (t) => {
+    const harness = await supervisor(t);
+    const client = await harness.client();
+    const closed = new Promise((resolve) => client.once("close", resolve));
+    const terminated = new Promise((resolve) => {
+      client.once("end", resolve);
+      client.once("close", resolve);
+    });
+    client.write("GET / HTTP/1.1\r\n");
+    harness.stop();
+    // A valid frame may already be queued when the supervisor receives SIGTERM.
+    harness.reader.write(JSON.stringify({ id: randomUUID(), type: "open" }) + "\n");
+    client.resume();
+    await terminated; // The server must close before the client supplies FIN.
+    client.end();
+    await closed;
+    await delay(50);
+    assert.equal(harness.gateway.connections, 0, "no Gateway connect after shutdown");
+  },
+);
 
 async function tcpPair(t) {
   const server = createTcpServer();
