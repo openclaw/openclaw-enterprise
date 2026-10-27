@@ -10,6 +10,7 @@ import { GATEWAY_RUNTIME_ENTRYPOINT as DOCKER_GATEWAY_RUNTIME_ENTRYPOINT } from 
 import {
   AGENT_WITH_NODE_ENTRYPOINT,
   GATEWAY_RUNTIME_ENTRYPOINT,
+  NATIVE_WORKER_ENTRYPOINT,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import {
   OPENCLAW_AGENT_DATABASE_SCHEMA_VERSION,
@@ -18,8 +19,8 @@ import {
 } from "../../apps/controller/src/drivers/compute/runtime-startup.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
-// Exercise the state migration step the Kubernetes and Docker Gateway programs
-// and the Harness's workspace node share, against real SQLite files. Only Doctor
+// Exercise the state migration step the Kubernetes and Docker Gateway programs,
+// the Harness's workspace node and the dedicated OpenClaw worker share, against real SQLite files. Only Doctor
 // is replaced: the runtime image tests prove the real Doctor migrates a released
 // Gateway's and a released workspace node's state.
 const helper = openClawStateMigrationHelper("Gateway", "restart the Pod");
@@ -161,6 +162,9 @@ test("Gateway state migration skips fresh, current, uninitialized and newer data
     [{}, { shared: STATE_CURRENT + 1 }],
     // Current content published under an older header while an older updater runs.
     [{ main: CURRENT }, { shared: STATE_CURRENT - 2, marker: STATE_CURRENT }],
+    // A current header over an older marker: OpenClaw publishes the header later
+    // without rewriting the marker row, so the newer of the two names the schema.
+    [{ main: CURRENT }, { shared: STATE_CURRENT, marker: STATE_CURRENT - 3 }],
   ]) {
     const directory = await stateDirectory(t, databases, shared);
     const outcome = await migrate(directory);
@@ -592,6 +596,172 @@ test("Harness holds without native setup or children when Doctor leaves older wo
   assert.ok(
     message.includes(`${sharedPath(join(directory, "node-state"))} at schema ${STATE_CURRENT - 1}`),
   );
+  assert.match(message, /then deploy the Agent again\.$/);
+  assert.equal(readVersion(sharedPath(join(directory, "node-state"))), STATE_CURRENT - 1);
+});
+
+// Runs the dedicated OpenClaw worker program, with its node state in
+// `directory`/node-state, until it starts its connect child or holds. Real files;
+// replaced: runtime asset publication, the model probe (it answers "ok"), the
+// readiness listener (`ready()` asks it) and every child process. Doctor runs
+// `doctor(child, { ready })`; `node identity` answers with a fixed device id.
+async function runNativeWorker(directory, doctor = () => assert.fail("Doctor must not run")) {
+  const spawned = [];
+  const identities = [];
+  const errors = [];
+  let readiness;
+  let holds = 0;
+  // The kubelet's readiness request on the Compute status port.
+  const ready = () =>
+    new Promise((resolve) => {
+      readiness(
+        { method: "GET", url: "/readyz" },
+        { writeHead: (status) => resolve(status), end() {} },
+      );
+    });
+  const probe = JSON.stringify({
+    auth: {
+      probes: {
+        results: [{ provider: "openai", model: "openai/fixture", source: "env", status: "ok" }],
+      },
+    },
+  });
+  const inference = { models: { providers: { openai: { baseUrl: "http://127.0.0.1:9" } } } };
+  const context = {
+    Buffer,
+    Date,
+    JSON,
+    Math,
+    Number,
+    Promise,
+    URL,
+    clearTimeout,
+    setTimeout,
+    console: { error: (line) => errors.push(String(line)), log() {} },
+    process: {
+      env: {
+        HOME: directory,
+        PATH: "/usr/bin",
+        TMPDIR: join(directory, "tmp"),
+        OPENCLAW_NODE_STATE_DIR: join(directory, "node-state"),
+        OPENCLAW_NODE_SETUP_CODE: "fixture-node-setup",
+        OPENCLAW_WORKSPACE_DIR: join(directory, "workspace"),
+        OPENCLAW_NATIVE_WORKER_CAPACITY: "8",
+        OPENCLAW_NATIVE_INFERENCE_CONFIG: JSON.stringify(inference),
+        OPENCLAW_RUNTIME_STATUS_PORT: "18791",
+        OPENCLAW_HARNESS_MODEL: "openai/fixture",
+        OPENCLAW_HARNESS_PROVIDER: "openai",
+        OPENCLAW_HARNESS_CREDENTIAL_ENV: "OPENAI_API_KEY",
+        OPENCLAW_HARNESS_PROBE_CONFIG: JSON.stringify({
+          ...inference,
+          agents: { defaults: { model: "openai/fixture" } },
+        }),
+        // The model credential the connect child needs and Doctor must not receive.
+        OPENAI_API_KEY: "sk-fixture-native-worker-model-credential",
+      },
+      execPath: "/usr/local/bin/node",
+      on() {},
+      off() {},
+      exit: (code) => assert.fail(`Native worker exited ${code}: ${errors.join("\n")}`),
+    },
+    setInterval: () => {
+      holds += 1;
+    },
+    require(specifier) {
+      if (specifier === "node:http") {
+        return {
+          createServer: (handler) => ({
+            listen() {
+              readiness = handler;
+            },
+          }),
+        };
+      }
+      if (specifier !== "node:child_process") {
+        return nodeRequire(specifier);
+      }
+      return {
+        execFile(command, args, options, callback) {
+          identities.push(args[2]);
+          callback(null, JSON.stringify({ deviceId: "a".repeat(64) }));
+        },
+        spawnSync: (command, args) =>
+          args.includes("--probe") ? { status: 0, stdout: probe } : { status: 0 },
+        spawn(command, args, options) {
+          const child = new EventEmitter();
+          child.kill = () => {};
+          spawned.push({ name: args[1], env: options.env });
+          if (args[1] === "doctor") {
+            setImmediate(() => doctor(child, { ready }));
+          }
+          return child;
+        },
+      };
+    },
+  };
+  vm.runInNewContext(
+    NATIVE_WORKER_ENTRYPOINT.replace("\ninitializeRuntimeAssets();\n", "\n"),
+    context,
+  );
+  const synchronous = spawned.map(({ name }) => name);
+  const connected = () => spawned.some(({ name }) => name === "connect");
+  for (let turn = 0; turn < 100 && holds === 0 && !connected(); turn += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  return { spawned, synchronous, identities, errors, holds, ready };
+}
+
+test("Native worker connects current and fresh node state without Doctor", async (t) => {
+  for (const version of [undefined, STATE_CURRENT]) {
+    const directory = await harnessDirectory(t, version);
+    const outcome = await runNativeWorker(directory);
+    // Current state adds no await before connect.
+    assert.deepEqual(outcome.synchronous, ["connect"]);
+    assert.equal(await outcome.ready(), 200);
+  }
+});
+
+test("Native worker migrates older node state without the model credential before it connects", async (t) => {
+  const directory = await harnessDirectory(t, STATE_CURRENT - 1);
+  const nodeState = join(directory, "node-state");
+  let readyDuringDoctor;
+  const outcome = await runNativeWorker(directory, async (child, { ready }) => {
+    readyDuringDoctor = await ready();
+    setVersion(sharedPath(nodeState), STATE_CURRENT);
+    child.emit("exit", 0, null);
+  });
+  // Readiness does not open the node state while Doctor migrates it.
+  assert.equal(readyDuringDoctor, 503);
+  assert.deepEqual(outcome.identities, []);
+  assert.deepEqual(
+    outcome.spawned.map(({ name }) => name),
+    ["doctor", "connect"],
+  );
+  const [doctor, connect] = outcome.spawned;
+  assert.equal(doctor.env.OPENCLAW_STATE_DIR, nodeState);
+  assert.equal(doctor.env.OPENCLAW_CONFIG_PATH, join(nodeState, "openclaw.json"));
+  assert.equal(doctor.env.OPENCLAW_CONFIG_READONLY, "1");
+  assert.equal(doctor.env.OPENAI_API_KEY, undefined);
+  assert.equal(doctor.env.OPENCLAW_NODE_SETUP_CODE, undefined);
+  assert.equal(connect.env.OPENAI_API_KEY, "sk-fixture-native-worker-model-credential");
+  assert.ok(outcome.errors.some((line) => /"phase":"state-migration","outcome":"ok"/.test(line)));
+  assert.equal(await outcome.ready(), 200);
+  assert.deepEqual(outcome.identities, ["identity"]);
+});
+
+test("Native worker holds unready without connecting when Doctor leaves older node state", async (t) => {
+  const directory = await harnessDirectory(t, STATE_CURRENT - 1);
+  const outcome = await runNativeWorker(directory, (child) => child.emit("exit", 1, null));
+  assert.deepEqual(
+    outcome.spawned.map(({ name }) => name),
+    ["doctor"],
+  );
+  assert.equal(outcome.holds, 1);
+  // A held worker never reports ready and never opens the older node state.
+  assert.equal(await outcome.ready(), 503);
+  assert.deepEqual(outcome.identities, []);
+  const message = outcome.errors.at(-1);
+  assert.match(message, /^Harness state migration failed: openclaw doctor --fix \(exit-1\) left /);
   assert.match(message, /then deploy the Agent again\.$/);
   assert.equal(readVersion(sharedPath(join(directory, "node-state"))), STATE_CURRENT - 1);
 });

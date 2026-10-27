@@ -134,8 +134,8 @@ renames such a directory aside, recreates it and moves its entries back. A name
 the new directory already has stays in `.<subpath>.kubelet-created`.
 
 This directory keeps node identity across Pod and version replacement.
-Before native setup, the Harness runs the [Gateway](#gateway-storage) Doctor
-pass on this state, with only the node's environment, when its database is
+Before native setup, or before a native worker connects, the Harness runs the
+[Gateway](#gateway-storage) Doctor pass on this state, with only the node's environment, when its database is
 older. A database still older holds the Harness unready
 (`Harness state migration failed`).
 The node Secret's setup code expires ten minutes after preparation mints it. A

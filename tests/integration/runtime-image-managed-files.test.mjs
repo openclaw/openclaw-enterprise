@@ -4,6 +4,7 @@
 // configuration as externally managed.
 import assert from "node:assert/strict";
 import test from "node:test";
+import { sanitizeRuntimeLogChunk } from "../../packages/occ/src/runtime-logs/sanitize.ts";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
 import {
   AGENT_WITH_NODE_ENTRYPOINT,
@@ -62,6 +63,7 @@ for (let attempt = 0; attempt < 4; attempt++) {
     assert.notEqual(result.status, 0);
     assert.doesNotMatch(result.stdout, /WORKSPACE_CHILD_STARTED/);
     assert.match(result.stderr, /Workspace initialization failed/);
+    console.log("SETUP_FAILURE " + JSON.stringify({ stdout: result.stdout, stderr: result.stderr }));
     continue;
   }
   assert.equal(result.status, 0, result.stderr + result.stdout);
@@ -128,6 +130,23 @@ console.log("WORKSPACE_INITIALIZATION_PASSED");
       { timeout: 120_000 * imageSmokeTimeoutMultiplier },
     );
     assert.match(stdout, /WORKSPACE_INITIALIZATION_PASSED/);
+    // Native setup reports the invalid configuration as a multi-line JSON document,
+    // which runtime logs withhold line by line (finding 2686). The Harness logs its
+    // message on one line that `occ agent logs` shows, and keeps the document out.
+    const failure = JSON.parse(/^SETUP_FAILURE (.*)$/m.exec(stdout)[1]);
+    assert.doesNotMatch(failure.stdout, /cli_error/);
+    const summary =
+      /^Error: Workspace initialization failed: openclaw setup --baseline \(exit-1\) reported: OpenClaw config is invalid: \S+$/m;
+    assert.match(failure.stderr, summary, failure.stderr);
+    const { records } = sanitizeRuntimeLogChunk({
+      stream: { source: "agent", pod: "agent-0", container: "agent" },
+      truncated: false,
+      lines: failure.stderr.split("\n").map((raw) => ({ time: null, raw })),
+    });
+    assert.ok(
+      records.some((record) => record.type === "line" && summary.test(record.message)),
+      JSON.stringify(records),
+    );
   },
 );
 
