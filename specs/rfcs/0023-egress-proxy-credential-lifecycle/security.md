@@ -125,6 +125,17 @@ defines snapshot ownership and zero-retention reads.
 
 ### Interface and consumer migration
 
+OCC calls the Backend's source registration contract for ordinary sources. A bundled
+OpenShell Backend declares `credentialSources.id` and its binary configuration. Startup
+can decode the released Gateway selector into that same owner. Preserve the source ID,
+snapshot fields and protected Driver configuration digest across either spelling.
+
+For an ordinary source, Kubernetes Compute calls its paired Sandbox to prepare, observe
+and withdraw provider attachments. These operations retain their existing enforcement.
+A protected source uses the Credential Proxy and its admitted bindings. The Token Service
+can read an existing grant under operator credentials after enrollment is disabled.
+Reading alone grants no authority to start a login or rotate a source.
+
 | Credential Gateway method | Responsibility that must survive retirement |
 | --- | --- |
 | `withSourceToken` | Authorized Token Service management use for discovery, including account metadata and a permission recheck before invoking the consumer |
