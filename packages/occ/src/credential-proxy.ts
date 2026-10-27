@@ -84,7 +84,7 @@ export interface EgressAuthorityPorts {
 export const STREAM_LEASE_IDLE_MS = 300_000;
 /** Hard ceiling from UUIDv7 creation; no progress extends a stream past it. */
 export const STREAM_LEASE_CEILING_MS = 15 * 60_000;
-/** Progress sooner than this after the last policy check keeps the lease unchanged. */
+/** Progress sooner than this after the last policy check attempt keeps the lease unchanged. */
 export const STREAM_LEASE_RECHECK_MS = 15_000;
 const maximumStreamBodyBytes = 4 * 1024 * 1024;
 /**
@@ -269,8 +269,9 @@ interface OperationRecord {
   stream?: {
     readonly bodyBytes: number;
     readonly ceiling: number;
-    readonly checkedAt: number;
   } | null;
+  /** Most recent stream policy check, whether it renewed the lease or was unavailable. */
+  streamCheckAttemptedAt?: number;
   timer?: ReturnType<typeof setTimeout>;
   release?: () => void;
 }
@@ -1054,7 +1055,7 @@ export class CredentialProxy implements CredentialProxyExchange {
    * Renew the permitted operation while the origin's response streams. Only progress
    * renews: the first frame needs the response head (within the operation deadline) and
    * each later frame more body bytes. Progress can trigger a policy check no sooner than
-   * STREAM_LEASE_RECHECK_MS after the last successful check; silence triggers no check.
+   * STREAM_LEASE_RECHECK_MS after the last check attempt; silence triggers no check.
    * An unavailable authority keeps the current bound without extending it. A lost
    * owner (custody or peer expiry) cuts without an observation: there is no stream left
    * to observe for. Nothing here releases bytes.
@@ -1091,9 +1092,9 @@ export class CredentialProxy implements CredentialProxyExchange {
     // A frame without new bytes, or sooner than the recheck interval, keeps the
     // current bound; it cannot extend it.
     if (
-      record.stream &&
-      (progress.bodyBytes <= record.stream.bodyBytes ||
-        this.ports.now() - record.stream.checkedAt < STREAM_LEASE_RECHECK_MS)
+      (record.stream && progress.bodyBytes <= record.stream.bodyBytes) ||
+      (record.streamCheckAttemptedAt !== undefined &&
+        this.ports.now() - record.streamCheckAttemptedAt < STREAM_LEASE_RECHECK_MS)
     ) {
       return lease();
     }
@@ -1131,6 +1132,7 @@ export class CredentialProxy implements CredentialProxyExchange {
         }
         return undefined;
       }
+      record.streamCheckAttemptedAt = now;
       if (!("key" in decision)) {
         record.stream ??= null;
         return lease();
@@ -1142,7 +1144,7 @@ export class CredentialProxy implements CredentialProxyExchange {
         return undefined;
       }
       record.expiresAt = renewBy;
-      record.stream = { bodyBytes: progress.bodyBytes, ceiling, checkedAt: now };
+      record.stream = { bodyBytes: progress.bodyBytes, ceiling };
       this.expireAt(handle, record, renewBy);
       return lease();
     } finally {

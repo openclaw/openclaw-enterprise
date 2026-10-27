@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
-updated: "2026-10-26"
-last_updated_session: authoring-run/8a58b4b6-9e85-4789-b9e8-8e820a7c6d7c
+updated: "2026-10-27"
+last_updated_session: authoring-run/1655d259-04e8-4e20-a37d-072ccfcaf037
 ---
 
 # Protected credential request flow
@@ -222,12 +222,12 @@ lost reply remains a possible effect and must not be retried.
 
 ### 4. Protect response and finish
 
-`packages/occ/src/credential-proxy.ts:protectResponse` binds the complete response to its peer, request and exchange, removes
-unlisted headers and releases no bytes before the decision. The request deadline bounds
-the first byte. On progress, `renewResponse` rechecks policy at most every 15 seconds;
-withdrawal cuts the stream within that window, and an unavailable authority cannot extend
-the lease. A shorter authenticated peer lifetime caps cached leases and held responses. Later progress
-cannot extend that bound.
+`packages/occ/src/credential-proxy.ts:protectResponse` binds the complete response to its peer,
+request and exchange, removes unlisted headers and withholds bytes until approval. The request
+deadline bounds the first byte. On progress, `renewResponse` checks policy at most once every
+15 seconds, including during outages. Unavailability preserves the deadline; denial cuts the
+stream. Recovery can renew before expiry. A shorter authenticated peer lifetime caps leases
+and held responses despite later progress.
 Limits: five minutes idle, fifteen minutes total, 4 MiB and 16,384 events.
 
 For Responses, check client-assembled SDK output-part snapshots, assistant text across
@@ -317,6 +317,8 @@ the origin and caller independently.
 None.
 
 ## Changelog
+
+- 2026-10-27 10:59: Document stream renewal retry cadence. (authoring-run/1655d259-04e8-4e20-a37d-072ccfcaf037 - 0418ef3a2c116b73f025281395d92477daf665d2)
 
 - 2026-10-26 21:57: Trace a protected repository metadata request through access, dispatch and response checks. (authoring-run/8a58b4b6-9e85-4789-b9e8-8e820a7c6d7c - e573b7de03bafa2e84ea072d8c10cef7320575d4)
 
