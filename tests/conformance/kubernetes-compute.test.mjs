@@ -6465,6 +6465,26 @@ test("the canonical Kubernetes runtime validates the dedicated Codex model endpo
   }
 });
 
+test("fixed provider Harness configuration accepts explicit and implicit discriminators", () => {
+  const provider = {
+    namespace: "openshell-system",
+    podLabels: { app: "openshell-gateway" },
+    address: "10.43.0.50",
+    port: 8080,
+  };
+  for (const providerHarness of [provider, { ...provider, mode: "fixed" }]) {
+    const configured = options();
+    configured.network.providerHarness = providerHarness;
+    assert.doesNotThrow(() => createKubernetesComputeDriver(configured));
+  }
+  const configured = options();
+  configured.network.providerHarness = { ...provider, mode: "namespace" };
+  assert.throws(
+    () => createKubernetesComputeDriver(configured),
+    SharedConfigurationValidationError,
+  );
+});
+
 test("every NetworkPolicy peer namespace must be a Kubernetes namespace name", () => {
   const runtime = { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" };
   const base = options({ runtime });
@@ -17799,7 +17819,7 @@ for (const method of ["api_key", "codex_pat"]) {
       url:
         driver.getGatewayEndpoint(revision).replace(/^wss:/, "https:") +
         "/node/__openclaw__/native-hook",
-      credentialDirectory: "/home/node/.oce-native-hooks",
+      credentialDirectory: "/home/node/.codex/.oce-native-hooks",
     });
     assert.equal(gateway.metadata.namespace, gatewayNamespace);
     assert.equal(harness.metadata.namespace, namespace);
@@ -20537,4 +20557,72 @@ test("Kubernetes embedded setup uses a Main roster entry's workspace", async () 
     containerProgram(gateway.spec.template.spec.containers[0]).includes("/srv/elsewhere"),
     false,
   );
+});
+
+test("Namespace provider routing grants exact revision ingress peers and retires predecessor grants", async () => {
+  let available = true;
+  let wrongOwner = false;
+  const driver = new KubernetesComputeDriver(
+    options({
+      runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+      network: { ...options().network, providerHarness: { mode: "namespace", port: 8080 } },
+    }),
+    {
+      sandboxDriver: {
+        id: "namespace-provider",
+        implementation: "example-provider",
+        async harnessEndpoint() {
+          throw new Error("Policy rendering must not discover an endpoint");
+        },
+        async harnessPeerLabels({ revision }) {
+          if (!available) {
+            return undefined;
+          }
+          return {
+            "openclaw.dev/namespace": revision.namespaceId,
+            "openclaw.dev/agent": wrongOwner ? "another-agent" : revision.agentId,
+            "openclaw.dev/revision": revision.id,
+            "openclaw.dev/workload-role": "agent",
+          };
+        },
+        async cleanup() {},
+      },
+    },
+  );
+  driver.apiClients = Promise.resolve({ objects: {} });
+  const revision = routedRevision(driver, {
+    id: "new-revision",
+    agentId: "namespace-agent",
+    sandboxDriverId: "namespace-provider",
+  });
+  const namespace = { name: kubernetesNamespaceName(revision.namespaceId), plane: "control" };
+  const render = async (preparation) =>
+    (await driver.agentNetworkPoliciesWithPeers(revision, namespace, preparation)).find(
+      ({ resource }) =>
+        resource.metadata.name === `allow-gateway-agent-${digest(revision.agentId)}`,
+    ).resource.spec.egress;
+  const grants = await render({ predecessorRevisionId: "old-revision" });
+  assert.equal(grants.length, 2);
+  assert.deepEqual(
+    new Set(grants.map((rule) => rule.to[0].podSelector.matchLabels["openclaw.dev/revision"])),
+    new Set(["new-revision", "old-revision"]),
+  );
+  for (const rule of grants) {
+    assert.equal(
+      rule.to[0].namespaceSelector.matchLabels["kubernetes.io/metadata.name"],
+      namespace.name,
+    );
+    assert.equal(rule.to[0].podSelector.matchLabels["openclaw.dev/agent"], revision.agentId);
+    assert.deepEqual(rule.ports, [{ protocol: "TCP", port: 8080 }]);
+  }
+  assert.equal((await render()).length, 1, "activation removes the predecessor grant");
+  available = false;
+  assert.deepEqual(
+    await render(),
+    [],
+    "missing workloads must never emit an unrestricted empty peer",
+  );
+  available = true;
+  wrongOwner = true;
+  await assert.rejects(render(), /exact revision/);
 });
