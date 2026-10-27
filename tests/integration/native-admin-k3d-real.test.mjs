@@ -720,9 +720,10 @@ async function assertSharedNativeSessions(
   }
   const sibling = await topology.adminRequest("POST", `${namespacePath}/agents`, {
     name: `private-sibling-${randomUUID()}`,
+    executionMode: topology.agent.executionMode,
     configurationId: topology.agent.configurationId,
   });
-  assert.equal(sibling.status, 201);
+  assert.equal(sibling.status, 201, JSON.stringify(sibling.error));
   const people = [];
   const deniedProbes = [];
   let operatorPage;
