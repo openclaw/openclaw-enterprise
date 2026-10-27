@@ -117,7 +117,7 @@ Kubernetes older than 1.35 is unsupported; the API and worker emit
 ### Recommended: generate profile configuration
 
 Choose `openclaw` or `codex` from the [profile options](installation-profiles.md#choose-a-profile).
-Generation requires Node.js 24+ on the operator host (and `pnpm install` with
+Generation requires Node.js 24.22.1+ on the operator host (and `pnpm install` with
 native admin). Manual YAML does not, but
 the later Agent transport-provisioning example does; without Node, provision
 transports in the console.

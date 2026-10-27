@@ -717,6 +717,13 @@ export function kubernetesHash(value, length = 12) {
   return sha256Hex(value, length);
 }
 
+// The production Gateway memory limit (deploy/examples/production/installation.yaml,
+// docs/guides/deploy/installation-profiles.md). Fixtures that run a real Gateway
+// turn set it, so they hold the Gateway to what production allows: OpenClaw
+// starts most of its worker threads on the first turn (finding 2700).
+export const productionGatewayMemoryLimitGi = 4;
+export const productionGatewayMemoryLimit = `${productionGatewayMemoryLimitGi}Gi`;
+
 export function createKubernetesInstallationConfiguration({
   authentication,
   platformNamespace,

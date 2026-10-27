@@ -98,10 +98,11 @@ and applies the checksum-verified patches described in the
 [runtime recipe](../../deploy/runtime/README.md). Both installs use
 frozen lockfiles and upstream's selected-plugin manifests, retaining required
 bundled plugins plus Codex and Slack. The standalone Codex command links to the
-plugin's installation. Build tools remain in full Bookworm stages; final images
-use a separately pinned Node 24 Bookworm slim base. Both bases apply available
-Debian package updates when their recipe layers build. The Node digest identifies
-the upstream image; it does not freeze Debian package repositories.
+plugin's installation. Build stages use full Bookworm; final images use separately
+pinned slim bases. `Dockerfile` checks its dependency and runtime stages, and
+`deploy/runtime/Dockerfile` checks both bases and its runtime, for Node 24.22.1+
+within the 24 series. Older explicit overrides fail. Both bases apply available
+Debian updates; image digests do not freeze Debian repositories.
 
 The build runs the caller-authority and Gateway recovery tests offline. The final
 image records the patch checksums in its provenance.
@@ -244,6 +245,8 @@ owns package-write access and coordination.
 ## Changelog
 
 - 2026-10-26 10:23: Read OpenClaw source metadata from one manifest; validate build arguments and provenance. (authoring-run/3032d748-8d18-4cef-a903-f9a72ed8cda9 - 37d28e211ed5831dc201433d36bb23eadd834f6b)
+
+- 2026-10-23 15:28: Require patched Node 24.22.1 bases before controller and runtime preparation (authoring-run/9b2870c6-312f-48b7-a654-186ae5ec4668 - 5370e972f8b1d51222d79b64c375e8e13a2bd452)
 
 - 2026-10-23 16:52: Select the source's CI base for standalone checks and update OpenClaw for Gateway managed mode. (codex/01a1558e-c27f-7bc0-a403-af59e9364ddf)
 

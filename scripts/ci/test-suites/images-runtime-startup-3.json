@@ -30,7 +30,8 @@
       "expectedTests": [
         "embedded Gateway restart recovers only its signed Pod owner",
         "runtime image migrates a released Gateway's agent database once before starting OpenClaw",
-        "runtime image migrates a released agent database before the Docker development Gateway starts OpenClaw"
+        "runtime image migrates a released agent database before the Docker development Gateway starts OpenClaw",
+        "runtime image migrates an older workspace node's credentials before the dedicated Harness starts"
       ]
     },
     {

@@ -651,7 +651,6 @@ test(
     });
 
     const { logs } = await runGatewaySmoke(t, "openclaw", {
-      collectPlugins: false,
       configuration,
       extraEnvironment: ["OPENCLAW_LOG_LEVEL=error"],
     });
@@ -686,7 +685,9 @@ test(
   "runtime image discovers the bundled Codex plugin from a fresh gateway home",
   imageTestOptions,
   async (t) => {
-    const { logs, containerName, pluginList } = await runGatewaySmoke(t, "codex");
+    const { logs, containerName, pluginList } = await runGatewaySmoke(t, "codex", {
+      collectPlugins: true,
+    });
 
     const entries = jsonLogEntries(logs);
     assertGatewayReadyLog(entries);

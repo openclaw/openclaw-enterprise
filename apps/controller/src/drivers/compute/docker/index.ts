@@ -6,6 +6,7 @@ import type {
   ComputeDriver,
   ComputeAgentBinding,
   ComputeRevisionContext,
+  ConfigurationValidationOptions,
   WorkspaceSetup,
   ComputeReadiness,
   RuntimeImage,
@@ -49,7 +50,8 @@ import {
 import { embeddedGatewayRecoveryPreamble } from "../embedded-gateway-owner.ts";
 import {
   gatewayManagedModeEnvironment,
-  gatewayStateMigrationHelper,
+  gatewayNodeOptionsEnvironment,
+  openClawStateMigrationHelper,
   startupPhaseHelper,
 } from "../runtime-startup.ts";
 import {
@@ -66,6 +68,7 @@ import {
 import {
   GATEWAY_TOOL_POLICY_RUNTIME,
   managedGatewayConfiguration,
+  validateGatewayToolPolicy,
 } from "../gateway-tool-policy.ts";
 import { validateCodexApprovalPolicySetting } from "../../../gateway/codex-approval-policy.ts";
 import { unsupportedNativeGatewayAuthFields } from "../../../gateway/auth-fields.ts";
@@ -251,7 +254,7 @@ const { spawn } = require("node:child_process");
 ${PLUGIN_RUNTIME_HELPERS}
 ${GATEWAY_TOOL_POLICY_RUNTIME}
 ${startupPhaseHelper("gateway")}
-${gatewayStateMigrationHelper("deploy the Agent again")}
+${openClawStateMigrationHelper("Gateway", "deploy the Agent again")}
 
 function forwardTermination(child) {
   let terminating = false;
@@ -269,7 +272,7 @@ function startGateway() {
   const child = spawn(
     "node",
     ["/app/openclaw.mjs", "gateway", "--port", process.env.OPENCLAW_GATEWAY_PORT],
-    { stdio: "inherit", env: { ...process.env, ...${gatewayManagedModeEnvironment(managedMode)} } },
+    { stdio: "inherit", env: { ...process.env, ...${gatewayManagedModeEnvironment(managedMode)}, ...${gatewayNodeOptionsEnvironment()} } },
   );
   forwardTermination(child);
   child.on("exit", (code, signal) => process.exit(code ?? (signal === "SIGTERM" ? 0 : 1)));
@@ -293,11 +296,12 @@ if (gatewayToolPolicyInput !== undefined) configureManagedGatewayTools(gatewayTo
 // reads the configuration written above; current state adds no await before
 // the spawn. A failure exits: the Driver reports the container that stopped
 // before readiness and nothing restarts it.
-const outdatedDatabases = outdatedAgentDatabases();
+const gatewayStateDirectory = process.env.OPENCLAW_STATE_DIR || "/home/node/.openclaw";
+const outdatedDatabases = outdatedOpenClawDatabases(gatewayStateDirectory);
 if (outdatedDatabases.length === 0) {
   startGateway();
 } else {
-  migrateGatewayState(outdatedDatabases).then(
+  migrateOpenClawState(gatewayStateDirectory, outdatedDatabases, process.env).then(
     (migrated) => {
       if (migrated) startGateway();
       else process.exit(1);
@@ -572,6 +576,16 @@ export class DockerComputeDriver implements ComputeDriver {
     validatePlaintextNativeGateway(configuration);
     validateRoutableNativeListener(configuration);
     validateCodexApprovalPolicySetting(configuration);
+  }
+
+  // An embedded Gateway applies tools.gatewayPolicy natively, so Configuration save, Preset save
+  // and deployment refuse a policy it cannot assemble, with Kubernetes's text (finding 2695).
+  // Dedicated Codex preparation still checks its composed policy.
+  validateConfiguration(
+    configuration: Readonly<OpenClawConfigurationDocument>,
+    options?: ConfigurationValidationOptions,
+  ): void {
+    validateGatewayToolPolicy(configuration, callerSettingError, options);
   }
 
   // Agent create and update apply preparation's workspace rule, with its message. (OCC

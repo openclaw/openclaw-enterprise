@@ -42,7 +42,7 @@ docker build -f deploy/runtime/Dockerfile \
   -t openclaw-enterprise-runtime:repository-credentials .
 ```
 
-The image includes Git, the client helper and pinned `gh` 2.100.0. Publish or
+The image includes Git, the client helper and pinned `gh` 2.103.2. Publish or
 import it, select its digest and configure model authentication.
 
 ## Keep Git access on the same running Agent

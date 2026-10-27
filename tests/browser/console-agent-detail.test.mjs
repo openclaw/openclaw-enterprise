@@ -1107,6 +1107,22 @@ test("Agent detail preserves admitted revision history while draft edits change 
       once: true,
     },
   );
+  // The hint says what managed mode keeps, the tool allowlist included (finding 2690).
+  await page
+    .getByText(
+      "Managed mode keeps the Gateway configuration, including its tool allowlist, as OCE deployed it, and blocks Gateway-local terminals and Gateway-hosted command jobs. With it off, Gateway administrators can change the configuration and widen the tool allowlist until a deployment with managed mode on restores it. Deploy a new version to apply a change.",
+      { exact: true },
+    )
+    .waitFor();
+  // An administrator gets the control, not the note for callers who cannot change it.
+  assert.equal(
+    await page
+      .getByText("Only an Installation administrator can change Gateway managed mode.", {
+        exact: true,
+      })
+      .count(),
+    0,
+  );
   await page.getByRole("button", { name: "Turn off managed mode for next deployment" }).click();
   await savingMode.requested;
   assert.equal(await deploy.isDisabled(), true);
@@ -3736,6 +3752,12 @@ test("a read-only principal sees Agent mutation controls disabled or absent befo
     await page.getByRole("button", { name: "Turn off managed mode for next deployment" }).count(),
     0,
   );
+  // A caller without the control learns who can change the setting (finding 2690).
+  await page
+    .getByText("Only an Installation administrator can change Gateway managed mode.", {
+      exact: true,
+    })
+    .waitFor();
 
   // The summary is a probe, not an attempted operation: no write was sent and nothing was
   // audited as a denial for the summary or the gated operations.

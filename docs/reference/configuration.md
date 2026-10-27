@@ -18,15 +18,14 @@ Every Agent Configuration has the required, immutable `kind: "agent"`. Its
 `values` holds the native OpenClaw document, including `env`, `file`, and `exec`
 SecretRefs. The optional `secretBindings` field binds exact Namespace-owned
 Secrets to selected gateway environment variables; the Secret Driver stores the
-values separately. The Configuration Driver stores the native document. The
-bundled Kubernetes Driver uses one `openclaw.json` ConfigMap entry, so values
-must serialize to less than 1 MiB; a save over that is refused with
+values separately. A reviewed Configuration Driver, bundled or installed, stores
+the native document in development and production. The bundled Kubernetes Driver
+uses one `openclaw.json` ConfigMap entry, so values must serialize to less than
+1 MiB; a save over that is refused with
 `400 INVALID_REQUEST` and a message naming the limit. Configuration POST/PATCH
 bodies allow six times 1 MiB plus 32 KiB (6.2 MiB), room for the values and the
 envelope in six-byte JSON escapes; a caller without the create or update grant
-is refused before the body is read. Reviewed
-bundled and installed Configuration Drivers are available in development and
-production.
+is refused before the body is read.
 
 Console presentation uses a separate API-only [theme bundle](console/theming.md),
 selected with `OCC_CONSOLE_THEME_DIR`. It does not change persisted Installation
@@ -188,15 +187,17 @@ too; an Agent ID or `agents.ownership` that waits on a variable is checked as
 far as its written text goes, and in full once filled. A Configuration saved before
 this check still reads, and Kubernetes deployment still refuses it; only a write
 that keeps the roster is refused. SSH Compute deployment does not check rosters.
-Rules that depend on the topology stay at deployment, because a Configuration
-does not fix one: dedicated execution's `main` Agent rules, for example.
+Topology rules, such as dedicated execution's `main` Agent rules, stay at
+deployment: a Configuration does not fix a topology.
 Every write and Preset save also refuses, with the `400` every deployment gives,
 an `agents.defaults.model` or `agents.entries.<id>.model` primary or fallback
-that is not `<provider>/<model>` (OpenClaw's `openrouter:auto` included), and
-fallbacks that are not a list, naming the setting. A Preset model that waits on
-a variable is checked as far as its written text goes, and in full once filled.
-A Configuration saved before this check still reads; deployment refuses it, and
-only a write that keeps the model is refused. Agent
+that is not `<provider>/<model>` (OpenClaw's `openrouter:auto` included),
+fallbacks that are not a list, a non-boolean `agents.defaults.skipBootstrap`,
+and `agents.defaults.skipOptionalBootstrapFiles` names outside OpenClaw's
+optional file list, naming the setting. A Preset value that waits on a variable
+is checked as far as its written text goes, and in full once filled. A
+Configuration saved before these checks still reads; deployment refuses it, and
+only a write that keeps the value is refused. Agent
 deployment separately validates supported
 runtime selection, topology, and Secret binding ownership before admission.
 Creation requires `create` permission for Configurations in the
@@ -293,11 +294,12 @@ The Kubernetes Configuration Driver stores live native documents in tenant Confi
 ## Gateway tool policy
 
 Dedicated OpenClaw on Kubernetes and Codex on Kubernetes or Docker apply the
-Gateway policy after plugin grants. Model access requires concrete names in
+Gateway policy after plugin grants; embedded OpenClaw applies a policy only when the
+Configuration sets one. Model access requires concrete names in
 `tools.gatewayPolicy.allow`. Plugin approval and `tools.alsoAllow` alone grant
-no additional model tools.
+no model tools.
 
-Trusted Configuration authors can select reviewed task tools:
+Select reviewed task tools, for example:
 
 ```json
 {
@@ -315,17 +317,16 @@ Enable Diffs as a plugin. Omitting the policy uses the
 empty `allow` withholds Gateway tools. Action-bearing tools, such as `dashboard`,
 require explicit allowed actions. Baseline actions can only narrow; administrative tools and
 additional baseline actions are rejected. Profiles, denies and Codex dynamic-tool
-exclusions still apply.
+exclusions still apply. Save and deployment refuse such a policy; a running
+revision keeps an older one until its next deployment.
 
-Compute enforces `automations.scope: "caller"` and `allowCommandJobs: false` under
-`tools.gatewayPolicy`, plus `agents.defaults.modelSelectionScope: "session"` and
-`cron.triggers.enabled: false`. Human Gateway administration and Codex native
-tools retain their existing authorization.
+Dedicated composition also sets `automations.scope: "caller"` and
+`allowCommandJobs: false` under `tools.gatewayPolicy`, plus `agents.defaults.modelSelectionScope: "session"` and
+`cron.triggers.enabled: false`.
 
-Deploy a revision to change the saved policy after old work ends. With Gateway managed mode off, an authorized Gateway admin
-can widen the local allowlist for subsequent turns through a native restart.
-Redeploying with managed mode on restores the revision's policy. The
-[deployment flow](../flows/agent-plugins.md#4-prepare-native-runtime-state-and-hand-off-readiness)
+Deploy a revision to change the saved policy after old work ends.
+[Gateway managed mode](agents/gateway-managed-mode.md) governs local allowlist
+changes. The [deployment flow](../flows/agent-plugins.md#4-prepare-native-runtime-state-and-hand-off-readiness)
 details compatibility checks.
 
 ## Related

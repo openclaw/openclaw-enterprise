@@ -122,8 +122,8 @@ drivers:
         requireImmutableDigest: true
       resources:
         gateway:
-          requests: { cpu: 100m, memory: 1792Mi }
-          limits: { cpu: "4", memory: 3Gi }
+          requests: { cpu: 100m, memory: 2560Mi }
+          limits: { cpu: "4", memory: 4Gi }
         agent:
           requests: { cpu: 100m, memory: 768Mi }
           limits: { cpu: "4", memory: 6Gi }

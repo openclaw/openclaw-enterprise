@@ -925,15 +925,9 @@ function imageCache(role) {
   return `type=gha,version=2,scope=oce-ci-${role}-${process.platform}-${process.arch}-v1`;
 }
 
-// Only main's warm job (ci-image-cache.yml) writes the cache. It runs for every
-// image input change and on a schedule from main's newest commit, in order and
-// never cancelled, so the newest commit's export lands last. CI lanes only
-// restore: a lane export on main could land after a newer commit's warm export
-// and replace it, and on a pull request it cost about 40 s and filled only the
-// merge ref's scope. The warm job exports in a second build after the image is
-// built and loaded: the same arguments without --load or the tag, so BuildKit
-// reuses the steps it just ran and only uploads the cache.
-function imageCacheExportArgs(role, buildArgs) {
+// The hosted cache build's arguments without --load or the tag, writing only
+// to BuildKit's cache, with the given options first.
+function imageCacheOnlyArgs(buildArgs, ...options) {
   if (buildArgs.slice(0, 3).join(" ") !== "buildx build --load") {
     throw new Error("Only a hosted cache build can export the image cache.");
   }
@@ -945,16 +939,28 @@ function imageCacheExportArgs(role, buildArgs) {
       rest.push(buildArgs[index]);
     }
   }
-  return [
-    "buildx",
-    "build",
-    "--output",
-    "type=cacheonly",
-    "--cache-to",
-    `${imageCache(role)},mode=max,timeout=10m`,
-    ...rest,
-  ];
+  return ["buildx", "build", "--output", "type=cacheonly", ...options, ...rest];
 }
+
+// Only main's warm job (ci-image-cache.yml) writes the cache. It runs for every
+// image input change and on a schedule from main's newest commit, in order and
+// never cancelled, so the newest commit's export lands last. CI lanes only
+// restore: a lane export on main could land after a newer commit's warm export
+// and replace it, and on a pull request it cost about 40 s and filled only the
+// merge ref's scope. The warm job exports in a second build after the image is
+// built and loaded: the same arguments without --load or the tag, so BuildKit
+// reuses the steps it just ran and only uploads the cache.
+function imageCacheExportArgs(role, buildArgs) {
+  return imageCacheOnlyArgs(buildArgs, "--cache-to", `${imageCache(role)},mode=max,timeout=10m`);
+}
+
+// The runtime Dockerfile builds OpenClaw beside its bridge tests (openclaw-build
+// and openclaw-bridge-tests). OpenClaw's build refuses to start unless about 5 GiB
+// is available, and the warm runner has 7.65 GiB: with the tests beside it, it
+// found 2.2-3.9 GiB. The warm job builds that stage alone first, so the image
+// build after it reuses the result and runs the tests then. Image lanes run on
+// larger runners and keep both stages in parallel.
+const warmRuntimeFirstStage = "openclaw-build";
 
 // The warm job's limit for one image's cache export. Exports that reuse the
 // OpenClaw layers took 25-65 s. A change to those layers (an OpenClaw pin, patch
@@ -1184,8 +1190,17 @@ async function buildRuntimeImages(
       return laneImageCommand(role, args);
     }
     const exportArgs = imageCacheExportArgs(role, args);
-    // A failed or overrunning build fails the job and keeps nothing.
-    await warmCommand(`${role} build`, args, 20 * 60_000);
+    // A failed or overrunning build fails the job and keeps nothing. The first
+    // stage and the image build share one 20-minute limit.
+    const deadline = performance.now() + 20 * 60_000;
+    if (role === "runtime") {
+      await warmCommand(
+        `runtime ${warmRuntimeFirstStage} build`,
+        imageCacheOnlyArgs(args, "--target", warmRuntimeFirstStage),
+        20 * 60_000,
+      );
+    }
+    await warmCommand(`${role} build`, args, Math.max(1, Math.round(deadline - performance.now())));
     // The export is best effort with its own limit. Without it, image lanes restore
     // the previous cache: content-addressed steps that still match are reused and
     // the rest rebuild, so a missed export makes builds slower, never wrong.

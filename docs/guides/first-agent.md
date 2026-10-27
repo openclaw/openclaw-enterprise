@@ -10,8 +10,8 @@ after the command exits.
 - Complete [Local setup](quickstart.md) and leave the installation running.
 - Select either `OCC_DEVELOPMENT_SANDBOX_DRIVER=none` for the default embedded
   OpenClaw Agent or `openshell` for the experimental dedicated Codex path.
-- For the default path, leave about 1.75 GiB of cluster memory free: the Agent's
-  Gateway Pod requests `1792Mi` ([sizing](deploy/installation-profiles.md)).
+- For the default path, leave about 2.5 GiB of cluster memory free: the Agent's
+  Gateway Pod requests `2560Mi` ([sizing](deploy/installation-profiles.md)).
 - Use the same checkout and development state directory. If you set
   `OCC_DEVELOPMENT_STATE_DIRECTORY` during setup, use the same value here.
   The command uses the recorded local container-engine socket and ignores

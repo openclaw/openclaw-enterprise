@@ -3359,6 +3359,56 @@ test("Installation deployment inventory fails closed on incomplete authorization
   assert.equal(incomplete.body.error.code, "DEPENDENCY_UNAVAILABLE");
 });
 
+test("Channel directory accepts Slack's null terminal cursor without losing prior matches", async () => {
+  const controller = await configuredController({ secretDriver: createTestSecretDriver() });
+  await bootstrap(controller);
+  const namespace = await createNamespace(controller, "slack-terminal-cursor");
+  const { fixture } = controller;
+  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
+  const secret = await controller.request("POST", `/namespaces/${namespace.id}/secrets`, {
+    body: { name: "directory-bot", value: "xoxb-directory-fixture" },
+  });
+  assert.equal(secret.status, 201);
+  let terminalCursor = null;
+  const driver = new SlackChannelDriver(async (url) => {
+    const request = new URL(url);
+    if (request.pathname === "/api/auth.test") {
+      return Response.json({ ok: true, bot_id: "BFIXTURE", team_id: "TWORKSPACE" });
+    }
+    assert.equal(request.pathname, "/api/conversations.list");
+    const secondPage = request.searchParams.has("cursor");
+    if (secondPage) {
+      assert.equal(request.searchParams.get("cursor"), "page-two");
+    }
+    return Response.json({
+      ok: true,
+      channels: [
+        secondPage ? { id: "CSECOND", name: "ann-second" } : { id: "CFIRST", name: "ann-first" },
+      ],
+      response_metadata: { next_cursor: secondPage ? terminalCursor : "page-two" },
+    });
+  });
+  fixture.controller.registerDriver(driver);
+  fixture.controller.selectDriver("channel", driver.id);
+  const path = `/namespaces/${namespace.id}/channel-directory/lookup`;
+  const body = { secretId: secret.data.id, kind: "channels", query: "ann" };
+  const found = await controller.request("POST", path, { body });
+  assert.equal(found.status, 200, JSON.stringify(found.body));
+  assert.deepEqual(found.data, {
+    workspaceId: "TWORKSPACE",
+    candidates: [
+      { id: "CFIRST", name: "ann-first" },
+      { id: "CSECOND", name: "ann-second" },
+    ],
+    complete: true,
+  });
+  // Accepting the documented null sentinel must not accept arbitrary cursor types.
+  terminalCursor = 7;
+  const invalid = await controller.request("POST", path, { body });
+  assert.equal(invalid.status, 503);
+  assert.equal(invalid.body.error.code, "CHANNEL_DIRECTORY_INVALID_RESPONSE");
+});
+
 test("Channel directory lookup checks the exact edit target and Secret before and after reading", async () => {
   const token = "synthetic-channel-directory-token";
   const secretDriver = createTestSecretDriver({ id: "secret-directory-integration" });

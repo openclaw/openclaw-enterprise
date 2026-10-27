@@ -65,7 +65,7 @@ jobs:
           printf 'SOURCE_DATE_EPOCH=%s\n' "$SOURCE_DATE_EPOCH" >> "$GITHUB_ENV"
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
-          node-version: "24.16.0"
+          node-version: "24.22.1"
       - name: Select the checked-in Node base for standalone verification
         if: ${{ !inputs.ci_run_id }}
         run: |

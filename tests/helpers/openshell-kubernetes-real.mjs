@@ -13,6 +13,7 @@ import {
   createKubernetesClient,
   createRealKubernetesFixture,
   diagnosticDeadlineMs,
+  productionGatewayMemoryLimit,
   withinDiagnosticDeadline,
 } from "./kubernetes-real.mjs";
 
@@ -410,7 +411,8 @@ export function createOpenShellInstallationConfiguration({
   configuration.drivers.configuration.id = "configuration-kubernetes-production";
   configuration.drivers.compute.id = "compute-kubernetes-production";
   // The real Gateway loads its plugins and installs the native worker bundle during the first turn.
-  configuration.drivers.compute.configuration.resources.gateway.limits.memory = "4Gi";
+  configuration.drivers.compute.configuration.resources.gateway.limits.memory =
+    productionGatewayMemoryLimit;
   configuration.drivers.compute.configuration.resources.namespace.quota = {
     pods: "14",
     "requests.cpu": "3",

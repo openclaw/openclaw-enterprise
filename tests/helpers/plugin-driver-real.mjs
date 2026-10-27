@@ -17,6 +17,7 @@ import {
   createKubernetesInstallationConfiguration,
   createRealKubernetesFixture,
   kubernetesHash as hash,
+  productionGatewayMemoryLimit,
 } from "./kubernetes-real.mjs";
 
 const authSecret = "plugin-driver-real-auth-secret-32-bytes";
@@ -249,7 +250,8 @@ function installationConfiguration({
     codexSeccompProfile: process.env.OCC_TEST_KUBERNETES_CODEX_SECCOMP_PROFILE,
   });
   if (pluginDriverId === "codex-plugin") {
-    configuration.drivers.compute.configuration.resources.gateway.limits.memory = "4Gi";
+    configuration.drivers.compute.configuration.resources.gateway.limits.memory =
+      productionGatewayMemoryLimit;
     configuration.drivers.compute.configuration.resources.agent.limits.memory = "2Gi";
   }
   configuration.drivers.secret.configuration.authentication = authentication;

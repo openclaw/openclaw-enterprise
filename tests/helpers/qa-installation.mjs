@@ -881,14 +881,9 @@ export async function prepareQaPreset(f, presetName) {
   );
   const codex = presetName === "Codex";
   const desiredPlugin = codex ? "codex-plugin" : "occ-plugin";
-  const gatewayResources = f.configuration.drivers.compute.configuration.resources.gateway;
-  // The full native repository workload exceeded the launcher's 2 GiB default.
-  // Keep both installation variants on the same explicit acceptance-test budget.
-  if (
-    f.configuration.drivers.plugin?.id !== desiredPlugin ||
-    gatewayResources.limits.memory !== "4Gi"
-  ) {
-    gatewayResources.limits.memory = "4Gi";
+  // The launcher's Gateway resources match the production example, whose memory
+  // limit covers the full native repository workload; only the plugin varies.
+  if (f.configuration.drivers.plugin?.id !== desiredPlugin) {
     assert.ok(
       f.agents.every((agent) => agent.stopped),
       "stop the prior Agent before changing the installation runtime configuration",

@@ -212,7 +212,7 @@ Other Harnesses are replaced, restarting their Gateway.
   across versions until Agent deletion.
 - `AGENT_WITH_NODE_ENTRYPOINT` runs native `setup --baseline` before supervising
   Codex and the node under `tini`. It passes admitted bootstrap options, preserves
-  existing edits, and stops on setup failure. Codex starts at once with the
+  existing edits, and holds on setup failure. Codex starts at once with the
   managed PATH; the node waits for a complete code. Neither gets OCC's key.
 - With the status proxy, a Codex Gateway hot-loads `file-transfer` from an
   Agent-owned ConfigMap (replacing the Codex plugin runtime); activation awaits

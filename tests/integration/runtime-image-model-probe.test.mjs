@@ -13,7 +13,6 @@ import {
   imageTestOptions,
   observed,
   phaseAt,
-  productionGatewayMemoryLimit,
   runDocker,
   runEmbeddedGatewayProbe,
   runtimeFailure,
@@ -54,7 +53,6 @@ test(
       mode: "answer",
       delayMs: 2_000,
       cpus: constrainedGatewayCpuLimit,
-      memory: productionGatewayMemoryLimit,
       limitMs: 400_000,
       stress,
       afterStop: async () => {

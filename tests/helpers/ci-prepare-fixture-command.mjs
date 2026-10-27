@@ -344,6 +344,25 @@ async function fakeCommand({
       state[role] = args[2];
       return finish();
     }
+    // The warm job builds the runtime image's OpenClaw build stage alone first.
+    if (
+      equals(args.slice(0, 6), [
+        "buildx",
+        "build",
+        "--output",
+        "type=cacheonly",
+        "--target",
+        "openclaw-build",
+      ])
+    ) {
+      assert.equal(
+        args.includes("--load") || args.includes("-t") || args.includes("--cache-to"),
+        false,
+      );
+      assert.ok(args[args.indexOf("-f") + 1].endsWith("/deploy/runtime/Dockerfile"));
+      assert.equal(state.runtime, undefined, "the stage builds before the runtime image");
+      return finish();
+    }
     // The warm job's cache export, after that image's build and load.
     if (equals(args.slice(0, 4), ["buildx", "build", "--output", "type=cacheonly"])) {
       assert.equal(args.includes("--load") || args.includes("-t"), false);

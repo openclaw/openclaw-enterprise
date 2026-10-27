@@ -1,4 +1,8 @@
-import type { OpenClawConfigurationDocument } from "@openclaw-enterprise/contracts";
+import type {
+  ConfigurationValidationOptions,
+  OpenClawConfigurationDocument,
+  OpenClawConfigurationValue,
+} from "@openclaw-enterprise/contracts";
 
 // Concrete reviewed tools/actions. Plugin selection and ordinary tool grants do
 // not extend this list. Keep native Codex capability policy separate.
@@ -319,6 +323,50 @@ export function managedGatewayConfiguration(
     next.plugins = plugins as OpenClawConfigurationDocument[string];
   }
   return next;
+}
+
+/**
+ * The tool policy rules that hold for every OpenClaw topology: the pinned OpenClaw applies
+ * tools.gatewayPolicy natively in an embedded Gateway too, so a policy it cannot assemble fails
+ * every turn there (finding 2688). Configuration save and Agent admission run it with the
+ * messages dedicated composition uses (finding 2689). A Configuration without a policy passes:
+ * only dedicated composition adds the baseline. A Preset policy with an unfilled variable
+ * anywhere, in a value or an object key, is skipped whole at Preset save and checked when a
+ * Configuration is created from it.
+ */
+export function validateGatewayToolPolicy(
+  configuration: Readonly<OpenClawConfigurationDocument>,
+  createError?: SettingError,
+  options?: ConfigurationValidationOptions,
+): void {
+  const tools = configuration.tools;
+  if (
+    tools === null ||
+    typeof tools !== "object" ||
+    Array.isArray(tools) ||
+    !Object.hasOwn(tools, "gatewayPolicy")
+  ) {
+    return;
+  }
+  const { gatewayPolicy } = tools as { readonly gatewayPolicy: OpenClawConfigurationValue };
+  const unresolved = options?.unresolved;
+  const waits = (value: OpenClawConfigurationValue, path: (string | number)[]): boolean =>
+    unresolved !== undefined &&
+    (typeof value === "string"
+      ? unresolved(path) !== undefined
+      : Array.isArray(value)
+        ? value.some((item: OpenClawConfigurationValue, index) => waits(item, [...path, index]))
+        : value !== null &&
+          typeof value === "object" &&
+          Object.entries(value).some(
+            ([key, item]) =>
+              unresolved([...path, key], true) !== undefined || waits(item, [...path, key]),
+          ));
+  if (waits(gatewayPolicy, ["tools", "gatewayPolicy"])) {
+    return;
+  }
+  // The policy alone, so the composition's other settings stay with dedicated deployment.
+  managedGatewayConfiguration({ tools: { gatewayPolicy } }, undefined, false, createError);
 }
 
 // Both Compute launchers compose and validate before any native Gateway starts.

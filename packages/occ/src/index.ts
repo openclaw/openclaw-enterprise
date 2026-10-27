@@ -322,7 +322,10 @@ import {
   SecretStorageDriverError,
   SecretValueError,
 } from "./errors.ts";
-import { validateConfigurationSettings } from "./configuration-settings.ts";
+import {
+  validateConfigurationSettings,
+  validateWorkspaceBootstrapSettings,
+} from "./configuration-settings.ts";
 import { enabledChannelEntries, requireChannelSecretBindings } from "./channel-secret-bindings.ts";
 import { validateModelProviderSettings } from "./model-provider-settings.ts";
 import {
@@ -10022,6 +10025,9 @@ export class OpenClawController {
       // baseUrl or api the runtime cannot use would otherwise fail later, as an unexplained
       // model probe failure (finding 1549).
       validateModelProviderSettings(configuration.values);
+      // Native workspace setup refuses an invalid bootstrap setting only after the deployment
+      // starts (finding 2699).
+      validateWorkspaceBootstrapSettings(configuration.values);
       this.validateComputeConfiguration(configuration.values);
       await configurationDriver.validate({ ...configuration, values: admittedConfiguration });
       if (resolveConfiguredHarnessId(admittedConfiguration) !== configuredHarnessId) {
@@ -12846,9 +12852,13 @@ export class OpenClawController {
     required: boolean,
   ): Promise<void> {
     if (required) {
+      // The denial names gatewayManagedMode: the rest of the request needs no Installation grant
+      // (finding 2691).
       await this.authorize(principalId, "administer", {
         kind: "installation",
         id: this.installation.id,
+      }).catch((error: unknown) => {
+        throw QualifiedAuthorizationDeniedError.qualify(error, "gateway_managed_mode");
       });
     }
   }
@@ -14090,6 +14100,8 @@ export class OpenClawController {
       return;
     }
     const configuration = await readConfiguration();
+    // Deploy admission's rule for a stored Configuration that predates it (finding 2699).
+    validateWorkspaceBootstrapSettings(configuration.values);
     let configuredHarnessId: string;
     try {
       configuredHarnessId = resolveConfiguredHarnessId(configuration.values);

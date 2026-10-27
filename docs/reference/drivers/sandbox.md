@@ -44,7 +44,8 @@ transport token. It answers `serving` only after an authenticated handshake, or
 `failed` with the Harness's held startup failure, which Compute validates and
 fails the Agent revision with; anything else is `starting`. A read the provider does
 not answer is a transient dependency failure, not evidence. Compute activates
-only a `serving` Codex Harness, and reads a dedicated OpenClaw worker's status
+only a `serving` Codex Harness, reads its status while its workspace node is
+pending (a hold before Codex starts), and reads a dedicated OpenClaw worker's status
 only before its node has enrolled (`workspaceNodeEnrolled` in the context); then
 it calls `withdrawHarnessExposure(context)`, which removes that worker's exposure
 and resolves only once the provider confirms it gone, through a read the
