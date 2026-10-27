@@ -489,6 +489,7 @@
         "exchange accepts stable keys and both absent keys",
         "exchange rejects malformed peer expiry at each public boundary",
         "exchange renewal preserves progress while bounded by original peer expiry",
+        "exchange bounds unavailable stream policy checks without extending authorization",
         "exchange renewal respects a shorter fresh peer expiry",
         "exchange send snapshots authenticated peers across receipt reservation",
         "exchange held response respects a shorter authenticated lifetime",
