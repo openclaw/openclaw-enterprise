@@ -292,10 +292,9 @@ to the k3d node's Pod bridge address, enabling plugin status and diagnostics and
 letting a dedicated Codex Gateway start once on a first deploy. The two-minute
 bridge-route wait also bounds each container-engine lookup.
 
-The OpenShell profile declares an `openshell` Backend for the Gateway
-endpoint and selects both the OpenShell Sandbox and the
-[OpenShell Credential Gateway](../../reference/drivers/openshell-credential-gateway.md),
-bound to the runtime image's native Codex executable. Agents in this profile
+The OpenShell profile selects the OpenShell Sandbox. Its `openshell` Backend
+configures the Gateway endpoint and [credential sources](../../reference/drivers/openshell-credential-gateway.md)
+for the runtime image’s native Codex executable. Agents in this profile
 must authenticate through a [credential source](../../reference/credential-sources.md);
 to register a key and bind it to an Agent, follow
 [Use a credential source on the local OpenShell profile](openshell-credential-sources.md).

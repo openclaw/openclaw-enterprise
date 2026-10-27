@@ -907,9 +907,9 @@ test("provider Harness protected execution is released only on current signed in
     protectedDriver,
     preparedTokens: { issuer: () => preparedIssuer },
     nodeEnrollment: fixture.driver.nodeEnrollment,
-    credentialGatewayDriver: {
+    credentialSources: {
       id: source.driverId,
-      capability: "credential_gateway",
+
       listSourceTypes: async () => [openAiStaticProvider.sourceType],
     },
   });

@@ -1,3 +1,4 @@
+import { workerSourceBackend } from "../helpers/postgres-worker-revision-fixture.mjs";
 import assert from "node:assert/strict";
 import { constants } from "node:fs";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
@@ -9,7 +10,6 @@ import test, { type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import type {
   AgentRevision,
-  Backend,
   ComputeRevisionContext,
   ComputeDriver,
   RepositoryGitDeliveryProfile,
@@ -49,10 +49,11 @@ import { standingGitConversation } from "../helpers/standing-git-conversation.ts
 import { gitExpiryGateway } from "../helpers/openshell-online-git-journey.mjs";
 import {
   openShellProviderName,
-  type OpenShellGateway,
+  type OpenShellBackend,
 } from "../../apps/controller/src/backends/openshell.ts";
 import { openShellCredentialAttachments } from "../../apps/controller/src/drivers/sandbox/openshell-credential-attachments.ts";
-import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
+import { OpenShellCredentialSources } from "../../apps/controller/src/backends/openshell-credential-sources.ts";
+import { OpenShellCredentialProfiles } from "../../apps/controller/src/backends/openshell-credential-profiles.ts";
 import {
   KubernetesComputeDriver,
   kubernetesNamespaceName,
@@ -467,21 +468,23 @@ function externalGitJourney(
     let modelCustody: ComputeRevisionContext | undefined;
     let modelClient: Awaited<ReturnType<typeof gitExpiryGateway>>["client"];
     const modelSourceId = "cs_" + randomUUID();
-    const modelGatewayConfiguration = { binaries: [codex!] };
-    const modelBackend: Backend<OpenShellGateway> = {
+    const sourceConfig = { binaries: [codex!] };
+    const modelBackend: OpenShellBackend = {
       id: "external-journey-model",
-      drivers: { credential_gateway: "external-journey-model" },
+      drivers: {},
+      credentialSources: { id: "external-journey-model", configuration: sourceConfig },
       client: { placement: () => undefined, clientForNamespace: () => modelClient },
     } as never;
-    const modelGateway = conversation
-      ? new OpenShellCredentialGatewayDriver(modelGatewayConfiguration, {
-          id: "external-journey-model",
-          backend: modelBackend,
-        })
-      : undefined;
+    const profiles =
+      conversation &&
+      new OpenShellCredentialProfiles(sourceConfig, {
+        id: modelBackend.credentialSources.id,
+        refresh: false,
+      });
+    const modelSources = profiles && new OpenShellCredentialSources(modelBackend, profiles);
     const modelAttachments =
-      modelGateway && openShellCredentialAttachments(modelBackend.client, modelGateway.profiles);
-    if (modelGateway && conversation) {
+      profiles && openShellCredentialAttachments(modelBackend.client, profiles);
+    if (modelSources && conversation) {
       // A ready gateway-held model source is the same state ordinary registration commits.
       // The existing stock-wire fixture supplies its independent model attachment below.
       await f.state.transact(async (unit) => {
@@ -493,7 +496,7 @@ function externalGitJourney(
           config: { base_url: conversation.baseUrl },
           secrets: {},
           ownerCapability: "credential_gateway",
-          driverId: modelGateway.id,
+          driverId: modelSources.id,
           state: "registering",
           createdAt: new Date().toISOString(),
         });
@@ -556,21 +559,16 @@ function externalGitJourney(
     const apiPackage = await protectedDriverPackage(t, id, "repository-git");
     const apiDrivers = (await load(apiPackage.directory))!;
     const loadedDrivers = (await load(directory))!;
-    const drivers = modelGateway
+    const drivers = modelSources
       ? {
           ...loadedDrivers,
-          credentialGatewayDriver: modelGateway,
+          credentialSources: modelSources,
           installation: {
             ...loadedDrivers.installation,
-            drivers: {
-              ...loadedDrivers.installation.drivers,
-              credential_gateway: {
-                id: modelGateway.id,
-                implementation: modelGateway.implementation,
-                configuration: modelGatewayConfiguration,
-                definition: OpenShellCredentialGatewayDriver,
-              },
-            },
+            backend: [
+              ...loadedDrivers.installation.backend,
+              workerSourceBackend(modelSources.id, loadedDrivers.sandboxDriver!.id),
+            ],
           },
         }
       : loadedDrivers;
@@ -585,7 +583,7 @@ function externalGitJourney(
     const apiOwner = apiDrivers.repositoryGitDriver!;
     assert.notEqual(apiOwner, owner);
     assert.deepEqual(apiOwner.ref, owner.ref);
-    const kube = modelGateway
+    const kube = modelSources
       ? new KubernetesComputeDriver(
           apiDrivers.installation.drivers.compute.configuration as unknown as ConstructorParameters<
             typeof KubernetesComputeDriver
@@ -594,7 +592,7 @@ function externalGitJourney(
             id: apiDrivers.computeDriver.id,
             implementation: apiDrivers.computeDriver.implementation,
             protectedDriver: apiOwner,
-            credentialGatewayDriver: modelGateway,
+            credentialSources: modelSources,
             // As production composition selects it; this test never enrolls a node.
             nodeEnrollment: createGatewayNodeEnrollment(async () => "unused"),
           },
@@ -804,12 +802,8 @@ function externalGitJourney(
     };
     const { actor, observerPool: pool } = f;
     const backends = apiDrivers.installation.backend;
-    const controller = createBackendController(f, { backends });
+    const controller = createBackendController(f, { backends, credentialSources: modelSources });
     const { id: who } = actor;
-    if (modelGateway) {
-      controller.registerDriver(modelGateway);
-      controller.selectDriver("credential_gateway", modelGateway.id);
-    }
     controller.installDriver(apiOwner, ["sandbox", "credential_proxy"]);
     for (const d of [apiDrivers.repositoryPolicy!, compute]) {
       controller.registerDriver(d);

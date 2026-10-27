@@ -10,7 +10,7 @@ accounts. Its nullable Agent `backendId` association neither grants permissions
 nor changes model or Harness selection. The GitHub Backend owns repository
 credential configuration for the selected `RepoDriver` and uses the separate
 Agent `repositoryBindings` selection. The OpenShell Backend owns the gateway
-connection shared by the OpenShell Sandbox and Credential Gateway Drivers.
+connection used by the Sandbox, source registration and Token Service.
 Backends have no OCC resource or write API. Installation administrators can
 discover nonsecret configured IDs and types through `GET /backends`.
 
@@ -145,9 +145,12 @@ backend:
         certificatePath: /etc/openclaw/openshell/tls.crt
         privateKeyPath: /etc/openclaw/openshell/tls.key
       rootCertificatePath: /etc/openclaw/openshell/ca.crt
+    credentialSources:
+      id: openshell-credentials
+      configuration:
+        binaries: [/usr/local/bin/node]
     drivers:
       sandbox: openshell-sandbox
-      credential_gateway: openshell-credentials
       credential_refresh: openshell-refresh
 ```
 
@@ -192,10 +195,11 @@ Its closed `configuration` accepts:
   supervisors. Credential registration sends resolved values over this
   connection, and OCC cannot verify the NetworkPolicy itself.
 
-Either `endpoint` or `serviceName` is required. Both `drivers.sandbox` and
-`drivers.credential_gateway` are required and must match the selected bundled
-[OpenShell SandboxDriver](drivers/openshell-sandbox.md) and
-[OpenShell Credential Gateway](drivers/openshell-credential-gateway.md). The
+Either `endpoint` or `serviceName` is required. The `drivers.sandbox` member names
+the selected [OpenShell SandboxDriver](drivers/openshell-sandbox.md).
+The Backend’s `credentialSources` declares its stable source owner ID and binary policy.
+[OpenShell credential source configuration](drivers/openshell-credential-gateway.md) describes
+these fields and the accepted legacy selector. The
 optional `drivers.credential_refresh` member must match the selected
 [Credential Refresh Driver](drivers/credential-refresh.md); OpenShell keeps
 refresh state on the gateway's provider records, so the two roles share this

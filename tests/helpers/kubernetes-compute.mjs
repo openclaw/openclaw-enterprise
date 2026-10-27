@@ -4,7 +4,7 @@ import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compu
  * Construct the production Kubernetes Driver without starting clients or contacting a cluster.
  * @param {string} id
  * @param {Pick<NonNullable<ConstructorParameters<typeof KubernetesComputeDriver>[1]>,
- *   "sandboxDriver" | "credentialGatewayDriver" | "protectedDriver"> & {
+ *   "sandboxDriver" | "credentialSources" | "protectedDriver"> & {
  *   authentication?: import("../../apps/controller/src/drivers/compute/kubernetes/index.ts").KubernetesComputeDriverOptions["authentication"],
  *   repositoryCredentials?: boolean, gatewayRuntime?: boolean, channelRuntime?: boolean,
  *   routed?: boolean, gatewayTrustedProxyCidrs?: string[],
@@ -23,7 +23,7 @@ export function createTestKubernetesComputeDriver(
     authentication = { mode: "inCluster" },
     gatewayTrustedProxyCidrs = ["127.0.0.1/32"],
     sandboxDriver,
-    credentialGatewayDriver,
+    credentialSources,
     protectedDriver,
   } = {},
 ) {
@@ -87,7 +87,7 @@ export function createTestKubernetesComputeDriver(
     {
       id,
       sandboxDriver,
-      credentialGatewayDriver,
+      credentialSources,
       protectedDriver,
       ...(placed ? { nodeEnrollment: {} } : {}),
     },

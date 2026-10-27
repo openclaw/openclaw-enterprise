@@ -24,7 +24,8 @@ import { KubernetesSecretDriver } from "../../apps/controller/src/drivers/secret
 import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
-import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
+import { OpenShellCredentialSources } from "../../apps/controller/src/backends/openshell-credential-sources.ts";
+import { OpenShellCredentialProfiles } from "../../apps/controller/src/backends/openshell-credential-profiles.ts";
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import { OpenShellEgressIdentity } from "../../apps/controller/src/drivers/egress-proxy/openshell-identity.ts";
 import {
@@ -378,6 +379,10 @@ export async function staticEgressFixture(
   const backend = createOpenShellBackend(
     {
       id: "openshell-test",
+      credentialSources: {
+        id: "openshell-credentials",
+        configuration: { binaries: ["/usr/bin/model-client"] },
+      },
       type: "openshell",
       configuration: {
         endpoint: `https://127.0.0.1:${gatewayPort}`,
@@ -385,7 +390,6 @@ export async function staticEgressFixture(
       },
       drivers: {
         sandbox: "openshell-sandbox",
-        credential_gateway: "openshell-credentials",
         credential_proxy: proxyDriverId,
       },
     },
@@ -449,14 +453,18 @@ export async function staticEgressFixture(
     backend,
     sandbox,
   });
-  const catalog = new OpenShellCredentialGatewayDriver(
-    { binaries: ["/usr/bin/model-client"] },
-    { id: "openshell-credentials", backend },
+  const catalog = new OpenShellCredentialSources(
+    backend,
+    new OpenShellCredentialProfiles(backend.credentialSources.configuration, {
+      id: backend.credentialSources.id,
+      refresh: false,
+    }),
   );
   const placement = createTestKubernetesComputeDriver("placement", {
     authentication: { mode: "kubeconfig", kubeconfigPath, context: "fixture" },
   });
   const app = await appFactory(t, {
+    ...(protectedSourceOnly ? {} : { credentialSources: catalog }),
     now,
     provisionedPeople: [],
     preparedTokens,
@@ -482,10 +490,6 @@ export async function staticEgressFixture(
     },
   });
   await app.bootstrap();
-  if (!protectedSourceOnly) {
-    app.controller.registerDriver(catalog);
-    app.controller.selectDriver(catalog.capability, catalog.id);
-  }
   if (owner || preparedProvider) {
     const refresh = {
       id: "native-token-service",
@@ -578,6 +582,7 @@ export async function staticEgressFixture(
         ? secret
         : await post("secrets", { name: "prepared-github-issuer", value: secretValue });
     ({ agent, source } = await admitSource({
+      credentialSources: catalog,
       app,
       agent,
       namespace,

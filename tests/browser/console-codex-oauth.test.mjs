@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import {
-  createDeviceCredentialDrivers,
+  createDeviceCredentials,
   DEVICE_ACCESS_TOKEN,
   DEVICE_ACCOUNT_ID,
-} from "../helpers/device-credential-gateway.mjs";
+} from "../helpers/device-credentials.mjs";
 import {
   apiRequests,
   expectNoText,
@@ -53,7 +53,10 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
   const advanceApiClock = (ms) => {
     apiClockAheadMs += ms;
   };
+  let approved = false;
+  const { credentialSources, refresh } = createDeviceCredentials({ approve: async () => approved });
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "OAuth console", {
+    credentialSources,
     provisionedPeople: [],
     agentProvisioning: true,
     now: () => new Date(Date.now() + apiClockAheadMs),
@@ -64,11 +67,7 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
   fixture.controller.registerDriver(driver);
   fixture.controller.selectDriver("plugin", driver.id);
   const originalFetch = globalThis.fetch;
-  let approved = false;
   const providerRequests = [];
-  const { gateway, refresh } = createDeviceCredentialDrivers({ approve: async () => approved });
-  fixture.controller.registerDriver(gateway);
-  fixture.controller.selectDriver("credential_gateway", gateway.id);
   fixture.controller.registerDriver(refresh);
   fixture.controller.selectDriver("credential_refresh", refresh.id);
   const plugin = {
@@ -224,7 +223,7 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
 
   // A later version uses the same saved source. No second login, Secret grant, or
   // authentication mutation is needed merely to configure plugins.
-  const loginsBeforeBrowse = gateway.calls.filter(
+  const loginsBeforeBrowse = credentialSources.calls.filter(
     (call) => call.operation === "startDeviceAuthorization",
   ).length;
   await page.getByRole("tab", { name: "Plugins", exact: true }).click();
@@ -241,7 +240,7 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
   assert.equal(savedDiscovery.body.credentialSource, undefined);
   assert.deepEqual((await fixture.request("GET", agentPath)).data.harnessAuth, originalAuth);
   assert.equal(
-    gateway.calls.filter((call) => call.operation === "startDeviceAuthorization").length,
+    credentialSources.calls.filter((call) => call.operation === "startDeviceAuthorization").length,
     loginsBeforeBrowse,
   );
   const sourceGrants = requests.filter(
@@ -275,7 +274,7 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
       name: "Other credential source",
     });
   });
-  gateway.sources.set(otherSource.id, "ready");
+  credentialSources.sources.set(otherSource.id, "ready");
   const withOtherSource = await fixture.request("PATCH", agentPath, {
     body: {
       configurationId: edited.configurationId,
@@ -315,7 +314,7 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
   );
   assert.equal(oldSource.status, 200);
   assert.equal(
-    gateway.calls.some((call) => call.operation === "removeSource"),
+    credentialSources.calls.some((call) => call.operation === "removeSource"),
     false,
   );
   const replacementGrants = requests.filter(
@@ -412,7 +411,10 @@ test("saving ChatGPT OAuth before sign-in names the missing step and sends nothi
 });
 
 test("Codex sign-in can retry a refused start but cannot repeat one with an unreadable confirmation", async (t) => {
-  const { fixture, namespace } = await createReadyConsoleNamespace(t, "OAuth unavailable");
+  const { credentialSources, refresh } = createDeviceCredentials();
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "OAuth unavailable", {
+    credentialSources,
+  });
   const { page } = await newPage(t, fixture);
   await trackSettledFetches(page);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
@@ -429,11 +431,8 @@ test("Codex sign-in can retry a refused start but cannot repeat one with an unre
   assert.equal(await page.getByRole("link", { name: "Open Codex sign-in" }).isVisible(), false);
   await waitForEnabled(start);
 
-  const { gateway, refresh } = createDeviceCredentialDrivers();
-  for (const driver of [gateway, refresh]) {
-    fixture.controller.registerDriver(driver);
-    fixture.controller.selectDriver(driver.capability, driver.id);
-  }
+  fixture.controller.registerDriver(refresh);
+  fixture.controller.selectDriver("credential_refresh", refresh.id);
   const namespacePath = `/namespaces/${namespace.id}`;
   const beginPath = `${namespacePath}/agents/device-authorizations`;
   const requests = apiRequests(page, fixture.origin);
@@ -500,12 +499,12 @@ test("a refused device login start on Create Agent names the create grants it ch
 // creates a Secret and a credential source; a poll or cancel checks Secret operate on the login's
 // Secret, which a Namespace Role can grant, so those name the grants to ask for instead.
 test("a refused device login on Agent detail names the grants its start, poll and cancel check", async (t) => {
-  const { fixture, namespace } = await createReadyConsoleNamespace(t, "OAuth Agent refused");
-  const { gateway, refresh } = createDeviceCredentialDrivers();
-  for (const driver of [gateway, refresh]) {
-    fixture.controller.registerDriver(driver);
-    fixture.controller.selectDriver(driver.capability, driver.id);
-  }
+  const { credentialSources, refresh } = createDeviceCredentials();
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "OAuth Agent refused", {
+    credentialSources,
+  });
+  fixture.controller.registerDriver(refresh);
+  fixture.controller.selectDriver("credential_refresh", refresh.id);
   const agent = await fixture.createAgent(
     namespace.id,
     "OAuth Agent refused",

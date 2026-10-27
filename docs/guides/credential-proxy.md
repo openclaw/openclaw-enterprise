@@ -33,7 +33,7 @@ which implementation OCC loads; qualification establishes what the installed
 sender actually enforces.
 
 Use the [upgrade procedure](deploy/credential-proxy-upgrade.md) for an existing
-installation, including when a Gateway source or its owner must remain.
+installation, including when an OpenShell source or its owner must remain.
 
 ## Prepare enforcement, trust, and custody
 
@@ -129,8 +129,8 @@ With Credential Proxy selected, fresh `openai` registration is already live:
 
 Require `ownerCapability: credential_gateway`, `egress.adoption: live` and
 `egress.retention: none`. Creation reads the versioned Secret without depositing
-a Gateway copy. The CLI's `GATEWAY STATUS ready` label does not prove such a copy
-exists. Keep the Gateway selected: live reads do not transfer ownership. A ready
+a copy in the OpenShell provider. The CLI's `GATEWAY STATUS ready` label does not prove such a copy
+exists. Keep the Backend source configuration and ID for live reads. A ready
 source alone does not prove installed enforcement.
 
 For an **existing unreferenced legacy or narrower source**, obtain the same
@@ -145,8 +145,8 @@ JSON
 ```
 
 This update requires exact source `update` and `operate` on every referenced
-Secret, advances the source generation, and retains its Gateway owner. It does
-not remove an old Gateway copy: `retention: none` describes live reads, not past
+Secret, advances the source generation, and retains its OpenShell Backend owner. It does
+not remove an existing OpenShell provider’s copy: `retention: none` describes live reads, not past
 custody. A bound source cannot take this first cutover.
 
 Follow [create the Agent and grant the source](deploy/openshell-credential-sources.md#create-the-agent-and-grant-the-source)
@@ -172,15 +172,15 @@ workload. Do not bypass pending or failed admission.
 ## Enroll prepared GitHub access
 
 Choose model authentication before enrollment. For bundled OpenShell v5/v6 Git,
-use an existing ready Gateway Harness source **without `egress`**, named by
+use an existing ready OpenShell Harness source **without `egress`**, named by
 `harnessAuth.method: credential_source`; the protected static source above cannot
-be reused beside Git. Gateway selection rejects an ordinary Secret-backed model
+be reused beside Git. The bundled OpenShell Backend rejects an ordinary Secret-backed model
 substitute. A capable exact-dispatch Driver with verified policy reduction v2
 can instead admit Git alongside independently authorized routes as v7; see
 [selection differences](../reference/drivers/selection.md#select-a-protected-sender).
 Fresh static `openai` registration while Proxy is selected produces an egress
 source (a Git-only `repository.openShell` Proxy refuses it with `409`). For the v5/v6 combination, retain a suitable existing ordinary source
-or provision it in a supported Gateway-only installation before enabling Git.
+or provision it in a supported ordinary OpenShell installation before enabling Git.
 If neither is available, stop before enrollment.
 Neither configuration qualifies stock OpenShell. Native prepared Git is a separate
 composition without Sandbox or Credential Proxy.
@@ -288,7 +288,7 @@ an explicit model withdrawal or IAM refusal queues retirement of that runtime.
 Unavailable evidence keeps cleanup pending without repeating the reduction or stopping
 a healthy Agent. Stock OpenShell cannot currently
 supply qualified proof of this workflow. Static model sources do not renew tokens;
-existing Gateway refresh sources use their own
+existing OpenShell refresh sources use their own
 [rotation procedure](../reference/credential-sources.md#rotate-a-refresh-source).
 
 ## Diagnose before retrying

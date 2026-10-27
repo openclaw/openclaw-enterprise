@@ -68,6 +68,7 @@ test(
         return app as unknown as Awaited<ReturnType<typeof createConsoleAppFixture>>;
       },
       async admitSource({
+        credentialSources,
         app,
         agent,
         namespace,
@@ -76,6 +77,7 @@ test(
         origin,
         computeAuthentication,
       }: {
+        credentialSources: import("../../packages/contracts/src/index.ts").BackendCredentialSources;
         app: Awaited<ReturnType<typeof postgresApp>>;
         agent: Agent;
         namespace: Namespace;
@@ -132,7 +134,7 @@ test(
         app.controller.installDriver(owner, ["sandbox", "credential_proxy"]);
         compute = createTestKubernetesComputeDriver("policy-reduction-compute", {
           authentication: computeAuthentication,
-          credentialGatewayDriver: app.controller.selectedDriver("credential_gateway"),
+          credentialSources,
           protectedDriver: owner,
           channelRuntime: true,
         });

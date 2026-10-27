@@ -482,7 +482,7 @@ test("Create Agent shows busy while its request runs and clears it on refusal, s
   left.release();
 });
 
-// A Credential Gateway that registers model Secrets as Credential Sources. Only the browser sees
+// A credential source Backend that registers model Secrets as Credential Sources. Only the browser sees
 // it: the Credential Source requests below are answered here.
 async function routeCredentialSourceInstallation(page: Page, fixture: ConsoleFixture) {
   await page.route(`${fixture.origin}/installation`, (route) =>

@@ -89,16 +89,6 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
       )
     );
   }
-  if (driver.capability === "credential_gateway") {
-    return [
-      "listSourceTypes",
-      "validateSourceConfig",
-      "registerSource",
-      "updateSource",
-      "sourceStatus",
-      "removeSource",
-    ].every((operation) => typeof candidate[operation] === "function");
-  }
   if (driver.capability === "credential_refresh") {
     const sources = asRecord(candidate.sources);
     const prepared = asRecord(candidate.preparedTokens);

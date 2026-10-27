@@ -283,13 +283,9 @@ test("an Agent principal's deploy refusal names its bound Secret only to a calle
 // With Secret read alone, the text would tell a caller that a record it cannot read binds that
 // Secret. The allow or deny decision is unchanged; only the text differs.
 test("a stored binding's denial names its Secret only to a caller who may read the record that binds it", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  // The Credential Gateway is a test double; HTTP, IAM and OCC admission stay real.
-  const gateway = {
-    id: "caller-denial-gateway",
-    capability: "credential_gateway",
-    implementation: "test-ready-gateway",
+  // The Backend's source registration is simulated. HTTP, IAM and OCC admission stay real.
+  const credentialSources = {
+    id: "caller-denial-sources",
     validateSourceConfig() {},
     async listSourceTypes() {
       return [
@@ -309,7 +305,7 @@ test("a stored binding's denial names its Secret only to a caller who may read t
       return { state: "ready" };
     },
     ...Object.fromEntries(
-      ["updateSource", "rotateSource", "removeSource"].map((name) => [
+      ["updateSource", "removeSource"].map((name) => [
         name,
         async () => {
           throw new Error(`${name} is not exercised: the save is refused first`);
@@ -317,8 +313,8 @@ test("a stored binding's denial names its Secret only to a caller who may read t
       ]),
     ),
   };
-  fixture.controller.registerDriver(gateway);
-  fixture.controller.selectDriver("credential_gateway", gateway.id);
+  const fixture = await createConsoleAppFixture(t, { credentialSources });
+  await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Stored binding denials", { ready: true });
   const secret = await fixture.createSecret(namespace.id, "Bound token", "synthetic-bound-token");
   const configuration = await fixture.createConfiguration(

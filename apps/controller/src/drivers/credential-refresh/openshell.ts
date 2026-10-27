@@ -1,6 +1,5 @@
 import { requireConfiguration } from "@openclaw-enterprise/contracts";
 import type {
-  Backend,
   CredentialRefreshDriver,
   CredentialSourceRefresh,
   CredentialRefreshInput,
@@ -16,7 +15,7 @@ import { isNonEmptyString } from "@openclaw-enterprise/utils";
 import {
   openShellProviderName,
   openShellWorkspaceName,
-  type OpenShellGateway,
+  type OpenShellBackend,
 } from "../../backends/openshell.ts";
 import { tokenServiceConfiguration } from "../../backends/token-service/service.ts";
 import {
@@ -45,7 +44,7 @@ import {
 export interface OpenShellCredentialRefreshSelection {
   readonly id?: string;
   readonly implementation?: string;
-  readonly backend: Backend<OpenShellGateway>;
+  readonly backend: OpenShellBackend;
 }
 
 class OpenShellCredentialRefreshFailure extends Error {}
@@ -99,7 +98,7 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
   }
   readonly implementation: string;
   readonly sourceTokens: CredentialSourceTokenReader;
-  private readonly backend: Backend<OpenShellGateway>;
+  private readonly backend: OpenShellBackend;
 
   constructor(configuration: unknown, selection: OpenShellCredentialRefreshSelection) {
     requireConfiguration(tokenServiceConfiguration, configuration);

@@ -432,11 +432,6 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 			"port":    8080,
 		}
 		config["drivers"].(map[string]any)["sandbox"] = openShellInstallationConfiguration(s, openShell.workspaceResources, harnessResources)
-		config["drivers"].(map[string]any)["credential_gateway"] = map[string]any{
-			"id": openShellCredentialGatewayID,
-			// Native OpenClaw uses Node; retain both architecture-specific Codex allowances.
-			"configuration": map[string]any{"binaries": append(openShellCodexBinaries(), "/usr/local/bin/node")},
-		}
 		if s.ProtectedEgress {
 			if s.egressKeyID == "" {
 				return fmt.Errorf("protected egress requires the generated OpenShell JWT key identifier")
@@ -456,8 +451,8 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 }
 
 const (
-	openShellSandboxID           = "sandbox-openshell-development"
-	openShellCredentialGatewayID = "credential-gateway-openshell-development"
+	openShellSandboxID               = "sandbox-openshell-development"
+	openShellCredentialSourceOwnerID = "credential-gateway-openshell-development"
 )
 
 // Match the kernel-resolved executable on both architectures of the pinned runtime.
@@ -469,9 +464,13 @@ func openShellCodexBinaries() []string {
 	}
 }
 
-// openShellBackendConfiguration owns the gateway connection shared by the Sandbox and
-// Credential Gateway Drivers.
+// openShellBackendConfiguration owns the gateway connection and source registration policy.
 func openShellBackendConfiguration(s *developmentState) map[string]any {
+	credentialSources := map[string]any{
+		"id": openShellCredentialSourceOwnerID,
+		// Native OpenClaw uses Node. Codex binaries are architecture-specific.
+		"configuration": map[string]any{"binaries": append(openShellCodexBinaries(), "/usr/local/bin/node")},
+	}
 	if s.ProtectedEgress {
 		return map[string]any{
 			"id": "openshell", "type": "openshell",
@@ -480,7 +479,8 @@ func openShellBackendConfiguration(s *developmentState) map[string]any {
 				"rootCertificatePath": "/etc/openclaw/openshell/ca.crt", "requestTimeoutMs": 30000,
 				"auth": map[string]string{"mode": "mtls", "certificatePath": "/etc/openclaw/openshell/tls.crt", "privateKeyPath": "/etc/openclaw/openshell/tls.key"},
 			},
-			"drivers": map[string]string{"sandbox": openShellSandboxID, "credential_gateway": openShellCredentialGatewayID, "credential_proxy": developmentEgressDriver},
+			"credentialSources": credentialSources,
+			"drivers":           map[string]string{"sandbox": openShellSandboxID, "credential_proxy": developmentEgressDriver},
 		}
 	}
 	endpoint := fmt.Sprintf("http://k3d-%s-server-0:%d", s.Cluster, openShellNodePort)
@@ -497,7 +497,8 @@ func openShellBackendConfiguration(s *developmentState) map[string]any {
 			"insecureTransport": "network-policy",
 			"requestTimeoutMs":  30000,
 		},
-		"drivers": map[string]string{"sandbox": openShellSandboxID, "credential_gateway": openShellCredentialGatewayID},
+		"credentialSources": credentialSources,
+		"drivers":           map[string]string{"sandbox": openShellSandboxID},
 	}
 }
 

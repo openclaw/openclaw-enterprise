@@ -3,7 +3,8 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
-import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
+import { OpenShellCredentialProfiles } from "../../apps/controller/src/backends/openshell-credential-profiles.ts";
+import { OpenShellCredentialSources } from "../../apps/controller/src/backends/openshell-credential-sources.ts";
 import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import { assertApiError } from "../helpers/api-error.mjs";
@@ -35,7 +36,7 @@ test("Console device login completes through the paired OpenShell Refresh Driver
   const managedAccess = "synthetic-managed-access-private";
   let status;
   // Only issuer HTTP and OpenShell transport are simulated. Fastify, IAM, OCC,
-  // both production Drivers, response parsing, handoff, and session fencing are real.
+  // Backend source registration, Token Service, response parsing, handoff, and session fencing are real.
   // This checks orchestration/custody; the real-gateway lane proves actual minting.
   const client = {
     async getProviderProfile() {},
@@ -94,23 +95,28 @@ test("Console device login completes through the paired OpenShell Refresh Driver
     },
     close() {},
   };
+  const sourceConfiguration = {
+    id: "credential-gateway-openshell",
+    configuration: { binaries: ["/usr/local/bin/codex"] },
+  };
   const backend = createOpenShellBackend(
     {
       id: "openshell",
-      implementation: "openshell",
+      type: "openshell",
+      credentialSources: sourceConfiguration,
       configuration: { endpoint: "https://fixture.invalid:443" },
       drivers: {
         sandbox: "openshell-sandbox",
-        credential_gateway: "credential-gateway-openshell",
         credential_refresh: "credential-refresh-openshell",
       },
     },
     { gatewayClient: client },
   );
-  const gateway = new OpenShellCredentialGatewayDriver(
-    { binaries: ["/usr/local/bin/codex"] },
-    { backend },
-  );
+  const credentialProfiles = new OpenShellCredentialProfiles(sourceConfiguration.configuration, {
+    id: sourceConfiguration.id,
+    refresh: true,
+  });
+  const credentialSources = new OpenShellCredentialSources(backend, credentialProfiles);
   const refresh = new OpenShellCredentialRefreshDriver({}, { backend });
   const compute = createTestKubernetesComputeDriver("openshell-device-api-compute");
   Object.assign(compute, {
@@ -126,14 +132,13 @@ test("Console device login completes through the paired OpenShell Refresh Driver
     computeDriver: compute,
     secretDriver: secrets,
     logger,
+    credentialSources,
     now: () => new Date(clock.wallNow()),
   });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("OAuth API proof", { ready: true });
-  for (const driver of [gateway, refresh]) {
-    fixture.controller.registerDriver(driver);
-    fixture.controller.selectDriver(driver.capability, driver.id);
-  }
+  fixture.controller.registerDriver(refresh);
+  fixture.controller.selectDriver(refresh.capability, refresh.id);
   const originalFetch = globalThis.fetch;
   let exchanges = 0;
   let polls = 0;
@@ -269,7 +274,7 @@ test("Console device login completes through the paired OpenShell Refresh Driver
     unit.secrets.findSecret(namespace.id, started.data.session.id),
   );
   const session = JSON.parse(secrets.valueFor(sessionRecord));
-  assert.equal(session.credentialGatewayId, gateway.id);
+  assert.equal(session.credentialGatewayId, credentialSources.id);
   assert.equal(session.credentialRefreshId, refresh.id);
   assert.equal(session.privateState, undefined);
   // A transport failure after the token POST is a different boundary: cancel the

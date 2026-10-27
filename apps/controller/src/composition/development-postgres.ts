@@ -149,7 +149,7 @@ export async function composePostgresDevelopment(
       }
     }
     const sandboxDriver = drivers?.sandboxDriver;
-    const credentialGatewayDriver = drivers?.credentialGatewayDriver;
+    const credentialSources = drivers?.credentialSources;
     const protectedDriver = drivers?.protectedDriver;
     const credentialRefreshDriver = drivers?.credentialRefreshDriver;
     const configurationDriver =
@@ -245,6 +245,7 @@ export async function composePostgresDevelopment(
 
     const loggingLevel = config.logging?.level ?? drivers?.installation.logging.level;
     const controller = new OpenClawController(persistedInstallation, {
+      ...(credentialSources && { credentialSources }),
       ...installationControllerOptions(drivers?.installation),
       state,
       recordOperations: true,
@@ -266,10 +267,6 @@ export async function composePostgresDevelopment(
     } else if (sandboxDriver !== undefined) {
       controller.registerDriver(sandboxDriver);
       controller.selectDriver("sandbox", sandboxDriver.id);
-    }
-    if (credentialGatewayDriver !== undefined) {
-      controller.registerDriver(credentialGatewayDriver);
-      controller.selectDriver("credential_gateway", credentialGatewayDriver.id);
     }
     if (credentialRefreshDriver !== undefined) {
       controller.registerDriver(credentialRefreshDriver);

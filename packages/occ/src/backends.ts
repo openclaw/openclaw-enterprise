@@ -65,7 +65,10 @@ function validateBackendDefinition(value: unknown, index: number): BackendDefini
     throw new ScopeViolationError(`backend[${index}] must be one object.`);
   }
   for (const key of Object.keys(candidate)) {
-    if (!["id", "type", "configuration", "drivers"].includes(key)) {
+    if (
+      !["id", "type", "configuration", "drivers"].includes(key) &&
+      !(candidate.type === "openshell" && key === "credentialSources")
+    ) {
       throw new ScopeViolationError(`backend[${index}] contains unsupported option ${key}.`);
     }
   }
@@ -100,7 +103,7 @@ function validateBackendDefinition(value: unknown, index: number): BackendDefini
     );
   }
   if (candidate.type === "openshell") {
-    return validateOpenShellBackend(id, configuration, drivers);
+    return validateOpenShellBackend(id, configuration, drivers, candidate.credentialSources);
   }
   if (candidate.type === "github") {
     for (const key of Object.keys(configuration)) {
@@ -237,6 +240,7 @@ function validateOpenShellBackend(
   id: string,
   configuration: Readonly<Record<string, unknown>>,
   drivers: Readonly<Record<string, unknown>>,
+  sourceSettings: unknown,
 ): OpenShellBackendDefinition {
   const allowed = [
     "endpoint",
@@ -399,18 +403,23 @@ function validateOpenShellBackend(
     );
   }
   for (const key of Object.keys(drivers)) {
-    if (
-      key !== "sandbox" &&
-      key !== "credential_gateway" &&
-      key !== "credential_refresh" &&
-      key !== "credential_proxy"
-    ) {
+    if (key !== "sandbox" && key !== "credential_refresh" && key !== "credential_proxy") {
       throw new ScopeViolationError(path(id, `drivers.${key}`) + " is unsupported.");
     }
   }
-  if (!isNonEmptyString(drivers.sandbox) || !isNonEmptyString(drivers.credential_gateway)) {
+  if (!isNonEmptyString(drivers.sandbox)) {
+    throw new ScopeViolationError(path(id, "drivers.sandbox") + " is required.");
+  }
+  const sources = asRecord(sourceSettings);
+  const sourceConfiguration = asRecord(sources?.configuration);
+  if (
+    !sources ||
+    !isNonEmptyString(sources.id) ||
+    !sourceConfiguration ||
+    Object.keys(sources).some((key) => key !== "id" && key !== "configuration")
+  ) {
     throw new ScopeViolationError(
-      path(id, "drivers") + " requires sandbox and credential_gateway members.",
+      path(id, "credentialSources") + " requires an id and configuration.",
     );
   }
   if (drivers.credential_refresh !== undefined && !isNonEmptyString(drivers.credential_refresh)) {
@@ -432,9 +441,9 @@ function validateOpenShellBackend(
         : { rootCertificatePath: rootCertificatePath as string }),
       ...(insecureTransport === undefined ? {} : { insecureTransport }),
     },
+    credentialSources: { id: sources.id, configuration: sourceConfiguration },
     drivers: {
       sandbox: drivers.sandbox,
-      credential_gateway: drivers.credential_gateway,
       ...(drivers.credential_proxy === undefined
         ? {}
         : { credential_proxy: backendId(drivers.credential_proxy, "Egress Driver ID") }),
@@ -454,7 +463,6 @@ function backendMembers(backend: BackendDefinition): readonly string[] {
   }
   return [
     `sandbox:${backend.drivers.sandbox}`,
-    `credential_gateway:${backend.drivers.credential_gateway}`,
     ...(backend.drivers.credential_refresh === undefined
       ? []
       : [`credential_refresh:${backend.drivers.credential_refresh}`]),
@@ -519,6 +527,7 @@ export function validateSelectedBackendDrivers(
   backends: readonly BackendDefinition[],
   selected: Readonly<Partial<Record<DriverCapability, Driver>>>,
   proxyOwner?: InstalledDriver,
+  credentialSourceOwnerId?: string,
 ): void {
   const requires = (capability: DriverCapability, id: string, label: string): void => {
     const driver = selected[capability];
@@ -534,11 +543,11 @@ export function validateSelectedBackendDrivers(
       requires("service_account", backend.drivers.service_account, "ServiceAccount Driver");
     } else {
       requires("sandbox", backend.drivers.sandbox, "Sandbox Driver");
-      requires(
-        "credential_gateway",
-        backend.drivers.credential_gateway,
-        "Credential Gateway Driver",
-      );
+      if (backend.credentialSources.id !== credentialSourceOwnerId) {
+        throw new DriverSelectionError(
+          "The configured Backend requires its credential source owner.",
+        );
+      }
       if (backend.drivers.credential_refresh !== undefined) {
         if (!refresh?.sources) {
           throw new DriverSelectionError(
@@ -582,15 +591,15 @@ export function validateSelectedBackendDrivers(
       "The selected Credential Proxy Driver and Sandbox must come from the same registered Driver.",
     );
   }
-  const gateway = selected.credential_gateway;
   if (
-    gateway !== undefined &&
-    !backends.some((backend) =>
-      backendMembers(backend).includes(`credential_gateway:${gateway.id}`),
+    credentialSourceOwnerId !== undefined &&
+    !backends.some(
+      (backend) =>
+        backend.type === "openshell" && backend.credentialSources.id === credentialSourceOwnerId,
     )
   ) {
     throw new DriverSelectionError(
-      "The selected Credential Gateway Driver must belong to a configured Backend.",
+      "The credential source owner must belong to a configured Backend.",
     );
   }
 }

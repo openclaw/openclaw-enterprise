@@ -111,7 +111,7 @@ settings to it. A new Secret gets no `operate` grant, so where the `operate` ans
 any readable Secret, the Preset's **Create new Secret** choice is disabled and a typed model key
 is refused before any write. It then checks the Agent name, draft values with their staged channel
 `secretBindings`, plugins and the planned `harnessAuth`
-(only the method for a Secret it saves next or registers with a Credential Gateway; none for
+(only the method for a Secret it saves next or registers with the configured source Backend; none for
 ChatGPT sign-in) with
 `POST /namespaces/:namespaceId/agents/validate`, which refuses a name another Agent has with
 Agent create's `409` and a channel token reference without a binding with Configuration

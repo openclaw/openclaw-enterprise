@@ -33,7 +33,7 @@ export interface OpenShellGatewaySelection {
 }
 
 /**
- * The authenticated OpenShell gateway shared by the Sandbox and Credential Gateway Drivers.
+ * The authenticated OpenShell gateway shared by source registration and Sandbox delivery.
  * A bare Service name resolves in each Sandbox namespace, so clients are cached per endpoint.
  */
 export class OpenShellGateway {
@@ -195,13 +195,17 @@ function serviceEndpoint(configuration: OpenShellBackendConfiguration, namespace
   return `${scheme}://${host}:${configuration.port ?? DEFAULT_GATEWAY_PORT}`;
 }
 
+export type OpenShellBackend = Backend<OpenShellGateway> &
+  Pick<OpenShellBackendDefinition, "credentialSources">;
+
 export function createOpenShellBackend(
   definition: OpenShellBackendDefinition,
   selection: OpenShellGatewaySelection = {},
-): Backend<OpenShellGateway> {
+): OpenShellBackend {
   return Object.freeze({
     id: definition.id,
     client: new OpenShellGateway(definition.configuration, selection),
+    credentialSources: definition.credentialSources,
     drivers: Object.freeze({ ...definition.drivers }),
   });
 }

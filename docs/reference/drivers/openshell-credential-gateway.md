@@ -1,20 +1,23 @@
-# OpenShell Credential Gateway
+# OpenShell credential sources
 
-The [Credential Gateway](credential-gateway.md) stores OCC [credential sources](../credential-sources.md)
-as OpenShell providers. The supervisor substitutes credentials outside the Harness.
-Select it with the [OpenShell SandboxDriver](openshell-sandbox.md) on one `openshell`
-[Backend](../backends.md#openshell-gateway).
+<a id="openshell-credential-gateway"></a>
+
+The OpenShell Backend registers OCC [credential sources](../credential-sources.md)
+as providers. The paired [OpenShell Sandbox](openshell-sandbox.md) prepares and
+attaches those providers. Its supervisor substitutes credentials outside the Harness.
+See the [Backend source contract](credential-gateway.md).
 
 **OpenShell remains unsupported for production.** Workload identity, writable state,
 authentication, admission, and provider-file proof follow the
 [OpenShell qualification contract](openshell-sandbox.md#qualification-contract).
 
-For an example of how a request gets its key, see [How sources map to OpenShell](#how-sources-map-to-openshell).
+<a id="configure-the-driver"></a>
 
-## Configure the Driver
+## Configure credential sources
 
-Select `drivers.credential_gateway` with the OpenShell Backend and Sandbox in
-trusted Installation YAML. The Backend member IDs must match the selected Drivers:
+Set the source owner ID and binary lists in `credentialSources`.
+Preserve the owner ID for existing sources. Match the selected Sandbox and
+optional OAuth Token Service IDs to the Backend members.
 
 ```yaml
 backend:
@@ -27,9 +30,16 @@ backend:
         certificatePath: /etc/openclaw/openshell/tls.crt
         privateKeyPath: /etc/openclaw/openshell/tls.key
       rootCertificatePath: /etc/openclaw/openshell/ca.crt
+    credentialSources:
+      id: openshell-credentials
+      configuration:
+        binaries:
+          - /path/to/codex
+          - /usr/local/bin/node
+        toolBinaries:
+          - /usr/bin/curl
     drivers:
       sandbox: openshell-sandbox
-      credential_gateway: openshell-credentials
       credential_refresh: openshell-refresh # enables OAuth2; Codex also needs operatorTls
 drivers:
   sandbox:
@@ -38,18 +48,13 @@ drivers:
       gateway:
         workspaceMode: operator
       # See openshell-sandbox.md for the remaining Sandbox settings.
-  credential_gateway:
-    id: openshell-credentials
-    configuration:
-      binaries:
-        - /path/to/codex
-        - /usr/local/bin/node
-      toolBinaries:
-        - /usr/bin/curl
   credential_refresh:
     id: openshell-refresh
     configuration: {}
 ```
+
+Startup also accepts the former `drivers.credential_gateway` settings with
+their matching Backend member. Use one form per Backend.
 
 `binaries` requires a nonempty list of absolute executable paths inside the Harness
 image. OpenShell releases credentials to those binaries and their child processes.
@@ -78,18 +83,13 @@ Removing `toolBinaries` returns `409 RESOURCE_CONFLICT` for tool-source
 registration, update, deployment and repair: OpenShell treats empty lists as any
 binary. Existing sources remain readable and deletable.
 
-Startup rejects the selection when:
+Startup requires bundled Kubernetes Compute and the bundled OpenShell Sandbox.
+The Backend's `credentialSources.configuration` accepts only `binaries` and
+`toolBinaries`.
 
-- the Installation does not select the bundled Kubernetes Compute Driver;
-- no `openshell` Backend exists, or its `drivers.credential_gateway`,
-  `drivers.sandbox`, or `drivers.credential_refresh` differs from the selected
-  IDs;
-- the OpenShell OAuth implementation is selected without `drivers.credential_gateway`; or
-- the configuration has any key other than `binaries` and `toolBinaries`.
-
-Both API and worker require Backend credentials. The API registers/deletes
-providers; the worker creates Sandboxes, updates profiles and reads attachment
-status. The Refresh Driver owns device exchange and refresh configuration.
+The API and worker both need Backend credentials. OCC registers and deletes
+providers. The worker prepares attachments, creates Sandboxes and reads attachment
+status. The selected Token Service performs device exchange and configures refresh.
 
 ## Source-type catalog
 
@@ -165,18 +165,15 @@ The [Refresh Driver](credential-refresh.md) owns request IDs and recovery.
 
 ## How sources map to OpenShell
 
-Consider a dedicated Codex Agent with an `openai` source. OCC registers the
-key with an OpenShell provider and attaches the provider to the revision's
-Sandbox. Codex reads an `openshell:resolve:env:` placeholder from
+For a dedicated Codex Agent with an `openai` source, OCC registers the key
+through the Backend. The Sandbox Driver attaches the provider to the revision's Harness. Codex reads an `openshell:resolve:env:` placeholder from
 `OPENAI_API_KEY` and sends it as a bearer. When the binary and HTTPS endpoint
 match the profile, the trusted supervisor replaces the placeholder with the key
 before forwarding the request. With the default endpoint, requests under
 `https://api.openai.com/v1/` can match. A child process of the configured binary
 can also use that route.
 
-The selected Driver determines what else OpenShell checks.
-
-- **Ordinary Gateway delivery** matches the caller and endpoint. A matching
+- **Ordinary Sandbox delivery** matches the caller and endpoint. A matching
   request can use the key within the profile's route. The profile does not
   check each inference body or decide which response bytes the caller may see.
 - **Observed request-hook preview** applies to the explicitly selected
@@ -208,8 +205,8 @@ namespace. Registration and Sandbox creation use that same Workspace.
   before profile mutation and again on creation collision. These calls are not
   atomic: a provider or orphan profile can change between them.
 
-`sourceStatus` reports `ready` for an owned provider, `absent` for a missing one,
-and `failed` for a same-name provider the source does not own.
+`sourceStatus` reports `ready` for an owned provider, `pending` for Codex OAuth
+awaiting account metadata, `absent` for a missing provider, and `failed` for foreign ownership.
 Refresh reports `pending` during `refresh_in_progress`/`refresh_committing`.
 A persistent uncertain marker requires inspection; OCC neither replays the
 exchange nor reseeds credentials.
@@ -217,8 +214,7 @@ exchange nor reseeds credentials.
 `updateSource` requires the existing provider to be OCC-owned for the exact
 source, rewrites the source's profile when the configured binaries changed,
 then calls `UpdateProvider` with the new credential values. `UpdateProvider`
-merges non-empty values, so the driver rejects an empty value rather than
-silently keep the old one. OpenShell gives the new value only to processes
+merges non-empty values, so the Backend rejects empty replacements. OpenShell gives the new value only to processes
 started after the update; a running Harness keeps the previous value until it
 restarts.
 
@@ -324,8 +320,8 @@ and selection rules.
 
 | Symptom or message                                                                                | Cause and fix                                                                                                                             |
 | ------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| `drivers.credential_gateway requires an owning backend entry with type openshell.`                | Add the `openshell` Backend.                                                                                                              |
-| `backend[…].drivers.credential_gateway must match …`                                              | Make the Backend member IDs match the selected Driver IDs.                                                                                |
+| `The OpenShell Token Service requires an owning OpenShell Backend.`                               | Add the `openshell` Backend.                                                                                                              |
+| `backend[…].credentialSources requires an id and configuration.`                                  | Set the stable source owner ID and binary configuration in the Backend’s `credentialSources`.                                             |
 | `OpenShell Credential Gateway binaries must be a nonempty list of absolute paths.`                | Correct `binaries`.                                                                                                                       |
 | Registering, updating, or deploying `bearer-token` returns `409`: the gateway does not offer it   | Configure `toolBinaries`.                                                                                                                 |
 | Registering, updating, or deploying an OAuth2 type returns `409`: the gateway does not offer it   | Configure `toolBinaries` and select `drivers.credential_refresh` on the same Backend.                                                     |
@@ -340,8 +336,8 @@ and selection rules.
 
 ## Related
 
-- [CredentialGatewayDriver contract](credential-gateway.md) and [CredentialRefreshDriver contract](credential-refresh.md)
+- [Backend credential source contract](credential-gateway.md) and [CredentialRefreshDriver contract](credential-refresh.md)
 - [OpenShell SandboxDriver](openshell-sandbox.md)
 - [Credential source lifecycle flow](../../flows/credential-source-lifecycle.md)
 - [OpenShell Sandbox provisioning flow](../../flows/openshell-sandbox-provisioning.md)
-- [Driver source](../../../apps/controller/src/drivers/credential-gateway/openshell.ts), [refresh source](../../../apps/controller/src/drivers/credential-refresh/openshell.ts), and [Backend source](../../../apps/controller/src/backends/openshell.ts)
+- [Source registration](../../../apps/controller/src/backends/openshell-credential-sources.ts), [profile catalog](../../../apps/controller/src/backends/openshell-credential-profiles.ts), [Token Service](../../../apps/controller/src/drivers/credential-refresh/openshell.ts), and [Sandbox attachments](../../../apps/controller/src/drivers/sandbox/openshell-credential-attachments.ts)

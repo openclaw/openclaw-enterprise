@@ -1,3 +1,5 @@
+import { workerSourceBackend } from "../helpers/postgres-worker-revision-fixture.mjs";
+import type { BackendDefinition } from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
@@ -15,7 +17,7 @@ import {
   waitForRevisionPass,
 } from "../helpers/postgres-worker-revision-support.mjs";
 import {
-  observationGateway,
+  observationCredentialSources,
   setupStandingWorkerAuthority,
   setupStandingWorkerDatabase,
 } from "../helpers/postgres-standing-worker-fixture.ts";
@@ -416,9 +418,11 @@ for (const scenario of [
                 events.push(e);
               }
             },
-            transformDrivers: (d: { installation: { drivers: object } }) => {
+            transformDrivers: (d: {
+              installation: { drivers: object; backend: readonly BackendDefinition[] };
+            }) => {
               const gateway = {
-                ...observationGateway(),
+                ...observationCredentialSources(),
                 ...(unavailableGateway && { id: "replacement-gateway" }),
               };
               const sandbox = {
@@ -432,16 +436,18 @@ for (const scenario of [
                 ...d,
                 repositoryPolicy: driver,
                 nativeRepositorySender: sender,
-                credentialGatewayDriver: gateway,
+                credentialSources: gateway,
                 sandboxDriver: sandbox,
                 installation: {
                   ...d.installation,
                   // Project unavailable configuration into the actual worker composition.
-                  ...(backendUnavailable && authorityFault ? { backend: [] } : {}),
+                  backend: [
+                    ...(backendUnavailable && authorityFault ? [] : d.installation.backend),
+                    workerSourceBackend(gateway.id, sandbox.id),
+                  ],
                   drivers: {
                     ...d.installation.drivers,
                     sandbox: { id: sandbox.id, configuration: {} },
-                    credential_gateway: { id: gateway.id, configuration: {} },
                   },
                 },
               };

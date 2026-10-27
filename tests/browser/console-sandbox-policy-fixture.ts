@@ -35,7 +35,7 @@ export async function createPolicyConsole(t: TestContext, ceiling: SandboxNetwor
       implementation: "openshell",
       backend: {
         id: "openshell",
-        drivers: { sandbox: "policy-openshell", credential_gateway: "policy-credentials" },
+        drivers: { sandbox: "policy-openshell" },
         client: new OpenShellGateway({ serviceName: "openshell-gateway" }),
       },
     },

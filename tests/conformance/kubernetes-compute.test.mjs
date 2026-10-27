@@ -1011,7 +1011,7 @@ function dedicatedFirstDeployFixture({
   modelEndpoint,
   sandboxDriver,
   openShellGit,
-  credentialGatewayDriver,
+  credentialSources,
   context,
   revision: revisionOverrides = {},
 } = {}) {
@@ -1051,7 +1051,7 @@ function dedicatedFirstDeployFixture({
     {
       sandboxDriver,
       ...(openShellGit === undefined ? {} : { openShellGit }),
-      credentialGatewayDriver,
+      credentialSources,
       nodeEnrollment: {
         async createSetup() {
           state.setupCalls++;
@@ -1669,9 +1669,9 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
   };
   const fixture = dedicatedFirstDeployFixture({
     sandboxDriver,
-    credentialGatewayDriver: {
+    credentialSources: {
       id: snapshot.credentialGatewayId,
-      capability: "credential_gateway",
+
       async listSourceTypes() {
         return [sourceType];
       },
@@ -8455,11 +8455,10 @@ test("credential withdrawal revokes through the revision's exact Sandbox", async
     },
     async cleanup() {},
   };
-  const credentialGatewayDriver = {
+  const credentialSources = {
     id: "credential-gateway",
-    capability: "credential_gateway",
   };
-  const driver = new KubernetesComputeDriver(options(), { sandboxDriver, credentialGatewayDriver });
+  const driver = new KubernetesComputeDriver(options(), { sandboxDriver, credentialSources });
   const namespace = kubernetesNamespaceName(tenant.id);
   const namespaceResource = {
     ...driver.manifest("v1", "Namespace", namespace, { namespaceId: tenant.id }),
@@ -8493,7 +8492,7 @@ test("credential withdrawal revokes through the revision's exact Sandbox", async
     namespaceId: tenant.id,
     type: "openai",
     ownerCapability: "credential_gateway",
-    driverId: credentialGatewayDriver.id,
+    driverId: credentialSources.id,
   };
   const revision = {
     id: "rev-withdraw",
@@ -8542,7 +8541,7 @@ test("credential withdrawal revokes through the revision's exact Sandbox", async
   // A SandboxDriver that cannot name the revision's Sandbox can never withdraw from it.
   const unaddressable = new KubernetesComputeDriver(options(), {
     sandboxDriver: { ...sandboxDriver, harnessResource: undefined },
-    credentialGatewayDriver,
+    credentialSources,
   });
   withdrawals.length = 0;
   await assert.rejects(
@@ -8984,13 +8983,13 @@ test("credential-source authentication renders no model Secret and requires the 
     facets: ["networking", "filesystem", "process"],
     provisionHarness() {},
   };
-  const credentialGatewayDriver = { id: "credential-gateway", capability: "credential_gateway" };
-  const driver = new KubernetesComputeDriver(options(), { sandboxDriver, credentialGatewayDriver });
+  const credentialSources = { id: "credential-gateway" };
+  const driver = new KubernetesComputeDriver(options(), { sandboxDriver, credentialSources });
   const namespace = { name: kubernetesNamespaceName(tenant.id), plane: "execution" };
   const snapshot = {
     method: "credential_source",
     sourceId: "cs_00000000-0000-4000-8000-000000000001",
-    credentialGatewayId: credentialGatewayDriver.id,
+    credentialGatewayId: credentialSources.id,
     sourceType: "openai",
     loginMode: "api_key",
   };
@@ -9017,7 +9016,7 @@ test("credential-source authentication renders no model Secret and requires the 
     config: {},
     secrets: {},
     ownerCapability: "credential_gateway",
-    driverId: credentialGatewayDriver.id,
+    driverId: credentialSources.id,
     state: "ready",
     createdAt: "2026-09-26T00:00:00.000Z",
   };
@@ -9199,8 +9198,8 @@ test("non-model credential sources resolved at dispatch must match the revision'
     facets: ["networking", "filesystem", "process"],
     provisionHarness() {},
   };
-  const credentialGatewayDriver = { id: "credential-gateway", capability: "credential_gateway" };
-  const driver = new KubernetesComputeDriver(options(), { sandboxDriver, credentialGatewayDriver });
+  const credentialSources = { id: "credential-gateway" };
+  const driver = new KubernetesComputeDriver(options(), { sandboxDriver, credentialSources });
   const source = (id) => ({
     id,
     namespaceId: tenant.id,
@@ -9209,7 +9208,7 @@ test("non-model credential sources resolved at dispatch must match the revision'
     config: {},
     secrets: {},
     ownerCapability: "credential_gateway",
-    driverId: credentialGatewayDriver.id,
+    driverId: credentialSources.id,
     state: "ready",
     createdAt: "2026-09-26T00:00:00.000Z",
   });
@@ -9219,7 +9218,7 @@ test("non-model credential sources resolved at dispatch must match the revision'
     namespaceId: tenant.id,
     credentialSources: [first, second].map(({ id }) => ({
       sourceId: id,
-      credentialGatewayId: credentialGatewayDriver.id,
+      credentialGatewayId: credentialSources.id,
       sourceType: "bearer-token",
     })),
   };
@@ -16366,7 +16365,7 @@ test("stopping a provider-owned Kubernetes revision waits for Sandbox workload t
 test("stop and retirement end credential-source access through Sandbox cleanup", async () => {
   // Salvaged from #146: stop and retirement must still shut the workload down when credential
   // cleanup is uncertain, and must not report completion until it is confirmed. On main the
-  // Credential Gateway attachment lives only in the paired Sandbox, so Sandbox cleanup is the
+  // The credential attachment lives only in the paired Sandbox, so Sandbox cleanup is the
   // withdrawal; OCC has no withdraw caller, and a failed cleanup must keep the work retryable.
   const cleanupCalls = [];
   let failCleanup = true;
@@ -16393,19 +16392,18 @@ test("stop and retirement end credential-source access through Sandbox cleanup",
     },
   };
   const unexpected = (method) => async () => {
-    assert.fail(`stop and retirement must not call Credential Gateway ${method}`);
+    assert.fail(`stop and retirement must not call the source owner’s ${method}`);
   };
-  const credentialGatewayDriver = {
+  const credentialSources = {
     id: "credential-gateway-stop",
-    implementation: "test/credential-gateway",
-    capability: "credential_gateway",
+
     removeSource: unexpected("removeSource"),
   };
-  const driver = new KubernetesComputeDriver(options(), { sandboxDriver, credentialGatewayDriver });
+  const driver = new KubernetesComputeDriver(options(), { sandboxDriver, credentialSources });
   const harnessAuth = {
     method: "credential_source",
     sourceId: "cs_00000000-0000-4000-8000-000000000146",
-    credentialGatewayId: credentialGatewayDriver.id,
+    credentialGatewayId: credentialSources.id,
     sourceType: "openai",
     loginMode: "api_key",
   };
@@ -18148,9 +18146,9 @@ test("external ChatGPT source preparation delivers the exact placeholder and acc
   };
   let attachments = [attachment];
   const provisions = [];
-  const credentialGatewayDriver = {
+  const credentialSources = {
     id: snapshot.credentialGatewayId,
-    capability: "credential_gateway",
+
     async listSourceTypes() {
       return [
         {
@@ -18193,7 +18191,7 @@ test("external ChatGPT source preparation delivers the exact placeholder and acc
     true,
     undefined,
     {},
-    { credentialGatewayDriver, sandboxDriver },
+    { credentialSources, sandboxDriver },
   );
   revision.sandboxDriverId = sandboxDriver.id;
   revision.harnessAuth = snapshot;

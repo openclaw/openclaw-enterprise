@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import type { TestContext } from "node:test";
 import { randomUUID, createHash } from "node:crypto";
 import {
-  CREDENTIAL_GATEWAY_FIXTURE_ID,
+  CREDENTIAL_SOURCE_OWNER_ID,
   createWorkerRevisionFixtures,
 } from "./postgres-worker-revision-fixture.mjs";
 import { databaseUrl } from "./postgres-database.mjs";
@@ -13,21 +13,19 @@ import { GitHubNativeRepositorySender } from "../../apps/controller/src/drivers/
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import { startRepositoryReceiptServer } from "../../apps/controller/src/backends/repository-credentials/receipt-server.ts";
 import { createSystemClock } from "../../apps/controller/src/drivers/repo/credentials/clock.ts";
-import type { CredentialGatewayDriver } from "../../packages/contracts/src/index.ts";
+import type { BackendCredentialSources } from "../../packages/contracts/src/index.ts";
 import type { ControllerWorker } from "../../apps/controller/src/worker.ts";
 import type { Pool } from "pg";
 import { repositoryApprovalFingerprint } from "../../packages/occ/src/index.ts";
 
 // The worker reaches model withdrawal through Compute. This registration supplies only
 // the paired gateway identity; the test does not claim real provider attachment or chat.
-export function observationGateway(): CredentialGatewayDriver {
+export function observationCredentialSources(): BackendCredentialSources {
   const unused = async (): Promise<never> => {
     throw new Error("Unexpected direct gateway effect");
   };
   return {
-    id: CREDENTIAL_GATEWAY_FIXTURE_ID,
-    implementation: "credential-gateway-worker-fixture",
-    capability: "credential_gateway",
+    id: CREDENTIAL_SOURCE_OWNER_ID,
     validateSourceConfig() {},
     listSourceTypes: async () => [],
     registerSource: unused,

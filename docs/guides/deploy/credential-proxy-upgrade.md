@@ -1,18 +1,17 @@
 # Upgrade an installation to Credential Proxy
 
-Start with [Credential Proxy setup](../credential-proxy.md). A schema upgrade,
-a live Secret adoption, and removal of a Credential Gateway are different
-operations. Existing static Gateway owners may remain. **There is no general
-in-place Gateway-to-Proxy ownership transfer or qualified stock protected
-replacement in this release.**
+Start with [Credential Proxy setup](../credential-proxy.md). Existing OpenShell
+sources keep their owner across a schema upgrade. Live Secret adoption changes
+how an admitted source supplies credentials. To change its owner, register and
+bind a supported replacement source.
 
 ## Decide what can move
 
 | Existing use                                                       | Upgrade decision                                                                                                                                                                                                                                                                                                                                                                                            |
 | ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Static `openai` source                                             | May remain Gateway-owned. An unbound source can explicitly adopt protected live reads, but retains its owner. Replacing that owner requires a supported Proxy-owned registration path; adoption alone cannot remove Gateway. With Credential Proxy selected, a source without live reads serves only as the Harness source beside repository Git; deploy refuses it elsewhere with `409 RESOURCE_CONFLICT`. |
-| Static `codex-pat` or `bearer-token`                               | Keep the Gateway path unless the selected Proxy explicitly supports that source and operation. Do not treat the static inference profile as a universal token injector.                                                                                                                                                                                                                                     |
-| `codex-oauth`, `oauth2-client-credentials`, `oauth2-refresh-token` | Keep existing Gateway/Refresh sources and their enrollment state; this does not promise arbitrary fresh refresh registration alongside a static Proxy profile. No general transfer of refresh grants to Token Service is implemented.                                                                                                                                                                       |
+| Static `openai` source                                             | May remain Backend-owned. An unbound source can explicitly adopt protected live reads, but retains its owner. Replacing that owner requires a supported Proxy-owned registration path; adoption preserves the Backend owner. With Credential Proxy selected, a source without live reads serves only as the Harness source beside repository Git; deploy refuses it elsewhere with `409 RESOURCE_CONFLICT`. |
+| Static `codex-pat` or `bearer-token`                               | Keep the ordinary OpenShell attachment path unless the selected Proxy explicitly supports that source and operation. Do not treat the static inference profile as a universal token injector.                                                                                                                                                                                                               |
+| `codex-oauth`, `oauth2-client-credentials`, `oauth2-refresh-token` | Keep the existing Backend-registered sources and their Token Service enrollment. The selected static Proxy profile limits which new registrations can run alongside it.                                                                                                                                                                                                                                     |
 | Proxy-owned metadata                                               | `github-app-metadata` (with its issuer configured) and `credential-free-repository-metadata` have narrow metadata profiles. Neither replaces static inference or Git delivery.                                                                                                                                                                                                                              |
 | Prepared GitHub App access                                         | Token Service owns preparation and retirement. Choose qualified protected delivery or explicit native prepared Git; do not copy tokens between owners.                                                                                                                                                                                                                                                      |
 | Earlier broker trial or legacy `drivers.repo`                      | New startup rejects these selections. Drain on the original release before switching; the new release cannot restart that owner.                                                                                                                                                                                                                                                                            |
@@ -22,8 +21,8 @@ source for the operator and Agent principal, replace bindings, and admit a new
 revision. Re-enroll provider credentials where the replacement requires it.
 An approval for a narrower operation, finite lifetime, or different repository
 scope never becomes broader or standing automatically. The static setup linked
-from this guide creates a Gateway-owned source, so it does not by itself provide
-the replacement registration needed to remove Gateway.
+from this guide creates a Backend-owned source, so it does not by itself provide
+the replacement registration needed to remove the old source owner.
 
 ## Check compatibility before interrupting access
 
@@ -33,10 +32,10 @@ Use `occ credential-source list`, then `get` for live status, and `occ agent get
 `revisions`, and `deployment-status`. Require visibility over every affected
 Namespace: an empty permission-filtered list does not prove no dependencies.
 
-**Keep Credential Gateway while using the bundled OpenShell Backend and Sandbox,
-even with no credential sources.** Both Backend members are mandatory. Removing
-Gateway requires a different qualified composition, or a future Backend contract
-with Gateway-independent source and Harness admission. Verify that a supported
+The bundled OpenShell Sandbox requires the Backend’s `credentialSources` settings,
+including its stable source owner ID. Existing Installations can supply this
+policy through the older `drivers.credential_gateway` selector. Startup maps
+both spellings to the same Backend source owner. Verify that a supported
 replacement exists for every retained source and model authentication path
 before withdrawing access. Selecting Credential Proxy alone does not provide one.
 
@@ -84,7 +83,7 @@ Migration reports its **starting** history; the last check must report
 `completed`. Upgrade the control plane without mixed-version
 writers. Keep existing Driver selections and admissions, then verify retained
 workflows. **You can stop here without revoking a working source.** Migration
-preserves Gateway ownership and records older revisions as version 2 `unprotected`;
+preserves Backend source ownership and records older revisions as version 2 `unprotected`;
 it does not enable protected execution or broaden approvals. Production also
 follows the [coordinated upgrade procedure](production-upgrade.md).
 
@@ -135,7 +134,7 @@ retirement of the earlier broker trial. New startup rejects `drivers.repo` and
 
 ## Replace bindings and verify before removing owners
 
-Keep the old Gateway selected while removing its references and deleting its
+Keep the old Backend source owner configured while removing its references and deleting its
 sources. Stop alone leaves selected revisions referenced; withdrawal also leaves
 the source in that revision. Update the Agent with its `configurationId`,
 replacement `harnessAuth`, and complete replacement `credentialSources` list
@@ -159,14 +158,12 @@ A `409` means references or withdrawal work remain; finish those operations.
 A `503` leaves cleanup incomplete. Retain the owner, correct its dependency,
 and retry its supported cleanup. Do not delete Secrets or custody keys first.
 
-Full Gateway removal is impossible while retaining the bundled OpenShell Backend
-and Sandbox. For a qualified replacement composition, first prove that no source,
-draft, selected revision, pending deployment/provisioning job, withdrawal, worker
-or unsettled custody needs the old owner. A `credential_source` Harness also
-snapshots its Gateway owner; while Gateway is selected, an ordinary Secret-backed
-Harness is not a supported substitute. Remove Refresh with Gateway if selected,
-because Refresh requires it. Update Backend membership and deployment settings
-together only after those dependencies are gone.
+A `credential_source` Harness snapshots its source owner ID. The bundled
+OpenShell Sandbox uses the Backend’s configured sources for Harness authentication.
+When switching to a replacement runtime, finish all source, revision, provisioning,
+withdrawal and custody work with the original owner before removing the OpenShell
+Backend or its Token Service. Update Backend membership and deployment settings
+together.
 
 The OpenShell Gateway **service** also serves Sandbox and middleware operations.
 Keep it and its TLS/network dependencies while any retained component needs them.

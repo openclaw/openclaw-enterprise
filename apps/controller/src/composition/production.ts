@@ -105,7 +105,7 @@ export async function composeProduction(
     configurationDriver,
     secretDriver,
     sandboxDriver,
-    credentialGatewayDriver,
+    credentialSources,
     credentialRefreshDriver,
     protectedDriver,
     pluginDriver,
@@ -278,6 +278,7 @@ export async function composeProduction(
 
     phaseCompleted("computePreflight");
     const controller = new OpenClawController(persistedInstallation, {
+      ...(credentialSources && { credentialSources }),
       ...installationControllerOptions(config.drivers.installation),
       state,
       recordOperations: true,
@@ -315,10 +316,6 @@ export async function composeProduction(
     } else if (sandboxDriver !== undefined) {
       controller.registerDriver(sandboxDriver);
       controller.selectDriver("sandbox", sandboxDriver.id);
-    }
-    if (credentialGatewayDriver !== undefined) {
-      controller.registerDriver(credentialGatewayDriver);
-      controller.selectDriver("credential_gateway", credentialGatewayDriver.id);
     }
     if (credentialRefreshDriver !== undefined) {
       controller.registerDriver(credentialRefreshDriver);

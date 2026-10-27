@@ -65,8 +65,11 @@ export function createCredentialProxyInstallationConfiguration() {
       },
       drivers: {
         sandbox: "openshell-sandbox",
-        credential_gateway: "openshell-credentials",
         credential_proxy: "openshell-egress",
+      },
+      credentialSources: {
+        id: "openshell-credentials",
+        configuration: { binaries: ["/usr/bin/model-client"] },
       },
     },
   ];
@@ -94,10 +97,6 @@ export function createCredentialProxyInstallationConfiguration() {
         ],
       },
     },
-  };
-  configuration.drivers.credential_gateway = {
-    id: "openshell-credentials",
-    configuration: { binaries: ["/usr/bin/model-client"] },
   };
   configuration.drivers.credential_proxy = {
     id: "openshell-egress",

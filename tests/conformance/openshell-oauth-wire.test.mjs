@@ -259,11 +259,14 @@ test(
 
     const backend = createOpenShellBackend({
       id: "openshell",
-      implementation: "openshell",
+      type: "openshell",
       configuration,
+      credentialSources: {
+        id: "credential-gateway-openshell",
+        configuration: { binaries: ["/app/bin/codex"] },
+      },
       drivers: {
         sandbox: "sandbox",
-        credential_gateway: "credential-gateway-openshell",
         credential_refresh: "credential-refresh-openshell",
       },
     });
@@ -281,7 +284,7 @@ test(
       source: {
         id: sourceId,
         namespaceId: "namespace",
-        driverId: backend.drivers.credential_gateway,
+        driverId: backend.credentialSources.id,
         type: "codex-oauth",
       },
     };
@@ -313,7 +316,7 @@ test(
       const read = credentialRefreshDriver.sourceTokens.withSourceToken(
         {
           ...context,
-          source: { ...context.source, driverId: definition.drivers.credential_gateway },
+          source: { ...context.source, driverId: definition.credentialSources.id },
         },
         async ({ accessToken }) => accessToken,
       );

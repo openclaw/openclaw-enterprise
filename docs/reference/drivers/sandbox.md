@@ -32,11 +32,11 @@ required `facets` and `cleanup` members, an optional `harnessHome`, and optional
 | `workspaceNodePeerLabels(context)`               | Optional. Exact Pod labels of the provider Pods that open the Agent revision's workspace-node connection, or `undefined` before its Sandbox exists. Compute admits only these Pods to that Agent's Gateway port, plus those of the serving Agent revision while a successor prepares, so the labels must select that Sandbox alone. OpenShell returns the supervisor's `openshell.ai/sandbox-id`.                   |
 | `readSandboxLogs(context, request)`              | Optional read of the Agent revision's Sandbox log: at most `lines` raw lines at or after `sinceTime`, plus how many lines the source examined. It must use a read-only interface and derive the Sandbox from the Agent revision. OCC classifies and redacts every line. See [Agent logs](../../guides/topics/agent-logs.md#sandbox-source).                                                                         |
 
-For ordinary providers, Compute passes the Namespace, revision and sources to
-`credentialAttachments.prepare`. The Sandbox verifies ownership and returns one opaque
-attachment per source. For `status` and `withdraw`, Compute includes the Harness reference.
-Withdrawal settles on a revocation receipt or confirmed Sandbox absence. A recheck detaches
-any source still listed. These operations also work without `credential_proxy`. [OpenShell provider attachments](openshell-credential-gateway.md#how-sources-map-to-openshell)
+For ordinary sources, Compute calls `credentialAttachments.prepare` with the
+Namespace, revision and authorized sources. After provisioning it passes the
+exact Harness reference to `status` and `withdraw`. Withdrawal settles on a
+revocation receipt or confirmed absence. Recheck detaches any reattached source.
+[OpenShell provider attachments](openshell-credential-gateway.md#how-sources-map-to-openshell)
 
 Two optional methods serve a provider-owned Harness transport.
 `harnessEndpoint(context)` returns the transport for the provisioned Harness, and
@@ -132,11 +132,10 @@ Private initialization must preserve the [workspace setup lifecycle](../../flows
 including safe retries and preserved later edits. Throw
 `SandboxWorkspaceSetupRefusedError` for a refusal; Compute fails at once.
 
-`credentialAttachments` holds one opaque `{ sourceId, ref }` entry per
-ordinary credential source the Agent revision uses. The list is empty otherwise. The
-selected Sandbox prepares the references and verifies that each belongs to its Backend
-before applying it. Compute configures protected sources separately through the Credential Proxy. After the Harness is ready, Compute asks the Sandbox whether each
-attachment is applied before activating the Agent revision.
+`credentialAttachments` holds one opaque `{ sourceId, ref }` per ordinary source.
+The Sandbox verifies each reference before applying it. Compute waits for every
+attachment to become ready before activation. It configures protected sources
+through the Credential Proxy.
 
 ### Sandbox resource identity
 
@@ -277,10 +276,9 @@ as the `reason`. OpenShell throws it for gRPC `PERMISSION_DENIED` and
 
 ## Implementations
 
-- [OpenShell SandboxDriver](openshell-sandbox.md): bundled implementation, paired
-  with the OpenShell Credential Gateway through an `openshell` Backend. Trusted
-  YAML can also select an operator-installed Sandbox package, which cannot pair
-  with a Credential Gateway.
+- The bundled [OpenShell SandboxDriver](openshell-sandbox.md) uses its OpenShell
+  Backend to prepare, observe and withdraw ordinary credential attachments.
+  Trusted YAML can also select an operator-installed Sandbox package.
 
 ## Related
 
