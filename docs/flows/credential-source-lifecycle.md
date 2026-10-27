@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
-updated: 2026-10-23
-last_updated_session: fix-2242
+updated: 2026-10-27
+last_updated_session: authoring-run/5f2d68c9-a379-48d1-b61e-f9971c654e17
 ---
 
 # Credential source lifecycle Flow
@@ -224,7 +224,7 @@ updates use the [Refresh Driver](credential-source-refresh.md#4-update-and-rotat
 `packages/occ/src/index.ts:withdrawAgentCredentialSource`,
 `apps/controller/src/worker.ts:processCredentialWithdrawal`,
 `apps/controller/src/drivers/compute/kubernetes/index.ts:withdrawCredentialSource`,
-`apps/controller/src/drivers/credential-gateway/openshell.ts:withdraw`
+`apps/controller/src/drivers/sandbox/openshell-credential-attachments.ts:openShellCredentialAttachments`
 
 The API authorizes `agent:operate` and requires the selected version to list the
 source in `credential_sources`. For that version, each later version
@@ -239,8 +239,9 @@ The worker rechecks `agent:operate` for each pending withdrawal's
 `withdrawCredentialSource` for each authorized one in admission order. The work retries while an authorized withdrawal is unconfirmed;
 otherwise a denied requester fails it after the others are revoked, unless a
 replay reassigned it. Revocations are audited per requester when confirmed;
-denials and failures, once when the claim ends. The OpenShell Driver calls `DetachSandboxProvider`
-on the `harnessResource` Sandbox and reads the receipt's status.
+denials and failures, once when the claim ends. Compute calls the paired Sandbox Driver's
+`credentialAttachments.withdraw` on the revision's `harnessResource`. OpenShell detaches
+its provider with `DetachSandboxProvider` and reads that receipt's status.
 `packages/occ/src/credential-policy-reduction.ts:reduceCredentialPolicy` reduces protected
 sources only on the selected version; elsewhere it sends nothing, and the refusal awaits a replay
 or, for a candidate, its activation, which queues one attempt. Each
@@ -303,6 +304,8 @@ OpenShell detaches again only if `SandboxSpec.providers` still lists the provide
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-27 01:01: Trace ordinary provider withdrawal through the paired Sandbox. (authoring-run/5f2d68c9-a379-48d1-b61e-f9971c654e17 - 95b3f6e4b1c1f40b6af6c0694732c5a7389331b8)
 
 - 2026-10-23 08:05: Refuse unselected protected withdrawals. (fix-2235 - 860eea712)
 

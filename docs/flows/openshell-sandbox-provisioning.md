@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
-updated: 2026-10-24
-last_updated_session: authoring-run/67a0706e-56ab-4514-adca-35cf217b0c3b
+updated: 2026-10-27
+last_updated_session: authoring-run/5f2d68c9-a379-48d1-b61e-f9971c654e17
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -307,9 +307,9 @@ value while the projection is unavailable. It relaunches the workspace-node
 process one second after every exit, uncapped, so Gateway rollout does not
 strand the Sandbox. Shutdown stops retries.
 
-Compute checks sources through `attachmentStatus`/`GetSandboxProviderStatus`:
-`pending` or missing status retries; `failed`, `withheld`, `revoked` or `absent`
-fails preparation. Shutdown calls `cleanup` for the version: `GetSandbox`, then
+Compute calls the paired Sandbox Driver’s `credentialAttachments.status` for the provisioned
+Harness. OpenShell reads each provider with `GetSandboxProviderStatus`. A pending or
+missing status retries. A failed, withheld, revoked or absent provider fails preparation. Shutdown calls `cleanup` for the version: `GetSandbox`, then
 `DeleteSandbox` (absence needs `GetWorkspace` and a second `GetSandbox`), then
 deletes the runtime provider, then the Git provider and profile. `cleanupNativeWorkspace` retires
 interrupted preparers without a Sandbox, refusing foreign/replaced resources.
@@ -366,6 +366,8 @@ proof on a Landlock-capable host; Console admission and initialized files are in
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-27 01:01: Identify the Sandbox Driver that observes provider readiness. (authoring-run/5f2d68c9-a379-48d1-b61e-f9971c654e17 - 95b3f6e4b1c1f40b6af6c0694732c5a7389331b8)
 
 - 2026-10-24 20:50: Refuse dedicated OpenClaw with several operator-mode ServiceAccounts at admission, and offer only admitted OpenClaw modes. (finding 2346)
 

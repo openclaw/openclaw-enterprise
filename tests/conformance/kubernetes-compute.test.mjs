@@ -1659,6 +1659,11 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
     secrets: {},
     state: "ready",
   };
+  sandboxDriver.credentialAttachments = {
+    async status() {
+      return [{ sourceId: source.id, state: "ready" }];
+    },
+  };
   const fixture = dedicatedFirstDeployFixture({
     sandboxDriver,
     credentialGatewayDriver: {
@@ -1669,9 +1674,6 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
       },
       async attachForRevision() {
         return [{ sourceId: source.id, ref: "native-provider" }];
-      },
-      async attachmentStatus() {
-        return [{ sourceId: source.id, state: "ready" }];
       },
     },
     context: { harnessAuth: { ...snapshot, source }, credentialSources: [source] },
@@ -8432,10 +8434,17 @@ test("direct service account token is confined to the model container and exact 
 
 test("credential withdrawal revokes through the revision's exact Sandbox", async () => {
   const withdrawals = [];
+  let reportedSource;
   const sandboxDriver = {
     id: "sandbox-openshell",
     capability: "sandbox",
     facets: ["networking"],
+    credentialAttachments: {
+      async withdraw(context) {
+        withdrawals.push(context);
+        return { sourceId: reportedSource ?? context.sourceId, state: "revoked" };
+      },
+    },
     harnessResource({ namespace, revision }) {
       return {
         namespaceName: namespace.name,
@@ -8446,14 +8455,9 @@ test("credential withdrawal revokes through the revision's exact Sandbox", async
     },
     async cleanup() {},
   };
-  let reportedSource;
   const credentialGatewayDriver = {
     id: "credential-gateway",
     capability: "credential_gateway",
-    async withdraw(context) {
-      withdrawals.push(context);
-      return { sourceId: reportedSource ?? context.sourceId, state: "revoked" };
-    },
   };
   const driver = new KubernetesComputeDriver(options(), { sandboxDriver, credentialGatewayDriver });
   const namespace = kubernetesNamespaceName(tenant.id);
@@ -8505,7 +8509,7 @@ test("credential withdrawal revokes through the revision's exact Sandbox", async
   };
   const signal = AbortSignal.timeout(5_000);
 
-  // Compute hands the gateway the Sandbox provisioning created, in the Namespace's placement.
+  // Compute addresses the same placed Sandbox that provisioned the Harness.
   assert.deepEqual(await driver.withdrawCredentialSource(revision, source, signal), {
     sourceId: source.id,
     state: "revoked",
@@ -8520,11 +8524,11 @@ test("credential withdrawal revokes through the revision's exact Sandbox", async
   assert.equal(withdrawals[0].sourceId, source.id);
   assert.equal(withdrawals[0].revision, revision);
   assert.equal(withdrawals[0].recheck, undefined);
-  // A recheck of a recorded revocation reaches the gateway as one.
+  // Preserve the recheck flag for the Sandbox receipt read.
   await driver.withdrawCredentialSource(revision, source, signal, { recheck: true });
   assert.equal(withdrawals[1].recheck, true);
 
-  // A gateway answer about another source is not evidence for this withdrawal, and retrying
+  // A Sandbox answer about another source is not evidence for this withdrawal, and retrying
   // cannot change it, so the worker fails the withdrawal at once.
   reportedSource = "cs_00000000-0000-4000-8000-000000000003";
   await assert.rejects(driver.withdrawCredentialSource(revision, source, signal), (error) => {
@@ -8549,6 +8553,14 @@ test("credential withdrawal revokes through the revision's exact Sandbox", async
       return true;
     },
   );
+  assert.equal(withdrawals.length, 0);
+
+  const attachments = sandboxDriver.credentialAttachments;
+  delete sandboxDriver.credentialAttachments;
+  await assert.rejects(driver.withdrawCredentialSource(revision, source, signal), {
+    code: "CREDENTIAL_WITHDRAWAL_MISCONFIGURED",
+  });
+  sandboxDriver.credentialAttachments = attachments;
   assert.equal(withdrawals.length, 0);
 
   // A Namespace at the derived name that this Namespace does not own (none claims it by label)
@@ -16383,8 +16395,6 @@ test("stop and retirement end credential-source access through Sandbox cleanup",
     implementation: "test/credential-gateway",
     capability: "credential_gateway",
     attachForRevision: unexpected("attachForRevision"),
-    attachmentStatus: unexpected("attachmentStatus"),
-    withdraw: unexpected("withdraw"),
     removeSource: unexpected("removeSource"),
   };
   const driver = new KubernetesComputeDriver(options(), { sandboxDriver, credentialGatewayDriver });

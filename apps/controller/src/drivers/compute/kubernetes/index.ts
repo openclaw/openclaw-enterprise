@@ -7257,7 +7257,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           await withdrawProviderExposure();
         }
         if (credentialContext !== undefined) {
-          const statuses = await this.requireCredentialGateway().attachmentStatus({
+          const statuses = await this.requireCredentialAttachments(sandboxDriver).status({
             ...credentialContext,
             sandbox,
           });
@@ -8169,7 +8169,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
 
   /**
    * Revokes one credential source from the revision's paired Sandbox. The Sandbox identity is
-   * derived exactly as provisioning created it, so the gateway withdraws and confirms whether or
+   * derived exactly as provisioning created it, so the Sandbox Driver withdraws and confirms whether or
    * not the Kubernetes Namespace still exists: the provider's Workspace record outlives the
    * Namespace, and only the gateway can tell a missing Sandbox from a hidden one (finding 1693).
    * A configuration that cannot reach the Sandbox, or an object this Driver does not own, is a
@@ -8236,7 +8236,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const { name: namespace, external } = await this.resolveNamespace(revision.namespaceId);
     const existingNamespace = await this.getNamespace(namespace);
     // A missing Namespace proves nothing about the Sandbox (finding 1693): only its ownership
-    // check needs the object; the gateway withdraws and confirms either way. Without the object
+    // check needs the object; the Sandbox Driver withdraws and confirms either way. Without the object
     // the placement is the derived default, so an adopted Namespace of another name fails closed
     // in the gateway (no such Workspace) rather than reporting absence.
     if (existingNamespace !== undefined) {
@@ -8278,7 +8278,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     const sandbox = sandboxDriver.harnessResource({ namespace: sandboxNamespace, revision });
     this.verifySandboxResourceRef(sandbox, revision, namespace);
-    const status = await this.requireCredentialGateway().withdraw({
+    const status = await this.requireCredentialAttachments(sandboxDriver).withdraw({
       namespace: sandboxNamespace,
       revision,
       sandbox,
@@ -8287,7 +8287,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       ...(options.recheck === true ? { recheck: true } : {}),
     });
     if (status.sourceId !== source.id) {
-      throw new OwnershipFailure("The Credential Gateway withdrew another credential source.");
+      throw new OwnershipFailure("The Sandbox Driver withdrew another credential source.");
     }
     return status;
   }
@@ -11096,6 +11096,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
       signal: this.operationSignal(),
     });
     return catalog.find((entry) => entry.type === sourceType);
+  }
+
+  private requireCredentialAttachments(sandbox: SandboxDriver) {
+    if (!sandbox.credentialAttachments) {
+      throw new ConfigurationFailure(
+        "The selected Sandbox Driver cannot observe or withdraw credential attachments.",
+      );
+    }
+    return sandbox.credentialAttachments;
   }
 
   private requireCredentialGateway(): CredentialGatewayDriver {

@@ -17,7 +17,7 @@ import {
   OpenShellRequestReplayRefusedError,
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { OpenShellGatewayFailure } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-errors.ts";
-import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
+import { openShellCredentialAttachments } from "../../apps/controller/src/drivers/sandbox/openshell-credential-attachments.ts";
 import {
   openShellProviderName,
   openShellWorkspaceName,
@@ -2567,7 +2567,7 @@ test("OpenShell client serializes v0.1.5 provider updates and detach receipts", 
   }
 });
 
-test("OpenShell gateway rechecks a revoked source through the Sandbox's provider list", async () => {
+test("OpenShell observes an attached provider and rechecks its withdrawal through the Sandbox", async () => {
   const proto = await loader.load(
     join(import.meta.dirname, "../fixtures/openshell-v0.1.5-wire.proto"),
     { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true },
@@ -2612,7 +2612,17 @@ test("OpenShell gateway rechecks a revoked source through the Sandbox's provider
       callback(null, { detached: true, receipt: { receipt_id: "receipt-recheck" } });
     },
     GetSandboxProviderStatus(call, callback) {
-      calls.push(["GetSandboxProviderStatus", call.request.sandbox, call.request.receipt_id]);
+      calls.push([
+        "GetSandboxProviderStatus",
+        call.request.workspace_scope?.workspace,
+        call.request.sandbox,
+        call.request.provider,
+        call.request.receipt_id,
+      ]);
+      if (!call.request.receipt_id) {
+        callback(null, { status: { state: "PROVIDER_READINESS_STATE_READY" } });
+        return;
+      }
       callback(null, {
         status: {
           receipt: { receipt_id: call.request.receipt_id },
@@ -2637,17 +2647,9 @@ test("OpenShell gateway rechecks a revoked source through the Sandbox's provider
     endpoint: `http://127.0.0.1:${port}`,
     auth: { mode: "unauthenticated" },
   });
-  const gateway = new OpenShellCredentialGatewayDriver(
-    { binaries: ["/usr/local/bin/codex"] },
-    {
-      backend: {
-        drivers: { credential_gateway: "credential-gateway-openshell" },
-        client: { clientForNamespace: () => client, placement: () => undefined },
-      },
-    },
-  );
+  const attachments = openShellCredentialAttachments({ clientForNamespace: () => client });
   const recheck = (resourceName) =>
-    gateway.withdraw({
+    attachments.withdraw({
       namespace,
       revision: { id: "rev_recheck" },
       sandbox: { resourceName },
@@ -2656,6 +2658,16 @@ test("OpenShell gateway rechecks a revoked source through the Sandbox's provider
       recheck: true,
     });
   try {
+    assert.deepEqual(
+      await attachments.status({
+        namespace,
+        revision: { id: "rev_recheck" },
+        sources: [{ id: sourceId }],
+        sandbox: { resourceName: "os-listed" },
+        signal: AbortSignal.timeout(2_000),
+      }),
+      [{ sourceId, state: "ready" }],
+    );
     // A Sandbox that lists the provider again, as after a late create, is detached once more;
     // the fresh receipt is not yet confirmed.
     assert.deepEqual(await recheck("os-listed"), {
@@ -2671,9 +2683,10 @@ test("OpenShell gateway rechecks a revoked source through the Sandbox's provider
     assert.deepEqual(await recheck("os-bare"), { sourceId, state: "revoked" });
     assert.deepEqual(await recheck("os-missing"), { sourceId, state: "absent" });
     assert.deepEqual(calls, [
+      ["GetSandboxProviderStatus", workspace, "os-listed", provider, undefined],
       ["GetSandbox", "os-listed"],
       ["DetachSandboxProvider", "os-listed", provider],
-      ["GetSandboxProviderStatus", "os-listed", "receipt-recheck"],
+      ["GetSandboxProviderStatus", workspace, "os-listed", provider, "receipt-recheck"],
       ["GetSandbox", "os-listed"],
       ["GetSandbox", "os-detached"],
       ["GetSandbox", "os-bare"],

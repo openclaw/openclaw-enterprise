@@ -234,9 +234,9 @@ its provider name. It fails when two of the Agent revision's sources would use
 the same environment variable, and the worker then fails the deployment with
 `CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT` without retrying. The
 OpenShell SandboxDriver appends those names to `SandboxSpec.providers`.
-`attachmentStatus` calls `GetSandboxProviderStatus` for each provider and maps
+Its `credentialAttachments.status` calls `GetSandboxProviderStatus` for each provider and maps
 OpenShell readiness states to `ready`, `withheld`, `revoked`, `failed`, or
-`pending`. `withdraw` calls `DetachSandboxProvider` for the Agent revision's Sandbox,
+`pending`. Its `credentialAttachments.withdraw` calls `DetachSandboxProvider` for the Agent revision's Sandbox,
 then reads that receipt's status. Only `REVOKED` reports `revoked`: the
 Sandbox's placeholders then stop resolving, even in running processes. OpenShell
 reports `REVOKED` once the supervisor sees a running process without the

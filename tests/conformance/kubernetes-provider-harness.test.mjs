@@ -619,7 +619,9 @@ for (const scenario of transportScenarios) {
       async attachForRevision(context) {
         return context.sources.map(({ id }) => ({ sourceId: id, ref: `ref-${id}` }));
       },
-      async attachmentStatus(context) {
+    };
+    fixture.sandbox.credentialAttachments = {
+      async status(context) {
         attachmentChecks.push(context.sources.map(({ id }) => id));
         return context.sources.map(({ id }) => ({ sourceId: id, state: "ready" }));
       },

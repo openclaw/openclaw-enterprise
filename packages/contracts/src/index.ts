@@ -582,7 +582,7 @@ export interface CredentialSourceMetadata {
 
 /**
  * An authorized request to revoke one credential source from one Agent revision. `revoked`
- * is recorded only after the Credential Gateway confirms the revision's placeholders no
+ * is recorded only after the paired Sandbox confirms the revision's placeholders no
  * longer resolve; the revision cannot re-attach the source.
  */
 export interface CredentialWithdrawal {
@@ -1784,7 +1784,7 @@ export interface CredentialRevisionContext extends CredentialGatewayContext {
   readonly namespace: Readonly<Namespace>;
   readonly revision: Readonly<AgentRevision>;
   readonly sources: readonly Readonly<CredentialSource>[];
-  /** The paired Sandbox's workload, once provisioned; required for attachment status. */
+  /** The paired Sandbox’s workload, once provisioned. */
   readonly sandbox?: SandboxResourceRef;
 }
 
@@ -1797,7 +1797,7 @@ export interface CredentialWithdrawalContext extends CredentialGatewayContext {
   readonly sandbox: SandboxResourceRef;
   readonly sourceId: string;
   /**
-   * Re-checks a withdrawal already recorded `revoked`: the gateway detaches again only when
+   * Re-checks a withdrawal already recorded `revoked`: the Sandbox Driver detaches again only when
    * the Sandbox still lists the source, and otherwise reports `revoked` without a mutation.
    */
   readonly recheck?: boolean;
@@ -1859,14 +1859,6 @@ export interface CredentialGatewayDriver extends Driver {
   attachForRevision(
     context: CredentialRevisionContext,
   ): Promise<readonly CredentialSourceAttachment[]>;
-  attachmentStatus(
-    context: CredentialRevisionContext,
-  ): Promise<readonly CredentialAttachmentStatus[]>;
-  /**
-   * Returns `revoked` only on gateway evidence that the revision's placeholders no longer
-   * resolve, `absent` when the Sandbox no longer exists, and `pending` otherwise.
-   */
-  withdraw(context: CredentialWithdrawalContext): Promise<CredentialAttachmentStatus>;
 }
 
 export interface CredentialRefreshInput {
@@ -1942,6 +1934,14 @@ export interface SandboxRepositoryAccess {
 }
 
 export interface SandboxDriver extends Driver {
+  /** Observes and withdraws source attachments on the revision's provisioned Harness. */
+  readonly credentialAttachments?: {
+    status(
+      context: CredentialRevisionContext & { readonly sandbox: SandboxResourceRef },
+    ): Promise<readonly CredentialAttachmentStatus[]>;
+    /** Reports revoked on provider evidence, absent on confirmed Sandbox absence, otherwise pending. */
+    withdraw(context: CredentialWithdrawalContext): Promise<CredentialAttachmentStatus>;
+  };
   readonly repositoryAccess?: SandboxRepositoryAccess;
   /** Explicit support; a networking facet alone never grants editable policy. */
   readonly networkPolicy?: {
@@ -2512,10 +2512,10 @@ export interface ComputeDriver extends Driver {
    */
   resolveSandboxNamespace?(namespace: Readonly<Namespace>): Promise<Readonly<Namespace>>;
   /**
-   * Revokes `source` from the revision's paired Sandbox through the selected Credential
-   * Gateway. Returns `revoked` only after the gateway confirms revocation, and `absent` when
-   * the revision has no Sandbox or attachment left to revoke. Required for withdrawal.
-   * `options.recheck` is passed through to the gateway's withdrawal context. Throws OCC's
+   * Revokes `source` through the revision's paired Sandbox or protected policy owner.
+   * Returns `revoked` on confirmed revocation and `absent` when the revision has no
+   * Sandbox or attachment left to revoke.
+   * For ordinary attachments, Compute passes `options.recheck` to the Sandbox Driver. Throws OCC's
    * CredentialWithdrawalRefusedError when retrying cannot help: a configuration that cannot
    * reach the revision's Sandbox, or an object the Driver does not own.
    */
