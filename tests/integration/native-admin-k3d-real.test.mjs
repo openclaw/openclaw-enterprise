@@ -474,8 +474,13 @@ async function assertManagedNativeConfigWriteRejected(page, nativeOrigin, topolo
     },
   };
   await editor.fill(serializeConfig(parsed));
+  const retrySave = page
+    .locator("openclaw-settings-save-indicator")
+    .getByRole("button", { name: "Retry", exact: true })
+    .first();
+  await retrySave.waitFor({ state: "hidden" });
   await page.locator(".config-raw-actions button.primary").first().click();
-  await page.getByText("Config is externally managed", { exact: false }).first().waitFor();
+  await retrySave.waitFor();
   assert.equal(await readRuntimeAccent(topology), originalAccent);
 }
 
