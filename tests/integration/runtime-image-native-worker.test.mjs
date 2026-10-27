@@ -253,6 +253,7 @@ ${NATIVE_WORKER_ENTRYPOINT}`;
         "tests/conformance/workspace-node-supervisor.test.mjs",
         "tests/helpers/available-port.mjs",
         "apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts",
+        "apps/controller/plugins/oce-google-workspace/ai.openclaw.oce/release.json",
         "apps/controller/src/drivers/compute/embedded-gateway-owner.ts",
         "apps/controller/src/drivers/compute/gateway-tool-policy.ts",
         "apps/controller/src/drivers/compute/harness-egress-enrollment.ts",
