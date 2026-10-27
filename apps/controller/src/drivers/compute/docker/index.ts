@@ -6,6 +6,7 @@ import type {
   ComputeDriver,
   ComputeAgentBinding,
   ComputeRevisionContext,
+  ConfigurationValidationOptions,
   WorkspaceSetup,
   ComputeReadiness,
   RuntimeImage,
@@ -66,6 +67,7 @@ import {
 import {
   GATEWAY_TOOL_POLICY_RUNTIME,
   managedGatewayConfiguration,
+  validateGatewayToolPolicy,
 } from "../gateway-tool-policy.ts";
 import { validateCodexApprovalPolicySetting } from "../../../gateway/codex-approval-policy.ts";
 import { unsupportedNativeGatewayAuthFields } from "../../../gateway/auth-fields.ts";
@@ -573,6 +575,16 @@ export class DockerComputeDriver implements ComputeDriver {
     validatePlaintextNativeGateway(configuration);
     validateRoutableNativeListener(configuration);
     validateCodexApprovalPolicySetting(configuration);
+  }
+
+  // An embedded Gateway applies tools.gatewayPolicy natively, so Configuration save, Preset save
+  // and deployment refuse a policy it cannot assemble, with Kubernetes's text (finding 2695).
+  // Dedicated Codex preparation still checks its composed policy.
+  validateConfiguration(
+    configuration: Readonly<OpenClawConfigurationDocument>,
+    options?: ConfigurationValidationOptions,
+  ): void {
+    validateGatewayToolPolicy(configuration, callerSettingError, options);
   }
 
   // Agent create and update apply preparation's workspace rule, with its message. (OCC

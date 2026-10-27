@@ -1114,6 +1114,15 @@ test("Agent detail preserves admitted revision history while draft edits change 
       { exact: true },
     )
     .waitFor();
+  // An administrator gets the control, not the note for callers who cannot change it.
+  assert.equal(
+    await page
+      .getByText("Only an Installation administrator can change Gateway managed mode.", {
+        exact: true,
+      })
+      .count(),
+    0,
+  );
   await page.getByRole("button", { name: "Turn off managed mode for next deployment" }).click();
   await savingMode.requested;
   assert.equal(await deploy.isDisabled(), true);

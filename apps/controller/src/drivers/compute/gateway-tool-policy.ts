@@ -330,8 +330,9 @@ export function managedGatewayConfiguration(
  * tools.gatewayPolicy natively in an embedded Gateway too, so a policy it cannot assemble fails
  * every turn there (finding 2688). Configuration save and Agent admission run it with the
  * messages dedicated composition uses (finding 2689). A Configuration without a policy passes:
- * only dedicated composition adds the baseline. A Preset policy that waits on an unfilled
- * variable is checked when a Configuration is created from it.
+ * only dedicated composition adds the baseline. A Preset policy with an unfilled variable
+ * anywhere, in a value or an object key, is skipped whole at Preset save and checked when a
+ * Configuration is created from it.
  */
 export function validateGatewayToolPolicy(
   configuration: Readonly<OpenClawConfigurationDocument>,

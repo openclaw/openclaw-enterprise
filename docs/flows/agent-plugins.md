@@ -189,10 +189,12 @@ Dedicated launchers capture the [Gateway tool policy](../reference/configuration
 from the saved Agent revision before plugin grants. Startup and peer respawn
 enforce it; failures keep the Gateway unready. Changes require deployment replacement
 after affected old work ends. Human permissions stay unchanged. An embedded Gateway
-applies a policy that the Configuration sets without this composition, so Kubernetes
-Compute checks the policy in `validateConfiguration` (Configuration save) and in Agent
-admission for every topology, with the dedicated launchers' rules
-(`gateway-tool-policy.ts:validateGatewayToolPolicy`).
+applies a policy that the Configuration sets without this composition, so Kubernetes,
+SSH and Docker Compute check the policy in `validateConfiguration` (Configuration save
+and deployment), and Kubernetes also in Agent admission, for every topology, with the
+dedicated launchers' rules (`gateway-tool-policy.ts:validateGatewayToolPolicy`).
+Preparation and activation, which also run on maintenance and recovery passes of the
+active revision, do not check it again; dedicated preparation checks its composed policy.
 
 Dedicated Codex uses isolated `CODEX_HOME`, disabling app/plugin defaults.
 Selections enable apps, plugins and remote plugins; disabled entries cannot execute.
@@ -360,6 +362,8 @@ establish starvation.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-27 04:00: Check the Gateway tool policy on SSH and Docker Compute too, and not on maintenance passes of an active revision (findings 2694, 2695). (fix-3816-gaps)
 
 - 2026-10-27 03:30: Check the Gateway tool policy at Configuration save and for embedded Agents (findings 2688, 2689). (fix-2688-policy)
 

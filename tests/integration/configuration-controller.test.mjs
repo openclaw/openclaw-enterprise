@@ -4,6 +4,8 @@ import { readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
 import { KubernetesConfigurationDriver } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
+import { DockerComputeDriver } from "../../apps/controller/src/drivers/compute/docker/index.ts";
+import { SshComputeDriver } from "../../apps/controller/src/drivers/compute/ssh/index.ts";
 import test from "node:test";
 import { resolveApprovedHarness as resolveApprovedDevelopmentHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createControllerApp } from "../../apps/controller/src/index.ts";
@@ -1074,6 +1076,72 @@ test("Configuration save refuses a Gateway tool policy that every OpenClaw topol
     "Tool-deferred",
   );
   assert.equal(deferred.status, 201, JSON.stringify(deferred.body));
+  // A variable can also name an action key; that policy waits too.
+  const keyed = await savePreset(
+    context,
+    {
+      variables: { tool: { type: "string" } },
+      configuration: {
+        values: withPolicy({ allow: ["dashboard"], actions: { "{{ vars.tool }}": ["read"] } }),
+      },
+    },
+    "Tool-key-deferred",
+  );
+  assert.equal(keyed.status, 201, JSON.stringify(keyed.body));
+});
+
+test("SSH and Docker Compute refuse at save and deployment a Gateway tool policy their embedded Gateway refuses", async () => {
+  // Finding 2695. SSH Compute (embedded only) and Docker's embedded Gateway apply
+  // tools.gatewayPolicy natively too, so a policy they cannot assemble saved, deployed and then
+  // failed every turn. Save and deployment run each real Driver's Configuration rule.
+  const computes = [
+    [
+      "ssh",
+      new SshComputeDriver({
+        ssh: { identityFile: "/tmp/ssh-test-key", knownHostsFile: "/tmp/ssh-test-hosts" },
+        hosts: { "tool-policy": { address: "127.0.0.1", user: "root" } },
+        runtime: {
+          nodePath: "/usr/bin/node",
+          openclawPath: "/opt/openclaw/index.js",
+          user: "openclaw",
+          root: "/var/lib/ssh-runtime-test",
+        },
+        network: { gatewayPortRange: { start: 18800, end: 18899 } },
+      }),
+    ],
+    ["docker", new DockerComputeDriver({ images: { gateway: "gateway", agent: "agent" } })],
+  ];
+  const withPolicy = (gatewayPolicy) => ({ ...runtimeSelected, tools: { gatewayPolicy } });
+  for (const [name, driver] of computes) {
+    const configurationDriver = createConfigurationBackend();
+    const context = await fixture({
+      configurationDriver,
+      computeDriver: createReadyComputeDriver(`compute-tool-policy-${name}`, {
+        implementation: "integration-compute-substrate",
+        validateConfiguration: (...args) => driver.validateConfiguration(...args),
+      }),
+    });
+    const agent = await storedRowAgent(context, configurationDriver, runtimeSelected, {
+      name: `Tool policy consumer ${name}`,
+      secretName: `tool-policy-key-${name}`,
+    });
+    await refusedAtSaveAndDeploy(
+      context,
+      agent,
+      withPolicy({ allow: ["sessions"] }),
+      setting("tools.gatewayPolicy.actions.sessions", "must list the permitted actions"),
+    );
+    await refusedOnSave(
+      context,
+      withPolicy({ allow: ["gateway"] }),
+      setting("tools.gatewayPolicy.allow", "must not grant Gateway administrative tools"),
+    );
+    // A policy that lists the actions saves, as a Configuration and as a Preset.
+    await acceptedOnSave(
+      context,
+      withPolicy({ allow: ["sessions"], actions: { sessions: ["patch"] } }),
+    );
+  }
 });
 
 test("Preset save refuses an agents roster every deployment refuses, as Configuration save does", async (t) => {
