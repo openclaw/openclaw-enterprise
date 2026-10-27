@@ -127,6 +127,11 @@ function startRuntimeReadinessServer(readiness) {
     }
     void answerRuntimeReadiness(response, readiness);
   });
+  // A bind failure leaves the runtime unready instead of ending it: a restart
+  // would run Doctor again before failing the same way.
+  server.on("error", (error) => {
+    console.error("Runtime readiness server failed: " + (error?.code ?? "unknown"));
+  });
   server.listen(port, "0.0.0.0");
 }
 `;
@@ -231,8 +236,9 @@ function serveHeldRuntimeFailureToTransportPeer(check, code, cause) {
 // can hold a startup failure before the child that would report it starts: a failed state
 // migration, a failed native workspace setup, or the worker's model check. Compute reads
 // the hold on its private status port; a Sandbox provider's caller reads it on the Harness
-// port. Both carry the check and code only; the cause stays in the container log
-// (finding 2686).
+// port. Both carry the check and code; the worker's model check adds its cause from a
+// closed vocabulary. Any other cause, such as setup's message, stays in the container
+// log (finding 2686).
 const SUPERVISOR_HELD_FAILURE_HELPER = String.raw`
 ${RUNTIME_READINESS_SERVER_HELPER}
 ${RUNTIME_STATUS_CONSTANTS_HELPER}
@@ -4265,11 +4271,22 @@ function workspaceBaselineOutput(path, tail = false) {
 }
 // OpenClaw's recovery hints name commands (doctor, config validate) that no Agent
 // user can run in this container: the Harness runs Doctor itself, and its failure
-// line names the remedy. Drop each sentence that names one (finding 2699).
+// line names the remedy (finding 2699). A hint names the command itself, so a
+// path such as a .doctor-importing claim under .openclaw is no hint. A sentence
+// that opens with a hint is dropped; a hint in parentheses or in a later clause
+// after ";" is cut, keeping the cause before it (finding 2701).
+const OPENCLAW_COMMAND_HINT = /\bopenclaw(?:\s+--profile\s+\S+)?\s+(?:doctor|config\s+validate)\b/i;
 function withoutOpenClawCommandHints(text) {
-  return text.split(/(?<=\.)\s+/)
-    .filter((sentence) => !/\bopenclaw\b.*\b(?:doctor|config validate)\b|\bdoctor commands\b/i.test(sentence))
-    .join(" ");
+  return text.split(/(?<=\.)\s+/).flatMap((sentence) => {
+    if (/\bdoctor commands\b/i.test(sentence)) return [];
+    if (!OPENCLAW_COMMAND_HINT.test(sentence)) return [sentence];
+    const clauses = sentence
+      .replace(/\s*\([^()]*\)/g, (group) => OPENCLAW_COMMAND_HINT.test(group) ? "" : group)
+      .split(/\s*;\s*/);
+    if (OPENCLAW_COMMAND_HINT.test(clauses[0])) return [];
+    const kept = clauses.filter((clause) => !OPENCLAW_COMMAND_HINT.test(clause)).join("; ").replace(/[\s.,:;]+$/, "");
+    return kept === "" ? [] : [/[.!?]$/.test(sentence) ? kept + "." : kept];
+  }).join(" ");
 }
 // What a failed native setup reported: its message on one line of at most 400
 // characters, and up to five invalid setting paths (names, never values).
@@ -4282,9 +4299,11 @@ function workspaceBaselineReport(path) {
   const settings = [...new Set((Array.isArray(reported?.issues) ? reported.issues : [])
     .map((issue) => issue?.path)
     .filter((setting) => typeof setting === "string" && setting.length <= 64 && /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/.test(setting)))].slice(0, 5);
-  const summary = typeof message === "string"
-    ? withoutOpenClawCommandHints(message.replace(/[\s\u0000-\u001f\u007f-\u009f]+/g, " ").trim()).slice(0, 400).replace(/\.$/, "")
+  // A message that is only a hint is still what OpenClaw reported: keep it whole.
+  const collapsed = typeof message === "string"
+    ? message.replace(/[\s\u0000-\u001f\u007f-\u009f]+/g, " ").trim()
     : "";
+  const summary = (withoutOpenClawCommandHints(collapsed) || collapsed).slice(0, 400).replace(/\.$/, "");
   return (summary === "" ? "reported no error message" : "reported: " + summary) +
     (settings.length > 0 ? " (invalid settings: " + settings.join(", ") + ")." : ".");
 }

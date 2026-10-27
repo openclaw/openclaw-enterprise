@@ -536,10 +536,11 @@ test("Docker development Gateway exits without starting OpenClaw on an unexpecte
 // runtime asset publication, every child process and HTTP listener. Native setup
 // runs `setup(options)` (it succeeds by default); Doctor runs `doctor(child)`. Records
 // the children in start order with their environments, and the servers it listens with.
+// A `bindError` code fails every listen with that error.
 async function runHarness(
   directory,
   doctor = () => assert.fail("Doctor must not run"),
-  { env = {}, setup = () => ({ status: 0 }) } = {},
+  { env = {}, setup = () => ({ status: 0 }), bindError } = {},
 ) {
   const spawned = [];
   const errors = [];
@@ -576,7 +577,7 @@ async function runHarness(
     },
     require(specifier) {
       if (specifier === "node:http") {
-        return { createServer: (handler) => listener(servers, handler) };
+        return { createServer: (handler) => listener(servers, handler, bindError) };
       }
       if (specifier !== "node:child_process") {
         return nodeRequire(specifier);
@@ -622,12 +623,19 @@ async function runHarness(
 }
 
 // A stand-in for node:http's server that records its handler and the port it listens on.
-function listener(servers, handler) {
+// With `bindError`, listening emits that error instead, as a failed bind does: an
+// "error" event nobody handles throws.
+function listener(servers, handler, bindError) {
   const server = { handler, port: undefined };
   servers.push(server);
+  const emitter = new EventEmitter();
   return {
-    on() {},
+    on: (event, handle) => emitter.on(event, handle),
     listen(port) {
+      if (bindError !== undefined) {
+        emitter.emit("error", Object.assign(new Error("bind failed"), { code: bindError }));
+        return;
+      }
       server.port = port;
     },
   };
@@ -773,7 +781,8 @@ test("Harness keeps OpenClaw's recovery hints out of a failed native setup's log
       "OpenClaw config is invalid: /fixture/openclaw.json. Run `openclaw doctor --fix` or `openclaw config validate`.",
       "reported: OpenClaw config is invalid: /fixture/openclaw.json",
     ],
-    ["Run `openclaw doctor --fix`.", "reported no error message"],
+    // A message that is only a hint is still what OpenClaw reported.
+    ["Run `openclaw doctor --fix`.", "reported: Run `openclaw doctor --fix`"],
   ]) {
     const directory = await harnessDirectory(t);
     const outcome = await runHarness(directory, undefined, {
@@ -800,6 +809,65 @@ test("Harness keeps OpenClaw's recovery hints out of a failed native setup's log
       ],
     );
   }
+});
+
+test("Harness keeps the cause beside OpenClaw's recovery hint", async (t) => {
+  // The hint is the command, not a path naming openclaw and doctor; one in a later
+  // clause or in parentheses is cut and the cause before it kept (finding 2701).
+  const claim = "/home/node/workspace/.openclaw/openclaw-workspace-state.json.doctor-importing";
+  for (const [message, kept] of [
+    [
+      `Run openclaw doctor --fix. Legacy workspace setup state requires migration for ${claim}.`,
+      `Legacy workspace setup state requires migration for ${claim}.`,
+    ],
+    [
+      "Auth profile credential fields require migration; run openclaw doctor --fix.",
+      "Auth profile credential fields require migration.",
+    ],
+    [
+      "slack: missing dependency @slack/bolt (run `openclaw doctor --fix` to install missing bundled runtime dependencies for channel slack)",
+      "slack: missing dependency @slack/bolt",
+    ],
+  ]) {
+    const directory = await harnessDirectory(t);
+    const outcome = await runHarness(directory, undefined, {
+      setup(options) {
+        writeSync(options.stdio[2], `${message}\n`);
+        writeSync(
+          options.stdio[1],
+          JSON.stringify({ ok: false, error: { type: "cli_error", message } }),
+        );
+        return { status: 1, signal: null };
+      },
+    });
+    assert.equal(outcome.holds, 1);
+    assert.deepEqual(
+      outcome.errors.filter((line) => !line.startsWith("{")),
+      [
+        kept,
+        `Workspace initialization failed: openclaw setup --baseline (exit-1) reported: ${kept.replace(/\.$/, "")}. Codex was not started. Fix the cause, then deploy the Agent again.`,
+      ],
+    );
+  }
+});
+
+test("Harness keeps holding when the status port cannot be bound", async (t) => {
+  // A bind failure that ended the supervisor would restart it into Doctor again.
+  const directory = await harnessDirectory(t);
+  const outcome = await runHarness(directory, undefined, {
+    env: COMPUTE_STATUS_ENV,
+    bindError: "EADDRINUSE",
+    setup: () => ({ status: 1, signal: null }),
+  });
+  assert.deepEqual(
+    outcome.spawned.map(({ name }) => name),
+    ["setup"],
+  );
+  assert.equal(outcome.holds, 1);
+  assert.deepEqual(
+    outcome.errors.filter((line) => line.startsWith("Runtime readiness server")),
+    ["Runtime readiness server failed: EADDRINUSE"],
+  );
 });
 
 test("Harness replays a successful native setup's diagnostics", async (t) => {
