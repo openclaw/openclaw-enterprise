@@ -110,8 +110,7 @@ Configuration ([Agent save](../../reference/drivers/compute-admission.md#agent-s
 the Sandbox execution mode, the Harness and its mode, and the Compute checks.
 With a Compute Driver and a Harness resolver selected, every Agent save reads
 its Configuration once from the Configuration Driver, inside the save's
-transaction; a Driver outage then fails the save with `503` instead of letting
-an unchecked pair through. `deployAgent` then locks the Agent, authorizes a read of the
+transaction; a Driver outage then fails the save with `503`. `deployAgent` then locks the Agent, authorizes a read of the
 referenced Configuration, and locks its ownership metadata. It authorizes the
 caller's selected Secret bindings and the Agent service principal's consumption,
 checks topology/model-source compatibility, and asks the selected Secret Driver
@@ -122,12 +121,10 @@ Next OCC reads the selected Configuration Driver's stored document. For the
 bundled Kubernetes Driver, that document is the `openclaw.json` ConfigMap entry.
 When the selected Sandbox Driver exposes `configureAgent`, OCC transforms a
 frozen copy before Configuration Driver validation and Harness selection. The
-stored reusable Configuration and its generation remain unchanged. OCC then sets
-`messages.queue.allowCollaborativeSteering: false` and
-`tools.exec.applyPatch.workspaceOnly: true` where the copy leaves them unset
-([`admitGatewaySecurityDefaults`](../../../packages/occ/src/configuration-settings.ts)),
-so OpenClaw's `personal` security preset does not loosen them, and refuses a
-non-boolean value or a non-object on their path. Compute then
+stored reusable Configuration and its generation remain unchanged.
+[`admitGatewaySecurityDefaults`](../../../packages/occ/src/configuration-settings.ts)
+then fills the two settings OpenClaw's `personal` security preset would loosen
+([reference](../../reference/configuration.md#agent-references-and-immutable-versions)). Compute then
 checks the Harness authentication binding (Kubernetes Compute also runs the shared
 `requireOpenClawRoster`, the dedicated OpenClaw and Codex `main` Agent rules, and
 [the rules](../../../apps/controller/src/drivers/compute/kubernetes/configuration-rules.ts)

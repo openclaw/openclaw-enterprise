@@ -222,50 +222,43 @@ export function refuseRetiredOpenClawSettings(
  * Settings OCE keeps at the value OpenClaw used before its `security.preset` (default
  * `personal`, openclaw/openclaw#185477), which fills them only when unset. Without them, another
  * participant's message could steer a running turn under the first requester's authority, and
- * apply_patch could write outside the workspace. An explicit value in the Configuration wins.
+ * apply_patch could write outside the workspace.
  */
-export const GATEWAY_SECURITY_DEFAULTS: readonly (readonly [string, boolean])[] = [
-  ["messages.queue.allowCollaborativeSteering", false],
-  ["tools.exec.applyPatch.workspaceOnly", true],
+const GATEWAY_SECURITY_DEFAULTS: readonly (readonly [readonly string[], boolean])[] = [
+  [["messages", "queue", "allowCollaborativeSteering"], false],
+  [["tools", "exec", "applyPatch", "workspaceOnly"], true],
 ];
 
 /**
  * Deployment admission fills each unset GATEWAY_SECURITY_DEFAULTS setting, for every Compute
- * Driver and execution mode. It refuses a non-object on the setting's path or a non-boolean
- * value, which the Gateway would refuse at startup.
+ * Driver and execution mode, the way the preset does (OpenClaw's mergeMissing): a value the
+ * Configuration sets is kept, and so is a non-object on the path. The Gateway refuses a
+ * non-boolean value or a non-object there at startup, so neither can loosen the setting.
  */
 export function admitGatewaySecurityDefaults(
   values: Readonly<OpenClawConfigurationDocument>,
 ): OpenClawConfigurationDocument {
-  const refuse = (setting: string, requirement: string) =>
-    new ConfigurationHarnessError(`Configuration setting ${setting} ${requirement}.`);
   const fill = (
-    parent: Readonly<OpenClawConfigurationDocument>,
-    path: readonly string[],
+    parent: Readonly<Record<string, unknown>>,
+    [key, ...rest]: readonly string[],
     value: boolean,
-    walked: string,
-  ): OpenClawConfigurationDocument => {
-    const [key, ...rest] = path as [string, ...string[]];
-    const setting = walked === "" ? key : `${walked}.${key}`;
-    const current = parent[key];
-    if (rest.length === 0) {
-      if (current !== undefined && typeof current !== "boolean") {
-        throw refuse(setting, "must be true or false");
-      }
-      return current === undefined ? { ...parent, [key]: value } : parent;
+  ): Readonly<Record<string, unknown>> => {
+    const current = parent[key!];
+    if (current === undefined) {
+      return { ...parent, [key!]: rest.length === 0 ? value : fill({}, rest, value) };
     }
-    if (current !== undefined && asRecord(current) === undefined) {
-      throw refuse(setting, "must be an object");
+    const child = asRecord(current);
+    if (rest.length === 0 || child === undefined) {
+      return parent;
     }
-    const child = (current ?? {}) as Readonly<OpenClawConfigurationDocument>;
-    const next = fill(child, rest, value, setting);
-    return next === child ? parent : { ...parent, [key]: next };
+    const next = fill(child, rest, value);
+    return next === child ? parent : { ...parent, [key!]: next };
   };
-  let admitted = values as OpenClawConfigurationDocument;
-  for (const [setting, value] of GATEWAY_SECURITY_DEFAULTS) {
-    admitted = fill(admitted, setting.split("."), value, "");
+  let admitted: Readonly<Record<string, unknown>> = values;
+  for (const [path, value] of GATEWAY_SECURITY_DEFAULTS) {
+    admitted = fill(admitted, path, value);
   }
-  return admitted;
+  return admitted as OpenClawConfigurationDocument;
 }
 
 // `${NAME}`, or an object naming a source and an id (OpenClaw's SecretRef).

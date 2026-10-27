@@ -1237,22 +1237,14 @@ test("deployment admission keeps the earlier steering and apply_patch defaults u
       });
     }
   }
-  // The Gateway refuses these at startup; Agent save names the setting first.
-  for (const [values, message] of [
-    [
-      { messages: { queue: { allowCollaborativeSteering: "no" } } },
-      "Configuration setting messages.queue.allowCollaborativeSteering must be true or false.",
-    ],
-    [
-      { tools: { exec: { applyPatch: true } } },
-      "Configuration setting tools.exec.applyPatch must be an object.",
-    ],
-  ]) {
-    await assert.rejects(deploy({ ...codexValues, ...values }, "dedicated"), {
-      name: "ConfigurationHarnessError",
-      message,
-    });
-  }
+  // Like the preset, admission fills only unset settings. A value of the wrong type stays for
+  // the Gateway's own validation, which refuses it at startup, so it cannot loosen the setting.
+  const invalid = await deploy(
+    { ...codexValues, messages: { queue: { allowCollaborativeSteering: "no" } }, tools: ["read"] },
+    "dedicated",
+  );
+  assert.deepEqual(invalid.configuration.messages, { queue: { allowCollaborativeSteering: "no" } });
+  assert.deepEqual(invalid.configuration.tools, ["read"]);
 });
 
 test("native selected-model policy explicitly chooses Codex or OpenClaw", () => {
