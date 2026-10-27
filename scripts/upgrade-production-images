@@ -27,6 +27,7 @@ OCC_URL, OCC_SERVICE_KEY_FILE, and OCC_CA_BUNDLE configure the OCC CLI connectio
 With the bundled Collector enabled, its config Secret must carry this checkout's
 deploy/logging collector.yaml and kubernetes.yaml; pass --collector-config-reviewed
 only to keep a reviewed custom configuration.
+--timeout-seconds bounds each wait (default 900, at most 86400).
 --doctor-heap-mib sets OpenClaw Doctor's heap cap (default 384); raise it only
 after Doctor ran out of heap. It can change on --resume.
 EOF
@@ -290,6 +291,12 @@ done
 [[ -n "$controller_image" || -n "$broker_image" || -n "$runtime_image" ]] ||
   die "select a controller, broker, or runtime image."
 positive_integer "$timeout_seconds" || die "--timeout-seconds must be positive."
+# Each phase's wait gets the whole timeout; a day is far beyond any of them, so a
+# larger value is likely a unit mistake. Compare lengths before arithmetic, which
+# would wrap a huge value and expire every wait at once.
+if ((${#timeout_seconds} > 5 || timeout_seconds > 86400)); then
+  die "--timeout-seconds must be at most 86400 (24 hours)."
+fi
 positive_integer "$doctor_heap_mib" || die "--doctor-heap-mib must be positive."
 # Leave room for both margins in signed 64-bit shell arithmetic; compare decimal
 # strings before evaluating the untrusted value as an arithmetic expression.
