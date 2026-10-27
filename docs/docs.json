@@ -1028,6 +1028,10 @@
                     "label": "Overview"
                   },
                   {
+                    "page": "taxonomy",
+                    "label": "Document Types"
+                  },
+                  {
                     "page": "local-preview",
                     "label": "Preview and Validate"
                   },

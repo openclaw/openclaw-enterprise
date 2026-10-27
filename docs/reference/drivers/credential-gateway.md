@@ -1,3 +1,7 @@
+---
+kind: reference/driver
+---
+
 # CredentialGatewayDriver contract
 
 ## Overview
@@ -36,7 +40,7 @@ method below. Startup rejects a Driver that omits one.
 | `updateSource`         | Existing source and new resolved values.                                                         | Replaces the stored values for processes started afterwards and returns the source state.                                                                      | `failed` or `absent` fails the update; OCC keeps the Secret references unchanged.      |
 | `sourceStatus`         | Existing source.                                                                                 | Live source state and an optional safe reason.                                                                                                                 | OCC reports `failed` with a fixed reason when the call throws.                         |
 | `removeSource`         | Source record.                                                                                   | Deletes the stored copy. An already-absent source counts as removed.                                                                                           | A failure leaves the OCC record `deleting` for retry.                                  |
-| `attachForRevision`    | Namespace, immutable Agent revision, and the bound source records.                               | Exactly one `{ sourceId, ref }` attachment per bound source. `ref` is opaque to OCC.                                                                           | Throws when a source is unavailable or foreign; the Agent revision does not provision. |
+| `attachForRevision`    | Namespace, Agent revision, and the bound source records.                                         | Exactly one `{ sourceId, ref }` attachment per bound source. `ref` is opaque to OCC.                                                                           | Throws when a source is unavailable or foreign; the Agent revision does not provision. |
 | `attachmentStatus`     | The same context plus the provisioned `SandboxResourceRef`.                                      | Per-source state: `ready`, `pending`, `withheld`, `failed`, `revoked`, or `absent`.                                                                            | Compute blocks activation on any state other than `ready` or `pending`.                |
 | `withdraw`             | Placement, Agent revision, its required `SandboxResourceRef`, and one source ID; no source list. | Revokes that Agent revision's access, including running processes. `revoked` only on gateway evidence, `absent` when the Sandbox is gone, otherwise `pending`. | Anything but `revoked` or `absent` keeps the OCC withdrawal `pending` for retry.       |
 
@@ -195,8 +199,9 @@ credentialGatewayId, sourceType, loginMode }` in the Agent revision. The source 
 4. **Provisioning.** Compute calls `attachForRevision` with the Harness source
    first and the other sources after it, and passes the result in
    `HarnessWorkloadRequirements.credentialAttachments` to `provisionHarness`.
-   The paired Sandbox must consume every attachment and reject any it did not
-   issue.
+   The Credential Gateway issues one reference per bound source. Its paired
+   Sandbox must consume every attachment and reject references from any other
+   provider.
 5. **Activation.** After the Harness is ready, Compute calls
    `attachmentStatus`. `pending` or a missing status retries reconciliation;
    `failed`, `withheld`, `revoked`, or `absent` fails it. Only `ready` for every

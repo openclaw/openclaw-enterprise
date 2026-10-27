@@ -2,7 +2,7 @@
 
 # Configuration persistence and Agent revision snapshots
 
-Follow Configuration storage transactions into immutable Agent revision admission. See the [parent flow](../configuration-driver.md) for its context and overall sequence.
+Trace how OCC reads a Configuration and saves its values in an Agent revision. See the [parent flow](../configuration-driver.md) for its context and overall sequence.
 
 ## Execution trace
 
@@ -98,7 +98,9 @@ prerequisites.
 
 <span id="5-resolve-the-agent-reference-and-freeze-an-immutable-revision" class="anchor-alias"></span>
 
-### 5. Resolve the Agent reference and freeze an immutable Agent revision
+<span id="5-resolve-the-agent-reference-and-freeze-an-immutable-agent-revision" class="anchor-alias"></span>
+
+### 5. Resolve the Agent reference and save the deployment configuration
 
 `packages/occ/src/index.ts:OpenClawController.deployAgent`
 
@@ -158,7 +160,7 @@ Configuration edits increment its generation but affect only later explicit
 deployments; historical Agent revisions and their admitted snapshots remain unchanged.
 PostgreSQL enforces the supported kind, positive generation, exact admitted
 snapshot shape, ownership, and Agent revision immutability. OCC records an
-attributable sanitized admission event and hands the immutable Agent revision to
+attributable sanitized admission event and hands the Agent revision to
 Compute-owned reconciliation without resolving credential bytes or starting a
 gateway during HTTP admission. A development worker can subsequently create or
 reuse exactly one gateway for the owning Agent during Agent revision preparation.

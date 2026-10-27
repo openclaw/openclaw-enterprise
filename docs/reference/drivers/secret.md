@@ -1,3 +1,7 @@
+---
+kind: reference/driver
+---
+
 # SecretDriver contract
 
 ## Overview

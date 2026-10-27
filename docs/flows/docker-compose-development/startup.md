@@ -153,7 +153,9 @@ Compose sets that root to `/app/.development/configurations` and backs it with
 the `occ_configuration_data` named volume, mounted only into the controller.
 PostgreSQL remains the OCC metadata system of record.
 
-### 5. The worker selects Docker compute and claims durable work
+<span id="5-the-worker-selects-docker-compute-and-claims-durable-work" class="anchor-alias"></span>
+
+### 5. The worker selects Docker Compute and claims queued operations
 
 `apps/controller/src/worker.mjs:configuration`,
 `apps/controller/src/drivers/compute/docker/index.ts:DockerComputeDriver.preflight`,

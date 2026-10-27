@@ -1,3 +1,7 @@
+---
+kind: reference/driver
+---
+
 # ServiceAccountDriver contract
 
 ## Overview

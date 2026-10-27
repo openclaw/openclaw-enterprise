@@ -1,14 +1,18 @@
 # Base Driver documentation template
 
 When writing or rewriting a base Driver contract, use the repository-owned
-[technical-writing template](../.agents/skills/technical-writing/references/driver-contracts.md).
-It is the canonical template used by the local technical-writing skill.
+[Driver contract Markdown template](../.agents/skills/technical-writing/assets/reference-driver.md).
+It starts with `kind: reference/driver`. See the [documentation taxonomy](taxonomy.md)
+for the scope of this kind.
 
 The required sections are **Overview**, **Interface**, **IAM**, **Lifecycle**,
 **Limits**, **Troubleshooting**, **Implementations**, and **Related**. Interface
-separates core operations from optional additions. IAM describes authorization,
-identity scope, and credential boundaries. Lifecycle distinguishes the Driver
-instance from the resources it manages.
+lists properties first and methods second. Each table lists required members
+before optional members. Use only `Required` or `Optional` in the Requirement
+column. Describe the effect of an omitted member in its behavior or value column.
+IAM describes authorization,
+identity scope, and credential boundaries. Lifecycle uses a Mermaid sequence diagram to show the calls in order. See the
+[Sandbox lifecycle](reference/drivers/sandbox.md#lifecycle) for an example.
 
 Start with [Driver development](contributing/driver-development.md) to find
 the existing base contract. Base contracts belong in

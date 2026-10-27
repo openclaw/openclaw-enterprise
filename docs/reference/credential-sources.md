@@ -6,7 +6,7 @@ records its Driver, configuration and Secret references in the Namespace. A
 `acme/widgets`.
 
 The Agent draft **binds** the source by ID. On deploy, OpenClaw Control Plane
-(OCC) saves the binding in an immutable **Agent revision**. How the sender gets
+(OCC) saves the binding in an **Agent revision**. How the sender gets
 a credential depends on the source.
 
 | Delivery mode            | Who holds or reads the credential                                                                                                                                                                                                   |

@@ -291,8 +291,7 @@ finished. The worker reauthorizes the original actor, invokes the selected
 Compute Driver's idempotent `stopRevision`, and clears the exact
 `activeRevisionId` only after shutdown succeeds.
 
-Stop terminates inbound routing and execution while retaining the immutable
-Agent revision, Agent credentials, gateway state, and workspace. It neither creates an
+Stop terminates inbound routing and execution while retaining the Agent revision, Agent credentials, gateway state, and workspace. It neither creates an
 Agent revision nor calls destructive version retirement. Repeated stop requests
 converge safely, and one Agent's stop does not affect siblings.
 

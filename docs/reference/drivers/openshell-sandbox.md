@@ -28,8 +28,9 @@ routing, and the per-Agent Gateway. Sandbox owns:
   and identity checks; the Sandbox privately initializes the same mount.
 - In `operator` mode, `ensureNamespace` applies configured labels, workspace
   resources, and NetworkPolicies, then owns the exact active Workspace.
-- `provisionHarness` creates one Workspace Sandbox, with a loopback app-server
-  exposure for dedicated Codex; native OpenClaw requests no inbound service. The Driver adds each
+- `provisionHarness` creates one Workspace Sandbox. Dedicated Codex exposes its
+  app-server. A native OpenClaw worker connects outbound and can expose a
+  temporary status endpoint until its workspace node enrolls. The Driver adds each
   [credential attachment](openshell-sandbox/harness-providers.md#credential-attachments) and that Agent revision's Harness runtime provider
   to the Sandbox's providers, validates any Codex route, and returns the stable Sandbox reference.
   Private [workspace initialization](../../flows/workspace-files.md#2-deployment-initializes-storage-before-execution) completes before execution.
@@ -188,7 +189,7 @@ before Sandbox creation. After supervisor readiness, Sandbox initializes
 through private stdin; the Harness verifies completion at its effective path.
 
 For dedicated Codex, OpenShell's `configureAgent` hook removes
-`appServer.networkProxy` and adds this before OCC validates and saves the immutable Agent revision:
+`appServer.networkProxy` and adds this before OCC validates and saves the Agent revision:
 
 ```json
 {
@@ -349,6 +350,29 @@ Errors include:
   below `/sandbox/.openclaw-runtime`; a Landlock write grant does not
   override Unix ownership on the image layer.
 
+### Gateway identity and removal
+
+If stop, deletion, or credential withdrawal reports `SANDBOX_GATEWAY_UNAUTHORIZED`,
+check the worker's `sandbox-gateway-identity` hint. A missing Workspace role
+fails immediately. Restore the role, or deploy again to recreate an externally
+removed Workspace. If authentication fails, check the controller's token file
+and the gateway's signing-key refresh. The worker retries transient failures
+within its attempt budget. Retry the original operation after restoring access.
+
+OpenShell can return `NOT_FOUND` for a resource hidden from the caller. To
+confirm absence, the Driver reads the Workspace with the controller's identity
+and reads the resource again. If a delete returns `NOT_FOUND` immediately after
+a read found the target, removal is unconfirmed (`SANDBOX_DELETION_UNCONFIRMED`).
+The worker logs `worker.harness-exposure-withdrawal-unconfirmed` during the
+exposure sweep and retries.
+
+For Namespace setup or cleanup, `PERMISSION_DENIED` or `UNAUTHENTICATED`
+raises `SandboxNamespaceRefusedError`. Compute marks the Namespace step as
+permanent. For setup, the worker records the refusal code as the reason. Check
+the gateway identity and Workspace access before retrying. Worker diagnostics
+report the method, gRPC status, and validation category without provider text or
+request values.
+
 ## Related documentation
 
 - [Development and production deployment](../../guides/deploy.md)
@@ -356,6 +380,7 @@ Errors include:
 - [OpenShell testing](../../testing/openshell.md)
 - [OpenShell Sandbox provisioning flow](../../flows/openshell-sandbox-provisioning.md)
 - [OpenShell Harness providers and exposure](openshell-sandbox/harness-providers.md)
+- [OpenShell Harness observation and restart states](openshell-sandbox/harness-providers.md#harness-observation)
 - [SandboxDriver contract](sandbox.md) and [OpenShell Credential Gateway](openshell-credential-gateway.md)
 - [ComputeDriver contract](compute.md)
 - [Kubernetes ComputeDriver](kubernetes-compute.md)

@@ -228,7 +228,7 @@ outside the Agent's Namespace or to a Configuration whose `kind` is not
 `"agent"`. Agent creation, update, and deployment separately require `read`
 permission for the exact referenced Configuration. Deployment deeply
 snapshots its admitted native document, including unresolved inline SecretRefs,
-into the immutable `AgentRevision.configuration` field and records
+into the `AgentRevision.configuration` field and records
 `configurationId`, `configurationKind`, and `configurationGeneration` as
 separate Agent revision fields. A selected [SandboxDriver](drivers/sandbox.md) may
 transform a copy through `configureAgent` before admission; the reusable
