@@ -4,8 +4,7 @@ Select `strands-sandbox` explicitly with the Kubernetes installation and Codex
 preset. It is excluded from `all` and the hosted advisory jobs: the Linux ARM64
 runtime, local Box container-backend patches and a node-installed setup seccomp
 profile require a prepared environment. Keep Restricted admission, default proc
-masks and separate container PID namespaces. An exception-based historical
-prototype is not evidence for the current candidate. This scenario does not
+masks and separate container PID namespaces. This scenario does not
 qualify production distribution, other architectures or multi-Agent capacity.
 
 The fixture selects an existing, stopped, test-owned Agent and its model Secret.
@@ -41,9 +40,8 @@ remove the second Agent's workloads, PVCs and exact IAM bindings while preservin
 the retained Agent. Two Agents establish functional concurrency, not capacity.
 The concurrency case invokes native `exec_command` and `write_stdin` through
 code mode and rejects tool errors. A process session ID is not a code-mode
-`wait` cell ID. An earlier unconstrained model selected the wrong continuation
-tool; preserve that failure separately from this protocol qualification.
-The [optional host patch](../guides/deploy/strands-code-mode.md) keeps native code
+`wait` cell ID.
+The [OCE code-mode entrypoint](../guides/deploy/strands-code-mode.md) keeps native code
 mode enabled under Box's existing W^X restriction. A separate real model call
 must compute JavaScript inside that host, with no Node globals.
 
@@ -95,18 +93,15 @@ profile through the node administrator's normal provisioning path before
 deploying; never substitute an unconfined profile or a privileged installer Pod.
 The acceptance login scope is `api_key`; PAT and Credential Proxy are excluded.
 
-The setup-profile necessity review now uses
+Generate the setup profile with
 `scripts/generate-strands-box-seccomp.mjs <RuntimeDefault.json> <new-profile.json>`.
 The baseline must be the operator-captured RuntimeDefault profile, not an
 already-expanded Codex profile. The local ARM64 candidate preserves that
 baseline and adds 12 exact setup rules for the original Box remount arguments.
 It does not copy inherited mount flags into each remount. Other mount variants
 require qualification. The workload filter still
-rejects mount creation. Keep the earlier profile with its image as historical
-E2E evidence; qualify the generated profile with the exact candidate before
-installation promotion. The current source withdraws the unsafe blanket
-`recvmsg(MSG_CMSG_CLOEXEC)` addition and also rejects `kill(0)`. Native IPC and
-whole-scenario qualification must be assessed against that narrowed candidate.
+rejects mount creation, `recvmsg`, and `kill(0)`. Qualify the generated profile
+with the exact candidate before installation promotion.
 
 The embedding phase explicitly calls the Memory Core `memory.index` Gateway
 method after each provider switch. This requires `operator.admin` and uses the

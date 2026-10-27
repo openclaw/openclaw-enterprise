@@ -153,12 +153,6 @@ credential on the controller.
 - `OPENAI_API_KEY_FILE` — Absolute path to a private credential file for the first-Agent helper.
 - `OPENCLAW_FIRST_AGENT_MODEL` — Plain OpenAI model ID, without a provider prefix; default for a new Agent: `gpt-6-astra`.
 
-## Optional runtime packaging
-
-The optional Strands runtime uses `CODEX_CODE_MODE_JITLESS=1` internally for its
-patched native Codex host. This is an image-specific runtime setting, not a
-controller configuration variable. See [native code mode in Strands Box](../../guides/deploy/strands-code-mode.md).
-
 ## Observability
 
 The application log level is the Installation YAML setting `logging.level`;

@@ -145,7 +145,7 @@ initialization before Pod readiness. Its workload runs in a separate container
 PID namespace in the same revision Pod. Box's argument-scoped compatibility
 permits apply only to that explicit container backend; the ordinary namespace
 backend retains its prior refusals. See
-[RFC-0024](../../specs/rfcs/0024-strands-box-sandbox.md#local-revision-2026-10-23)
+[RFC-0024](../../specs/rfcs/0024-strands-box-sandbox.md#containment-and-supervision)
 for the candidate's qualification limits; readiness alone is not E2E proof.
 
 `scripts/generate-strands-box-seccomp.mjs` preserves the captured RuntimeDefault
@@ -365,12 +365,6 @@ owns claim sizes, mount paths, StorageClass requirements, and final teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
-
-- 2026-10-26 21:33: Trace the reviewed original-remount setup profile. (Codex/01a16571-f230-73d0-b786-f83300124449 - 28e75abf85bb0460fbf3b2b289ea7e31d12c1efc)
-
-- 2026-10-26 11:47: Trace committed pairing publication and runtime regression proof. (Codex/01a16571-f230-73d0-b786-f83300124449 - 28e75abf85bb0460fbf3b2b289ea7e31d12c1efc)
-
-- 2026-10-23 17:48: Trace local provider supervision and authenticated readiness changes. (Codex/01a16571-f230-73d0-b786-f83300124449 - 28e75abf85bb0460fbf3b2b289ea7e31d12c1efc)
 
 - 2026-10-16 17:02: Persist worktrees and Git sources. (Codex/01a13654-be66-7741-b54f-f8ae80f2d496 - 68b95a2514f183b194a478e72d734b719bf4c2e8)
 
