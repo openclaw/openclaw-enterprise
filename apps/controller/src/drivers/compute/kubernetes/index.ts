@@ -511,10 +511,21 @@ export interface KubernetesComputeDriverOptions {
     /** Private ClusterIP of the credential-free reader in this execution cluster. */
     readonly publicGithubRead?: KubernetesWorkloadPeer & { readonly address: string };
     /** Exact provider ingress used only when the selected Sandbox owns Harness transport. */
-    readonly providerHarness?: KubernetesWorkloadPeer & {
-      readonly address: string;
-      readonly port: number;
-    };
+    readonly providerHarness?:
+      | (KubernetesWorkloadPeer & {
+          readonly address: string;
+          readonly port: number;
+        })
+      | {
+          /**
+           * The provider serves Harness endpoints from a cluster this Compute Driver
+           * cannot reach with Pod selection. The address is an exact IP or CIDR that
+           * the advertised endpoints resolve through, and egress admits only it.
+           */
+          readonly remote: true;
+          readonly address: string;
+          readonly port: number;
+        };
   };
   readonly servicePrincipalCredentials:
     | { readonly mode: "disabled" }
@@ -1889,6 +1900,30 @@ function parseCidr(value: unknown, description: string, path?: string): ParsedCi
     throw configurationConstraintFailure(`${description} must be a valid IPv4 or IPv6 CIDR.`, path);
   }
   return { value, address, family: family === 4 ? 4 : 6, prefix: prefixValue };
+}
+
+function validateCidr(value: unknown, description: string): void {
+  parseCidr(value, description);
+}
+
+type RemoteProviderHarness = Extract<
+  NonNullable<KubernetesComputeDriverOptions["network"]["providerHarness"]>,
+  { readonly remote: true }
+>;
+
+function isRemoteProviderHarness(
+  provider: NonNullable<KubernetesComputeDriverOptions["network"]["providerHarness"]>,
+): provider is RemoteProviderHarness {
+  return "remote" in provider && provider.remote === true;
+}
+
+function isValidExactCidr(value: string): boolean {
+  try {
+    parseCidr(value, "Remote Provider Harness address");
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function providerHarnessUrl(
@@ -3537,14 +3572,30 @@ export class KubernetesComputeDriver implements ComputeDriver {
             },
           },
           providerHarness: {
-            type: "object",
-            required: ["namespace", "podLabels", "address", "port"],
-            additionalProperties: false,
-            properties: {
-              ...WORKLOAD_PEER_SCHEMA.properties,
-              address: { type: "string", minLength: 1 },
-              port: { type: "integer", minimum: 1, maximum: 65535 },
-            },
+            anyOf: [
+              {
+                type: "object",
+                required: ["namespace", "podLabels", "address", "port"],
+                additionalProperties: false,
+                properties: {
+                  ...WORKLOAD_PEER_SCHEMA.properties,
+                  address: { type: "string", minLength: 1 },
+                  port: { type: "integer", minimum: 1, maximum: 65535 },
+                },
+              },
+              {
+                // A remote provider serves Harness endpoints from a cluster this
+                // driver cannot reach with Pod selection; egress admits only it.
+                type: "object",
+                required: ["remote", "address", "port"],
+                additionalProperties: false,
+                properties: {
+                  remote: { const: true },
+                  address: { type: "string", minLength: 1 },
+                  port: { type: "integer", minimum: 1, maximum: 65535 },
+                },
+              },
+            ],
           },
         },
       },
@@ -3820,11 +3871,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
         }
       }
       if (options.network.providerHarness !== undefined) {
-        validatePeer(
-          options.network.providerHarness,
-          "Provider Harness gateway",
-          "/network/providerHarness",
-        );
+        // The remote form is an exact IP or CIDR this driver cannot reach with Pod
+        // selection; only the local Pod-peer form validates as a workload peer.
+        if (!isRemoteProviderHarness(options.network.providerHarness)) {
+          validatePeer(
+            options.network.providerHarness,
+            "Provider Harness gateway",
+            "/network/providerHarness",
+          );
+        }
         if (isIP(options.network.providerHarness.address) === 0) {
           throw configurationConstraintFailure(
             "Provider Harness gateway address must be an IP address.",
@@ -15222,13 +15277,16 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           "SandboxDriver Harness endpoint requires an exact provider network route.",
         );
       }
+      const remoteProvider = isRemoteProviderHarness(provider);
       return [
         policy("allow-gateway-agent", {
           podSelector: gateway,
           policyTypes: ["Egress"],
           egress: [
             {
-              to: [this.peer(provider)],
+              to: remoteProvider
+                ? [{ ipBlock: { cidr: provider.address } }]
+                : [this.peer(provider)],
               ports: [{ protocol: "TCP", port: provider.port }],
             },
           ],
@@ -16648,7 +16706,11 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
               : {
                   hostAliases: [
                     {
-                      ip: providerNetwork!.address,
+                      // The remote provider address is a CIDR for the egress
+                      // ipBlock; a host alias needs the bare IP.
+                      ip: isRemoteProviderHarness(providerNetwork!)
+                        ? providerNetwork!.address.split("/")[0]!
+                        : providerNetwork!.address,
                       hostnames: [providerUrl.hostname],
                     },
                   ],
