@@ -2430,11 +2430,12 @@ let gatewayTerminating = false;
 // OpenClaw ignores a stop signal that arrives while it restarts itself in place
 // (after a native configuration edit that needs a Gateway restart) and then
 // serves again. A stopping Gateway does not serve again after its server closes,
-// so repeat the signal when the native readiness endpoint answers after a miss.
+// so repeat the signal when the native readiness endpoint answers after it
+// refused a connection. A slow or unready answer proves neither.
 function stopNativeGateway(target, signal) {
   const exited = () => target.exitCode !== null || target.signalCode !== null;
   target.kill(signal);
-  let missed = false;
+  let closed = false;
   let checking = false;
   const recheck = setInterval(async () => {
     if (exited()) {
@@ -2447,11 +2448,11 @@ function stopNativeGateway(target, signal) {
       const response = await fetch(
         "http://127.0.0.1:" + process.env.OPENCLAW_GATEWAY_PORT + "/readyz",
         { signal: AbortSignal.timeout(2_000), redirect: "error" },
-      ).catch(() => undefined);
-      if (response?.status !== 200) {
-        missed = true;
-      } else if (missed && !exited()) {
-        missed = false;
+      ).catch((error) => error);
+      if (response instanceof Error) {
+        if (response.cause?.code === "ECONNREFUSED") closed = true;
+      } else if (response.status === 200 && closed && !exited()) {
+        closed = false;
         target.kill(signal);
       }
     } finally {
