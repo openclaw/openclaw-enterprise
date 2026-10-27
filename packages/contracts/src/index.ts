@@ -882,7 +882,9 @@ export function validPluginRevisionState(value: unknown): value is PluginRevisio
   const record = asRecord(value);
   if (
     record === undefined ||
-    Object.keys(record).some((key) => key !== "driver" && key !== "plugins" && key !== "runtimeConfiguration")
+    Object.keys(record).some(
+      (key) => key !== "driver" && key !== "plugins" && key !== "runtimeConfiguration",
+    )
   ) {
     return false;
   }

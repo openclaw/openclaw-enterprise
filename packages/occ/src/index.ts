@@ -10278,7 +10278,11 @@ export class OpenClawController {
       // Agent saves check the plugins against the Configuration they name, but a later
       // Configuration save does not know which Agents use it: check the admitted pair again.
       this.validatePluginConfiguration(pluginState?.plugins, admittedConfiguration);
-      this.validatePluginHarness(pluginState?.plugins, revisionHarness, runtimeConfiguration !== undefined);
+      this.validatePluginHarness(
+        pluginState?.plugins,
+        revisionHarness,
+        runtimeConfiguration !== undefined,
+      );
       // Decode every earlier revision: one that is unreadable refuses the deploy here (503,
       // nothing created), because the worker must decode them all to stop or retire them.
       const previous = await state.revisions.listRevisions(namespace.id, lockedAgent.id);
@@ -14193,7 +14197,10 @@ export class OpenClawController {
     harness: Readonly<Pick<RevisionHarnessDescriptor, "id" | "mode">>,
     hasRuntimeConfiguration = false,
   ): void {
-    if (!hasRuntimeConfiguration && (plugins === undefined || Object.keys(plugins).length === 0)) {
+    if (
+      !hasRuntimeConfiguration &&
+      (plugins === undefined || Object.keys(plugins).length === 0)
+    ) {
       return;
     }
     const required = pluginRuntimeHarnessRequirement(this.pluginDriver().implementation, harness);

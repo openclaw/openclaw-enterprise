@@ -93,7 +93,9 @@ test("Codex permission profiles validate without catalog discovery and freeze th
   const snapshot = driver.snapshotRuntimeConfiguration();
   assert.equal(snapshot.permissionProfiles["custom-investigation"].network.enabled, true);
   assert.equal(snapshot.permissionProfiles["custom-offline"].network.enabled, false);
-  assert.throws(() => { snapshot.permissionProfiles["custom-offline"].extends = ":workspace"; }, TypeError);
+  assert.throws(() => {
+    snapshot.permissionProfiles["custom-offline"].extends = ":workspace";
+  }, TypeError);
   assert.equal(new CodexPluginDriver().snapshotRuntimeConfiguration(), undefined);
 });
 

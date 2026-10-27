@@ -167,7 +167,10 @@ export function pluginRuntimeSpecForRevision(
   if (!validPluginRevisionState(state) || !validPluginApprovers(revision.pluginApprovers)) {
     throw new Error("AgentRevision plugin selections are invalid.");
   }
-  if (state.runtimeConfiguration !== undefined && state.driver.implementation !== CODEX_PLUGIN_DRIVER_IMPLEMENTATION) {
+  if (
+    state.runtimeConfiguration !== undefined &&
+    state.driver.implementation !== CODEX_PLUGIN_DRIVER_IMPLEMENTATION
+  ) {
     throw new Error("The selected Plugin Driver does not support saved runtime configuration.");
   }
   const permissionProfiles = codexRevisionPermissionProfiles(state.runtimeConfiguration);

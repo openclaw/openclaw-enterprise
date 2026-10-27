@@ -249,7 +249,15 @@ function validateCodexConfiguration(configuration: unknown): {
   }
   const keys = Object.keys(value);
   for (const key of keys) {
-    if (!["catalogSource", "codexExecutable", "codexHome", "requestTimeoutMs", "permissionProfiles"].includes(key)) {
+    if (
+      ![
+        "catalogSource",
+        "codexExecutable",
+        "codexHome",
+        "requestTimeoutMs",
+        "permissionProfiles",
+      ].includes(key)
+    ) {
       throw new PluginValidationError(`Codex Plugin Driver configuration.${key} is unsupported.`);
     }
   }

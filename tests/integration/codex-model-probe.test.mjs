@@ -177,11 +177,15 @@ async function startLauncher(
       "-e",
       "OPENCLAW_WORKSPACE_DIR=/home/node/workspace",
       ...Object.entries(auth).flatMap(([key, value]) => ["-e", `${key}=${value}`]),
-      ...Object.entries(pluginRuntimeEnvironment({
-        kind: "codex",
-        selections: {},
-        permissionProfiles: { "custom-investigation": { extends: ":workspace", network: { enabled: true } } },
-      })).flatMap(([key, value]) => ["-e", `${key}=${value}`]),
+      ...Object.entries(
+        pluginRuntimeEnvironment({
+          kind: "codex",
+          selections: {},
+          permissionProfiles: {
+            "custom-investigation": { extends: ":workspace", network: { enabled: true } },
+          },
+        }),
+      ).flatMap(([key, value]) => ["-e", `${key}=${value}`]),
       "-e",
       "OPENCLAW_HARNESS_MODEL=codex/fixture-model",
       "-e",

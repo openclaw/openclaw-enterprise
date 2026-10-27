@@ -3818,8 +3818,14 @@ test("Agent deployment snapshots Codex permission profiles without plugin select
   const controller = await configuredController();
   await bootstrap(controller);
   const namespace = await createNamespace(controller, "permission-profile-api");
-  const configuration = await createConfiguration(controller, namespace.id, createHarnessConfiguration("codex", "gpt-6-astra"));
-  const permissionProfiles = { "custom-investigation": { extends: ":workspace", network: { enabled: true } } };
+  const configuration = await createConfiguration(
+    controller,
+    namespace.id,
+    createHarnessConfiguration("codex", "gpt-6-astra"),
+  );
+  const permissionProfiles = {
+    "custom-investigation": { extends: ":workspace", network: { enabled: true } },
+  };
   const first = new CodexPluginDriver({ permissionProfiles });
   controller.fixture.controller.registerDriver(first);
   controller.fixture.controller.selectDriver("plugin", first.id);
@@ -3827,7 +3833,11 @@ test("Agent deployment snapshots Codex permission profiles without plugin select
     body: { name: "profile-agent", executionMode: "dedicated", configurationId: configuration.id },
   });
   assert.equal(created.status, 201, JSON.stringify(created.body));
-  await controller.fixture.controller.handleNamespaceLifecycle(controller.fixture.principal.id, namespace.id, "ready");
+  await controller.fixture.controller.handleNamespaceLifecycle(
+    controller.fixture.principal.id,
+    namespace.id,
+    "ready",
+  );
   await bindHarnessKey(controller.fixture, namespace.id, created.data);
   const path = `/namespaces/${namespace.id}/agents/${created.data.id}`;
   const deployed = await controller.request("POST", `${path}/deploy`);
@@ -3837,25 +3847,46 @@ test("Agent deployment snapshots Codex permission profiles without plugin select
     plugins: {},
     runtimeConfiguration: { permissionProfiles },
   });
-  const originalConfig = pluginRuntimeConfigMapData(pluginRuntimeSpecForRevision(deployed.data))["config.toml"];
+  const originalConfig = pluginRuntimeConfigMapData(pluginRuntimeSpecForRevision(deployed.data))[
+    "config.toml"
+  ];
   assert.match(originalConfig, /\[permissions\."custom-investigation"\.network\]\nenabled = true/);
 
   // Reconfiguration is a new Driver selection; old revisions must remain renderable from storage.
-  const replacementProfiles = { "custom-investigation": { extends: ":read-only", network: { enabled: false } } };
-  const replacement = new CodexPluginDriver({ permissionProfiles: replacementProfiles }, { id: "codex-reconfigured" });
+  const replacementProfiles = {
+    "custom-investigation": { extends: ":read-only", network: { enabled: false } },
+  };
+  const replacement = new CodexPluginDriver(
+    { permissionProfiles: replacementProfiles },
+    { id: "codex-reconfigured" },
+  );
   controller.fixture.controller.registerDriver(replacement);
   controller.fixture.controller.selectDriver("plugin", replacement.id);
   const historical = await controller.request("GET", `${path}/revisions/${deployed.data.id}`);
   assert.equal(historical.status, 200, JSON.stringify(historical.body));
-  assert.equal(pluginRuntimeConfigMapData(pluginRuntimeSpecForRevision(historical.data))["config.toml"], originalConfig);
+  assert.equal(
+    pluginRuntimeConfigMapData(pluginRuntimeSpecForRevision(historical.data))["config.toml"],
+    originalConfig,
+  );
   const next = await controller.request("POST", `${path}/deploy`);
   assert.equal(next.status, 202, JSON.stringify(next.body));
-  assert.deepEqual(next.data.plugins.runtimeConfiguration, { permissionProfiles: replacementProfiles });
-  assert.match(pluginRuntimeConfigMapData(pluginRuntimeSpecForRevision(next.data))["config.toml"], /\[permissions\."custom-investigation"\.network\]\nenabled = false/);
+  assert.deepEqual(next.data.plugins.runtimeConfiguration, {
+    permissionProfiles: replacementProfiles,
+  });
+  assert.match(
+    pluginRuntimeConfigMapData(pluginRuntimeSpecForRevision(next.data))["config.toml"],
+    /\[permissions\."custom-investigation"\.network\]\nenabled = false/,
+  );
 
   // Empty selections cannot bypass the same Harness boundary that protects selected plugins.
-  const incompatible = await createConfiguration(controller, namespace.id, createHarnessConfiguration("openclaw", "gpt-5.1"));
-  const changed = await controller.request("PATCH", path, { body: { configurationId: incompatible.id } });
+  const incompatible = await createConfiguration(
+    controller,
+    namespace.id,
+    createHarnessConfiguration("openclaw", "gpt-5.1"),
+  );
+  const changed = await controller.request("PATCH", path, {
+    body: { configurationId: incompatible.id },
+  });
   assert.equal(changed.status, 200, JSON.stringify(changed.body));
   assertApiError(await controller.request("POST", `${path}/deploy`), 400, "INVALID_REQUEST");
 });

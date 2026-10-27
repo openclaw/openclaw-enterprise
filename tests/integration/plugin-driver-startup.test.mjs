@@ -44,6 +44,33 @@ test("Installation startup accepts explicit native Codex catalog reader configur
   });
 });
 
+test("Installation startup admits Codex permission profiles without a catalog reader", async (t) => {
+  const permissionProfiles = {
+    "custom-investigation": { extends: ":workspace", network: { enabled: true } },
+  };
+  const loaded = await load(t, {
+    id: "codex-plugin",
+    configuration: { permissionProfiles },
+  });
+  assert.deepEqual(loaded.pluginDriver.snapshotRuntimeConfiguration(), { permissionProfiles });
+
+  // Startup's closed schema must reject native fields outside the supported operator contract.
+  await assert.rejects(
+    load(t, {
+      id: "codex-plugin",
+      configuration: {
+        permissionProfiles: {
+          "custom-investigation": {
+            extends: ":workspace",
+            network: { enabled: true, mode: "limited" },
+          },
+        },
+      },
+    }),
+    ConfigurationValidationError,
+  );
+});
+
 test("Installation selects hosted discovery by default and can select the curated catalog", async (t) => {
   for (const [configuration, credential] of [
     [{}, "required"],

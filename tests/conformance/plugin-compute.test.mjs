@@ -484,14 +484,19 @@ test("compute renders saved Codex permission profiles with quoted names and no d
   assert.ok(native.includes('[permissions."custom.\\"investigation\\"".network]\nenabled = true'));
   assert.doesNotMatch(native, /^default_permissions\s*=/m);
   assert.match(native, /^plugins = false$/m);
-  assert.equal(JSON.parse(pluginRuntimeEnvironment(runtime)[PLUGIN_RUNTIME_ENVIRONMENT]).codexConfigurationToml, native);
+  assert.equal(
+    JSON.parse(pluginRuntimeEnvironment(runtime)[PLUGIN_RUNTIME_ENVIRONMENT]).codexConfigurationToml,
+    native,
+  );
 
   // A corrupt persisted definition must fail preparation, not silently drop the setting.
   for (const runtimeConfiguration of [
     { unrecognized: {} },
     { permissionProfiles: { custom: { extends: "missing", network: { enabled: true } } } },
   ]) {
-    assert.throws(() => pluginRuntimeSpecForRevision(revision({ plugins: { ...state, runtimeConfiguration } })));
+    assert.throws(() =>
+      pluginRuntimeSpecForRevision(revision({ plugins: { ...state, runtimeConfiguration } })),
+    );
   }
 });
 
