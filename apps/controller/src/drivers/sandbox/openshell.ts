@@ -108,7 +108,10 @@ import {
   toProtobufStruct,
 } from "./openshell-gateway-client.ts";
 import { OpenShellServiceTransportError } from "./openshell-service-transport.ts";
-import { RUNTIME_WRAPPER_COMMAND } from "../compute/kubernetes/runtime-entrypoints.ts";
+import {
+  matchesWorkspaceNodeStateUpgrade,
+  RUNTIME_WRAPPER_COMMAND,
+} from "../compute/kubernetes/runtime-entrypoints.ts";
 import { harnessWorkspacePreparationScript } from "../compute/kubernetes/index.ts";
 import {
   compareResourceQuantities,
@@ -2800,9 +2803,53 @@ function runtimeProviderSetupUpdate(
   });
 }
 
+// These are the two workspace-node payloads actually produced before private state
+// initialization (b64bb6b8). Never accept a different program based on its name or owner.
+const beforePrivateNodeState = {
+  ordinary: "c6903eddf73e5e3f9e3fd17857d2fd79286c3a1e23122078a8265d925b195b20",
+  protected: "58bedfc8b3c4f69eb3589b8596e33717ee65ccc452e55b5ad8574e9ec9deaadb",
+};
+
+function matchesOwnedSandboxSpec(
+  existing: OpenShellSandboxResponse,
+  request: OpenShellSandboxCreateRequest,
+  revision: Readonly<AgentRevision>,
+): boolean {
+  const wanted = canonicalSandboxSpec(request.spec);
+  if (isDeepStrictEqual(canonicalSandboxSpec(existing.spec), wanted)) {
+    return true;
+  }
+  const observed = existing.spec?.command;
+  const expected = request.spec.command;
+  const first = RUNTIME_WRAPPER_COMMAND.length + 1;
+  const admission = revision.compute?.admission;
+  const protectedCodex = admission === "protected-codex-no-connection-retry:v1";
+  if (
+    revision.harness.id !== "codex" ||
+    revision.harness.mode !== "dedicated" ||
+    !revision.compute ||
+    (admission !== undefined && !protectedCodex) ||
+    !Array.isArray(expected) ||
+    !Array.isArray(observed) ||
+    observed.length !== expected.length ||
+    !isDeepStrictEqual(observed.slice(0, first), expected.slice(0, first))
+  ) {
+    return false;
+  }
+  const payload = observed.slice(first);
+  return (
+    payload.every((part) => typeof part === "string" && part.length <= 32768) &&
+    sha256Hex(JSON.stringify(payload)) ===
+      beforePrivateNodeState[protectedCodex ? "protected" : "ordinary"] &&
+    matchesWorkspaceNodeStateUpgrade(expected.slice(first), payload, protectedCodex) &&
+    isDeepStrictEqual(canonicalSandboxSpec({ ...existing.spec, command: expected }), wanted)
+  );
+}
+
 function verifyExistingSandbox(
   existing: OpenShellSandboxResponse,
   request: OpenShellSandboxCreateRequest,
+  revision: Readonly<AgentRevision>,
 ): void {
   if (
     existing.name !== request.name ||
@@ -2813,7 +2860,7 @@ function verifyExistingSandbox(
       request.annotations,
       "internal.openshell.ai/",
     ) ||
-    !isDeepStrictEqual(canonicalSandboxSpec(existing.spec), canonicalSandboxSpec(request.spec))
+    !matchesOwnedSandboxSpec(existing, request, revision)
   ) {
     throw new OpenShellSandboxConfigurationFailure(
       `Refusing OpenShell Sandbox ${request.name} without exact AgentRevision ownership and content.`,
@@ -3319,7 +3366,12 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         );
       await this.openShellGit!.bind(
         context.revision.id,
-        (observed) => verifyExistingSandbox(observed, { ...create, requestId: requestIds[0]! }),
+        (observed) =>
+          verifyExistingSandbox(
+            observed,
+            { ...create, requestId: requestIds[0]! },
+            context.revision,
+          ),
         originalModel ? continuity : undefined,
       );
     }
@@ -3426,7 +3478,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       }
     }
     // Adopt only this revision's own live Sandbox, with its Harness service in place.
-    verifyExistingSandbox(existing, { ...create, requestId: requestIds[0]! });
+    verifyExistingSandbox(existing, { ...create, requestId: requestIds[0]! }, context.revision);
     if (existing.phase === "SANDBOX_PHASE_DELETING" || existing.phase === 4) {
       throw new OpenShellSandboxConfigurationFailure(
         `OpenShell Sandbox ${sandbox.resourceName} is being deleted; it can be created again once deletion finishes.`,

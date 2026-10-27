@@ -4235,7 +4235,15 @@ export const PROTECTED_CODEX_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint(true);
 // the saved device identity. No deadline here: the controller's convergence
 // deadline governs a setup that never arrives. SandboxDriver Harnesses still
 // receive OPENCLAW_NODE_SETUP_CODE in the environment.
-function agentWithNodeEntrypoint(entrypoint: string): string {
+const PRIVATE_WORKSPACE_NODE_STATE = `mkdirSync(state, { recursive: true, mode: 0o700 });
+// PVC parents can propagate setgid even with mkdir's 0700 mode. Keep the
+// process-owned node state private before OpenClaw creates its child directories.
+chmodSync(state, 0o700);`;
+
+function agentWithNodeEntrypoint(
+  entrypoint: string,
+  prepareState = PRIVATE_WORKSPACE_NODE_STATE,
+): string {
   return String.raw`
 const { chmodSync, closeSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, writeFileSync, rmSync } = require("node:fs");
 const { join } = require("node:path");
@@ -4262,10 +4270,7 @@ if (
 ) {
   throw new Error("The workspace node is not provisioned.");
 }
-mkdirSync(state, { recursive: true, mode: 0o700 });
-// PVC parents can propagate setgid even with mkdir's 0700 mode. Keep the
-// process-owned node state private before OpenClaw creates its child directories.
-chmodSync(state, 0o700);
+${prepareState}
 initializeRuntimeAssets();
 publishAgentPluginSkillPath();
 const configPath = join(state, "openclaw.json");
@@ -4627,6 +4632,29 @@ export const AGENT_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(AGENT_RUNTIME_
 export const PROTECTED_CODEX_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
   PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
 );
+
+/** Check the one supported upgrade without exposing an old program to the launch path. */
+export function matchesWorkspaceNodeStateUpgrade(
+  expected: readonly string[],
+  observed: readonly string[],
+  protectedCodex: boolean,
+): boolean {
+  const entrypoint = protectedCodex ? PROTECTED_CODEX_RUNTIME_ENTRYPOINT : AGENT_RUNTIME_ENTRYPOINT;
+  const samePayload = (parts: readonly string[], program: string) => {
+    const [, ...encoded] = nodeProgramArguments(program);
+    return parts.length === encoded.length && parts.every((part, index) => part === encoded[index]);
+  };
+  return (
+    samePayload(
+      expected,
+      protectedCodex ? PROTECTED_CODEX_WITH_NODE_ENTRYPOINT : AGENT_WITH_NODE_ENTRYPOINT,
+    ) &&
+    samePayload(
+      observed,
+      agentWithNodeEntrypoint(entrypoint, "mkdirSync(state, { recursive: true });"),
+    )
+  );
+}
 
 export const NATIVE_WORKER_ENTRYPOINT = String.raw`
 const { join } = require("node:path");

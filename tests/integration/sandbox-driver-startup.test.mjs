@@ -26,6 +26,7 @@ import {
 import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
 import {
   AGENT_RUNTIME_ENTRYPOINT,
+  AGENT_WITH_NODE_ENTRYPOINT,
   NATIVE_WORKER_ENTRYPOINT,
   RUNTIME_WRAPPER_COMMAND,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
@@ -1979,6 +1980,36 @@ test("OpenShell adopts its revision's existing Sandbox instead of re-sending Cre
     /without exact AgentRevision ownership and content/,
   );
   assert.deepEqual(calls, [["getSandbox", name, calls[0][2]]]);
+
+  // The stored program is independently identified by the pre-upgrade producer.
+  const previous = AGENT_WITH_NODE_ENTRYPOINT.replace(
+    /mkdirSync\(state, \{ recursive: true, mode: 0o700 \}\);[\s\S]*?chmodSync\(state, 0o700\);/,
+    "mkdirSync(state, { recursive: true });",
+  );
+  const previousParts = nodeProgramArguments(previous).slice(1);
+  assert.equal(
+    createHash("sha256").update(JSON.stringify(previousParts)).digest("hex"),
+    "c6903eddf73e5e3f9e3fd17857d2fd79286c3a1e23122078a8265d925b195b20",
+  );
+  const saved = sandboxes.get(name);
+  const prefix = saved.spec.command.slice(0, RUNTIME_WRAPPER_COMMAND.length + 1);
+  const stored = { ...saved, spec: { ...saved.spec, command: [...prefix, ...previousParts] } };
+  sandboxes.set(name, stored);
+  const requestProgram = (program, target = { ...revision, compute: { driverId: "kubernetes" } }) =>
+    driver.provisionHarness({
+      ...context,
+      revision: target,
+      requirements: { ...codexRequirements(revision), command: harnessRuntimeCommand(program) },
+    });
+  calls.length = 0;
+  assert.deepEqual(await requestProgram(AGENT_WITH_NODE_ENTRYPOINT), first);
+  assert.equal(sandboxes.get(name), stored);
+  await assert.rejects(
+    requestProgram(AGENT_WITH_NODE_ENTRYPOINT + "\n0;"),
+    /exact AgentRevision ownership and content/,
+  );
+  assert.ok(calls.every(([method]) => method !== "createSandbox"));
+  sandboxes.set(name, saved);
 
   // ALREADY_EXISTS (a create that outlived its 24 h replay record) adopts this revision's Sandbox.
   sandboxes.clear();
