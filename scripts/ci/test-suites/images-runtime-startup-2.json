@@ -34,7 +34,8 @@
     {
       "path": "tests/integration/runtime-image-gateway-unclean-restart.test.mjs",
       "expectedTests": [
-        "runtime image embedded Gateway serves its first turn after operator-confirmed recovery from an unclean stop"
+        "runtime image embedded Gateway serves its first turn after operator-confirmed recovery from an unclean stop",
+        "runtime image Docker Compute replacement Gateway starts on the state its stopped or replaced predecessor released"
       ]
     },
     {

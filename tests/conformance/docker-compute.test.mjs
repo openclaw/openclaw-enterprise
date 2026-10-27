@@ -711,6 +711,13 @@ function fakeDockerEngine() {
       if (method === "POST" && action === "start") {
         return "";
       }
+      if (method === "POST" && action === "stop") {
+        const container = containers.get(name);
+        if (container !== undefined) {
+          container.State = { Running: false, ExitCode: 0 };
+        }
+        return "";
+      }
       if (method === "DELETE") {
         containers.delete(name);
         return "";
@@ -1009,6 +1016,13 @@ for (const mode of ["embedded", "dedicated"]) {
           assert.equal(setupFinished, true, "no runtime process can start before setup succeeds");
           runtimeStarts += 1;
           container.State = { Running: true, Health: { Status: "healthy" } };
+        }
+        return "";
+      }
+      if (method === "POST" && action === "stop") {
+        const container = containers.get(name);
+        if (container !== undefined) {
+          container.State = { Running: false, ExitCode: 0 };
         }
         return "";
       }

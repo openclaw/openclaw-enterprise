@@ -148,6 +148,13 @@ Driver retains the Agent-owned state and workspace volumes used for initial
 workspace setup across stop and version replacement. Without initial workspace
 inputs, writable container tmpfs remains ephemeral.
 
+Before the Driver removes a container, it asks Docker to stop it: Docker sends
+SIGTERM and sends SIGKILL after 10 seconds. A gateway that exits on SIGTERM
+releases its OpenClaw state lock, so the next gateway on the retained volume
+starts without operator action. A gateway that stops without SIGTERM (crash,
+out-of-memory kill, `docker kill`) keeps the lock until an operator
+[recovers it](../../guides/topics/agent-troubleshoot.md#an-embedded-gateway-reports-an-unverifiable-state-owner).
+
 State on that volume outlives runtime image upgrades. Before OpenClaw starts,
 the gateway runs the same agent database migration as a
 [Kubernetes Gateway](kubernetes-compute/storage-and-credentials.md#gateway-storage):

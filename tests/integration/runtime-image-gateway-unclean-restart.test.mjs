@@ -1,14 +1,23 @@
-// The embedded Gateway restarted after an unclean stop, split from
-// runtime-image-startup-termination.test.mjs. It starts the wrapper through the
-// same scenario helper as the startup probe files.
+// The embedded Gateway restarted on its retained state: after an unclean stop
+// (split from runtime-image-startup-termination.test.mjs; it starts the wrapper
+// through the same scenario helper as the startup probe files), and after Docker
+// Compute stops or replaces it.
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import test from "node:test";
+import { DockerComputeDriver } from "../../apps/controller/src/drivers/compute/docker/index.ts";
+import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
+import {
+  createHarnessConfiguration,
+  withStubbedProviderEndpoint,
+} from "../helpers/harness-configuration.mjs";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
 import {
   image,
   imageTestOptions,
   runDocker,
   gatewayStateVolume,
+  runtimeImageModel,
 } from "../helpers/runtime-image-startup.mjs";
 import {
   runStartupProbeScenario,
@@ -182,5 +191,98 @@ test(
       assert.match(restarted.snapshot.output, /integrityGateReason=stale-lease-full because=[a-z]/);
       assert.match(restarted.snapshot.output, /recovered after background inspection/);
     });
+  },
+);
+
+// Board finding 2674: Docker Compute force-removed (SIGKILL) the Gateway on Stop
+// and on redeploy. With retained state (initial workspace files), the killed
+// Gateway's OpenClaw state lock stayed on the volume; the replacement, in a new
+// PID namespace, cannot prove that owner stopped, so it refused the state and
+// exited before readiness. A Gateway stopped with SIGTERM releases the lock, and
+// its replacement starts with no operator recovery.
+test(
+  "runtime image Docker Compute replacement Gateway starts on the state its stopped or replaced predecessor released",
+  { ...imageTestOptions, timeout: 600_000 },
+  async (t) => {
+    // The real Docker Compute Driver on the local engine with the image under test.
+    // No model turn runs; the provider endpoint is a stub, so the synthetic key
+    // the Driver requires never leaves the host.
+    const previousKey = process.env.OPENAI_API_KEY;
+    process.env.OPENAI_API_KEY = "synthetic-docker-replacement-key";
+    t.after(() => {
+      if (previousKey === undefined) {
+        delete process.env.OPENAI_API_KEY;
+      } else {
+        process.env.OPENAI_API_KEY = previousKey;
+      }
+    });
+    const driver = new DockerComputeDriver({ images: { gateway: image, agent: image } });
+    const createdAt = new Date().toISOString();
+    const namespace = {
+      id: `ns-replacement-${randomUUID()}`,
+      name: "Gateway replacement proof",
+      status: "ready",
+      createdAt,
+    };
+    const agentId = `agent-replacement-${randomUUID()}`;
+    const revisionAt = (number) => ({
+      id: `rev-replacement-${number}-${randomUUID()}`,
+      namespaceId: namespace.id,
+      agentId,
+      revision: number,
+      configurationId: `cfg-replacement-${randomUUID()}`,
+      configurationKind: "agent",
+      configurationGeneration: 1,
+      configuration: admitLoggingConfiguration(
+        withStubbedProviderEndpoint(createHarnessConfiguration("openclaw", runtimeImageModel)),
+        "info",
+      ),
+      harness: { id: "openclaw", version: "2026.9.1", mode: "embedded" },
+      compute: { id: driver.id, implementation: driver.implementation },
+      executionAdmission: { version: 2, mode: "unprotected" },
+      servicePrincipalId: `sp-replacement-${randomUUID()}`,
+      createdAt,
+    });
+    // Initial workspace files give the Agent its retained state and workspace
+    // volumes, so each Gateway below opens the state its predecessor left.
+    const setup = {
+      id: `setup-${randomUUID()}`,
+      namespaceId: namespace.id,
+      agentId,
+      completed: false,
+      files: {
+        "AGENTS.md": "# Replacement proof\n",
+        "SOUL.md": "",
+        "IDENTITY.md": "",
+        "USER.md": "",
+      },
+    };
+    const completed = { id: setup.id, namespaceId: namespace.id, agentId, completed: true };
+    t.after(async () => {
+      const result = await driver.deleteNamespace(namespace);
+      assert.equal(result.namespaceDeleted, true, "owned containers, volumes and network removed");
+    });
+    await driver.preflight();
+    assert.equal((await driver.ensureNamespace(namespace)).namespaceReady, true);
+    const first = revisionAt(1);
+    assert.equal((await driver.prepareRevision(first, { workspaceSetup: setup })).ready, true);
+
+    // Stop, then deploy the next revision on the same state.
+    await driver.stopRevision(first);
+    const second = revisionAt(2);
+    assert.equal(
+      (await driver.prepareRevision(second, { workspaceSetup: completed })).ready,
+      true,
+      "the Gateway started after Stop must take over the released state",
+    );
+
+    // Redeploy with no Stop: the Driver removes the running Gateway itself.
+    const third = revisionAt(3);
+    assert.equal(
+      (await driver.prepareRevision(third, { workspaceSetup: completed })).ready,
+      true,
+      "the Gateway that replaces a running one must take over the released state",
+    );
+    await driver.stopRevision(third);
   },
 );
